@@ -13,6 +13,7 @@ pub mod ir;
 pub mod normalize;
 pub mod ontology;
 pub mod role_hierarchy;
+pub mod told;
 pub mod vocab;
 
 pub use convert::{
@@ -24,4 +25,5 @@ pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, R
 pub use normalize::{is_nnf, to_nnf};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};
 pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};
+pub use told::{ToldTables, build_told_tables};
 pub use vocab::Vocabulary;

@@ -538,6 +538,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "horned-owl",
  "owl-dl-reasoner",
  "serde",
  "serde_json",

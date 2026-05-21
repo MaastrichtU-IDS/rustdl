@@ -1,0 +1,75 @@
+# Differential-testing fixtures for the pure-ALC fragment of rustdl.
+#
+# Each entry pins:
+#   file        — fixture filename, relative to this directory
+#   description — one-line summary of what the fixture exercises
+#   test_class  — IRI of the named class whose satisfiability is checked
+#   expected    — "sat" if the test_class is satisfiable, "unsat" otherwise
+#
+# An oracle (e.g. ROBOT + HermiT via `docker/robot/oracle.sh`) and a
+# rustdl driver should both produce a verdict for each fixture and agree
+# with `expected`.
+#
+# All fixtures are pure ALC: no inverse roles, no cardinality, no
+# nominals, no datatypes. They cover the rule set landed in Phase 2
+# commits 1-6.
+
+[[fixture]]
+file = "01_atomic_sat.ofn"
+description = "Single atomic class — satisfiable"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "02_and_not_a_unsat.ofn"
+description = "A ⊓ ¬A — direct clash"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "03_or_backtrack_sat.ofn"
+description = "(A ⊓ ¬A) ⊔ B — first disjunct unsat, search backtracks"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "04_or_all_unsat.ofn"
+description = "(A ⊓ ¬A) ⊔ (B ⊓ ¬B) — every branch clashes"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "05_exists_sat.ofn"
+description = "∃r.A — exercises ∃-rule"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "06_exists_inner_clash_unsat.ofn"
+description = "∃r.(A ⊓ ¬A) — clash propagated through ∃-witness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "07_forall_clash_unsat.ofn"
+description = "∃r.A ⊓ ∀r.¬A — ∀ propagation clashes ∃ witness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "08_cyclic_blocking_sat.ofn"
+description = "A ⊑ ∃r.A; check A — must terminate via subset blocking"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "09_subsumption_chain_unsat.ofn"
+description = "A ⊑ B, B ⊑ C; A ⊓ ¬C — chained subsumption"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "10_disjoint_clash_unsat.ofn"
+description = "DisjointClasses(A, B); A ⊓ B"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

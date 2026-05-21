@@ -25,5 +25,8 @@ walkdir.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+horned-owl.workspace = true
+
 [lints]
 workspace = true

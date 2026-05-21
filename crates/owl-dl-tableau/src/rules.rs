@@ -418,3 +418,78 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         RuleOutcome::NoChange
     }
 }
+
+/// `≤n R.C` rule: for every `Max(n, R, C)` in `L(node)`, ensure at
+/// most `n` distinct R-neighbours of `node` carry `C`.
+///
+/// Algorithm:
+/// 1. Skip blocked nodes.
+/// 2. Collect distinct R-neighbours where `C ∈ L(neighbour)`.
+/// 3. If `count <= n`, no action.
+/// 4. Otherwise find a pair `(a, b)` not yet known distinct and
+///    merge `b` into `a` via [`TableauContext::merge_into`].
+/// 5. If every pair in the over-count set is pairwise distinct,
+///    the constraint cannot be satisfied — flag the node with `Bot`
+///    so clash detection fires.
+///
+/// The choose rule is in [`crate::search`]: this rule assumes the
+/// neighbours' `C`/`¬C` labelling is already decided.
+pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    let maxes: Vec<(u32, Role, ConceptId)> = ctx
+        .graph()
+        .node(node)
+        .labels()
+        .iter()
+        .filter_map(|&c| match ctx.pool().get(c) {
+            ConceptExpr::Max(n, role, body) => Some((*n, *role, *body)),
+            _ => None,
+        })
+        .collect();
+    if maxes.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    let mut applied = false;
+    for (n, role, body) in maxes {
+        // Distinct R-neighbours carrying body (deduped: edges to
+        // the same NodeId count once).
+        let mut c_neighbours: Vec<NodeId> = Vec::new();
+        for (seen, w) in ctx.graph().node(node).neighbours() {
+            if ctx.edge_satisfies(seen, role)
+                && ctx.graph().node(w).has_label(body)
+                && !c_neighbours.contains(&w)
+            {
+                c_neighbours.push(w);
+            }
+        }
+        if c_neighbours.len() <= n as usize {
+            continue;
+        }
+        // Find a mergeable pair (not already known distinct).
+        let mut merged = false;
+        'pairs: for i in 0..c_neighbours.len() {
+            for j in (i + 1)..c_neighbours.len() {
+                let a = c_neighbours[i];
+                let b = c_neighbours[j];
+                if !ctx.are_distinct(a, b) && ctx.merge_into(b, a) {
+                    applied = true;
+                    merged = true;
+                    break 'pairs;
+                }
+            }
+        }
+        if !merged
+            && let Some(bot) = ctx.pool().bot_id()
+            && ctx.add_label(node, bot)
+        {
+            applied = true;
+        }
+    }
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}

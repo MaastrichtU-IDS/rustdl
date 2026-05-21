@@ -57,27 +57,78 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Option<
         SaturationResult::Clash(_) => Some(false),
         SaturationResult::Stalled => None,
         SaturationResult::Stable => {
-            let Some((node, disjuncts)) = first_open_disjunction(ctx) else {
-                return Some(true);
-            };
-            let mut depth_limited = false;
-            for d in disjuncts {
-                let cp = ctx.checkpoint();
-                ctx.add_label(node, d);
-                match search(ctx, max_depth - 1) {
-                    Some(true) => return Some(true),
-                    Some(false) => {
-                        ctx.rollback_to(cp);
-                    }
-                    None => {
-                        ctx.rollback_to(cp);
-                        depth_limited = true;
-                    }
-                }
+            // Step 1: ⊔ branching has priority — it's structurally
+            // cheaper and keeps the search shape predictable.
+            if let Some((node, disjuncts)) = first_open_disjunction(ctx) {
+                return branch(ctx, max_depth, node, disjuncts);
             }
-            if depth_limited { None } else { Some(false) }
+            // Step 2: choose rule for `≤n R.C` — pick a neighbour
+            // that doesn't yet have `C` or `¬C` and branch.
+            if let Some((node, c, c_neg)) = first_open_choose(ctx) {
+                return branch(ctx, max_depth, node, vec![c, c_neg]);
+            }
+            Some(true)
         }
     }
+}
+
+fn branch(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    max_depth: usize,
+    node: NodeId,
+    options: Vec<ConceptId>,
+) -> Option<bool> {
+    let mut depth_limited = false;
+    for d in options {
+        let cp = ctx.checkpoint();
+        ctx.add_label(node, d);
+        match search(ctx, max_depth - 1) {
+            Some(true) => return Some(true),
+            Some(false) => {
+                ctx.rollback_to(cp);
+            }
+            None => {
+                ctx.rollback_to(cp);
+                depth_limited = true;
+            }
+        }
+    }
+    if depth_limited { None } else { Some(false) }
+}
+
+/// Find the first `Max(n, R, C)` label whose R-neighbour at the
+/// owning node is unlabelled for both `C` and `¬C`. Returns
+/// `(neighbour, C, ¬C)` — the two labels the search will branch on.
+fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, ConceptId, ConceptId)> {
+    let pool = ctx.pool();
+    let graph = ctx.graph();
+    for idx in 0..graph.len() {
+        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        for &c in graph.node(node_id).labels() {
+            let ConceptExpr::Max(_, role, body) = pool.get(c) else {
+                continue;
+            };
+            let Some(complement) = ctx.complement_of(*body) else {
+                // No complement registered — the reasoner facade
+                // should have set this for every Max body. Skip
+                // rather than panic; a missing complement results
+                // in incompleteness, not unsoundness.
+                continue;
+            };
+            for (seen, neighbour) in graph.node(node_id).neighbours() {
+                if !ctx.edge_satisfies(seen, *role) {
+                    continue;
+                }
+                let nlabels = graph.node(neighbour).labels();
+                let has_body = nlabels.binary_search(body).is_ok();
+                let has_comp = nlabels.binary_search(&complement).is_ok();
+                if !has_body && !has_comp {
+                    return Some((neighbour, *body, complement));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Find the first `Or` label in any node such that none of its

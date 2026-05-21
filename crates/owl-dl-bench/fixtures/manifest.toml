@@ -283,3 +283,27 @@ file = "45_min_with_forall_propagation_unsat.ofn"
 description = "≥3 r.A ⊓ ∀r.B ⊓ DisjointClasses(A,B) — witnesses get A then B, clash"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "46_max_one_two_exists_merge_sat.ofn"
+description = "∃r.A ⊓ ∃r.B ⊓ ≤1 r.⊤ — two witnesses merge into one carrying A and B"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "47_min_max_conflict_unsat.ofn"
+description = "≥2 r.A ⊓ ≤1 r.A — inequality clash, witnesses can't merge"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "48_max_merge_with_disjoint_unsat.ofn"
+description = "∃r.A ⊓ ∃r.B ⊓ ≤1 r.⊤ with DisjointClasses(A,B) — merged witness gets A⊓B, clash"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "49_exact_cardinality_sat.ofn"
+description = "ExactCardinality(2, r, A) — lowers to ≥2 ⊓ ≤2; satisfiable"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

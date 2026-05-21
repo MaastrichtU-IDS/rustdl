@@ -27,7 +27,7 @@
 //! count anyway so rollback doesn't have to count.
 
 use crate::graph::{CompletionGraph, NodeId};
-use owl_dl_core::{ConceptId, RoleId};
+use owl_dl_core::{ConceptId, Role, RoleId};
 
 /// A single recorded mutation of the completion graph, or a checkpoint
 /// marker.
@@ -54,6 +54,33 @@ pub enum TrailEntry {
     /// last entry on each node's `inequalities` list (append-only
     /// discipline between checkpoints lets us pop without scanning).
     DistinctMarked { a: NodeId, b: NodeId },
+    /// An out-edge `(role, target)` was removed from `from`'s edge
+    /// list at position `position`. The mirror in-edge at `target`
+    /// was also removed; both halves are restored on undo. Used by
+    /// `merge_into` to re-anchor edges to the merge target.
+    EdgeRemoved {
+        from: NodeId,
+        role: RoleId,
+        target: NodeId,
+        position: usize,
+        in_position: usize,
+    },
+    /// `node` was marked as merged into `new_target`. Undo restores
+    /// the prior `merged_into` value (usually `None`).
+    MergedRedirect {
+        node: NodeId,
+        new_target: NodeId,
+        prior_redirect: Option<NodeId>,
+    },
+    /// `node`'s `parent` / `parent_role` was rewritten (typically
+    /// during merge, when a child's parent was the source side and
+    /// needs to point at the target). Undo restores the prior
+    /// `(parent, parent_role)` pair.
+    ParentRewritten {
+        node: NodeId,
+        prior_parent: Option<NodeId>,
+        prior_parent_role: Option<Role>,
+    },
     /// Marker recording a position in the trail. [`TableauTrail::rollback_to`]
     /// takes the [`Checkpoint`] returned by [`TableauTrail::checkpoint`]
     /// and undoes everything after it.
@@ -174,6 +201,37 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             let ineq_b = &mut graph.node_mut(b).inequalities;
             let last = ineq_b.pop().expect("DistinctMarked undo: b empty");
             debug_assert_eq!(last, a, "DistinctMarked undo: b/a mismatch");
+        }
+        TrailEntry::EdgeRemoved {
+            from,
+            role,
+            target,
+            position,
+            in_position,
+        } => {
+            // Re-insert the out-edge at the original position.
+            graph.node_mut(from).edges.insert(position, (role, target));
+            // Re-insert the mirror in-edge.
+            graph
+                .node_mut(target)
+                .in_edges
+                .insert(in_position, (role, from));
+        }
+        TrailEntry::MergedRedirect {
+            node,
+            new_target: _,
+            prior_redirect,
+        } => {
+            graph.node_mut(node).merged_into = prior_redirect;
+        }
+        TrailEntry::ParentRewritten {
+            node,
+            prior_parent,
+            prior_parent_role,
+        } => {
+            let n = graph.node_mut(node);
+            n.parent = prior_parent;
+            n.parent_role = prior_parent_role;
         }
         TrailEntry::Checkpoint => {}
     }

@@ -200,6 +200,31 @@ impl ConceptPool {
         self.by_id.iter()
     }
 
+    /// Iterate every interned expression paired with its
+    /// [`ConceptId`]. Useful for callers that need a stable handle.
+    pub fn iter_with_ids(&self) -> impl Iterator<Item = (ConceptId, &ConceptExpr)> {
+        self.by_id.iter().enumerate().map(|(i, e)| {
+            (
+                ConceptId(u32::try_from(i).expect("pool size fits in u32")),
+                e,
+            )
+        })
+    }
+
+    /// Look up the canonical `⊥` id in the pool, if it has been
+    /// interned. Returns `None` for empty pools or pools where no
+    /// expression references `Bot`.
+    #[must_use]
+    pub fn bot_id(&self) -> Option<ConceptId> {
+        self.iter_with_ids().find_map(|(id, e)| {
+            if matches!(e, ConceptExpr::Bot) {
+                Some(id)
+            } else {
+                None
+            }
+        })
+    }
+
     ///
     /// # Panics
     /// Panics if `id` was not produced by this pool.

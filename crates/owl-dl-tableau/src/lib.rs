@@ -33,7 +33,7 @@ mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_min,
+    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
     apply_nominal_rules, apply_residual_gcis, apply_role_rules,
 };
 pub use saturate::{SaturationResult, saturate};
@@ -69,6 +69,12 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// borrowed because it's small (one entry per declared pair) and
     /// avoiding a fourth lifetime keeps the API tractable.
     inverse_pairs: HashMap<RoleId, RoleId>,
+    /// NNF complement table: `body → nnf(¬body)`. Populated by the
+    /// reasoner facade for every `body` appearing in a
+    /// `Max(_, _, body)` expression, so `apply_choose` can branch
+    /// on `C` vs `¬C` without ever needing to intern at tableau
+    /// time. `ConceptPool` is logically frozen during the tableau.
+    complements: HashMap<ConceptId, ConceptId>,
     graph: CompletionGraph,
     trail: TableauTrail,
 }
@@ -84,6 +90,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             tbox: None,
             hierarchy: None,
             inverse_pairs: HashMap::new(),
+            complements: HashMap::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -100,6 +107,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             tbox: Some(tbox),
             hierarchy: None,
             inverse_pairs: HashMap::new(),
+            complements: HashMap::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -121,6 +129,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
             inverse_pairs: HashMap::new(),
+            complements: HashMap::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -157,6 +166,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn are_declared_inverses(&self, r: RoleId, s: RoleId) -> bool {
         self.inverse_pairs.get(&r) == Some(&s)
+    }
+
+    /// Register the NNF complement of `body`. Must be called before
+    /// satisfiability for every `body` appearing in a `Max(_, _, body)`
+    /// so [`apply_choose`] can look the complement up at branching
+    /// time without mutating the pool.
+    pub fn set_complement(&mut self, body: ConceptId, complement: ConceptId) -> &mut Self {
+        self.complements.insert(body, complement);
+        self
+    }
+
+    /// Lookup the pre-registered NNF complement of `body`.
+    #[must_use]
+    pub fn complement_of(&self, body: ConceptId) -> Option<ConceptId> {
+        self.complements.get(&body).copied()
     }
 
     /// True iff a role-tagged neighbour view `seen` (as produced by
@@ -365,6 +389,172 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn are_distinct(&self, a: NodeId, b: NodeId) -> bool {
         self.graph.node(a).inequalities().contains(&b)
+    }
+
+    /// Follow the merge-redirect chain for `node` until an
+    /// unmerged node is reached. Returns `node` unchanged if it
+    /// has no `merged_into` link.
+    #[must_use]
+    pub fn resolve(&self, node: NodeId) -> NodeId {
+        let mut cur = node;
+        while let Some(next) = self.graph.node(cur).merged_into() {
+            cur = next;
+        }
+        cur
+    }
+
+    /// Merge `source` into `target`. After this call:
+    /// - every label of `source` is also a label of `target` (or
+    ///   was already);
+    /// - every outgoing edge `source —r→ x` is re-anchored as
+    ///   `target —r→ x`;
+    /// - every incoming edge `y —r→ source` is re-anchored as
+    ///   `y —r→ target`;
+    /// - every distinct-mark on `source` is also a distinct-mark
+    ///   on `target`;
+    /// - every node whose parent was `source` now has parent
+    ///   `target`;
+    /// - `source.merged_into` becomes `Some(target)`.
+    ///
+    /// Returns `true` if the merge happened, `false` if it was
+    /// rejected because `source` and `target` are already known
+    /// distinct (signalling an inequality clash to the caller).
+    /// All mutations are recorded on the trail so rollback restores
+    /// the prior state.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn merge_into(&mut self, source: NodeId, target: NodeId) -> bool {
+        debug_assert_ne!(source, target, "merge_into: source and target must differ");
+        if self.are_distinct(source, target) {
+            return false;
+        }
+        // Snapshot source's state before mutating. We use clones so
+        // the loops don't borrow the graph mutably during iteration.
+        let source_labels: Vec<ConceptId> = self.graph.node(source).labels.to_vec();
+        let source_out: Vec<(RoleId, NodeId)> = self.graph.node(source).edges.to_vec();
+        let source_in: Vec<(RoleId, NodeId)> = self.graph.node(source).in_edges.to_vec();
+        let source_ineq: Vec<NodeId> = self.graph.node(source).inequalities.to_vec();
+
+        // 1. Replay labels on target via add_label (LabelAdded trail
+        //    entries; idempotent).
+        for c in source_labels {
+            self.add_label(target, c);
+        }
+
+        // 2. Re-anchor outgoing edges: for each (r, x) in source.edges,
+        //    remove it and add (r, x) on target. This works even when
+        //    x == source (self-loop) — handled by the in_position
+        //    bookkeeping.
+        for (role, x) in source_out {
+            // Find this edge's positions and remove.
+            let from_pos = self
+                .graph
+                .node(source)
+                .edges
+                .iter()
+                .position(|&e| e == (role, x))
+                .expect("edge present at merge time");
+            let in_pos = self
+                .graph
+                .node(x)
+                .in_edges
+                .iter()
+                .position(|&e| e == (role, source))
+                .expect("mirror in-edge present at merge time");
+            self.remove_edge_recorded(source, role, x, from_pos, in_pos);
+            // Add (role, x') where x' = x unless x was source (a
+            // self-loop turns into target —r→ target).
+            let new_target = if x == source { target } else { x };
+            self.add_edge_inner(target, role, new_target);
+        }
+
+        // 3. Re-anchor incoming edges: each (r, y) in source.in_edges
+        //    means y —r→ source exists. Remove it and add y —r→ target.
+        for (role, y) in source_in {
+            // y may itself be merged; resolve so we don't operate on
+            // a redirect.
+            let y_eff = self.resolve(y);
+            if y_eff == source {
+                // Self-loop already handled above.
+                continue;
+            }
+            let from_pos = self
+                .graph
+                .node(y_eff)
+                .edges
+                .iter()
+                .position(|&e| e == (role, source));
+            let Some(from_pos) = from_pos else { continue };
+            let in_pos = self
+                .graph
+                .node(source)
+                .in_edges
+                .iter()
+                .position(|&e| e == (role, y))
+                .expect("source in-edge present at merge time");
+            self.remove_edge_recorded(y_eff, role, source, from_pos, in_pos);
+            self.add_edge_inner(y_eff, role, target);
+        }
+
+        // 4. Carry inequalities. mark_distinct is symmetric and
+        //    idempotent.
+        for other in source_ineq {
+            if other != target && other != source {
+                self.mark_distinct(target, other);
+            }
+        }
+
+        // 5. Rewrite children-parent pointers: any node whose
+        //    parent equals source becomes parented at target.
+        //    Iterate through the node arena. Skip the source itself.
+        let node_count = self.graph.len();
+        for idx in 0..node_count {
+            let nid = NodeId::new(u32::try_from(idx).expect("node count fits in u32"));
+            if nid == source {
+                continue;
+            }
+            if self.graph.node(nid).parent() == Some(source) {
+                let prior_parent = Some(source);
+                let prior_parent_role = self.graph.node(nid).parent_role();
+                self.graph.node_mut(nid).parent = Some(target);
+                self.trail.record(TrailEntry::ParentRewritten {
+                    node: nid,
+                    prior_parent,
+                    prior_parent_role,
+                });
+            }
+        }
+
+        // 6. Mark source as redirected.
+        let prior = self.graph.node(source).merged_into();
+        self.graph.node_mut(source).merged_into = Some(target);
+        self.trail.record(TrailEntry::MergedRedirect {
+            node: source,
+            new_target: target,
+            prior_redirect: prior,
+        });
+
+        true
+    }
+
+    fn remove_edge_recorded(
+        &mut self,
+        from: NodeId,
+        role: RoleId,
+        target: NodeId,
+        position: usize,
+        in_position: usize,
+    ) {
+        let removed = self.graph.node_mut(from).edges.remove(position);
+        debug_assert_eq!(removed, (role, target));
+        let mirror = self.graph.node_mut(target).in_edges.remove(in_position);
+        debug_assert_eq!(mirror, (role, from));
+        self.trail.record(TrailEntry::EdgeRemoved {
+            from,
+            role,
+            target,
+            position,
+            in_position,
+        });
     }
 
     /// Return true if `node` contains a clash:

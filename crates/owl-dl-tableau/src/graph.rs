@@ -70,10 +70,12 @@ pub struct Node {
     /// Pairwise inequality assertions: every [`NodeId`] in this list
     /// is known to denote a *different* individual than this node.
     /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
-    /// Populated by `apply_min` (newly-generated witnesses are marked
-    /// pairwise distinct); consulted by `apply_max` (Q2) when
-    /// deciding whether two witnesses can be merged.
     pub(crate) inequalities: SmallVec<[NodeId; 2]>,
+    /// `Some(t)` if this node has been merged into `t` by
+    /// `apply_max`. All meaningful state has been transferred to
+    /// `t`; this node is a redirect. Resolved through chains via
+    /// [`crate::TableauContext::resolve`].
+    pub(crate) merged_into: Option<NodeId>,
 }
 
 impl Node {
@@ -100,6 +102,16 @@ impl Node {
     #[must_use]
     pub fn inequalities(&self) -> &[NodeId] {
         &self.inequalities
+    }
+
+    #[must_use]
+    pub fn merged_into(&self) -> Option<NodeId> {
+        self.merged_into
+    }
+
+    #[must_use]
+    pub fn is_redirected(&self) -> bool {
+        self.merged_into.is_some()
     }
 
     #[must_use]

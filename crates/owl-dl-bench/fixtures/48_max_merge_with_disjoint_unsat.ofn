@@ -1,0 +1,20 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/48_max_merge_with_disjoint_unsat>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Test))
+    Declaration(ObjectProperty(:r))
+    DisjointClasses(:A :B)
+    SubClassOf(:Test
+        ObjectIntersectionOf(
+            ObjectSomeValuesFrom(:r :A)
+            ObjectSomeValuesFrom(:r :B)
+            ObjectMaxCardinality(1 :r owl:Thing)
+        )
+    )
+)

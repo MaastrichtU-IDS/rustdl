@@ -20,7 +20,7 @@ use thiserror::Error;
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
     AbsorbedTBox, Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology,
-    RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms,
+    RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms, nnf_complement,
 };
 use owl_dl_tableau::TableauContext;
 
@@ -50,13 +50,6 @@ pub enum ReasonError {
     /// machinery and are not supported by the current `ALCH` tableau.
     #[error("role chain sub-property axioms are deferred to Phase 5 (SROIQ)")]
     RoleChainUnsupported,
-
-    /// The ontology uses a `≤n R.C` (`ObjectMaxCardinality`,
-    /// `ObjectExactCardinality`, or `FunctionalRole`) cardinality
-    /// restriction. `≥n` is supported (Phase 3 Q1) but `≤n` requires
-    /// successor merging + the choose rule — that's Phase 3 Q2.
-    #[error("upper-bound cardinality restrictions (≤n R.C) not yet supported (Phase 3 Q2)")]
-    MaxCardinalityUnsupported,
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.
@@ -102,72 +95,44 @@ pub fn is_class_satisfiable_internal(
 
     let hierarchy = build_role_hierarchy(&internal)?;
     let inverse_pairs = collect_inverse_pairs(&internal);
-    // Reject upper-bound cardinality BEFORE NNF — otherwise the
-    // ¬Min → Max rewrite would mask user-written ≥n behind a
-    // pool-level Max occurrence and we'd be unable to tell them
-    // apart. Walking axiom concepts pre-NNF only sees Max if the
-    // user wrote one (ObjectMaxCardinality / ObjectExactCardinality /
-    // FunctionalRole-derived).
-    if user_wrote_max(&internal) {
-        return Err(ReasonError::MaxCardinalityUnsupported);
-    }
     let normalized = nnf_axioms(&mut internal);
     let tbox = absorb(&normalized, &mut internal.concepts);
+    // Ensure `⊥` is interned — `apply_max` flags inequality clashes
+    // by adding `Bot` to the offending node's label set, and looks
+    // up the canonical id via `pool.bot_id()`. Cheap & idempotent.
+    let _ = internal.concepts.bot();
+    let complements = precompute_max_complements(&mut internal.concepts);
     decide(
         &internal.concepts,
         &tbox,
         &hierarchy,
         &inverse_pairs,
+        &complements,
         class_id,
     )
 }
 
-/// True iff any concept *reachable from the input axioms* contains a
-/// `Max(_, _, _)` shape. The reachability walk is bounded by a
-/// visited set so cycles in the pool (impossible by construction
-/// today, but defensive) terminate.
-fn user_wrote_max(internal: &InternalOntology) -> bool {
-    use std::collections::HashSet;
-    let pool = &internal.concepts;
-    let mut visited: HashSet<ConceptId> = HashSet::new();
-    let mut stack: Vec<ConceptId> = Vec::new();
-    for ax in &internal.axioms {
-        collect_axiom_concepts(ax, &mut stack);
+/// Pre-compute NNF complements for every body appearing in a
+/// `Max(_, _, body)` expression so the choose rule can look them up
+/// without mutating the pool at tableau time. This is the last
+/// stage that mutates the pool; after this call the pool is frozen
+/// for the tableau run.
+fn precompute_max_complements(pool: &mut ConceptPool) -> Vec<(ConceptId, ConceptId)> {
+    // Two-step to avoid borrowing the pool both mutably and
+    // immutably: collect bodies first, then intern complements.
+    let bodies: Vec<ConceptId> = pool
+        .iter_with_ids()
+        .filter_map(|(_, e)| match e {
+            ConceptExpr::Max(_, _, body) => Some(*body),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::with_capacity(bodies.len());
+    for body in bodies {
+        let neg = nnf_complement(body, pool);
+        out.push((body, neg));
     }
-    while let Some(c) = stack.pop() {
-        if !visited.insert(c) {
-            continue;
-        }
-        match pool.get(c) {
-            ConceptExpr::Max(_, _, _) => return true,
-            ConceptExpr::Not(inner)
-            | ConceptExpr::Some(_, inner)
-            | ConceptExpr::All(_, inner)
-            | ConceptExpr::Min(_, _, inner) => stack.push(*inner),
-            ConceptExpr::And(args) | ConceptExpr::Or(args) => stack.extend(args.iter().copied()),
-            _ => {}
-        }
-    }
-    false
-}
-
-fn collect_axiom_concepts(ax: &Axiom, out: &mut Vec<ConceptId>) {
-    use Axiom::{
-        ClassAssertion, DisjointClasses, DisjointUnion, EquivalentClasses, ObjectPropertyDomain,
-        ObjectPropertyRange, SubClassOf,
-    };
-    match ax {
-        SubClassOf { sub, sup } => {
-            out.push(*sub);
-            out.push(*sup);
-        }
-        EquivalentClasses(ids) | DisjointClasses(ids) => out.extend(ids.iter().copied()),
-        DisjointUnion { members, .. } => out.extend(members.iter().copied()),
-        ObjectPropertyDomain { domain, .. } => out.push(*domain),
-        ObjectPropertyRange { range, .. } => out.push(*range),
-        ClassAssertion { class, .. } => out.push(*class),
-        _ => {}
-    }
+    out
 }
 
 /// Build the ALCH role hierarchy from atomic `SubObjectPropertyOf` and
@@ -229,6 +194,7 @@ fn decide(
     tbox: &AbsorbedTBox,
     hierarchy: &RoleHierarchy,
     inverse_pairs: &[(RoleId, RoleId)],
+    complements: &[(ConceptId, ConceptId)],
     class_id: ClassId,
 ) -> Result<bool, ReasonError> {
     // The Atomic-of-class concept; interning is cheap and idempotent
@@ -239,6 +205,9 @@ fn decide(
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
     for &(r, s) in inverse_pairs {
         ctx.declare_inverse_pair(r, s);
+    }
+    for &(body, comp) in complements {
+        ctx.set_complement(body, comp);
     }
     ctx.is_satisfiable(concept).ok_or(ReasonError::NoVerdict)
 }
@@ -381,7 +350,10 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     #[test]
-    fn max_cardinality_rejected_with_clear_error() {
+    fn max_cardinality_alone_is_satisfiable() {
+        // ≤1 r.A alone is trivially satisfiable — pick a model with
+        // zero or one r-successors. Tests that Max parses, lowers,
+        // and saturates without error.
         let onto = parse(&format!(
             "{HEADER}\
 Ontology(<http://rustdl.test/test>\n\
@@ -391,9 +363,26 @@ Ontology(<http://rustdl.test/test>\n\
     SubClassOf(:Test ObjectMaxCardinality(1 :r :A))\n\
 )\n"
         ));
-        let err = is_class_satisfiable(&onto, "http://rustdl.test/Test")
-            .expect_err("Max should error in Q1");
-        assert!(matches!(err, ReasonError::MaxCardinalityUnsupported));
+        assert!(check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn min_and_max_conflict_unsat() {
+        // ≥2 r.A ⊓ ≤1 r.A — two distinct A-witnesses required, only
+        // one allowed. The merge rule cannot collapse them
+        // (apply_min marked them distinct); inequality clash.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:Test ObjectIntersectionOf(\
+        ObjectMinCardinality(2 :r :A) \
+        ObjectMaxCardinality(1 :r :A)))\n\
+)\n"
+        ));
+        assert!(!check(&onto, "http://rustdl.test/Test"));
     }
 
     #[test]

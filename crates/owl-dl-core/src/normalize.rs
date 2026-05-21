@@ -74,6 +74,14 @@ pub fn to_nnf(cid: ConceptId, pool: &mut ConceptPool) -> ConceptId {
     }
 }
 
+/// Compute `nnf(¬C)` given `C` (already assumed NNF or convertible).
+/// Exposed for the tableau's choose rule, which needs the NNF
+/// complement of a concept when branching on `≤n R.C`.
+#[must_use]
+pub fn nnf_complement(cid: ConceptId, pool: &mut ConceptPool) -> ConceptId {
+    push_negation_in(cid, pool)
+}
+
 /// Helper: compute `nnf(¬C)` given the `C` (not its negation).
 fn push_negation_in(cid: ConceptId, pool: &mut ConceptPool) -> ConceptId {
     let expr = pool.get(cid).clone();

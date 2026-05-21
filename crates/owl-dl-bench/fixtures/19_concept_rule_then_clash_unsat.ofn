@@ -1,0 +1,19 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/19_concept_rule_then_clash_unsat>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Test))
+    Declaration(ObjectProperty(:r))
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))
+    EquivalentClasses(:Test
+        ObjectIntersectionOf(
+            :A
+            ObjectAllValuesFrom(:r ObjectComplementOf(:B))
+        )
+    )
+)

@@ -73,3 +73,63 @@ file = "10_disjoint_clash_unsat.ofn"
 description = "DisjointClasses(A, B); A ⊓ B"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "11_nested_exists_sat.ofn"
+description = "∃r.∃r.A — nested ∃ generation, two-deep tree"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "12_mutual_cycle_blocking_sat.ofn"
+description = "A ⊑ ∃r.B, B ⊑ ∃r.A — mutual recursion + blocking"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "13_deep_disjunction_sat.ofn"
+description = "Four-way ⊔ with three clashing branches; one survives"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "14_residual_gci_unsat.ofn"
+description = "⊤ ⊑ A residual GCI clashes with ¬A in the test class"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "15_two_roles_sat.ofn"
+description = "∃r.A ⊓ ∃s.B — distinct roles, distinct witnesses"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "16_forall_split_disjunction_sat.ofn"
+description = "∃r.A ⊓ ∃r.B ⊓ ∀r.(C ⊔ D) — ⊔ branches at each successor"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "17_three_way_equivalence_sat.ofn"
+description = "EquivalentClasses(A, B, C) — multi-way EquivalentClasses normalization"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "18_diamond_subsumption_unsat.ofn"
+description = "Diamond A ⊑ B, A ⊑ C, D ≡ B ⊓ C; A ⊓ ¬D unsat"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "19_concept_rule_then_clash_unsat.ofn"
+description = "A ⊑ ∃r.B; A ⊓ ∀r.¬B — ConceptRule fires then clashes at ∃ witness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "20_double_negation_sat.ofn"
+description = "¬¬A — exercises NNF pre-pass"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

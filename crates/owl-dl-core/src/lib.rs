@@ -10,6 +10,7 @@
 pub mod convert;
 pub mod convert_back;
 pub mod ir;
+pub mod normalize;
 pub mod ontology;
 pub mod role_hierarchy;
 pub mod vocab;
@@ -20,6 +21,7 @@ pub use convert::{
 };
 pub use convert_back::{axiom_to_component, concept_to_class_expression, convert_back};
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
+pub use normalize::{is_nnf, to_nnf};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};
 pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};
 pub use vocab::Vocabulary;

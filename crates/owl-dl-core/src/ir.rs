@@ -60,21 +60,58 @@ impl IndividualId {
     }
 }
 
-/// A role *expression*. Currently a thin wrapper over [`RoleId`]; in Phase 3
-/// it grows an `inverted: bool` field so [`ConceptExpr::Some`] / `All` / `Min`
-/// / `Max` / `SelfRestriction` continue to type-check without churn.
+/// A role expression as it appears in a concept (`∀R.C`, `∃R.C`, …)
+/// or in an `RBox` axiom.
+///
+/// A role is either a *named* property (the common case) or the
+/// *inverse* of a named property. Inverse roles are part of `ALCI`
+/// onward; the constructor [`Role::inverse`] is exposed in Phase 3
+/// commit 1's refactor pass but the converter still only produces
+/// [`Role::Named`] until Phase 3 commit 2 wires up `ObjectInverseOf`.
+///
+/// Call sites that only need the underlying [`RoleId`] keep using
+/// [`Role::role_id`]; sites that care about polarity check
+/// [`Role::is_inverse`] or destructure.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct Role(RoleId);
+pub enum Role {
+    Named(RoleId),
+    Inverse(RoleId),
+}
 
 impl Role {
     #[must_use]
     pub const fn named(id: RoleId) -> Self {
-        Self(id)
+        Self::Named(id)
     }
 
     #[must_use]
+    pub const fn inverse(id: RoleId) -> Self {
+        Self::Inverse(id)
+    }
+
+    /// The underlying named role, regardless of polarity. `r⁻` and
+    /// `r` both report the same `role_id`; use [`Self::is_inverse`]
+    /// to disambiguate.
+    #[must_use]
     pub const fn role_id(self) -> RoleId {
-        self.0
+        match self {
+            Self::Named(id) | Self::Inverse(id) => id,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_inverse(self) -> bool {
+        matches!(self, Self::Inverse(_))
+    }
+
+    /// Flip polarity: `r` ↔ `r⁻`. Useful when traversing an edge
+    /// "backwards" or applying ∃r⁻ as an ∃r at the predecessor.
+    #[must_use]
+    pub const fn flip(self) -> Self {
+        match self {
+            Self::Named(id) => Self::Inverse(id),
+            Self::Inverse(id) => Self::Named(id),
+        }
     }
 }
 

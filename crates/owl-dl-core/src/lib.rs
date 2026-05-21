@@ -16,6 +16,7 @@ pub mod normalize;
 pub mod ontology;
 pub mod role_hierarchy;
 pub mod told;
+pub mod transform;
 pub mod vocab;
 
 pub use absorb::{AbsorbedTBox, ConceptRule, NominalRule, RoleRule, absorb, absorb_roles};
@@ -30,4 +31,5 @@ pub use normalize::{is_nnf, nnf_axioms, to_nnf};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};
 pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};
 pub use told::{ToldTables, build_told_tables};
+pub use transform::transform;
 pub use vocab::Vocabulary;

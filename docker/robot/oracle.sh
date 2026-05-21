@@ -9,22 +9,30 @@
 #     crates/owl-dl-bench/fixtures/02_and_not_a_unsat.ofn \
 #     http://rustdl.test/Test
 #
-# Output: a single line, either "sat" or "unsat" on stdout. Diagnostics on
-# stderr. Exit 0 on success, non-zero if ROBOT failed.
+# Output: a single line, either "sat" or "unsat" on stdout. ROBOT
+# diagnostics on stderr. Exit 0 on success, non-zero only if ROBOT
+# could not run at all (image missing, file unreadable, ...).
 #
 # How it works
 # ============
 #
 # ROBOT's `reason` subcommand runs HermiT (or other reasoners via
-# `--reasoner`) and emits inferred axioms. If `:Test` is unsatisfiable,
-# the reasoner will infer `SubClassOf(:Test owl:Nothing)` and ROBOT will
-# include that in the output. We grep for it.
+# `--reasoner`). When it finds unsatisfiable classes it logs an
+# explicit line on stderr:
+#
+#     ERROR ... There are N unsatisfiable classes in the ontology.
+#     ERROR ...     unsatisfiable: <iri>
+#
+# and exits non-zero. (The log lines come out on **stdout**, not
+# stderr, despite the ERROR tag — Java logback config quirk.) We
+# capture both streams and search for our test IRI. No unsatisfiable
+# line ⇒ satisfiable.
 #
 # Pinning
 # =======
 #
-# The default image tag is `v1.9.6`; override with the ROBOT_IMAGE env
-# var. The official image is published at
+# Defaults to `obolibrary/robot:v1.9.6`; override with the ROBOT_IMAGE
+# env var. Image is published at
 # https://hub.docker.com/r/obolibrary/robot.
 
 set -euo pipefail
@@ -49,32 +57,36 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 cp "$FIXTURE" "$TMPDIR/in.ofn"
 
-# Run ROBOT reason with HermiT. The output is the *full* ontology with
-# inferred axioms merged in; the `--axiom-generators` flag restricts
-# which inference kinds get emitted. SubClass is what we need for
-# unsatisfiability detection: every unsat class becomes a subclass of
-# owl:Nothing.
+# Capture both streams; ROBOT may exit non-zero when classes are
+# unsat, so don't let that abort the script.
+LOG="$TMPDIR/robot.log"
+set +e
 docker run --rm \
     -v "$TMPDIR:/work" \
     -w /work \
     "$ROBOT_IMAGE" \
     robot reason \
         --reasoner hermit \
-        --axiom-generators "SubClass EquivalentClass" \
         --input in.ofn \
-        --output out.ofn >&2
+        --output out.ofn \
+        >"$LOG" 2>&1
+ROBOT_EXIT=$?
+set -e
 
-# Inferred output is OWL Functional Syntax. Look for any line asserting
-# the test class is a subclass of or equivalent to owl:Nothing. ROBOT
-# emits IRIs in full angle-bracket form in functional syntax output, so
-# we match against the full IRI.
-NOTHING="<http://www.w3.org/2002/07/owl#Nothing>"
-TEST="<${TEST_IRI}>"
+# Replay ROBOT's log so callers can see it.
+cat "$LOG" >&2
 
-if grep -E \
-    "SubClassOf\(${TEST} ${NOTHING}\)|EquivalentClasses\(${TEST} ${NOTHING}\)|EquivalentClasses\(${NOTHING} ${TEST}\)" \
-    "$TMPDIR/out.ofn" >/dev/null 2>&1; then
+# If our test IRI shows up in an "unsatisfiable: <iri>" line, that's
+# the verdict. Otherwise: if ROBOT exited 0, the ontology has no
+# unsat classes and our test class is satisfiable.
+if grep -qE "unsatisfiable:[[:space:]]+${TEST_IRI}([[:space:]]|$)" "$LOG"; then
     echo "unsat"
-else
-    echo "sat"
+    exit 0
 fi
+
+if [[ "$ROBOT_EXIT" -ne 0 ]]; then
+    echo "robot reason failed (exit $ROBOT_EXIT) without flagging $TEST_IRI" >&2
+    exit "$ROBOT_EXIT"
+fi
+
+echo "sat"

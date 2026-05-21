@@ -5,7 +5,7 @@
 //! node, asks each rule whether it applies, and stops when no rule
 //! adds anything (saturation) or a clash appears.
 //!
-//! ## Phase 2 commit 4 scope
+//! ## Phase 2 commit 6 scope
 //!
 //! Deterministic rules covered:
 //!
@@ -14,9 +14,10 @@
 //! - `⊑` via the four absorbed-TBox families:
 //!   [`apply_concept_rules`], [`apply_nominal_rules`],
 //!   [`apply_role_rules`], [`apply_residual_gcis`]
+//! - `∃` generation with naive subset blocking ([`apply_exists`])
 //!
-//! Subsequent commits add the non-deterministic `⊔` and the
-//! generative `∃` rule.
+//! The non-deterministic `⊔` rule lives in [`crate::search`] since it
+//! requires a backtracking driver rather than a fixed-point sweep.
 
 use crate::TableauContext;
 use crate::graph::NodeId;
@@ -266,6 +267,59 @@ pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> Ru
     let mut applied = false;
     for c in pending {
         if ctx.add_label(node, c) {
+            applied = true;
+        }
+    }
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}
+
+/// `∃`-rule: for every `Some(R, C)` in `L(x)`, ensure x has an
+/// R-successor whose label set contains `C`. If no existing R-edge
+/// from `x` reaches a node already carrying `C`, allocate a fresh
+/// successor via [`TableauContext::new_successor`] and seed it with
+/// `C`.
+///
+/// Skipped entirely when `x` is subset-blocked by an ancestor (see
+/// [`TableauContext::is_blocked`]): the ancestor already witnesses
+/// every existential `x` would generate.
+///
+/// Returns [`RuleOutcome::Applied`] if any successor was created or
+/// re-used by adding a new label.
+pub fn apply_exists(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+    if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    let pending: Vec<(RoleId, ConceptId)> = ctx
+        .graph()
+        .node(node)
+        .labels()
+        .iter()
+        .filter_map(|&c| match ctx.pool().get(c) {
+            ConceptExpr::Some(role, body) => Some((role.role_id(), *body)),
+            _ => None,
+        })
+        .collect();
+    if pending.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    let mut applied = false;
+    for (role, body) in pending {
+        let witness = ctx
+            .graph()
+            .node(node)
+            .edges()
+            .iter()
+            .find(|&&(r, target)| r == role && ctx.graph().node(target).has_label(body))
+            .map(|&(_, target)| target);
+        if witness.is_some() {
+            continue;
+        }
+        let succ = ctx.new_successor(node, role);
+        if ctx.add_label(succ, body) {
             applied = true;
         }
     }

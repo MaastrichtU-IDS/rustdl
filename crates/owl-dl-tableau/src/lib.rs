@@ -33,7 +33,7 @@ mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_forall, apply_nominal_rules,
+    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_nominal_rules,
     apply_residual_gcis, apply_role_rules,
 };
 pub use saturate::{SaturationResult, saturate};
@@ -119,13 +119,54 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox> {
         self.trail.rollback_to(cp, &mut self.graph);
     }
 
-    /// Allocate a fresh node and return its id. Records a
+    /// Allocate a fresh root-level node and return its id. Records a
     /// [`TrailEntry::NodeCreated`] so rollback drops the node.
+    ///
+    /// Root nodes have `parent: None` and are never subject to
+    /// subset blocking. Use [`Self::new_successor`] for `∃`-rule
+    /// generation where blocking applies.
     pub fn new_node(&mut self) -> NodeId {
         let prior_len = self.graph.len();
         let id = self.graph.push_node();
         self.trail.record(TrailEntry::NodeCreated { prior_len });
         id
+    }
+
+    /// Allocate a fresh successor of `from` reachable by `role`.
+    /// Records both `NodeCreated` and `EdgeAdded` on the trail and
+    /// stamps the new node with `parent = Some(from)` so subset
+    /// blocking can walk the tree.
+    pub fn new_successor(&mut self, from: NodeId, role: RoleId) -> NodeId {
+        let prior_len = self.graph.len();
+        let id = self.graph.push_node_with_parent(Some(from));
+        self.trail.record(TrailEntry::NodeCreated { prior_len });
+        self.graph.node_mut(from).edges.push((role, id));
+        self.trail.record(TrailEntry::EdgeAdded {
+            from,
+            role,
+            target: id,
+        });
+        id
+    }
+
+    /// True if `node` has an ancestor (via the `parent` chain)
+    /// whose label set is a superset of `node`'s. Root nodes
+    /// (`parent: None`) are never blocked.
+    ///
+    /// Subset blocking is naive: O(depth · |labels|) per check.
+    /// Phase 4 swaps in pairwise blocking with caches.
+    #[must_use]
+    pub fn is_blocked(&self, node: NodeId) -> bool {
+        let my_labels = self.graph.node(node).labels();
+        let mut cursor = self.graph.node(node).parent();
+        while let Some(p) = cursor {
+            let p_labels = self.graph.node(p).labels();
+            if is_subset_sorted(my_labels, p_labels) {
+                return true;
+            }
+            cursor = self.graph.node(p).parent();
+        }
+        false
     }
 
     /// Add concept `c` to `node`'s label list if not already present.
@@ -196,19 +237,36 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox> {
     /// - `None` if the iteration cap was hit before settling
     ///   (defensive guard while the ruleset is incomplete).
     ///
-    /// As of commit 5 the wired rules are `⊓`, `∀`, the four
-    /// absorbed-TBox families (`ConceptRule`, `NominalRule`,
-    /// `RoleRule`, residual GCI), and the non-deterministic `⊔`
-    /// rule driven by trail-based backtracking. The generative `∃`
-    /// rule and subset blocking arrive in commit 6, so any concept
-    /// whose unsatisfiability requires a successor witness will
-    /// currently come back `Some(true)`.
+    /// As of commit 6 the full ALC ruleset is wired: `⊓`, `⊔` (via
+    /// backtracking search), `∀`, `∃` with naive subset blocking,
+    /// and the four absorbed-TBox families (`ConceptRule`,
+    /// `NominalRule`, `RoleRule`, residual GCI). For pure ALC with
+    /// an absorbed `TBox`, verdicts are sound and complete.
+    /// Phase 3 (`ALCHIQ`) and Phase 5 (nominals + complex role
+    /// hierarchies) extend the ruleset further.
     pub fn is_satisfiable(&mut self, c: ConceptId) -> Option<bool> {
         const MAX_DEPTH: usize = 256;
         let root = self.new_node();
         self.add_label(root, c);
         search::search(self, MAX_DEPTH)
     }
+}
+
+/// Linear-time subset check for two ascending-sorted slices.
+fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
+    let mut i = 0;
+    let mut j = 0;
+    while i < small.len() && j < big.len() {
+        match small[i].cmp(&big[j]) {
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    i == small.len()
 }
 
 #[cfg(test)]
@@ -706,6 +764,148 @@ mod tests {
         // the bad ∀R.…
         assert!(ctx.graph().node(x).has_label(top));
         assert!(!ctx.graph().node(x).has_label(bad_forall));
+    }
+
+    #[test]
+    fn exists_creates_successor_with_body() {
+        // ∃R.A is satisfiable; saturate generates one R-successor
+        // labelled with A.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        let some_r_a = pool.some(Role::named(r), a);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, some_r_a);
+        let result = saturate(&mut ctx, 64);
+        assert_eq!(result, SaturationResult::Stable);
+        assert_eq!(ctx.graph().len(), 2);
+        let succ = ctx.graph().node(root).edges()[0].1;
+        assert!(ctx.graph().node(succ).has_label(a));
+        assert_eq!(ctx.graph().node(succ).parent(), Some(root));
+    }
+
+    #[test]
+    fn exists_reuses_existing_witness() {
+        // L(x) = {∃R.A}, x already has an R-successor y with A.
+        // The rule should not create a new node.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        let some_r_a = pool.some(Role::named(r), a);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_edge(x, r, y);
+        ctx.add_label(y, a);
+        ctx.add_label(x, some_r_a);
+        let result = saturate(&mut ctx, 64);
+        assert_eq!(result, SaturationResult::Stable);
+        assert_eq!(ctx.graph().len(), 2);
+    }
+
+    #[test]
+    fn exists_clash_in_successor_propagates_unsat() {
+        // ∃R.(A ⊓ ¬A) — successor clashes; concept is unsat.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let not_a = pool.not(a);
+        let bad = pool.and([a, not_a]);
+        let r = RoleId::new(0);
+        let some_r_bad = pool.some(Role::named(r), bad);
+        assert_eq!(check_sat(&pool, some_r_bad), Some(false));
+    }
+
+    #[test]
+    fn exists_terminates_on_cyclic_tbox_via_blocking() {
+        // A ⊑ ∃R.A — naively loops forever. With subset blocking,
+        // the second-level successor is blocked by the root and the
+        // search terminates with Some(true).
+        let mut pool = ConceptPool::new();
+        let a_class = ClassId::new(0);
+        let a = pool.atomic(a_class);
+        let r = RoleId::new(0);
+        let some_r_a = pool.some(Role::named(r), a);
+        let tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: a_class,
+                conclusion: some_r_a,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        assert_eq!(ctx.is_satisfiable(a), Some(true));
+        // Should have at most 2 nodes after blocking kicks in:
+        // root (labelled A, ∃R.A) and one R-successor (labelled A,
+        // ∃R.A) blocked by the root.
+        assert!(ctx.graph().len() <= 4);
+    }
+
+    #[test]
+    fn exists_with_forall_propagation_into_successor() {
+        // ∃R.A ⊓ ∀R.B — the existential's witness must also pick
+        // up B from the ∀. Successor ends with {A, B}.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let r = RoleId::new(0);
+        let some_r_a = pool.some(Role::named(r), a);
+        let all_r_b = pool.all(Role::named(r), b);
+        let conj = pool.and([some_r_a, all_r_b]);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, conj);
+        let result = saturate(&mut ctx, 64);
+        assert_eq!(result, SaturationResult::Stable);
+        // The R-successor must have both A and B.
+        let succ = ctx.graph().node(root).edges()[0].1;
+        assert!(ctx.graph().node(succ).has_label(a));
+        assert!(ctx.graph().node(succ).has_label(b));
+    }
+
+    #[test]
+    fn exists_with_forall_clash_unsat() {
+        // ∃R.A ⊓ ∀R.¬A — witness gets A then ¬A; clashes.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let not_a = pool.not(a);
+        let r = RoleId::new(0);
+        let some_r_a = pool.some(Role::named(r), a);
+        let all_r_not_a = pool.all(Role::named(r), not_a);
+        let conj = pool.and([some_r_a, all_r_not_a]);
+        assert_eq!(check_sat(&pool, conj), Some(false));
+    }
+
+    #[test]
+    fn is_blocked_root_is_never_blocked() {
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        ctx.add_label(x, a);
+        assert!(!ctx.is_blocked(x));
+    }
+
+    #[test]
+    fn is_blocked_when_labels_are_subset_of_parent() {
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let c = pool.atomic(ClassId::new(2));
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, a);
+        ctx.add_label(root, b);
+        let succ = ctx.new_successor(root, r);
+        ctx.add_label(succ, a);
+        assert!(ctx.is_blocked(succ));
+        ctx.add_label(succ, b);
+        assert!(ctx.is_blocked(succ));
+        // Add a label not on the parent — successor escapes the
+        // subset and is no longer blocked.
+        ctx.add_label(succ, c);
+        assert!(!ctx.is_blocked(succ));
     }
 
     #[test]

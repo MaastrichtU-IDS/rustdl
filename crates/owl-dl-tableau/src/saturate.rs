@@ -7,18 +7,19 @@
 //! (priority queues, dependency-directed backtracking, lazy unfolding
 //! integration) arrives in Phase 4.
 //!
-//! ## Phase 2 commit 4 scope
+//! ## Phase 2 commit 6 scope
 //!
-//! Deterministic rules wired into the sweep: `⊓`, `∀`, plus the four
-//! absorbed-TBox families (`ConceptRule`, `NominalRule`, `RoleRule`,
-//! residual GCI). Non-deterministic `⊔` and generative `∃` arrive in
-//! later commits; until then concepts whose unsatisfiability hinges
-//! on those will still come back [`SaturationResult::Stable`].
+//! All deterministic ALC rules are wired into the sweep: `⊓`, `∀`,
+//! the four absorbed-TBox families (`ConceptRule`, `NominalRule`,
+//! `RoleRule`, residual GCI), and the generative `∃` rule with
+//! naive subset blocking. The non-deterministic `⊔` rule sits one
+//! level up in [`crate::search`] since it requires a backtracking
+//! driver.
 
 use crate::TableauContext;
 use crate::graph::NodeId;
 use crate::rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_forall, apply_nominal_rules,
+    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_nominal_rules,
     apply_residual_gcis, apply_role_rules,
 };
 
@@ -69,6 +70,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_>, max_iters: usize) -> Saturatio
                 changed = true;
             }
             if apply_role_rules(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
+            if apply_exists(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
         }

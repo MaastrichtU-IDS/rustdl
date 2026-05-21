@@ -307,3 +307,27 @@ file = "49_exact_cardinality_sat.ofn"
 description = "ExactCardinality(2, r, A) — lowers to ≥2 ⊓ ≤2; satisfiable"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "50_nominal_basic_sat.ofn"
+description = "{alice} — bare singleton nominal class, satisfiable"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "51_nominal_exists_sat.ofn"
+description = "∃r.{alice} — generates an r-successor labelled with the nominal"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "52_nominal_clash_unsat.ofn"
+description = "{alice} ⊑ A; {alice} ⊓ ¬A — unsat via nominal-mediated ConceptRule"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "53_nominal_merges_witnesses_sat.ofn"
+description = "∃r.(A⊓{alice}) ⊓ ∃r.(B⊓{alice}) — two witnesses merge into one carrying A and B"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

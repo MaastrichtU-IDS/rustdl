@@ -34,7 +34,7 @@ mod trail;
 pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
-    apply_nominal_rules, apply_residual_gcis, apply_role_rules,
+    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_rules,
 };
 pub use saturate::{SaturationResult, saturate};
 pub use search::search;
@@ -43,7 +43,8 @@ pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 use std::collections::HashMap;
 
 use owl_dl_core::{
-    AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, Role, RoleHierarchy, RoleId, is_nnf,
+    AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleHierarchy, RoleId,
+    is_nnf,
 };
 
 /// Coordinator owning the completion graph and trail for one tableau
@@ -389,6 +390,19 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn are_distinct(&self, a: NodeId, b: NodeId) -> bool {
         self.graph.node(a).inequalities().contains(&b)
+    }
+
+    /// Set `node` as the canonical witness for nominal `individual`.
+    /// Idempotent: a no-op if already set to `node`. Records a
+    /// [`TrailEntry::NominalAssigned`] when the mapping changes.
+    pub fn assign_nominal(&mut self, individual: IndividualId, node: NodeId) {
+        let prior = self.graph.nominals.get(&individual).copied();
+        if prior == Some(node) {
+            return;
+        }
+        self.graph.nominals.insert(individual, node);
+        self.trail
+            .record(TrailEntry::NominalAssigned { individual, prior });
     }
 
     /// Follow the merge-redirect chain for `node` until an

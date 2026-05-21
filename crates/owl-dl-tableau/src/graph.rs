@@ -22,7 +22,9 @@
 //! Sorted `SmallVec` keeps inline allocation for small label sets and
 //! gives O(log n) contains + O(n) subset check.
 
-use owl_dl_core::{ConceptId, Role, RoleId};
+use std::collections::HashMap;
+
+use owl_dl_core::{ConceptId, IndividualId, Role, RoleId};
 use smallvec::SmallVec;
 
 /// Index into the node arena of a [`CompletionGraph`].
@@ -147,6 +149,11 @@ impl Node {
 #[derive(Clone, Debug, Default)]
 pub struct CompletionGraph {
     pub(crate) nodes: Vec<Node>,
+    /// Canonical node for each nominal individual seen during this
+    /// tableau run. Phase 5 (N): when a node is labelled `{a}` and
+    /// another already represents `a`, they must denote the same
+    /// individual — the rule merges them.
+    pub(crate) nominals: HashMap<IndividualId, NodeId>,
 }
 
 impl CompletionGraph {
@@ -201,5 +208,13 @@ impl CompletionGraph {
     /// [`crate::TrailEntry::NodeCreated`] entries.
     pub(crate) fn truncate_nodes(&mut self, new_len: usize) {
         self.nodes.truncate(new_len);
+    }
+
+    /// Look up the canonical node currently assigned to `individual`,
+    /// if any. The result may itself be a redirected node; callers
+    /// should pass it through [`crate::TableauContext::resolve`].
+    #[must_use]
+    pub fn nominal_node(&self, individual: IndividualId) -> Option<NodeId> {
+        self.nominals.get(&individual).copied()
     }
 }

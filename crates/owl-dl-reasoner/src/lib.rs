@@ -336,6 +336,28 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     #[test]
+    fn nominal_forces_witness_merge() {
+        // ∃r.(A ⊓ {alice}) ⊓ ∃r.(B ⊓ {alice}) — the two existentials
+        // generate separate witnesses, but both carry {alice}; the
+        // nominal-assignment rule merges them into one node carrying
+        // A and B. Satisfiable.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    SubClassOf(:Test ObjectIntersectionOf(\
+        ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A ObjectOneOf(:alice))) \
+        ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B ObjectOneOf(:alice)))))\n\
+)\n"
+        ));
+        assert!(check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
     fn min_cardinality_generates_distinct_witnesses() {
         let onto = parse(&format!(
             "{HEADER}\

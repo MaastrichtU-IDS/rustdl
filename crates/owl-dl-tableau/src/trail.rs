@@ -27,7 +27,7 @@
 //! count anyway so rollback doesn't have to count.
 
 use crate::graph::{CompletionGraph, NodeId};
-use owl_dl_core::{ConceptId, Role, RoleId};
+use owl_dl_core::{ConceptId, IndividualId, Role, RoleId};
 
 /// A single recorded mutation of the completion graph, or a checkpoint
 /// marker.
@@ -80,6 +80,14 @@ pub enum TrailEntry {
         node: NodeId,
         prior_parent: Option<NodeId>,
         prior_parent_role: Option<Role>,
+    },
+    /// The canonical node for `individual` (the `O` axis of `SROIQ`)
+    /// was changed. Stored on the [`crate::TableauContext`], outside
+    /// the graph itself; the trail entry holds the prior mapping so
+    /// undo restores it.
+    NominalAssigned {
+        individual: IndividualId,
+        prior: Option<NodeId>,
     },
     /// Marker recording a position in the trail. [`TableauTrail::rollback_to`]
     /// takes the [`Checkpoint`] returned by [`TableauTrail::checkpoint`]
@@ -233,6 +241,14 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             n.parent = prior_parent;
             n.parent_role = prior_parent_role;
         }
+        TrailEntry::NominalAssigned { individual, prior } => match prior {
+            Some(node) => {
+                graph.nominals.insert(individual, node);
+            }
+            None => {
+                graph.nominals.remove(&individual);
+            }
+        },
         TrailEntry::Checkpoint => {}
     }
 }

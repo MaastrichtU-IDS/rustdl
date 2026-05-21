@@ -493,3 +493,69 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         RuleOutcome::NoChange
     }
 }
+
+/// Nominal-assignment rule: when `node` is labelled `Nominal(a)`,
+/// either claim `node` as the canonical witness of individual `a`
+/// (if no prior claim exists) or merge `node` with the existing
+/// canonical node.
+///
+/// OWL 2 has no Unique Name Assumption: two `Nominal({a})` and
+/// `Nominal({b})` labels on the same node don't clash on their
+/// own; they jointly force `SameIndividual(a, b)` to hold in the
+/// model. The merge semantics drop out naturally — both
+/// individuals end up pointing at the same canonical node.
+///
+/// Distinctness comes from `DifferentIndividuals` axioms (not yet
+/// processed by the facade) which would `mark_distinct` the
+/// corresponding nominal nodes; a forced merge between distinct
+/// nodes then returns `false` and the caller flags the clash.
+pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    // Collect Nominal(a) individuals from this node's labels.
+    let individuals: Vec<owl_dl_core::IndividualId> = ctx
+        .graph()
+        .node(node)
+        .labels()
+        .iter()
+        .filter_map(|&c| match ctx.pool().get(c) {
+            ConceptExpr::Nominal(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
+    if individuals.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    let mut applied = false;
+    let resolved_node = ctx.resolve(node);
+    for ind in individuals {
+        match ctx.graph().nominal_node(ind) {
+            None => {
+                ctx.assign_nominal(ind, resolved_node);
+                applied = true;
+            }
+            Some(other) => {
+                let other_res = ctx.resolve(other);
+                if other_res != resolved_node {
+                    // Merge other_res into resolved_node. If the
+                    // merge is rejected (declared distinct), the
+                    // caller surfaces the clash via the next
+                    // iteration's clash_in check — we still need
+                    // to flag the node with ⊥.
+                    if !ctx.merge_into(other_res, resolved_node)
+                        && let Some(bot) = ctx.pool().bot_id()
+                    {
+                        ctx.add_label(resolved_node, bot);
+                    }
+                    // After merging, update the nominal map so
+                    // subsequent lookups skip the resolve chain.
+                    ctx.assign_nominal(ind, resolved_node);
+                    applied = true;
+                }
+            }
+        }
+    }
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}

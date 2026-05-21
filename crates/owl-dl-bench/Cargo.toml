@@ -27,6 +27,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 horned-owl.workspace = true
+owl-dl-reasoner.workspace = true
 
 [lints]
 workspace = true

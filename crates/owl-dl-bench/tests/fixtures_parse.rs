@@ -25,7 +25,10 @@ fn each_fixture(mut check: impl FnMut(&str)) {
         .filter_map(Result::ok)
         .filter_map(|e| {
             let path = e.path();
-            if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("ofn")) {
+            if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ofn"))
+            {
                 Some(e.file_name().to_string_lossy().into_owned())
             } else {
                 None

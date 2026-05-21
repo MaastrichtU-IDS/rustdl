@@ -1,0 +1,95 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/owl-dl-core",
+    "crates/owl-dl-saturation",
+    "crates/owl-dl-tableau",
+    "crates/owl-dl-datatypes",
+    "crates/owl-dl-reasoner",
+    "crates/owl-dl-cli",
+    "crates/owl-dl-bench",
+    "xtask",
+]
+default-members = [
+    "crates/owl-dl-core",
+    "crates/owl-dl-saturation",
+    "crates/owl-dl-tableau",
+    "crates/owl-dl-datatypes",
+    "crates/owl-dl-reasoner",
+    "crates/owl-dl-cli",
+    "crates/owl-dl-bench",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+authors = ["rustdl contributors"]
+repository = "https://github.com/dumontierlab/rustdl"
+homepage = "https://github.com/dumontierlab/rustdl"
+readme = "README.md"
+keywords = ["owl", "ontology", "reasoner", "description-logic", "semantic-web"]
+categories = ["science", "data-structures"]
+
+[workspace.dependencies]
+owl-dl-core = { path = "crates/owl-dl-core", version = "0.0.1" }
+owl-dl-saturation = { path = "crates/owl-dl-saturation", version = "0.0.1" }
+owl-dl-tableau = { path = "crates/owl-dl-tableau", version = "0.0.1" }
+owl-dl-datatypes = { path = "crates/owl-dl-datatypes", version = "0.0.1" }
+owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.0.1" }
+
+horned-owl = { version = "1.4", default-features = false }
+
+hashbrown = "0.15"
+smallvec = { version = "1.13", features = ["const_generics", "union"] }
+bitvec = "1.0"
+bumpalo = { version = "3.16", features = ["collections"] }
+
+rayon = "1.10"
+dashmap = "6.1"
+
+thiserror = "2.0"
+anyhow = "1.0"
+
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+clap = { version = "4.5", features = ["derive"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+walkdir = "2.5"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+unnecessary_wraps = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+print_stdout = "allow"
+print_stderr = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"
+
+[profile.dev]
+debug = "line-tables-only"

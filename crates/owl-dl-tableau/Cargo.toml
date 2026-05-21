@@ -1,0 +1,28 @@
+[package]
+name = "owl-dl-tableau"
+description = "Tableau-based reasoning engine for SROIQ used by rustdl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+owl-dl-core.workspace = true
+owl-dl-datatypes.workspace = true
+hashbrown.workspace = true
+smallvec.workspace = true
+bitvec.workspace = true
+bumpalo.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

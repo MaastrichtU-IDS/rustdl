@@ -63,8 +63,20 @@ pub fn convert_class_expression<A: ForIRI>(
     match ce {
         ClassExpression::Class(c) => {
             let iri: &str = c.0.as_ref();
-            let class_id = vocab.intern_class(iri);
-            Ok(pool.atomic(class_id))
+            // OWL 2 built-in vocabulary: owl:Thing ≡ ⊤, owl:Nothing ≡ ⊥.
+            // The IRI form is the only legal way to refer to them in
+            // ClassExpression (horned-owl has no dedicated Top/Bottom
+            // variants), so we intercept here and lower to the IR's
+            // structural Top/Bot rather than interning the IRI as if
+            // it were an arbitrary user class.
+            match iri {
+                "http://www.w3.org/2002/07/owl#Thing" => Ok(pool.top()),
+                "http://www.w3.org/2002/07/owl#Nothing" => Ok(pool.bot()),
+                _ => {
+                    let class_id = vocab.intern_class(iri);
+                    Ok(pool.atomic(class_id))
+                }
+            }
         }
         ClassExpression::ObjectIntersectionOf(xs) => {
             let ids = convert_many(xs, vocab, pool)?;

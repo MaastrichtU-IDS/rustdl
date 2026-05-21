@@ -8,5 +8,7 @@
 //! full plan.
 
 pub mod ir;
+pub mod role_hierarchy;
 
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
+pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};

@@ -193,3 +193,27 @@ file = "30_disjoint_union_member_sat.ofn"
 description = "DisjointUnion(Animal, Mammal, Bird, Reptile); Test ≡ Animal"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "31_role_hierarchy_propagation_unsat.ofn"
+description = "r ⊑ s; ∃r.A ⊓ ∀s.¬A — ∀ propagates through sub-role"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "32_role_equivalence_propagation_unsat.ofn"
+description = "r ≡ s; ∃r.A ⊓ ∀s.¬A — EquivalentObjectProperties bidirectional sub-role"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "33_role_hierarchy_witness_reuse_sat.ofn"
+description = "r ⊑ s; ∃r.A ⊓ ∃s.A — one r-witness discharges both existentials"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "34_role_hierarchy_chain_unsat.ofn"
+description = "r ⊑ s ⊑ t; ∃r.A ⊓ ∀t.¬A — transitive sub-role closure"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

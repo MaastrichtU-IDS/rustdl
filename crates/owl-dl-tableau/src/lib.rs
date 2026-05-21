@@ -40,49 +40,76 @@ pub use saturate::{SaturationResult, saturate};
 pub use search::search;
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
-use owl_dl_core::{AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, RoleId, is_nnf};
+use owl_dl_core::{
+    AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, RoleHierarchy, RoleId, is_nnf,
+};
 
 /// Coordinator owning the completion graph and trail for one tableau
 /// run.
 ///
 /// Borrows the [`ConceptPool`] (frozen by the end of Phase 1) and,
-/// optionally, an [`AbsorbedTBox`] whose rules are applied by the
-/// driver. Without a `TBox` the context decides concept
-/// satisfiability in isolation; with a `TBox` it decides w.r.t. all
-/// `⊤ ⊑ φ` constraints.
+/// optionally, an [`AbsorbedTBox`] (rules applied by the driver) plus
+/// a [`RoleHierarchy`] (consulted by the `∀` / `∃` / `RoleRule` rules
+/// when deciding whether an edge's role satisfies a role mentioned in
+/// a label). Without a `TBox` and hierarchy the context decides
+/// concept satisfiability in isolation.
 ///
 /// All graph mutation goes through this type so the trail stays in
 /// sync.
 #[derive(Debug)]
-pub struct TableauContext<'pool, 'tbox> {
+pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,
     tbox: Option<&'tbox AbsorbedTBox>,
+    hierarchy: Option<&'hier RoleHierarchy>,
     graph: CompletionGraph,
     trail: TableauTrail,
 }
 
-impl<'pool> TableauContext<'pool, 'static> {
-    /// Build a context with no `TBox`. Useful for testing individual
-    /// rules and for concept-only satisfiability.
+impl<'pool> TableauContext<'pool, 'static, 'static> {
+    /// Build a context with no `TBox` and no role hierarchy. Useful
+    /// for testing individual rules and for concept-only
+    /// satisfiability.
     #[must_use]
     pub fn new(pool: &'pool ConceptPool) -> Self {
         Self {
             pool,
             tbox: None,
+            hierarchy: None,
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
     }
 }
 
-impl<'pool, 'tbox> TableauContext<'pool, 'tbox> {
+impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
     /// Build a context that applies the rules from `tbox` during
-    /// saturation.
+    /// saturation, with no role hierarchy.
     #[must_use]
     pub fn with_tbox(pool: &'pool ConceptPool, tbox: &'tbox AbsorbedTBox) -> Self {
         Self {
             pool,
             tbox: Some(tbox),
+            hierarchy: None,
+            graph: CompletionGraph::new(),
+            trail: TableauTrail::new(),
+        }
+    }
+}
+
+impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
+    /// Build a context with both a `TBox` and a role hierarchy.
+    /// The hierarchy is consulted when matching edge roles against
+    /// roles mentioned in `∀` / `∃` / `RoleRule` labels.
+    #[must_use]
+    pub fn with_tbox_and_hierarchy(
+        pool: &'pool ConceptPool,
+        tbox: &'tbox AbsorbedTBox,
+        hierarchy: &'hier RoleHierarchy,
+    ) -> Self {
+        Self {
+            pool,
+            tbox: Some(tbox),
+            hierarchy: Some(hierarchy),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -96,6 +123,22 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox> {
     #[must_use]
     pub fn tbox(&self) -> Option<&AbsorbedTBox> {
         self.tbox
+    }
+
+    #[must_use]
+    pub fn hierarchy(&self) -> Option<&RoleHierarchy> {
+        self.hierarchy
+    }
+
+    /// True iff `edge_role ⊑ wanted` under the active hierarchy.
+    /// Falls back to plain equality when no hierarchy is attached,
+    /// preserving Phase 2 semantics for callers that don't opt in.
+    #[must_use]
+    pub fn edge_satisfies(&self, edge_role: RoleId, wanted: RoleId) -> bool {
+        match self.hierarchy {
+            Some(h) => h.is_sub_role(edge_role, wanted),
+            None => edge_role == wanted,
+        }
     }
 
     #[must_use]

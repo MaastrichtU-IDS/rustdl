@@ -49,7 +49,7 @@ const SATURATE_ITERS: usize = 4096;
 ///   never happen for well-formed input until subset blocking is
 ///   added in commit 6 and the search becomes potentially
 ///   non-terminating without it).
-pub fn search(ctx: &mut TableauContext<'_, '_>, max_depth: usize) -> Option<bool> {
+pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Option<bool> {
     if max_depth == 0 {
         return None;
     }
@@ -86,7 +86,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_>, max_depth: usize) -> Option<bool
 /// "First" is well-defined: nodes are visited in arena order, labels
 /// in sorted order. Stable choice keeps the search deterministic for
 /// reproducible tests; smarter heuristics arrive in Phase 4.
-fn first_open_disjunction(ctx: &TableauContext<'_, '_>) -> Option<(NodeId, Vec<ConceptId>)> {
+fn first_open_disjunction(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Vec<ConceptId>)> {
     let pool = ctx.pool();
     let graph = ctx.graph();
     for idx in 0..graph.len() {

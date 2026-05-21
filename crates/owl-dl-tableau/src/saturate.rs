@@ -45,7 +45,7 @@ pub enum SaturationResult {
 /// `max_iters` caps the outer fixed-point loop so a buggy rule cannot
 /// run unbounded. Each iteration sweeps every existing node and
 /// applies each available rule. Stops as soon as a clash is found.
-pub fn saturate(ctx: &mut TableauContext<'_, '_>, max_iters: usize) -> SaturationResult {
+pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
     for _ in 0..max_iters {
         if let Some(node) = first_clash(ctx) {
             return SaturationResult::Clash(node);
@@ -87,7 +87,7 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_>, max_iters: usize) -> Saturatio
     SaturationResult::Stalled
 }
 
-fn first_clash(ctx: &TableauContext<'_, '_>) -> Option<NodeId> {
+fn first_clash(ctx: &TableauContext<'_, '_, '_>) -> Option<NodeId> {
     for idx in 0..ctx.graph().len() {
         let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
         if ctx.clash_in(node) {

@@ -19,7 +19,8 @@ use thiserror::Error;
 
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
-    AbsorbedTBox, ClassId, ConceptId, ConceptPool, InternalOntology, absorb, nnf_axioms,
+    AbsorbedTBox, Axiom, ClassId, ConceptId, ConceptPool, InternalOntology, RoleHierarchy,
+    RoleHierarchyBuilder, SubRolePath, absorb, nnf_axioms,
 };
 use owl_dl_tableau::TableauContext;
 
@@ -43,6 +44,12 @@ pub enum ReasonError {
     /// indicator.
     #[error("tableau bailed out without a verdict (likely an internal limit)")]
     NoVerdict,
+
+    /// A `SubObjectPropertyOf` axiom uses a role chain on its left-hand
+    /// side. Chain axioms (`r ∘ s ⊑ t`) require Phase 5 (`SROIQ`)
+    /// machinery and are not supported by the current `ALCH` tableau.
+    #[error("role chain sub-property axioms are deferred to Phase 5 (SROIQ)")]
+    RoleChainUnsupported,
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.
@@ -86,18 +93,56 @@ pub fn is_class_satisfiable_internal(
         return Err(ReasonError::UnknownClass(class_iri.to_owned()));
     };
 
+    let hierarchy = build_role_hierarchy(&internal)?;
     let normalized = nnf_axioms(&mut internal);
     let tbox = absorb(&normalized, &mut internal.concepts);
-    decide(&internal.concepts, &tbox, class_id)
+    decide(&internal.concepts, &tbox, &hierarchy, class_id)
 }
 
-fn decide(pool: &ConceptPool, tbox: &AbsorbedTBox, class_id: ClassId) -> Result<bool, ReasonError> {
+/// Build the ALCH role hierarchy from atomic `SubObjectPropertyOf` and
+/// `EquivalentObjectProperties` axioms. Chain sub-property axioms are
+/// rejected with [`ReasonError::RoleChainUnsupported`] (they require
+/// Phase 5).
+fn build_role_hierarchy(internal: &InternalOntology) -> Result<RoleHierarchy, ReasonError> {
+    let mut builder = RoleHierarchyBuilder::with_roles(
+        u32::try_from(internal.vocabulary.num_roles()).expect("vocabulary role count fits in u32"),
+    );
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf { sub, sup } => match sub {
+                SubRolePath::Role(sub_role) => {
+                    builder.add_sub_role(sub_role.role_id(), sup.role_id());
+                }
+                SubRolePath::Chain(_) => return Err(ReasonError::RoleChainUnsupported),
+            },
+            Axiom::EquivalentObjectProperties(roles) => {
+                // r ≡ s ≡ … expands to pairwise sub-property both ways.
+                for a in roles {
+                    for b in roles {
+                        if a != b {
+                            builder.add_sub_role(a.role_id(), b.role_id());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(builder.build())
+}
+
+fn decide(
+    pool: &ConceptPool,
+    tbox: &AbsorbedTBox,
+    hierarchy: &RoleHierarchy,
+    class_id: ClassId,
+) -> Result<bool, ReasonError> {
     // The Atomic-of-class concept; interning is cheap and idempotent
     // — if the class appears anywhere in the TBox the id is already
     // in the pool, otherwise this just registers it.
     let mut pool = pool.clone();
     let concept: ConceptId = pool.atomic(class_id);
-    let mut ctx = TableauContext::with_tbox(&pool, tbox);
+    let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
     ctx.is_satisfiable(concept).ok_or(ReasonError::NoVerdict)
 }
 
@@ -180,6 +225,47 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         assert!(check(&onto, "http://rustdl.test/A"));
+    }
+
+    #[test]
+    fn role_hierarchy_makes_concept_unsat() {
+        // r ⊑ s; ∃r.A ⊓ ∀s.¬A — the sub-property axiom forces the
+        // ¬A from ∀s to land on the r-witness too, producing a clash.
+        // Without role hierarchy support this would (wrongly) be sat.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    SubObjectPropertyOf(:r :s)\n\
+    EquivalentClasses(:Test ObjectIntersectionOf(\
+        ObjectSomeValuesFrom(:r :A) \
+        ObjectAllValuesFrom(:s ObjectComplementOf(:A))))\n\
+)\n"
+        ));
+        assert!(!check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn role_chain_axiom_rejected_with_clear_error() {
+        // SubObjectPropertyOf(ObjectPropertyChain(r s) t) — chain on
+        // the LHS. ALCH (Phase 3) doesn't handle chains; rustdl
+        // surfaces a dedicated error pointing at Phase 5.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    Declaration(ObjectProperty(:t))\n\
+    SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t)\n\
+)\n"
+        ));
+        let err = is_class_satisfiable(&onto, "http://rustdl.test/A")
+            .expect_err("role chain should error");
+        assert!(matches!(err, ReasonError::RoleChainUnsupported));
     }
 
     #[test]

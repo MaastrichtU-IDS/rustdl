@@ -42,7 +42,7 @@ pub enum RuleOutcome {
 /// Implementation note: we snapshot the relevant `ConceptId`s first to
 /// release the borrow on the graph before calling `add_label` (which
 /// also borrows `&mut`).
-pub fn apply_and(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     let mut pending: Vec<ConceptId> = Vec::new();
     for &c in ctx.graph().node(node).labels() {
         if let ConceptExpr::And(args) = ctx.pool().get(c) {
@@ -75,17 +75,15 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome 
 /// Implementation note: we snapshot every applicable
 /// `(target, concept)` pair before touching `add_label` so the
 /// graph-read and graph-write borrows don't overlap.
-pub fn apply_forall(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     let mut pending: Vec<(NodeId, ConceptId)> = Vec::new();
     {
-        let graph = ctx.graph();
-        let pool = ctx.pool();
-        let n = graph.node(node);
+        let n = ctx.graph().node(node);
         for &c in n.labels() {
-            if let ConceptExpr::All(role, body) = pool.get(c) {
+            if let ConceptExpr::All(role, body) = ctx.pool().get(c) {
                 let want: RoleId = role.role_id();
                 for &(edge_role, target) in n.edges() {
-                    if edge_role == want {
+                    if ctx.edge_satisfies(edge_role, want) {
                         pending.push((target, *body));
                     }
                 }
@@ -111,7 +109,7 @@ pub fn apply_forall(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutco
 /// `L(node)`.
 ///
 /// Returns [`RuleOutcome::NoChange`] when the context has no `TBox`.
-pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -160,7 +158,7 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> Ru
 /// label some node (e.g., from a `ClassAssertion` lowering not yet
 /// implemented here). Kept in the driver so the integration point is
 /// stable for Phase 5.
-pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -204,7 +202,7 @@ pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> Ru
 /// `node —role→ y`, add `target_label` to `L(y)` if either
 /// `guard` is `None` or [`ConceptExpr::Atomic(guard)`] is in
 /// `L(node)`.
-pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -232,7 +230,7 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleO
                 continue;
             }
             for &(edge_role, target) in n.edges() {
-                if edge_role == rule.role {
+                if ctx.edge_satisfies(edge_role, rule.role) {
                     pending.push((target, rule.target_label));
                 }
             }
@@ -256,7 +254,7 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleO
 ///
 /// Idempotent: subsequent passes are O(|residuals|) lookups with no
 /// graph mutation once each node already carries the residuals.
-pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -289,7 +287,7 @@ pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> Ru
 ///
 /// Returns [`RuleOutcome::Applied`] if any successor was created or
 /// re-used by adding a new label.
-pub fn apply_exists(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutcome {
+pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -308,12 +306,20 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_>, node: NodeId) -> RuleOutco
     }
     let mut applied = false;
     for (role, body) in pending {
+        // Witness check honours the role hierarchy: an edge via any
+        // sub-role of `role` to a node already carrying `body`
+        // discharges the existential. Generation, however, always
+        // uses the exact `role` — using a sub-role would be
+        // unsound (a sub-role assertion implies the super-role, not
+        // vice versa).
         let witness = ctx
             .graph()
             .node(node)
             .edges()
             .iter()
-            .find(|&&(r, target)| r == role && ctx.graph().node(target).has_label(body))
+            .find(|&&(edge_role, target)| {
+                ctx.edge_satisfies(edge_role, role) && ctx.graph().node(target).has_label(body)
+            })
             .map(|&(_, target)| target);
         if witness.is_some() {
             continue;

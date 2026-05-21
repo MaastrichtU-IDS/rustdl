@@ -217,24 +217,65 @@ impl ConceptPool {
         self.intern_raw(ConceptExpr::Max(n, r, c))
     }
 
-    /// Intern an And. Operands are sorted and deduped; an And with a single
-    /// distinct operand collapses to that operand (OWL: `C ⊓ C ≡ C`).
+    /// Intern an And with the following Boolean normalizations applied:
+    ///
+    /// - **Flatten nested Ands**: `And([And([a, b]), c])` → `And([a, b, c])`.
+    /// - **Drop Top** (the identity of And): `And([a, ⊤, b])` → `And([a, b])`.
+    /// - **Short-circuit on Bot** (the annihilator): `And([a, ⊥, b])` → `⊥`.
+    /// - **Sort + dedup** operands so commutative-equivalent expressions
+    ///   collide.
+    /// - **Collapse**: empty → `⊤`; single → the operand.
     pub fn and(&mut self, args: impl IntoIterator<Item = ConceptId>) -> ConceptId {
-        let mut v: Vec<ConceptId> = args.into_iter().collect();
+        let mut v: Vec<ConceptId> = Vec::new();
+        let mut any_bot = false;
+        for arg in args {
+            match self.get(arg) {
+                ConceptExpr::Top => {} // identity — skip
+                ConceptExpr::Bot => any_bot = true,
+                ConceptExpr::And(inner) => v.extend_from_slice(inner),
+                _ => v.push(arg),
+            }
+        }
+        if any_bot {
+            return self.bot();
+        }
         v.sort_unstable();
         v.dedup();
+        if v.is_empty() {
+            return self.top();
+        }
         if v.len() == 1 {
             return v[0];
         }
         self.intern_raw(ConceptExpr::And(v.into_boxed_slice()))
     }
 
-    /// Intern an Or. Operands are sorted and deduped; an Or with a single
-    /// distinct operand collapses to that operand (OWL: `C ⊔ C ≡ C`).
+    /// Intern an Or with the dual normalizations:
+    ///
+    /// - **Flatten nested Ors**: `Or([Or([a, b]), c])` → `Or([a, b, c])`.
+    /// - **Drop Bot** (the identity of Or): `Or([a, ⊥, b])` → `Or([a, b])`.
+    /// - **Short-circuit on Top** (the annihilator): `Or([a, ⊤, b])` → `⊤`.
+    /// - **Sort + dedup** operands.
+    /// - **Collapse**: empty → `⊥`; single → the operand.
     pub fn or(&mut self, args: impl IntoIterator<Item = ConceptId>) -> ConceptId {
-        let mut v: Vec<ConceptId> = args.into_iter().collect();
+        let mut v: Vec<ConceptId> = Vec::new();
+        let mut any_top = false;
+        for arg in args {
+            match self.get(arg) {
+                ConceptExpr::Bot => {} // identity — skip
+                ConceptExpr::Top => any_top = true,
+                ConceptExpr::Or(inner) => v.extend_from_slice(inner),
+                _ => v.push(arg),
+            }
+        }
+        if any_top {
+            return self.top();
+        }
         v.sort_unstable();
         v.dedup();
+        if v.is_empty() {
+            return self.bot();
+        }
         if v.len() == 1 {
             return v[0];
         }
@@ -312,5 +353,89 @@ mod tests {
         let r = Role::named(RoleId::new(42));
         assert_eq!(r.role_id(), RoleId::new(42));
         assert_eq!(r.role_id().index(), 42);
+    }
+
+    // ── Boolean-normalization tests for and/or ────────────────────────
+
+    #[test]
+    fn and_flattens_nested_and() {
+        let mut p = ConceptPool::new();
+        let a = p.atomic(ClassId::new(0));
+        let b = p.atomic(ClassId::new(1));
+        let c = p.atomic(ClassId::new(2));
+        let inner = p.and([a, b]);
+        let outer = p.and([inner, c]);
+        // outer = And([a, b, c]), not And([And([a, b]), c]).
+        match p.get(outer) {
+            ConceptExpr::And(args) => assert_eq!(args.len(), 3),
+            other => panic!("expected flat And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn and_drops_top() {
+        let mut p = ConceptPool::new();
+        let a = p.atomic(ClassId::new(0));
+        let t = p.top();
+        let result = p.and([a, t]);
+        // And([a, Top]) = a.
+        assert_eq!(result, a);
+    }
+
+    #[test]
+    fn and_with_bot_collapses_to_bot() {
+        let mut p = ConceptPool::new();
+        let a = p.atomic(ClassId::new(0));
+        let b = p.bot();
+        let result = p.and([a, b]);
+        assert_eq!(result, b);
+    }
+
+    #[test]
+    fn empty_and_is_top() {
+        let mut p = ConceptPool::new();
+        let empty: Vec<ConceptId> = Vec::new();
+        let result = p.and(empty);
+        assert_eq!(result, p.top());
+    }
+
+    #[test]
+    fn or_flattens_nested_or() {
+        let mut p = ConceptPool::new();
+        let a = p.atomic(ClassId::new(0));
+        let b = p.atomic(ClassId::new(1));
+        let c = p.atomic(ClassId::new(2));
+        let inner = p.or([a, b]);
+        let outer = p.or([inner, c]);
+        match p.get(outer) {
+            ConceptExpr::Or(args) => assert_eq!(args.len(), 3),
+            other => panic!("expected flat Or, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn or_drops_bot() {
+        let mut p = ConceptPool::new();
+        let a = p.atomic(ClassId::new(0));
+        let b = p.bot();
+        let result = p.or([a, b]);
+        assert_eq!(result, a);
+    }
+
+    #[test]
+    fn or_with_top_collapses_to_top() {
+        let mut p = ConceptPool::new();
+        let a = p.atomic(ClassId::new(0));
+        let t = p.top();
+        let result = p.or([a, t]);
+        assert_eq!(result, t);
+    }
+
+    #[test]
+    fn empty_or_is_bot() {
+        let mut p = ConceptPool::new();
+        let empty: Vec<ConceptId> = Vec::new();
+        let result = p.or(empty);
+        assert_eq!(result, p.bot());
     }
 }

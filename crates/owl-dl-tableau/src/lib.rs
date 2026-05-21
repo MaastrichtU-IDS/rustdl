@@ -28,6 +28,7 @@
 mod graph;
 mod rules;
 mod saturate;
+mod search;
 mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
@@ -36,6 +37,7 @@ pub use rules::{
     apply_residual_gcis, apply_role_rules,
 };
 pub use saturate::{SaturationResult, saturate};
+pub use search::search;
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use owl_dl_core::{AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, RoleId, is_nnf};
@@ -194,21 +196,18 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox> {
     /// - `None` if the iteration cap was hit before settling
     ///   (defensive guard while the ruleset is incomplete).
     ///
-    /// As of commit 4 the wired rules are `⊓`, `∀`, and the four
+    /// As of commit 5 the wired rules are `⊓`, `∀`, the four
     /// absorbed-TBox families (`ConceptRule`, `NominalRule`,
-    /// `RoleRule`, residual GCI). The non-deterministic `⊔` and
-    /// the generative `∃` rule still land in later commits, so
-    /// concepts whose unsatisfiability hinges on those will return
-    /// `Some(true)` even when they may actually be unsatisfiable.
+    /// `RoleRule`, residual GCI), and the non-deterministic `⊔`
+    /// rule driven by trail-based backtracking. The generative `∃`
+    /// rule and subset blocking arrive in commit 6, so any concept
+    /// whose unsatisfiability requires a successor witness will
+    /// currently come back `Some(true)`.
     pub fn is_satisfiable(&mut self, c: ConceptId) -> Option<bool> {
-        const MAX_ITERS: usize = 1024;
+        const MAX_DEPTH: usize = 256;
         let root = self.new_node();
         self.add_label(root, c);
-        match saturate(self, MAX_ITERS) {
-            SaturationResult::Clash(_) => Some(false),
-            SaturationResult::Stable => Some(true),
-            SaturationResult::Stalled => None,
-        }
+        search::search(self, MAX_DEPTH)
     }
 }
 
@@ -612,6 +611,101 @@ mod tests {
         let result = saturate(&mut ctx, 16);
         assert_eq!(result, SaturationResult::Stable);
         assert!(ctx.graph().node(y).has_label(c));
+    }
+
+    #[test]
+    fn or_satisfied_by_first_disjunct() {
+        // A ⊔ B is satisfiable; search picks A.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let or = pool.or([a, b]);
+        assert_eq!(check_sat(&pool, or), Some(true));
+    }
+
+    #[test]
+    fn or_with_first_disjunct_unsat_backtracks_to_second() {
+        // (A ⊓ ¬A) ⊔ B — first disjunct clashes, search must
+        // rollback and try the second.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let not_a = pool.not(a);
+        let b = pool.atomic(ClassId::new(1));
+        let bad = pool.and([a, not_a]);
+        let or = pool.or([bad, b]);
+        assert_eq!(check_sat(&pool, or), Some(true));
+    }
+
+    #[test]
+    fn or_all_disjuncts_unsat_returns_false() {
+        // (A ⊓ ¬A) ⊔ (B ⊓ ¬B) — every branch clashes.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let not_a = pool.not(a);
+        let b = pool.atomic(ClassId::new(1));
+        let not_b = pool.not(b);
+        let bad_a = pool.and([a, not_a]);
+        let bad_b = pool.and([b, not_b]);
+        let or = pool.or([bad_a, bad_b]);
+        assert_eq!(check_sat(&pool, or), Some(false));
+    }
+
+    #[test]
+    fn or_resolved_implicitly_by_deterministic_rule() {
+        // (A ⊔ B) ⊓ A — ⊓ adds A; the disjunction is then closed
+        // by the existing A label without an explicit branch.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let or = pool.or([a, b]);
+        let conj = pool.and([or, a]);
+        assert_eq!(check_sat(&pool, conj), Some(true));
+    }
+
+    #[test]
+    fn or_closed_when_a_disjunct_already_present() {
+        // L(x) = {A, A ⊔ B} — no open disjunction; saturate &
+        // search return Stable / Some(true) without branching.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let or = pool.or([a, b]);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        ctx.add_label(x, a);
+        ctx.add_label(x, or);
+        let initial_label_count = ctx.graph().node(x).labels().len();
+        // search should succeed with no additional labels added.
+        let result = search::search(&mut ctx, 16);
+        assert_eq!(result, Some(true));
+        assert_eq!(ctx.graph().node(x).labels().len(), initial_label_count);
+    }
+
+    #[test]
+    fn or_with_forall_clash_backtracks() {
+        // ∀R.(A ⊓ ¬A) ⊔ ⊤ — the first disjunct propagates a clash
+        // to the R-successor; backtrack and the second succeeds.
+        // We construct this manually since check_sat doesn't set
+        // up edges.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let not_a = pool.not(a);
+        let r = RoleId::new(0);
+        let bad = pool.and([a, not_a]);
+        let bad_forall = pool.all(Role::named(r), bad);
+        let top = pool.top();
+        let or = pool.or([bad_forall, top]);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_edge(x, r, y);
+        ctx.add_label(x, or);
+        let result = search::search(&mut ctx, 32);
+        assert_eq!(result, Some(true));
+        // Confirm ⊤ wound up in L(x) — the chosen disjunct — not
+        // the bad ∀R.…
+        assert!(ctx.graph().node(x).has_label(top));
+        assert!(!ctx.graph().node(x).has_label(bad_forall));
     }
 
     #[test]

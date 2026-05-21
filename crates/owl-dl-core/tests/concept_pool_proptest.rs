@@ -30,8 +30,11 @@ fn arb_build() -> impl Strategy<Value = Build> {
     leaf.prop_recursive(4, 32, 4, |inner| {
         prop_oneof![
             inner.clone().prop_map(|b| Build::Not(Box::new(b))),
-            prop::collection::vec(inner.clone(), 1..4).prop_map(Build::And),
-            prop::collection::vec(inner.clone(), 1..4).prop_map(Build::Or),
+            // 2..4: keep And/Or shapes meaningful — single-element And/Or
+            // collapses to its operand on intern (OWL `C ⊓ C ≡ C`), which
+            // would invalidate the top-level shape assertion below.
+            prop::collection::vec(inner.clone(), 2..4).prop_map(Build::And),
+            prop::collection::vec(inner.clone(), 2..4).prop_map(Build::Or),
             (0u8..4, inner.clone()).prop_map(|(r, b)| Build::Some(r, Box::new(b))),
             (0u8..4, inner).prop_map(|(r, b)| Build::All(r, Box::new(b))),
         ]
@@ -101,8 +104,10 @@ proptest! {
             Build::Bot        => prop_assert!(matches!(expr, ConceptExpr::Bot)),
             Build::Atomic(_)  => prop_assert!(matches!(expr, ConceptExpr::Atomic(_))),
             Build::Not(_)     => prop_assert!(matches!(expr, ConceptExpr::Not(_))),
-            Build::And(_)     => prop_assert!(matches!(expr, ConceptExpr::And(_))),
-            Build::Or(_)      => prop_assert!(matches!(expr, ConceptExpr::Or(_))),
+            // And/Or shapes can dedup to a single operand and then collapse
+            // (e.g. `And([Atomic(3), Atomic(3)])` → `Atomic(3)`), so the
+            // top-level constructor isn't guaranteed preserved.
+            Build::And(_) | Build::Or(_) => {}
             Build::Some(_, _) => prop_assert!(matches!(expr, ConceptExpr::Some(_, _))),
             Build::All(_, _)  => prop_assert!(matches!(expr, ConceptExpr::All(_, _))),
         }

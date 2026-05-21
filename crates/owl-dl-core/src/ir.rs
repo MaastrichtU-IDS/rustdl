@@ -217,17 +217,27 @@ impl ConceptPool {
         self.intern_raw(ConceptExpr::Max(n, r, c))
     }
 
+    /// Intern an And. Operands are sorted and deduped; an And with a single
+    /// distinct operand collapses to that operand (OWL: `C ⊓ C ≡ C`).
     pub fn and(&mut self, args: impl IntoIterator<Item = ConceptId>) -> ConceptId {
         let mut v: Vec<ConceptId> = args.into_iter().collect();
         v.sort_unstable();
         v.dedup();
+        if v.len() == 1 {
+            return v[0];
+        }
         self.intern_raw(ConceptExpr::And(v.into_boxed_slice()))
     }
 
+    /// Intern an Or. Operands are sorted and deduped; an Or with a single
+    /// distinct operand collapses to that operand (OWL: `C ⊔ C ≡ C`).
     pub fn or(&mut self, args: impl IntoIterator<Item = ConceptId>) -> ConceptId {
         let mut v: Vec<ConceptId> = args.into_iter().collect();
         v.sort_unstable();
         v.dedup();
+        if v.len() == 1 {
+            return v[0];
+        }
         self.intern_raw(ConceptExpr::Or(v.into_boxed_slice()))
     }
 }

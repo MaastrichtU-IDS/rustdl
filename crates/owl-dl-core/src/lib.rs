@@ -8,14 +8,17 @@
 //! full plan.
 
 pub mod convert;
+pub mod convert_back;
 pub mod ir;
 pub mod ontology;
 pub mod role_hierarchy;
 pub mod vocab;
 
 pub use convert::{
-    ConversionError, convert_class_expression, convert_individual, convert_object_property,
+    ConversionError, convert_class_expression, convert_component, convert_individual,
+    convert_object_property, convert_ontology,
 };
+pub use convert_back::{axiom_to_component, concept_to_class_expression, convert_back};
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};
 pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};

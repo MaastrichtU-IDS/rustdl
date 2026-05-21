@@ -26,9 +26,13 @@
 //! satisfiability of any non-trivial concept.
 
 mod graph;
+mod rules;
+mod saturate;
 mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
+pub use rules::{RuleOutcome, apply_and};
+pub use saturate::{SaturationResult, saturate};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool, RoleId, is_nnf};
@@ -152,33 +156,30 @@ impl<'pool> TableauContext<'pool> {
         false
     }
 
-    /// Stub satisfiability check for trivial top-level shapes only.
+    /// Partial satisfiability check.
     ///
-    /// Returns:
-    /// - `Some(true)` for `Top`, `Atomic`, `Nominal`, `Not(Atomic)`,
-    ///   `Not(Nominal)`, `SelfRestriction` (any single-node-consistent
-    ///   shape with no further obligations);
-    /// - `Some(false)` for `Bot`;
-    /// - `None` for everything else — the real ⊓/⊔/∃/∀/⊑ rules will
-    ///   answer those in subsequent Phase 2 commits.
+    /// Seeds a fresh root node labelled with `c` and runs the naive
+    /// saturation driver. Returns:
+    /// - `Some(false)` if saturation hits a clash;
+    /// - `Some(true)` if saturation reaches a stable state under the
+    ///   currently-wired rules;
+    /// - `None` if the iteration cap was hit before settling
+    ///   (defensive guard while the ruleset is incomplete).
     ///
-    /// Implemented as a free-standing decision over the pool, but
-    /// kept as a method so later commits can replace it with a full
-    /// completion-graph driver without changing call sites.
-    #[must_use]
-    pub fn is_satisfiable(&self, c: ConceptId) -> Option<bool> {
-        match self.pool.get(c) {
-            ConceptExpr::Top
-            | ConceptExpr::Atomic(_)
-            | ConceptExpr::Nominal(_)
-            | ConceptExpr::SelfRestriction(_) => Some(true),
-            ConceptExpr::Bot => Some(false),
-            ConceptExpr::Not(inner) => match self.pool.get(*inner) {
-                ConceptExpr::Top => Some(false),
-                ConceptExpr::Atomic(_) | ConceptExpr::Nominal(_) | ConceptExpr::Bot => Some(true),
-                _ => None,
-            },
-            _ => None,
+    /// As of commit 2 only the ⊓-rule is implemented, so verdicts
+    /// are only sound for concepts that decompose purely through
+    /// conjunction (e.g., `Bot`, `A ⊓ Not(A)`, `Top ⊓ A`).
+    /// Concepts requiring `⊔`, `∀`, or `∃` rules will return
+    /// `Some(true)` even when they may actually be unsatisfiable —
+    /// later commits close the gap.
+    pub fn is_satisfiable(&mut self, c: ConceptId) -> Option<bool> {
+        const MAX_ITERS: usize = 1024;
+        let root = self.new_node();
+        self.add_label(root, c);
+        match saturate(self, MAX_ITERS) {
+            SaturationResult::Clash(_) => Some(false),
+            SaturationResult::Stable => Some(true),
+            SaturationResult::Stalled => None,
         }
     }
 }
@@ -297,21 +298,67 @@ mod tests {
         assert!(ctx.graph().node(from).edges().is_empty());
     }
 
+    fn check_sat(pool: &ConceptPool, c: ConceptId) -> Option<bool> {
+        let mut ctx = TableauContext::new(pool);
+        ctx.is_satisfiable(c)
+    }
+
     #[test]
-    fn is_satisfiable_handles_trivial_shapes() {
+    fn satisfiable_trivial_shapes() {
         let mut pool = ConceptPool::new();
         let top = pool.top();
+        let a = pool.atomic(ClassId::new(0));
+        let self_r = pool.self_restriction(Role::named(RoleId::new(0)));
+        assert_eq!(check_sat(&pool, top), Some(true));
+        assert_eq!(check_sat(&pool, a), Some(true));
+        assert_eq!(check_sat(&pool, self_r), Some(true));
+    }
+
+    #[test]
+    fn unsatisfiable_bot() {
+        let mut pool = ConceptPool::new();
         let bot = pool.bot();
+        assert_eq!(check_sat(&pool, bot), Some(false));
+    }
+
+    #[test]
+    fn and_rule_decomposes_conjunction() {
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let a_and_b = pool.and([a, b]);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, a_and_b);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(root).has_label(a));
+        assert!(ctx.graph().node(root).has_label(b));
+    }
+
+    #[test]
+    fn unsatisfiable_a_and_not_a() {
+        let mut pool = ConceptPool::new();
         let a = pool.atomic(ClassId::new(0));
         let not_a = pool.not(a);
-        let self_r = pool.self_restriction(Role::named(RoleId::new(0)));
-        let some_r_a = pool.some(Role::named(RoleId::new(0)), a);
-        let ctx = TableauContext::new(&pool);
-        assert_eq!(ctx.is_satisfiable(top), Some(true));
-        assert_eq!(ctx.is_satisfiable(bot), Some(false));
-        assert_eq!(ctx.is_satisfiable(a), Some(true));
-        assert_eq!(ctx.is_satisfiable(not_a), Some(true));
-        assert_eq!(ctx.is_satisfiable(self_r), Some(true));
-        assert_eq!(ctx.is_satisfiable(some_r_a), None);
+        let conj = pool.and([a, not_a]);
+        assert_eq!(check_sat(&pool, conj), Some(false));
+    }
+
+    #[test]
+    fn and_rule_decomposes_nested_conjunction() {
+        // (A ⊓ B) ⊓ (C ⊓ Not(A)) — the inner conjunctions are
+        // flattened by ConceptPool::and, but this test guards the
+        // saturation path that finds A and Not(A) co-resident at the
+        // root.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let c = pool.atomic(ClassId::new(2));
+        let not_a = pool.not(a);
+        let left = pool.and([a, b]);
+        let right = pool.and([c, not_a]);
+        let conj = pool.and([left, right]);
+        assert_eq!(check_sat(&pool, conj), Some(false));
     }
 }

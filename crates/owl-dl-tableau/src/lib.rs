@@ -33,8 +33,8 @@ mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_nominal_rules,
-    apply_residual_gcis, apply_role_rules,
+    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_min,
+    apply_nominal_rules, apply_residual_gcis, apply_role_rules,
 };
 pub use saturate::{SaturationResult, saturate};
 pub use search::search;
@@ -346,6 +346,25 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.graph.node_mut(target).in_edges.push((role, from));
         self.trail
             .record(TrailEntry::EdgeAdded { from, role, target });
+    }
+
+    /// Mark `a` and `b` as denoting distinct individuals. Symmetric.
+    /// Idempotent: a no-op if the pair is already marked. Records a
+    /// [`TrailEntry::DistinctMarked`] when the mark is fresh.
+    pub fn mark_distinct(&mut self, a: NodeId, b: NodeId) {
+        if a == b || self.are_distinct(a, b) {
+            return;
+        }
+        self.graph.node_mut(a).inequalities.push(b);
+        self.graph.node_mut(b).inequalities.push(a);
+        self.trail.record(TrailEntry::DistinctMarked { a, b });
+    }
+
+    /// True iff `a` and `b` are known distinct via a prior
+    /// [`Self::mark_distinct`].
+    #[must_use]
+    pub fn are_distinct(&self, a: NodeId, b: NodeId) -> bool {
+        self.graph.node(a).inequalities().contains(&b)
     }
 
     /// Return true if `node` contains a clash:

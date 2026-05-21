@@ -338,3 +338,83 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         RuleOutcome::NoChange
     }
 }
+
+/// `≥n R.C` rule: for every `Min(n, R, C)` in `L(node)`, ensure
+/// `node` has at least `n` pairwise-distinct R-successors carrying
+/// `C`.
+///
+/// Skipped at blocked nodes (the blocking ancestor already witnesses
+/// any cardinality assertion via label inclusion).
+///
+/// Algorithm:
+/// 1. Collect existing R-witnesses (via inverse-aware traversal,
+///    sub-role-aware match) that already carry `C`.
+/// 2. If at least `n` exist, no generation is needed but we still
+///    pairwise-mark them distinct so a future `≤m R.C` (Q2) can see
+///    the existing constraint.
+/// 3. Otherwise, generate fresh successors via the exact role (named
+///    polarity → `new_successor`; inverse polarity → `new_predecessor`)
+///    until the count reaches `n`. All witnesses (existing ∪ fresh)
+///    are then marked pairwise distinct.
+pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    let mins: Vec<(u32, Role, ConceptId)> = ctx
+        .graph()
+        .node(node)
+        .labels()
+        .iter()
+        .filter_map(|&c| match ctx.pool().get(c) {
+            ConceptExpr::Min(n, role, body) => Some((*n, *role, *body)),
+            _ => None,
+        })
+        .collect();
+    if mins.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    let mut applied = false;
+    for (n, role, body) in mins {
+        if n == 0 {
+            continue;
+        }
+        // Existing R-witnesses carrying `body`. Collect into a Vec
+        // (deduped: an edge that loops or that we'd otherwise count
+        // twice for some reason gets counted once).
+        let mut existing: Vec<NodeId> = Vec::new();
+        for (seen, neighbour) in ctx.graph().node(node).neighbours() {
+            if ctx.edge_satisfies(seen, role)
+                && ctx.graph().node(neighbour).has_label(body)
+                && !existing.contains(&neighbour)
+            {
+                existing.push(neighbour);
+            }
+        }
+        let need = (n as usize).saturating_sub(existing.len());
+        let mut all_witnesses = existing;
+        for _ in 0..need {
+            let fresh = match role {
+                Role::Named(r) => ctx.new_successor(node, r),
+                Role::Inverse(r) => ctx.new_predecessor(node, r),
+            };
+            ctx.add_label(fresh, body);
+            all_witnesses.push(fresh);
+            applied = true;
+        }
+        // Pairwise-mark all witnesses distinct. mark_distinct is
+        // idempotent and a no-op when a == b, so this is safe.
+        for i in 0..all_witnesses.len() {
+            for j in (i + 1)..all_witnesses.len() {
+                if !ctx.are_distinct(all_witnesses[i], all_witnesses[j]) {
+                    ctx.mark_distinct(all_witnesses[i], all_witnesses[j]);
+                    applied = true;
+                }
+            }
+        }
+    }
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}

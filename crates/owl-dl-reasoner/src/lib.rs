@@ -19,8 +19,8 @@ use thiserror::Error;
 
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
-    AbsorbedTBox, Axiom, ClassId, ConceptId, ConceptPool, InternalOntology, RoleHierarchy,
-    RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms,
+    AbsorbedTBox, Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology,
+    RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms,
 };
 use owl_dl_tableau::TableauContext;
 
@@ -50,6 +50,13 @@ pub enum ReasonError {
     /// machinery and are not supported by the current `ALCH` tableau.
     #[error("role chain sub-property axioms are deferred to Phase 5 (SROIQ)")]
     RoleChainUnsupported,
+
+    /// The ontology uses a `≤n R.C` (`ObjectMaxCardinality`,
+    /// `ObjectExactCardinality`, or `FunctionalRole`) cardinality
+    /// restriction. `≥n` is supported (Phase 3 Q1) but `≤n` requires
+    /// successor merging + the choose rule — that's Phase 3 Q2.
+    #[error("upper-bound cardinality restrictions (≤n R.C) not yet supported (Phase 3 Q2)")]
+    MaxCardinalityUnsupported,
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.
@@ -95,6 +102,15 @@ pub fn is_class_satisfiable_internal(
 
     let hierarchy = build_role_hierarchy(&internal)?;
     let inverse_pairs = collect_inverse_pairs(&internal);
+    // Reject upper-bound cardinality BEFORE NNF — otherwise the
+    // ¬Min → Max rewrite would mask user-written ≥n behind a
+    // pool-level Max occurrence and we'd be unable to tell them
+    // apart. Walking axiom concepts pre-NNF only sees Max if the
+    // user wrote one (ObjectMaxCardinality / ObjectExactCardinality /
+    // FunctionalRole-derived).
+    if user_wrote_max(&internal) {
+        return Err(ReasonError::MaxCardinalityUnsupported);
+    }
     let normalized = nnf_axioms(&mut internal);
     let tbox = absorb(&normalized, &mut internal.concepts);
     decide(
@@ -104,6 +120,54 @@ pub fn is_class_satisfiable_internal(
         &inverse_pairs,
         class_id,
     )
+}
+
+/// True iff any concept *reachable from the input axioms* contains a
+/// `Max(_, _, _)` shape. The reachability walk is bounded by a
+/// visited set so cycles in the pool (impossible by construction
+/// today, but defensive) terminate.
+fn user_wrote_max(internal: &InternalOntology) -> bool {
+    use std::collections::HashSet;
+    let pool = &internal.concepts;
+    let mut visited: HashSet<ConceptId> = HashSet::new();
+    let mut stack: Vec<ConceptId> = Vec::new();
+    for ax in &internal.axioms {
+        collect_axiom_concepts(ax, &mut stack);
+    }
+    while let Some(c) = stack.pop() {
+        if !visited.insert(c) {
+            continue;
+        }
+        match pool.get(c) {
+            ConceptExpr::Max(_, _, _) => return true,
+            ConceptExpr::Not(inner)
+            | ConceptExpr::Some(_, inner)
+            | ConceptExpr::All(_, inner)
+            | ConceptExpr::Min(_, _, inner) => stack.push(*inner),
+            ConceptExpr::And(args) | ConceptExpr::Or(args) => stack.extend(args.iter().copied()),
+            _ => {}
+        }
+    }
+    false
+}
+
+fn collect_axiom_concepts(ax: &Axiom, out: &mut Vec<ConceptId>) {
+    use Axiom::{
+        ClassAssertion, DisjointClasses, DisjointUnion, EquivalentClasses, ObjectPropertyDomain,
+        ObjectPropertyRange, SubClassOf,
+    };
+    match ax {
+        SubClassOf { sub, sup } => {
+            out.push(*sub);
+            out.push(*sup);
+        }
+        EquivalentClasses(ids) | DisjointClasses(ids) => out.extend(ids.iter().copied()),
+        DisjointUnion { members, .. } => out.extend(members.iter().copied()),
+        ObjectPropertyDomain { domain, .. } => out.push(*domain),
+        ObjectPropertyRange { range, .. } => out.push(*range),
+        ClassAssertion { class, .. } => out.push(*class),
+        _ => {}
+    }
 }
 
 /// Build the ALCH role hierarchy from atomic `SubObjectPropertyOf` and
@@ -300,6 +364,36 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         assert!(!check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn min_cardinality_generates_distinct_witnesses() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:Test ObjectMinCardinality(3 :r :A))\n\
+)\n"
+        ));
+        assert!(check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn max_cardinality_rejected_with_clear_error() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:Test ObjectMaxCardinality(1 :r :A))\n\
+)\n"
+        ));
+        let err = is_class_satisfiable(&onto, "http://rustdl.test/Test")
+            .expect_err("Max should error in Q1");
+        assert!(matches!(err, ReasonError::MaxCardinalityUnsupported));
     }
 
     #[test]

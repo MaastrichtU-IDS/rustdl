@@ -195,6 +195,11 @@ impl ConceptPool {
     }
 
     /// Look up the expression behind a [`ConceptId`].
+    /// Iterate every interned expression in id order.
+    pub fn iter_exprs(&self) -> impl Iterator<Item = &ConceptExpr> {
+        self.by_id.iter()
+    }
+
     ///
     /// # Panics
     /// Panics if `id` was not produced by this pool.
@@ -246,7 +251,12 @@ impl ConceptPool {
         self.intern_raw(ConceptExpr::All(r, c))
     }
 
+    /// Intern `≥n r.C`. Folds trivial cases at intern time:
+    /// `≥0 r.C ≡ ⊤` (every individual satisfies "at least zero").
     pub fn min(&mut self, n: u32, r: Role, c: ConceptId) -> ConceptId {
+        if n == 0 {
+            return self.top();
+        }
         self.intern_raw(ConceptExpr::Min(n, r, c))
     }
 

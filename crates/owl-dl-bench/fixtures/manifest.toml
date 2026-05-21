@@ -253,3 +253,33 @@ file = "40_inverse_axiom_witness_reuse_sat.ofn"
 description = "InverseObjectProperties(hasChild,hasParent); ∃hasChild.A ⊓ ∃hasParent⁻.A — both ∃ satisfied by one edge"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "41_min_two_sat.ofn"
+description = "≥2 r.A — generates two pairwise-distinct r-successors"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "42_min_clash_forall_unsat.ofn"
+description = "≥1 r.A ⊓ ∀r.¬A — generated witness clashes via ∀-propagation"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "43_min_zero_trivial_sat.ofn"
+description = "≥0 r.A — trivially satisfiable; pool folds to ⊤"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "44_min_cyclic_blocking_sat.ofn"
+description = "A ⊑ ≥1 r.A — terminates via pair blocking on Min-generated witnesses"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "45_min_with_forall_propagation_unsat.ofn"
+description = "≥3 r.A ⊓ ∀r.B ⊓ DisjointClasses(A,B) — witnesses get A then B, clash"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

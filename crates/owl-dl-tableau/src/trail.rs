@@ -50,6 +50,10 @@ pub enum TrailEntry {
     /// *before* this allocation; rollback truncates back to that
     /// length, dropping this node and any nodes created after it.
     NodeCreated { prior_len: usize },
+    /// `a` and `b` were marked pairwise distinct. Undo removes the
+    /// last entry on each node's `inequalities` list (append-only
+    /// discipline between checkpoints lets us pop without scanning).
+    DistinctMarked { a: NodeId, b: NodeId },
     /// Marker recording a position in the trail. [`TableauTrail::rollback_to`]
     /// takes the [`Checkpoint`] returned by [`TableauTrail::checkpoint`]
     /// and undoes everything after it.
@@ -160,6 +164,16 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
         }
         TrailEntry::NodeCreated { prior_len } => {
             graph.truncate_nodes(prior_len);
+        }
+        TrailEntry::DistinctMarked { a, b } => {
+            // Pop the trailing peer from each side; the mark is
+            // symmetric and append-only between checkpoints.
+            let ineq_a = &mut graph.node_mut(a).inequalities;
+            let last = ineq_a.pop().expect("DistinctMarked undo: a empty");
+            debug_assert_eq!(last, b, "DistinctMarked undo: a/b mismatch");
+            let ineq_b = &mut graph.node_mut(b).inequalities;
+            let last = ineq_b.pop().expect("DistinctMarked undo: b empty");
+            debug_assert_eq!(last, a, "DistinctMarked undo: b/a mismatch");
         }
         TrailEntry::Checkpoint => {}
     }

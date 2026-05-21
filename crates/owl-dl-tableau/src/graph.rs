@@ -67,6 +67,13 @@ pub struct Node {
     /// index of [`Self::edges`] across the graph so inverse-aware
     /// rules can iterate neighbours without scanning every node.
     pub(crate) in_edges: SmallVec<[(RoleId, NodeId); 2]>,
+    /// Pairwise inequality assertions: every [`NodeId`] in this list
+    /// is known to denote a *different* individual than this node.
+    /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
+    /// Populated by `apply_min` (newly-generated witnesses are marked
+    /// pairwise distinct); consulted by `apply_max` (Q2) when
+    /// deciding whether two witnesses can be merged.
+    pub(crate) inequalities: SmallVec<[NodeId; 2]>,
 }
 
 impl Node {
@@ -88,6 +95,11 @@ impl Node {
     #[must_use]
     pub fn parent(&self) -> Option<NodeId> {
         self.parent
+    }
+
+    #[must_use]
+    pub fn inequalities(&self) -> &[NodeId] {
+        &self.inequalities
     }
 
     #[must_use]

@@ -172,10 +172,10 @@ fn convert_many<A: ForIRI>(
 
 /// Convert a horned-owl [`ObjectPropertyExpression`] to a [`Role`].
 ///
-/// `InverseObjectProperty` is rejected in Phase 0: our [`Role`] type does
-/// not yet carry an `inverted: bool` field (Phase 3 adds it). Returning an
-/// error here, rather than silently dropping the inversion, surfaces the
-/// gap explicitly.
+/// `InverseObjectProperty` lowers to [`Role::Inverse`] as of Phase 3
+/// commit 2. The named property inside the inversion is interned in
+/// the role vocabulary just like a forward use; downstream rules
+/// decide direction by inspecting [`Role::is_inverse`].
 pub fn convert_object_property<A: ForIRI>(
     ope: &ObjectPropertyExpression<A>,
     vocab: &mut Vocabulary,
@@ -185,10 +185,9 @@ pub fn convert_object_property<A: ForIRI>(
             let iri: &str = op.0.as_ref();
             Ok(Role::named(vocab.intern_role(iri)))
         }
-        ObjectPropertyExpression::InverseObjectProperty(_) => {
-            Err(ConversionError::UnsupportedConcept {
-                kind: "InverseObjectProperty",
-            })
+        ObjectPropertyExpression::InverseObjectProperty(op) => {
+            let iri: &str = op.0.as_ref();
+            Ok(Role::inverse(vocab.intern_role(iri)))
         }
     }
 }
@@ -676,17 +675,17 @@ mod tests {
     }
 
     #[test]
-    fn inverse_object_property_rejected() {
+    fn inverse_object_property_lowers_to_inverse_role() {
         let mut v = Vocabulary::new();
         let ope =
             ObjectPropertyExpression::<RcStr>::InverseObjectProperty(b().object_property("r"));
-        let err = convert_object_property(&ope, &mut v).unwrap_err();
-        assert_eq!(
-            err,
-            ConversionError::UnsupportedConcept {
-                kind: "InverseObjectProperty"
-            }
-        );
+        let role = convert_object_property(&ope, &mut v).unwrap();
+        assert!(role.is_inverse());
+        // The named id should match the forward use's id.
+        let forward = b().object_property("r");
+        let forward_ope = ObjectPropertyExpression::<RcStr>::ObjectProperty(forward);
+        let forward_role = convert_object_property(&forward_ope, &mut v).unwrap();
+        assert_eq!(role.role_id(), forward_role.role_id());
     }
 
     #[test]

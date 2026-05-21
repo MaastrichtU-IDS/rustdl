@@ -21,7 +21,7 @@
 
 use crate::TableauContext;
 use crate::graph::NodeId;
-use owl_dl_core::{ConceptExpr, ConceptId, RoleId};
+use owl_dl_core::{ConceptExpr, ConceptId, Role};
 
 /// What happened when a rule was asked to apply at a node.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -81,10 +81,10 @@ pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         let n = ctx.graph().node(node);
         for &c in n.labels() {
             if let ConceptExpr::All(role, body) = ctx.pool().get(c) {
-                let want: RoleId = role.role_id();
-                for &(edge_role, target) in n.edges() {
-                    if ctx.edge_satisfies(edge_role, want) {
-                        pending.push((target, *body));
+                let wanted: Role = *role;
+                for (seen, neighbour) in n.neighbours() {
+                    if ctx.edge_satisfies(seen, wanted) {
+                        pending.push((neighbour, *body));
                     }
                 }
             }
@@ -229,9 +229,9 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
             if !guard_ok {
                 continue;
             }
-            for &(edge_role, target) in n.edges() {
-                if ctx.edge_satisfies(edge_role, rule.role) {
-                    pending.push((target, rule.target_label));
+            for (seen, neighbour) in n.neighbours() {
+                if ctx.edge_satisfies(seen, rule.role) {
+                    pending.push((neighbour, rule.target_label));
                 }
             }
         }
@@ -291,13 +291,13 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
-    let pending: Vec<(RoleId, ConceptId)> = ctx
+    let pending: Vec<(Role, ConceptId)> = ctx
         .graph()
         .node(node)
         .labels()
         .iter()
         .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Some(role, body) => Some((role.role_id(), *body)),
+            ConceptExpr::Some(role, body) => Some((*role, *body)),
             _ => None,
         })
         .collect();
@@ -306,26 +306,29 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     }
     let mut applied = false;
     for (role, body) in pending {
-        // Witness check honours the role hierarchy: an edge via any
-        // sub-role of `role` to a node already carrying `body`
-        // discharges the existential. Generation, however, always
-        // uses the exact `role` — using a sub-role would be
-        // unsound (a sub-role assertion implies the super-role, not
-        // vice versa).
+        // Witness check honours the role hierarchy and inverse
+        // polarity: any neighbour reachable via a sub-role of `role`
+        // (same polarity) that already carries `body` discharges the
+        // existential.
         let witness = ctx
             .graph()
             .node(node)
-            .edges()
-            .iter()
-            .find(|&&(edge_role, target)| {
-                ctx.edge_satisfies(edge_role, role) && ctx.graph().node(target).has_label(body)
+            .neighbours()
+            .find(|&(seen, neighbour)| {
+                ctx.edge_satisfies(seen, role) && ctx.graph().node(neighbour).has_label(body)
             })
-            .map(|&(_, target)| target);
+            .map(|(_, neighbour)| neighbour);
         if witness.is_some() {
             continue;
         }
-        let succ = ctx.new_successor(node, role);
-        if ctx.add_label(succ, body) {
+        // Generation: use the exact role (no sub-role substitution —
+        // unsound). Polarity dictates direction: a named role grows
+        // a successor; an inverse role grows a predecessor.
+        let fresh = match role {
+            Role::Named(r) => ctx.new_successor(node, r),
+            Role::Inverse(r) => ctx.new_predecessor(node, r),
+        };
+        if ctx.add_label(fresh, body) {
             applied = true;
         }
     }

@@ -41,7 +41,7 @@ pub use search::search;
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use owl_dl_core::{
-    AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, RoleHierarchy, RoleId, is_nnf,
+    AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, Role, RoleHierarchy, RoleId, is_nnf,
 };
 
 /// Coordinator owning the completion graph and trail for one tableau
@@ -130,14 +130,27 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.hierarchy
     }
 
-    /// True iff `edge_role ⊑ wanted` under the active hierarchy.
-    /// Falls back to plain equality when no hierarchy is attached,
-    /// preserving Phase 2 semantics for callers that don't opt in.
+    /// True iff a role-tagged neighbour view `seen` (as produced by
+    /// [`Node::neighbours`]) satisfies a `wanted` role expression
+    /// from a `∀R.C` / `∃R.C` / `RoleRule`. Polarity must match —
+    /// an outgoing `r`-edge does not satisfy `∀r⁻.C` and vice versa.
+    /// Within the same polarity, sub-role propagation applies (so
+    /// `r ⊑ s` makes an `r`-edge satisfy `∀s.C`, and likewise
+    /// `r⁻ ⊑ s⁻`).
+    ///
+    /// Falls back to plain equality on the underlying [`RoleId`]s
+    /// when no hierarchy is attached, preserving the Phase 2 / H
+    /// semantics for callers that don't opt in.
     #[must_use]
-    pub fn edge_satisfies(&self, edge_role: RoleId, wanted: RoleId) -> bool {
+    pub fn edge_satisfies(&self, seen: Role, wanted: Role) -> bool {
+        if seen.is_inverse() != wanted.is_inverse() {
+            return false;
+        }
+        let s = seen.role_id();
+        let w = wanted.role_id();
         match self.hierarchy {
-            Some(h) => h.is_sub_role(edge_role, wanted),
-            None => edge_role == wanted,
+            Some(h) => h.is_sub_role(s, w),
+            None => s == w,
         }
     }
 
@@ -175,41 +188,83 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         id
     }
 
-    /// Allocate a fresh successor of `from` reachable by `role`.
-    /// Records both `NodeCreated` and `EdgeAdded` on the trail and
-    /// stamps the new node with `parent = Some(from)` so subset
-    /// blocking can walk the tree.
+    /// Allocate a fresh successor of `from` reachable by `role`,
+    /// i.e. an edge `from —role→ new`. Records both `NodeCreated`
+    /// and `EdgeAdded` on the trail and stamps the new node with
+    /// `parent = Some(from)`, `parent_role = Some(Role::Named(role))`
+    /// for pair blocking. Also wires the in-edge `(role, from)`
+    /// into the new node so inverse-aware traversal sees it.
     pub fn new_successor(&mut self, from: NodeId, role: RoleId) -> NodeId {
         let prior_len = self.graph.len();
-        let id = self.graph.push_node_with_parent(Some(from));
+        let id = self
+            .graph
+            .push_node_with_parent(Some(from), Some(Role::Named(role)));
         self.trail.record(TrailEntry::NodeCreated { prior_len });
-        self.graph.node_mut(from).edges.push((role, id));
-        self.trail.record(TrailEntry::EdgeAdded {
-            from,
-            role,
-            target: id,
-        });
+        self.add_edge_inner(from, role, id);
         id
     }
 
-    /// True if `node` has an ancestor (via the `parent` chain)
-    /// whose label set is a superset of `node`'s. Root nodes
-    /// (`parent: None`) are never blocked.
+    /// Allocate a fresh *predecessor* of `to`: the inverse direction
+    /// of [`Self::new_successor`]. The new node `new` is created
+    /// with an outgoing edge `new —role→ to`. The new node's
+    /// `parent` is `to` (its *creator* — pair-blocking ancestry runs
+    /// through the creator), and `parent_role = Role::Inverse(role)`
+    /// because the inbound generative role at the creator is `r⁻`.
+    pub fn new_predecessor(&mut self, to: NodeId, role: RoleId) -> NodeId {
+        let prior_len = self.graph.len();
+        let id = self
+            .graph
+            .push_node_with_parent(Some(to), Some(Role::Inverse(role)));
+        self.trail.record(TrailEntry::NodeCreated { prior_len });
+        self.add_edge_inner(id, role, to);
+        id
+    }
+
+    /// Pair blocking (a.k.a. double blocking).
     ///
-    /// Subset blocking is naive: O(depth · |labels|) per check.
-    /// Phase 4 swaps in pairwise blocking with caches.
+    /// A non-root node `y` is blocked by a tree-ancestor `x'` iff:
+    ///
+    /// 1. `x'` is itself non-root (has its own creator);
+    /// 2. `parent_role(y) == parent_role(x')` — the creating edge
+    ///    role and polarity match;
+    /// 3. `L(y) ⊆ L(x')`;
+    /// 4. `L(parent(y)) ⊆ L(parent(x'))`.
+    ///
+    /// Roots and orphan nodes always answer `false`. Naive subset
+    /// blocking would only require (3) — that's unsound the moment
+    /// inverse roles enter the picture, because an existential at
+    /// `y` may demand a label at `parent(y)` that subset-blocking
+    /// can't see. Pair blocking restores soundness for `ALCHI`.
     #[must_use]
-    pub fn is_blocked(&self, node: NodeId) -> bool {
-        let my_labels = self.graph.node(node).labels();
-        let mut cursor = self.graph.node(node).parent();
-        while let Some(p) = cursor {
-            let p_labels = self.graph.node(p).labels();
-            if is_subset_sorted(my_labels, p_labels) {
-                return true;
+    pub fn is_blocked(&self, y: NodeId) -> bool {
+        let yn = self.graph.node(y);
+        let (Some(yp_id), Some(yr)) = (yn.parent(), yn.parent_role()) else {
+            return false;
+        };
+        let yl = yn.labels();
+        let ypn = self.graph.node(yp_id);
+        let ypl = ypn.labels();
+
+        // Iterate strict tree-ancestors of y (starting at yp_id, walking
+        // upward through `parent`). x' is a valid blocking candidate
+        // when its own creator/role match yp/yr and the two subset
+        // checks pass.
+        let mut x_prime_id = yp_id;
+        loop {
+            let xn = self.graph.node(x_prime_id);
+            if let (Some(xp_id), Some(xr)) = (xn.parent(), xn.parent_role())
+                && xr == yr
+            {
+                let xpn = self.graph.node(xp_id);
+                if is_subset_sorted(yl, xn.labels()) && is_subset_sorted(ypl, xpn.labels()) {
+                    return true;
+                }
             }
-            cursor = self.graph.node(p).parent();
+            match xn.parent() {
+                Some(next) => x_prime_id = next,
+                None => return false,
+            }
         }
-        false
     }
 
     /// Add concept `c` to `node`'s label list if not already present.
@@ -238,14 +293,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         }
     }
 
-    /// Append `(role, target)` to `from`'s edge list and record the
-    /// addition on the trail.
+    /// Append `(role, target)` to `from`'s edge list, mirror it as
+    /// `(role, from)` on `target.in_edges`, and record one trail
+    /// entry covering both. Rollback pops both halves in reverse —
+    /// see [`crate::TrailEntry::EdgeAdded`].
     ///
     /// Edges are not deduplicated here — distinct role assertions
     /// between the same nodes can be meaningful for cardinality
     /// reasoning later. Higher-level rules can check before adding.
     pub fn add_edge(&mut self, from: NodeId, role: RoleId, target: NodeId) {
+        self.add_edge_inner(from, role, target);
+    }
+
+    fn add_edge_inner(&mut self, from: NodeId, role: RoleId, target: NodeId) {
         self.graph.node_mut(from).edges.push((role, target));
+        self.graph.node_mut(target).in_edges.push((role, from));
         self.trail
             .record(TrailEntry::EdgeAdded { from, role, target });
     }
@@ -649,7 +711,7 @@ mod tests {
         let c = pool.atomic(ClassId::new(0));
         let tbox = AbsorbedTBox {
             role_rules: vec![RoleRule {
-                role: r,
+                role: Role::Named(r),
                 guard: None,
                 target_label: c,
             }],
@@ -674,7 +736,7 @@ mod tests {
         let c = pool.atomic(ClassId::new(1));
         let tbox = AbsorbedTBox {
             role_rules: vec![RoleRule {
-                role: r,
+                role: Role::Named(r),
                 guard: Some(a_class),
                 target_label: c,
             }],
@@ -698,7 +760,7 @@ mod tests {
         let c = pool.atomic(ClassId::new(1));
         let tbox = AbsorbedTBox {
             role_rules: vec![RoleRule {
-                role: r,
+                role: Role::Named(r),
                 guard: Some(a_class),
                 target_label: c,
             }],
@@ -930,25 +992,64 @@ mod tests {
     }
 
     #[test]
-    fn is_blocked_when_labels_are_subset_of_parent() {
+    fn pair_blocking_fires_on_depth_two_repeat() {
+        // root —r→ s1 —r→ s2.  Both s1 and s2 carry {A}.
+        // Pair blocking: s2 blocked by s1 iff
+        //   parent_role(s2) == parent_role(s1)  (both Named(r))   ✓
+        //   L(s2) ⊆ L(s1)                        ✓ ({A} ⊆ {A})
+        //   L(parent(s2)=s1) ⊆ L(parent(s1)=root) ✓
         let mut pool = ConceptPool::new();
         let a = pool.atomic(ClassId::new(0));
-        let b = pool.atomic(ClassId::new(1));
-        let c = pool.atomic(ClassId::new(2));
         let r = RoleId::new(0);
         let mut ctx = TableauContext::new(&pool);
         let root = ctx.new_node();
         ctx.add_label(root, a);
-        ctx.add_label(root, b);
-        let succ = ctx.new_successor(root, r);
-        ctx.add_label(succ, a);
-        assert!(ctx.is_blocked(succ));
-        ctx.add_label(succ, b);
-        assert!(ctx.is_blocked(succ));
-        // Add a label not on the parent — successor escapes the
-        // subset and is no longer blocked.
-        ctx.add_label(succ, c);
-        assert!(!ctx.is_blocked(succ));
+        let s1 = ctx.new_successor(root, r);
+        ctx.add_label(s1, a);
+        let s2 = ctx.new_successor(s1, r);
+        ctx.add_label(s2, a);
+        assert!(ctx.is_blocked(s2));
+    }
+
+    #[test]
+    fn pair_blocking_skips_when_parent_role_differs() {
+        // root —r→ s1 —s→ s2.  Label sets match, but the creating
+        // role at s2 (Named(s)) ≠ creating role at s1 (Named(r)),
+        // so pair blocking refuses.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        let s_role = RoleId::new(1);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, a);
+        let s1 = ctx.new_successor(root, r);
+        ctx.add_label(s1, a);
+        let s2 = ctx.new_successor(s1, s_role);
+        ctx.add_label(s2, a);
+        assert!(!ctx.is_blocked(s2));
+    }
+
+    #[test]
+    fn pair_blocking_requires_parent_subset_too() {
+        // root has {A,B}, s1 has {A}, s2 has {A}, both via r.
+        // L(s2) ⊆ L(s1)  ✓  but L(parent(s2)=s1)={A} ⊆ L(root)={A,B} ✓
+        // so this IS blocked. Now if root only carries {A} (no B):
+        //   L(s2)={A,X} ⊄ L(s1)={A} when we add X to s2 — not blocked.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let x = pool.atomic(ClassId::new(2));
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, a);
+        let s1 = ctx.new_successor(root, r);
+        ctx.add_label(s1, a);
+        let s2 = ctx.new_successor(s1, r);
+        ctx.add_label(s2, a);
+        assert!(ctx.is_blocked(s2));
+        ctx.add_label(s2, x);
+        assert!(!ctx.is_blocked(s2));
     }
 
     #[test]

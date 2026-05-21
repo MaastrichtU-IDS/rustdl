@@ -50,6 +50,18 @@ pub enum ReasonError {
     /// machinery and are not supported by the current `ALCH` tableau.
     #[error("role chain sub-property axioms are deferred to Phase 5 (SROIQ)")]
     RoleChainUnsupported,
+
+    /// An `InverseObjectProperties(r, s)` axiom declares two roles as
+    /// mutual inverses. This Phase 3 commit handles inverse roles
+    /// via explicit `ObjectInverseOf(_)` syntax in concepts; the
+    /// declarative-axiom form lands in a follow-up commit (Phase 3
+    /// part 3) which rewrites references to `r⁻`/`s⁻` against
+    /// declared inverse pairs.
+    #[error(
+        "InverseObjectProperties axiom not yet supported — rewrite the ontology to use \
+         ObjectInverseOf(...) in concept positions for now"
+    )]
+    InverseAxiomUnsupported,
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.
@@ -111,6 +123,14 @@ fn build_role_hierarchy(internal: &InternalOntology) -> Result<RoleHierarchy, Re
         match ax {
             Axiom::SubObjectPropertyOf { sub, sup } => match sub {
                 SubRolePath::Role(sub_role) => {
+                    // Only encode the named-to-named portion of the
+                    // sub-role lattice; the inverse axis still hangs
+                    // off the polarity-check in `edge_satisfies`. If
+                    // either side carries an inverse polarity, we'd
+                    // need a Role-keyed hierarchy — defer to a later
+                    // commit, but still record the underlying-id
+                    // relation so same-polarity sub-role inference
+                    // remains correct.
                     builder.add_sub_role(sub_role.role_id(), sup.role_id());
                 }
                 SubRolePath::Chain(_) => return Err(ReasonError::RoleChainUnsupported),
@@ -124,6 +144,9 @@ fn build_role_hierarchy(internal: &InternalOntology) -> Result<RoleHierarchy, Re
                         }
                     }
                 }
+            }
+            Axiom::InverseObjectProperties(_, _) => {
+                return Err(ReasonError::InverseAxiomUnsupported);
             }
             _ => {}
         }

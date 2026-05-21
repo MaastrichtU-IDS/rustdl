@@ -45,7 +45,7 @@
 //! Multi-trigger absorption (`A ⊓ B ⊑ C`) is a Phase 4 refinement.
 
 use crate::ConceptPool;
-use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, RoleId};
+use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role};
 use crate::normalize::to_nnf;
 use crate::ontology::Axiom;
 
@@ -82,7 +82,11 @@ pub struct NominalRule {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct RoleRule {
-    pub role: RoleId,
+    /// The role expression to match against an edge incident on the
+    /// labelled node. `Role::Named(r)` fires on outgoing r-edges;
+    /// `Role::Inverse(r)` fires on incoming r-edges. Sub-role
+    /// propagation is consulted by the tableau, not by absorption.
+    pub role: Role,
     pub guard: Option<ClassId>,
     pub target_label: ConceptId,
 }
@@ -113,7 +117,7 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
     for rule in std::mem::take(&mut tbox.concept_rules) {
         if let ConceptExpr::All(role, target) = pool.get(rule.conclusion) {
             tbox.role_rules.push(RoleRule {
-                role: role.role_id(),
+                role: *role,
                 guard: Some(rule.trigger),
                 target_label: *target,
             });
@@ -128,7 +132,7 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
     for gci in std::mem::take(&mut tbox.residual_gcis) {
         if let ConceptExpr::All(role, target) = pool.get(gci) {
             tbox.role_rules.push(RoleRule {
-                role: role.role_id(),
+                role: *role,
                 guard: None,
                 target_label: *target,
             });
@@ -472,7 +476,7 @@ mod tests {
         assert!(t.residual_gcis.is_empty());
         assert_eq!(t.role_rules.len(), 1);
         let rr = t.role_rules[0];
-        assert_eq!(rr.role, r.role_id());
+        assert_eq!(rr.role, crate::Role::Named(r.role_id()));
         assert_eq!(rr.guard, None);
         assert_eq!(rr.target_label, a);
     }
@@ -492,7 +496,7 @@ mod tests {
         assert!(t.concept_rules.is_empty());
         assert_eq!(t.role_rules.len(), 1);
         let rr = t.role_rules[0];
-        assert_eq!(rr.role, r.role_id());
+        assert_eq!(rr.role, crate::Role::Named(r.role_id()));
         assert_eq!(rr.guard, Some(cid(&o, "A")));
         assert_eq!(rr.target_label, b);
     }

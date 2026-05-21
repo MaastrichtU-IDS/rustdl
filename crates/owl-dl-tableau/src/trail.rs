@@ -137,12 +137,25 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             labels.remove(pos);
         }
         TrailEntry::EdgeAdded { from, role, target } => {
+            // Pop the outgoing edge at `from`.
             let edges = &mut graph.node_mut(from).edges;
             let last = edges.pop().expect("EdgeAdded undo: edge list empty");
             debug_assert_eq!(
                 last,
                 (role, target),
                 "EdgeAdded undo: trail/graph edge mismatch"
+            );
+            // Pop the mirror in-edge at `target`. Same append-only
+            // discipline applies — every EdgeAdded entry on the
+            // trail corresponds to one push on each side.
+            let in_edges = &mut graph.node_mut(target).in_edges;
+            let last_in = in_edges
+                .pop()
+                .expect("EdgeAdded undo: target in-edges empty");
+            debug_assert_eq!(
+                last_in,
+                (role, from),
+                "EdgeAdded undo: trail/graph in-edge mismatch"
             );
         }
         TrailEntry::NodeCreated { prior_len } => {

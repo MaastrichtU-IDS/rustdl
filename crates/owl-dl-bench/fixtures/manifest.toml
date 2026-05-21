@@ -217,3 +217,27 @@ file = "34_role_hierarchy_chain_unsat.ofn"
 description = "r ⊑ s ⊑ t; ∃r.A ⊓ ∀t.¬A — transitive sub-role closure"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "35_inverse_exists_sat.ofn"
+description = "∃r⁻.A — generates a predecessor via inverse role"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "36_inverse_exists_clash_unsat.ofn"
+description = "∃r⁻.(A ⊓ ¬A) — clash at the generated predecessor"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "37_inverse_forall_propagation_unsat.ofn"
+description = "∃r⁻.A ⊓ ∀r⁻.¬A — ∀r⁻ propagates onto generated predecessor"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "38_inverse_cyclic_blocking_sat.ofn"
+description = "A ⊑ ∃r⁻.A — terminates only via pair blocking"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

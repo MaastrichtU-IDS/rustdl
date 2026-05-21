@@ -31,7 +31,7 @@ mod saturate;
 mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
-pub use rules::{RuleOutcome, apply_and};
+pub use rules::{RuleOutcome, apply_and, apply_forall};
 pub use saturate::{SaturationResult, saturate};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
@@ -185,6 +185,7 @@ impl<'pool> TableauContext<'pool> {
 }
 
 #[cfg(test)]
+#[allow(clippy::many_single_char_names)]
 mod tests {
     use super::*;
     use owl_dl_core::{ClassId, Role, RoleId};
@@ -343,6 +344,81 @@ mod tests {
         let not_a = pool.not(a);
         let conj = pool.and([a, not_a]);
         assert_eq!(check_sat(&pool, conj), Some(false));
+    }
+
+    #[test]
+    fn forall_propagates_to_successor() {
+        // L(x) = {∀R.A}, x —R→ y  ⇒  L(y) gets A.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        let forall_r_a = pool.all(Role::named(r), a);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_label(x, forall_r_a);
+        ctx.add_edge(x, r, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(y).has_label(a));
+    }
+
+    #[test]
+    fn forall_skips_other_roles() {
+        // L(x) = {∀R.A}, x —S→ y with S ≠ R  ⇒  L(y) stays empty.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        let s = RoleId::new(1);
+        let forall_r_a = pool.all(Role::named(r), a);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_label(x, forall_r_a);
+        ctx.add_edge(x, s, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(!ctx.graph().node(y).has_label(a));
+    }
+
+    #[test]
+    fn forall_clash_via_propagated_label() {
+        // L(x) = {∀R.A}, L(y) = {¬A}, x —R→ y  ⇒  clash at y after
+        // propagation.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let not_a = pool.not(a);
+        let r = RoleId::new(0);
+        let forall_r_a = pool.all(Role::named(r), a);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_label(x, forall_r_a);
+        ctx.add_label(y, not_a);
+        ctx.add_edge(x, r, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Clash(y));
+    }
+
+    #[test]
+    fn forall_composes_with_and() {
+        // L(x) = {∀R.(A ⊓ B)}, x —R→ y  ⇒  L(y) ends with {A⊓B, A, B}
+        // after one ⊓ decomposition at y.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let a_and_b = pool.and([a, b]);
+        let r = RoleId::new(0);
+        let forall_r_ab = pool.all(Role::named(r), a_and_b);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_label(x, forall_r_ab);
+        ctx.add_edge(x, r, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(y).has_label(a));
+        assert!(ctx.graph().node(y).has_label(b));
     }
 
     #[test]

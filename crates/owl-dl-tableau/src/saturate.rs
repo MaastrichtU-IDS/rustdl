@@ -7,17 +7,18 @@
 //! (priority queues, dependency-directed backtracking, lazy unfolding
 //! integration) arrives in Phase 4.
 //!
-//! ## Phase 2 commit 2 scope
+//! ## Phase 2 commit 3 scope
 //!
-//! Only the deterministic `⊓` rule is wired in. A satisfiability
-//! verdict is therefore available only for concepts that decompose
-//! purely through conjunction-of-literals. Other top-level shapes
-//! still return [`SaturationResult::Stalled`] — the driver did its
-//! best but more rules are needed.
+//! Two deterministic rules are wired in: `⊓` decomposition and `∀`
+//! propagation along role edges. Existential and disjunctive
+//! reasoning still need their own rules (later commits), so any
+//! concept whose unsatisfiability hinges on `⊔` or `∃` will currently
+//! return [`SaturationResult::Stable`] — sound only for the wired
+//! fragment.
 
 use crate::TableauContext;
 use crate::graph::NodeId;
-use crate::rules::{RuleOutcome, apply_and};
+use crate::rules::{RuleOutcome, apply_and, apply_forall};
 
 /// Verdict from one run of [`saturate`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -51,6 +52,9 @@ pub fn saturate(ctx: &mut TableauContext<'_>, max_iters: usize) -> SaturationRes
         for idx in 0..node_count {
             let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
             if apply_and(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
+            if apply_forall(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
         }

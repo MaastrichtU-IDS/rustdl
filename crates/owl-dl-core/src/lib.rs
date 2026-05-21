@@ -7,6 +7,7 @@
 //! See `owl-dl-reasoner-rust-strategy-v2.md` at the workspace root for the
 //! full plan.
 
+pub mod absorb;
 pub mod convert;
 pub mod convert_back;
 pub mod definitions;
@@ -17,6 +18,7 @@ pub mod role_hierarchy;
 pub mod told;
 pub mod vocab;
 
+pub use absorb::{AbsorbedTBox, ConceptRule, absorb};
 pub use convert::{
     ConversionError, convert_class_expression, convert_component, convert_individual,
     convert_object_property, convert_ontology,

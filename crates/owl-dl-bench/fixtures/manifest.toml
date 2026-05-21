@@ -133,3 +133,63 @@ file = "20_double_negation_sat.ofn"
 description = "¬¬A — exercises NNF pre-pass"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "21_propositional_unsat.ofn"
+description = "(A∨B) ∧ (¬A∨B) ∧ (A∨¬B) ∧ (¬A∨¬B) — classic 2-SAT unsat"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "22_disjunction_under_exists_sat.ofn"
+description = "∃r.(A ⊔ B) ⊓ ∀r.¬A — must pick B at the witness"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "23_three_step_cycle_blocking_sat.ofn"
+description = "A → B → C → A three-class ∃-cycle, blocking deeper in the tree"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "24_nested_propagation_sat.ofn"
+description = "∃r.∃s.A ⊓ ∀r.∀s.B — depth-2 witness gets both A and B"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "25_parent_childless_unsat.ofn"
+description = "Parent ≡ ∃hasChild.Person, Childless ≡ ∀hasChild.⊥ — incompatible"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "26_pizza_disjoint_unsat.ofn"
+description = "DisjointClasses(Veg,Meat); ∀hasT.Veg ⊓ ∃hasT.Meat — pizza pattern"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "27_eight_way_disjunction_sat.ofn"
+description = "Eight-way ⊔ with seven clashing branches — deep backtracking"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "28_equivalence_chain_sat.ofn"
+description = "A ≡ B ≡ C ≡ D ≡ E ≡ Test — long equivalence chain"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "29_disjunction_under_all_branches_clash_unsat.ofn"
+description = "∃r.A ⊓ ∀r.(¬A ⊔ B) ⊓ ∀r.¬B — both ⊔-branches clash at the witness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "30_disjoint_union_member_sat.ofn"
+description = "DisjointUnion(Animal, Mammal, Bird, Reptile); Test ≡ Animal"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

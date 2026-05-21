@@ -1,0 +1,29 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/27_eight_way_disjunction_sat>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:E))
+    Declaration(Class(:F))
+    Declaration(Class(:G))
+    Declaration(Class(:H))
+    Declaration(Class(:Test))
+    EquivalentClasses(:Test
+        ObjectUnionOf(
+            ObjectIntersectionOf(:A ObjectComplementOf(:A))
+            ObjectIntersectionOf(:B ObjectComplementOf(:B))
+            ObjectIntersectionOf(:C ObjectComplementOf(:C))
+            ObjectIntersectionOf(:D ObjectComplementOf(:D))
+            ObjectIntersectionOf(:E ObjectComplementOf(:E))
+            ObjectIntersectionOf(:F ObjectComplementOf(:F))
+            ObjectIntersectionOf(:G ObjectComplementOf(:G))
+            :H
+        )
+    )
+)

@@ -1,0 +1,19 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/21_propositional_unsat>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Test))
+    EquivalentClasses(:Test
+        ObjectIntersectionOf(
+            ObjectUnionOf(:A :B)
+            ObjectUnionOf(ObjectComplementOf(:A) :B)
+            ObjectUnionOf(:A ObjectComplementOf(:B))
+            ObjectUnionOf(ObjectComplementOf(:A) ObjectComplementOf(:B))
+        )
+    )
+)

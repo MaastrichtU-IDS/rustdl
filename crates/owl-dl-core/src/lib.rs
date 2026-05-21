@@ -18,7 +18,7 @@ pub mod role_hierarchy;
 pub mod told;
 pub mod vocab;
 
-pub use absorb::{AbsorbedTBox, ConceptRule, absorb};
+pub use absorb::{AbsorbedTBox, ConceptRule, NominalRule, RoleRule, absorb, absorb_roles};
 pub use convert::{
     ConversionError, convert_class_expression, convert_component, convert_individual,
     convert_object_property, convert_ontology,

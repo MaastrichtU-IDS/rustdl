@@ -9,6 +9,7 @@
 
 pub mod convert;
 pub mod convert_back;
+pub mod definitions;
 pub mod ir;
 pub mod normalize;
 pub mod ontology;
@@ -21,6 +22,7 @@ pub use convert::{
     convert_object_property, convert_ontology,
 };
 pub use convert_back::{axiom_to_component, concept_to_class_expression, convert_back};
+pub use definitions::{Definitions, extract_definitions};
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
 pub use normalize::{is_nnf, to_nnf};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};

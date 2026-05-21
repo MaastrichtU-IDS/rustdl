@@ -11,6 +11,9 @@ Cargo.lock.bak
 *.swp
 .DS_Store
 
+# Claude Code session state
+.claude/
+
 # Local environments
 .venv/
 .env

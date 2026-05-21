@@ -241,3 +241,15 @@ file = "38_inverse_cyclic_blocking_sat.ofn"
 description = "A ⊑ ∃r⁻.A — terminates only via pair blocking"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "39_inverse_axiom_propagation_unsat.ofn"
+description = "InverseObjectProperties(r,s); ∃r.A ⊓ ∀s⁻.¬A — cross-polarity match via declared inverse"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "40_inverse_axiom_witness_reuse_sat.ofn"
+description = "InverseObjectProperties(hasChild,hasParent); ∃hasChild.A ⊓ ∃hasParent⁻.A — both ∃ satisfied by one edge"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

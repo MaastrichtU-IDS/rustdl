@@ -20,7 +20,7 @@ use thiserror::Error;
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
     AbsorbedTBox, Axiom, ClassId, ConceptId, ConceptPool, InternalOntology, RoleHierarchy,
-    RoleHierarchyBuilder, SubRolePath, absorb, nnf_axioms,
+    RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms,
 };
 use owl_dl_tableau::TableauContext;
 
@@ -50,18 +50,6 @@ pub enum ReasonError {
     /// machinery and are not supported by the current `ALCH` tableau.
     #[error("role chain sub-property axioms are deferred to Phase 5 (SROIQ)")]
     RoleChainUnsupported,
-
-    /// An `InverseObjectProperties(r, s)` axiom declares two roles as
-    /// mutual inverses. This Phase 3 commit handles inverse roles
-    /// via explicit `ObjectInverseOf(_)` syntax in concepts; the
-    /// declarative-axiom form lands in a follow-up commit (Phase 3
-    /// part 3) which rewrites references to `r⁻`/`s⁻` against
-    /// declared inverse pairs.
-    #[error(
-        "InverseObjectProperties axiom not yet supported — rewrite the ontology to use \
-         ObjectInverseOf(...) in concept positions for now"
-    )]
-    InverseAxiomUnsupported,
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.
@@ -106,9 +94,16 @@ pub fn is_class_satisfiable_internal(
     };
 
     let hierarchy = build_role_hierarchy(&internal)?;
+    let inverse_pairs = collect_inverse_pairs(&internal);
     let normalized = nnf_axioms(&mut internal);
     let tbox = absorb(&normalized, &mut internal.concepts);
-    decide(&internal.concepts, &tbox, &hierarchy, class_id)
+    decide(
+        &internal.concepts,
+        &tbox,
+        &hierarchy,
+        &inverse_pairs,
+        class_id,
+    )
 }
 
 /// Build the ALCH role hierarchy from atomic `SubObjectPropertyOf` and
@@ -145,19 +140,31 @@ fn build_role_hierarchy(internal: &InternalOntology) -> Result<RoleHierarchy, Re
                     }
                 }
             }
-            Axiom::InverseObjectProperties(_, _) => {
-                return Err(ReasonError::InverseAxiomUnsupported);
-            }
             _ => {}
         }
     }
     Ok(builder.build())
 }
 
+/// Collect declared inverse-role pairs from `InverseObjectProperties`
+/// axioms. Each axiom `InverseObjectProperties(r, s)` contributes one
+/// `(r.role_id(), s.role_id())` pair; the tableau context populates
+/// the map symmetrically.
+fn collect_inverse_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
+    let mut pairs = Vec::new();
+    for ax in &internal.axioms {
+        if let Axiom::InverseObjectProperties(a, b) = ax {
+            pairs.push((a.role_id(), b.role_id()));
+        }
+    }
+    pairs
+}
+
 fn decide(
     pool: &ConceptPool,
     tbox: &AbsorbedTBox,
     hierarchy: &RoleHierarchy,
+    inverse_pairs: &[(RoleId, RoleId)],
     class_id: ClassId,
 ) -> Result<bool, ReasonError> {
     // The Atomic-of-class concept; interning is cheap and idempotent
@@ -166,6 +173,9 @@ fn decide(
     let mut pool = pool.clone();
     let concept: ConceptId = pool.atomic(class_id);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
+    for &(r, s) in inverse_pairs {
+        ctx.declare_inverse_pair(r, s);
+    }
     ctx.is_satisfiable(concept).ok_or(ReasonError::NoVerdict)
 }
 
@@ -266,6 +276,27 @@ Ontology(<http://rustdl.test/test>\n\
     EquivalentClasses(:Test ObjectIntersectionOf(\
         ObjectSomeValuesFrom(:r :A) \
         ObjectAllValuesFrom(:s ObjectComplementOf(:A))))\n\
+)\n"
+        ));
+        assert!(!check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn inverse_object_properties_declared_inverse_matches() {
+        // InverseObjectProperties(r, s); Test ≡ ∃r.A ⊓ ∀s⁻.¬A.
+        // The declared pair lets the ∀s⁻ rule propagate ¬A through
+        // the r-edge, clashing at the witness.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    InverseObjectProperties(:r :s)\n\
+    EquivalentClasses(:Test ObjectIntersectionOf(\
+        ObjectSomeValuesFrom(:r :A) \
+        ObjectAllValuesFrom(ObjectInverseOf(:s) ObjectComplementOf(:A))))\n\
 )\n"
         ));
         assert!(!check(&onto, "http://rustdl.test/Test"));

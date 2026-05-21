@@ -40,6 +40,8 @@ pub use saturate::{SaturationResult, saturate};
 pub use search::search;
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
+use std::collections::HashMap;
+
 use owl_dl_core::{
     AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, Role, RoleHierarchy, RoleId, is_nnf,
 };
@@ -61,6 +63,12 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,
     tbox: Option<&'tbox AbsorbedTBox>,
     hierarchy: Option<&'hier RoleHierarchy>,
+    /// Declared inverse pairs: `r → s` means an `InverseObjectProperties(r, s)`
+    /// axiom in the source ontology. The map is symmetric (both
+    /// directions populated). Owned by the context rather than
+    /// borrowed because it's small (one entry per declared pair) and
+    /// avoiding a fourth lifetime keeps the API tractable.
+    inverse_pairs: HashMap<RoleId, RoleId>,
     graph: CompletionGraph,
     trail: TableauTrail,
 }
@@ -75,6 +83,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             pool,
             tbox: None,
             hierarchy: None,
+            inverse_pairs: HashMap::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -90,6 +99,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             pool,
             tbox: Some(tbox),
             hierarchy: None,
+            inverse_pairs: HashMap::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -110,6 +120,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             pool,
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
+            inverse_pairs: HashMap::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -130,27 +141,52 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.hierarchy
     }
 
+    /// Declare `r` and `s` as mutual inverses (corresponding to an
+    /// `InverseObjectProperties(r, s)` axiom). After this,
+    /// [`Self::edge_satisfies`] will accept a cross-polarity match
+    /// between `Role::Named(r)` and `Role::Inverse(s)` (or vice
+    /// versa). The map is populated symmetrically.
+    pub fn declare_inverse_pair(&mut self, r: RoleId, s: RoleId) -> &mut Self {
+        self.inverse_pairs.insert(r, s);
+        self.inverse_pairs.insert(s, r);
+        self
+    }
+
+    /// True if `r` and `s` are linked by a declared
+    /// `InverseObjectProperties` axiom.
+    #[must_use]
+    pub fn are_declared_inverses(&self, r: RoleId, s: RoleId) -> bool {
+        self.inverse_pairs.get(&r) == Some(&s)
+    }
+
     /// True iff a role-tagged neighbour view `seen` (as produced by
     /// [`Node::neighbours`]) satisfies a `wanted` role expression
-    /// from a `∀R.C` / `∃R.C` / `RoleRule`. Polarity must match —
-    /// an outgoing `r`-edge does not satisfy `∀r⁻.C` and vice versa.
-    /// Within the same polarity, sub-role propagation applies (so
-    /// `r ⊑ s` makes an `r`-edge satisfy `∀s.C`, and likewise
-    /// `r⁻ ⊑ s⁻`).
+    /// from a `∀R.C` / `∃R.C` / `RoleRule`.
+    ///
+    /// Three regimes:
+    /// 1. Same polarity — sub-role propagation on the underlying
+    ///    [`RoleId`]s: an `r`-edge satisfies `∀s.C` when `r ⊑ s`,
+    ///    and likewise on the inverse axis.
+    /// 2. Cross polarity, linked by an `InverseObjectProperties`
+    ///    declaration — match. `Role::Named(r)` satisfies
+    ///    `Role::Inverse(s)` iff `r ≡ s⁻`, i.e.
+    ///    `inverse_pairs[r] == Some(s)`.
+    /// 3. Otherwise — no match.
     ///
     /// Falls back to plain equality on the underlying [`RoleId`]s
-    /// when no hierarchy is attached, preserving the Phase 2 / H
+    /// when no hierarchy is attached, preserving the H-only
     /// semantics for callers that don't opt in.
     #[must_use]
     pub fn edge_satisfies(&self, seen: Role, wanted: Role) -> bool {
-        if seen.is_inverse() != wanted.is_inverse() {
-            return false;
-        }
         let s = seen.role_id();
         let w = wanted.role_id();
-        match self.hierarchy {
-            Some(h) => h.is_sub_role(s, w),
-            None => s == w,
+        if seen.is_inverse() == wanted.is_inverse() {
+            match self.hierarchy {
+                Some(h) => h.is_sub_role(s, w),
+                None => s == w,
+            }
+        } else {
+            self.are_declared_inverses(s, w)
         }
     }
 

@@ -7,10 +7,16 @@
 //! See `owl-dl-reasoner-rust-strategy-v2.md` at the workspace root for the
 //! full plan.
 
+pub mod convert;
 pub mod ir;
+pub mod ontology;
 pub mod role_hierarchy;
 pub mod vocab;
 
+pub use convert::{
+    ConversionError, convert_class_expression, convert_individual, convert_object_property,
+};
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
+pub use ontology::{Axiom, InternalOntology, SubRolePath};
 pub use role_hierarchy::{RoleHierarchy, RoleHierarchyBuilder};
 pub use vocab::Vocabulary;

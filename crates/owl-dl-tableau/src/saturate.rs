@@ -7,18 +7,20 @@
 //! (priority queues, dependency-directed backtracking, lazy unfolding
 //! integration) arrives in Phase 4.
 //!
-//! ## Phase 2 commit 3 scope
+//! ## Phase 2 commit 4 scope
 //!
-//! Two deterministic rules are wired in: `⊓` decomposition and `∀`
-//! propagation along role edges. Existential and disjunctive
-//! reasoning still need their own rules (later commits), so any
-//! concept whose unsatisfiability hinges on `⊔` or `∃` will currently
-//! return [`SaturationResult::Stable`] — sound only for the wired
-//! fragment.
+//! Deterministic rules wired into the sweep: `⊓`, `∀`, plus the four
+//! absorbed-TBox families (`ConceptRule`, `NominalRule`, `RoleRule`,
+//! residual GCI). Non-deterministic `⊔` and generative `∃` arrive in
+//! later commits; until then concepts whose unsatisfiability hinges
+//! on those will still come back [`SaturationResult::Stable`].
 
 use crate::TableauContext;
 use crate::graph::NodeId;
-use crate::rules::{RuleOutcome, apply_and, apply_forall};
+use crate::rules::{
+    RuleOutcome, apply_and, apply_concept_rules, apply_forall, apply_nominal_rules,
+    apply_residual_gcis, apply_role_rules,
+};
 
 /// Verdict from one run of [`saturate`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -42,7 +44,7 @@ pub enum SaturationResult {
 /// `max_iters` caps the outer fixed-point loop so a buggy rule cannot
 /// run unbounded. Each iteration sweeps every existing node and
 /// applies each available rule. Stops as soon as a clash is found.
-pub fn saturate(ctx: &mut TableauContext<'_>, max_iters: usize) -> SaturationResult {
+pub fn saturate(ctx: &mut TableauContext<'_, '_>, max_iters: usize) -> SaturationResult {
     for _ in 0..max_iters {
         if let Some(node) = first_clash(ctx) {
             return SaturationResult::Clash(node);
@@ -51,10 +53,22 @@ pub fn saturate(ctx: &mut TableauContext<'_>, max_iters: usize) -> SaturationRes
         let node_count = ctx.graph().len();
         for idx in 0..node_count {
             let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+            if apply_residual_gcis(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
             if apply_and(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
+            if apply_concept_rules(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
+            if apply_nominal_rules(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
             if apply_forall(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
+            if apply_role_rules(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
         }
@@ -69,7 +83,7 @@ pub fn saturate(ctx: &mut TableauContext<'_>, max_iters: usize) -> SaturationRes
     SaturationResult::Stalled
 }
 
-fn first_clash(ctx: &TableauContext<'_>) -> Option<NodeId> {
+fn first_clash(ctx: &TableauContext<'_, '_>) -> Option<NodeId> {
     for idx in 0..ctx.graph().len() {
         let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
         if ctx.clash_in(node) {

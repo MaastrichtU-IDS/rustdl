@@ -31,33 +31,56 @@ mod saturate;
 mod trail;
 
 pub use graph::{CompletionGraph, Node, NodeId};
-pub use rules::{RuleOutcome, apply_and, apply_forall};
+pub use rules::{
+    RuleOutcome, apply_and, apply_concept_rules, apply_forall, apply_nominal_rules,
+    apply_residual_gcis, apply_role_rules,
+};
 pub use saturate::{SaturationResult, saturate};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
-use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool, RoleId, is_nnf};
+use owl_dl_core::{AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, RoleId, is_nnf};
 
 /// Coordinator owning the completion graph and trail for one tableau
 /// run.
 ///
-/// The context borrows the [`ConceptPool`] immutably; the pool was
-/// fully populated by Phase 1 normalization and absorption and no
-/// further interning happens during tableau search.
+/// Borrows the [`ConceptPool`] (frozen by the end of Phase 1) and,
+/// optionally, an [`AbsorbedTBox`] whose rules are applied by the
+/// driver. Without a `TBox` the context decides concept
+/// satisfiability in isolation; with a `TBox` it decides w.r.t. all
+/// `⊤ ⊑ φ` constraints.
 ///
 /// All graph mutation goes through this type so the trail stays in
 /// sync.
 #[derive(Debug)]
-pub struct TableauContext<'pool> {
+pub struct TableauContext<'pool, 'tbox> {
     pool: &'pool ConceptPool,
+    tbox: Option<&'tbox AbsorbedTBox>,
     graph: CompletionGraph,
     trail: TableauTrail,
 }
 
-impl<'pool> TableauContext<'pool> {
+impl<'pool> TableauContext<'pool, 'static> {
+    /// Build a context with no `TBox`. Useful for testing individual
+    /// rules and for concept-only satisfiability.
     #[must_use]
     pub fn new(pool: &'pool ConceptPool) -> Self {
         Self {
             pool,
+            tbox: None,
+            graph: CompletionGraph::new(),
+            trail: TableauTrail::new(),
+        }
+    }
+}
+
+impl<'pool, 'tbox> TableauContext<'pool, 'tbox> {
+    /// Build a context that applies the rules from `tbox` during
+    /// saturation.
+    #[must_use]
+    pub fn with_tbox(pool: &'pool ConceptPool, tbox: &'tbox AbsorbedTBox) -> Self {
+        Self {
+            pool,
+            tbox: Some(tbox),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -66,6 +89,11 @@ impl<'pool> TableauContext<'pool> {
     #[must_use]
     pub fn pool(&self) -> &ConceptPool {
         self.pool
+    }
+
+    #[must_use]
+    pub fn tbox(&self) -> Option<&AbsorbedTBox> {
+        self.tbox
     }
 
     #[must_use]
@@ -166,12 +194,12 @@ impl<'pool> TableauContext<'pool> {
     /// - `None` if the iteration cap was hit before settling
     ///   (defensive guard while the ruleset is incomplete).
     ///
-    /// As of commit 2 only the ⊓-rule is implemented, so verdicts
-    /// are only sound for concepts that decompose purely through
-    /// conjunction (e.g., `Bot`, `A ⊓ Not(A)`, `Top ⊓ A`).
-    /// Concepts requiring `⊔`, `∀`, or `∃` rules will return
-    /// `Some(true)` even when they may actually be unsatisfiable —
-    /// later commits close the gap.
+    /// As of commit 4 the wired rules are `⊓`, `∀`, and the four
+    /// absorbed-TBox families (`ConceptRule`, `NominalRule`,
+    /// `RoleRule`, residual GCI). The non-deterministic `⊔` and
+    /// the generative `∃` rule still land in later commits, so
+    /// concepts whose unsatisfiability hinges on those will return
+    /// `Some(true)` even when they may actually be unsatisfiable.
     pub fn is_satisfiable(&mut self, c: ConceptId) -> Option<bool> {
         const MAX_ITERS: usize = 1024;
         let root = self.new_node();
@@ -188,7 +216,9 @@ impl<'pool> TableauContext<'pool> {
 #[allow(clippy::many_single_char_names)]
 mod tests {
     use super::*;
-    use owl_dl_core::{ClassId, Role, RoleId};
+    use owl_dl_core::{
+        AbsorbedTBox, ClassId, ConceptRule, IndividualId, NominalRule, Role, RoleId, RoleRule,
+    };
 
     fn pool_with_a_and_not_a() -> (ConceptPool, ConceptId, ConceptId) {
         let mut pool = ConceptPool::new();
@@ -436,5 +466,169 @@ mod tests {
         let right = pool.and([c, not_a]);
         let conj = pool.and([left, right]);
         assert_eq!(check_sat(&pool, conj), Some(false));
+    }
+
+    #[test]
+    fn concept_rule_fires_on_atomic_label() {
+        // A ⊑ B, L(x) = {A}  ⇒  B added to L(x).
+        let mut pool = ConceptPool::new();
+        let a_class = ClassId::new(0);
+        let a = pool.atomic(a_class);
+        let b = pool.atomic(ClassId::new(1));
+        let tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: a_class,
+                conclusion: b,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        ctx.add_label(x, a);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(x).has_label(b));
+    }
+
+    #[test]
+    fn concept_rule_unsat_via_chained_trigger() {
+        // A ⊑ B, B ⊑ ¬A  ⇒  any model containing A is unsatisfiable.
+        let mut pool = ConceptPool::new();
+        let a_class = ClassId::new(0);
+        let b_class = ClassId::new(1);
+        let a = pool.atomic(a_class);
+        let b = pool.atomic(b_class);
+        let not_a = pool.not(a);
+        let tbox = AbsorbedTBox {
+            concept_rules: vec![
+                ConceptRule {
+                    trigger: a_class,
+                    conclusion: b,
+                },
+                ConceptRule {
+                    trigger: b_class,
+                    conclusion: not_a,
+                },
+            ],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        ctx.add_label(x, a);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Clash(x));
+    }
+
+    #[test]
+    fn nominal_rule_fires_on_nominal_label() {
+        let mut pool = ConceptPool::new();
+        let ind = IndividualId::new(0);
+        let nominal = pool.nominal(ind);
+        let b = pool.atomic(ClassId::new(0));
+        let tbox = AbsorbedTBox {
+            nominal_rules: vec![NominalRule {
+                individual: ind,
+                conclusion: b,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        ctx.add_label(x, nominal);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(x).has_label(b));
+    }
+
+    #[test]
+    fn role_rule_unguarded_fires_on_every_edge() {
+        // ⊤ ⊑ ∀R.C absorbed to RoleRule { role: R, guard: None,
+        // target_label: C }. x —R→ y  ⇒  C ∈ L(y).
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(0));
+        let tbox = AbsorbedTBox {
+            role_rules: vec![RoleRule {
+                role: r,
+                guard: None,
+                target_label: c,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_edge(x, r, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(y).has_label(c));
+    }
+
+    #[test]
+    fn role_rule_guarded_skips_when_guard_absent() {
+        // A ⊑ ∀R.C absorbed to RoleRule { role: R, guard: Some(A),
+        // target_label: C }. L(x) = {} (no guard), x —R→ y  ⇒  C ∉ L(y).
+        let mut pool = ConceptPool::new();
+        let a_class = ClassId::new(0);
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(1));
+        let tbox = AbsorbedTBox {
+            role_rules: vec![RoleRule {
+                role: r,
+                guard: Some(a_class),
+                target_label: c,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_edge(x, r, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(!ctx.graph().node(y).has_label(c));
+    }
+
+    #[test]
+    fn role_rule_guarded_fires_when_guard_present() {
+        let mut pool = ConceptPool::new();
+        let a_class = ClassId::new(0);
+        let a = pool.atomic(a_class);
+        let r = RoleId::new(0);
+        let c = pool.atomic(ClassId::new(1));
+        let tbox = AbsorbedTBox {
+            role_rules: vec![RoleRule {
+                role: r,
+                guard: Some(a_class),
+                target_label: c,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        ctx.add_label(x, a);
+        ctx.add_edge(x, r, y);
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(y).has_label(c));
+    }
+
+    #[test]
+    fn residual_gci_applies_to_every_node() {
+        // Residual ⊤ ⊑ B: every node ends up with B.
+        let mut pool = ConceptPool::new();
+        let b = pool.atomic(ClassId::new(0));
+        let tbox = AbsorbedTBox {
+            residual_gcis: vec![b],
+            ..AbsorbedTBox::default()
+        };
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let x = ctx.new_node();
+        let y = ctx.new_node();
+        let result = saturate(&mut ctx, 16);
+        assert_eq!(result, SaturationResult::Stable);
+        assert!(ctx.graph().node(x).has_label(b));
+        assert!(ctx.graph().node(y).has_label(b));
     }
 }

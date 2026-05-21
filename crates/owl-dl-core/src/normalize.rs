@@ -1,15 +1,18 @@
 //! Normalization passes that prepare an ontology for reasoning.
 //!
-//! Phase 1 of the strategy. This module currently provides:
+//! Phase 1 of the strategy. This module provides:
 //!
 //! - [`to_nnf`] — Negation Normal Form, pushing `Not` to atomic positions.
+//! - [`nnf_axioms`] — apply NNF to every concept embedded in every axiom of
+//!   an ontology, returning a fresh `Vec<Axiom>` with the original axiom
+//!   list untouched.
 //!
-//! Coming next: told-subsumer / told-disjoint tables, lazy unfolding, and
-//! the three flavors of absorption (binary, role, nominal). Structural
-//! (Tseitin-style) transformation lands toward the end of Phase 1.
+//! Coming next: absorption (binary, role, nominal) and the structural
+//! (Tseitin-style) transformation.
 
 use crate::ConceptPool;
 use crate::ir::{ConceptExpr, ConceptId};
+use crate::ontology::{Axiom, InternalOntology};
 
 /// Rewrite a concept into Negation Normal Form: every `Not` is pushed down
 /// until it wraps an atomic concept (`Atomic`, `Nominal`, or
@@ -139,6 +142,61 @@ pub fn is_nnf(cid: ConceptId, pool: &ConceptPool) -> bool {
         | ConceptExpr::All(_, c)
         | ConceptExpr::Min(_, _, c)
         | ConceptExpr::Max(_, _, c) => is_nnf(*c, pool),
+    }
+}
+
+/// Apply NNF to every concept embedded in the ontology's axioms, producing
+/// a fresh `Vec<Axiom>`. The original `ontology.axioms` is left untouched;
+/// only `ontology.concepts` may grow with newly interned sub-expressions.
+///
+/// The pipeline pattern matches told/definitions: source ontology in,
+/// derived view out. Absorption and structural transformation downstream
+/// consume the result.
+pub fn nnf_axioms(ontology: &mut InternalOntology) -> Vec<Axiom> {
+    // Disjoint field access: read `axioms`, mutate `concepts`.
+    let axioms = &ontology.axioms;
+    let pool = &mut ontology.concepts;
+    let mut out = Vec::with_capacity(axioms.len());
+    for ax in axioms {
+        out.push(nnf_axiom(ax, pool));
+    }
+    out
+}
+
+/// Apply NNF to every `ConceptId` field of a single [`Axiom`]. Axioms with
+/// no concept fields (role characteristics, `ABox` assertions, declarations,
+/// etc.) are returned unchanged.
+fn nnf_axiom(ax: &Axiom, pool: &mut ConceptPool) -> Axiom {
+    match ax {
+        Axiom::SubClassOf { sub, sup } => Axiom::SubClassOf {
+            sub: to_nnf(*sub, pool),
+            sup: to_nnf(*sup, pool),
+        },
+        Axiom::EquivalentClasses(ids) => {
+            Axiom::EquivalentClasses(ids.iter().map(|&c| to_nnf(c, pool)).collect())
+        }
+        Axiom::DisjointClasses(ids) => {
+            Axiom::DisjointClasses(ids.iter().map(|&c| to_nnf(c, pool)).collect())
+        }
+        Axiom::DisjointUnion { class, members } => Axiom::DisjointUnion {
+            class: *class,
+            members: members.iter().map(|&c| to_nnf(c, pool)).collect(),
+        },
+        Axiom::ObjectPropertyDomain { role, domain } => Axiom::ObjectPropertyDomain {
+            role: *role,
+            domain: to_nnf(*domain, pool),
+        },
+        Axiom::ObjectPropertyRange { role, range } => Axiom::ObjectPropertyRange {
+            role: *role,
+            range: to_nnf(*range, pool),
+        },
+        Axiom::ClassAssertion { class, individual } => Axiom::ClassAssertion {
+            class: to_nnf(*class, pool),
+            individual: *individual,
+        },
+        // All other variants — RBox characteristics, role hierarchies, ABox
+        // assertions, declarations — have no embedded ConceptId.
+        other => other.clone(),
     }
 }
 
@@ -346,5 +404,109 @@ mod tests {
         let conj = p.and([a, b]);
         let neg = p.not(conj);
         assert!(!is_nnf(neg, &p));
+    }
+
+    // ── nnf_axioms tests ───────────────────────────────────────────────
+
+    use crate::ontology::{Axiom, InternalOntology};
+
+    fn fresh_ontology() -> InternalOntology {
+        let mut o = InternalOntology::new();
+        o.vocabulary.intern_class("A");
+        o.vocabulary.intern_class("B");
+        o.vocabulary.intern_class("C");
+        o
+    }
+
+    #[test]
+    fn nnf_axioms_rewrites_sub_class_of() {
+        // SubClassOf(A, Not(And(B, C)))  →  SubClassOf(A, Or(Not(B), Not(C)))
+        let mut o = fresh_ontology();
+        let a = o.concepts.atomic(ClassId::new(0));
+        let b = o.concepts.atomic(ClassId::new(1));
+        let c = o.concepts.atomic(ClassId::new(2));
+        let and_bc = o.concepts.and([b, c]);
+        let not_and = o.concepts.not(and_bc);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: a,
+            sup: not_and,
+        });
+        let normalized = nnf_axioms(&mut o);
+        let Axiom::SubClassOf { sub, sup } = &normalized[0] else {
+            panic!()
+        };
+        assert_eq!(*sub, a);
+        let nb = o.concepts.not(b);
+        let nc = o.concepts.not(c);
+        let expected_sup = o.concepts.or([nb, nc]);
+        assert_eq!(*sup, expected_sup);
+        assert!(is_nnf(*sup, &o.concepts));
+    }
+
+    #[test]
+    fn nnf_axioms_leaves_original_axioms_unchanged() {
+        // Verify the source list survives unaltered.
+        let mut o = fresh_ontology();
+        let a = o.concepts.atomic(ClassId::new(0));
+        let b = o.concepts.atomic(ClassId::new(1));
+        let and_ab = o.concepts.and([a, b]);
+        let not_and = o.concepts.not(and_ab);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: a,
+            sup: not_and,
+        });
+        let original_count = o.axioms.len();
+        let _ = nnf_axioms(&mut o);
+        assert_eq!(o.axioms.len(), original_count);
+        // The original axiom still holds the un-NNF'd super-concept.
+        let Axiom::SubClassOf { sup, .. } = &o.axioms[0] else {
+            panic!()
+        };
+        assert_eq!(*sup, not_and);
+    }
+
+    #[test]
+    fn nnf_axioms_handles_multi_concept_axioms() {
+        // EquivalentClasses normalizes every member.
+        let mut o = fresh_ontology();
+        let a = o.concepts.atomic(ClassId::new(0));
+        let b = o.concepts.atomic(ClassId::new(1));
+        let not_a = o.concepts.not(a);
+        let not_not_a = o.concepts.not(not_a);
+        o.axioms.push(Axiom::EquivalentClasses(vec![not_not_a, b]));
+        let normalized = nnf_axioms(&mut o);
+        let Axiom::EquivalentClasses(ids) = &normalized[0] else {
+            panic!()
+        };
+        // Double-negated A collapses to A in NNF.
+        assert_eq!(ids[0], a);
+        assert_eq!(ids[1], b);
+    }
+
+    #[test]
+    fn nnf_axioms_passes_through_role_axioms_unchanged() {
+        let mut o = fresh_ontology();
+        let r = Role::named(RoleId::new(0));
+        o.axioms.push(Axiom::TransitiveRole(r));
+        let normalized = nnf_axioms(&mut o);
+        assert!(matches!(normalized[0], Axiom::TransitiveRole(_)));
+    }
+
+    #[test]
+    fn nnf_axioms_normalizes_class_assertion_concept() {
+        let mut o = fresh_ontology();
+        let i = o.vocabulary.intern_individual("a");
+        let a = o.concepts.atomic(ClassId::new(0));
+        let not_a = o.concepts.not(a);
+        let not_not_a = o.concepts.not(not_a);
+        o.axioms.push(Axiom::ClassAssertion {
+            class: not_not_a,
+            individual: i,
+        });
+        let normalized = nnf_axioms(&mut o);
+        let Axiom::ClassAssertion { class, .. } = normalized[0] else {
+            panic!()
+        };
+        assert_eq!(class, a);
     }
 }

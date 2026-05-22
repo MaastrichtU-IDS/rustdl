@@ -104,8 +104,12 @@ struct WorklistEngine {
 
     facts: Vec<ExistentialFact>,
     seen_facts: HashSet<(ClassId, RoleId, ClassId)>,
-    facts_by_sub: HashMap<ClassId, Vec<usize>>,
-    facts_by_target: HashMap<ClassId, Vec<usize>>,
+    /// `facts_by_sub[class_idx]` → indices into `facts`. Dense
+    /// `Vec<Vec<_>>` keyed by class id, replacing the previous
+    /// `HashMap<ClassId, Vec<usize>>` for cache- and dispatch-
+    /// friendliness on the hot lookups.
+    facts_by_sub: Vec<Vec<usize>>,
+    facts_by_target: Vec<Vec<usize>>,
 
     todo_subsumer: VecDeque<(ClassId, ClassId)>,
     todo_fact: VecDeque<usize>,
@@ -113,9 +117,12 @@ struct WorklistEngine {
 
     rules: ElRules,
     role_super: HashMap<RoleId, HashSet<RoleId>>,
-    conjunctive_by_body: HashMap<ClassId, Vec<usize>>,
-    existential_triggers_by_body: HashMap<ClassId, Vec<usize>>,
-    disjoints_by_class: HashMap<ClassId, Vec<ClassId>>,
+    /// Dense per-class indices into `rules.conjunctive_triggers`.
+    conjunctive_by_body: Vec<Vec<usize>>,
+    /// Dense per-class indices into `rules.existential_triggers`.
+    existential_triggers_by_body: Vec<Vec<usize>>,
+    /// Dense per-class list of classes disjoint from each class.
+    disjoints_by_class: Vec<Vec<ClassId>>,
 
     /// Number of *user-declared* classes (excluding Tseitin
     /// synthetics). The seeder iterates only this range for
@@ -134,23 +141,20 @@ impl WorklistEngine {
         rules: ElRules,
         role_super: HashMap<RoleId, HashSet<RoleId>>,
     ) -> Self {
-        let mut conjunctive_by_body: HashMap<ClassId, Vec<usize>> = HashMap::new();
+        let mut conjunctive_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
         for (idx, trigger) in rules.conjunctive_triggers.iter().enumerate() {
             for &body in &trigger.bodies {
-                conjunctive_by_body.entry(body).or_default().push(idx);
+                conjunctive_by_body[body.index() as usize].push(idx);
             }
         }
-        let mut existential_triggers_by_body: HashMap<ClassId, Vec<usize>> = HashMap::new();
+        let mut existential_triggers_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
         for (idx, trigger) in rules.existential_triggers.iter().enumerate() {
-            existential_triggers_by_body
-                .entry(trigger.body)
-                .or_default()
-                .push(idx);
+            existential_triggers_by_body[trigger.body.index() as usize].push(idx);
         }
-        let mut disjoints_by_class: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+        let mut disjoints_by_class: Vec<Vec<ClassId>> = vec![Vec::new(); num_total_classes];
         for &(a, b) in &rules.disjoint_pairs {
-            disjoints_by_class.entry(a).or_default().push(b);
-            disjoints_by_class.entry(b).or_default().push(a);
+            disjoints_by_class[a.index() as usize].push(b);
+            disjoints_by_class[b.index() as usize].push(a);
         }
         let mut subsumed_by = Vec::with_capacity(num_total_classes);
         for _ in 0..num_total_classes {
@@ -161,8 +165,8 @@ impl WorklistEngine {
             subsumed_by,
             facts: Vec::new(),
             seen_facts: HashSet::new(),
-            facts_by_sub: HashMap::new(),
-            facts_by_target: HashMap::new(),
+            facts_by_sub: vec![Vec::new(); num_total_classes],
+            facts_by_target: vec![Vec::new(); num_total_classes],
             todo_subsumer: VecDeque::new(),
             todo_fact: VecDeque::new(),
             todo_unsat: VecDeque::new(),
@@ -291,11 +295,8 @@ impl WorklistEngine {
         }
         let idx = self.facts.len();
         self.facts.push(fact);
-        self.facts_by_sub.entry(fact.sub).or_default().push(idx);
-        self.facts_by_target
-            .entry(fact.target)
-            .or_default()
-            .push(idx);
+        self.facts_by_sub[fact.sub.index() as usize].push(idx);
+        self.facts_by_target[fact.target.index() as usize].push(idx);
         self.todo_fact.push_back(idx);
         Some(idx)
     }
@@ -324,7 +325,7 @@ impl WorklistEngine {
         }
         // Conjunctive triggers: every trigger with D in its body
         // list may now fire on C if C has all the other bodies too.
-        if let Some(trigger_idxs) = self.conjunctive_by_body.get(&d).cloned() {
+        if let Some(trigger_idxs) = Some(self.conjunctive_by_body[d.index() as usize].clone()) {
             for tidx in trigger_idxs {
                 let trigger = &self.rules.conjunctive_triggers[tidx];
                 if trigger
@@ -339,7 +340,7 @@ impl WorklistEngine {
         }
         // Disjointness: if any class disjoint from D is already a
         // subsumer of C, C is unsat.
-        if let Some(others) = self.disjoints_by_class.get(&d).cloned()
+        if let Some(others) = Some(self.disjoints_by_class[d.index() as usize].clone())
             && others
                 .iter()
                 .any(|other| self.subsumers.contains(c, *other))
@@ -348,8 +349,9 @@ impl WorklistEngine {
         }
         // Existential trigger firing — target side: for facts whose
         // target is C, a new subsumer D may match a trigger body.
-        if let Some(fact_idxs) = self.facts_by_target.get(&c).cloned()
-            && let Some(trigger_idxs) = self.existential_triggers_by_body.get(&d).cloned()
+        if let Some(fact_idxs) = Some(self.facts_by_target[c.index() as usize].clone())
+            && let Some(trigger_idxs) =
+                Some(self.existential_triggers_by_body[d.index() as usize].clone())
         {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
@@ -375,13 +377,14 @@ impl WorklistEngine {
         // subsumer D, and D itself has an existential fact, then
         // C inherits that fact's trigger effect for every trigger
         // whose body is already in subsumers(fact.target).
-        if let Some(fact_idxs) = self.facts_by_sub.get(&d).cloned() {
+        if let Some(fact_idxs) = Some(self.facts_by_sub[d.index() as usize].clone()) {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
                 let target_subsumers = self.supers_of_class(fact.target);
                 let fact_role_supers = supers_of(&self.role_super, fact.role);
                 for sub in target_subsumers {
-                    if let Some(trigger_idxs) = self.existential_triggers_by_body.get(&sub).cloned()
+                    if let Some(trigger_idxs) =
+                        Some(self.existential_triggers_by_body[sub.index() as usize].clone())
                     {
                         for tidx in trigger_idxs {
                             let trigger = self.rules.existential_triggers[tidx];
@@ -414,21 +417,13 @@ impl WorklistEngine {
         // when the chain matches.
         let chain_axioms = self.rules.chain_axioms.clone();
         if !chain_axioms.is_empty() {
-            let head_facts: Vec<ExistentialFact> = self
-                .facts_by_target
-                .get(&c)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|i| self.facts[i])
+            let head_facts: Vec<ExistentialFact> = self.facts_by_target[c.index() as usize]
+                .iter()
+                .map(|&i| self.facts[i])
                 .collect();
-            let tail_facts: Vec<ExistentialFact> = self
-                .facts_by_sub
-                .get(&d)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|i| self.facts[i])
+            let tail_facts: Vec<ExistentialFact> = self.facts_by_sub[d.index() as usize]
+                .iter()
+                .map(|&i| self.facts[i])
                 .collect();
             for (r1, r2, sup) in chain_axioms {
                 for head in &head_facts {
@@ -496,7 +491,9 @@ impl WorklistEngine {
         let target_subsumers = self.supers_of_class(fact.target);
         let candidates = self.subs_of_class(fact.sub);
         for sub in &target_subsumers {
-            if let Some(trigger_idxs) = self.existential_triggers_by_body.get(sub).cloned() {
+            if let Some(trigger_idxs) =
+                Some(self.existential_triggers_by_body[sub.index() as usize].clone())
+            {
                 for tidx in trigger_idxs {
                     let trigger = self.rules.existential_triggers[tidx];
                     if !role_supers.contains(&trigger.role) {
@@ -520,7 +517,7 @@ impl WorklistEngine {
                 // is a subsumer of fact.target.
                 let target_subs = target_subsumers.clone();
                 for sub in &target_subs {
-                    let tail_idxs = self.facts_by_sub.get(sub).cloned().unwrap_or_default();
+                    let tail_idxs = self.facts_by_sub[sub.index() as usize].clone();
                     for tidx in tail_idxs {
                         let tail = self.facts[tidx];
                         if supers_of(&self.role_super, tail.role).contains(&r2) {
@@ -540,7 +537,7 @@ impl WorklistEngine {
                 let mut head_targets: Vec<ClassId> = candidates;
                 head_targets.push(fact.sub);
                 for cand in head_targets {
-                    let head_idxs = self.facts_by_target.get(&cand).cloned().unwrap_or_default();
+                    let head_idxs = self.facts_by_target[cand.index() as usize].clone();
                     for hidx in head_idxs {
                         let head = self.facts[hidx];
                         if supers_of(&self.role_super, head.role).contains(&r1) {
@@ -569,7 +566,7 @@ impl WorklistEngine {
             self.enqueue_unsat(d);
         }
         // Every fact with c as its target makes its source unsat.
-        if let Some(fact_idxs) = self.facts_by_target.get(&c).cloned() {
+        if let Some(fact_idxs) = Some(self.facts_by_target[c.index() as usize].clone()) {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
                 self.enqueue_unsat(fact.sub);

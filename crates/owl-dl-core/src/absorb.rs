@@ -44,6 +44,8 @@
 //!
 //! Multi-trigger absorption (`A ⊓ B ⊑ C`) is a Phase 4 refinement.
 
+use std::collections::HashMap;
+
 use crate::ConceptPool;
 use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role};
 use crate::normalize::to_nnf;
@@ -51,6 +53,17 @@ use crate::ontology::Axiom;
 
 /// The output of absorption. Always a derived view of an `InternalOntology`'s
 /// axiom list — never a replacement.
+///
+/// In addition to the four `Vec`-based axiom families, holds two
+/// dispatch indices ([`Self::concept_rules_by_trigger`],
+/// [`Self::nominal_rules_by_individual`]). They map a trigger to the
+/// list of conclusions to apply, so [`crate::AbsorbedTBox`]-driven
+/// tableau rules do `O(triggers × hits_per_trigger)` work per node
+/// instead of `O(triggers × |rules|)`. [`absorb`] and [`absorb_roles`]
+/// keep the indices in sync; callers who build an [`AbsorbedTBox`] by
+/// hand should call [`Self::finalize`] before handing it to the
+/// tableau (the tableau falls back to a linear scan when the indices
+/// are empty, so this is "for performance, not correctness").
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 pub struct AbsorbedTBox {
     /// `A ⊑ ψ` — when the trigger class appears in a node label,
@@ -66,6 +79,39 @@ pub struct AbsorbedTBox {
     /// `⊤ ⊑ φ` — applied universally by the tableau, after every other
     /// pattern was tried.
     pub residual_gcis: Vec<ConceptId>,
+    /// Index: every conclusion `ConceptId` that should fire for a
+    /// given trigger class. Derived from `concept_rules` by
+    /// [`Self::finalize`]; consulted by `apply_concept_rules` to skip
+    /// the linear scan.
+    pub concept_rules_by_trigger: HashMap<ClassId, Vec<ConceptId>>,
+    /// Same idea for nominal rules — index by individual id.
+    pub nominal_rules_by_individual: HashMap<IndividualId, Vec<ConceptId>>,
+}
+
+impl AbsorbedTBox {
+    /// Rebuild the dispatch indices from the canonical `Vec` fields.
+    /// Idempotent — safe to call after any mutation of the rule lists.
+    /// Linear in the total rule count; cheap.
+    pub fn finalize(&mut self) {
+        self.concept_rules_by_trigger.clear();
+        self.concept_rules_by_trigger
+            .reserve(self.concept_rules.len());
+        for rule in &self.concept_rules {
+            self.concept_rules_by_trigger
+                .entry(rule.trigger)
+                .or_default()
+                .push(rule.conclusion);
+        }
+        self.nominal_rules_by_individual.clear();
+        self.nominal_rules_by_individual
+            .reserve(self.nominal_rules.len());
+        for rule in &self.nominal_rules {
+            self.nominal_rules_by_individual
+                .entry(rule.individual)
+                .or_default()
+                .push(rule.conclusion);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -106,6 +152,10 @@ pub fn absorb(axioms_nnf: &[Axiom], pool: &mut ConceptPool) -> AbsorbedTBox {
     absorb_roles(&mut tbox, pool);
     tbox
 }
+
+// `absorb_roles` is the last mutator on `concept_rules` /
+// `nominal_rules`, so it owns the responsibility for refreshing the
+// dispatch indices — see the `finalize()` call at its tail.
 
 /// Second pass over an [`AbsorbedTBox`]: rewrite rules / residual GCIs of
 /// shape `∀R.D` as [`RoleRule`]s. Conceptually a separate stage from
@@ -160,6 +210,9 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
         }
     }
     tbox.nominal_rules = kept;
+
+    // Rebuild the dispatch indices now that every mutator has run.
+    tbox.finalize();
 }
 
 fn absorb_one(ax: &Axiom, pool: &mut ConceptPool, tbox: &mut AbsorbedTBox) {

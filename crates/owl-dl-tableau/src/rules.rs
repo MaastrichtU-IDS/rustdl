@@ -129,12 +129,24 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     if triggers.is_empty() {
         return RuleOutcome::NoChange;
     }
-    let pending: Vec<ConceptId> = tbox
-        .concept_rules
-        .iter()
-        .filter(|r| triggers.contains(&r.trigger))
-        .map(|r| r.conclusion)
-        .collect();
+    // Index lookup is O(triggers + hits). Fall back to the linear
+    // scan only when callers built the TBox by hand without calling
+    // `finalize()` — e.g., tableau unit tests in this crate.
+    let pending: Vec<ConceptId> = if tbox.concept_rules_by_trigger.is_empty() {
+        tbox.concept_rules
+            .iter()
+            .filter(|r| triggers.contains(&r.trigger))
+            .map(|r| r.conclusion)
+            .collect()
+    } else {
+        let mut out = Vec::new();
+        for trigger in &triggers {
+            if let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) {
+                out.extend(conclusions.iter().copied());
+            }
+        }
+        out
+    };
     let mut applied = false;
     for c in pending {
         if ctx.add_label(node, c) {
@@ -178,12 +190,21 @@ pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     if individuals.is_empty() {
         return RuleOutcome::NoChange;
     }
-    let pending: Vec<ConceptId> = tbox
-        .nominal_rules
-        .iter()
-        .filter(|r| individuals.contains(&r.individual))
-        .map(|r| r.conclusion)
-        .collect();
+    let pending: Vec<ConceptId> = if tbox.nominal_rules_by_individual.is_empty() {
+        tbox.nominal_rules
+            .iter()
+            .filter(|r| individuals.contains(&r.individual))
+            .map(|r| r.conclusion)
+            .collect()
+    } else {
+        let mut out = Vec::new();
+        for ind in &individuals {
+            if let Some(conclusions) = tbox.nominal_rules_by_individual.get(ind) {
+                out.extend(conclusions.iter().copied());
+            }
+        }
+        out
+    };
     let mut applied = false;
     for c in pending {
         if ctx.add_label(node, c) {

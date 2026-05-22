@@ -62,6 +62,14 @@ enum Command {
         /// summary at the end.
         #[arg(long)]
         quiet: bool,
+        /// Re-run each fixture this many times and report the median
+        /// elapsed time per file (plus min/max). The aggregate
+        /// `wall clock (sum)` line sums medians. Use `--repeats 5`
+        /// or higher to drown out trial-to-trial system noise when
+        /// bisecting perf changes — a single run on a shared 16-core
+        /// machine has ~30% variance at the millisecond scale.
+        #[arg(long, default_value = "1")]
+        repeats: usize,
     },
     /// In-process comparison against `whelk-rs` (another EL
     /// reasoner in Rust), running both engines on the same input.
@@ -168,7 +176,11 @@ fn main() -> Result<()> {
                     .map_err(|e| anyhow::anyhow!("synthesised ontology failed to parse: {e}"))?;
             run_classify(&onto)?;
         }
-        Command::Corpus { dir, quiet } => run_corpus(&dir, quiet)?,
+        Command::Corpus {
+            dir,
+            quiet,
+            repeats,
+        } => run_corpus(&dir, quiet, repeats)?,
         #[cfg(feature = "whelk-compare")]
         Command::CompareWhelk { file, iters } => run_compare_whelk(&file, iters)?,
     }
@@ -234,7 +246,9 @@ fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
     Ok(())
 }
 
-fn run_corpus(dir: &Path, quiet: bool) -> Result<()> {
+#[allow(clippy::too_many_lines)]
+fn run_corpus(dir: &Path, quiet: bool, repeats: usize) -> Result<()> {
+    let repeats = repeats.max(1);
     let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .into_iter()
         .filter_map(std::result::Result::ok)
@@ -254,39 +268,88 @@ fn run_corpus(dir: &Path, quiet: bool) -> Result<()> {
     let mut total_elapsed = std::time::Duration::ZERO;
     let mut failures: Vec<(PathBuf, String)> = Vec::new();
     for path in &paths {
-        match parse_ofn(path).and_then(|onto| {
-            let start = Instant::now();
-            let h = classify(&onto).context("classify")?;
-            Ok((h, start.elapsed()))
-        }) {
-            Ok((h, elapsed)) => {
-                let stats = h.stats();
-                if !quiet {
-                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-                    println!(
-                        "{:50} classes={:4} mode={:6} sat-sub={:5} tab-sub={:5} sat-unsat={:3} tab-unsat={:3} {:>9.3?}",
-                        name,
-                        h.classes().len(),
-                        if stats.pure_el_mode { "EL" } else { "hybrid" },
-                        stats.saturation_subsumption_hits,
-                        stats.tableau_subsumption_calls,
-                        stats.saturation_unsat_hits,
-                        stats.tableau_unsat_calls,
-                        elapsed,
-                    );
-                }
-                total_classes += h.classes().len();
-                if stats.pure_el_mode {
-                    total_pure_el += 1;
-                }
-                total_sat_sub += stats.saturation_subsumption_hits;
-                total_tab_sub += stats.tableau_subsumption_calls;
-                total_sat_unsat += stats.saturation_unsat_hits;
-                total_tab_unsat += stats.tableau_unsat_calls;
-                total_elapsed += elapsed;
+        let onto = match parse_ofn(path) {
+            Ok(o) => o,
+            Err(e) => {
+                failures.push((path.clone(), format!("{e:#}")));
+                continue;
             }
-            Err(e) => failures.push((path.clone(), format!("{e:#}"))),
+        };
+        // Run `repeats` times, keep stats from the first run (they're
+        // deterministic per the convert+sort guarantee), report
+        // median wall clock. Min/max are surfaced in per-file output
+        // when more than one repeat is requested.
+        let mut times: Vec<std::time::Duration> = Vec::with_capacity(repeats);
+        let mut first_stats: Option<owl_dl_reasoner::ClassificationStats> = None;
+        let mut classes_len = 0usize;
+        let mut err: Option<String> = None;
+        for _ in 0..repeats {
+            let start = Instant::now();
+            match classify(&onto).context("classify") {
+                Ok(h) => {
+                    times.push(start.elapsed());
+                    if first_stats.is_none() {
+                        first_stats = Some(h.stats());
+                        classes_len = h.classes().len();
+                    }
+                }
+                Err(e) => {
+                    err = Some(format!("{e:#}"));
+                    break;
+                }
+            }
         }
+        if let Some(e) = err {
+            failures.push((path.clone(), e));
+            continue;
+        }
+        times.sort();
+        // `times` is non-empty here: the inner loop pushed at least
+        // one element before any `err` path could break out, and
+        // failures are handled by the `if let Some(e)` above.
+        let median = times[times.len() / 2];
+        let min = *times.first().expect("times non-empty after success");
+        let max = *times.last().expect("times non-empty after success");
+        let stats = first_stats.expect("first stats present on success");
+        if !quiet {
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            if repeats > 1 {
+                println!(
+                    "{:50} classes={:4} mode={:6} sat-sub={:5} tab-sub={:5} sat-unsat={:3} tab-unsat={:3} med={:>9.3?} min={:>9.3?} max={:>9.3?}",
+                    name,
+                    classes_len,
+                    if stats.pure_el_mode { "EL" } else { "hybrid" },
+                    stats.saturation_subsumption_hits,
+                    stats.tableau_subsumption_calls,
+                    stats.saturation_unsat_hits,
+                    stats.tableau_unsat_calls,
+                    median,
+                    min,
+                    max,
+                );
+            } else {
+                println!(
+                    "{:50} classes={:4} mode={:6} sat-sub={:5} tab-sub={:5} sat-unsat={:3} tab-unsat={:3} {:>9.3?}",
+                    name,
+                    classes_len,
+                    if stats.pure_el_mode { "EL" } else { "hybrid" },
+                    stats.saturation_subsumption_hits,
+                    stats.tableau_subsumption_calls,
+                    stats.saturation_unsat_hits,
+                    stats.tableau_unsat_calls,
+                    median,
+                );
+            }
+        }
+        total_classes += classes_len;
+        if stats.pure_el_mode {
+            total_pure_el += 1;
+        }
+        total_sat_sub += stats.saturation_subsumption_hits;
+        total_tab_sub += stats.tableau_subsumption_calls;
+        total_sat_unsat += stats.saturation_unsat_hits;
+        total_tab_unsat += stats.tableau_unsat_calls;
+        total_elapsed += median;
     }
     println!();
     println!("# corpus summary");
@@ -299,7 +362,13 @@ fn run_corpus(dir: &Path, quiet: bool) -> Result<()> {
     println!("  pure-EL files: {total_pure_el} / {total}");
     println!("  subsumption queries: saturation={total_sat_sub} tableau={total_tab_sub}");
     println!("  satisfiability probes: saturation={total_sat_unsat} tableau={total_tab_unsat}");
-    println!("  wall clock (sum): {total_elapsed:.3?}");
+    if repeats > 1 {
+        println!(
+            "  wall clock (sum of medians, {repeats} repeats each): {total_elapsed:.3?}"
+        );
+    } else {
+        println!("  wall clock (sum): {total_elapsed:.3?}");
+    }
     if !failures.is_empty() {
         println!();
         println!("# failures");

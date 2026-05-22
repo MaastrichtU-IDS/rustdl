@@ -371,7 +371,7 @@ fn classify_pure_el(
 /// cardinality, nominals, inverse roles, role characteristics that
 /// expand to cardinality, `ABox` assertions, ...) immediately returns
 /// `false`.
-fn is_pure_el(internal: &InternalOntology) -> bool {
+pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
     internal
         .axioms
         .iter()

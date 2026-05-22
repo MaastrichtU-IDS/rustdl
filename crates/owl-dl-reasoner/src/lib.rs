@@ -140,6 +140,18 @@ pub fn is_class_satisfiable_internal(
         .vocabulary
         .class_id(class_iri)
         .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    // EL closure oracle: a sound `⊑ ⊥` flag means the class is
+    // definitively unsatisfiable, regardless of whether the rest of
+    // the ontology is in the EL fragment. And for *pure*-EL inputs
+    // the closure is also complete, so a *lack* of `⊑ ⊥` is itself
+    // the verdict.
+    let closure = owl_dl_saturation::saturate(&internal);
+    if closure.is_unsatisfiable(class_id) {
+        return Ok(false);
+    }
+    if classify::is_pure_el(&internal) {
+        return Ok(true);
+    }
     run_satisfiability(internal, move |pool| pool.atomic(class_id))
 }
 
@@ -213,6 +225,16 @@ pub fn is_subclass_of_internal(
     let closure = owl_dl_saturation::saturate(&internal);
     if closure.contains(sub_id, super_id) {
         return Ok(true);
+    }
+    // If `sub` is itself unsat in the closure, every superclass —
+    // including `super` — vacuously subsumes it.
+    if closure.is_unsatisfiable(sub_id) {
+        return Ok(true);
+    }
+    // Pure-EL inputs: the closure is complete, so a miss is the
+    // verdict, no tableau needed.
+    if classify::is_pure_el(&internal) {
+        return Ok(false);
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.

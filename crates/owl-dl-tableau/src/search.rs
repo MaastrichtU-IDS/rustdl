@@ -54,7 +54,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Option<
         return None;
     }
     match saturate(ctx, SATURATE_ITERS) {
-        SaturationResult::Clash(_) => Some(false),
+        SaturationResult::Clash(_, _) => Some(false),
         SaturationResult::Stalled => None,
         SaturationResult::Stable => {
             // Step 1: ⊔ branching has priority — it's structurally

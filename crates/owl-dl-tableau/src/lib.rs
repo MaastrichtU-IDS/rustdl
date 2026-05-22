@@ -864,15 +864,37 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// clashes (e.g., individual identity for nominals).
     #[must_use]
     pub fn clash_in(&self, node: NodeId) -> bool {
-        let labels = self.graph.node(node).labels();
-        for &c in labels {
+        self.clash_deps_at(node).is_some()
+    }
+
+    /// Dep-aware clash check: returns `Some(deps)` when this node
+    /// holds either a `Bot` label or a complementary `(c, ¬c)` pair,
+    /// where `deps` is the union of the offending labels' deps —
+    /// i.e. the set of branch decisions necessary to derive the
+    /// clash. Returns `None` if the node is clash-free.
+    ///
+    /// Used by [`crate::saturate`] to construct
+    /// [`crate::SaturationResult::Clash`] with the clash provenance
+    /// attached, which then drives Phase 4 back-jumping.
+    #[must_use]
+    pub fn clash_deps_at(&self, node: NodeId) -> Option<crate::graph::DepSet> {
+        let n = self.graph.node(node);
+        let labels = n.labels();
+        for (pos, &c) in labels.iter().enumerate() {
             match self.pool.get(c) {
-                ConceptExpr::Bot => return true,
-                ConceptExpr::Not(inner) if labels.binary_search(inner).is_ok() => return true,
+                ConceptExpr::Bot => return Some(n.label_deps[pos].clone()),
+                ConceptExpr::Not(inner) => {
+                    if let Ok(inner_pos) = labels.binary_search(inner) {
+                        return Some(crate::deps::union(
+                            &n.label_deps[pos],
+                            &n.label_deps[inner_pos],
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
-        false
+        None
     }
 
     /// Partial satisfiability check.
@@ -1214,7 +1236,11 @@ mod tests {
         ctx.add_label(y, not_a);
         ctx.add_edge(x, r, y);
         let result = saturate(&mut ctx, 16);
-        assert_eq!(result, SaturationResult::Clash(y));
+        // Deps empty: this trail uses the deps-free `add_label`/
+        // `add_edge` API, so the clash propagation has nothing to
+        // attribute branch-wise. We assert the variant + the node;
+        // the DepSet is just the empty Vec.
+        assert!(matches!(result, SaturationResult::Clash(n, _) if n == y));
     }
 
     #[test]
@@ -1303,7 +1329,7 @@ mod tests {
         let x = ctx.new_node();
         ctx.add_label(x, a);
         let result = saturate(&mut ctx, 16);
-        assert_eq!(result, SaturationResult::Clash(x));
+        assert!(matches!(result, SaturationResult::Clash(n, _) if n == x));
     }
 
     #[test]

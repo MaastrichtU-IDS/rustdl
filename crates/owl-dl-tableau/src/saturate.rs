@@ -17,7 +17,7 @@
 //! driver.
 
 use crate::TableauContext;
-use crate::graph::NodeId;
+use crate::graph::{DepSet, NodeId};
 use crate::rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
     apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
@@ -25,12 +25,15 @@ use crate::rules::{
 };
 
 /// Verdict from one run of [`saturate`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaturationResult {
-    /// A clash was found at some node. The expansion is closed —
+    /// A clash was found at some node, with the [`DepSet`] of the
+    /// offending complementary labels. The expansion is closed —
     /// for a satisfiability check this means *unsatisfiable* along
-    /// the current branch.
-    Clash(NodeId),
+    /// the current branch. The deps tell `search::branch` which
+    /// branch decisions the clash actually depended on, enabling
+    /// dependency-directed back-jumping.
+    Clash(NodeId, DepSet),
     /// No rule had anything left to add and no node clashes. For
     /// the full ALC ruleset this would mean *satisfiable*. With only
     /// the `⊓` rule wired in, it just means "stable under conjunction
@@ -56,8 +59,8 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
         if ctx.check_deadline() {
             return SaturationResult::Stalled;
         }
-        if let Some(node) = first_clash(ctx) {
-            return SaturationResult::Clash(node);
+        if let Some((node, deps)) = first_clash(ctx) {
+            return SaturationResult::Clash(node, deps);
         }
         let mut changed = false;
         let node_count = ctx.graph().len();
@@ -111,8 +114,8 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             }
         }
         if !changed {
-            return if let Some(node) = first_clash(ctx) {
-                SaturationResult::Clash(node)
+            return if let Some((node, deps)) = first_clash(ctx) {
+                SaturationResult::Clash(node, deps)
             } else {
                 SaturationResult::Stable
             };
@@ -121,11 +124,11 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
     SaturationResult::Stalled
 }
 
-fn first_clash(ctx: &TableauContext<'_, '_, '_>) -> Option<NodeId> {
+fn first_clash(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, DepSet)> {
     for idx in 0..ctx.graph().len() {
         let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
-        if ctx.clash_in(node) {
-            return Some(node);
+        if let Some(deps) = ctx.clash_deps_at(node) {
+            return Some((node, deps));
         }
     }
     None

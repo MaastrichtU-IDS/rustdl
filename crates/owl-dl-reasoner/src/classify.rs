@@ -623,74 +623,76 @@ pub(crate) fn classify_top_down_internal(
     });
 
     // `direct_supers[i]` = direct super-classes of `i` placed so
-    // far. `placed[i]` = whether `i` has been processed yet.
+    // far. The hierarchy is built tier-by-tier: a tier is the set
+    // of classes that share a closure-subsumer count. Within a
+    // tier, classes are independent of each other w.r.t. the
+    // hierarchy walk (none has been placed yet; they don't appear
+    // in any frontier), so the tier processes in parallel via
+    // rayon. Cross-tier subsumption that the walk can't see is
+    // recovered by the closure-seed step in the entailment-matrix
+    // builder below.
     let mut direct_supers: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut direct_children: Vec<Vec<usize>> = vec![Vec::new(); n];
-    // Virtual "Top" sentinel: every class starts here.
     let mut top_level: Vec<usize> = Vec::new();
-    let mut placed: Vec<bool> = vec![false; n];
 
-    for &c in &order {
-        let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
-        // Top-down walk: collect "topmost" placed classes that
-        // subsume c, then descend through their children.
-        let mut frontier: Vec<usize> = top_level.clone();
-        let mut accepted: Vec<usize> = Vec::new();
-        while let Some(d) = frontier.pop() {
-            if d == c {
-                continue;
+    // Group `order` into tiers of equal closure-subsumer count.
+    let mut tiers: Vec<Vec<usize>> = Vec::new();
+    {
+        let mut current: Vec<usize> = Vec::new();
+        let mut current_rank: Option<usize> = None;
+        for &c in &order {
+            let rank = closure
+                .subsumers_of(owl_dl_core::ClassId::new(
+                    u32::try_from(c).expect("class index fits in u32"),
+                ))
+                .len();
+            if current_rank.is_some_and(|r| r != rank) {
+                tiers.push(std::mem::take(&mut current));
             }
-            let d_id =
-                owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
-            let subsumed = if closure.contains(c_id, d_id) {
-                stats.saturation_subsumption_hits += 1;
-                true
-            } else {
-                subsumes_via_tableau(&prepared, c_id, d_id, per_pair_timeout, &mut stats)?
-                    .unwrap_or_default()
-            };
-            if !subsumed {
-                continue;
-            }
-            // d subsumes c. Try descending into d's placed children.
-            // The "most-specific" pruning post-pass handles the case
-            // where d itself stays a direct parent because none of
-            // its children turn out to also subsume c.
-            for &k in &direct_children[d] {
-                frontier.push(k);
-            }
-            accepted.push(d);
+            current_rank = Some(rank);
+            current.push(c);
         }
-        // Prune `accepted` to the most-specific entries: drop any
-        // candidate that has a strict descendant also in `accepted`.
-        let direct_parents: Vec<usize> = accepted
-            .iter()
-            .filter(|&&d| {
-                !accepted.iter().any(|&e| {
-                    e != d
-                        && (closure.contains(
-                            owl_dl_core::ClassId::new(
-                                u32::try_from(e).expect("class index fits in u32"),
-                            ),
-                            owl_dl_core::ClassId::new(
-                                u32::try_from(d).expect("class index fits in u32"),
-                            ),
-                        ) || direct_supers[e].contains(&d))
-                })
+        if !current.is_empty() {
+            tiers.push(current);
+        }
+    }
+
+    for tier in &tiers {
+        // Each tier member walks the snapshot of `direct_children`
+        // + `top_level` as of tier entry and returns its
+        // `direct_parents` + a stats delta. Parallel since none of
+        // them read or write each other's slot.
+        let tier_results: Result<Vec<(usize, Vec<usize>, ClassificationStats)>, ReasonError> = tier
+            .par_iter()
+            .map(|&c| {
+                let mut local_stats = ClassificationStats::default();
+                let parents = find_direct_parents_top_down(
+                    c,
+                    &closure,
+                    &prepared,
+                    &direct_supers,
+                    &direct_children,
+                    &top_level,
+                    per_pair_timeout,
+                    &mut local_stats,
+                )?;
+                Ok((c, parents, local_stats))
             })
-            .copied()
-            .collect::<HashSet<_>>()
-            .into_iter()
             .collect();
-
-        for &p in &direct_parents {
-            direct_children[p].push(c);
+        let tier_results = tier_results?;
+        // Serial merge of the tier's results into the global state.
+        for (c, parents, sd) in tier_results {
+            stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
+            stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
+            stats.timed_out_pairs += sd.timed_out_pairs;
+            for &p in &parents {
+                direct_children[p].push(c);
+            }
+            if parents.is_empty() {
+                top_level.push(c);
+            }
+            direct_supers[c] = parents;
         }
-        if direct_parents.is_empty() {
-            top_level.push(c);
-        }
-        direct_supers[c] = direct_parents;
-        placed[c] = true;
     }
 
     // Build the full entailment matrix. Three sources contribute:
@@ -742,7 +744,7 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
-    let _ = placed; // currently informational only
+    let _ = top_level; // currently informational only
     Ok(Classification {
         classes,
         index,
@@ -750,6 +752,74 @@ pub(crate) fn classify_top_down_internal(
         unsatisfiable_idxs,
         stats,
     })
+}
+
+/// Walk the partial hierarchy top-down to find class `c`'s direct
+/// super-classes among the already-placed classes. Free function so
+/// rayon workers can invoke it in parallel within a closure-rank
+/// tier (the tier's members don't appear in each other's frontier
+/// — `top_level` + `direct_children` are snapshots from before the
+/// tier started).
+///
+/// Returns the set of most-specific placed classes that subsume `c`.
+/// Mutates `stats` in place (the caller treats it as a delta and
+/// merges into a global accumulator).
+#[allow(clippy::too_many_arguments)]
+fn find_direct_parents_top_down(
+    c: usize,
+    closure: &owl_dl_saturation::Subsumers,
+    prepared: &PreparedOntology,
+    direct_supers: &[Vec<usize>],
+    direct_children: &[Vec<usize>],
+    top_level: &[usize],
+    per_pair_timeout: Option<std::time::Duration>,
+    stats: &mut ClassificationStats,
+) -> Result<Vec<usize>, ReasonError> {
+    let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+    let mut frontier: Vec<usize> = top_level.to_vec();
+    let mut accepted: Vec<usize> = Vec::new();
+    while let Some(d) = frontier.pop() {
+        if d == c {
+            continue;
+        }
+        let d_id = owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
+        let subsumed = if closure.contains(c_id, d_id) {
+            stats.saturation_subsumption_hits += 1;
+            true
+        } else {
+            subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, stats)?
+                .unwrap_or_default()
+        };
+        if !subsumed {
+            continue;
+        }
+        for &k in &direct_children[d] {
+            frontier.push(k);
+        }
+        accepted.push(d);
+    }
+    // Prune `accepted` to the most-specific entries: drop any
+    // candidate that has a strict descendant also in `accepted`.
+    let direct_parents: Vec<usize> = accepted
+        .iter()
+        .filter(|&&d| {
+            !accepted.iter().any(|&e| {
+                e != d
+                    && (closure.contains(
+                        owl_dl_core::ClassId::new(
+                            u32::try_from(e).expect("class index fits in u32"),
+                        ),
+                        owl_dl_core::ClassId::new(
+                            u32::try_from(d).expect("class index fits in u32"),
+                        ),
+                    ) || direct_supers[e].contains(&d))
+            })
+        })
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(direct_parents)
 }
 
 /// Helper: ask the tableau whether `sub ⊑ sup`. Counts the call in

@@ -21,7 +21,7 @@ use owl_dl_core::InternalOntology;
 use owl_dl_core::convert::convert_ontology;
 use owl_dl_saturation::saturate;
 
-use crate::{ReasonError, is_subclass_of_internal, run_satisfiability};
+use crate::{ReasonError, run_satisfiability, subsumes_via_tableau};
 
 /// Result of [`classify`]. Holds the complete pairwise subsumption
 /// matrix over every declared named class plus the IRIs themselves,
@@ -217,6 +217,7 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
     // unsatisfiable (it subsumes everything trivially — fill the
     // row).
     let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
+    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         entailed[i][i] = true;
         if unsatisfiable_idxs.contains(&i) {
@@ -225,6 +226,7 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
         }
         let sub_class =
             owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        #[allow(clippy::needless_range_loop)]
         for j in 0..n {
             if i == j {
                 continue;
@@ -247,9 +249,7 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
                 continue;
             }
             stats.tableau_subsumption_calls += 1;
-            let sub = &classes[i];
-            let sup = &classes[j];
-            entailed[i][j] = is_subclass_of_internal(internal.clone(), sub, sup)?;
+            entailed[i][j] = subsumes_via_tableau(internal.clone(), sub_class, super_class)?;
         }
     }
     let _ = satisfiable; // currently informational only

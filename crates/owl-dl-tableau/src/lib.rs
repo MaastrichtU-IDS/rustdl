@@ -41,6 +41,7 @@
 //! - Phase 4 optimisation stack (dependency-directed backtracking,
 //!   lazy unfolding integration, priority queue over rules).
 
+mod deps;
 mod graph;
 mod rules;
 mod saturate;
@@ -463,12 +464,25 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// for pair blocking. Also wires the in-edge `(role, from)`
     /// into the new node so inverse-aware traversal sees it.
     pub fn new_successor(&mut self, from: NodeId, role: RoleId) -> NodeId {
+        self.new_successor_with_deps(from, role, &[])
+    }
+
+    /// Like [`Self::new_successor`] but tags the generative edge
+    /// with `deps` — the [`crate::DepSet`] of the `∃R.C` label that
+    /// licensed this generation. Used by `apply_exists` to propagate
+    /// branch-decision provenance through fresh witnesses.
+    pub fn new_successor_with_deps(
+        &mut self,
+        from: NodeId,
+        role: RoleId,
+        deps: &[u32],
+    ) -> NodeId {
         let prior_len = self.graph.len();
         let id = self
             .graph
             .push_node_with_parent(Some(from), Some(Role::Named(role)));
         self.trail.record(TrailEntry::NodeCreated { prior_len });
-        self.add_edge_inner(from, role, id, &[]);
+        self.add_edge_inner(from, role, id, deps);
         id
     }
 
@@ -479,12 +493,22 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// through the creator), and `parent_role = Role::Inverse(role)`
     /// because the inbound generative role at the creator is `r⁻`.
     pub fn new_predecessor(&mut self, to: NodeId, role: RoleId) -> NodeId {
+        self.new_predecessor_with_deps(to, role, &[])
+    }
+
+    /// Dep-aware variant of [`Self::new_predecessor`].
+    pub fn new_predecessor_with_deps(
+        &mut self,
+        to: NodeId,
+        role: RoleId,
+        deps: &[u32],
+    ) -> NodeId {
         let prior_len = self.graph.len();
         let id = self
             .graph
             .push_node_with_parent(Some(to), Some(Role::Inverse(role)));
         self.trail.record(TrailEntry::NodeCreated { prior_len });
-        self.add_edge_inner(id, role, to, &[]);
+        self.add_edge_inner(id, role, to, deps);
         id
     }
 
@@ -971,6 +995,23 @@ mod tests {
         ctx.rollback_to(cp);
         assert!(ctx.graph().node(n).labels().is_empty());
         assert!(ctx.label_deps_of(n, a).is_none());
+    }
+
+    #[test]
+    fn apply_and_propagates_deps_to_conjuncts() {
+        // L(x) ← And([a, b]) with deps={5} ⇒ a and b should both be
+        // added to L(x) with deps={5}. Phase 4 commit 2 propagation.
+        use crate::apply_and;
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let and_ab = pool.and([a, b]);
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label_with_deps(n, and_ab, &[5]);
+        let _ = apply_and(&mut ctx, n);
+        assert_eq!(ctx.label_deps_of(n, a).map(Vec::as_slice), Some(&[5u32][..]));
+        assert_eq!(ctx.label_deps_of(n, b).map(Vec::as_slice), Some(&[5u32][..]));
     }
 
     #[test]

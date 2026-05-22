@@ -20,7 +20,8 @@
 //! requires a backtracking driver rather than a fixed-point sweep.
 
 use crate::TableauContext;
-use crate::graph::NodeId;
+use crate::deps::union;
+use crate::graph::{DepSet, NodeId};
 use owl_dl_core::{ConceptExpr, ConceptId, Role, RoleId};
 
 /// What happened when a rule was asked to apply at a node.
@@ -43,15 +44,26 @@ pub enum RuleOutcome {
 /// release the borrow on the graph before calling `add_label` (which
 /// also borrows `&mut`).
 pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
-    let mut pending: Vec<ConceptId> = Vec::new();
-    for &c in ctx.graph().node(node).labels() {
-        if let ConceptExpr::And(args) = ctx.pool().get(c) {
-            pending.extend(args.iter().copied());
+    // Snapshot (operand, deps) pairs first to release the graph
+    // borrow before any `add_label_with_deps` mutates the node. The
+    // conclusion's deps inherit from the triggering `And` label.
+    let pending: Vec<(ConceptId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        let mut out = Vec::new();
+        for (pos, &c) in n.labels().iter().enumerate() {
+            if let ConceptExpr::And(args) = pool.get(c) {
+                let deps = &n.label_deps[pos];
+                for &arg in args {
+                    out.push((arg, deps.clone()));
+                }
+            }
         }
-    }
+        out
+    };
     let mut applied = false;
-    for c in pending {
-        if ctx.add_label(node, c) {
+    for (c, deps) in pending {
+        if ctx.add_label_with_deps(node, c, &deps) {
             applied = true;
         }
     }
@@ -76,23 +88,37 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// `(target, concept)` pair before touching `add_label` so the
 /// graph-read and graph-write borrows don't overlap.
 pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
-    let mut pending: Vec<(NodeId, ConceptId)> = Vec::new();
-    {
+    // `(target, body, deps)` triples. Conclusion deps = deps of the
+    // `All`-label ∪ deps of the matching edge (outgoing or incoming).
+    let pending: Vec<(NodeId, ConceptId, DepSet)> = {
         let n = ctx.graph().node(node);
-        for &c in n.labels() {
-            if let ConceptExpr::All(role, body) = ctx.pool().get(c) {
+        let pool = ctx.pool();
+        let mut out = Vec::new();
+        for (pos, &c) in n.labels().iter().enumerate() {
+            if let ConceptExpr::All(role, body) = pool.get(c) {
                 let wanted: Role = *role;
-                for (seen, neighbour) in n.neighbours() {
-                    if ctx.edge_satisfies(seen, wanted) {
-                        pending.push((neighbour, *body));
+                let all_deps = &n.label_deps[pos];
+                // Outgoing edges first, in `edges` order — index into
+                // `edge_deps` matches.
+                for (epos, &(edge_role, neighbour)) in n.edges.iter().enumerate() {
+                    if ctx.edge_satisfies(Role::Named(edge_role), wanted) {
+                        let combined = union(all_deps, &n.edge_deps[epos]);
+                        out.push((neighbour, *body, combined));
+                    }
+                }
+                for (epos, &(edge_role, neighbour)) in n.in_edges.iter().enumerate() {
+                    if ctx.edge_satisfies(Role::Inverse(edge_role), wanted) {
+                        let combined = union(all_deps, &n.in_edge_deps[epos]);
+                        out.push((neighbour, *body, combined));
                     }
                 }
             }
         }
-    }
+        out
+    };
     let mut applied = false;
-    for (target, body) in pending {
-        if ctx.add_label(target, body) {
+    for (target, body, deps) in pending {
+        if ctx.add_label_with_deps(target, body, &deps) {
             applied = true;
         }
     }
@@ -116,40 +142,51 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     if tbox.concept_rules.is_empty() {
         return RuleOutcome::NoChange;
     }
-    let triggers: Vec<owl_dl_core::ClassId> = ctx
-        .graph()
-        .node(node)
-        .labels()
-        .iter()
-        .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Atomic(cls) => Some(*cls),
-            _ => None,
-        })
-        .collect();
+    // Trigger class + the deps of the `Atomic(trigger)` label that
+    // licenses each rule firing. Conclusion deps inherit from the
+    // triggering atomic label.
+    let triggers: Vec<(owl_dl_core::ClassId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        n.labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Atomic(cls) => Some((*cls, n.label_deps[pos].clone())),
+                _ => None,
+            })
+            .collect()
+    };
     if triggers.is_empty() {
         return RuleOutcome::NoChange;
     }
-    // Index lookup is O(triggers + hits). Fall back to the linear
-    // scan only when callers built the TBox by hand without calling
-    // `finalize()` — e.g., tableau unit tests in this crate.
-    let pending: Vec<ConceptId> = if tbox.concept_rules_by_trigger.is_empty() {
-        tbox.concept_rules
-            .iter()
-            .filter(|r| triggers.contains(&r.trigger))
-            .map(|r| r.conclusion)
-            .collect()
+    // (conclusion, deps) pairs. Index lookup is O(triggers + hits).
+    // Fall back to the linear scan only when callers built the TBox
+    // by hand without calling `finalize()` — e.g., tableau unit tests.
+    let pending: Vec<(ConceptId, DepSet)> = if tbox.concept_rules_by_trigger.is_empty() {
+        let mut out = Vec::new();
+        for (trigger, deps) in &triggers {
+            for rule in &tbox.concept_rules {
+                if rule.trigger == *trigger {
+                    out.push((rule.conclusion, deps.clone()));
+                }
+            }
+        }
+        out
     } else {
         let mut out = Vec::new();
-        for trigger in &triggers {
+        for (trigger, deps) in &triggers {
             if let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) {
-                out.extend(conclusions.iter().copied());
+                for &c in conclusions {
+                    out.push((c, deps.clone()));
+                }
             }
         }
         out
     };
     let mut applied = false;
-    for c in pending {
-        if ctx.add_label(node, c) {
+    for (c, deps) in pending {
+        if ctx.add_label_with_deps(node, c, &deps) {
             applied = true;
         }
     }
@@ -177,37 +214,46 @@ pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     if tbox.nominal_rules.is_empty() {
         return RuleOutcome::NoChange;
     }
-    let individuals: Vec<owl_dl_core::IndividualId> = ctx
-        .graph()
-        .node(node)
-        .labels()
-        .iter()
-        .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Nominal(i) => Some(*i),
-            _ => None,
-        })
-        .collect();
+    // Nominal trigger + the deps of its `Nominal(_)` label.
+    let individuals: Vec<(owl_dl_core::IndividualId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        n.labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Nominal(i) => Some((*i, n.label_deps[pos].clone())),
+                _ => None,
+            })
+            .collect()
+    };
     if individuals.is_empty() {
         return RuleOutcome::NoChange;
     }
-    let pending: Vec<ConceptId> = if tbox.nominal_rules_by_individual.is_empty() {
-        tbox.nominal_rules
-            .iter()
-            .filter(|r| individuals.contains(&r.individual))
-            .map(|r| r.conclusion)
-            .collect()
+    let pending: Vec<(ConceptId, DepSet)> = if tbox.nominal_rules_by_individual.is_empty() {
+        let mut out = Vec::new();
+        for (ind, deps) in &individuals {
+            for rule in &tbox.nominal_rules {
+                if rule.individual == *ind {
+                    out.push((rule.conclusion, deps.clone()));
+                }
+            }
+        }
+        out
     } else {
         let mut out = Vec::new();
-        for ind in &individuals {
+        for (ind, deps) in &individuals {
             if let Some(conclusions) = tbox.nominal_rules_by_individual.get(ind) {
-                out.extend(conclusions.iter().copied());
+                for &c in conclusions {
+                    out.push((c, deps.clone()));
+                }
             }
         }
         out
     };
     let mut applied = false;
-    for c in pending {
-        if ctx.add_label(node, c) {
+    for (c, deps) in pending {
+        if ctx.add_label_with_deps(node, c, &deps) {
             applied = true;
         }
     }
@@ -236,57 +282,78 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
     // skipped `finalize`).
     let use_index = !(tbox.unguarded_role_rules.is_empty()
         && tbox.guarded_role_rules_by_guard.is_empty());
-    let mut pending: Vec<(NodeId, ConceptId)> = Vec::new();
-    {
+    // `(target_node, conclusion_label, deps)`. Unguarded rules
+    // inherit only the matching edge's deps. Guarded rules also
+    // include the deps of the guard atomic on `node`.
+    let pending: Vec<(NodeId, ConceptId, DepSet)> = {
         let pool = ctx.pool();
         let n = ctx.graph().node(node);
-        let guards_present: Vec<owl_dl_core::ClassId> = n
+        // guard class → deps of its Atomic label on `node`
+        let guards_present: std::collections::HashMap<owl_dl_core::ClassId, DepSet> = n
             .labels()
             .iter()
-            .filter_map(|&c| match pool.get(c) {
-                ConceptExpr::Atomic(cls) => Some(*cls),
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Atomic(cls) => Some((*cls, n.label_deps[pos].clone())),
                 _ => None,
             })
             .collect();
-        if use_index {
-            for rule in &tbox.unguarded_role_rules {
-                for (seen, neighbour) in n.neighbours() {
-                    if ctx.edge_satisfies(seen, rule.role) {
-                        pending.push((neighbour, rule.target_label));
-                    }
+        let mut out = Vec::new();
+        // Helper closure: yield matching (edge_role, neighbour, edge_deps)
+        // triples for a wanted role.
+        let matching_edges = |rule_role: Role| {
+            let mut triples: Vec<(Role, NodeId, DepSet)> = Vec::new();
+            for (pos, &(role, neighbour)) in n.edges.iter().enumerate() {
+                if ctx.edge_satisfies(Role::Named(role), rule_role) {
+                    triples.push((Role::Named(role), neighbour, n.edge_deps[pos].clone()));
                 }
             }
-            for g in &guards_present {
+            for (pos, &(role, neighbour)) in n.in_edges.iter().enumerate() {
+                if ctx.edge_satisfies(Role::Inverse(role), rule_role) {
+                    triples.push((Role::Inverse(role), neighbour, n.in_edge_deps[pos].clone()));
+                }
+            }
+            triples
+        };
+        if use_index {
+            for rule in &tbox.unguarded_role_rules {
+                for (_, neighbour, edge_deps) in matching_edges(rule.role) {
+                    out.push((neighbour, rule.target_label, edge_deps));
+                }
+            }
+            for (g, guard_deps) in &guards_present {
                 if let Some(rules) = tbox.guarded_role_rules_by_guard.get(g) {
                     for rule in rules {
-                        for (seen, neighbour) in n.neighbours() {
-                            if ctx.edge_satisfies(seen, rule.role) {
-                                pending.push((neighbour, rule.target_label));
-                            }
+                        for (_, neighbour, edge_deps) in matching_edges(rule.role) {
+                            let combined = union(guard_deps, &edge_deps);
+                            out.push((neighbour, rule.target_label, combined));
                         }
                     }
                 }
             }
         } else {
             for rule in &tbox.role_rules {
-                let guard_ok = match rule.guard {
-                    None => true,
-                    Some(g) => guards_present.contains(&g),
+                let guard_deps_opt: Option<&DepSet> = match rule.guard {
+                    None => None,
+                    Some(g) => guards_present.get(&g),
                 };
-                if !guard_ok {
+                if rule.guard.is_some() && guard_deps_opt.is_none() {
                     continue;
                 }
-                for (seen, neighbour) in n.neighbours() {
-                    if ctx.edge_satisfies(seen, rule.role) {
-                        pending.push((neighbour, rule.target_label));
-                    }
+                for (_, neighbour, edge_deps) in matching_edges(rule.role) {
+                    let combined = match guard_deps_opt {
+                        None => edge_deps,
+                        Some(gd) => union(gd, &edge_deps),
+                    };
+                    out.push((neighbour, rule.target_label, combined));
                 }
             }
         }
-    }
+        out
+    };
     let mut applied = false;
-    for (target, c) in pending {
-        if ctx.add_label(target, c) {
+    for (target, c, deps) in pending {
+        if ctx.add_label_with_deps(target, c, &deps) {
             applied = true;
         }
     }
@@ -339,21 +406,26 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
-    let pending: Vec<(Role, ConceptId)> = ctx
-        .graph()
-        .node(node)
-        .labels()
-        .iter()
-        .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Some(role, body) => Some((*role, *body)),
-            _ => None,
-        })
-        .collect();
+    // `(role, body, deps_of_the_some_label)` triples.
+    let pending: Vec<(Role, ConceptId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        n.labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Some(role, body) => {
+                    Some((*role, *body, n.label_deps[pos].clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
     if pending.is_empty() {
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
-    for (role, body) in pending {
+    for (role, body, exists_deps) in pending {
         // Witness check honours the role hierarchy and inverse
         // polarity: any neighbour reachable via a sub-role of `role`
         // (same polarity) that already carries `body` discharges the
@@ -371,12 +443,14 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
         }
         // Generation: use the exact role (no sub-role substitution —
         // unsound). Polarity dictates direction: a named role grows
-        // a successor; an inverse role grows a predecessor.
+        // a successor; an inverse role grows a predecessor. The new
+        // edge inherits the deps of the licensing ∃ label; the seed
+        // label on the fresh node inherits the same.
         let fresh = match role {
-            Role::Named(r) => ctx.new_successor(node, r),
-            Role::Inverse(r) => ctx.new_predecessor(node, r),
+            Role::Named(r) => ctx.new_successor_with_deps(node, r, &exists_deps),
+            Role::Inverse(r) => ctx.new_predecessor_with_deps(node, r, &exists_deps),
         };
-        if ctx.add_label(fresh, body) {
+        if ctx.add_label_with_deps(fresh, body, &exists_deps) {
             applied = true;
         }
     }
@@ -408,21 +482,25 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
-    let mins: Vec<(u32, Role, ConceptId)> = ctx
-        .graph()
-        .node(node)
-        .labels()
-        .iter()
-        .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Min(n, role, body) => Some((*n, *role, *body)),
-            _ => None,
-        })
-        .collect();
+    let mins: Vec<(u32, Role, ConceptId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        n.labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Min(count, role, body) => {
+                    Some((*count, *role, *body, n.label_deps[pos].clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
     if mins.is_empty() {
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
-    for (n, role, body) in mins {
+    for (n, role, body, min_deps) in mins {
         if n == 0 {
             continue;
         }
@@ -441,11 +519,14 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         let need = (n as usize).saturating_sub(existing.len());
         let mut all_witnesses = existing;
         for _ in 0..need {
+            // Generated witnesses inherit the deps of the `Min` label
+            // that triggered their creation, both on the generative
+            // edge and on the seed body label.
             let fresh = match role {
-                Role::Named(r) => ctx.new_successor(node, r),
-                Role::Inverse(r) => ctx.new_predecessor(node, r),
+                Role::Named(r) => ctx.new_successor_with_deps(node, r, &min_deps),
+                Role::Inverse(r) => ctx.new_predecessor_with_deps(node, r, &min_deps),
             };
-            ctx.add_label(fresh, body);
+            ctx.add_label_with_deps(fresh, body, &min_deps);
             all_witnesses.push(fresh);
             applied = true;
         }
@@ -486,21 +567,25 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
-    let maxes: Vec<(u32, Role, ConceptId)> = ctx
-        .graph()
-        .node(node)
-        .labels()
-        .iter()
-        .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Max(n, role, body) => Some((*n, *role, *body)),
-            _ => None,
-        })
-        .collect();
+    let maxes: Vec<(u32, Role, ConceptId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        n.labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Max(count, role, body) => {
+                    Some((*count, *role, *body, n.label_deps[pos].clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
     if maxes.is_empty() {
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
-    for (n, role, body) in maxes {
+    for (n, role, body, max_deps) in maxes {
         // Distinct R-neighbours carrying body (deduped: edges to
         // the same NodeId count once).
         let mut c_neighbours: Vec<NodeId> = Vec::new();
@@ -530,9 +615,23 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         }
         if !merged
             && let Some(bot) = ctx.pool().bot_id()
-            && ctx.add_label(node, bot)
         {
-            applied = true;
+            // Conservative deps for the clash: union of the Max
+            // label's deps and every active branch decision. The
+            // contributing neighbour edges + their `body` labels also
+            // matter, but `active_branches()` is a strict
+            // over-approximation that subsumes them all and keeps the
+            // soundness invariant — back-jumping may miss prune
+            // opportunities here but will never wrongly propagate.
+            let mut deps = max_deps.clone();
+            for &b in ctx.active_branches() {
+                if let Err(pos) = deps.binary_search(&b) {
+                    deps.insert(pos, b);
+                }
+            }
+            if ctx.add_label_with_deps(node, bot, &deps) {
+                applied = true;
+            }
         }
     }
     if applied {
@@ -591,7 +690,14 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
                     if !ctx.merge_into(other_res, resolved_node)
                         && let Some(bot) = ctx.pool().bot_id()
                     {
-                        ctx.add_label(resolved_node, bot);
+                        // Conservative deps: the merge-clash depends
+                        // on whatever branch decisions placed the two
+                        // colliding `Nominal(_)` labels. Their precise
+                        // deps would be the right tag, but
+                        // `active_branches()` is a sound over-approx
+                        // that keeps the soundness invariant.
+                        let deps: DepSet = ctx.active_branches().to_vec();
+                        ctx.add_label_with_deps(resolved_node, bot, &deps);
                     }
                     // After merging, update the nominal map so
                     // subsequent lookups skip the resolve chain.
@@ -626,6 +732,7 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
 ///
 /// Skipped at blocked nodes — the blocking ancestor already
 /// witnesses any chain-derived edge by label inclusion.
+#[allow(clippy::too_many_lines)]
 pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
@@ -634,51 +741,99 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         return RuleOutcome::NoChange;
     }
     let chains: Vec<(Role, Role, Role)> = ctx.chains().to_vec();
-    // Collect the node's neighbours in *both* polarities so we can
-    // walk the chain regardless of role polarity in either position.
-    let outgoing: Vec<(RoleId, NodeId)> = ctx.graph().node(node).edges().to_vec();
-    let incoming: Vec<(RoleId, NodeId)> = ctx.graph().node(node).in_edges().to_vec();
-    let mut pending: Vec<(Role, NodeId)> = Vec::new();
+    // Collect the node's neighbours in *both* polarities, dragging
+    // along each edge's `DepSet` so the chain-derived edge can inherit
+    // their union.
+    let outgoing: Vec<(RoleId, NodeId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        n.edges
+            .iter()
+            .enumerate()
+            .map(|(pos, &(r, t))| (r, t, n.edge_deps[pos].clone()))
+            .collect()
+    };
+    let incoming: Vec<(RoleId, NodeId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        n.in_edges
+            .iter()
+            .enumerate()
+            .map(|(pos, &(r, t))| (r, t, n.in_edge_deps[pos].clone()))
+            .collect()
+    };
+    let mut pending: Vec<(Role, NodeId, DepSet)> = Vec::new();
     for (r1, r2, sup) in chains {
         // Step 1: find every `mid` reachable from `node` via the
-        // first chain position. Named(r) ⇒ outgoing r-edge.
-        // Inverse(r) ⇒ incoming r-edge (i.e., mid —r→ node).
-        let mids: Vec<NodeId> = match r1 {
+        // first chain position, together with the edge deps.
+        let mids: Vec<(NodeId, DepSet)> = match r1 {
             Role::Named(r) => outgoing
                 .iter()
-                .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
+                .filter_map(|(role, n, d)| {
+                    if *role == r {
+                        Some((*n, d.clone()))
+                    } else {
+                        None
+                    }
+                })
                 .collect(),
             Role::Inverse(r) => incoming
                 .iter()
-                .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
+                .filter_map(|(role, n, d)| {
+                    if *role == r {
+                        Some((*n, d.clone()))
+                    } else {
+                        None
+                    }
+                })
                 .collect(),
         };
-        for mid in mids {
+        for (mid, head_deps) in mids {
             let mid_res = ctx.resolve(mid);
-            // Step 2: find every `tail` reachable from `mid` via
-            // the second chain position. Symmetric treatment.
-            let tails: Vec<NodeId> = match r2 {
-                Role::Named(r) => ctx
-                    .graph()
-                    .node(mid_res)
-                    .edges()
-                    .iter()
-                    .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
-                    .collect(),
-                Role::Inverse(r) => ctx
-                    .graph()
-                    .node(mid_res)
-                    .in_edges()
-                    .iter()
-                    .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
-                    .collect(),
+            // Step 2: tail walk through `mid_res` carrying that edge's
+            // deps too.
+            let tails: Vec<(NodeId, DepSet)> = {
+                let mid_node = ctx.graph().node(mid_res);
+                match r2 {
+                    Role::Named(r) => mid_node
+                        .edges
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(pos, &(role, n))| {
+                            if role == r {
+                                Some((n, mid_node.edge_deps[pos].clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Role::Inverse(r) => mid_node
+                        .in_edges
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(pos, &(role, n))| {
+                            if role == r {
+                                Some((n, mid_node.in_edge_deps[pos].clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                }
             };
-            for tail in tails {
+            for (tail, tail_deps) in tails {
                 let tail_res = ctx.resolve(tail);
-                let already = chain_edge_already_present(ctx, node, sup, tail_res)
-                    || pending.iter().any(|&(s, t)| s == sup && t == tail_res);
-                if !already {
-                    pending.push((sup, tail_res));
+                if chain_edge_already_present(ctx, node, sup, tail_res) {
+                    continue;
+                }
+                let combined = union(&head_deps, &tail_deps);
+                // If a (sup, tail_res) is already pending, union the
+                // deps in — same chain target reachable through
+                // multiple branches contributes the union.
+                if let Some(existing) =
+                    pending.iter_mut().find(|(s, t, _)| *s == sup && *t == tail_res)
+                {
+                    existing.2 = union(&existing.2, &combined);
+                } else {
+                    pending.push((sup, tail_res, combined));
                 }
             }
         }
@@ -686,14 +841,14 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     if pending.is_empty() {
         return RuleOutcome::NoChange;
     }
-    for (sup, tail) in pending {
+    for (sup, tail, deps) in pending {
         // Polarity of `sup` chooses which direction we materialise:
         // Named(r)  ⇒ outgoing r-edge from node to tail.
         // Inverse(r) ⇒ outgoing r-edge from tail to node (which
         //               looks like an incoming r-edge at node).
         match sup {
-            Role::Named(r) => ctx.add_edge(node, r, tail),
-            Role::Inverse(r) => ctx.add_edge(tail, r, node),
+            Role::Named(r) => ctx.add_edge_with_deps(node, r, tail, &deps),
+            Role::Inverse(r) => ctx.add_edge_with_deps(tail, r, node, &deps),
         }
     }
     RuleOutcome::Applied
@@ -748,17 +903,22 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
     }
     // Snapshot the relevant label data; release the immutable borrow
     // before mutating.
-    let mut positives: Vec<Role> = Vec::new();
-    let mut negatives: Vec<Role> = Vec::new();
-    for &c in ctx.graph().node(node).labels() {
-        match ctx.pool().get(c) {
-            ConceptExpr::SelfRestriction(role) => positives.push(*role),
-            ConceptExpr::Not(inner) => {
-                if let ConceptExpr::SelfRestriction(role) = ctx.pool().get(*inner) {
-                    negatives.push(*role);
+    let mut positives: Vec<(Role, DepSet)> = Vec::new();
+    let mut negatives: Vec<(Role, DepSet)> = Vec::new();
+    {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        for (pos, &c) in n.labels().iter().enumerate() {
+            let deps = &n.label_deps[pos];
+            match pool.get(c) {
+                ConceptExpr::SelfRestriction(role) => positives.push((*role, deps.clone())),
+                ConceptExpr::Not(inner) => {
+                    if let ConceptExpr::SelfRestriction(role) = pool.get(*inner) {
+                        negatives.push((*role, deps.clone()));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
     if positives.is_empty() && negatives.is_empty() {
@@ -784,15 +944,15 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
     // check before mutating. We flag `⊥` when an existing self-edge
     // already satisfies the negated role.
     let bot_id = ctx.pool().bot_id();
-    for wanted in &negatives {
+    for (wanted, neg_deps) in &negatives {
         if satisfies_any(*wanted, &self_edges, ctx)
             && let Some(bot) = bot_id
-            && ctx.add_label(node, bot)
+            && ctx.add_label_with_deps(node, bot, neg_deps)
         {
             applied = true;
         }
     }
-    for wanted in positives {
+    for (wanted, pos_deps) in positives {
         if satisfies_any(wanted, &self_edges, ctx) {
             continue;
         }
@@ -801,7 +961,7 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
         // forward edge on the underlying role id. The negative-self
         // check above will catch any clash introduced this sweep on
         // the next pass.
-        ctx.add_edge(node, wanted.role_id(), node);
+        ctx.add_edge_with_deps(node, wanted.role_id(), node, &pos_deps);
         applied = true;
     }
     if applied {
@@ -884,9 +1044,17 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
             }
         }
     }
-    if violated && ctx.add_label(node, bot) {
-        RuleOutcome::Applied
-    } else {
-        RuleOutcome::NoChange
+    if violated {
+        // Conservative deps: the violation depends on whichever
+        // branch decisions placed the two clashing edges. Computing
+        // it precisely would require threading per-edge deps through
+        // the `outgoing` snapshot above; `active_branches()` is a
+        // sound over-approximation that keeps the soundness
+        // invariant.
+        let deps: DepSet = ctx.active_branches().to_vec();
+        if ctx.add_label_with_deps(node, bot, &deps) {
+            return RuleOutcome::Applied;
+        }
     }
+    RuleOutcome::NoChange
 }

@@ -17,7 +17,7 @@ use crate::ir::{ClassId, ConceptId, IndividualId, Role, RoleId};
 /// The chain variant supports SROIQ's `R₁ ∘ ... ∘ Rₙ ⊑ S` axioms. The
 /// converter accepts chains now so they survive into the IR; the reasoner
 /// will error on them until Phase 5 lands the automaton machinery.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum SubRolePath {
     Role(Role),
     Chain(Vec<Role>),
@@ -31,7 +31,7 @@ pub enum SubRolePath {
 /// (`ObjectHasValue` → `Some-of-Nominal`, `ObjectExactCardinality` →
 /// `Min ⊓ Max`) happen during conversion because our IR has no direct
 /// counterpart for those source constructors.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum Axiom {
     // --- TBox ---
     SubClassOf {

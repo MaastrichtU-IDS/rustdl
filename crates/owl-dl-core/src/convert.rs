@@ -6,7 +6,7 @@
 //!   [`convert_ontology`]) — this file.
 //! - Day 12: reverse conversion + round-trip proptest (still to come).
 
-use horned_owl::model::{Class, SubObjectPropertyExpression};
+use horned_owl::model::{AnnotatedComponent, Class, SubObjectPropertyExpression};
 use horned_owl::model::{ClassExpression, Component, ForIRI, Individual, ObjectPropertyExpression};
 use horned_owl::ontology::set::SetOntology;
 use thiserror::Error;
@@ -453,20 +453,38 @@ pub fn convert_component<A: ForIRI>(
 
 /// Convert an entire horned-owl [`SetOntology`] into an [`InternalOntology`].
 ///
-/// Returns the first error encountered. Order of iteration is hashmap-based
-/// (horned-owl uses `HashSet`), so axiom order in the result is not
-/// guaranteed stable across runs.
+/// Returns the first error encountered. horned-owl iterates a `HashSet`, so
+/// the components arrive in HashMap-iteration order (different between
+/// processes). Two stabilizations make every downstream pass — vocabulary
+/// interning, absorption, saturation, the tableau search — deterministic
+/// across runs:
+///
+/// 1. Sort components by their derived `Ord` *before* lowering, so the
+///    sequence of `intern_class` / `intern_role` / `intern_individual`
+///    calls is reproducible. This pins `ClassId` / `RoleId` /
+///    `IndividualId` assignment (and therefore every `ConceptId` derived
+///    from them) to a single canonical order across runs.
+/// 2. Sort the lowered axiom list afterwards. Step 1 already guarantees
+///    a deterministic sequence given a stable component order, but
+///    sorting the output too keeps the contract explicit and survives
+///    any future change to lowering that might shuffle ordering.
+///
+/// Same input → same axiom vector → reproducible reasoning behaviour and
+/// timings.
 pub fn convert_ontology<A: ForIRI>(
     src: &SetOntology<A>,
 ) -> Result<InternalOntology, ConversionError> {
+    let mut components: Vec<&AnnotatedComponent<A>> = src.iter().collect();
+    components.sort();
     let mut out = InternalOntology::new();
-    for ac in src {
+    for ac in components {
         if let Some(axiom) =
             convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts)?
         {
             out.axioms.push(axiom);
         }
     }
+    out.axioms.sort();
     Ok(out)
 }
 

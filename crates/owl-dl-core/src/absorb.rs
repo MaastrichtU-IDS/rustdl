@@ -619,4 +619,110 @@ mod tests {
         assert_eq!(t.residual_gcis.len(), 1);
         assert_eq!(t.residual_gcis[0], a);
     }
+
+    #[test]
+    fn finalize_indexes_concept_rules_by_trigger() {
+        // A ⊑ B, A ⊑ C, D ⊑ E — two rules trigger on A, one on D.
+        let mut o = fresh(&["A", "B", "C", "D", "E"]);
+        let a = atom(&mut o, "A");
+        let b = atom(&mut o, "B");
+        let cc = atom(&mut o, "C");
+        let d = atom(&mut o, "D");
+        let e = atom(&mut o, "E");
+        o.axioms.push(Axiom::SubClassOf { sub: a, sup: b });
+        o.axioms.push(Axiom::SubClassOf { sub: a, sup: cc });
+        o.axioms.push(Axiom::SubClassOf { sub: d, sup: e });
+        let t = run(&mut o);
+        assert_eq!(t.concept_rules.len(), 3);
+        // Index reachable from each trigger.
+        let a_id = cid(&o, "A");
+        let d_id = cid(&o, "D");
+        let from_a = t
+            .concept_rules_by_trigger
+            .get(&a_id)
+            .expect("A indexed");
+        assert_eq!(from_a.len(), 2);
+        assert!(from_a.contains(&b));
+        assert!(from_a.contains(&cc));
+        let from_d = t
+            .concept_rules_by_trigger
+            .get(&d_id)
+            .expect("D indexed");
+        assert_eq!(from_d, &vec![e]);
+        // Triggers not present in the index ⇒ not in any rule.
+        assert!(!t.concept_rules_by_trigger.contains_key(&cid(&o, "B")));
+    }
+
+    #[test]
+    fn finalize_indexes_nominal_rules_by_individual() {
+        // {a} ⊑ B, {a} ⊑ C, {b} ⊑ D — two rules trigger on a, one on b.
+        let mut o = fresh(&["B", "C", "D"]);
+        let b = atom(&mut o, "B");
+        let cc = atom(&mut o, "C");
+        let d = atom(&mut o, "D");
+        let ind_a = o.vocabulary.intern_individual("a");
+        let ind_b = o.vocabulary.intern_individual("b");
+        let nom_a = o.concepts.nominal(ind_a);
+        let nom_b = o.concepts.nominal(ind_b);
+        o.axioms.push(Axiom::SubClassOf { sub: nom_a, sup: b });
+        o.axioms.push(Axiom::SubClassOf { sub: nom_a, sup: cc });
+        o.axioms.push(Axiom::SubClassOf { sub: nom_b, sup: d });
+        let t = run(&mut o);
+        assert_eq!(t.nominal_rules.len(), 3);
+        let from_a = t
+            .nominal_rules_by_individual
+            .get(&ind_a)
+            .expect("a indexed");
+        assert_eq!(from_a.len(), 2);
+        assert!(from_a.contains(&b));
+        assert!(from_a.contains(&cc));
+        assert_eq!(
+            t.nominal_rules_by_individual.get(&ind_b),
+            Some(&vec![d])
+        );
+    }
+
+    #[test]
+    fn finalize_partitions_role_rules_by_guard() {
+        // A ⊑ ∀r.B (guarded) plus Range(r, C) which lowers to ⊤ ⊑ ∀r.C
+        // (unguarded). Partition must split them correctly.
+        let mut o = fresh(&["A", "B", "C"]);
+        let a = atom(&mut o, "A");
+        let b = atom(&mut o, "B");
+        let cc = atom(&mut o, "C");
+        let r = Role::named(RoleId::new(0));
+        let all_r_b = o.concepts.all(r, b);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: a,
+            sup: all_r_b,
+        });
+        o.axioms.push(Axiom::ObjectPropertyRange {
+            role: r,
+            range: cc,
+        });
+        let t = run(&mut o);
+        assert_eq!(t.role_rules.len(), 2);
+        assert_eq!(t.unguarded_role_rules.len(), 1);
+        assert_eq!(t.unguarded_role_rules[0].target_label, cc);
+        let a_id = cid(&o, "A");
+        let guarded = t
+            .guarded_role_rules_by_guard
+            .get(&a_id)
+            .expect("guarded on A");
+        assert_eq!(guarded.len(), 1);
+        assert_eq!(guarded[0].target_label, b);
+    }
+
+    #[test]
+    fn finalize_is_idempotent() {
+        let mut o = fresh(&["A", "B"]);
+        let a = atom(&mut o, "A");
+        let b = atom(&mut o, "B");
+        o.axioms.push(Axiom::SubClassOf { sub: a, sup: b });
+        let mut t = run(&mut o);
+        let before = t.clone();
+        t.finalize();
+        t.finalize();
+        assert_eq!(t, before);
+    }
 }

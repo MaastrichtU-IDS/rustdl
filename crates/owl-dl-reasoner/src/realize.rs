@@ -69,11 +69,22 @@ pub fn is_instance_of_internal(
     instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)
 }
 
-/// Single instance check that consults the saturation closure first:
-/// if any told `ClassAssertion(D, individual)` has `D ⊑ class_id` in
-/// the EL closure, the answer is `yes` without invoking the tableau.
-/// Otherwise falls through to the standard `{a} ⊓ ¬C` satisfiability
-/// reduction against the prepared ontology.
+/// Single instance check that consults the saturation closure first.
+///
+/// Three saturation fast paths, all of which short-circuit the
+/// tableau. For each told class membership of `individual_id`
+/// (described below), if its asserted class is a subsumer of
+/// `class_id` in the EL closure, the answer is `yes`:
+///
+/// 1. **`ClassAssertion(D, a)`** — direct told membership.
+/// 2. **`ObjectPropertyAssertion(r, a, _)` with `r`'s domain `Dom`**
+///    — `a` is in `Dom` via the property domain axiom, transitively
+///    via the role hierarchy.
+/// 3. **`ObjectPropertyAssertion(r, _, a)` with `r`'s range `Rng`**
+///    — `a` is in `Rng` via the property range axiom, transitively
+///    via the role hierarchy.
+///
+/// Falls through to the `{a} ⊓ ¬C` satisfiability reduction otherwise.
 fn instance_check_with_closure(
     internal: &InternalOntology,
     closure: &Subsumers,
@@ -81,15 +92,8 @@ fn instance_check_with_closure(
     class_id: ClassId,
     individual_id: IndividualId,
 ) -> Result<bool, ReasonError> {
-    // Saturation fast path: walk the told class assertions for this
-    // individual; if any of them is a saturation-subsumer of the
-    // target class, we're done.
-    for axiom in &internal.axioms {
-        if let Axiom::ClassAssertion { class, individual } = axiom
-            && *individual == individual_id
-            && let ConceptExpr::Atomic(asserted) = internal.concepts.get(*class)
-            && closure.contains(*asserted, class_id)
-        {
+    for told in told_classes_of(internal, individual_id) {
+        if closure.contains(told, class_id) {
             return Ok(true);
         }
     }
@@ -101,6 +105,81 @@ fn instance_check_with_closure(
         pool.and(vec![nom, not_cls])
     })?;
     Ok(!sat)
+}
+
+/// Collect every atomic class that `individual_id` is *told* to
+/// belong to:
+///
+/// - Direct: every `ClassAssertion(D, individual)` with `D` atomic.
+/// - Via domain: every `ObjectPropertyAssertion(r, individual, _)`
+///   where some `ObjectPropertyDomain(r', Dom)` axiom applies for
+///   `r ⊑ r'` (named-role-only; `r'` matches when `r` and `r'`
+///   share an underlying `RoleId`).
+/// - Via range: every `ObjectPropertyAssertion(r, _, individual)`
+///   where some `ObjectPropertyRange(r', Rng)` axiom applies under
+///   the same conditions.
+fn told_classes_of(internal: &InternalOntology, individual_id: IndividualId) -> Vec<ClassId> {
+    let mut out = Vec::new();
+    for axiom in &internal.axioms {
+        match axiom {
+            Axiom::ClassAssertion { class, individual } if *individual == individual_id => {
+                if let ConceptExpr::Atomic(id) = internal.concepts.get(*class) {
+                    out.push(*id);
+                }
+            }
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                // Inverse-role property assertions: the converter
+                // swaps subject/object so the stored role is always
+                // named; we don't try to second-guess that here and
+                // simply use `role.role_id()`.
+                let used_role_id = role.role_id();
+                if *subject == individual_id {
+                    for dom in domains_for_role(internal, used_role_id) {
+                        out.push(dom);
+                    }
+                }
+                if *object == individual_id {
+                    for rng in ranges_for_role(internal, used_role_id) {
+                        out.push(rng);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn domains_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -> Vec<ClassId> {
+    let mut out = Vec::new();
+    for axiom in &internal.axioms {
+        if let Axiom::ObjectPropertyDomain { role, domain } = axiom
+            && !role.is_inverse()
+            && role.role_id() == role_id
+            && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
+        {
+            out.push(*id);
+        }
+    }
+    out
+}
+
+fn ranges_for_role(internal: &InternalOntology, role_id: owl_dl_core::RoleId) -> Vec<ClassId> {
+    let mut out = Vec::new();
+    for axiom in &internal.axioms {
+        if let Axiom::ObjectPropertyRange { role, range } = axiom
+            && !role.is_inverse()
+            && role.role_id() == role_id
+            && let ConceptExpr::Atomic(id) = internal.concepts.get(*range)
+        {
+            out.push(*id);
+        }
+    }
+    out
 }
 
 /// All declared individuals that `KB` provably places in `class_iri`.
@@ -369,6 +448,55 @@ Ontology(<http://rustdl.test/test>\n\
                 "http://rustdl.test/alice".to_owned(),
                 "http://rustdl.test/bob".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn instance_check_via_property_domain() {
+        // ObjectPropertyDomain(hasParent, Person);
+        // ObjectPropertyAssertion(hasParent, alice, bob) ⇒
+        // alice is a Person (subject of an r-edge, r's domain is
+        // Person). bob is also a Person via the *range* axiom in
+        // the next test.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Person))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    Declaration(NamedIndividual(:bob))\n\
+    ObjectPropertyDomain(:hasParent :Person)\n\
+    ObjectPropertyAssertion(:hasParent :alice :bob)\n\
+)\n"
+        ));
+        assert!(
+            is_instance_of(
+                &onto,
+                "http://rustdl.test/Person",
+                "http://rustdl.test/alice"
+            )
+            .expect("verdict")
+        );
+    }
+
+    #[test]
+    fn instance_check_via_property_range() {
+        // ObjectPropertyRange(hasParent, Person);
+        // hasParent(alice, bob) ⇒ bob is a Person.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Person))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    Declaration(NamedIndividual(:bob))\n\
+    ObjectPropertyRange(:hasParent :Person)\n\
+    ObjectPropertyAssertion(:hasParent :alice :bob)\n\
+)\n"
+        ));
+        assert!(
+            is_instance_of(&onto, "http://rustdl.test/Person", "http://rustdl.test/bob")
+                .expect("verdict")
         );
     }
 

@@ -1,0 +1,103 @@
+Prefix(:=<http://example.test/anatomy/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://example.test/anatomy>
+    Declaration(ObjectProperty(:partOf))
+    Declaration(ObjectProperty(:hasPart))
+    TransitiveObjectProperty(:partOf)
+    TransitiveObjectProperty(:hasPart)
+
+    Declaration(Class(:BodyPart))
+    Declaration(Class(:Tissue))
+    Declaration(Class(:Organ))
+    Declaration(Class(:Bone))
+    Declaration(Class(:Muscle))
+    Declaration(Class(:Skin))
+    Declaration(Class(:Body))
+    Declaration(Class(:Head))
+    Declaration(Class(:Neck))
+    Declaration(Class(:Torso))
+    Declaration(Class(:Limb))
+    Declaration(Class(:Arm))
+    Declaration(Class(:Leg))
+    Declaration(Class(:Hand))
+    Declaration(Class(:Forearm))
+    Declaration(Class(:UpperArm))
+    Declaration(Class(:Finger))
+    Declaration(Class(:Thumb))
+    Declaration(Class(:Foot))
+    Declaration(Class(:Lower)) # Lower leg
+    Declaration(Class(:Upper)) # Upper leg
+    Declaration(Class(:Toe))
+    Declaration(Class(:Skull))
+    Declaration(Class(:Brain))
+    Declaration(Class(:Eye))
+    Declaration(Class(:Ear))
+    Declaration(Class(:Heart))
+    Declaration(Class(:Lung))
+    Declaration(Class(:Stomach))
+    Declaration(Class(:HasFingers))
+    Declaration(Class(:HasBrain))
+
+    # Top of taxonomy.
+    SubClassOf(:Organ :BodyPart)
+    SubClassOf(:Bone :BodyPart)
+    SubClassOf(:Muscle :Tissue)
+    SubClassOf(:Skin :Tissue)
+    SubClassOf(:Tissue :BodyPart)
+
+    # Body has these top-level parts.
+    SubClassOf(:Head ObjectSomeValuesFrom(:partOf :Body))
+    SubClassOf(:Neck ObjectSomeValuesFrom(:partOf :Body))
+    SubClassOf(:Torso ObjectSomeValuesFrom(:partOf :Body))
+    SubClassOf(:Limb ObjectSomeValuesFrom(:partOf :Body))
+
+    # Limb taxonomy.
+    SubClassOf(:Arm :Limb)
+    SubClassOf(:Leg :Limb)
+
+    # Arm parts.
+    SubClassOf(:Hand ObjectSomeValuesFrom(:partOf :Arm))
+    SubClassOf(:Forearm ObjectSomeValuesFrom(:partOf :Arm))
+    SubClassOf(:UpperArm ObjectSomeValuesFrom(:partOf :Arm))
+
+    # Hand parts.
+    SubClassOf(:Finger ObjectSomeValuesFrom(:partOf :Hand))
+    SubClassOf(:Thumb :Finger)
+
+    # Leg parts.
+    SubClassOf(:Foot ObjectSomeValuesFrom(:partOf :Leg))
+    SubClassOf(:Lower ObjectSomeValuesFrom(:partOf :Leg))
+    SubClassOf(:Upper ObjectSomeValuesFrom(:partOf :Leg))
+    SubClassOf(:Toe ObjectSomeValuesFrom(:partOf :Foot))
+
+    # Head parts.
+    SubClassOf(:Skull ObjectSomeValuesFrom(:partOf :Head))
+    SubClassOf(:Brain ObjectSomeValuesFrom(:partOf :Head))
+    SubClassOf(:Eye ObjectSomeValuesFrom(:partOf :Head))
+    SubClassOf(:Ear ObjectSomeValuesFrom(:partOf :Head))
+
+    # Torso parts.
+    SubClassOf(:Heart ObjectSomeValuesFrom(:partOf :Torso))
+    SubClassOf(:Lung ObjectSomeValuesFrom(:partOf :Torso))
+    SubClassOf(:Stomach ObjectSomeValuesFrom(:partOf :Torso))
+
+    # Bone-vs-organ classification at the leaves.
+    SubClassOf(:Skull :Bone)
+    SubClassOf(:Brain :Organ)
+    SubClassOf(:Eye :Organ)
+    SubClassOf(:Ear :Organ)
+    SubClassOf(:Heart :Organ)
+    SubClassOf(:Lung :Organ)
+    SubClassOf(:Stomach :Organ)
+
+    # Range axiom: a partOf-target is always a BodyPart.
+    ObjectPropertyRange(:partOf :BodyPart)
+
+    # Trigger classes: derived membership via ∃-restrictions, EL-only.
+    EquivalentClasses(:HasFingers ObjectSomeValuesFrom(:hasPart :Finger))
+    EquivalentClasses(:HasBrain ObjectSomeValuesFrom(:hasPart :Brain))
+)

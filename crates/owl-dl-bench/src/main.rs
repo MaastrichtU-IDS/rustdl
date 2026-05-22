@@ -58,6 +58,10 @@ enum Command {
     Corpus {
         /// Directory containing .ofn ontologies.
         dir: PathBuf,
+        /// Suppress per-file output; only print the aggregate
+        /// summary at the end.
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -152,12 +156,12 @@ fn main() -> Result<()> {
                     .map_err(|e| anyhow::anyhow!("synthesised ontology failed to parse: {e}"))?;
             run_classify(&onto)?;
         }
-        Command::Corpus { dir } => run_corpus(&dir)?,
+        Command::Corpus { dir, quiet } => run_corpus(&dir, quiet)?,
     }
     Ok(())
 }
 
-fn run_corpus(dir: &Path) -> Result<()> {
+fn run_corpus(dir: &Path, quiet: bool) -> Result<()> {
     let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .into_iter()
         .filter_map(std::result::Result::ok)
@@ -184,18 +188,20 @@ fn run_corpus(dir: &Path) -> Result<()> {
         }) {
             Ok((h, elapsed)) => {
                 let stats = h.stats();
-                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-                println!(
-                    "{:50} classes={:4} mode={:6} sat-sub={:5} tab-sub={:5} sat-unsat={:3} tab-unsat={:3} {:>9.3?}",
-                    name,
-                    h.classes().len(),
-                    if stats.pure_el_mode { "EL" } else { "hybrid" },
-                    stats.saturation_subsumption_hits,
-                    stats.tableau_subsumption_calls,
-                    stats.saturation_unsat_hits,
-                    stats.tableau_unsat_calls,
-                    elapsed,
-                );
+                if !quiet {
+                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+                    println!(
+                        "{:50} classes={:4} mode={:6} sat-sub={:5} tab-sub={:5} sat-unsat={:3} tab-unsat={:3} {:>9.3?}",
+                        name,
+                        h.classes().len(),
+                        if stats.pure_el_mode { "EL" } else { "hybrid" },
+                        stats.saturation_subsumption_hits,
+                        stats.tableau_subsumption_calls,
+                        stats.saturation_unsat_hits,
+                        stats.tableau_unsat_calls,
+                        elapsed,
+                    );
+                }
                 total_classes += h.classes().len();
                 if stats.pure_el_mode {
                     total_pure_el += 1;

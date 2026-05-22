@@ -187,22 +187,8 @@ pub fn is_subclass_of_internal(
     if closure.contains(sub_id, super_id) {
         return Ok(true);
     }
-    subsumes_via_tableau(internal, sub_id, super_id)
-}
-
-/// Tableau-only subsumption check, skipping the EL saturation
-/// pre-pass. Used by `classify_internal` when it has already run
-/// saturation once for the whole ontology and only needs the tableau
-/// to adjudicate the misses — re-running saturate on every miss
-/// would be O(pairs × axioms) wasted work.
-pub(crate) fn subsumes_via_tableau(
-    internal: InternalOntology,
-    sub_id: owl_dl_core::ClassId,
-    super_id: owl_dl_core::ClassId,
-) -> Result<bool, ReasonError> {
-    if sub_id == super_id {
-        return Ok(true);
-    }
+    // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
+    // `sub`-instance also makes it a `sup`-instance.
     let sat = run_satisfiability(internal, move |pool| {
         let sub_concept = pool.atomic(sub_id);
         let super_concept = pool.atomic(super_id);

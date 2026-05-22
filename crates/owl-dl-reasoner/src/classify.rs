@@ -693,10 +693,17 @@ pub(crate) fn classify_top_down_internal(
         placed[c] = true;
     }
 
-    // Build the full entailment matrix from `direct_supers` via
-    // transitive closure: reachable-from in the directed acyclic
-    // graph (we treat equivalence classes as cycles — those collapse
-    // naturally during the reachability walk).
+    // Build the full entailment matrix. Three sources contribute:
+    //
+    // 1. **Closure seed.** Every saturation-derived subsumption is
+    //    sound, so we copy `closure` straight in. This catches
+    //    *same-tier* equivalences (e.g., `EquivalentClasses(A, B)`
+    //    where both ranks tie at 2) that the top-down walk above
+    //    misses by construction — the walk only looks at *placed*
+    //    classes, and two same-tier classes don't see each other.
+    // 2. **Reflexive + unsat-row trivial fill.**
+    // 3. **Tableau-derived direct supers** from the top-down walk,
+    //    transitively closed via BFS over `direct_supers`.
     let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
     for i in 0..n {
         entailed[i][i] = true;
@@ -704,15 +711,31 @@ pub(crate) fn classify_top_down_internal(
             entailed[i].iter_mut().take(n).for_each(|v| *v = true);
             continue;
         }
-        // BFS over direct_supers starting from `i`.
+        // Closure seed.
+        let i_id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        for sup in closure.subsumers_of(i_id) {
+            let j = sup.index() as usize;
+            if j < n {
+                entailed[i][j] = true;
+            }
+        }
+        // BFS over direct_supers starting from `i` to pick up the
+        // tableau-derived transitive closure. Tracked via a
+        // `visited` set so we descend through every reached node
+        // exactly once — `entailed[i][j]` may already be true from
+        // the closure seed above, but we still need to follow
+        // `direct_supers[j]` to catch tableau-only ancestors of `j`
+        // that aren't on `i`'s closure ray.
+        let mut visited = vec![false; n];
         let mut frontier: Vec<usize> = direct_supers[i].clone();
         while let Some(j) = frontier.pop() {
-            if entailed[i][j] {
+            if visited[j] {
                 continue;
             }
+            visited[j] = true;
             entailed[i][j] = true;
             for &k in &direct_supers[j] {
-                if !entailed[i][k] {
+                if !visited[k] {
                     frontier.push(k);
                 }
             }
@@ -1023,6 +1046,37 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         assert_top_down_matches_naive(&onto);
+    }
+
+    #[test]
+    fn classify_top_down_handles_equivalent_classes_in_hybrid_mode() {
+        // Regression test: the top-down walk only inspects *placed*
+        // classes. When A and B sit at the same closure-rank
+        // (`EquivalentClasses(A, B)` ⇒ both have 2 subsumers), the
+        // walk for whichever class is processed first sees an empty
+        // frontier and misses the equivalence in `direct_supers`.
+        // The closure-seed step in the entailment-matrix builder
+        // restores it. The pure-EL counterpart goes through
+        // `classify_pure_el` and was never affected; we force the
+        // hybrid path here with a `DisjointObjectProperties` axiom.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    EquivalentClasses(:A :B)\n\
+)\n"
+        ));
+        assert_top_down_matches_naive(&onto);
+        let h = classify_top_down(&onto).expect("td classify");
+        assert!(!h.stats().pure_el_mode, "expected hybrid mode for this fixture");
+        let iri_a = "http://rustdl.test/A";
+        let iri_b = "http://rustdl.test/B";
+        assert!(h.is_subclass(iri_a, iri_b), "A ⊑ B should hold");
+        assert!(h.is_subclass(iri_b, iri_a), "B ⊑ A should hold");
     }
 
     #[test]

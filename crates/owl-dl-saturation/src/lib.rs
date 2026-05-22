@@ -30,7 +30,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use owl_dl_core::{Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, RoleId};
+use owl_dl_core::{
+    Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, RoleId,
+    SubRolePath,
+};
 
 /// Compute the subsumer closure over the EL-fragment subset of
 /// `internal`. The result maps every declared `ClassId` to the set
@@ -44,6 +47,7 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
         subsumers.add(id, id);
     }
     let rules = collect_el_rules(internal);
+    let role_super = build_role_super(internal);
     let mut changed = true;
     while changed {
         changed = false;
@@ -71,8 +75,15 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
         // — meaning ∃r.Z ⊑ W — if Z is already a subsumer of Y,
         // every class that has A among its subsumers also gains W.
         for fact in &rules.existential_facts {
+            // Pre-compute the set of super-roles of this fact's role
+            // once — the trigger's role is acceptable iff it is one
+            // of them (reflexive + transitive role hierarchy).
+            let supers: Vec<RoleId> = role_super.get(&fact.role).map_or_else(
+                || vec![fact.role],
+                |set| set.iter().copied().collect(),
+            );
             for trigger in &rules.existential_triggers {
-                if trigger.role != fact.role {
+                if !supers.contains(&trigger.role) {
                     continue;
                 }
                 if !subsumers.contains(fact.target, trigger.body) {
@@ -346,6 +357,83 @@ fn atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<ClassId> {
     }
 }
 
+/// Build the reflexive-transitive closure of the named-role
+/// sub-property relation. `result[r]` is the set of named roles `s`
+/// such that `r ⊑ s` (including `r` itself).
+///
+/// Sources:
+/// - `SubObjectPropertyOf(r, s)` with both sides named.
+/// - `EquivalentObjectProperties(rs)` decomposed pairwise.
+///
+/// Inverse-role sub-properties are ignored — Phase 6's EL scope is
+/// named-roles only. Role chain LHS sub-properties are likewise
+/// ignored: chain semantics belong to the tableau path.
+fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<RoleId>> {
+    let num_roles = internal.vocabulary.num_roles();
+    let mut closure: HashMap<RoleId, HashSet<RoleId>> = HashMap::with_capacity(num_roles);
+    for i in 0..num_roles {
+        let id = RoleId::new(u32::try_from(i).expect("role count fits in u32"));
+        closure.entry(id).or_default().insert(id);
+    }
+    let edge = |role: &Role| -> Option<RoleId> {
+        if role.is_inverse() {
+            None
+        } else {
+            Some(role.role_id())
+        }
+    };
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(sub_role),
+                sup,
+            } => {
+                if let (Some(a), Some(b)) = (edge(sub_role), edge(sup)) {
+                    closure.entry(a).or_default().insert(b);
+                }
+            }
+            Axiom::EquivalentObjectProperties(members) => {
+                let named: Vec<RoleId> = members.iter().filter_map(edge).collect();
+                for a in &named {
+                    for b in &named {
+                        if a != b {
+                            closure.entry(*a).or_default().insert(*b);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // Transitive closure (Warshall-style, small Vec-of-ids domain).
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let snapshot: Vec<(RoleId, Vec<RoleId>)> = closure
+            .iter()
+            .map(|(k, v)| (*k, v.iter().copied().collect()))
+            .collect();
+        for (a, supers) in snapshot {
+            let to_add: Vec<RoleId> = supers
+                .iter()
+                .flat_map(|s| {
+                    closure
+                        .get(s)
+                        .into_iter()
+                        .flat_map(|set| set.iter().copied())
+                })
+                .collect();
+            let entry = closure.entry(a).or_default();
+            for s in to_add {
+                if entry.insert(s) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    closure
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +551,29 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Pizza"), class(&internal, "FoodItem")));
+    }
+
+    #[test]
+    fn role_hierarchy_propagates_through_existential() {
+        // SubObjectPropertyOf(hasOwner, hasContact); a—hasOwner→...
+        // existential on the right; ∃hasContact-trigger on the left.
+        // The fact's role (hasOwner) is a sub-role of the trigger's
+        // (hasContact) — saturation should fire across the hierarchy.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Pet))\n\
+    Declaration(Class(:Person))\n\
+    Declaration(Class(:Reachable))\n\
+    Declaration(ObjectProperty(:hasOwner))\n\
+    Declaration(ObjectProperty(:hasContact))\n\
+    SubObjectPropertyOf(:hasOwner :hasContact)\n\
+    SubClassOf(:Pet ObjectSomeValuesFrom(:hasOwner :Person))\n\
+    SubClassOf(ObjectSomeValuesFrom(:hasContact :Person) :Reachable)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Pet"), class(&internal, "Reachable")));
     }
 
     #[test]

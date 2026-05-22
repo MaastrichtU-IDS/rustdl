@@ -1,0 +1,27 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/86_role_chain_with_inverse_first_sat>
+    Declaration(Class(:Test))
+    Declaration(ObjectProperty(:hasChild))
+    Declaration(ObjectProperty(:hasSibling))
+    Declaration(ObjectProperty(:hasNiece))
+    Declaration(NamedIndividual(:alice))
+    Declaration(NamedIndividual(:mom))
+    Declaration(NamedIndividual(:carol))
+    # inverse(hasChild) ∘ hasSibling ⊑ hasNiece
+    # Meaning: if mom hasChild alice and mom hasSibling carol,
+    # then alice hasNiece carol.
+    SubObjectPropertyOf(ObjectPropertyChain(ObjectInverseOf(:hasChild) :hasSibling) :hasNiece)
+    ObjectPropertyAssertion(:hasChild :mom :alice)
+    ObjectPropertyAssertion(:hasSibling :mom :carol)
+    EquivalentClasses(:Test
+        ObjectIntersectionOf(
+            ObjectOneOf(:alice)
+            ObjectSomeValuesFrom(:hasNiece ObjectOneOf(:carol))
+        )
+    )
+)

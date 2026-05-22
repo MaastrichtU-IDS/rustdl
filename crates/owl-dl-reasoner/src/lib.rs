@@ -404,7 +404,7 @@ pub(crate) struct PreparedOntology {
     tbox: AbsorbedTBox,
     hierarchy: RoleHierarchy,
     inverse_pairs: Vec<(RoleId, RoleId)>,
-    chain_axioms: Vec<(RoleId, RoleId, RoleId)>,
+    chain_axioms: Vec<(Role, Role, Role)>,
     asymmetric_roles: Vec<RoleId>,
     disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     complements: Vec<(ConceptId, ConceptId)>,
@@ -663,13 +663,14 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
 /// 2. `TransitiveRole(Role::Named(r))` lowered to `(r, r, r)` — the
 ///    standard chain encoding of role transitivity.
 ///
-/// Anything outside that fragment (length ≠ 2, inverse-role anywhere,
-/// inverse-typed super-role) is rejected with
-/// [`ReasonError::RoleChainUnsupported`] so callers see a clean error
-/// rather than an unsound silent skip.
+/// Anything outside that fragment (length ≠ 2) is rejected with
+/// [`ReasonError::RoleChainUnsupported`]. Inverse roles in any
+/// position (including the super-role) are accepted; the tableau's
+/// chain rule reads each position's polarity to choose edge
+/// direction.
 fn collect_chain_axioms(
     internal: &InternalOntology,
-) -> Result<Vec<(RoleId, RoleId, RoleId)>, ReasonError> {
+) -> Result<Vec<(Role, Role, Role)>, ReasonError> {
     let mut chains = Vec::new();
     for ax in &internal.axioms {
         match ax {
@@ -680,17 +681,14 @@ fn collect_chain_axioms(
                 if parts.len() != 2 {
                     return Err(ReasonError::RoleChainUnsupported);
                 }
-                if parts.iter().any(|r| r.is_inverse()) || sup.is_inverse() {
-                    return Err(ReasonError::RoleChainUnsupported);
-                }
-                chains.push((parts[0].role_id(), parts[1].role_id(), sup.role_id()));
+                chains.push((parts[0], parts[1], *sup));
             }
             Axiom::TransitiveRole(role) => {
-                if role.is_inverse() {
-                    return Err(ReasonError::RoleChainUnsupported);
-                }
-                let r = role.role_id();
-                chains.push((r, r, r));
+                // Transitivity on `r` lowers to `r ∘ r ⊑ r` —
+                // including the inverse polarity if the user
+                // declared `TransitiveObjectProperty` against an
+                // inverse-typed role expression.
+                chains.push((*role, *role, *role));
             }
             _ => {}
         }
@@ -827,7 +825,7 @@ fn decide<F>(
     tbox: &AbsorbedTBox,
     hierarchy: &RoleHierarchy,
     inverse_pairs: &[(RoleId, RoleId)],
-    chain_axioms: &[(RoleId, RoleId, RoleId)],
+    chain_axioms: &[(Role, Role, Role)],
     asymmetric_roles: &[RoleId],
     disjoint_role_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],

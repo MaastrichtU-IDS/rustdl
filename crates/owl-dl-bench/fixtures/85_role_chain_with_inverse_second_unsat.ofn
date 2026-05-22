@@ -1,0 +1,24 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/85_role_chain_with_inverse_second_unsat>
+    Declaration(Class(:Test))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:hasParticipant))
+    Declaration(ObjectProperty(:hasFeature))
+    Declaration(NamedIndividual(:x))
+    Declaration(NamedIndividual(:y))
+    Declaration(NamedIndividual(:z))
+    # hasParticipant ∘ inverse(hasFeature) ⊑ hasParticipant
+    # Meaning: if x hasParticipant y and z hasFeature y, then
+    # x hasParticipant z.
+    SubObjectPropertyOf(ObjectPropertyChain(:hasParticipant ObjectInverseOf(:hasFeature)) :hasParticipant)
+    ObjectPropertyAssertion(:hasParticipant :x :y)
+    ObjectPropertyAssertion(:hasFeature :z :y)
+    ClassAssertion(:A :z)
+    ClassAssertion(ObjectAllValuesFrom(:hasParticipant ObjectComplementOf(:A)) :x)
+    EquivalentClasses(:Test ObjectOneOf(:x))
+)

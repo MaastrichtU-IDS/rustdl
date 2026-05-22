@@ -98,7 +98,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// length 2, named roles only) and from `TransitiveRole(r)` lowered
     /// as `(r, r, r)`. The [`apply_role_chains`] rule walks two
     /// consecutive named-role edges and adds the implied `sup` edge.
-    chains: Vec<(RoleId, RoleId, RoleId)>,
+    chains: Vec<(Role, Role, Role)>,
     /// Roles declared `AsymmetricObjectProperty`. The
     /// [`apply_role_axioms`] rule flags `⊥` at any node that has both
     /// an outgoing `r`-edge and an incoming `r`-edge to/from the same
@@ -220,18 +220,20 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self
     }
 
-    /// Register a length-2 role chain axiom `r₁ ∘ r₂ ⊑ sup`. The
-    /// tableau's [`apply_role_chains`](crate::apply_role_chains)
-    /// rule walks two consecutive named-role edges and adds the
-    /// implied `sup` edge.
-    pub fn declare_chain_axiom(&mut self, r1: RoleId, r2: RoleId, sup: RoleId) -> &mut Self {
+    /// Register a length-2 role chain axiom `r₁ ∘ r₂ ⊑ sup`. Each
+    /// position carries its own polarity ([`Role::Named`] or
+    /// [`Role::Inverse`]). The [`apply_role_chains`](crate::apply_role_chains)
+    /// rule walks the appropriate edge direction at each position
+    /// (named ⇒ outgoing, inverse ⇒ incoming) and adds an edge of
+    /// the appropriate polarity at `sup`.
+    pub fn declare_chain_axiom(&mut self, r1: Role, r2: Role, sup: Role) -> &mut Self {
         self.chains.push((r1, r2, sup));
         self
     }
 
     /// Slice of all registered length-2 chain axioms.
     #[must_use]
-    pub fn chains(&self) -> &[(RoleId, RoleId, RoleId)] {
+    pub fn chains(&self) -> &[(Role, Role, Role)] {
         &self.chains
     }
 

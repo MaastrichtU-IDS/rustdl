@@ -560,18 +560,24 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
     }
 }
 
-/// Length-2 role-chain rule: for every registered chain axiom
-/// `r₁ ∘ r₂ ⊑ sup` and every pair of outgoing edges
-/// `node —r₁→ mid —r₂→ tail`, ensure the implied edge
-/// `node —sup→ tail` exists. Deduplicated against existing outgoing
-/// `sup`-edges so transitivity (`r ∘ r ⊑ r`) does not loop.
+/// Length-2 role-chain rule with per-position polarity.
 ///
-/// Phase 5 (R): restricted to **named** roles end-to-end. Inverse roles
-/// in chain axioms are rejected upstream by the reasoner facade with
-/// `ReasonError::RoleChainUnsupported`.
+/// For every registered chain axiom `r₁ ∘ r₂ ⊑ sup` (each role may
+/// be named or inverse), walk the polarity-correct edge at each
+/// position. With `r` ranging over named edges:
+/// - `Named(r)` reads an outgoing edge `x —r→ y` and contributes
+///   the source `x` / target `y` as the chain's left / right
+///   endpoint.
+/// - `Inverse(r)` reads an incoming edge `y —r→ x` and contributes
+///   the target `y` / source `x` as the chain's left / right
+///   endpoint.
 ///
-/// Skipped at blocked nodes — the blocking ancestor already witnesses
-/// any chain-derived edge by label inclusion.
+/// The combined effect is: a length-2 walk `node → mid → tail`
+/// (where the arrows respect each position's polarity) implies an
+/// edge of `sup`'s polarity between `node` and `tail`.
+///
+/// Skipped at blocked nodes — the blocking ancestor already
+/// witnesses any chain-derived edge by label inclusion.
 pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
@@ -579,28 +585,50 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     if ctx.chains().is_empty() {
         return RuleOutcome::NoChange;
     }
-    let chains: Vec<(RoleId, RoleId, RoleId)> = ctx.chains().to_vec();
+    let chains: Vec<(Role, Role, Role)> = ctx.chains().to_vec();
+    // Collect the node's neighbours in *both* polarities so we can
+    // walk the chain regardless of role polarity in either position.
     let outgoing: Vec<(RoleId, NodeId)> = ctx.graph().node(node).edges().to_vec();
-    let mut pending: Vec<(RoleId, NodeId)> = Vec::new();
+    let incoming: Vec<(RoleId, NodeId)> = ctx.graph().node(node).in_edges().to_vec();
+    let mut pending: Vec<(Role, NodeId)> = Vec::new();
     for (r1, r2, sup) in chains {
-        for &(role_a, mid) in &outgoing {
-            if role_a != r1 {
-                continue;
-            }
+        // Step 1: find every `mid` reachable from `node` via the
+        // first chain position. Named(r) ⇒ outgoing r-edge.
+        // Inverse(r) ⇒ incoming r-edge (i.e., mid —r→ node).
+        let mids: Vec<NodeId> = match r1 {
+            Role::Named(r) => outgoing
+                .iter()
+                .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
+                .collect(),
+            Role::Inverse(r) => incoming
+                .iter()
+                .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
+                .collect(),
+        };
+        for mid in mids {
             let mid_res = ctx.resolve(mid);
-            let mid_edges: Vec<(RoleId, NodeId)> = ctx.graph().node(mid_res).edges().to_vec();
-            for (role_b, tail) in mid_edges {
-                if role_b != r2 {
-                    continue;
-                }
-                let tail_res = ctx.resolve(tail);
-                let already = ctx
+            // Step 2: find every `tail` reachable from `mid` via
+            // the second chain position. Symmetric treatment.
+            let tails: Vec<NodeId> = match r2 {
+                Role::Named(r) => ctx
                     .graph()
-                    .node(node)
+                    .node(mid_res)
                     .edges()
                     .iter()
-                    .any(|&(r, t)| r == sup && ctx.resolve(t) == tail_res)
-                    || pending.iter().any(|&(r, t)| r == sup && t == tail_res);
+                    .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
+                    .collect(),
+                Role::Inverse(r) => ctx
+                    .graph()
+                    .node(mid_res)
+                    .in_edges()
+                    .iter()
+                    .filter_map(|&(role, n)| if role == r { Some(n) } else { None })
+                    .collect(),
+            };
+            for tail in tails {
+                let tail_res = ctx.resolve(tail);
+                let already = chain_edge_already_present(ctx, node, sup, tail_res)
+                    || pending.iter().any(|&(s, t)| s == sup && t == tail_res);
                 if !already {
                     pending.push((sup, tail_res));
                 }
@@ -611,9 +639,41 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         return RuleOutcome::NoChange;
     }
     for (sup, tail) in pending {
-        ctx.add_edge(node, sup, tail);
+        // Polarity of `sup` chooses which direction we materialise:
+        // Named(r)  ⇒ outgoing r-edge from node to tail.
+        // Inverse(r) ⇒ outgoing r-edge from tail to node (which
+        //               looks like an incoming r-edge at node).
+        match sup {
+            Role::Named(r) => ctx.add_edge(node, r, tail),
+            Role::Inverse(r) => ctx.add_edge(tail, r, node),
+        }
     }
     RuleOutcome::Applied
+}
+
+/// True iff the implied chain edge `node —sup→ tail` (where polarity
+/// of `sup` determines direction) is already present.
+fn chain_edge_already_present(
+    ctx: &TableauContext<'_, '_, '_>,
+    node: NodeId,
+    sup: Role,
+    tail: NodeId,
+) -> bool {
+    let r = sup.role_id();
+    match sup {
+        Role::Named(_) => ctx
+            .graph()
+            .node(node)
+            .edges()
+            .iter()
+            .any(|&(role, t)| role == r && ctx.resolve(t) == tail),
+        Role::Inverse(_) => ctx
+            .graph()
+            .node(tail)
+            .edges()
+            .iter()
+            .any(|&(role, t)| role == r && ctx.resolve(t) == node),
+    }
 }
 
 /// Self-restriction rule for SROIQ's `ObjectHasSelf` concept.

@@ -517,3 +517,15 @@ file = "84_disjoint_through_subsumer_chain_unsat.ofn"
 description = "DisjointClasses(A, B) + Test ⊑ Mid ⊑ A + Test ⊑ B — multi-hop subsumer chain triggers disjointness"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "85_role_chain_with_inverse_second_unsat.ofn"
+description = "hasParticipant ∘ inverse(hasFeature) ⊑ hasParticipant — inverse second position; chain induces hasParticipant(x, z), ∀-clash makes Test unsat"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "86_role_chain_with_inverse_first_sat.ofn"
+description = "inverse(hasChild) ∘ hasSibling ⊑ hasNiece — inverse first position; chain provides the hasNiece witness"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

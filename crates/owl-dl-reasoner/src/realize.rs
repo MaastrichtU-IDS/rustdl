@@ -19,7 +19,8 @@ use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
 
 use owl_dl_core::convert::convert_ontology;
-use owl_dl_core::{ClassId, IndividualId, InternalOntology};
+use owl_dl_core::{Axiom, ClassId, ConceptExpr, IndividualId, InternalOntology};
+use owl_dl_saturation::{Subsumers, saturate};
 
 use crate::{ReasonError, classify_internal, run_satisfiability};
 
@@ -63,10 +64,37 @@ pub fn is_instance_of_internal(
         .vocabulary
         .individual_id(individual_iri)
         .ok_or_else(|| ReasonError::UnknownClass(individual_iri.to_owned()))?;
-    instance_check_internal(internal.clone(), class_id, individual_id)
+    let closure = saturate(internal);
+    instance_check_with_closure(internal, &closure, class_id, individual_id)
 }
 
-fn instance_check_internal(
+/// Single instance check that consults the saturation closure first:
+/// if any told `ClassAssertion(D, individual)` has `D ⊑ class_id` in
+/// the EL closure, the answer is `yes` without invoking the tableau.
+/// Otherwise falls through to the standard `{a} ⊓ ¬C` satisfiability
+/// reduction.
+fn instance_check_with_closure(
+    internal: &InternalOntology,
+    closure: &Subsumers,
+    class_id: ClassId,
+    individual_id: IndividualId,
+) -> Result<bool, ReasonError> {
+    // Saturation fast path: walk the told class assertions for this
+    // individual; if any of them is a saturation-subsumer of the
+    // target class, we're done.
+    for axiom in &internal.axioms {
+        if let Axiom::ClassAssertion { class, individual } = axiom
+            && *individual == individual_id
+            && let ConceptExpr::Atomic(asserted) = internal.concepts.get(*class)
+            && closure.contains(*asserted, class_id)
+        {
+            return Ok(true);
+        }
+    }
+    instance_check_via_tableau(internal.clone(), class_id, individual_id)
+}
+
+fn instance_check_via_tableau(
     internal: InternalOntology,
     class_id: ClassId,
     individual_id: IndividualId,
@@ -107,11 +135,12 @@ pub fn instances_of_internal(
         .vocabulary
         .class_id(class_iri)
         .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let closure = saturate(internal);
     let mut out = Vec::new();
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-        if instance_check_internal(internal.clone(), class_id, individual_id)? {
+        if instance_check_with_closure(internal, &closure, class_id, individual_id)? {
             out.push(internal.vocabulary.individual_iri(individual_id).to_owned());
         }
     }
@@ -216,6 +245,7 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
 
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
+    let closure = saturate(internal);
 
     for (idx, iri) in individual_iris.iter().enumerate() {
         let individual_id =
@@ -223,7 +253,7 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
         let mut types: Vec<&str> = Vec::new();
         for (class_idx, class_iri) in &satisfiable {
             let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
-            if instance_check_internal(internal.clone(), class_id, individual_id)? {
+            if instance_check_with_closure(internal, &closure, class_id, individual_id)? {
                 types.push(class_iri);
             }
         }

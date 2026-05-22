@@ -55,7 +55,7 @@ pub use rules::{
     apply_role_chains, apply_role_rules, apply_self_restriction,
 };
 pub use saturate::{SaturationResult, saturate};
-pub use search::search;
+pub use search::{SearchVerdict, search};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use std::collections::HashMap;
@@ -918,7 +918,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         const MAX_DEPTH: usize = 256;
         let root = self.new_node();
         self.add_label(root, c);
-        search::search(self, MAX_DEPTH)
+        search::search(self, MAX_DEPTH).to_option()
     }
 }
 
@@ -1491,7 +1491,7 @@ mod tests {
         let initial_label_count = ctx.graph().node(x).labels().len();
         // search should succeed with no additional labels added.
         let result = search::search(&mut ctx, 16);
-        assert_eq!(result, Some(true));
+        assert_eq!(result, search::SearchVerdict::Sat);
         assert_eq!(ctx.graph().node(x).labels().len(), initial_label_count);
     }
 
@@ -1515,7 +1515,7 @@ mod tests {
         ctx.add_edge(x, r, y);
         ctx.add_label(x, or);
         let result = search::search(&mut ctx, 32);
-        assert_eq!(result, Some(true));
+        assert_eq!(result, search::SearchVerdict::Sat);
         // Confirm ⊤ wound up in L(x) — the chosen disjunct — not
         // the bad ∀R.…
         assert!(ctx.graph().node(x).has_label(top));

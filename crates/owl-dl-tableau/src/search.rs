@@ -1,34 +1,34 @@
-//! Backtracking driver for the non-deterministic `⊔` rule.
+//! Backtracking driver for the non-deterministic `⊔` rule, with
+//! dependency-directed back-jumping (Phase 4 commits 4 + 5).
 //!
 //! The deterministic rules in [`crate::rules`] cannot handle a label
 //! of shape `Or([d1, …, dn])` — they would have to *choose* which
 //! disjunct to add. This module implements the choice via depth-first
-//! search with trail-based undo:
+//! search with trail-based undo.
 //!
-//! 1. Run deterministic saturation. If it clashes, the branch is dead.
-//! 2. Otherwise, find any `Or` label in any node whose disjuncts are
-//!    not yet present in that node's labels — an *open disjunction*.
-//! 3. For each disjunct `di`:
-//!    - take a [`crate::Checkpoint`];
-//!    - add `di` to the node;
-//!    - recurse;
-//!    - on a `false` return, [`crate::TableauContext::rollback_to`]
-//!      and try the next disjunct.
-//! 4. If every disjunct fails, the branch is unsatisfiable.
-//! 5. If there are no open disjunctions and no clash, the branch is
-//!    satisfiable.
+//! Each `⊔`-branching decision is identified by a unique `branch_id`
+//! allocated by [`crate::TableauContext::push_branch`]. When the
+//! recursive search detects a clash, [`crate::saturate`] returns the
+//! [`crate::SaturationResult::Clash`] variant carrying the
+//! [`crate::DepSet`] of the offending complementary labels. Each
+//! rule propagates this `DepSet` to its conclusions during saturation
+//! (see [`crate::deps`] + the per-rule plumbing in [`crate::rules`]).
 //!
-//! ## Why open-disjunction detection is non-trivial
+//! [`branch`] reads the clash deps. If its own `branch_id` is *not*
+//! in there, this disjunction's choice didn't contribute to the clash
+//! — every sibling disjunct would clash for the same upstream
+//! reason, so we propagate the [`SearchVerdict::Unsat`] (with the
+//! original deps) straight up without trying them. This is the
+//! dependency-directed back-jumping that the chronological version
+//! couldn't do.
 //!
-//! A naive `for label in L(x): if Or(_) then branch` would loop
-//! forever: after we add `d1` to satisfy the Or, the Or is still in
-//! `L(x)`. We have to check that *no* disjunct is already present
-//! before branching. This makes the rule re-entrant under
-//! deterministic saturation: a later `⊓` may add `d1` as a side
-//! effect, closing the disjunction without an explicit choice.
+//! When all disjuncts *did* clash with this branch's id in their
+//! deps, we conclude that the disjunction itself is unsat under the
+//! ancestor branches' deps — return `Unsat(combined ∖ {my_id})`
+//! where combined unions each child's clash deps.
 
 use crate::TableauContext;
-use crate::graph::NodeId;
+use crate::graph::{DepSet, NodeId};
 use crate::saturate::{SaturationResult, saturate};
 use owl_dl_core::{ConceptExpr, ConceptId};
 
@@ -39,35 +39,64 @@ use owl_dl_core::{ConceptExpr, ConceptId};
 /// defensive against rule bugs.
 const SATURATE_ITERS: usize = 4096;
 
-/// Drive deterministic saturation interleaved with `⊔` branching.
+/// Outcome of one call to [`search`] or [`branch`].
 ///
-/// Returns:
-/// - `Some(true)` if some branch reaches a saturated, clash-free
-///   completion graph with no open disjunctions;
-/// - `Some(false)` if every branch clashes;
-/// - `None` if the recursion depth cap is hit (defensive — should
-///   never happen for well-formed input until subset blocking is
-///   added in commit 6 and the search becomes potentially
-///   non-terminating without it).
-pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Option<bool> {
+/// Generalises the previous `Option<bool>` API: `Sat` is what
+/// callers want for a model existence check; `Unsat` carries the
+/// `DepSet` so [`branch`] can decide whether the failure depends on
+/// its own decision; `DepthLimit` covers both the recursion cap and
+/// the cooperative deadline (callers disambiguate via
+/// [`TableauContext::deadline_reached`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchVerdict {
+    /// A clash-free saturated completion exists — concept is
+    /// satisfiable along the current branch.
+    Sat,
+    /// Every continuation clashed. The [`DepSet`] is the union of
+    /// every clash's deps minus any branch decisions made *inside*
+    /// this subtree — what remains is the set of ancestor branches
+    /// the failure depends on. Empty `DepSet` ⇒ the failure is
+    /// independent of any branch (unsat under the root context).
+    Unsat(DepSet),
+    /// Either the recursion depth cap was reached or the cooperative
+    /// deadline elapsed. Callers distinguish via
+    /// [`TableauContext::deadline_reached`].
+    DepthLimit,
+}
+
+impl SearchVerdict {
+    /// Bridge to the legacy `Option<bool>` shape that
+    /// [`TableauContext::is_satisfiable`] still hands to its callers.
+    #[must_use]
+    pub fn to_option(&self) -> Option<bool> {
+        match self {
+            Self::Sat => Some(true),
+            Self::Unsat(_) => Some(false),
+            Self::DepthLimit => None,
+        }
+    }
+}
+
+/// Drive deterministic saturation interleaved with `⊔` branching.
+pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
     if max_depth == 0 || ctx.check_deadline() {
-        return None;
+        return SearchVerdict::DepthLimit;
     }
     match saturate(ctx, SATURATE_ITERS) {
-        SaturationResult::Clash(_, _) => Some(false),
-        SaturationResult::Stalled => None,
+        SaturationResult::Clash(_, deps) => SearchVerdict::Unsat(deps),
+        SaturationResult::Stalled => SearchVerdict::DepthLimit,
         SaturationResult::Stable => {
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
             if let Some((node, disjuncts)) = first_open_disjunction(ctx) {
-                return branch(ctx, max_depth, node, disjuncts);
+                return branch(ctx, max_depth, node, &disjuncts);
             }
             // Step 2: choose rule for `≤n R.C` — pick a neighbour
             // that doesn't yet have `C` or `¬C` and branch.
             if let Some((node, c, c_neg)) = first_open_choose(ctx) {
-                return branch(ctx, max_depth, node, vec![c, c_neg]);
+                return branch(ctx, max_depth, node, &[c, c_neg]);
             }
-            Some(true)
+            SearchVerdict::Sat
         }
     }
 }
@@ -76,24 +105,64 @@ fn branch(
     ctx: &mut TableauContext<'_, '_, '_>,
     max_depth: usize,
     node: NodeId,
-    options: Vec<ConceptId>,
-) -> Option<bool> {
+    options: &[ConceptId],
+) -> SearchVerdict {
+    let my_id = ctx.push_branch();
+    let mut combined: DepSet = Vec::new();
     let mut depth_limited = false;
+    let mut early_return: Option<SearchVerdict> = None;
+
     for d in options {
+        if early_return.is_some() {
+            break;
+        }
         let cp = ctx.checkpoint();
-        ctx.add_label(node, d);
+        // The labelled disjunct depends on *this* branch decision.
+        ctx.add_label_with_deps(node, *d, &[my_id]);
         match search(ctx, max_depth - 1) {
-            Some(true) => return Some(true),
-            Some(false) => {
-                ctx.rollback_to(cp);
+            SearchVerdict::Sat => {
+                // Found a model; keep state, exit early. State is
+                // left as-is — the model labels are real.
+                early_return = Some(SearchVerdict::Sat);
             }
-            None => {
+            SearchVerdict::Unsat(clash_deps) => {
+                ctx.rollback_to(cp);
+                if clash_deps.binary_search(&my_id).is_err() {
+                    // Back-jump: this branch decision didn't
+                    // contribute to the clash. Every sibling disjunct
+                    // would clash for the same upstream reason —
+                    // propagate the failure straight up.
+                    early_return = Some(SearchVerdict::Unsat(clash_deps));
+                } else {
+                    // This decision mattered. Accumulate the rest of
+                    // the deps for the "all options exhausted" case.
+                    for &x in &clash_deps {
+                        if x != my_id
+                            && let Err(pos) = combined.binary_search(&x)
+                        {
+                            combined.insert(pos, x);
+                        }
+                    }
+                }
+            }
+            SearchVerdict::DepthLimit => {
                 ctx.rollback_to(cp);
                 depth_limited = true;
             }
         }
     }
-    if depth_limited { None } else { Some(false) }
+    ctx.pop_branch();
+
+    if let Some(v) = early_return {
+        v
+    } else if depth_limited {
+        SearchVerdict::DepthLimit
+    } else {
+        // Every option clashed and every clash depended on `my_id`.
+        // The disjunction itself is therefore unsat under the union
+        // of ancestor deps in `combined`.
+        SearchVerdict::Unsat(combined)
+    }
 }
 
 /// Find the first `Max(n, R, C)` label whose R-neighbour at the

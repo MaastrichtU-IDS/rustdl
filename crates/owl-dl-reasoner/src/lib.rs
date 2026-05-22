@@ -951,9 +951,10 @@ where
 
     let outcome = owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH);
     match outcome {
-        Some(v) => Ok(Some(v)),
-        None if ctx.deadline_reached() => Ok(None),
-        None => Err(ReasonError::NoVerdict),
+        owl_dl_tableau::SearchVerdict::Sat => Ok(Some(true)),
+        owl_dl_tableau::SearchVerdict::Unsat(_) => Ok(Some(false)),
+        owl_dl_tableau::SearchVerdict::DepthLimit if ctx.deadline_reached() => Ok(None),
+        owl_dl_tableau::SearchVerdict::DepthLimit => Err(ReasonError::NoVerdict),
     }
 }
 

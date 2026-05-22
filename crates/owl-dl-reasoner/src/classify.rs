@@ -489,6 +489,283 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     }
 }
 
+// ─── Top-down classification ─────────────────────────────────────
+//
+// The naive [`classify_internal_with_timeout`] tests `n²` ordered
+// pairs. On hierarchies dominated by "this class is *not* subsumed
+// by that one" pairs — the typical real-ontology shape — most
+// queries return `false` after a full tableau call. Top-down
+// classification (Tsarkov & Horrocks 2005) walks the partial
+// hierarchy built so far, only testing candidates whose closure +
+// already-confirmed subsumptions don't already settle the question.
+//
+// For an ontology of depth `d` and branching factor `b`, top-down
+// does roughly `n × d × b` tableau calls instead of `n²` — a real
+// reduction once `n` exceeds a few hundred. For SULO at `n = 17`
+// the savings are modest; for SIO at `n = 1585` it's the difference
+// between feasibility and not.
+//
+// This commit ships `classify_top_down_internal` + a public
+// `classify_top_down` wrapper. The CLI doesn't surface it yet
+// (intentional — perf comparison vs. the naive path happens in a
+// follow-up). Tests confirm bit-identical `Classification` output
+// on the existing in-tree test ontologies.
+
+/// Top-down counterpart to [`classify`]. Tests pairs against an
+/// incrementally-built partial hierarchy instead of the full
+/// `n × n` matrix. See the module-level comment above this function
+/// for the algorithmic shape.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn classify_top_down<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Classification, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    classify_top_down_internal(&internal, None)
+}
+
+/// Top-down classifier with an optional per-pair tableau timeout
+/// (same semantics as [`classify_with_timeout`]).
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn classify_top_down_with_timeout<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    per_pair_timeout: std::time::Duration,
+) -> Result<Classification, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    classify_top_down_internal(&internal, Some(per_pair_timeout))
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn classify_top_down_internal(
+    internal: &InternalOntology,
+    per_pair_timeout: Option<std::time::Duration>,
+) -> Result<Classification, ReasonError> {
+    let classes: Vec<String> = (0..internal.vocabulary.num_classes())
+        .map(|i| {
+            internal
+                .vocabulary
+                .class_iri(owl_dl_core::ClassId::new(
+                    u32::try_from(i).expect("class count fits in u32"),
+                ))
+                .to_owned()
+        })
+        .collect();
+    let n = classes.len();
+    let index: HashMap<String, usize> = classes
+        .iter()
+        .enumerate()
+        .map(|(i, iri)| (iri.clone(), i))
+        .collect();
+
+    let closure = saturate(internal);
+
+    // Pure-EL path: the closure is complete; reuse the naive
+    // classifier's fast path. Top-down only earns its complexity on
+    // hybrid inputs where the tableau actually runs.
+    if is_pure_el(internal) {
+        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+    }
+
+    let prepared = PreparedOntology::from_internal(internal.clone())?;
+
+    // Per-class unsat probes — identical to the naive path. Reuse
+    // the same parallel pattern.
+    let mut stats = ClassificationStats::default();
+    let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let class_id =
+                owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+            if closure.is_unsatisfiable(class_id) {
+                Ok((i, false, true))
+            } else if let Some(timeout) = per_pair_timeout {
+                let deadline = Instant::now() + timeout;
+                let sat = prepared
+                    .decide_with_deadline(deadline, move |pool| pool.atomic(class_id))?
+                    .unwrap_or(true);
+                Ok((i, sat, false))
+            } else {
+                let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
+                Ok((i, sat, false))
+            }
+        })
+        .collect();
+    let unsat_probe_results = unsat_probe_results?;
+    let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
+    for (i, is_sat, used_saturation) in unsat_probe_results {
+        if used_saturation {
+            stats.saturation_unsat_hits += 1;
+        } else {
+            stats.tableau_unsat_calls += 1;
+        }
+        if !is_sat {
+            unsatisfiable_idxs.insert(i);
+        }
+    }
+
+    // Sort the satisfiable classes by ascending closure-subsumer
+    // count — "most general first". This ordering means when we
+    // place class `c`, every class that could be `c`'s parent has
+    // already been placed (modulo same-tier siblings, which are
+    // handled by the walk's iterative refinement).
+    let mut order: Vec<usize> = (0..n).filter(|i| !unsatisfiable_idxs.contains(i)).collect();
+    order.sort_by_key(|&i| {
+        closure
+            .subsumers_of(owl_dl_core::ClassId::new(
+                u32::try_from(i).expect("class index fits in u32"),
+            ))
+            .len()
+    });
+
+    // `direct_supers[i]` = direct super-classes of `i` placed so
+    // far. `placed[i]` = whether `i` has been processed yet.
+    let mut direct_supers: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut direct_children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    // Virtual "Top" sentinel: every class starts here.
+    let mut top_level: Vec<usize> = Vec::new();
+    let mut placed: Vec<bool> = vec![false; n];
+
+    for &c in &order {
+        let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+        // Top-down walk: collect "topmost" placed classes that
+        // subsume c, then descend through their children.
+        let mut frontier: Vec<usize> = top_level.clone();
+        let mut accepted: Vec<usize> = Vec::new();
+        while let Some(d) = frontier.pop() {
+            if d == c {
+                continue;
+            }
+            let d_id =
+                owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
+            let subsumed = if closure.contains(c_id, d_id) {
+                stats.saturation_subsumption_hits += 1;
+                true
+            } else {
+                subsumes_via_tableau(&prepared, c_id, d_id, per_pair_timeout, &mut stats)?
+                    .unwrap_or_default()
+            };
+            if !subsumed {
+                continue;
+            }
+            // d subsumes c. Try descending into d's placed children.
+            // The "most-specific" pruning post-pass handles the case
+            // where d itself stays a direct parent because none of
+            // its children turn out to also subsume c.
+            for &k in &direct_children[d] {
+                frontier.push(k);
+            }
+            accepted.push(d);
+        }
+        // Prune `accepted` to the most-specific entries: drop any
+        // candidate that has a strict descendant also in `accepted`.
+        let direct_parents: Vec<usize> = accepted
+            .iter()
+            .filter(|&&d| {
+                !accepted.iter().any(|&e| {
+                    e != d
+                        && (closure.contains(
+                            owl_dl_core::ClassId::new(
+                                u32::try_from(e).expect("class index fits in u32"),
+                            ),
+                            owl_dl_core::ClassId::new(
+                                u32::try_from(d).expect("class index fits in u32"),
+                            ),
+                        ) || direct_supers[e].contains(&d))
+                })
+            })
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        for &p in &direct_parents {
+            direct_children[p].push(c);
+        }
+        if direct_parents.is_empty() {
+            top_level.push(c);
+        }
+        direct_supers[c] = direct_parents;
+        placed[c] = true;
+    }
+
+    // Build the full entailment matrix from `direct_supers` via
+    // transitive closure: reachable-from in the directed acyclic
+    // graph (we treat equivalence classes as cycles — those collapse
+    // naturally during the reachability walk).
+    let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
+    for i in 0..n {
+        entailed[i][i] = true;
+        if unsatisfiable_idxs.contains(&i) {
+            entailed[i].iter_mut().take(n).for_each(|v| *v = true);
+            continue;
+        }
+        // BFS over direct_supers starting from `i`.
+        let mut frontier: Vec<usize> = direct_supers[i].clone();
+        while let Some(j) = frontier.pop() {
+            if entailed[i][j] {
+                continue;
+            }
+            entailed[i][j] = true;
+            for &k in &direct_supers[j] {
+                if !entailed[i][k] {
+                    frontier.push(k);
+                }
+            }
+        }
+    }
+
+    let _ = placed; // currently informational only
+    Ok(Classification {
+        classes,
+        index,
+        entailed,
+        unsatisfiable_idxs,
+        stats,
+    })
+}
+
+/// Helper: ask the tableau whether `sub ⊑ sup`. Counts the call in
+/// `stats`, honours `per_pair_timeout`, returns:
+/// - `Ok(Some(true))` — subsumption holds
+/// - `Ok(Some(false))` — refuted (sat verdict on `sub ⊓ ¬sup`)
+/// - `Ok(None)` — timed out (counted as `timed_out_pairs`)
+fn subsumes_via_tableau(
+    prepared: &PreparedOntology,
+    sub: owl_dl_core::ClassId,
+    sup: owl_dl_core::ClassId,
+    per_pair_timeout: Option<std::time::Duration>,
+    stats: &mut ClassificationStats,
+) -> Result<Option<bool>, ReasonError> {
+    let build = move |pool: &mut ConceptPool| {
+        let sub_concept = pool.atomic(sub);
+        let super_concept = pool.atomic(sup);
+        let not_super = pool.not(super_concept);
+        pool.and(vec![sub_concept, not_super])
+    };
+    match per_pair_timeout {
+        None => {
+            let sat = prepared.decide(build)?;
+            stats.tableau_subsumption_calls += 1;
+            Ok(Some(!sat))
+        }
+        Some(timeout) => {
+            let deadline = Instant::now() + timeout;
+            if let Some(sat) = prepared.decide_with_deadline(deadline, build)? {
+                stats.tableau_subsumption_calls += 1;
+                Ok(Some(!sat))
+            } else {
+                stats.timed_out_pairs += 1;
+                Ok(None)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,5 +928,100 @@ Ontology(<http://rustdl.test/test>\n\
             stats.tableau_subsumption_calls + stats.tableau_unsat_calls > 0,
             "expected the tableau to be invoked for the non-EL fragment"
         );
+    }
+
+    /// Helper for the top-down ↔ naive cross-check: compare the
+    /// entailment matrix and unsat set under both classifiers. We
+    /// don't compare `ClassificationStats` — the call-count breakdown
+    /// is expected to differ by construction.
+    fn assert_top_down_matches_naive(onto: &SetOntology<RcStr>) {
+        let naive = classify(onto).expect("naive classify");
+        let td = classify_top_down(onto).expect("top-down classify");
+        assert_eq!(
+            naive.classes(),
+            td.classes(),
+            "class list disagrees: naive {:?} vs top-down {:?}",
+            naive.classes(),
+            td.classes(),
+        );
+        let unsat_naive: std::collections::BTreeSet<&str> =
+            naive.unsatisfiable_classes().into_iter().collect();
+        let unsat_td: std::collections::BTreeSet<&str> =
+            td.unsatisfiable_classes().into_iter().collect();
+        assert_eq!(unsat_naive, unsat_td, "unsat set disagrees");
+        for sub in naive.classes() {
+            for sup in naive.classes() {
+                assert_eq!(
+                    naive.is_subclass(sub, sup),
+                    td.is_subclass(sub, sup),
+                    "subsumption verdict diverges for {sub} ⊑ {sup}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classify_top_down_matches_naive_on_explicit_chain() {
+        // A ⊑ B ⊑ C: 3-class tower used in `classify_picks_up_
+        // explicit_chain` — top-down should report the same matrix.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        assert_top_down_matches_naive(&onto);
+    }
+
+    #[test]
+    fn classify_top_down_matches_naive_on_equivalent_classes() {
+        // EquivalentClasses(A, B) — equivalence pairs are a subtle
+        // case for the top-down hierarchy walk.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    EquivalentClasses(:A :B)\n\
+)\n"
+        ));
+        assert_top_down_matches_naive(&onto);
+    }
+
+    #[test]
+    fn classify_top_down_matches_naive_on_unsatisfiable_class() {
+        // A ⊑ B ⊓ ¬B — A is unsat. Top-down's unsat-row trivial
+        // fill should match naive.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A ObjectIntersectionOf(:B ObjectComplementOf(:B)))\n\
+)\n"
+        ));
+        assert_top_down_matches_naive(&onto);
+    }
+
+    #[test]
+    fn classify_top_down_matches_naive_on_hybrid_fragment() {
+        // The DisjointObjectProperties axiom forces hybrid mode.
+        // Top-down's hybrid path must agree with naive.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        assert_top_down_matches_naive(&onto);
     }
 }

@@ -111,12 +111,24 @@ fn branch(
     let mut combined: DepSet = Vec::new();
     let mut depth_limited = false;
     let mut early_return: Option<SearchVerdict> = None;
+    // Restricted semantic branching companion. When option `d_j`
+    // failed and `¬d_j` is registered as a cheap literal complement,
+    // assert `¬d_j` in every subsequent branch so any rule that
+    // tries to re-derive `d_j` clashes immediately. Compound
+    // complements (Or, quantified) are *not* carried forward — they
+    // would inflate the label set without back-jumping enough subtree
+    // to pay for themselves (see `docs/phase4-backjumping-plan.md`).
+    let mut literal_complements: Vec<ConceptId> = Vec::new();
 
     for d in options {
         if early_return.is_some() {
             break;
         }
         let cp = ctx.checkpoint();
+        // Assert prior failed disjuncts' literal complements.
+        for &comp in &literal_complements {
+            ctx.add_label_with_deps(node, comp, &[my_id]);
+        }
         // The labelled disjunct depends on *this* branch decision.
         ctx.add_label_with_deps(node, *d, &[my_id]);
         match search(ctx, max_depth - 1) {
@@ -143,6 +155,15 @@ fn branch(
                             combined.insert(pos, x);
                         }
                     }
+                    // Carry forward the failed disjunct's literal
+                    // complement (if it has one registered) so the
+                    // next iteration short-circuits any rebirth of
+                    // `d` in the model.
+                    if let Some(comp) = ctx.complement_of(*d)
+                        && is_literal(ctx, comp)
+                    {
+                        literal_complements.push(comp);
+                    }
                 }
             }
             SearchVerdict::DepthLimit => {
@@ -163,6 +184,20 @@ fn branch(
         // of ancestor deps in `combined`.
         SearchVerdict::Unsat(combined)
     }
+}
+
+/// True iff `c` is a cheap literal — atomic, nominal,
+/// self-restriction, or `Not(_)` of one. Used by `branch()` to
+/// decide whether to carry a disjunct's complement forward in
+/// restricted semantic branching.
+fn is_literal(ctx: &TableauContext<'_, '_, '_>, c: ConceptId) -> bool {
+    matches!(
+        ctx.pool().get(c),
+        ConceptExpr::Atomic(_)
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_)
+            | ConceptExpr::Not(_)
+    )
 }
 
 /// Find the first `Max(n, R, C)` label whose R-neighbour at the

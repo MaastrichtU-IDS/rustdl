@@ -620,25 +620,58 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
     abox
 }
 
-/// Pre-compute NNF complements for every body appearing in a
-/// `Max(_, _, body)` expression so the choose rule can look them up
-/// without mutating the pool at tableau time. This is the last
-/// stage that mutates the pool; after this call the pool is frozen
-/// for the tableau run.
+/// Pre-compute NNF complements for every concept that the tableau
+/// may need to negate at search time. Two sources of targets:
+///
+/// 1. **`Max(_, _, body)` bodies.** The choose rule branches on
+///    `C` vs `¬C` around an unlabelled neighbour of a `≤n R.C`
+///    constraint.
+/// 2. **Literal `Or` disjuncts** — atomic, nominal, self-restriction,
+///    or `Not(_)` of those. Phase 4 commit 6's *restricted semantic
+///    branching* (see `docs/phase4-backjumping-plan.md`) asserts
+///    `¬d_j` for previously-tried literal disjuncts `d_j` in
+///    [`crate::search::branch`] so a re-derivation clashes
+///    immediately. Complex (Or/And/quantified) disjuncts are
+///    deliberately *excluded* — their complements are themselves
+///    compound expressions whose addition would inflate the label
+///    set faster than the back-jump can prune (Phase 4 attempt 1
+///    regressed corpus 2× this way).
+///
+/// This is the last stage that mutates the pool; after this call
+/// the pool is frozen for the tableau run.
 fn precompute_max_complements(pool: &mut ConceptPool) -> Vec<(ConceptId, ConceptId)> {
-    // Two-step to avoid borrowing the pool both mutably and
-    // immutably: collect bodies first, then intern complements.
-    let bodies: Vec<ConceptId> = pool
+    let mut targets: Vec<ConceptId> = pool
         .iter_with_ids()
         .filter_map(|(_, e)| match e {
             ConceptExpr::Max(_, _, body) => Some(*body),
             _ => None,
         })
         .collect();
-    let mut out = Vec::with_capacity(bodies.len());
-    for body in bodies {
-        let neg = nnf_complement(body, pool);
-        out.push((body, neg));
+    // Atomic-shaped Or disjuncts for semantic branching.
+    let literal_disjuncts: Vec<ConceptId> = pool
+        .iter_with_ids()
+        .filter_map(|(_, e)| match e {
+            ConceptExpr::Or(args) => Some(args.to_vec()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|d| {
+            matches!(
+                pool.get(*d),
+                ConceptExpr::Atomic(_)
+                    | ConceptExpr::Nominal(_)
+                    | ConceptExpr::SelfRestriction(_)
+                    | ConceptExpr::Not(_)
+            )
+        })
+        .collect();
+    targets.extend(literal_disjuncts);
+    targets.sort_unstable();
+    targets.dedup();
+    let mut out = Vec::with_capacity(targets.len());
+    for target in targets {
+        let neg = nnf_complement(target, pool);
+        out.push((target, neg));
     }
     out
 }

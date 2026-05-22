@@ -56,17 +56,39 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
         facts.add(*fact);
     }
     let mut changed = true;
+    // Did the subsumer table grow during the previous outer-loop
+    // iteration? Used by `apply_role_chains` to decide whether its
+    // delta optimisation is safe: when subsumers grow, previously-
+    // failing chain conditions can newly hold, so we must re-scan
+    // every (i, j) pair.
+    let mut subsumers_grew_last_round = true;
     while changed {
+        let subsumer_size_before = subsumers_total_entries(&subsumers);
         changed = false;
         changed |= apply_atomic_subsumptions(&mut subsumers, &rules);
         changed |= apply_conjunctive_triggers(&mut subsumers, &rules);
         changed |= apply_existential_propagation(&mut subsumers, &facts, &rules, &role_super);
-        changed |= apply_role_chains(&mut facts, &subsumers, &rules, &role_super);
+        changed |= apply_role_chains(
+            &mut facts,
+            &subsumers,
+            &rules,
+            &role_super,
+            subsumers_grew_last_round,
+        );
         changed |= apply_domain_and_range(&mut subsumers, &facts, &rules, &role_super);
         changed |= apply_disjointness(&mut subsumers, &rules);
         changed |= apply_transitivity(&mut subsumers);
+        subsumers_grew_last_round = subsumers_total_entries(&subsumers) > subsumer_size_before;
     }
     subsumers
+}
+
+/// Total number of `(C, D)` pairs currently in the subsumer table
+/// (including the `unsatisfiable` set). Used by `saturate` to detect
+/// whether the previous round grew subsumers, so the chain rule
+/// knows whether its delta-only path is safe.
+fn subsumers_total_entries(subsumers: &Subsumers) -> usize {
+    subsumers.table.values().map(HashSet::len).sum::<usize>() + subsumers.unsatisfiable.len()
 }
 
 /// Dedup-aware growable store of existential facts.
@@ -74,6 +96,11 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
 struct ExistentialFacts {
     list: Vec<ExistentialFact>,
     seen: HashSet<(ClassId, RoleId, ClassId)>,
+    /// Frontier for the chain rule's delta optimisation: facts at
+    /// `list[..chained_through]` have already been paired against
+    /// everything they could chain with under the current subsumer
+    /// state. When subsumers grow, this is reset to 0.
+    chained_through: usize,
 }
 
 impl ExistentialFacts {
@@ -167,41 +194,61 @@ fn apply_role_chains(
     subsumers: &Subsumers,
     rules: &ElRules,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
+    subsumers_grew_last_round: bool,
 ) -> bool {
     if rules.chain_axioms.is_empty() {
         return false;
     }
+    // Frontier optimisation: pairs (i, j) where neither side was
+    // added since the last chain call AND the subsumer table didn't
+    // grow can't produce anything new — we processed them already.
+    // When subsumers grow, previously-failing chain conditions
+    // (`subsumers.contains(fact1.target, fact2.sub)`) can now hold,
+    // so we have to re-scan everything.
+    let n = facts.list.len();
+    let old_boundary = if subsumers_grew_last_round {
+        0
+    } else {
+        facts.chained_through
+    };
     let mut changed = false;
-    // Snapshot the current fact list so we can derive against a
-    // stable view of this iteration's state; the loop runs again on
-    // any change.
-    let snapshot: Vec<ExistentialFact> = facts.list.clone();
     for &(r1, r2, sup) in &rules.chain_axioms {
-        for fact1 in &snapshot {
-            if !supers_of(role_super, fact1.role).contains(&r1) {
+        // For each chain, consider pairs (i, j):
+        //   - i >= old_boundary, any j  (new fact1's, paired with everything)
+        //   - i <  old_boundary, j >= old_boundary (old fact1, new fact2)
+        // That covers every pair where at least one side is new
+        // (or everything, if subsumers grew).
+        for i in 0..n {
+            // ExistentialFact is Copy so no borrow held across the
+            // mutable add() below.
+            let head_edge = facts.list[i];
+            if !supers_of(role_super, head_edge.role).contains(&r1) {
                 continue;
             }
-            for fact2 in &snapshot {
-                if !supers_of(role_super, fact2.role).contains(&r2) {
+            let j_range_start = if i >= old_boundary { 0 } else { old_boundary };
+            for j in j_range_start..n {
+                let tail_edge = facts.list[j];
+                if !supers_of(role_super, tail_edge.role).contains(&r2) {
                     continue;
                 }
-                if !subsumers.contains(fact1.target, fact2.sub) {
+                if !subsumers.contains(head_edge.target, tail_edge.sub) {
                     continue;
                 }
-                // Derive (fact1.sub, sup, fact2.target). Further
-                // sweeps of apply_existential_propagation will fire
-                // any matching trigger against this fact; further
-                // chain sweeps lengthen the chain through it.
+                // Derive (head_edge.sub, sup, tail_edge.target).
+                // Further sweeps of apply_existential_propagation
+                // will fire matching triggers against this fact;
+                // further chain sweeps lengthen the chain through it.
                 if facts.add(ExistentialFact {
-                    sub: fact1.sub,
+                    sub: head_edge.sub,
                     role: sup,
-                    target: fact2.target,
+                    target: tail_edge.target,
                 }) {
                     changed = true;
                 }
             }
         }
     }
+    facts.chained_through = n;
     changed
 }
 

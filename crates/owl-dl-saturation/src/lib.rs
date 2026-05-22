@@ -48,18 +48,43 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
     }
     let rules = collect_el_rules(internal);
     let role_super = build_role_super(internal);
+    // Existential facts grow over time: chain propagation derives new
+    // (A, sup, C) entries that further chain/trigger steps consume.
+    // Seed from told axioms; dedup via the (sub, role, target) key.
+    let mut facts = ExistentialFacts::default();
+    for fact in &rules.existential_facts {
+        facts.add(*fact);
+    }
     let mut changed = true;
     while changed {
         changed = false;
         changed |= apply_atomic_subsumptions(&mut subsumers, &rules);
         changed |= apply_conjunctive_triggers(&mut subsumers, &rules);
-        changed |= apply_existential_propagation(&mut subsumers, &rules, &role_super);
-        changed |= apply_role_chains(&mut subsumers, &rules, &role_super);
-        changed |= apply_domain_and_range(&mut subsumers, &rules, &role_super);
+        changed |= apply_existential_propagation(&mut subsumers, &facts, &rules, &role_super);
+        changed |= apply_role_chains(&mut facts, &subsumers, &rules, &role_super);
+        changed |= apply_domain_and_range(&mut subsumers, &facts, &rules, &role_super);
         changed |= apply_disjointness(&mut subsumers, &rules);
         changed |= apply_transitivity(&mut subsumers);
     }
     subsumers
+}
+
+/// Dedup-aware growable store of existential facts.
+#[derive(Debug, Default)]
+struct ExistentialFacts {
+    list: Vec<ExistentialFact>,
+    seen: HashSet<(ClassId, RoleId, ClassId)>,
+}
+
+impl ExistentialFacts {
+    fn add(&mut self, fact: ExistentialFact) -> bool {
+        if self.seen.insert((fact.sub, fact.role, fact.target)) {
+            self.list.push(fact);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Direct told subsumers: `A ⊑ B`.
@@ -95,13 +120,17 @@ fn apply_conjunctive_triggers(subsumers: &mut Subsumers, rules: &ElRules) -> boo
 /// meaning `A ⊑ ∃r.Y` — and every trigger `(r', Z, W)` with `r ⊑ r'`,
 /// if `Z` is already a subsumer of `Y`, every class that has `A`
 /// among its subsumers also gains `W`.
+///
+/// Reads from the runtime fact set (told + chain-derived) so further
+/// chain steps participate naturally.
 fn apply_existential_propagation(
     subsumers: &mut Subsumers,
+    facts: &ExistentialFacts,
     rules: &ElRules,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
 ) -> bool {
     let mut changed = false;
-    for fact in &rules.existential_facts {
+    for fact in &facts.list {
         let supers = supers_of(role_super, fact.role);
         for trigger in &rules.existential_triggers {
             if !supers.contains(&trigger.role) {
@@ -134,7 +163,8 @@ fn apply_existential_propagation(
 /// Inverse-role chains and length ≠ 2 chains are rejected upstream
 /// during rule collection — those stay in the tableau's lane.
 fn apply_role_chains(
-    subsumers: &mut Subsumers,
+    facts: &mut ExistentialFacts,
+    subsumers: &Subsumers,
     rules: &ElRules,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
 ) -> bool {
@@ -142,39 +172,32 @@ fn apply_role_chains(
         return false;
     }
     let mut changed = false;
-    // Snapshot facts up-front — they're a Vec inside `rules`, but
-    // we'll also need to iterate against the live subsumer table.
+    // Snapshot the current fact list so we can derive against a
+    // stable view of this iteration's state; the loop runs again on
+    // any change.
+    let snapshot: Vec<ExistentialFact> = facts.list.clone();
     for &(r1, r2, sup) in &rules.chain_axioms {
-        for fact1 in &rules.existential_facts {
+        for fact1 in &snapshot {
             if !supers_of(role_super, fact1.role).contains(&r1) {
                 continue;
             }
-            // We need a class `B'` that subsumes `fact1.target` and
-            // has an outgoing r2-fact. Walk every fact2; check
-            // subsumer membership against `fact1.target`.
-            for fact2 in &rules.existential_facts {
+            for fact2 in &snapshot {
                 if !supers_of(role_super, fact2.role).contains(&r2) {
                     continue;
                 }
                 if !subsumers.contains(fact1.target, fact2.sub) {
                     continue;
                 }
-                // Now A = fact1.sub has an implied sup-successor of
-                // class fact2.target. Fire any trigger that matches.
-                let sup_supers = supers_of(role_super, sup);
-                for trigger in &rules.existential_triggers {
-                    if !sup_supers.contains(&trigger.role) {
-                        continue;
-                    }
-                    if !subsumers.contains(fact2.target, trigger.body) {
-                        continue;
-                    }
-                    let candidates = classes_with_subsumer(subsumers, fact1.sub);
-                    for x in candidates {
-                        if subsumers.add(x, trigger.head) {
-                            changed = true;
-                        }
-                    }
+                // Derive (fact1.sub, sup, fact2.target). Further
+                // sweeps of apply_existential_propagation will fire
+                // any matching trigger against this fact; further
+                // chain sweeps lengthen the chain through it.
+                if facts.add(ExistentialFact {
+                    sub: fact1.sub,
+                    role: sup,
+                    target: fact2.target,
+                }) {
+                    changed = true;
                 }
             }
         }
@@ -188,11 +211,12 @@ fn apply_role_chains(
 /// - `range(r')` ∈ subsumers(Y) for every `r' ⊒ r`.
 fn apply_domain_and_range(
     subsumers: &mut Subsumers,
+    facts: &ExistentialFacts,
     rules: &ElRules,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
 ) -> bool {
     let mut changed = false;
-    for fact in &rules.existential_facts {
+    for fact in &facts.list {
         let supers = supers_of(role_super, fact.role);
         for super_role in &supers {
             if let Some(domains) = rules.role_domains.get(super_role) {
@@ -865,6 +889,35 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Finger"), class(&internal, "HasArmRoot")));
+    }
+
+    #[test]
+    fn transitive_role_chains_three_hops() {
+        // TransitiveObjectProperty(partOf); Finger ⊑ ∃partOf.Hand,
+        // Hand ⊑ ∃partOf.Arm, Arm ⊑ ∃partOf.Body. With derived
+        // existentials, the closure should reach Finger ⊑ ∃partOf.Body
+        // (3 hops). The trigger ∃partOf.Body ⊑ BodyPart then fires
+        // on Finger, Hand, and Arm.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Finger))\n\
+    Declaration(Class(:Hand))\n\
+    Declaration(Class(:Arm))\n\
+    Declaration(Class(:Body))\n\
+    Declaration(Class(:BodyPart))\n\
+    Declaration(ObjectProperty(:partOf))\n\
+    TransitiveObjectProperty(:partOf)\n\
+    SubClassOf(:Finger ObjectSomeValuesFrom(:partOf :Hand))\n\
+    SubClassOf(:Hand ObjectSomeValuesFrom(:partOf :Arm))\n\
+    SubClassOf(:Arm ObjectSomeValuesFrom(:partOf :Body))\n\
+    SubClassOf(ObjectSomeValuesFrom(:partOf :Body) :BodyPart)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Arm"), class(&internal, "BodyPart")));
+        assert!(subs.contains(class(&internal, "Hand"), class(&internal, "BodyPart")));
+        assert!(subs.contains(class(&internal, "Finger"), class(&internal, "BodyPart")));
     }
 
     #[test]

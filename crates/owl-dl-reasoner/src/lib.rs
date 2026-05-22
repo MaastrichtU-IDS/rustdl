@@ -14,8 +14,13 @@
 //! `ALCHIQ` and full `SROIQ(D)`.
 
 mod classify;
+mod realize;
 
 pub use classify::{Classification, classify, classify_internal};
+pub use realize::{
+    Realization, instances_of, instances_of_internal, is_instance_of, is_instance_of_internal,
+    realize, realize_internal,
+};
 
 use std::collections::HashMap;
 

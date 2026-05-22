@@ -21,7 +21,8 @@ use horned_owl::io::ofn::reader::read;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
-    Classification, classify, is_class_satisfiable, is_consistent, is_subclass_of,
+    Classification, Realization, classify, instances_of, is_class_satisfiable, is_consistent,
+    is_instance_of, is_subclass_of, realize,
 };
 
 #[derive(Parser, Debug)]
@@ -60,6 +61,27 @@ enum Command {
     },
     /// Compute the full class hierarchy of the ontology.
     Classify {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+    },
+    /// Decide whether INDIVIDUAL is provably an instance of CLASS.
+    Instance {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+        /// Full IRI of the class.
+        class_iri: String,
+        /// Full IRI of the individual.
+        individual_iri: String,
+    },
+    /// List every individual provably in CLASS.
+    Instances {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+        /// Full IRI of the class.
+        class_iri: String,
+    },
+    /// Realize the ontology: per-individual most-specific entailed types.
+    Realize {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
@@ -154,6 +176,38 @@ fn main() -> Result<()> {
             let h = classify(&onto).context("classify")?;
             print_classification(&h);
         }
+        Command::Instance {
+            file,
+            class_iri,
+            individual_iri,
+        } => {
+            let onto = parse_ofn(&file)?;
+            let verdict =
+                is_instance_of(&onto, &class_iri, &individual_iri).context("is_instance_of")?;
+            println!("{}", if verdict { "yes" } else { "no" });
+        }
+        Command::Instances { file, class_iri } => {
+            let onto = parse_ofn(&file)?;
+            let members = instances_of(&onto, &class_iri).context("instances_of")?;
+            for iri in members {
+                println!("{iri}");
+            }
+        }
+        Command::Realize { file } => {
+            let onto = parse_ofn(&file)?;
+            let r = realize(&onto).context("realize")?;
+            print_realization(&r);
+        }
     }
     Ok(())
+}
+
+fn print_realization(r: &Realization) {
+    for individual in r.individuals() {
+        let leaves = r.most_specific_types(individual);
+        if leaves.is_empty() {
+            continue;
+        }
+        println!("{individual}\t{}", leaves.join("\t"));
+    }
 }

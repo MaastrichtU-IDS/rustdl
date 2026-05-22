@@ -174,6 +174,19 @@ pub fn is_subclass_of_internal(
         .vocabulary
         .class_id(super_iri)
         .ok_or_else(|| ReasonError::UnknownClass(super_iri.to_owned()))?;
+    // Reflexive shortcut.
+    if sub_id == super_id {
+        return Ok(true);
+    }
+    // Saturation fast path: the EL closure is sound (every entry is a
+    // genuine entailment) but only complete for the EL fragment of the
+    // input. If it answers `yes`, we're done — skip the tableau. A
+    // `no` just means "the EL subset doesn't witness it"; full
+    // tableau still needs to run.
+    let closure = owl_dl_saturation::saturate(&internal);
+    if closure.contains(sub_id, super_id) {
+        return Ok(true);
+    }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
     let sat = run_satisfiability(internal, move |pool| {
@@ -1030,6 +1043,40 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         assert!(
             !is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/B")
+                .expect("verdict")
+        );
+    }
+
+    #[test]
+    fn subclass_via_saturation_then_tableau_mixed_ontology() {
+        // Mixed input: an EL subsumption (A ⊑ B ⊑ C reachable by the
+        // saturation engine) plus a non-EL one (D ⊑ ∀r.A which the
+        // saturation drops but the tableau handles). The
+        // orchestrator should resolve both correctly.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+    SubClassOf(:D ObjectAllValuesFrom(:r :A))\n\
+)\n"
+        ));
+        // EL chain: saturation should handle without invoking tableau.
+        assert!(
+            is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/C").expect("verdict")
+        );
+        // Reflexive: handled by the in-function shortcut.
+        assert!(
+            is_subclass_of(&onto, "http://rustdl.test/D", "http://rustdl.test/D").expect("verdict")
+        );
+        // A doesn't subsume D (truly false; tableau-confirmed).
+        assert!(
+            !is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/D")
                 .expect("verdict")
         );
     }

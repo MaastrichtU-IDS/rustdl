@@ -19,6 +19,7 @@ use horned_owl::ontology::set::SetOntology;
 
 use owl_dl_core::InternalOntology;
 use owl_dl_core::convert::convert_ontology;
+use owl_dl_saturation::saturate;
 
 use crate::{ReasonError, is_subclass_of_internal, run_satisfiability};
 
@@ -170,6 +171,13 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
         }
     }
 
+    // Run the EL saturation engine once. Its closure is *sound*
+    // (every entry is a genuine entailment) but only complete for
+    // the EL fragment of the input — so we use it as a fast positive
+    // oracle and fall back to the tableau when the closure has
+    // nothing to say.
+    let closure = saturate(internal);
+
     // Second pass: pairwise subsumption. Skip rows where `i` is
     // unsatisfiable (it subsumes everything trivially — fill the
     // row).
@@ -180,6 +188,8 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             entailed[i].iter_mut().take(n).for_each(|v| *v = true);
             continue;
         }
+        let sub_class =
+            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
         for j in 0..n {
             if i == j {
                 continue;
@@ -190,6 +200,14 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             // would force `i` unsat, contradicting that — so it's
             // false.
             if unsatisfiable_idxs.contains(&j) {
+                continue;
+            }
+            let super_class =
+                owl_dl_core::ClassId::new(u32::try_from(j).expect("class index fits in u32"));
+            // Saturation fast path: if the closure already entails
+            // `i ⊑ j`, we're done — skip the tableau pass.
+            if closure.contains(sub_class, super_class) {
+                entailed[i][j] = true;
                 continue;
             }
             let sub = &classes[i];

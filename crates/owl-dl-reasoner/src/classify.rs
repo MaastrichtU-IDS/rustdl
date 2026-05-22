@@ -18,8 +18,8 @@ use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
 use rayon::prelude::*;
 
-use owl_dl_core::InternalOntology;
 use owl_dl_core::convert::convert_ontology;
+use owl_dl_core::{Axiom, ConceptExpr, ConceptId, ConceptPool, InternalOntology, SubRolePath};
 use owl_dl_saturation::saturate;
 
 use crate::{PreparedOntology, ReasonError};
@@ -57,6 +57,12 @@ pub struct ClassificationStats {
     /// Classes that needed a per-class tableau satisfiability probe
     /// (saturation had no opinion).
     pub tableau_unsat_calls: usize,
+    /// True iff the entire ontology fits inside the EL fragment
+    /// our saturation engine is complete for — in that case the
+    /// tableau is never invoked and saturation's `no` answer is
+    /// itself the verdict (`no` pairs aren't counted in
+    /// `saturation_subsumption_hits`, only the `yes` pairs are).
+    pub pure_el_mode: bool,
 }
 
 impl Classification {
@@ -161,6 +167,7 @@ pub fn classify<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Classification, 
 /// # Errors
 ///
 /// See [`ReasonError`].
+#[allow(clippy::too_many_lines)]
 pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, ReasonError> {
     // Snapshot the class IRIs before we clone the ontology into each
     // subsumption call. Order is the vocabulary's interning order.
@@ -188,6 +195,16 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
     // oracle and fall back to the tableau when the closure has
     // nothing to say.
     let closure = saturate(internal);
+
+    // If the entire ontology fits inside the EL fragment our
+    // saturation engine recognises, the closure is *also complete*
+    // — saturation's `no` answer is itself the verdict, and we
+    // never need the tableau. This is the common case for partonomy
+    // ontologies like Galen-EL or the SNOMED core fragment.
+    if is_pure_el(internal) {
+        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+    }
+
     // Prepare the tableau-side pipeline once. Every subsequent
     // tableau query reuses the absorbed TBox, role-side metadata,
     // ABox seed, and pool — only the test concept varies.
@@ -287,6 +304,121 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
         unsatisfiable_idxs,
         stats,
     })
+}
+
+/// Fast-path classifier for ontologies that lie entirely inside our
+/// EL saturation fragment. The closure is then *complete* — both
+/// subsumption and unsatisfiability decisions reduce to closure
+/// lookups, with no tableau calls. Sets `stats.pure_el_mode = true`.
+fn classify_pure_el(
+    internal: &InternalOntology,
+    classes: &[String],
+    index: &HashMap<String, usize>,
+    closure: &owl_dl_saturation::Subsumers,
+) -> Classification {
+    let n = classes.len();
+    let mut stats = ClassificationStats {
+        pure_el_mode: true,
+        ..ClassificationStats::default()
+    };
+    let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
+    let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
+    for (i, row) in entailed.iter_mut().enumerate().take(n) {
+        row[i] = true;
+        let class_id =
+            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        if closure.is_unsatisfiable(class_id) {
+            unsatisfiable_idxs.insert(i);
+            stats.saturation_unsat_hits += 1;
+            for v in row.iter_mut() {
+                *v = true;
+            }
+        }
+    }
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..n {
+        if unsatisfiable_idxs.contains(&i) {
+            continue;
+        }
+        let sub_class =
+            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        #[allow(clippy::needless_range_loop)]
+        for j in 0..n {
+            if i == j || unsatisfiable_idxs.contains(&j) {
+                continue;
+            }
+            let super_class =
+                owl_dl_core::ClassId::new(u32::try_from(j).expect("class index fits in u32"));
+            if closure.contains(sub_class, super_class) {
+                entailed[i][j] = true;
+                stats.saturation_subsumption_hits += 1;
+            }
+        }
+    }
+    let _ = internal; // closure was built from this; nothing more to read
+    Classification {
+        classes: classes.to_vec(),
+        index: index.clone(),
+        entailed,
+        unsatisfiable_idxs,
+        stats,
+    }
+}
+
+/// True iff every axiom in `internal` lies inside the EL fragment
+/// the saturation engine is complete for. A conservative check: any
+/// construct outside the supported shapes (disjunction, complement,
+/// cardinality, nominals, inverse roles, role characteristics that
+/// expand to cardinality, `ABox` assertions, ...) immediately returns
+/// `false`.
+fn is_pure_el(internal: &InternalOntology) -> bool {
+    internal
+        .axioms
+        .iter()
+        .all(|ax| is_el_axiom(ax, &internal.concepts))
+}
+
+fn is_el_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
+    match ax {
+        Axiom::SubClassOf { sub, sup } => is_el_concept(*sub, pool) && is_el_concept(*sup, pool),
+        Axiom::EquivalentClasses(members) => members.iter().all(|c| is_el_concept(*c, pool)),
+        Axiom::DisjointClasses(members) => members.iter().all(|c| is_el_concept(*c, pool)),
+        Axiom::SubObjectPropertyOf { sub, sup } => {
+            if sup.is_inverse() {
+                return false;
+            }
+            match sub {
+                SubRolePath::Role(r) => !r.is_inverse(),
+                SubRolePath::Chain(parts) => {
+                    parts.len() == 2 && parts.iter().all(|r| !r.is_inverse())
+                }
+            }
+        }
+        Axiom::EquivalentObjectProperties(roles) => roles.iter().all(|r| !r.is_inverse()),
+        Axiom::TransitiveRole(role) => !role.is_inverse(),
+        Axiom::ObjectPropertyDomain { role, domain } => {
+            !role.is_inverse() && is_el_concept(*domain, pool)
+        }
+        Axiom::ObjectPropertyRange { role, range } => {
+            !role.is_inverse() && is_el_concept(*range, pool)
+        }
+        Axiom::DeclareClass(_)
+        | Axiom::DeclareObjectProperty(_)
+        | Axiom::DeclareNamedIndividual(_) => true,
+        // Everything else (ABox assertions, role characteristics that
+        // expand to cardinality, disjoint object properties, ...) is
+        // outside the saturation fragment.
+        _ => false,
+    }
+}
+
+fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Top | ConceptExpr::Atomic(_) => true,
+        ConceptExpr::And(ops) => ops.iter().all(|op| is_el_concept(*op, pool)),
+        ConceptExpr::Some(role, body) => !role.is_inverse() && is_el_concept(*body, pool),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -390,15 +522,38 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let h = classify(&onto).expect("classification");
         let stats = h.stats();
-        // 4 classes, 4*3 = 12 ordered non-reflexive pairs.
-        assert_eq!(
-            stats.saturation_subsumption_hits + stats.tableau_subsumption_calls,
-            12
+        // Pure EL ⇒ tableau is never invoked, saturation alone is
+        // both sound and complete here.
+        assert!(stats.pure_el_mode);
+        assert_eq!(stats.tableau_subsumption_calls, 0);
+        assert_eq!(stats.tableau_unsat_calls, 0);
+        // Entailed pairs are A⊑B, A⊑C, A⊑D, B⊑C, B⊑D, C⊑D = 6.
+        assert_eq!(stats.saturation_subsumption_hits, 6);
+    }
+
+    #[test]
+    fn classify_drops_to_tableau_when_axioms_leave_el() {
+        // The DisjointObjectProperties axiom is outside our EL
+        // saturation fragment — classify should NOT take the
+        // pure-EL fast path and should issue at least one tableau
+        // call (per-class unsat probes count).
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        let h = classify(&onto).expect("classification");
+        let stats = h.stats();
+        assert!(!stats.pure_el_mode);
+        assert!(
+            stats.tableau_subsumption_calls + stats.tableau_unsat_calls > 0,
+            "expected the tableau to be invoked for the non-EL fragment"
         );
-        // Every entailed pair was held by saturation. The
-        // non-subsumed pairs (e.g., C ⊑ A) still go to the tableau
-        // because EL saturation only answers `yes` — a miss means
-        // "ask the tableau."
-        assert!(stats.saturation_subsumption_hits > 0);
     }
 }

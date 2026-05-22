@@ -101,6 +101,14 @@ fn print_classification(h: &Classification) {
     let stats = h.stats();
     println!("# classes: {}", classes.len());
     println!(
+        "# mode: {}",
+        if stats.pure_el_mode {
+            "pure EL (saturation-only)"
+        } else {
+            "hybrid (saturation + tableau)"
+        }
+    );
+    println!(
         "# subsumption: saturation={} tableau={}",
         stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
     );

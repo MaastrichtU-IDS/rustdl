@@ -86,6 +86,13 @@ pub struct AbsorbedTBox {
     pub concept_rules_by_trigger: HashMap<ClassId, Vec<ConceptId>>,
     /// Same idea for nominal rules — index by individual id.
     pub nominal_rules_by_individual: HashMap<IndividualId, Vec<ConceptId>>,
+    /// `RoleRule`s with no class guard — they fire on any node that
+    /// has an outgoing edge matching their `role`. Partition of
+    /// `role_rules` produced by [`Self::finalize`].
+    pub unguarded_role_rules: Vec<RoleRule>,
+    /// Guarded `RoleRule`s indexed by guard class. Partition of
+    /// `role_rules` produced by [`Self::finalize`].
+    pub guarded_role_rules_by_guard: HashMap<ClassId, Vec<RoleRule>>,
 }
 
 impl AbsorbedTBox {
@@ -110,6 +117,18 @@ impl AbsorbedTBox {
                 .entry(rule.individual)
                 .or_default()
                 .push(rule.conclusion);
+        }
+        self.unguarded_role_rules.clear();
+        self.guarded_role_rules_by_guard.clear();
+        for rule in &self.role_rules {
+            match rule.guard {
+                None => self.unguarded_role_rules.push(*rule),
+                Some(g) => self
+                    .guarded_role_rules_by_guard
+                    .entry(g)
+                    .or_default()
+                    .push(*rule),
+            }
         }
     }
 }

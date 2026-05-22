@@ -230,6 +230,12 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
     if tbox.role_rules.is_empty() {
         return RuleOutcome::NoChange;
     }
+    // Fall back to the linear scan when the partitioned indices have
+    // not been finalized — guarded by both partitions being empty
+    // *and* `role_rules` being non-empty (i.e. a hand-built TBox that
+    // skipped `finalize`).
+    let use_index = !(tbox.unguarded_role_rules.is_empty()
+        && tbox.guarded_role_rules_by_guard.is_empty());
     let mut pending: Vec<(NodeId, ConceptId)> = Vec::new();
     {
         let pool = ctx.pool();
@@ -242,17 +248,38 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
                 _ => None,
             })
             .collect();
-        for rule in &tbox.role_rules {
-            let guard_ok = match rule.guard {
-                None => true,
-                Some(g) => guards_present.contains(&g),
-            };
-            if !guard_ok {
-                continue;
+        if use_index {
+            for rule in &tbox.unguarded_role_rules {
+                for (seen, neighbour) in n.neighbours() {
+                    if ctx.edge_satisfies(seen, rule.role) {
+                        pending.push((neighbour, rule.target_label));
+                    }
+                }
             }
-            for (seen, neighbour) in n.neighbours() {
-                if ctx.edge_satisfies(seen, rule.role) {
-                    pending.push((neighbour, rule.target_label));
+            for g in &guards_present {
+                if let Some(rules) = tbox.guarded_role_rules_by_guard.get(g) {
+                    for rule in rules {
+                        for (seen, neighbour) in n.neighbours() {
+                            if ctx.edge_satisfies(seen, rule.role) {
+                                pending.push((neighbour, rule.target_label));
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            for rule in &tbox.role_rules {
+                let guard_ok = match rule.guard {
+                    None => true,
+                    Some(g) => guards_present.contains(&g),
+                };
+                if !guard_ok {
+                    continue;
+                }
+                for (seen, neighbour) in n.neighbours() {
+                    if ctx.edge_satisfies(seen, rule.role) {
+                        pending.push((neighbour, rule.target_label));
+                    }
                 }
             }
         }

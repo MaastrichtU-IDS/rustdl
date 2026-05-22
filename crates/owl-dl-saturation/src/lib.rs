@@ -54,6 +54,7 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
         changed |= apply_atomic_subsumptions(&mut subsumers, &rules);
         changed |= apply_conjunctive_triggers(&mut subsumers, &rules);
         changed |= apply_existential_propagation(&mut subsumers, &rules, &role_super);
+        changed |= apply_role_chains(&mut subsumers, &rules, &role_super);
         changed |= apply_domain_and_range(&mut subsumers, &rules, &role_super);
         changed |= apply_disjointness(&mut subsumers, &rules);
         changed |= apply_transitivity(&mut subsumers);
@@ -113,6 +114,67 @@ fn apply_existential_propagation(
             for x in candidates {
                 if subsumers.add(x, trigger.head) {
                     changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// Role chain propagation (Kazakov CR11 — length-2 form). For each
+/// registered chain axiom `r₁ ∘ r₂ ⊑ sup`, the *implied* edge
+/// `A —sup→ C` whenever `A —r₁→ B` and `B —r₂→ C` chain through.
+///
+/// We don't materialise derived `ExistentialFact`s; instead we go
+/// straight to the trigger side: any `ExistentialTrigger (rt, body,
+/// head)` with `sup ⊑ rt` and `body ∈ subsumers(C)` fires `head` to
+/// every class that subsumes `A`. Role-hierarchy lifts apply at the
+/// fact roles (`r₁` and `r₂`) and at the trigger role (`rt`).
+///
+/// Inverse-role chains and length ≠ 2 chains are rejected upstream
+/// during rule collection — those stay in the tableau's lane.
+fn apply_role_chains(
+    subsumers: &mut Subsumers,
+    rules: &ElRules,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+) -> bool {
+    if rules.chain_axioms.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    // Snapshot facts up-front — they're a Vec inside `rules`, but
+    // we'll also need to iterate against the live subsumer table.
+    for &(r1, r2, sup) in &rules.chain_axioms {
+        for fact1 in &rules.existential_facts {
+            if !supers_of(role_super, fact1.role).contains(&r1) {
+                continue;
+            }
+            // We need a class `B'` that subsumes `fact1.target` and
+            // has an outgoing r2-fact. Walk every fact2; check
+            // subsumer membership against `fact1.target`.
+            for fact2 in &rules.existential_facts {
+                if !supers_of(role_super, fact2.role).contains(&r2) {
+                    continue;
+                }
+                if !subsumers.contains(fact1.target, fact2.sub) {
+                    continue;
+                }
+                // Now A = fact1.sub has an implied sup-successor of
+                // class fact2.target. Fire any trigger that matches.
+                let sup_supers = supers_of(role_super, sup);
+                for trigger in &rules.existential_triggers {
+                    if !sup_supers.contains(&trigger.role) {
+                        continue;
+                    }
+                    if !subsumers.contains(fact2.target, trigger.body) {
+                        continue;
+                    }
+                    let candidates = classes_with_subsumer(subsumers, fact1.sub);
+                    for x in candidates {
+                        if subsumers.add(x, trigger.head) {
+                            changed = true;
+                        }
+                    }
                 }
             }
         }
@@ -309,6 +371,13 @@ struct ElRules {
     /// `C`. Equivalent to `⊤ ⊑ ∀r.C`; in EL we only consult it on
     /// edges that actually appear (the existential-fact targets).
     role_ranges: HashMap<RoleId, Vec<ClassId>>,
+    /// Role chain axioms `r₁ ∘ r₂ ⊑ sup`. Lowered from
+    /// `SubObjectPropertyOf(ObjectPropertyChain(r₁ r₂), sup)` with
+    /// length-2 named roles end-to-end, and from
+    /// `TransitiveObjectProperty(r)` as `(r, r, r)`. Longer chains
+    /// and inverse-role chains are dropped — those stay in the
+    /// tableau's lane.
+    chain_axioms: Vec<(RoleId, RoleId, RoleId)>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -397,6 +466,22 @@ fn collect_el_rules(internal: &InternalOntology) -> ElRules {
                         .or_default()
                         .push(*id);
                 }
+            }
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(parts),
+                sup,
+            } if parts.len() == 2
+                && !parts[0].is_inverse()
+                && !parts[1].is_inverse()
+                && !sup.is_inverse() =>
+            {
+                rules
+                    .chain_axioms
+                    .push((parts[0].role_id(), parts[1].role_id(), sup.role_id()));
+            }
+            Axiom::TransitiveRole(role) if !role.is_inverse() => {
+                let r = role.role_id();
+                rules.chain_axioms.push((r, r, r));
             }
             _ => {}
         }
@@ -728,6 +813,58 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Pet"), class(&internal, "Reachable")));
+    }
+
+    #[test]
+    fn role_chain_propagates_through_two_existentials() {
+        // SubObjectPropertyOf(ObjectPropertyChain(hasParent, hasBrother), hasUncle).
+        // Niece ⊑ ∃hasParent.Parent.
+        // Parent ⊑ ∃hasBrother.Man.
+        // ∃hasUncle.Man ⊑ HasUncle.
+        // ⇒ Niece ⊑ HasUncle.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Niece))\n\
+    Declaration(Class(:Parent))\n\
+    Declaration(Class(:Man))\n\
+    Declaration(Class(:HasUncle))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(ObjectProperty(:hasBrother))\n\
+    Declaration(ObjectProperty(:hasUncle))\n\
+    SubObjectPropertyOf(ObjectPropertyChain(:hasParent :hasBrother) :hasUncle)\n\
+    SubClassOf(:Niece ObjectSomeValuesFrom(:hasParent :Parent))\n\
+    SubClassOf(:Parent ObjectSomeValuesFrom(:hasBrother :Man))\n\
+    SubClassOf(ObjectSomeValuesFrom(:hasUncle :Man) :HasUncle)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Niece"), class(&internal, "HasUncle")));
+    }
+
+    #[test]
+    fn transitive_role_chains_two_existentials() {
+        // TransitiveObjectProperty(partOf) ≡ partOf ∘ partOf ⊑ partOf.
+        // Finger ⊑ ∃partOf.Hand.
+        // Hand ⊑ ∃partOf.Arm.
+        // ∃partOf.Arm ⊑ HasArmRoot.
+        // ⇒ Finger ⊑ HasArmRoot.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Finger))\n\
+    Declaration(Class(:Hand))\n\
+    Declaration(Class(:Arm))\n\
+    Declaration(Class(:HasArmRoot))\n\
+    Declaration(ObjectProperty(:partOf))\n\
+    TransitiveObjectProperty(:partOf)\n\
+    SubClassOf(:Finger ObjectSomeValuesFrom(:partOf :Hand))\n\
+    SubClassOf(:Hand ObjectSomeValuesFrom(:partOf :Arm))\n\
+    SubClassOf(ObjectSomeValuesFrom(:partOf :Arm) :HasArmRoot)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Finger"), class(&internal, "HasArmRoot")));
     }
 
     #[test]

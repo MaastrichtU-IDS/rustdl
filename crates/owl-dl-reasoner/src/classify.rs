@@ -1024,4 +1024,46 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         assert_top_down_matches_naive(&onto);
     }
+
+    #[test]
+    fn classify_top_down_issues_fewer_tableau_calls_than_naive() {
+        // Constructed shape: 6 classes A..F with two told subsumptions
+        // (A ⊑ B, C ⊑ D), plus DisjointObjectProperties forcing the
+        // hybrid path. With saturation handling the told edges, the
+        // naive path still tableau-tests every remaining pair (6×5 =
+        // 30 pairs, minus closure hits and unsat-row fills). The
+        // top-down path walks the partial hierarchy and only probes
+        // candidates encountered during descent — should issue
+        // strictly fewer subsumption calls.
+        //
+        // This is a regression-test against accidental degradation of
+        // the top-down algorithm into "test every pair anyway."
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(Class(:E))\n\
+    Declaration(Class(:F))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:C :D)\n\
+)\n"
+        ));
+        let naive = classify(&onto).expect("naive");
+        let td = classify_top_down(&onto).expect("top-down");
+        let naive_calls = naive.stats().tableau_subsumption_calls;
+        let td_calls = td.stats().tableau_subsumption_calls;
+        assert!(
+            td_calls < naive_calls,
+            "top-down should issue fewer tableau subsumption calls than naive — \
+             naive={naive_calls} top-down={td_calls}",
+        );
+        // Sanity: outputs still match.
+        assert_top_down_matches_naive(&onto);
+    }
 }

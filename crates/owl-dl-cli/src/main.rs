@@ -21,8 +21,8 @@ use horned_owl::io::ofn::reader::read;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
-    Classification, Realization, classify, classify_with_timeout, instances_of,
-    is_class_satisfiable, is_consistent,
+    Classification, Realization, classify, classify_top_down, classify_top_down_with_timeout,
+    classify_with_timeout, instances_of, is_class_satisfiable, is_consistent,
     is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
 };
 
@@ -71,6 +71,13 @@ enum Command {
         /// SROIQ-heavy ontologies.
         #[arg(long)]
         pair_timeout_ms: Option<u64>,
+        /// Use top-down classification (walks the partial hierarchy
+        /// instead of the naive `n²` pairwise sweep). Algorithmically
+        /// `n × depth × branching` tableau calls; same `Classification`
+        /// output as the default path. Opt-in while we collect
+        /// evidence that it's the right default.
+        #[arg(long)]
+        top_down: bool,
     },
     /// Decide whether INDIVIDUAL is provably an instance of CLASS.
     Instance {
@@ -171,6 +178,7 @@ fn print_classification(h: &Classification) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -216,13 +224,18 @@ fn main() -> Result<()> {
         Command::Classify {
             file,
             pair_timeout_ms,
+            top_down,
         } => {
             let onto = parse_ofn(&file)?;
-            let h = if let Some(ms) = pair_timeout_ms {
-                classify_with_timeout(&onto, std::time::Duration::from_millis(ms))
-                    .context("classify_with_timeout")?
-            } else {
-                classify(&onto).context("classify")?
+            let timeout = pair_timeout_ms.map(std::time::Duration::from_millis);
+            let h = match (top_down, timeout) {
+                (true, Some(t)) => classify_top_down_with_timeout(&onto, t)
+                    .context("classify_top_down_with_timeout")?,
+                (true, None) => classify_top_down(&onto).context("classify_top_down")?,
+                (false, Some(t)) => {
+                    classify_with_timeout(&onto, t).context("classify_with_timeout")?
+                }
+                (false, None) => classify(&onto).context("classify")?,
             };
             print_classification(&h);
         }

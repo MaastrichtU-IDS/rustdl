@@ -1,0 +1,22 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/79_tseitin_dedupes_reordered_intersection_sat>
+    Declaration(Class(:Test))
+    Declaration(Class(:X))
+    Declaration(Class(:Y))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:W))
+    Declaration(ObjectProperty(:r))
+    # Two existentials with the same intersection in different
+    # syntactic orders. Tseitin should dedupe them onto a single
+    # synthetic stand-in.
+    SubClassOf(:X ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B)))
+    SubClassOf(:Y ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :A)))
+    SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B)) :W)
+    EquivalentClasses(:Test ObjectIntersectionOf(:X :Y :W))
+)

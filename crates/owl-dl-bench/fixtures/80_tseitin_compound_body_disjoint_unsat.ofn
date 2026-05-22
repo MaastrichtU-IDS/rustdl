@@ -1,0 +1,20 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/80_tseitin_compound_body_disjoint_unsat>
+    Declaration(Class(:Test))
+    Declaration(Class(:Y))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(ObjectProperty(:r))
+    # Y is forced into the disjoint pair A ⊓ B. Anything that has a
+    # Y witness via an existential is therefore unsat (because Y is
+    # unsat). Test asserts exactly that witness.
+    DisjointClasses(:A :B)
+    SubClassOf(:Y :A)
+    SubClassOf(:Y :B)
+    EquivalentClasses(:Test ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B :Y)))
+)

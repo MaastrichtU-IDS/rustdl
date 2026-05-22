@@ -469,3 +469,27 @@ file = "76_disjoint_properties_distinct_targets_sat.ofn"
 description = "DisjointObjectProperties(r,s); r(a,b) ∧ s(a,c) with b ≠ c — distinct targets, disjointness holds"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "77_tseitin_compound_existential_body_sat.ofn"
+description = "Test ≡ ∃r.(A ⊓ B) — compound existential body via Tseitin synthetic, satisfiable since A and B aren't disjoint"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "78_tseitin_propagates_through_intersection_sat.ofn"
+description = "Y ⊑ A ⊓ B; X ⊑ ∃r.Y; ∃r.(A ⊓ B) ⊑ W ⇒ X ⊑ W (Test ≡ X ⊓ W)"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "79_tseitin_dedupes_reordered_intersection_sat.ofn"
+description = "∃r.(A ⊓ B) and ∃r.(B ⊓ A) should dedupe to the same Tseitin synthetic; Test ≡ X ⊓ Y ⊓ W stays satisfiable"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "80_tseitin_compound_body_disjoint_unsat.ofn"
+description = "DisjointClasses(A, B) + Y ⊑ A ⊓ B + Test ≡ ∃r.(A ⊓ B ⊓ Y) — Y is unsat, intersection has no model"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

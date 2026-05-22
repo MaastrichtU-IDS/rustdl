@@ -111,6 +111,16 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     graph: CompletionGraph,
     trail: TableauTrail,
+    /// Optional wall-clock deadline. When set, [`crate::search`] checks
+    /// it at every node and abandons the search (returning `None`) the
+    /// moment it elapses. Lets a caller cap a single satisfiability
+    /// probe without resorting to OS-thread cancellation. Inspected
+    /// via [`Self::deadline_reached`].
+    deadline: Option<std::time::Instant>,
+    /// Set to `true` by [`crate::search`] the first time it notices
+    /// `deadline` has elapsed. Sticky — callers read this *after*
+    /// search returns to distinguish "depth-limited" from "timed out".
+    deadline_hit: bool,
 }
 
 impl<'pool> TableauContext<'pool, 'static, 'static> {
@@ -130,6 +140,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
+            deadline: None,
+            deadline_hit: false,
         }
     }
 }
@@ -150,6 +162,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
+            deadline: None,
+            deadline_hit: false,
         }
     }
 }
@@ -175,7 +189,41 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
+            deadline: None,
+            deadline_hit: false,
         }
+    }
+
+    /// Cap the search at a wall-clock instant. The driver in
+    /// [`crate::search`] consults it on every recursion and bails out
+    /// (returning `None`) the moment the deadline has passed. Use this
+    /// to bound per-pair tableau time in higher-level classifiers
+    /// without resorting to OS-thread cancellation.
+    pub fn set_deadline(&mut self, deadline: std::time::Instant) -> &mut Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// True iff a previously-set deadline was observed elapsed during
+    /// the search. Sticky once set. Read this *after* [`crate::search`]
+    /// returns to disambiguate "depth limit reached" from "deadline
+    /// hit".
+    #[must_use]
+    pub fn deadline_reached(&self) -> bool {
+        self.deadline_hit
+    }
+
+    /// Internal: returns true iff a deadline is configured and `now`
+    /// has reached it. Marks the sticky `deadline_hit` flag.
+    #[doc(hidden)]
+    pub fn check_deadline(&mut self) -> bool {
+        if let Some(d) = self.deadline
+            && std::time::Instant::now() >= d
+        {
+            self.deadline_hit = true;
+            return true;
+        }
+        false
     }
 
     #[must_use]

@@ -21,7 +21,8 @@ use horned_owl::io::ofn::reader::read;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
-    Classification, Realization, classify, instances_of, is_class_satisfiable, is_consistent,
+    Classification, Realization, classify, classify_with_timeout, instances_of,
+    is_class_satisfiable, is_consistent,
     is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
 };
 
@@ -63,6 +64,13 @@ enum Command {
     Classify {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
+        /// Optional per-pair tableau timeout in milliseconds. Pairs
+        /// exceeding the budget default to `not subsumed` (sound
+        /// under-approximation) and are counted in the output stats.
+        /// Useful for diagnosing pathological tableau queries on
+        /// SROIQ-heavy ontologies.
+        #[arg(long)]
+        pair_timeout_ms: Option<u64>,
     },
     /// Decide whether INDIVIDUAL is provably an instance of CLASS.
     Instance {
@@ -127,6 +135,12 @@ fn print_classification(h: &Classification) {
         "# satisfiability probes: saturation={} tableau={}",
         stats.saturation_unsat_hits, stats.tableau_unsat_calls
     );
+    if stats.timed_out_pairs > 0 {
+        println!(
+            "# timed-out pairs: {} (defaulted to not-subsumed)",
+            stats.timed_out_pairs
+        );
+    }
     let unsat = h.unsatisfiable_classes();
     if !unsat.is_empty() {
         println!("# unsatisfiable: {}", unsat.len());
@@ -199,9 +213,17 @@ fn main() -> Result<()> {
             let verdict = is_subclass_of(&onto, &sub, &sup).context("is_subclass_of")?;
             println!("{}", if verdict { "yes" } else { "no" });
         }
-        Command::Classify { file } => {
+        Command::Classify {
+            file,
+            pair_timeout_ms,
+        } => {
             let onto = parse_ofn(&file)?;
-            let h = classify(&onto).context("classify")?;
+            let h = if let Some(ms) = pair_timeout_ms {
+                classify_with_timeout(&onto, std::time::Duration::from_millis(ms))
+                    .context("classify_with_timeout")?
+            } else {
+                classify(&onto).context("classify")?
+            };
             print_classification(&h);
         }
         Command::Instance {

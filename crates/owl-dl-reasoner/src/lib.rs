@@ -43,7 +43,9 @@
 mod classify;
 mod realize;
 
-pub use classify::{Classification, ClassificationStats, classify, classify_internal};
+pub use classify::{
+    Classification, ClassificationStats, classify, classify_internal, classify_with_timeout,
+};
 pub use realize::{
     Realization, instances_of, instances_of_internal, is_instance_of, is_instance_of_internal,
     realize, realize_internal,
@@ -462,6 +464,34 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             &self.abox,
+            None,
+            build_test_concept,
+        )
+        .map(|opt| opt.expect("no deadline ⇒ search always returns Some(_)"))
+    }
+
+    /// Like [`Self::decide`] but the search is bounded by `deadline`.
+    /// Returns `Ok(Some(sat))` if the tableau reached a verdict in
+    /// time, or `Ok(None)` if the deadline elapsed first.
+    pub(crate) fn decide_with_deadline<F>(
+        &self,
+        deadline: std::time::Instant,
+        build_test_concept: F,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            &self.abox,
+            Some(deadline),
             build_test_concept,
         )
     }
@@ -830,14 +860,18 @@ fn decide<F>(
     disjoint_role_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
+    deadline: Option<std::time::Instant>,
     build_test_concept: F,
-) -> Result<bool, ReasonError>
+) -> Result<Option<bool>, ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
     let mut pool = pool.clone();
     let test_concept: ConceptId = build_test_concept(&mut pool);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
+    if let Some(d) = deadline {
+        ctx.set_deadline(d);
+    }
     for &(r, s) in inverse_pairs {
         ctx.declare_inverse_pair(r, s);
     }
@@ -915,7 +949,12 @@ where
     let test_root = ctx.new_node();
     ctx.add_label(test_root, test_concept);
 
-    owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH).ok_or(ReasonError::NoVerdict)
+    let outcome = owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH);
+    match outcome {
+        Some(v) => Ok(Some(v)),
+        None if ctx.deadline_reached() => Ok(None),
+        None => Err(ReasonError::NoVerdict),
+    }
 }
 
 #[cfg(test)]

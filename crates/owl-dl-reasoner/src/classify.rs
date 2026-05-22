@@ -13,6 +13,7 @@
 //! acceleration.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
@@ -23,6 +24,10 @@ use owl_dl_core::{Axiom, ConceptExpr, ConceptId, ConceptPool, InternalOntology, 
 use owl_dl_saturation::saturate;
 
 use crate::{PreparedOntology, ReasonError};
+
+/// `(i, j, entailed, used_saturation, timed_out)` — one entry per
+/// pairwise subsumption check returned from the parallel work loop.
+type PairResult = (usize, usize, bool, bool, bool);
 
 /// Result of [`classify`]. Holds the complete pairwise subsumption
 /// matrix over every declared named class plus the IRIs themselves,
@@ -63,6 +68,12 @@ pub struct ClassificationStats {
     /// itself the verdict (`no` pairs aren't counted in
     /// `saturation_subsumption_hits`, only the `yes` pairs are).
     pub pure_el_mode: bool,
+    /// When the classifier was configured with a per-pair timeout,
+    /// the number of pairs that hit it before the tableau returned
+    /// a verdict. Those pairs default to `not subsumed` in the
+    /// entailment matrix — sound (never reports a false positive),
+    /// but may under-report subsumption.
+    pub timed_out_pairs: usize,
 }
 
 impl Classification {
@@ -161,14 +172,37 @@ pub fn classify<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Classification, 
     classify_internal(&internal)
 }
 
+/// Like [`classify`] but each pairwise tableau query is bounded by
+/// `per_pair_timeout`. Pairs that exceed the timeout default to
+/// `not subsumed` in the entailment matrix (sound under-approximation)
+/// and bump [`ClassificationStats::timed_out_pairs`].
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn classify_with_timeout<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    per_pair_timeout: std::time::Duration,
+) -> Result<Classification, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    classify_internal_with_timeout(&internal, Some(per_pair_timeout))
+}
+
 /// Internal entry point. Useful for tests that hand-build an
 /// [`InternalOntology`].
 ///
 /// # Errors
 ///
 /// See [`ReasonError`].
-#[allow(clippy::too_many_lines)]
 pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, ReasonError> {
+    classify_internal_with_timeout(internal, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn classify_internal_with_timeout(
+    internal: &InternalOntology,
+    per_pair_timeout: Option<std::time::Duration>,
+) -> Result<Classification, ReasonError> {
     // Snapshot the class IRIs before we clone the ontology into each
     // subsumption call. Order is the vocabulary's interning order.
     let classes: Vec<String> = (0..internal.vocabulary.num_classes())
@@ -225,6 +259,17 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             if closure.is_unsatisfiable(class_id) {
                 // (idx, is_sat, used_saturation)
                 Ok((i, false, true))
+            } else if let Some(timeout) = per_pair_timeout {
+                let deadline = Instant::now() + timeout;
+                // A timed-out unsat probe defaults to "satisfiable" —
+                // sound: if the class actually were unsat the timeout
+                // would have flagged it via saturation already, and
+                // assuming sat here can never cause us to claim a
+                // false subsumption later.
+                let sat = prepared
+                    .decide_with_deadline(deadline, move |pool| pool.atomic(class_id))?
+                    .unwrap_or(true);
+                Ok((i, sat, false))
             } else {
                 let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
                 Ok((i, sat, false))
@@ -268,7 +313,7 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             work.push((i, j));
         }
     }
-    let pair_results: Result<Vec<(usize, usize, bool, bool)>, ReasonError> = work
+    let pair_results: Result<Vec<PairResult>, ReasonError> = work
         .par_iter()
         .map(|&(i, j)| {
             let sub_class =
@@ -276,19 +321,42 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             let super_class =
                 owl_dl_core::ClassId::new(u32::try_from(j).expect("class index fits in u32"));
             if closure.contains(sub_class, super_class) {
-                // (i, j, entailed, used_saturation)
-                return Ok((i, j, true, true));
+                // (i, j, entailed, used_saturation, timed_out)
+                return Ok((i, j, true, true, false));
             }
-            let sat = prepared.decide(move |pool| {
+            let build = move |pool: &mut ConceptPool| {
                 let sub_concept = pool.atomic(sub_class);
                 let super_concept = pool.atomic(super_class);
                 let not_super = pool.not(super_concept);
                 pool.and(vec![sub_concept, not_super])
-            })?;
-            Ok((i, j, !sat, false))
+            };
+            match per_pair_timeout {
+                None => {
+                    let sat = prepared.decide(build)?;
+                    Ok((i, j, !sat, false, false))
+                }
+                Some(timeout) => {
+                    // Cooperative deadline: the tableau's search loop
+                    // checks `Instant::now()` against this deadline on
+                    // every recursion and bails out if exceeded. No
+                    // extra threads, no cancellation race — the rayon
+                    // worker stays bound to this single decide call.
+                    let deadline = Instant::now() + timeout;
+                    match prepared.decide_with_deadline(deadline, build)? {
+                        Some(sat) => Ok((i, j, !sat, false, false)),
+                        None => Ok((i, j, false, false, true)),
+                    }
+                }
+            }
         })
         .collect();
-    for (i, j, is_entailed, used_saturation) in pair_results? {
+    for (i, j, is_entailed, used_saturation, timed_out) in pair_results? {
+        if timed_out {
+            stats.timed_out_pairs += 1;
+            // Sound under-approximation: default to "not subsumed".
+            // Do not credit either engine — neither produced a verdict.
+            continue;
+        }
         if used_saturation {
             stats.saturation_subsumption_hits += 1;
         } else {
@@ -529,6 +597,34 @@ Ontology(<http://rustdl.test/test>\n\
         assert_eq!(stats.tableau_unsat_calls, 0);
         // Entailed pairs are A⊑B, A⊑C, A⊑D, B⊑C, B⊑D, C⊑D = 6.
         assert_eq!(stats.saturation_subsumption_hits, 6);
+    }
+
+    #[test]
+    fn classify_with_timeout_matches_untimed_for_simple_input() {
+        // A → B → C (pure EL) — even with a tiny timeout, all pairs
+        // get answered by saturation (the closure path bypasses the
+        // tableau entirely) so the timed and untimed runs agree.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        let baseline = classify(&onto).expect("baseline");
+        let timed = super::classify_with_timeout(&onto, std::time::Duration::from_millis(50))
+            .expect("timed classification");
+        assert_eq!(baseline.stats().timed_out_pairs, 0);
+        assert_eq!(timed.stats().timed_out_pairs, 0);
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        assert!(timed.is_subclass(&iri("A"), &iri("C")));
+        assert_eq!(
+            baseline.unsatisfiable_classes(),
+            timed.unsatisfiable_classes()
+        );
     }
 
     #[test]

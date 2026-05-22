@@ -48,12 +48,27 @@ pub enum SaturationResult {
 /// applies each available rule. Stops as soon as a clash is found.
 pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> SaturationResult {
     for _ in 0..max_iters {
+        // Cooperative deadline check. A single saturate() call can
+        // generate many nodes (e.g. via chain rule expansion under
+        // inverse roles) and would otherwise run far past a
+        // caller-imposed wall-clock budget. Returning `Stalled` lets
+        // search.rs propagate `None` up to the reasoner facade.
+        if ctx.check_deadline() {
+            return SaturationResult::Stalled;
+        }
         if let Some(node) = first_clash(ctx) {
             return SaturationResult::Clash(node);
         }
         let mut changed = false;
         let node_count = ctx.graph().len();
         for idx in 0..node_count {
+            // Pathological inputs can create thousands of nodes and
+            // make a single outer-iteration sweep dominate the
+            // wall-clock budget. Check the deadline at each node so a
+            // mid-sweep cancel is responsive within a few µs.
+            if ctx.check_deadline() {
+                return SaturationResult::Stalled;
+            }
             let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
             if apply_residual_gcis(ctx, node) == RuleOutcome::Applied {
                 changed = true;

@@ -50,7 +50,7 @@ const SATURATE_ITERS: usize = 4096;
 ///   added in commit 6 and the search becomes potentially
 ///   non-terminating without it).
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> Option<bool> {
-    if max_depth == 0 {
+    if max_depth == 0 || ctx.check_deadline() {
         return None;
     }
     match saturate(ctx, SATURATE_ITERS) {

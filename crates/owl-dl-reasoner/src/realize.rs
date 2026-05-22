@@ -17,12 +17,18 @@ use std::collections::{HashMap, HashSet};
 
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
+use rayon::prelude::*;
 
 use owl_dl_core::convert::convert_ontology;
 use owl_dl_core::{Axiom, ClassId, ConceptExpr, IndividualId, InternalOntology};
 use owl_dl_saturation::{Subsumers, saturate};
 
 use crate::{PreparedOntology, ReasonError, classify_internal};
+
+/// `(entailed_types, hasse_leaves)` for one individual — returned
+/// by the parallel realisation worker so the outer loop can stitch
+/// the maps together.
+type IndivResult = (Vec<String>, Vec<String>);
 
 /// Decide whether `KB ⊨ class_iri(individual_iri)`. Returns `true`
 /// iff `individual_iri` is provably an instance of `class_iri` in
@@ -317,35 +323,54 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
         })
         .collect();
 
-    let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
-    let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
 
-    for (idx, iri) in individual_iris.iter().enumerate() {
-        let individual_id =
-            IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-        let mut types: Vec<&str> = Vec::new();
-        for (class_idx, class_iri) in &satisfiable {
-            let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
-            if instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)?
-            {
-                types.push(class_iri);
+    // Per-individual realization is independent across individuals
+    // (each builds a fresh tableau context per class probe via
+    // `prepared.decide`). Parallelise the outer loop with rayon; the
+    // hierarchy / closure / prepared snapshot is shared read-only.
+    let per_individual: Result<Vec<IndivResult>, ReasonError> = individual_iris
+        .par_iter()
+        .enumerate()
+        .map(|(idx, _iri)| {
+            let individual_id =
+                IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
+            let mut types: Vec<&str> = Vec::new();
+            for (class_idx, class_iri) in &satisfiable {
+                let class_id =
+                    ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
+                if instance_check_with_closure(
+                    internal,
+                    &closure,
+                    &prepared,
+                    class_id,
+                    individual_id,
+                )? {
+                    types.push(class_iri);
+                }
             }
-        }
-        // Filter to Hasse leaves under the classification relation.
-        let leaves: Vec<String> = types
-            .iter()
-            .filter(|&&cls| {
-                !types.iter().any(|&other| {
-                    other != cls
-                        && hierarchy.is_subclass(other, cls)
-                        && !hierarchy.is_subclass(cls, other)
+            // Filter to Hasse leaves under the classification relation.
+            let leaves: Vec<String> = types
+                .iter()
+                .filter(|&&cls| {
+                    !types.iter().any(|&other| {
+                        other != cls
+                            && hierarchy.is_subclass(other, cls)
+                            && !hierarchy.is_subclass(cls, other)
+                    })
                 })
-            })
-            .map(|s| (*s).to_owned())
-            .collect();
-        entailed_types.insert(iri.clone(), types.into_iter().map(str::to_owned).collect());
+                .map(|s| (*s).to_owned())
+                .collect();
+            let types_owned: Vec<String> = types.into_iter().map(str::to_owned).collect();
+            Ok((types_owned, leaves))
+        })
+        .collect();
+    let per_individual = per_individual?;
+    let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
+    let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
+    for (iri, (types_owned, leaves)) in individual_iris.iter().zip(per_individual) {
+        entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
     }
 

@@ -98,6 +98,7 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
         );
         changed |= apply_domain_and_range(&mut subsumers, &facts, &rules, &role_super);
         changed |= apply_disjointness(&mut subsumers, &rules);
+        changed |= apply_unsat_propagation(&mut subsumers, &facts);
         changed |= apply_transitivity(&mut subsumers);
         subsumers_grew_last_round = subsumers_total_entries(&subsumers) > subsumer_size_before;
     }
@@ -351,6 +352,48 @@ fn apply_disjointness(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
     changed
 }
 
+/// Propagate `⊑ ⊥` flags through two paths the disjointness rule
+/// alone misses:
+///
+/// 1. **Existential-to-source.** If `(A, r, T)` is an existential
+///    fact and `T` is flagged unsat, then `A` is also unsat — every
+///    `A`-instance would need an `r`-successor in the empty class
+///    `T`, which is impossible.
+/// 2. **Subsumer-transitive.** If `Y` is unsat and `Y ∈ subsumers(X)`,
+///    then `X` is unsat (every `X`-instance would have to be a
+///    `Y`-instance, but `Y` has none).
+///
+/// Both reuse the closure's existing subsumer table, no new state.
+fn apply_unsat_propagation(subsumers: &mut Subsumers, facts: &ExistentialFacts) -> bool {
+    let mut changed = false;
+    // 1. Existential targets that are unsat make their source unsat.
+    for fact in &facts.list {
+        if subsumers.unsatisfiable.contains(&fact.target)
+            && subsumers.unsatisfiable.insert(fact.sub)
+        {
+            changed = true;
+        }
+    }
+    // 2. Subsumer-driven unsat propagation. Snapshot the subsumer
+    //    table so we can mutate `unsatisfiable` while iterating.
+    let snapshot: Vec<(ClassId, Vec<ClassId>)> = subsumers
+        .table
+        .iter()
+        .map(|(k, v)| (*k, v.iter().copied().collect()))
+        .collect();
+    for (x, subs) in snapshot {
+        if subsumers.unsatisfiable.contains(&x) {
+            continue;
+        }
+        if subs.iter().any(|s| subsumers.unsatisfiable.contains(s))
+            && subsumers.unsatisfiable.insert(x)
+        {
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Transitive closure of the current `subsumers` relation.
 fn apply_transitivity(subsumers: &mut Subsumers) -> bool {
     let mut changed = false;
@@ -581,19 +624,22 @@ fn collect_el_rules(internal: &InternalOntology) -> ElRules {
                 lower_sub_class_of(*sub, *sup, &internal.concepts, &mut rules, &mut tseitin);
             }
             Axiom::EquivalentClasses(members) => {
-                let atomics: Vec<ClassId> = members
-                    .iter()
-                    .filter_map(|c| match internal.concepts.get(*c) {
-                        ConceptExpr::Atomic(id) => Some(*id),
-                        _ => None,
-                    })
-                    .collect();
-                for a in &atomics {
-                    for b in &atomics {
-                        if a != b {
-                            rules
-                                .atomic_subsumptions
-                                .push(AtomicSubsumption { sub: *a, sup: *b });
+                // Decompose pairwise as mutual `SubClassOf` and route
+                // each direction through `lower_sub_class_of`. That
+                // handles compound members (e.g. `Test ≡ ∃r.(A⊓B)`)
+                // through the same path that processes told
+                // SubClassOf axioms, including the Tseitin allocator
+                // for compound existential bodies.
+                for i in 0..members.len() {
+                    for j in 0..members.len() {
+                        if i != j {
+                            lower_sub_class_of(
+                                members[i],
+                                members[j],
+                                &internal.concepts,
+                                &mut rules,
+                                &mut tseitin,
+                            );
                         }
                     }
                 }
@@ -1133,6 +1179,58 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Dog"), class(&internal, "Person")));
+    }
+
+    #[test]
+    fn existential_with_unsat_body_propagates_to_source() {
+        // DisjointClasses(A, B); Y ⊑ A; Y ⊑ B (Y is unsat);
+        // Test ≡ ∃r.(A ⊓ B ⊓ Y).
+        // The Tseitin synthetic for the body has A and B as
+        // subsumers and is thus unsat. The existential fact
+        // (Test, r, synth) then propagates unsat back to Test.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Test))\n\
+    Declaration(Class(:Y))\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    DisjointClasses(:A :B)\n\
+    SubClassOf(:Y :A)\n\
+    SubClassOf(:Y :B)\n\
+    EquivalentClasses(:Test ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B :Y)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.is_unsatisfiable(class(&internal, "Y")),
+            "Y ⊑ A ⊓ B must be unsat"
+        );
+        assert!(
+            subs.is_unsatisfiable(class(&internal, "Test")),
+            "Test ≡ ∃r.<unsat> must itself be unsat"
+        );
+    }
+
+    #[test]
+    fn equivalent_classes_with_compound_existential_decomposes() {
+        // Test ≡ ∃r.B; X ⊑ ∃r.B  ⇒  X ⊑ Test should hold via the
+        // existential trigger introduced by the equivalence's
+        // backward direction (∃r.B ⊑ Test).
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Test))\n\
+    Declaration(Class(:X))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    EquivalentClasses(:Test ObjectSomeValuesFrom(:r :B))\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "X"), class(&internal, "Test")));
     }
 
     #[test]

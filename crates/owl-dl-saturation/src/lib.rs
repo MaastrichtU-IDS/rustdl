@@ -96,6 +96,11 @@ fn subsumers_total_entries(subsumers: &Subsumers) -> usize {
 struct ExistentialFacts {
     list: Vec<ExistentialFact>,
     seen: HashSet<(ClassId, RoleId, ClassId)>,
+    /// Inverted index: `by_sub[c]` is the set of `list` indices whose
+    /// `sub` is `c`. Lets the chain rule jump directly to candidate
+    /// tail facts from a head fact's target subsumer set, instead of
+    /// scanning the whole `list`.
+    by_sub: HashMap<ClassId, Vec<usize>>,
     /// Frontier for the chain rule's delta optimisation: facts at
     /// `list[..chained_through]` have already been paired against
     /// everything they could chain with under the current subsumer
@@ -106,7 +111,9 @@ struct ExistentialFacts {
 impl ExistentialFacts {
     fn add(&mut self, fact: ExistentialFact) -> bool {
         if self.seen.insert((fact.sub, fact.role, fact.target)) {
+            let idx = self.list.len();
             self.list.push(fact);
+            self.by_sub.entry(fact.sub).or_default().push(idx);
             true
         } else {
             false
@@ -211,40 +218,50 @@ fn apply_role_chains(
     } else {
         facts.chained_through
     };
+    // Collect derivations into a side buffer so the inner loop can
+    // keep a borrow into `facts.by_sub` without conflicting with
+    // `facts.add()`. The buffer is drained after each chain.
+    let mut pending: Vec<ExistentialFact> = Vec::new();
     let mut changed = false;
     for &(r1, r2, sup) in &rules.chain_axioms {
-        // For each chain, consider pairs (i, j):
-        //   - i >= old_boundary, any j  (new fact1's, paired with everything)
-        //   - i <  old_boundary, j >= old_boundary (old fact1, new fact2)
-        // That covers every pair where at least one side is new
-        // (or everything, if subsumers grew).
+        // For each head fact (i) with role `r1` (or sub-role),
+        // candidate tail facts are those whose `sub` is one of the
+        // subsumers of `head_edge.target`. We iterate that subsumer
+        // set directly via the by_sub index instead of scanning the
+        // whole fact list.
         for i in 0..n {
-            // ExistentialFact is Copy so no borrow held across the
-            // mutable add() below.
             let head_edge = facts.list[i];
             if !supers_of(role_super, head_edge.role).contains(&r1) {
                 continue;
             }
-            let j_range_start = if i >= old_boundary { 0 } else { old_boundary };
-            for j in j_range_start..n {
-                let tail_edge = facts.list[j];
-                if !supers_of(role_super, tail_edge.role).contains(&r2) {
+            let Some(target_subsumers) = subsumers.table.get(&head_edge.target) else {
+                continue;
+            };
+            for &candidate_sub in target_subsumers {
+                let Some(tail_ids) = facts.by_sub.get(&candidate_sub) else {
                     continue;
+                };
+                for &j in tail_ids {
+                    // Delta gate: if neither side is new, we already
+                    // processed (i, j) on the previous chain call.
+                    if i < old_boundary && j < old_boundary {
+                        continue;
+                    }
+                    let tail_edge = facts.list[j];
+                    if !supers_of(role_super, tail_edge.role).contains(&r2) {
+                        continue;
+                    }
+                    pending.push(ExistentialFact {
+                        sub: head_edge.sub,
+                        role: sup,
+                        target: tail_edge.target,
+                    });
                 }
-                if !subsumers.contains(head_edge.target, tail_edge.sub) {
-                    continue;
-                }
-                // Derive (head_edge.sub, sup, tail_edge.target).
-                // Further sweeps of apply_existential_propagation
-                // will fire matching triggers against this fact;
-                // further chain sweeps lengthen the chain through it.
-                if facts.add(ExistentialFact {
-                    sub: head_edge.sub,
-                    role: sup,
-                    target: tail_edge.target,
-                }) {
-                    changed = true;
-                }
+            }
+        }
+        for fact in pending.drain(..) {
+            if facts.add(fact) {
+                changed = true;
             }
         }
     }

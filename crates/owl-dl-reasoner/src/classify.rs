@@ -21,7 +21,7 @@ use owl_dl_core::InternalOntology;
 use owl_dl_core::convert::convert_ontology;
 use owl_dl_saturation::saturate;
 
-use crate::{ReasonError, run_satisfiability, subsumes_via_tableau};
+use crate::{PreparedOntology, ReasonError};
 
 /// Result of [`classify`]. Holds the complete pairwise subsumption
 /// matrix over every declared named class plus the IRIs themselves,
@@ -187,6 +187,10 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
     // oracle and fall back to the tableau when the closure has
     // nothing to say.
     let closure = saturate(internal);
+    // Prepare the tableau-side pipeline once. Every subsequent
+    // tableau query reuses the absorbed TBox, role-side metadata,
+    // ABox seed, and pool — only the test concept varies.
+    let prepared = PreparedOntology::from_internal(internal.clone())?;
 
     // First pass: which classes are individually unsatisfiable? An
     // unsat class `C` is `⊑ ⊥` and therefore `⊑ D` for every `D` —
@@ -205,7 +209,7 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             continue;
         }
         stats.tableau_unsat_calls += 1;
-        let sat = run_satisfiability(internal.clone(), move |pool| pool.atomic(class_id))?;
+        let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
         if sat {
             satisfiable[i] = true;
         } else {
@@ -249,7 +253,13 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
                 continue;
             }
             stats.tableau_subsumption_calls += 1;
-            entailed[i][j] = subsumes_via_tableau(internal.clone(), sub_class, super_class)?;
+            let sat = prepared.decide(move |pool| {
+                let sub_concept = pool.atomic(sub_class);
+                let super_concept = pool.atomic(super_class);
+                let not_super = pool.not(super_concept);
+                pool.and(vec![sub_concept, not_super])
+            })?;
+            entailed[i][j] = !sat;
         }
     }
     let _ = satisfiable; // currently informational only

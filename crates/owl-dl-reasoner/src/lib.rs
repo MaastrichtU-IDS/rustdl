@@ -217,42 +217,98 @@ pub(crate) fn subsumes_via_tableau(
 /// pipeline once, and asks the tableau whether `build_test_concept`
 /// produces a satisfiable concept against the rest of the model.
 ///
+/// One-shot convenience wrapper for callers (`is_class_satisfiable`,
+/// `is_consistent`, `is_subclass_of`) that only ask a single tableau
+/// question. For repeated queries against the same ontology — the
+/// pairwise loop in `classify`, or the per-class probes in
+/// `realize` — prefer [`PreparedOntology::from_internal`] +
+/// [`PreparedOntology::decide`], which shares the expensive
+/// prepare work across calls.
+///
 /// The closure is invoked *after* the pool has been cloned for the
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
 pub(crate) fn run_satisfiability<F>(
-    mut internal: InternalOntology,
+    internal: InternalOntology,
     build_test_concept: F,
 ) -> Result<bool, ReasonError>
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
-    expand_role_characteristics(&mut internal);
-    let hierarchy = build_role_hierarchy(&internal);
-    let inverse_pairs = collect_inverse_pairs(&internal);
-    let asymmetric_roles = collect_asymmetric_roles(&internal);
-    let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
-    let chain_axioms = collect_chain_axioms(&internal)?;
-    let normalized = nnf_axioms(&mut internal);
-    let tbox = absorb(&normalized, &mut internal.concepts);
-    // Ensure `⊥` is interned — `apply_max` flags inequality clashes
-    // by adding `Bot` to the offending node's label set, and looks
-    // up the canonical id via `pool.bot_id()`. Cheap & idempotent.
-    let _ = internal.concepts.bot();
-    let complements = precompute_max_complements(&mut internal.concepts);
-    let abox = collect_abox(&mut internal);
-    decide(
-        &internal.concepts,
-        &tbox,
-        &hierarchy,
-        &inverse_pairs,
-        &chain_axioms,
-        &asymmetric_roles,
-        &disjoint_role_pairs,
-        &complements,
-        &abox,
-        build_test_concept,
-    )
+    let prepared = PreparedOntology::from_internal(internal)?;
+    prepared.decide(build_test_concept)
+}
+
+/// Snapshot of an ontology after every pre-tableau pass has run.
+/// Holds the absorbed `TBox`, role-side metadata, `ABox` seed data and
+/// the (now-frozen) concept pool, so each tableau query reuses one
+/// preparation pass.
+pub(crate) struct PreparedOntology {
+    pool: ConceptPool,
+    tbox: AbsorbedTBox,
+    hierarchy: RoleHierarchy,
+    inverse_pairs: Vec<(RoleId, RoleId)>,
+    chain_axioms: Vec<(RoleId, RoleId, RoleId)>,
+    asymmetric_roles: Vec<RoleId>,
+    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+    complements: Vec<(ConceptId, ConceptId)>,
+    abox: Abox,
+}
+
+impl PreparedOntology {
+    /// Run every preparation pass against `internal` so subsequent
+    /// `decide` calls only have to allocate a fresh tableau and run
+    /// the search.
+    pub(crate) fn from_internal(mut internal: InternalOntology) -> Result<Self, ReasonError> {
+        expand_role_characteristics(&mut internal);
+        let hierarchy = build_role_hierarchy(&internal);
+        let inverse_pairs = collect_inverse_pairs(&internal);
+        let asymmetric_roles = collect_asymmetric_roles(&internal);
+        let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
+        let chain_axioms = collect_chain_axioms(&internal)?;
+        let normalized = nnf_axioms(&mut internal);
+        let tbox = absorb(&normalized, &mut internal.concepts);
+        // Ensure `⊥` is interned — `apply_max` flags inequality
+        // clashes by adding `Bot` to the offending node's label set,
+        // and looks up the canonical id via `pool.bot_id()`. Cheap
+        // & idempotent.
+        let _ = internal.concepts.bot();
+        let complements = precompute_max_complements(&mut internal.concepts);
+        let abox = collect_abox(&mut internal);
+        Ok(Self {
+            pool: internal.concepts,
+            tbox,
+            hierarchy,
+            inverse_pairs,
+            chain_axioms,
+            asymmetric_roles,
+            disjoint_role_pairs,
+            complements,
+            abox,
+        })
+    }
+
+    /// Decide whether the test concept built by `build_test_concept`
+    /// is satisfiable in this prepared ontology. The closure is
+    /// invoked on a freshly-cloned pool so the prepared pool stays
+    /// intact for the next call.
+    pub(crate) fn decide<F>(&self, build_test_concept: F) -> Result<bool, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            &self.abox,
+            build_test_concept,
+        )
+    }
 }
 
 /// Pre-resolved `ABox` state, ready to seed into the tableau context.

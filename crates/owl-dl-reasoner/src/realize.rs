@@ -22,7 +22,7 @@ use owl_dl_core::convert::convert_ontology;
 use owl_dl_core::{Axiom, ClassId, ConceptExpr, IndividualId, InternalOntology};
 use owl_dl_saturation::{Subsumers, saturate};
 
-use crate::{ReasonError, classify_internal, run_satisfiability};
+use crate::{PreparedOntology, ReasonError, classify_internal};
 
 /// Decide whether `KB ⊨ class_iri(individual_iri)`. Returns `true`
 /// iff `individual_iri` is provably an instance of `class_iri` in
@@ -65,17 +65,19 @@ pub fn is_instance_of_internal(
         .individual_id(individual_iri)
         .ok_or_else(|| ReasonError::UnknownClass(individual_iri.to_owned()))?;
     let closure = saturate(internal);
-    instance_check_with_closure(internal, &closure, class_id, individual_id)
+    let prepared = PreparedOntology::from_internal(internal.clone())?;
+    instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)
 }
 
 /// Single instance check that consults the saturation closure first:
 /// if any told `ClassAssertion(D, individual)` has `D ⊑ class_id` in
 /// the EL closure, the answer is `yes` without invoking the tableau.
 /// Otherwise falls through to the standard `{a} ⊓ ¬C` satisfiability
-/// reduction.
+/// reduction against the prepared ontology.
 fn instance_check_with_closure(
     internal: &InternalOntology,
     closure: &Subsumers,
+    prepared: &PreparedOntology,
     class_id: ClassId,
     individual_id: IndividualId,
 ) -> Result<bool, ReasonError> {
@@ -91,16 +93,8 @@ fn instance_check_with_closure(
             return Ok(true);
         }
     }
-    instance_check_via_tableau(internal.clone(), class_id, individual_id)
-}
-
-fn instance_check_via_tableau(
-    internal: InternalOntology,
-    class_id: ClassId,
-    individual_id: IndividualId,
-) -> Result<bool, ReasonError> {
     // KB ⊨ C(a) iff `{a} ⊓ ¬C` is unsatisfiable.
-    let sat = run_satisfiability(internal, move |pool| {
+    let sat = prepared.decide(move |pool| {
         let cls = pool.atomic(class_id);
         let not_cls = pool.not(cls);
         let nom = pool.nominal(individual_id);
@@ -136,11 +130,12 @@ pub fn instances_of_internal(
         .class_id(class_iri)
         .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
     let closure = saturate(internal);
+    let prepared = PreparedOntology::from_internal(internal.clone())?;
     let mut out = Vec::new();
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-        if instance_check_with_closure(internal, &closure, class_id, individual_id)? {
+        if instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)? {
             out.push(internal.vocabulary.individual_iri(individual_id).to_owned());
         }
     }
@@ -246,6 +241,7 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let closure = saturate(internal);
+    let prepared = PreparedOntology::from_internal(internal.clone())?;
 
     for (idx, iri) in individual_iris.iter().enumerate() {
         let individual_id =
@@ -253,7 +249,8 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
         let mut types: Vec<&str> = Vec::new();
         for (class_idx, class_iri) in &satisfiable {
             let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
-            if instance_check_with_closure(internal, &closure, class_id, individual_id)? {
+            if instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)?
+            {
                 types.push(class_iri);
             }
         }

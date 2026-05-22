@@ -30,7 +30,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use owl_dl_core::{Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology};
+use owl_dl_core::{Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, RoleId};
 
 /// Compute the subsumer closure over the EL-fragment subset of
 /// `internal`. The result maps every declared `ClassId` to the set
@@ -63,6 +63,39 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
                     && subsumers.add(id, trigger.head)
                 {
                     changed = true;
+                }
+            }
+        }
+        // Existential propagation (Kazakov CR5): for every fact
+        // (A, r, Y) — meaning A ⊑ ∃r.Y — and every trigger (r, Z, W)
+        // — meaning ∃r.Z ⊑ W — if Z is already a subsumer of Y,
+        // every class that has A among its subsumers also gains W.
+        for fact in &rules.existential_facts {
+            for trigger in &rules.existential_triggers {
+                if trigger.role != fact.role {
+                    continue;
+                }
+                if !subsumers.contains(fact.target, trigger.body) {
+                    continue;
+                }
+                // Propagate W to every X with A ∈ subsumers(X). We
+                // snapshot the table to avoid mutating under
+                // iteration.
+                let candidates: Vec<ClassId> = subsumers
+                    .table
+                    .iter()
+                    .filter_map(|(x, s)| {
+                        if s.contains(&fact.sub) {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for x in candidates {
+                    if subsumers.add(x, trigger.head) {
+                        changed = true;
+                    }
                 }
             }
         }
@@ -139,6 +172,14 @@ struct ElRules {
     /// Conjunctive triggers: when a class accumulates every `body`
     /// among its subsumers, it gains `head`.
     conjunctive_triggers: Vec<ConjunctiveTrigger>,
+    /// Existential facts from `SubClassOf(sub, ∃role.target)` over
+    /// atomic-named-atomic shapes. Read as "every `sub`-instance has
+    /// some `role`-successor whose subsumers include `target`."
+    existential_facts: Vec<ExistentialFact>,
+    /// Existential triggers from `SubClassOf(∃role.body, head)` over
+    /// atomic-named-atomic shapes. Read as "any class with an
+    /// existential `role`-successor in `body` is also in `head`."
+    existential_triggers: Vec<ExistentialTrigger>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -150,6 +191,20 @@ struct AtomicSubsumption {
 #[derive(Debug, Clone)]
 struct ConjunctiveTrigger {
     bodies: Vec<ClassId>,
+    head: ClassId,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ExistentialFact {
+    sub: ClassId,
+    role: RoleId,
+    target: ClassId,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ExistentialTrigger {
+    role: RoleId,
+    body: ClassId,
     head: ClassId,
 }
 
@@ -197,6 +252,27 @@ fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules:
                     sup: atomic_sup,
                 });
             }
+            // Atomic ⊑ ∃r.Y: existential fact.
+            if let Some((role, target)) = atomic_existential(sup, pool) {
+                rules.existential_facts.push(ExistentialFact {
+                    sub: *sub_id,
+                    role,
+                    target,
+                });
+            }
+            // Atomic ⊑ (∃r.Y₁ ⊓ ∃r.Y₂ ⊓ …): pick up each existential
+            // operand of a top-level And on the right.
+            if let ConceptExpr::And(operands) = pool.get(sup) {
+                for op in operands {
+                    if let Some((role, target)) = atomic_existential(*op, pool) {
+                        rules.existential_facts.push(ExistentialFact {
+                            sub: *sub_id,
+                            role,
+                            target,
+                        });
+                    }
+                }
+            }
         }
         ConceptExpr::And(operands) => {
             let Some(bodies) = atomic_classes(operands, pool) else {
@@ -209,8 +285,40 @@ fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules:
                 });
             }
         }
+        ConceptExpr::Some(role, body) => {
+            // ∃r.B ⊑ C: existential trigger. Only named-role + atomic-
+            // body shapes are in scope.
+            if role.is_inverse() {
+                return;
+            }
+            let ConceptExpr::Atomic(body_id) = pool.get(*body) else {
+                return;
+            };
+            for head in atomic_operands_on_right(sup, pool) {
+                rules.existential_triggers.push(ExistentialTrigger {
+                    role: role.role_id(),
+                    body: *body_id,
+                    head,
+                });
+            }
+        }
         _ => {}
     }
+}
+
+/// Extract `(role_id, target_class_id)` from a concept of the shape
+/// `∃<named-role>.<atomic-class>`; `None` for any other shape.
+fn atomic_existential(c: ConceptId, pool: &ConceptPool) -> Option<(RoleId, ClassId)> {
+    let ConceptExpr::Some(role, body) = pool.get(c) else {
+        return None;
+    };
+    if role.is_inverse() {
+        return None;
+    }
+    let ConceptExpr::Atomic(body_id) = pool.get(*body) else {
+        return None;
+    };
+    Some((role.role_id(), *body_id))
 }
 
 fn atomic_classes(ids: &[ConceptId], pool: &ConceptPool) -> Option<Vec<ClassId>> {
@@ -331,6 +439,30 @@ Ontology(<http://rustdl.test/test>\n\
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "A"), class(&internal, "B")));
         assert!(subs.contains(class(&internal, "B"), class(&internal, "A")));
+    }
+
+    #[test]
+    fn existential_propagation_pizza_food() {
+        // Classic EL pattern:
+        //   Pizza        ⊑ ∃hasTopping.Topping
+        //   Topping      ⊑ EdibleThing
+        //   ∃hasTopping.EdibleThing ⊑ FoodItem
+        // ⇒ Pizza ⊑ FoodItem.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Pizza))\n\
+    Declaration(Class(:Topping))\n\
+    Declaration(Class(:EdibleThing))\n\
+    Declaration(Class(:FoodItem))\n\
+    Declaration(ObjectProperty(:hasTopping))\n\
+    SubClassOf(:Pizza ObjectSomeValuesFrom(:hasTopping :Topping))\n\
+    SubClassOf(:Topping :EdibleThing)\n\
+    SubClassOf(ObjectSomeValuesFrom(:hasTopping :EdibleThing) :FoodItem)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Pizza"), class(&internal, "FoodItem")));
     }
 
     #[test]

@@ -13,6 +13,10 @@
 //! ontology?". Limited to pure ALC for now; later phases extend to
 //! `ALCHIQ` and full `SROIQ(D)`.
 
+mod classify;
+
+pub use classify::{Classification, classify, classify_internal};
+
 use std::collections::HashMap;
 
 use horned_owl::model::ForIRI;
@@ -184,7 +188,7 @@ pub fn is_subclass_of_internal(
 /// The closure is invoked *after* the pool has been cloned for the
 /// tableau run, so the concept it returns is guaranteed to live in
 /// the pool the tableau will use.
-fn run_satisfiability<F>(
+pub(crate) fn run_satisfiability<F>(
     mut internal: InternalOntology,
     build_test_concept: F,
 ) -> Result<bool, ReasonError>

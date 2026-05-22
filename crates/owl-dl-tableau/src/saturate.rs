@@ -20,7 +20,8 @@ use crate::TableauContext;
 use crate::graph::NodeId;
 use crate::rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
-    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_rules,
+    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_chains,
+    apply_role_rules,
 };
 
 /// Verdict from one run of [`saturate`].
@@ -70,6 +71,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
                 changed = true;
             }
             if apply_role_rules(ctx, node) == RuleOutcome::Applied {
+                changed = true;
+            }
+            if apply_role_chains(ctx, node) == RuleOutcome::Applied {
                 changed = true;
             }
             if apply_exists(ctx, node) == RuleOutcome::Applied {

@@ -53,10 +53,14 @@ pub enum ReasonError {
     #[error("tableau bailed out without a verdict (likely an internal limit)")]
     NoVerdict,
 
-    /// A `SubObjectPropertyOf` axiom uses a role chain on its left-hand
-    /// side. Chain axioms (`r ∘ s ⊑ t`) require Phase 5 (`SROIQ`)
-    /// machinery and are not supported by the current `ALCH` tableau.
-    #[error("role chain sub-property axioms are deferred to Phase 5 (SROIQ)")]
+    /// A role chain sub-property axiom is outside the supported
+    /// fragment. Phase 5 (R) supports **length-2** chains
+    /// (`r ∘ s ⊑ t`) over **named** roles only. Anything longer, or
+    /// any chain containing an `ObjectInverseOf` role expression,
+    /// surfaces here.
+    #[error(
+        "role chain sub-property axiom outside supported fragment (only length-2 named-role chains are implemented)"
+    )]
     RoleChainUnsupported,
 }
 
@@ -101,8 +105,9 @@ pub fn is_class_satisfiable_internal(
         return Err(ReasonError::UnknownClass(class_iri.to_owned()));
     };
 
-    let hierarchy = build_role_hierarchy(&internal)?;
+    let hierarchy = build_role_hierarchy(&internal);
     let inverse_pairs = collect_inverse_pairs(&internal);
+    let chain_axioms = collect_chain_axioms(&internal)?;
     let normalized = nnf_axioms(&mut internal);
     let tbox = absorb(&normalized, &mut internal.concepts);
     // Ensure `⊥` is interned — `apply_max` flags inequality clashes
@@ -116,6 +121,7 @@ pub fn is_class_satisfiable_internal(
         &tbox,
         &hierarchy,
         &inverse_pairs,
+        &chain_axioms,
         &complements,
         &abox,
         class_id,
@@ -270,28 +276,29 @@ fn precompute_max_complements(pool: &mut ConceptPool) -> Vec<(ConceptId, Concept
 
 /// Build the ALCH role hierarchy from atomic `SubObjectPropertyOf` and
 /// `EquivalentObjectProperties` axioms. Chain sub-property axioms are
-/// rejected with [`ReasonError::RoleChainUnsupported`] (they require
-/// Phase 5).
-fn build_role_hierarchy(internal: &InternalOntology) -> Result<RoleHierarchy, ReasonError> {
+/// not encoded in the hierarchy itself — they are collected separately
+/// by [`collect_chain_axioms`] and registered on the
+/// [`TableauContext`].
+fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
     let mut builder = RoleHierarchyBuilder::with_roles(
         u32::try_from(internal.vocabulary.num_roles()).expect("vocabulary role count fits in u32"),
     );
     for ax in &internal.axioms {
         match ax {
-            Axiom::SubObjectPropertyOf { sub, sup } => match sub {
-                SubRolePath::Role(sub_role) => {
-                    // Only encode the named-to-named portion of the
-                    // sub-role lattice; the inverse axis still hangs
-                    // off the polarity-check in `edge_satisfies`. If
-                    // either side carries an inverse polarity, we'd
-                    // need a Role-keyed hierarchy — defer to a later
-                    // commit, but still record the underlying-id
-                    // relation so same-polarity sub-role inference
-                    // remains correct.
-                    builder.add_sub_role(sub_role.role_id(), sup.role_id());
-                }
-                SubRolePath::Chain(_) => return Err(ReasonError::RoleChainUnsupported),
-            },
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Role(sub_role),
+                sup,
+            } => {
+                // Only encode the named-to-named portion of the
+                // sub-role lattice; the inverse axis still hangs
+                // off the polarity-check in `edge_satisfies`. If
+                // either side carries an inverse polarity, we'd
+                // need a Role-keyed hierarchy — defer to a later
+                // commit, but still record the underlying-id
+                // relation so same-polarity sub-role inference
+                // remains correct.
+                builder.add_sub_role(sub_role.role_id(), sup.role_id());
+            }
             Axiom::EquivalentObjectProperties(roles) => {
                 // r ≡ s ≡ … expands to pairwise sub-property both ways.
                 for a in roles {
@@ -305,7 +312,51 @@ fn build_role_hierarchy(internal: &InternalOntology) -> Result<RoleHierarchy, Re
             _ => {}
         }
     }
-    Ok(builder.build())
+    builder.build()
+}
+
+/// Collect the length-2 role-chain axioms supported by Phase 5 (R).
+///
+/// Two sources:
+/// 1. `SubObjectPropertyOf` with a `Chain` LHS — must have exactly
+///    length 2 and use only named roles end-to-end (including the
+///    super-role).
+/// 2. `TransitiveRole(Role::Named(r))` lowered to `(r, r, r)` — the
+///    standard chain encoding of role transitivity.
+///
+/// Anything outside that fragment (length ≠ 2, inverse-role anywhere,
+/// inverse-typed super-role) is rejected with
+/// [`ReasonError::RoleChainUnsupported`] so callers see a clean error
+/// rather than an unsound silent skip.
+fn collect_chain_axioms(
+    internal: &InternalOntology,
+) -> Result<Vec<(RoleId, RoleId, RoleId)>, ReasonError> {
+    let mut chains = Vec::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(parts),
+                sup,
+            } => {
+                if parts.len() != 2 {
+                    return Err(ReasonError::RoleChainUnsupported);
+                }
+                if parts.iter().any(|r| r.is_inverse()) || sup.is_inverse() {
+                    return Err(ReasonError::RoleChainUnsupported);
+                }
+                chains.push((parts[0].role_id(), parts[1].role_id(), sup.role_id()));
+            }
+            Axiom::TransitiveRole(role) => {
+                if role.is_inverse() {
+                    return Err(ReasonError::RoleChainUnsupported);
+                }
+                let r = role.role_id();
+                chains.push((r, r, r));
+            }
+            _ => {}
+        }
+    }
+    Ok(chains)
 }
 
 /// Collect declared inverse-role pairs from `InverseObjectProperties`
@@ -328,6 +379,7 @@ fn decide(
     tbox: &AbsorbedTBox,
     hierarchy: &RoleHierarchy,
     inverse_pairs: &[(RoleId, RoleId)],
+    chain_axioms: &[(RoleId, RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
     class_id: ClassId,
@@ -337,6 +389,9 @@ fn decide(
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
     for &(r, s) in inverse_pairs {
         ctx.declare_inverse_pair(r, s);
+    }
+    for &(r1, r2, sup) in chain_axioms {
+        ctx.declare_chain_axiom(r1, r2, sup);
     }
     for &(body, comp) in complements {
         ctx.set_complement(body, comp);
@@ -638,10 +693,31 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     #[test]
-    fn role_chain_axiom_rejected_with_clear_error() {
-        // SubObjectPropertyOf(ObjectPropertyChain(r s) t) — chain on
-        // the LHS. ALCH (Phase 3) doesn't handle chains; rustdl
-        // surfaces a dedicated error pointing at Phase 5.
+    fn role_chain_length_three_rejected() {
+        // Length-3 chain — outside Phase 5 (R) supported fragment.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    Declaration(ObjectProperty(:u))\n\
+    Declaration(ObjectProperty(:t))\n\
+    SubObjectPropertyOf(ObjectPropertyChain(:r :s :u) :t)\n\
+)\n"
+        ));
+        let err = is_class_satisfiable(&onto, "http://rustdl.test/A")
+            .expect_err("length-3 chain should error");
+        assert!(matches!(err, ReasonError::RoleChainUnsupported));
+    }
+
+    #[test]
+    fn length_two_role_chain_supported() {
+        // SubObjectPropertyOf(ObjectPropertyChain(r s) t) at length 2
+        // is in scope for Phase 5 (R): the named-role two-hop chain
+        // axiom is registered on the tableau context, so this
+        // ontology is consistent and the test class is satisfiable
+        // (no axioms forbid it).
         let onto = parse(&format!(
             "{HEADER}\
 Ontology(<http://rustdl.test/test>\n\
@@ -652,9 +728,7 @@ Ontology(<http://rustdl.test/test>\n\
     SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t)\n\
 )\n"
         ));
-        let err = is_class_satisfiable(&onto, "http://rustdl.test/A")
-            .expect_err("role chain should error");
-        assert!(matches!(err, ReasonError::RoleChainUnsupported));
+        assert!(check(&onto, "http://rustdl.test/A"));
     }
 
     #[test]

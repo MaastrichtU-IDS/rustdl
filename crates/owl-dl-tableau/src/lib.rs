@@ -34,7 +34,8 @@ mod trail;
 pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
-    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_rules,
+    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_chains,
+    apply_role_rules,
 };
 pub use saturate::{SaturationResult, saturate};
 pub use search::search;
@@ -76,6 +77,12 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// on `C` vs `¬C` without ever needing to intern at tableau
     /// time. `ConceptPool` is logically frozen during the tableau.
     complements: HashMap<ConceptId, ConceptId>,
+    /// Length-2 role chain axioms `r₁ ∘ r₂ ⊑ sup`. Populated by the
+    /// reasoner facade from `SubObjectPropertyOf::Chain` axioms (with
+    /// length 2, named roles only) and from `TransitiveRole(r)` lowered
+    /// as `(r, r, r)`. The [`apply_role_chains`] rule walks two
+    /// consecutive named-role edges and adds the implied `sup` edge.
+    chains: Vec<(RoleId, RoleId, RoleId)>,
     graph: CompletionGraph,
     trail: TableauTrail,
 }
@@ -92,6 +99,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             hierarchy: None,
             inverse_pairs: HashMap::new(),
             complements: HashMap::new(),
+            chains: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -109,6 +117,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             hierarchy: None,
             inverse_pairs: HashMap::new(),
             complements: HashMap::new(),
+            chains: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -131,6 +140,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             hierarchy: Some(hierarchy),
             inverse_pairs: HashMap::new(),
             complements: HashMap::new(),
+            chains: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -176,6 +186,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     pub fn set_complement(&mut self, body: ConceptId, complement: ConceptId) -> &mut Self {
         self.complements.insert(body, complement);
         self
+    }
+
+    /// Register a length-2 role chain axiom `r₁ ∘ r₂ ⊑ sup`. The
+    /// tableau's [`apply_role_chains`](crate::apply_role_chains)
+    /// rule walks two consecutive named-role edges and adds the
+    /// implied `sup` edge.
+    pub fn declare_chain_axiom(&mut self, r1: RoleId, r2: RoleId, sup: RoleId) -> &mut Self {
+        self.chains.push((r1, r2, sup));
+        self
+    }
+
+    /// Slice of all registered length-2 chain axioms.
+    #[must_use]
+    pub fn chains(&self) -> &[(RoleId, RoleId, RoleId)] {
+        &self.chains
     }
 
     /// Lookup the pre-registered NNF complement of `body`.

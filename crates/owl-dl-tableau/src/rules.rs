@@ -21,7 +21,7 @@
 
 use crate::TableauContext;
 use crate::graph::NodeId;
-use owl_dl_core::{ConceptExpr, ConceptId, Role};
+use owl_dl_core::{ConceptExpr, ConceptId, Role, RoleId};
 
 /// What happened when a rule was asked to apply at a node.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -558,4 +558,60 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
     } else {
         RuleOutcome::NoChange
     }
+}
+
+/// Length-2 role-chain rule: for every registered chain axiom
+/// `r₁ ∘ r₂ ⊑ sup` and every pair of outgoing edges
+/// `node —r₁→ mid —r₂→ tail`, ensure the implied edge
+/// `node —sup→ tail` exists. Deduplicated against existing outgoing
+/// `sup`-edges so transitivity (`r ∘ r ⊑ r`) does not loop.
+///
+/// Phase 5 (R): restricted to **named** roles end-to-end. Inverse roles
+/// in chain axioms are rejected upstream by the reasoner facade with
+/// `ReasonError::RoleChainUnsupported`.
+///
+/// Skipped at blocked nodes — the blocking ancestor already witnesses
+/// any chain-derived edge by label inclusion.
+pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    if ctx.chains().is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    let chains: Vec<(RoleId, RoleId, RoleId)> = ctx.chains().to_vec();
+    let outgoing: Vec<(RoleId, NodeId)> = ctx.graph().node(node).edges().to_vec();
+    let mut pending: Vec<(RoleId, NodeId)> = Vec::new();
+    for (r1, r2, sup) in chains {
+        for &(role_a, mid) in &outgoing {
+            if role_a != r1 {
+                continue;
+            }
+            let mid_res = ctx.resolve(mid);
+            let mid_edges: Vec<(RoleId, NodeId)> = ctx.graph().node(mid_res).edges().to_vec();
+            for (role_b, tail) in mid_edges {
+                if role_b != r2 {
+                    continue;
+                }
+                let tail_res = ctx.resolve(tail);
+                let already = ctx
+                    .graph()
+                    .node(node)
+                    .edges()
+                    .iter()
+                    .any(|&(r, t)| r == sup && ctx.resolve(t) == tail_res)
+                    || pending.iter().any(|&(r, t)| r == sup && t == tail_res);
+                if !already {
+                    pending.push((sup, tail_res));
+                }
+            }
+        }
+    }
+    if pending.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    for (sup, tail) in pending {
+        ctx.add_edge(node, sup, tail);
+    }
+    RuleOutcome::Applied
 }

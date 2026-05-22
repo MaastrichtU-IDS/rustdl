@@ -361,3 +361,33 @@ file = "58_abox_different_individuals_unsat.ofn"
 description = "DifferentIndividuals(alice,bob) + SameIndividual(alice,bob) — inequality clash on merge"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "59_role_chain_propagation_unsat.ofn"
+description = "hasPart ∘ hasPart ⊑ hasPart; a—hasPart→b—hasPart→c, A(c), ∀hasPart.¬A(a) — chain forces ¬A on c"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "60_role_chain_no_clash_sat.ofn"
+description = "hasPart ∘ hasPart ⊑ hasPart with a→b→c, A everywhere — chain present but no contradiction"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "61_transitive_role_propagation_unsat.ofn"
+description = "TransitiveObjectProperty(:r); a→b→c, A(c), ∀r.¬A(a) — transitivity propagates ¬A to c"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "62_uncle_role_chain_unsat.ofn"
+description = "hasParent ∘ hasBrother ⊑ hasUncle; A(carol), ∀hasUncle.¬A(alice) — distinct-role chain clash"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "63_uncle_role_chain_existential_sat.ofn"
+description = "hasParent ∘ hasBrother ⊑ hasUncle; {alice} ⊓ ∃hasUncle.{carol} — chain provides witness"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

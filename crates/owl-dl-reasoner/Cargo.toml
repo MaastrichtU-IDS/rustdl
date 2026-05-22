@@ -17,6 +17,7 @@ owl-dl-saturation.workspace = true
 owl-dl-tableau.workspace = true
 owl-dl-datatypes.workspace = true
 horned-owl.workspace = true
+rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

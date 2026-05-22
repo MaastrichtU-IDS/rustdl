@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
+use rayon::prelude::*;
 
 use owl_dl_core::InternalOntology;
 use owl_dl_core::convert::convert_ontology;
@@ -196,31 +197,46 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
     // unsat class `C` is `⊑ ⊥` and therefore `⊑ D` for every `D` —
     // record that directly. Saturation's bot-detection flags many of
     // these without ever invoking the tableau; the rest fall back to
-    // a per-class satisfiability probe.
+    // a per-class satisfiability probe. Probes are independent so
+    // they run in parallel via rayon.
+    let mut stats = ClassificationStats::default();
+    let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let class_id =
+                owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+            if closure.is_unsatisfiable(class_id) {
+                // (idx, is_sat, used_saturation)
+                Ok((i, false, true))
+            } else {
+                let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
+                Ok((i, sat, false))
+            }
+        })
+        .collect();
+    let unsat_probe_results = unsat_probe_results?;
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
     let mut satisfiable: Vec<bool> = vec![false; n];
-    let mut stats = ClassificationStats::default();
-    for (i, _iri) in classes.iter().enumerate() {
-        let class_id =
-            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-        if closure.is_unsatisfiable(class_id) {
-            unsatisfiable_idxs.insert(i);
+    for (i, is_sat, used_saturation) in unsat_probe_results {
+        if used_saturation {
             stats.saturation_unsat_hits += 1;
-            continue;
+        } else {
+            stats.tableau_unsat_calls += 1;
         }
-        stats.tableau_unsat_calls += 1;
-        let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
-        if sat {
+        if is_sat {
             satisfiable[i] = true;
         } else {
             unsatisfiable_idxs.insert(i);
         }
     }
 
-    // Second pass: pairwise subsumption. Skip rows where `i` is
-    // unsatisfiable (it subsumes everything trivially — fill the
-    // row).
+    // Second pass: pairwise subsumption. Build the worklist of
+    // (i, j) pairs that need a real query (saturation-or-tableau);
+    // run them in parallel; reduce into the entailment matrix and
+    // stats counters. Skip rows where `i` is unsatisfiable (it
+    // subsumes everything trivially — fill the row).
     let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
+    let mut work: Vec<(usize, usize)> = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for i in 0..n {
         entailed[i][i] = true;
@@ -228,39 +244,40 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             entailed[i].iter_mut().take(n).for_each(|v| *v = true);
             continue;
         }
-        let sub_class =
-            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-        #[allow(clippy::needless_range_loop)]
         for j in 0..n {
-            if i == j {
+            if i == j || unsatisfiable_idxs.contains(&j) {
                 continue;
             }
-            // Short-circuit: if `j` is unsat, `i ⊑ j` only if `i` is
-            // also unsat — but we already filled those rows above.
-            // Here `i` is satisfiable; subsumption by an unsat class
-            // would force `i` unsat, contradicting that — so it's
-            // false.
-            if unsatisfiable_idxs.contains(&j) {
-                continue;
-            }
+            work.push((i, j));
+        }
+    }
+    let pair_results: Result<Vec<(usize, usize, bool, bool)>, ReasonError> = work
+        .par_iter()
+        .map(|&(i, j)| {
+            let sub_class =
+                owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
             let super_class =
                 owl_dl_core::ClassId::new(u32::try_from(j).expect("class index fits in u32"));
-            // Saturation fast path: if the closure already entails
-            // `i ⊑ j`, we're done — skip the tableau pass.
             if closure.contains(sub_class, super_class) {
-                entailed[i][j] = true;
-                stats.saturation_subsumption_hits += 1;
-                continue;
+                // (i, j, entailed, used_saturation)
+                return Ok((i, j, true, true));
             }
-            stats.tableau_subsumption_calls += 1;
             let sat = prepared.decide(move |pool| {
                 let sub_concept = pool.atomic(sub_class);
                 let super_concept = pool.atomic(super_class);
                 let not_super = pool.not(super_concept);
                 pool.and(vec![sub_concept, not_super])
             })?;
-            entailed[i][j] = !sat;
+            Ok((i, j, !sat, false))
+        })
+        .collect();
+    for (i, j, is_entailed, used_saturation) in pair_results? {
+        if used_saturation {
+            stats.saturation_subsumption_hits += 1;
+        } else {
+            stats.tableau_subsumption_calls += 1;
         }
+        entailed[i][j] = is_entailed;
     }
     let _ = satisfiable; // currently informational only
     Ok(Classification {

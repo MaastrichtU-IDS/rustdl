@@ -17,6 +17,7 @@ hashbrown.workspace = true
 smallvec.workspace = true
 rayon.workspace = true
 dashmap.workspace = true
+fixedbitset.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

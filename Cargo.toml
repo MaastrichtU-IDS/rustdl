@@ -44,6 +44,7 @@ horned-owl = { version = "1.4", default-features = false }
 hashbrown = "0.15"
 smallvec = { version = "1.13", features = ["const_generics", "union"] }
 bitvec = "1.0"
+fixedbitset = "0.5"
 bumpalo = { version = "3.16", features = ["collections"] }
 
 rayon = "1.10"

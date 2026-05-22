@@ -51,6 +51,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use fixedbitset::FixedBitSet;
 use owl_dl_core::{
     Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, RoleId,
     SubRolePath,
@@ -68,9 +69,9 @@ use owl_dl_core::{
 #[must_use]
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let n = internal.vocabulary.num_classes();
-    let rules = collect_el_rules(internal);
+    let (rules, num_total_classes) = collect_el_rules(internal);
     let role_super = build_role_super(internal);
-    let mut engine = WorklistEngine::new(n, rules, role_super);
+    let mut engine = WorklistEngine::new(n, num_total_classes, rules, role_super);
     engine.seed();
     engine.run();
     engine.subsumers
@@ -95,10 +96,11 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
 ///   — disjoint-pair lookup keyed on either operand.
 struct WorklistEngine {
     subsumers: Subsumers,
-    /// Reverse index: `subsumed_by[D]` is the set of classes `C`
-    /// such that `C ⊑ D` is in the closure. Maintained pairwise
-    /// with `subsumers.table` (every `(C, D)` pair lives in both).
-    subsumed_by: HashMap<ClassId, HashSet<ClassId>>,
+    /// Reverse index: `subsumed_by[D]` is the bitset of classes
+    /// `C` such that `C ⊑ D` is in the closure. Maintained pairwise
+    /// with `subsumers.subsumers` (every `(C, D)` pair lives in
+    /// both).
+    subsumed_by: Vec<FixedBitSet>,
 
     facts: Vec<ExistentialFact>,
     seen_facts: HashSet<(ClassId, RoleId, ClassId)>,
@@ -115,12 +117,20 @@ struct WorklistEngine {
     existential_triggers_by_body: HashMap<ClassId, Vec<usize>>,
     disjoints_by_class: HashMap<ClassId, Vec<ClassId>>,
 
-    num_classes: usize,
+    /// Number of *user-declared* classes (excluding Tseitin
+    /// synthetics). The seeder iterates only this range for
+    /// reflexive `C ⊑ C` so synthetic classes get their reflexivity
+    /// implicitly via the rules that introduce them.
+    num_user_classes: usize,
+    /// Total class-id universe size (user + Tseitin). Used to size
+    /// the bitsets.
+    num_total_classes: usize,
 }
 
 impl WorklistEngine {
     fn new(
-        num_classes: usize,
+        num_user_classes: usize,
+        num_total_classes: usize,
         rules: ElRules,
         role_super: HashMap<RoleId, HashSet<RoleId>>,
     ) -> Self {
@@ -142,9 +152,13 @@ impl WorklistEngine {
             disjoints_by_class.entry(a).or_default().push(b);
             disjoints_by_class.entry(b).or_default().push(a);
         }
+        let mut subsumed_by = Vec::with_capacity(num_total_classes);
+        for _ in 0..num_total_classes {
+            subsumed_by.push(FixedBitSet::with_capacity(num_total_classes));
+        }
         Self {
-            subsumers: Subsumers::with_capacity(num_classes),
-            subsumed_by: HashMap::new(),
+            subsumers: Subsumers::with_capacity(num_total_classes),
+            subsumed_by,
             facts: Vec::new(),
             seen_facts: HashSet::new(),
             facts_by_sub: HashMap::new(),
@@ -157,14 +171,57 @@ impl WorklistEngine {
             conjunctive_by_body,
             existential_triggers_by_body,
             disjoints_by_class,
-            num_classes,
+            num_user_classes,
+            num_total_classes,
         }
+    }
+
+    /// Snapshot the bitset at `subsumers.subsumers[c.index()]` as a
+    /// `Vec<ClassId>`. Used at points where the borrow into the
+    /// bitset would conflict with subsequent mutation.
+    fn supers_of_class(&self, c: ClassId) -> Vec<ClassId> {
+        let ci = c.index() as usize;
+        self.subsumers
+            .subsumers
+            .get(ci)
+            .map(|bs| {
+                bs.ones()
+                    .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Snapshot the reverse bitset at `subsumed_by[c.index()]` as a
+    /// `Vec<ClassId>`.
+    fn subs_of_class(&self, c: ClassId) -> Vec<ClassId> {
+        let ci = c.index() as usize;
+        self.subsumed_by
+            .get(ci)
+            .map(|bs| {
+                bs.ones()
+                    .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Seed the worklist from told axioms + reflexivity.
     fn seed(&mut self) {
-        // Reflexive `C ⊑ C` for every declared class.
-        for i in 0..self.num_classes {
+        // Reflexive `C ⊑ C` for every declared class. Synthetic
+        // Tseitin classes get their reflexive entry implicitly via
+        // the conjunctive-trigger / atomic-subsumption rules that
+        // introduced them.
+        for i in 0..self.num_user_classes {
+            let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+            self.todo_subsumer.push_back((id, id));
+        }
+        // Synthetic Tseitin classes need explicit reflexivity too —
+        // they don't appear in the user vocabulary but the engine
+        // still derives `F ⊑ F` for them via told rules. Push them
+        // up-front to keep behaviour matched with the previous
+        // HashSet implementation.
+        for i in self.num_user_classes..self.num_total_classes {
             let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
             self.todo_subsumer.push_back((id, id));
         }
@@ -198,11 +255,16 @@ impl WorklistEngine {
     /// Insert a derived `(C, D)` subsumer edge — no-op if already
     /// present. Returns whether the insert was new.
     fn record_subsumer(&mut self, c: ClassId, d: ClassId) -> bool {
-        let added = self.subsumers.table.entry(c).or_default().insert(d);
-        if added {
-            self.subsumed_by.entry(d).or_default().insert(c);
+        let ci = c.index() as usize;
+        let di = d.index() as usize;
+        let added = self.subsumers.subsumers[ci].put(di);
+        if !added {
+            // `put` returns true iff the bit was already set; we want
+            // the opposite semantic here ("newly inserted").
+            self.subsumed_by[di].insert(ci);
+            return true;
         }
-        added
+        false
     }
 
     /// Push `(c, d)` onto the subsumer worklist if not yet asserted.
@@ -214,7 +276,8 @@ impl WorklistEngine {
 
     /// Push a class onto the unsat worklist if not yet flagged.
     fn enqueue_unsat(&mut self, c: ClassId) {
-        if !self.subsumers.unsatisfiable.contains(&c) {
+        let ci = c.index() as usize;
+        if !self.subsumers.unsatisfiable.contains(ci) {
             self.todo_unsat.push_back(c);
         }
     }
@@ -245,25 +308,18 @@ impl WorklistEngine {
         }
         // Transitivity (forward): anything D ⊑ is also a subsumer
         // of C.
-        let supers_of_d: Vec<ClassId> = self
-            .subsumers
-            .table
-            .get(&d)
-            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        let supers_of_d = self.supers_of_class(d);
         for e in supers_of_d {
             self.enqueue_subsumer(c, e);
         }
         // Transitivity (backward): anything that had C as a
         // subsumer now also has D as a subsumer.
-        let subs_of_c: Vec<ClassId> = self
-            .subsumed_by
-            .get(&c)
-            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        let subs_of_c = self.subs_of_class(c);
         for x in subs_of_c {
             self.enqueue_subsumer(x, d);
         }
         // Unsat propagation: if D is unsat, C is unsat too.
-        if self.subsumers.unsatisfiable.contains(&d) {
+        if self.subsumers.is_unsatisfiable(d) {
             self.enqueue_unsat(c);
         }
         // Conjunctive triggers: every trigger with D in its body
@@ -306,10 +362,7 @@ impl WorklistEngine {
                     // Every Y with fact.sub ∈ subsumers(Y) gains
                     // trigger.head — walk subsumed_by.
                     let head = trigger.head;
-                    let candidates: Vec<ClassId> = self
-                        .subsumed_by
-                        .get(&fact.sub)
-                        .map_or_else(Vec::new, |s| s.iter().copied().collect());
+                    let candidates = self.subs_of_class(fact.sub);
                     for y in candidates {
                         self.enqueue_subsumer(y, head);
                     }
@@ -325,11 +378,7 @@ impl WorklistEngine {
         if let Some(fact_idxs) = self.facts_by_sub.get(&d).cloned() {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
-                let target_subsumers: Vec<ClassId> = self
-                    .subsumers
-                    .table
-                    .get(&fact.target)
-                    .map_or_else(Vec::new, |s| s.iter().copied().collect());
+                let target_subsumers = self.supers_of_class(fact.target);
                 let fact_role_supers = supers_of(&self.role_super, fact.role);
                 for sub in target_subsumers {
                     if let Some(trigger_idxs) = self.existential_triggers_by_body.get(&sub).cloned()
@@ -425,10 +474,7 @@ impl WorklistEngine {
                 .cloned()
                 .unwrap_or_default();
             if !domains.is_empty() {
-                let candidates: Vec<ClassId> = self
-                    .subsumed_by
-                    .get(&fact.sub)
-                    .map_or_else(Vec::new, |s| s.iter().copied().collect());
+                let candidates = self.subs_of_class(fact.sub);
                 for dom in domains {
                     self.enqueue_subsumer(fact.sub, dom);
                     for y in &candidates {
@@ -440,22 +486,15 @@ impl WorklistEngine {
         // Unsat propagation: if the target is unsat, the source is
         // unsat (an A-instance would need an r-successor in an
         // empty class).
-        if self.subsumers.unsatisfiable.contains(&fact.target) {
+        if self.subsumers.is_unsatisfiable(fact.target) {
             self.enqueue_unsat(fact.sub);
         }
         // Existential triggers (fact side): for each trigger
         // (r', body, head) with fact.role ⊑ r' and body in
         // subsumers(target), every class with fact.sub as a subsumer
         // gains head.
-        let target_subsumers: Vec<ClassId> = self
-            .subsumers
-            .table
-            .get(&fact.target)
-            .map_or_else(Vec::new, |s| s.iter().copied().collect());
-        let candidates: Vec<ClassId> = self
-            .subsumed_by
-            .get(&fact.sub)
-            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        let target_subsumers = self.supers_of_class(fact.target);
+        let candidates = self.subs_of_class(fact.sub);
         for sub in &target_subsumers {
             if let Some(trigger_idxs) = self.existential_triggers_by_body.get(sub).cloned() {
                 for tidx in trigger_idxs {
@@ -519,14 +558,13 @@ impl WorklistEngine {
 
     /// Fire all rules triggered by `c` becoming unsatisfiable.
     fn process_unsat(&mut self, c: ClassId) {
-        if !self.subsumers.unsatisfiable.insert(c) {
+        let ci = c.index() as usize;
+        if self.subsumers.unsatisfiable.put(ci) {
+            // already flagged
             return;
         }
         // Every class with c as a subsumer is also unsat.
-        let dependents: Vec<ClassId> = self
-            .subsumed_by
-            .get(&c)
-            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        let dependents = self.subs_of_class(c);
         for d in dependents {
             self.enqueue_unsat(d);
         }
@@ -557,35 +595,63 @@ fn supers_of(role_super: &HashMap<RoleId, HashSet<RoleId>>, r: RoleId) -> Vec<Ro
 /// input*. Axioms outside EL (union, complement, cardinality,
 /// nominals) are not consulted; if a subsumption depends on those,
 /// the table will miss it.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Subsumers {
-    table: HashMap<ClassId, HashSet<ClassId>>,
-    /// Classes the saturation has proven equivalent to `⊥` —
-    /// derived from `DisjointClasses(A, B)` axioms where the closure
-    /// shows some class has both `A` and `B` as subsumers.
-    unsatisfiable: HashSet<ClassId>,
+    /// One `FixedBitSet` per class — `subsumers[i].contains(j)` is
+    /// true iff `class_i ⊑ class_j`. Each bitset is sized for the
+    /// full class universe (including Tseitin synthetic classes
+    /// allocated above the user vocabulary). Dense representation
+    /// gives O(1) `contains` and avoids the per-class
+    /// `HashSet<ClassId>` allocation overhead the previous
+    /// implementation paid.
+    subsumers: Vec<FixedBitSet>,
+    /// Bit i set iff `class_i ⊑ ⊥`.
+    unsatisfiable: FixedBitSet,
+}
+
+impl Default for Subsumers {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
 }
 
 impl Subsumers {
     fn with_capacity(n: usize) -> Self {
-        Self {
-            table: HashMap::with_capacity(n),
-            unsatisfiable: HashSet::new(),
+        let mut subsumers = Vec::with_capacity(n);
+        for _ in 0..n {
+            subsumers.push(FixedBitSet::with_capacity(n));
         }
+        Self {
+            subsumers,
+            unsatisfiable: FixedBitSet::with_capacity(n),
+        }
+    }
+
+    fn class_index(c: ClassId) -> usize {
+        c.index() as usize
     }
 
     /// True iff the closure contains `sub ⊑ sup`.
     #[must_use]
     pub fn contains(&self, sub: ClassId, sup: ClassId) -> bool {
-        self.table.get(&sub).is_some_and(|set| set.contains(&sup))
+        let si = Self::class_index(sub);
+        let pi = Self::class_index(sup);
+        self.subsumers
+            .get(si)
+            .is_some_and(|bs| pi < bs.len() && bs.contains(pi))
     }
 
     /// Every entailed subsumer of `c` (including `c` itself).
     #[must_use]
     pub fn subsumers_of(&self, c: ClassId) -> Vec<ClassId> {
-        self.table
-            .get(&c)
-            .map(|set| set.iter().copied().collect())
+        let ci = Self::class_index(c);
+        self.subsumers
+            .get(ci)
+            .map(|bs| {
+                bs.ones()
+                    .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -593,13 +659,17 @@ impl Subsumers {
     /// `c ⊑ ⊥`).
     #[must_use]
     pub fn is_unsatisfiable(&self, c: ClassId) -> bool {
-        self.unsatisfiable.contains(&c)
+        let ci = Self::class_index(c);
+        ci < self.unsatisfiable.len() && self.unsatisfiable.contains(ci)
     }
 
     /// Every class flagged as `⊑ ⊥` by the saturation pass.
     #[must_use]
     pub fn unsatisfiable_classes(&self) -> Vec<ClassId> {
-        self.unsatisfiable.iter().copied().collect()
+        self.unsatisfiable
+            .ones()
+            .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
+            .collect()
     }
 }
 
@@ -724,7 +794,7 @@ impl TseitinAllocator {
     }
 }
 
-fn collect_el_rules(internal: &InternalOntology) -> ElRules {
+fn collect_el_rules(internal: &InternalOntology) -> (ElRules, usize) {
     let mut rules = ElRules::default();
     let mut tseitin = TseitinAllocator::new(internal.vocabulary.num_classes());
     for ax in &internal.axioms {
@@ -808,7 +878,8 @@ fn collect_el_rules(internal: &InternalOntology) -> ElRules {
             _ => {}
         }
     }
-    rules
+    let total_classes = tseitin.next_id as usize;
+    (rules, total_classes)
 }
 
 /// Lower a single `SubClassOf(sub, sup)` axiom into atomic facts

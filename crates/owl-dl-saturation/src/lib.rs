@@ -49,7 +49,7 @@
 //! fast path (when *every* axiom is in scope) or fall through to
 //! tableau on the misses.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use owl_dl_core::{
     Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, RoleId,
@@ -59,379 +59,493 @@ use owl_dl_core::{
 /// Compute the subsumer closure over the EL-fragment subset of
 /// `internal`. The result maps every declared `ClassId` to the set
 /// of named classes that subsume it (including itself).
+///
+/// Implementation: worklist-driven (ELK-style). Each newly-derived
+/// fact (new subsumer, new existential edge, or new unsat flag) is
+/// pushed onto a worklist; the loop pops and fires *only* the rules
+/// that depend on that specific fact. Replaces the previous
+/// full-table sweep on each fixed-point iteration.
 #[must_use]
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let n = internal.vocabulary.num_classes();
-    let mut subsumers = Subsumers::with_capacity(n);
-    for i in 0..n {
-        let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
-        subsumers.add(id, id);
-    }
     let rules = collect_el_rules(internal);
     let role_super = build_role_super(internal);
-    // Existential facts grow over time: chain propagation derives new
-    // (A, sup, C) entries that further chain/trigger steps consume.
-    // Seed from told axioms; dedup via the (sub, role, target) key.
-    let mut facts = ExistentialFacts::default();
-    for fact in &rules.existential_facts {
-        facts.add(*fact);
-    }
-    let mut changed = true;
-    // Did the subsumer table grow during the previous outer-loop
-    // iteration? Used by `apply_role_chains` to decide whether its
-    // delta optimisation is safe: when subsumers grow, previously-
-    // failing chain conditions can newly hold, so we must re-scan
-    // every (i, j) pair.
-    let mut subsumers_grew_last_round = true;
-    while changed {
-        let subsumer_size_before = subsumers_total_entries(&subsumers);
-        changed = false;
-        changed |= apply_atomic_subsumptions(&mut subsumers, &rules);
-        changed |= apply_conjunctive_triggers(&mut subsumers, &rules);
-        changed |= apply_existential_propagation(&mut subsumers, &facts, &rules, &role_super);
-        changed |= apply_role_chains(
-            &mut facts,
-            &subsumers,
-            &rules,
-            &role_super,
-            subsumers_grew_last_round,
-        );
-        changed |= apply_domain_and_range(&mut subsumers, &facts, &rules, &role_super);
-        changed |= apply_disjointness(&mut subsumers, &rules);
-        changed |= apply_unsat_propagation(&mut subsumers, &facts);
-        changed |= apply_transitivity(&mut subsumers);
-        subsumers_grew_last_round = subsumers_total_entries(&subsumers) > subsumer_size_before;
-    }
-    subsumers
+    let mut engine = WorklistEngine::new(n, rules, role_super);
+    engine.seed();
+    engine.run();
+    engine.subsumers
 }
 
-/// Total number of `(C, D)` pairs currently in the subsumer table
-/// (including the `unsatisfiable` set). Used by `saturate` to detect
-/// whether the previous round grew subsumers, so the chain rule
-/// knows whether its delta-only path is safe.
-fn subsumers_total_entries(subsumers: &Subsumers) -> usize {
-    subsumers.table.values().map(HashSet::len).sum::<usize>() + subsumers.unsatisfiable.len()
+/// Worklist-driven saturation engine. Maintains the running closure
+/// plus three event queues; each iteration pops one event, derives
+/// its direct consequents, and pushes new events for anything that
+/// became newly applicable. Terminates when all three queues are
+/// empty.
+///
+/// Indices the engine maintains for O(1) rule lookup:
+/// - `subsumed_by[D] = {C : C ⊑ D}` — reverse of `subsumers`.
+///   Used by unsat propagation and trigger firing.
+/// - `facts_by_sub[A]` / `facts_by_target[T]` — per-side fact
+///   indices, so chain-rule and trigger lookups walk only relevant
+///   facts.
+/// - `conjunctive_by_body[B]` / `existential_triggers_by_body[B]`
+///   — trigger lookup keyed on the body class, so a new subsumer
+///   only re-checks the triggers that could possibly fire.
+/// - `disjoints_by_class[A] = {B : (A,B) or (B,A) is disjoint}`
+///   — disjoint-pair lookup keyed on either operand.
+struct WorklistEngine {
+    subsumers: Subsumers,
+    /// Reverse index: `subsumed_by[D]` is the set of classes `C`
+    /// such that `C ⊑ D` is in the closure. Maintained pairwise
+    /// with `subsumers.table` (every `(C, D)` pair lives in both).
+    subsumed_by: HashMap<ClassId, HashSet<ClassId>>,
+
+    facts: Vec<ExistentialFact>,
+    seen_facts: HashSet<(ClassId, RoleId, ClassId)>,
+    facts_by_sub: HashMap<ClassId, Vec<usize>>,
+    facts_by_target: HashMap<ClassId, Vec<usize>>,
+
+    todo_subsumer: VecDeque<(ClassId, ClassId)>,
+    todo_fact: VecDeque<usize>,
+    todo_unsat: VecDeque<ClassId>,
+
+    rules: ElRules,
+    role_super: HashMap<RoleId, HashSet<RoleId>>,
+    conjunctive_by_body: HashMap<ClassId, Vec<usize>>,
+    existential_triggers_by_body: HashMap<ClassId, Vec<usize>>,
+    disjoints_by_class: HashMap<ClassId, Vec<ClassId>>,
+
+    num_classes: usize,
 }
 
-/// Dedup-aware growable store of existential facts.
-#[derive(Debug, Default)]
-struct ExistentialFacts {
-    list: Vec<ExistentialFact>,
-    seen: HashSet<(ClassId, RoleId, ClassId)>,
-    /// Inverted index: `by_sub[c]` is the set of `list` indices whose
-    /// `sub` is `c`. Lets the chain rule jump directly to candidate
-    /// tail facts from a head fact's target subsumer set, instead of
-    /// scanning the whole `list`.
-    by_sub: HashMap<ClassId, Vec<usize>>,
-    /// Frontier for the chain rule's delta optimisation: facts at
-    /// `list[..chained_through]` have already been paired against
-    /// everything they could chain with under the current subsumer
-    /// state. When subsumers grow, this is reset to 0.
-    chained_through: usize,
-}
-
-impl ExistentialFacts {
-    fn add(&mut self, fact: ExistentialFact) -> bool {
-        if self.seen.insert((fact.sub, fact.role, fact.target)) {
-            let idx = self.list.len();
-            self.list.push(fact);
-            self.by_sub.entry(fact.sub).or_default().push(idx);
-            true
-        } else {
-            false
+impl WorklistEngine {
+    fn new(
+        num_classes: usize,
+        rules: ElRules,
+        role_super: HashMap<RoleId, HashSet<RoleId>>,
+    ) -> Self {
+        let mut conjunctive_by_body: HashMap<ClassId, Vec<usize>> = HashMap::new();
+        for (idx, trigger) in rules.conjunctive_triggers.iter().enumerate() {
+            for &body in &trigger.bodies {
+                conjunctive_by_body.entry(body).or_default().push(idx);
+            }
+        }
+        let mut existential_triggers_by_body: HashMap<ClassId, Vec<usize>> = HashMap::new();
+        for (idx, trigger) in rules.existential_triggers.iter().enumerate() {
+            existential_triggers_by_body
+                .entry(trigger.body)
+                .or_default()
+                .push(idx);
+        }
+        let mut disjoints_by_class: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+        for &(a, b) in &rules.disjoint_pairs {
+            disjoints_by_class.entry(a).or_default().push(b);
+            disjoints_by_class.entry(b).or_default().push(a);
+        }
+        Self {
+            subsumers: Subsumers::with_capacity(num_classes),
+            subsumed_by: HashMap::new(),
+            facts: Vec::new(),
+            seen_facts: HashSet::new(),
+            facts_by_sub: HashMap::new(),
+            facts_by_target: HashMap::new(),
+            todo_subsumer: VecDeque::new(),
+            todo_fact: VecDeque::new(),
+            todo_unsat: VecDeque::new(),
+            rules,
+            role_super,
+            conjunctive_by_body,
+            existential_triggers_by_body,
+            disjoints_by_class,
+            num_classes,
         }
     }
-}
 
-/// Direct told subsumers: `A ⊑ B`.
-fn apply_atomic_subsumptions(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
-    let mut changed = false;
-    for rule in &rules.atomic_subsumptions {
-        if subsumers.add(rule.sub, rule.sup) {
-            changed = true;
-        }
-    }
-    changed
-}
-
-/// Conjunctive triggers: if `X` has every `bᵢ` among its subsumers,
-/// it gains the trigger's `head`.
-fn apply_conjunctive_triggers(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
-    let mut changed = false;
-    let len = subsumers.table.len();
-    for trigger in &rules.conjunctive_triggers {
-        for i in 0..len {
+    /// Seed the worklist from told axioms + reflexivity.
+    fn seed(&mut self) {
+        // Reflexive `C ⊑ C` for every declared class.
+        for i in 0..self.num_classes {
             let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
-            if trigger.bodies.iter().all(|b| subsumers.contains(id, *b))
-                && subsumers.add(id, trigger.head)
-            {
-                changed = true;
+            self.todo_subsumer.push_back((id, id));
+        }
+        // Told atomic subsumers.
+        for rule in &self.rules.atomic_subsumptions {
+            self.todo_subsumer.push_back((rule.sub, rule.sup));
+        }
+        // Told existential facts (snapshot first to release the
+        // borrow into `self.rules`).
+        let told: Vec<ExistentialFact> = self.rules.existential_facts.clone();
+        for fact in told {
+            self.push_fact(fact);
+        }
+    }
+
+    /// Drain queues until all three are empty.
+    fn run(&mut self) {
+        loop {
+            if let Some((c, d)) = self.todo_subsumer.pop_front() {
+                self.process_subsumer(c, d);
+            } else if let Some(idx) = self.todo_fact.pop_front() {
+                self.process_fact(idx);
+            } else if let Some(c) = self.todo_unsat.pop_front() {
+                self.process_unsat(c);
+            } else {
+                break;
             }
         }
     }
-    changed
-}
 
-/// CR5: existential propagation. For every fact `(A, r, Y)` —
-/// meaning `A ⊑ ∃r.Y` — and every trigger `(r', Z, W)` with `r ⊑ r'`,
-/// if `Z` is already a subsumer of `Y`, every class that has `A`
-/// among its subsumers also gains `W`.
-///
-/// Reads from the runtime fact set (told + chain-derived) so further
-/// chain steps participate naturally.
-fn apply_existential_propagation(
-    subsumers: &mut Subsumers,
-    facts: &ExistentialFacts,
-    rules: &ElRules,
-    role_super: &HashMap<RoleId, HashSet<RoleId>>,
-) -> bool {
-    let mut changed = false;
-    for fact in &facts.list {
-        let supers = supers_of(role_super, fact.role);
-        for trigger in &rules.existential_triggers {
-            if !supers.contains(&trigger.role) {
-                continue;
+    /// Insert a derived `(C, D)` subsumer edge — no-op if already
+    /// present. Returns whether the insert was new.
+    fn record_subsumer(&mut self, c: ClassId, d: ClassId) -> bool {
+        let added = self.subsumers.table.entry(c).or_default().insert(d);
+        if added {
+            self.subsumed_by.entry(d).or_default().insert(c);
+        }
+        added
+    }
+
+    /// Push `(c, d)` onto the subsumer worklist if not yet asserted.
+    fn enqueue_subsumer(&mut self, c: ClassId, d: ClassId) {
+        if !self.subsumers.contains(c, d) {
+            self.todo_subsumer.push_back((c, d));
+        }
+    }
+
+    /// Push a class onto the unsat worklist if not yet flagged.
+    fn enqueue_unsat(&mut self, c: ClassId) {
+        if !self.subsumers.unsatisfiable.contains(&c) {
+            self.todo_unsat.push_back(c);
+        }
+    }
+
+    /// Insert a new existential fact and enqueue it for processing.
+    /// Returns the index assigned to the fact, or `None` if it was
+    /// already known.
+    fn push_fact(&mut self, fact: ExistentialFact) -> Option<usize> {
+        if !self.seen_facts.insert((fact.sub, fact.role, fact.target)) {
+            return None;
+        }
+        let idx = self.facts.len();
+        self.facts.push(fact);
+        self.facts_by_sub.entry(fact.sub).or_default().push(idx);
+        self.facts_by_target
+            .entry(fact.target)
+            .or_default()
+            .push(idx);
+        self.todo_fact.push_back(idx);
+        Some(idx)
+    }
+
+    /// Fire all rules triggered by a freshly-derived `(C, D)` edge.
+    #[allow(clippy::too_many_lines)]
+    fn process_subsumer(&mut self, c: ClassId, d: ClassId) {
+        if !self.record_subsumer(c, d) {
+            return;
+        }
+        // Transitivity (forward): anything D ⊑ is also a subsumer
+        // of C.
+        let supers_of_d: Vec<ClassId> = self
+            .subsumers
+            .table
+            .get(&d)
+            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        for e in supers_of_d {
+            self.enqueue_subsumer(c, e);
+        }
+        // Transitivity (backward): anything that had C as a
+        // subsumer now also has D as a subsumer.
+        let subs_of_c: Vec<ClassId> = self
+            .subsumed_by
+            .get(&c)
+            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        for x in subs_of_c {
+            self.enqueue_subsumer(x, d);
+        }
+        // Unsat propagation: if D is unsat, C is unsat too.
+        if self.subsumers.unsatisfiable.contains(&d) {
+            self.enqueue_unsat(c);
+        }
+        // Conjunctive triggers: every trigger with D in its body
+        // list may now fire on C if C has all the other bodies too.
+        if let Some(trigger_idxs) = self.conjunctive_by_body.get(&d).cloned() {
+            for tidx in trigger_idxs {
+                let trigger = &self.rules.conjunctive_triggers[tidx];
+                if trigger
+                    .bodies
+                    .iter()
+                    .all(|b| self.subsumers.contains(c, *b))
+                {
+                    let head = trigger.head;
+                    self.enqueue_subsumer(c, head);
+                }
             }
-            if !subsumers.contains(fact.target, trigger.body) {
-                continue;
+        }
+        // Disjointness: if any class disjoint from D is already a
+        // subsumer of C, C is unsat.
+        if let Some(others) = self.disjoints_by_class.get(&d).cloned()
+            && others
+                .iter()
+                .any(|other| self.subsumers.contains(c, *other))
+        {
+            self.enqueue_unsat(c);
+        }
+        // Existential trigger firing — target side: for facts whose
+        // target is C, a new subsumer D may match a trigger body.
+        if let Some(fact_idxs) = self.facts_by_target.get(&c).cloned()
+            && let Some(trigger_idxs) = self.existential_triggers_by_body.get(&d).cloned()
+        {
+            for fidx in fact_idxs {
+                let fact = self.facts[fidx];
+                let fact_role_supers = supers_of(&self.role_super, fact.role);
+                for tidx in &trigger_idxs {
+                    let trigger = self.rules.existential_triggers[*tidx];
+                    if !fact_role_supers.contains(&trigger.role) {
+                        continue;
+                    }
+                    // Every Y with fact.sub ∈ subsumers(Y) gains
+                    // trigger.head — walk subsumed_by.
+                    let head = trigger.head;
+                    let candidates: Vec<ClassId> = self
+                        .subsumed_by
+                        .get(&fact.sub)
+                        .map_or_else(Vec::new, |s| s.iter().copied().collect());
+                    for y in candidates {
+                        self.enqueue_subsumer(y, head);
+                    }
+                    // fact.sub itself always has fact.sub ∈ subsumers(sub).
+                    self.enqueue_subsumer(fact.sub, head);
+                }
             }
-            let candidates = classes_with_subsumer(subsumers, fact.sub);
-            for x in candidates {
-                if subsumers.add(x, trigger.head) {
-                    changed = true;
+        }
+        // Existential trigger firing — sub side: when C newly has
+        // subsumer D, and D itself has an existential fact, then
+        // C inherits that fact's trigger effect for every trigger
+        // whose body is already in subsumers(fact.target).
+        if let Some(fact_idxs) = self.facts_by_sub.get(&d).cloned() {
+            for fidx in fact_idxs {
+                let fact = self.facts[fidx];
+                let target_subsumers: Vec<ClassId> = self
+                    .subsumers
+                    .table
+                    .get(&fact.target)
+                    .map_or_else(Vec::new, |s| s.iter().copied().collect());
+                let fact_role_supers = supers_of(&self.role_super, fact.role);
+                for sub in target_subsumers {
+                    if let Some(trigger_idxs) = self.existential_triggers_by_body.get(&sub).cloned()
+                    {
+                        for tidx in trigger_idxs {
+                            let trigger = self.rules.existential_triggers[tidx];
+                            if !fact_role_supers.contains(&trigger.role) {
+                                continue;
+                            }
+                            self.enqueue_subsumer(c, trigger.head);
+                        }
+                    }
+                }
+                // Domain axiom: if there's a domain for any super
+                // of fact.role, C now gets that domain.
+                for super_role in &fact_role_supers {
+                    let doms: Vec<ClassId> = self
+                        .rules
+                        .role_domains
+                        .get(super_role)
+                        .cloned()
+                        .unwrap_or_default();
+                    for dom in doms {
+                        self.enqueue_subsumer(c, dom);
+                    }
+                }
+            }
+        }
+        // Chain rule — `c` is fact1.target side: when a new subsumer
+        // `d` lands on `c`, for every fact1 = (A, r1', c) with the
+        // chain's r1 in r1's super-roles, and every fact2 = (d, r2',
+        // T) whose sub is the new subsumer `d`, derive (A, sup, T)
+        // when the chain matches.
+        let chain_axioms = self.rules.chain_axioms.clone();
+        if !chain_axioms.is_empty() {
+            let head_facts: Vec<ExistentialFact> = self
+                .facts_by_target
+                .get(&c)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|i| self.facts[i])
+                .collect();
+            let tail_facts: Vec<ExistentialFact> = self
+                .facts_by_sub
+                .get(&d)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|i| self.facts[i])
+                .collect();
+            for (r1, r2, sup) in chain_axioms {
+                for head in &head_facts {
+                    if !supers_of(&self.role_super, head.role).contains(&r1) {
+                        continue;
+                    }
+                    for tail in &tail_facts {
+                        if !supers_of(&self.role_super, tail.role).contains(&r2) {
+                            continue;
+                        }
+                        self.push_fact(ExistentialFact {
+                            sub: head.sub,
+                            role: sup,
+                            target: tail.target,
+                        });
+                    }
                 }
             }
         }
     }
-    changed
-}
 
-/// Role chain propagation (Kazakov CR11 — length-2 form). For each
-/// registered chain axiom `r₁ ∘ r₂ ⊑ sup`, the *implied* edge
-/// `A —sup→ C` whenever `A —r₁→ B` and `B —r₂→ C` chain through.
-///
-/// We don't materialise derived `ExistentialFact`s; instead we go
-/// straight to the trigger side: any `ExistentialTrigger (rt, body,
-/// head)` with `sup ⊑ rt` and `body ∈ subsumers(C)` fires `head` to
-/// every class that subsumes `A`. Role-hierarchy lifts apply at the
-/// fact roles (`r₁` and `r₂`) and at the trigger role (`rt`).
-///
-/// Inverse-role chains and length ≠ 2 chains are rejected upstream
-/// during rule collection — those stay in the tableau's lane.
-fn apply_role_chains(
-    facts: &mut ExistentialFacts,
-    subsumers: &Subsumers,
-    rules: &ElRules,
-    role_super: &HashMap<RoleId, HashSet<RoleId>>,
-    subsumers_grew_last_round: bool,
-) -> bool {
-    if rules.chain_axioms.is_empty() {
-        return false;
-    }
-    // Frontier optimisation: pairs (i, j) where neither side was
-    // added since the last chain call AND the subsumer table didn't
-    // grow can't produce anything new — we processed them already.
-    // When subsumers grow, previously-failing chain conditions
-    // (`subsumers.contains(fact1.target, fact2.sub)`) can now hold,
-    // so we have to re-scan everything.
-    let n = facts.list.len();
-    let old_boundary = if subsumers_grew_last_round {
-        0
-    } else {
-        facts.chained_through
-    };
-    // Collect derivations into a side buffer so the inner loop can
-    // keep a borrow into `facts.by_sub` without conflicting with
-    // `facts.add()`. The buffer is drained after each chain.
-    let mut pending: Vec<ExistentialFact> = Vec::new();
-    let mut changed = false;
-    for &(r1, r2, sup) in &rules.chain_axioms {
-        // For each head fact (i) with role `r1` (or sub-role),
-        // candidate tail facts are those whose `sub` is one of the
-        // subsumers of `head_edge.target`. We iterate that subsumer
-        // set directly via the by_sub index instead of scanning the
-        // whole fact list.
-        for i in 0..n {
-            let head_edge = facts.list[i];
-            if !supers_of(role_super, head_edge.role).contains(&r1) {
-                continue;
+    /// Fire all rules triggered by a freshly-added existential fact.
+    fn process_fact(&mut self, idx: usize) {
+        let fact = self.facts[idx];
+        let role_supers = supers_of(&self.role_super, fact.role);
+        // Range axiom: target gains the range for every super-role.
+        for super_role in &role_supers {
+            let ranges: Vec<ClassId> = self
+                .rules
+                .role_ranges
+                .get(super_role)
+                .cloned()
+                .unwrap_or_default();
+            for rng in ranges {
+                self.enqueue_subsumer(fact.target, rng);
             }
-            let Some(target_subsumers) = subsumers.table.get(&head_edge.target) else {
-                continue;
-            };
-            for &candidate_sub in target_subsumers {
-                let Some(tail_ids) = facts.by_sub.get(&candidate_sub) else {
-                    continue;
-                };
-                for &j in tail_ids {
-                    // Delta gate: if neither side is new, we already
-                    // processed (i, j) on the previous chain call.
-                    if i < old_boundary && j < old_boundary {
-                        continue;
+            // Domain axiom: every class with fact.sub as a subsumer
+            // (including fact.sub itself) gains the domain.
+            let domains: Vec<ClassId> = self
+                .rules
+                .role_domains
+                .get(super_role)
+                .cloned()
+                .unwrap_or_default();
+            if !domains.is_empty() {
+                let candidates: Vec<ClassId> = self
+                    .subsumed_by
+                    .get(&fact.sub)
+                    .map_or_else(Vec::new, |s| s.iter().copied().collect());
+                for dom in domains {
+                    self.enqueue_subsumer(fact.sub, dom);
+                    for y in &candidates {
+                        self.enqueue_subsumer(*y, dom);
                     }
-                    let tail_edge = facts.list[j];
-                    if !supers_of(role_super, tail_edge.role).contains(&r2) {
-                        continue;
-                    }
-                    pending.push(ExistentialFact {
-                        sub: head_edge.sub,
-                        role: sup,
-                        target: tail_edge.target,
-                    });
                 }
             }
         }
-        for fact in pending.drain(..) {
-            if facts.add(fact) {
-                changed = true;
+        // Unsat propagation: if the target is unsat, the source is
+        // unsat (an A-instance would need an r-successor in an
+        // empty class).
+        if self.subsumers.unsatisfiable.contains(&fact.target) {
+            self.enqueue_unsat(fact.sub);
+        }
+        // Existential triggers (fact side): for each trigger
+        // (r', body, head) with fact.role ⊑ r' and body in
+        // subsumers(target), every class with fact.sub as a subsumer
+        // gains head.
+        let target_subsumers: Vec<ClassId> = self
+            .subsumers
+            .table
+            .get(&fact.target)
+            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        let candidates: Vec<ClassId> = self
+            .subsumed_by
+            .get(&fact.sub)
+            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        for sub in &target_subsumers {
+            if let Some(trigger_idxs) = self.existential_triggers_by_body.get(sub).cloned() {
+                for tidx in trigger_idxs {
+                    let trigger = self.rules.existential_triggers[tidx];
+                    if !role_supers.contains(&trigger.role) {
+                        continue;
+                    }
+                    let head = trigger.head;
+                    self.enqueue_subsumer(fact.sub, head);
+                    for y in &candidates {
+                        self.enqueue_subsumer(*y, head);
+                    }
+                }
             }
         }
-    }
-    facts.chained_through = n;
-    changed
-}
-
-/// Property domain + range. For every existential fact `(A, r, Y)`:
-/// - `domain(r')` ∈ subsumers(X) for every `X` with `A` in its
-///   subsumers and every `r' ⊒ r`;
-/// - `range(r')` ∈ subsumers(Y) for every `r' ⊒ r`.
-fn apply_domain_and_range(
-    subsumers: &mut Subsumers,
-    facts: &ExistentialFacts,
-    rules: &ElRules,
-    role_super: &HashMap<RoleId, HashSet<RoleId>>,
-) -> bool {
-    let mut changed = false;
-    for fact in &facts.list {
-        let supers = supers_of(role_super, fact.role);
-        for super_role in &supers {
-            if let Some(domains) = rules.role_domains.get(super_role) {
-                let candidates = classes_with_subsumer(subsumers, fact.sub);
-                for &dom in domains {
-                    for x in &candidates {
-                        if subsumers.add(*x, dom) {
-                            changed = true;
+        // Chain rule: pair with existing facts.
+        let chain_axioms = self.rules.chain_axioms.clone();
+        for (r1, r2, sup) in chain_axioms {
+            let role_in_r1 = role_supers.contains(&r1);
+            let role_in_r2 = role_supers.contains(&r2);
+            if role_in_r1 {
+                // This fact is the head; pair with tails whose sub
+                // is a subsumer of fact.target.
+                let target_subs = target_subsumers.clone();
+                for sub in &target_subs {
+                    let tail_idxs = self.facts_by_sub.get(sub).cloned().unwrap_or_default();
+                    for tidx in tail_idxs {
+                        let tail = self.facts[tidx];
+                        if supers_of(&self.role_super, tail.role).contains(&r2) {
+                            self.push_fact(ExistentialFact {
+                                sub: fact.sub,
+                                role: sup,
+                                target: tail.target,
+                            });
                         }
                     }
                 }
             }
-            if let Some(ranges) = rules.role_ranges.get(super_role) {
-                for &rng in ranges {
-                    if subsumers.add(fact.target, rng) {
-                        changed = true;
+            if role_in_r2 {
+                // This fact is the tail; pair with heads whose
+                // target has fact.sub as a subsumer.
+                let candidates = candidates.clone();
+                let mut head_targets: Vec<ClassId> = candidates;
+                head_targets.push(fact.sub);
+                for cand in head_targets {
+                    let head_idxs = self.facts_by_target.get(&cand).cloned().unwrap_or_default();
+                    for hidx in head_idxs {
+                        let head = self.facts[hidx];
+                        if supers_of(&self.role_super, head.role).contains(&r1) {
+                            self.push_fact(ExistentialFact {
+                                sub: head.sub,
+                                role: sup,
+                                target: fact.target,
+                            });
+                        }
                     }
                 }
             }
         }
     }
-    changed
-}
 
-/// `DisjointClasses(A, B)` ⇒ every class with both `A` and `B` as
-/// subsumers is flagged as unsatisfiable.
-fn apply_disjointness(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
-    let mut changed = false;
-    for &(a, b) in &rules.disjoint_pairs {
-        let candidates: Vec<ClassId> = subsumers
-            .table
-            .iter()
-            .filter_map(|(x, s)| {
-                if !subsumers.unsatisfiable.contains(x) && s.contains(&a) && s.contains(&b) {
-                    Some(*x)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for x in candidates {
-            if subsumers.unsatisfiable.insert(x) {
-                changed = true;
+    /// Fire all rules triggered by `c` becoming unsatisfiable.
+    fn process_unsat(&mut self, c: ClassId) {
+        if !self.subsumers.unsatisfiable.insert(c) {
+            return;
+        }
+        // Every class with c as a subsumer is also unsat.
+        let dependents: Vec<ClassId> = self
+            .subsumed_by
+            .get(&c)
+            .map_or_else(Vec::new, |s| s.iter().copied().collect());
+        for d in dependents {
+            self.enqueue_unsat(d);
+        }
+        // Every fact with c as its target makes its source unsat.
+        if let Some(fact_idxs) = self.facts_by_target.get(&c).cloned() {
+            for fidx in fact_idxs {
+                let fact = self.facts[fidx];
+                self.enqueue_unsat(fact.sub);
             }
         }
     }
-    changed
-}
-
-/// Propagate `⊑ ⊥` flags through two paths the disjointness rule
-/// alone misses:
-///
-/// 1. **Existential-to-source.** If `(A, r, T)` is an existential
-///    fact and `T` is flagged unsat, then `A` is also unsat — every
-///    `A`-instance would need an `r`-successor in the empty class
-///    `T`, which is impossible.
-/// 2. **Subsumer-transitive.** If `Y` is unsat and `Y ∈ subsumers(X)`,
-///    then `X` is unsat (every `X`-instance would have to be a
-///    `Y`-instance, but `Y` has none).
-///
-/// Both reuse the closure's existing subsumer table, no new state.
-fn apply_unsat_propagation(subsumers: &mut Subsumers, facts: &ExistentialFacts) -> bool {
-    let mut changed = false;
-    // 1. Existential targets that are unsat make their source unsat.
-    for fact in &facts.list {
-        if subsumers.unsatisfiable.contains(&fact.target)
-            && subsumers.unsatisfiable.insert(fact.sub)
-        {
-            changed = true;
-        }
-    }
-    // 2. Subsumer-driven unsat propagation. Snapshot the subsumer
-    //    table so we can mutate `unsatisfiable` while iterating.
-    let snapshot: Vec<(ClassId, Vec<ClassId>)> = subsumers
-        .table
-        .iter()
-        .map(|(k, v)| (*k, v.iter().copied().collect()))
-        .collect();
-    for (x, subs) in snapshot {
-        if subsumers.unsatisfiable.contains(&x) {
-            continue;
-        }
-        if subs.iter().any(|s| subsumers.unsatisfiable.contains(s))
-            && subsumers.unsatisfiable.insert(x)
-        {
-            changed = true;
-        }
-    }
-    changed
-}
-
-/// Transitive closure of the current `subsumers` relation.
-fn apply_transitivity(subsumers: &mut Subsumers) -> bool {
-    let mut changed = false;
-    let snapshot: Vec<(ClassId, Vec<ClassId>)> = subsumers
-        .table
-        .iter()
-        .map(|(k, v)| (*k, v.iter().copied().collect()))
-        .collect();
-    for (c, ds) in &snapshot {
-        for d in ds {
-            if let Some(es) = subsumers.table.get(d) {
-                let new_subs: Vec<ClassId> = es.iter().copied().collect();
-                for e in new_subs {
-                    if subsumers.add(*c, e) {
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-    changed
 }
 
 /// Look up the reflexive + transitive super-role closure for `r`,
-/// falling back to `[r]` if the closure has no entry (defensive).
+/// falling back to `[r]` if the closure has no entry.
 fn supers_of(role_super: &HashMap<RoleId, HashSet<RoleId>>, r: RoleId) -> Vec<RoleId> {
     role_super
         .get(&r)
         .map_or_else(|| vec![r], |set| set.iter().copied().collect())
-}
-
-/// Snapshot every class id whose subsumer set currently contains `c`.
-fn classes_with_subsumer(subsumers: &Subsumers, c: ClassId) -> Vec<ClassId> {
-    subsumers
-        .table
-        .iter()
-        .filter_map(|(x, s)| if s.contains(&c) { Some(*x) } else { None })
-        .collect()
 }
 
 /// Subsumer closure: for each class `C`, the set of named classes
@@ -458,11 +572,6 @@ impl Subsumers {
             table: HashMap::with_capacity(n),
             unsatisfiable: HashSet::new(),
         }
-    }
-
-    /// Insert `(sub ⊑ sup)`. Returns `true` if this was new.
-    fn add(&mut self, sub: ClassId, sup: ClassId) -> bool {
-        self.table.entry(sub).or_default().insert(sup)
     }
 
     /// True iff the closure contains `sub ⊑ sup`.

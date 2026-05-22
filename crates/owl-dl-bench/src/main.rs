@@ -50,6 +50,13 @@ enum Command {
         /// variants.
         #[arg(long, default_value = "1")]
         anchors: usize,
+        /// Re-run the classification this many times; report `med`,
+        /// `min`, and `max` wall-clock instead of a single sample.
+        /// Defaults to 1 (single run). Pair with `--repeats 10` to
+        /// drown trial-to-trial system noise (~30 % at the ms scale
+        /// on a shared 16-core box).
+        #[arg(long, default_value = "1")]
+        repeats: usize,
     },
     /// Walk a directory of .ofn ontologies, classify each, report
     /// per-file and aggregate stats. Used to see how the
@@ -156,6 +163,43 @@ fn run_classify(ontology: &SetOntology<RcStr>) -> Result<()> {
     Ok(())
 }
 
+/// Like [`run_classify`] but classifies `repeats` times and reports
+/// `med` / `min` / `max` wall-clock. Stats are read from the first
+/// run since they're deterministic per the convert+sort guarantee.
+fn run_classify_repeated(ontology: &SetOntology<RcStr>, repeats: usize) -> Result<()> {
+    if repeats <= 1 {
+        return run_classify(ontology);
+    }
+    let mut times: Vec<std::time::Duration> = Vec::with_capacity(repeats);
+    let mut first: Option<owl_dl_reasoner::Classification> = None;
+    for _ in 0..repeats {
+        let start = Instant::now();
+        let h = classify(ontology).context("classify")?;
+        times.push(start.elapsed());
+        if first.is_none() {
+            first = Some(h);
+        }
+    }
+    times.sort();
+    let median = times[times.len() / 2];
+    let min = *times.first().expect("repeats >= 2 ⇒ times non-empty");
+    let max = *times.last().expect("repeats >= 2 ⇒ times non-empty");
+    let h = first.expect("first present after success loop");
+    let stats = h.stats();
+    println!("classes: {}", h.classes().len());
+    println!(
+        "subsumption: saturation={} tableau={}",
+        stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
+    );
+    println!(
+        "satisfiability probes: saturation={} tableau={}",
+        stats.saturation_unsat_hits, stats.tableau_unsat_calls
+    );
+    println!("unsat classes: {}", h.unsatisfiable_classes().len());
+    println!("elapsed: med={median:.3?} min={min:.3?} max={max:.3?} (n={repeats})");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -167,14 +211,18 @@ fn main() -> Result<()> {
             let onto = parse_ofn(&file)?;
             run_classify(&onto)?;
         }
-        Command::SyntheticEl { classes, anchors } => {
+        Command::SyntheticEl {
+            classes,
+            anchors,
+            repeats,
+        } => {
             anyhow::ensure!(classes >= 2, "need at least 2 classes for the chain");
             let src = synthetic_el_ontology(classes, anchors);
             let mut reader = std::io::Cursor::new(src);
             let (onto, _): (SetOntology<RcStr>, _) =
                 read(&mut reader, ParserConfiguration::default())
                     .map_err(|e| anyhow::anyhow!("synthesised ontology failed to parse: {e}"))?;
-            run_classify(&onto)?;
+            run_classify_repeated(&onto, repeats.max(1))?;
         }
         Command::Corpus {
             dir,

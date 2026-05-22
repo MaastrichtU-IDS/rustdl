@@ -58,12 +58,19 @@ pub enum TrailEntry {
     /// list at position `position`. The mirror in-edge at `target`
     /// was also removed; both halves are restored on undo. Used by
     /// `merge_into` to re-anchor edges to the merge target.
+    ///
+    /// `prior_edge_deps` and `prior_in_edge_deps` carry the
+    /// [`crate::DepSet`]s that were attached to those edge slots
+    /// before removal, so undo can re-insert them in lockstep with
+    /// the edges themselves. Phase 4 commit 1 invariant.
     EdgeRemoved {
         from: NodeId,
         role: RoleId,
         target: NodeId,
         position: usize,
         in_position: usize,
+        prior_edge_deps: crate::graph::DepSet,
+        prior_in_edge_deps: crate::graph::DepSet,
     },
     /// `node` was marked as merged into `new_target`. Undo restores
     /// the prior `merged_into` value (usually `None`).
@@ -166,29 +173,50 @@ impl TableauTrail {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
     match *entry {
         TrailEntry::LabelAdded { node, concept } => {
-            let labels = &mut graph.node_mut(node).labels;
-            let pos = labels
+            let n = graph.node_mut(node);
+            let pos = n
+                .labels
                 .binary_search(&concept)
                 .expect("LabelAdded undo: concept missing from sorted labels");
-            labels.remove(pos);
+            n.labels.remove(pos);
+            // The parallel `label_deps` always tracks `labels` in
+            // lockstep — `add_label_with_deps` pushes both, undo pops
+            // both. Phase 4 commit 1 invariant: every `LabelAdded`
+            // entry corresponds to one push on each.
+            debug_assert!(
+                pos < n.label_deps.len(),
+                "LabelAdded undo: label_deps shorter than labels"
+            );
+            n.label_deps.remove(pos);
         }
         TrailEntry::EdgeAdded { from, role, target } => {
             // Pop the outgoing edge at `from`.
-            let edges = &mut graph.node_mut(from).edges;
-            let last = edges.pop().expect("EdgeAdded undo: edge list empty");
+            let from_node = graph.node_mut(from);
+            let last = from_node
+                .edges
+                .pop()
+                .expect("EdgeAdded undo: edge list empty");
             debug_assert_eq!(
                 last,
                 (role, target),
                 "EdgeAdded undo: trail/graph edge mismatch"
             );
-            // Pop the mirror in-edge at `target`. Same append-only
-            // discipline applies — every EdgeAdded entry on the
-            // trail corresponds to one push on each side.
-            let in_edges = &mut graph.node_mut(target).in_edges;
-            let last_in = in_edges
+            // Same append-only discipline for `edge_deps`. Always
+            // pushed in lockstep with `edges`; same length invariant.
+            from_node
+                .edge_deps
+                .pop()
+                .expect("EdgeAdded undo: edge_deps empty");
+            // Pop the mirror in-edge at `target` plus its dep
+            // mirror. Every EdgeAdded entry on the trail corresponds
+            // to one push on each side.
+            let target_node = graph.node_mut(target);
+            let last_in = target_node
+                .in_edges
                 .pop()
                 .expect("EdgeAdded undo: target in-edges empty");
             debug_assert_eq!(
@@ -196,6 +224,10 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 (role, from),
                 "EdgeAdded undo: trail/graph in-edge mismatch"
             );
+            target_node
+                .in_edge_deps
+                .pop()
+                .expect("EdgeAdded undo: target in_edge_deps empty");
         }
         TrailEntry::NodeCreated { prior_len } => {
             graph.truncate_nodes(prior_len);
@@ -216,14 +248,21 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             target,
             position,
             in_position,
+            ref prior_edge_deps,
+            ref prior_in_edge_deps,
         } => {
             // Re-insert the out-edge at the original position.
-            graph.node_mut(from).edges.insert(position, (role, target));
+            let from_node = graph.node_mut(from);
+            from_node.edges.insert(position, (role, target));
+            from_node
+                .edge_deps
+                .insert(position, prior_edge_deps.clone());
             // Re-insert the mirror in-edge.
-            graph
-                .node_mut(target)
-                .in_edges
-                .insert(in_position, (role, from));
+            let target_node = graph.node_mut(target);
+            target_node.in_edges.insert(in_position, (role, from));
+            target_node
+                .in_edge_deps
+                .insert(in_position, prior_in_edge_deps.clone());
         }
         TrailEntry::MergedRedirect {
             node,

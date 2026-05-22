@@ -27,6 +27,20 @@ use std::collections::HashMap;
 use owl_dl_core::{ConceptId, IndividualId, Role, RoleId};
 use smallvec::SmallVec;
 
+/// The set of `branch_id`s whose `⊔`- or choose-rule decisions a
+/// particular label or edge derivation depended on. Empty means the
+/// label/edge was added by a deterministic rule with no upstream
+/// branch decisions (e.g. a residual GCI, an absorbed `ConceptRule`
+/// triggered by an axiom-direct atomic).
+///
+/// Used by Phase 4's dependency-directed back-jumping (see
+/// `docs/phase4-backjumping-plan.md`). Today (commit 1 of that
+/// rollout) the field is plumbed everywhere but always observed
+/// empty — the per-rule propagation and the `branch()` jump logic
+/// arrive in later commits. The `Vec<u32>` is kept sorted + dedup'd
+/// so set union / membership tests run in O(n).
+pub type DepSet = Vec<u32>;
+
 /// Index into the node arena of a [`CompletionGraph`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(u32);
@@ -63,12 +77,22 @@ pub struct Node {
     pub(crate) parent: Option<NodeId>,
     pub(crate) parent_role: Option<Role>,
     pub(crate) labels: SmallVec<[ConceptId; 8]>,
+    /// Per-label [`DepSet`], parallel to [`Self::labels`] (same index,
+    /// same length). Populated by `add_label_with_deps`; the legacy
+    /// `add_label` writes an empty `DepSet`. Tracks which branch
+    /// decisions a label derivation depended on; used by Phase 4 DDB.
+    pub(crate) label_deps: Vec<DepSet>,
     pub(crate) edges: SmallVec<[(RoleId, NodeId); 4]>,
+    /// Per-out-edge `DepSet`, parallel to [`Self::edges`].
+    pub(crate) edge_deps: Vec<DepSet>,
     /// Incoming forward edges — for any edge `y —r→ self` somewhere
     /// in the graph, `(r, y)` lives here. Maintained as a redundant
     /// index of [`Self::edges`] across the graph so inverse-aware
     /// rules can iterate neighbours without scanning every node.
     pub(crate) in_edges: SmallVec<[(RoleId, NodeId); 2]>,
+    /// Per-in-edge `DepSet`, parallel to [`Self::in_edges`]. Mirrors
+    /// the matching `edge_deps` entry on the source node.
+    pub(crate) in_edge_deps: Vec<DepSet>,
     /// Pairwise inequality assertions: every [`NodeId`] in this list
     /// is known to denote a *different* individual than this node.
     /// Symmetric — if `a ∈ b.inequalities` then `b ∈ a.inequalities`.
@@ -126,6 +150,25 @@ impl Node {
     #[must_use]
     pub fn has_label(&self, c: ConceptId) -> bool {
         self.labels.binary_search(&c).is_ok()
+    }
+
+    /// Read the [`DepSet`] of label `c` on this node, if present.
+    /// Returns `None` for labels that aren't in `L(node)`. Empty
+    /// `DepSet` means the label was added by a deterministic rule
+    /// with no upstream branch decisions.
+    #[must_use]
+    pub fn deps_of_label(&self, c: ConceptId) -> Option<&DepSet> {
+        let pos = self.labels.binary_search(&c).ok()?;
+        Some(&self.label_deps[pos])
+    }
+
+    /// Read the [`DepSet`] of the *first* edge from this node with
+    /// the given `(role, target)`. Returns `None` if no such edge
+    /// exists.
+    #[must_use]
+    pub fn deps_of_edge(&self, role: RoleId, target: NodeId) -> Option<&DepSet> {
+        let pos = self.edges.iter().position(|&e| e == (role, target))?;
+        Some(&self.edge_deps[pos])
     }
 
     /// Iterate every role-tagged neighbour of this node, with each

@@ -47,7 +47,7 @@ mod saturate;
 mod search;
 mod trail;
 
-pub use graph::{CompletionGraph, Node, NodeId};
+pub use graph::{CompletionGraph, DepSet, Node, NodeId};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
     apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
@@ -121,6 +121,16 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// `deadline` has elapsed. Sticky — callers read this *after*
     /// search returns to distinguish "depth-limited" from "timed out".
     deadline_hit: bool,
+    /// Stack of `branch_id`s currently in scope (outer-most first).
+    /// [`crate::search::branch`] pushes a fresh id when it enters a
+    /// disjunction and pops it on the way out. Rules use the stack
+    /// to tag derived labels' [`crate::DepSet`]s with the active
+    /// branch decisions. Phase 4 DDB — see
+    /// `docs/phase4-backjumping-plan.md`.
+    active_branches: Vec<u32>,
+    /// Monotonic counter handing out the next `branch_id`. Reset to
+    /// zero per tableau run; lives as long as the context.
+    next_branch_id: u32,
 }
 
 impl<'pool> TableauContext<'pool, 'static, 'static> {
@@ -142,6 +152,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
+            active_branches: Vec::new(),
+            next_branch_id: 0,
         }
     }
 }
@@ -164,6 +176,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
+            active_branches: Vec::new(),
+            next_branch_id: 0,
         }
     }
 }
@@ -191,6 +205,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
+            active_branches: Vec::new(),
+            next_branch_id: 0,
         }
     }
 
@@ -211,6 +227,54 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn deadline_reached(&self) -> bool {
         self.deadline_hit
+    }
+
+    /// Allocate the next fresh `branch_id` and push it onto the
+    /// active-branches stack. Returns the freshly issued id.
+    /// `branch()` calls this on entry, [`Self::pop_branch`] on exit.
+    #[doc(hidden)]
+    pub fn push_branch(&mut self) -> u32 {
+        let id = self.next_branch_id;
+        self.next_branch_id = self.next_branch_id.checked_add(1).expect(
+            "TableauContext: branch id counter overflowed u32 — \
+             pathological search tree",
+        );
+        self.active_branches.push(id);
+        id
+    }
+
+    /// Pop the most recently pushed `branch_id`. Must be paired with
+    /// [`Self::push_branch`].
+    #[doc(hidden)]
+    pub fn pop_branch(&mut self) {
+        self.active_branches.pop();
+    }
+
+    /// Snapshot of the currently active branch decisions, outer-most
+    /// first. Used by rules that want to tag a derived label/edge's
+    /// [`crate::DepSet`] with "everything currently in scope".
+    #[must_use]
+    pub fn active_branches(&self) -> &[u32] {
+        &self.active_branches
+    }
+
+    /// Read the [`crate::DepSet`] of label `c` on `node`, if present.
+    /// Returns `None` when the label isn't currently in `L(node)`.
+    #[must_use]
+    pub fn label_deps_of(&self, node: NodeId, c: ConceptId) -> Option<&crate::graph::DepSet> {
+        self.graph.node(node).deps_of_label(c)
+    }
+
+    /// Read the [`crate::DepSet`] of the first edge `node —role→ target`,
+    /// if present.
+    #[must_use]
+    pub fn edge_deps_of(
+        &self,
+        node: NodeId,
+        role: RoleId,
+        target: NodeId,
+    ) -> Option<&crate::graph::DepSet> {
+        self.graph.node(node).deps_of_edge(role, target)
     }
 
     /// Internal: returns true iff a deadline is configured and `now`
@@ -404,7 +468,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             .graph
             .push_node_with_parent(Some(from), Some(Role::Named(role)));
         self.trail.record(TrailEntry::NodeCreated { prior_len });
-        self.add_edge_inner(from, role, id);
+        self.add_edge_inner(from, role, id, &[]);
         id
     }
 
@@ -420,7 +484,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             .graph
             .push_node_with_parent(Some(to), Some(Role::Inverse(role)));
         self.trail.record(TrailEntry::NodeCreated { prior_len });
-        self.add_edge_inner(id, role, to);
+        self.add_edge_inner(id, role, to, &[]);
         id
     }
 
@@ -475,21 +539,41 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     ///
     /// Returns `true` if the label was newly inserted, `false` if it
     /// was already there. Records a [`TrailEntry::LabelAdded`] on
-    /// insertion.
+    /// insertion. The new label's [`crate::DepSet`] is empty —
+    /// callers that know which branch decisions the derivation
+    /// depended on should use [`Self::add_label_with_deps`] instead.
     ///
     /// `c` must be in NNF; debug-asserted at the boundary so any rule
     /// that forgets to normalize is caught in tests but pays no cost
     /// in release.
     pub fn add_label(&mut self, node: NodeId, c: ConceptId) -> bool {
+        self.add_label_with_deps(node, c, &[])
+    }
+
+    /// Like [`Self::add_label`] but attaches `deps` to the new label
+    /// (empty for deterministic-rule conclusions; non-empty for
+    /// branch-decision-derived labels). On duplicate add the existing
+    /// `DepSet` is preserved — widening will arrive with the per-rule
+    /// propagation commit (see `docs/phase4-backjumping-plan.md`).
+    pub fn add_label_with_deps(
+        &mut self,
+        node: NodeId,
+        c: ConceptId,
+        deps: &[u32],
+    ) -> bool {
         debug_assert!(
             is_nnf(c, self.pool),
             "TableauContext::add_label received non-NNF concept"
         );
-        let labels = &mut self.graph.node_mut(node).labels;
-        match labels.binary_search(&c) {
+        let n = self.graph.node_mut(node);
+        match n.labels.binary_search(&c) {
             Ok(_) => false,
             Err(pos) => {
-                labels.insert(pos, c);
+                n.labels.insert(pos, c);
+                let mut owned: crate::graph::DepSet = deps.to_vec();
+                owned.sort_unstable();
+                owned.dedup();
+                n.label_deps.insert(pos, owned);
                 self.trail
                     .record(TrailEntry::LabelAdded { node, concept: c });
                 true
@@ -506,12 +590,39 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// between the same nodes can be meaningful for cardinality
     /// reasoning later. Higher-level rules can check before adding.
     pub fn add_edge(&mut self, from: NodeId, role: RoleId, target: NodeId) {
-        self.add_edge_inner(from, role, target);
+        self.add_edge_with_deps(from, role, target, &[]);
     }
 
-    fn add_edge_inner(&mut self, from: NodeId, role: RoleId, target: NodeId) {
-        self.graph.node_mut(from).edges.push((role, target));
-        self.graph.node_mut(target).in_edges.push((role, from));
+    /// Like [`Self::add_edge`] but attaches `deps` (the branch
+    /// decisions whose firing produced this edge) to both the
+    /// outgoing and the mirror incoming slot. Phase 4 DDB will read
+    /// these on clash to compute the clash's full dependency set.
+    pub fn add_edge_with_deps(
+        &mut self,
+        from: NodeId,
+        role: RoleId,
+        target: NodeId,
+        deps: &[u32],
+    ) {
+        self.add_edge_inner(from, role, target, deps);
+    }
+
+    fn add_edge_inner(
+        &mut self,
+        from: NodeId,
+        role: RoleId,
+        target: NodeId,
+        deps: &[u32],
+    ) {
+        let mut owned: crate::graph::DepSet = deps.to_vec();
+        owned.sort_unstable();
+        owned.dedup();
+        let from_node = self.graph.node_mut(from);
+        from_node.edges.push((role, target));
+        from_node.edge_deps.push(owned.clone());
+        let target_node = self.graph.node_mut(target);
+        target_node.in_edges.push((role, from));
+        target_node.in_edge_deps.push(owned);
         self.trail
             .record(TrailEntry::EdgeAdded { from, role, target });
     }
@@ -621,7 +732,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             // Add (role, x') where x' = x unless x was source (a
             // self-loop turns into target —r→ target).
             let new_target = if x == source { target } else { x };
-            self.add_edge_inner(target, role, new_target);
+            self.add_edge_inner(target, role, new_target, &[]);
         }
 
         // 3. Re-anchor incoming edges: each (r, y) in source.in_edges
@@ -649,7 +760,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 .position(|&e| e == (role, y))
                 .expect("source in-edge present at merge time");
             self.remove_edge_recorded(y_eff, role, source, from_pos, in_pos);
-            self.add_edge_inner(y_eff, role, target);
+            self.add_edge_inner(y_eff, role, target, &[]);
         }
 
         // 4. Carry inequalities. mark_distinct is symmetric and
@@ -701,16 +812,22 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         position: usize,
         in_position: usize,
     ) {
-        let removed = self.graph.node_mut(from).edges.remove(position);
+        let from_node = self.graph.node_mut(from);
+        let removed = from_node.edges.remove(position);
         debug_assert_eq!(removed, (role, target));
-        let mirror = self.graph.node_mut(target).in_edges.remove(in_position);
+        let prior_edge_deps = from_node.edge_deps.remove(position);
+        let target_node = self.graph.node_mut(target);
+        let mirror = target_node.in_edges.remove(in_position);
         debug_assert_eq!(mirror, (role, from));
+        let prior_in_edge_deps = target_node.in_edge_deps.remove(in_position);
         self.trail.record(TrailEntry::EdgeRemoved {
             from,
             role,
             target,
             position,
             in_position,
+            prior_edge_deps,
+            prior_in_edge_deps,
         });
     }
 
@@ -811,6 +928,71 @@ mod tests {
         assert!(!ctx.add_label(n, a));
         assert_eq!(ctx.graph().node(n).labels(), &[a]);
         assert_eq!(ctx.trail().len(), trail_len_before + 1);
+    }
+
+    #[test]
+    fn add_label_default_deps_are_empty() {
+        // Phase 4 commit 1 invariant: the legacy `add_label` API
+        // attaches an empty `DepSet`. This pins the no-behaviour-change
+        // contract for the data-plumbing commit.
+        let (pool, a, _) = pool_with_a_and_not_a();
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label(n, a);
+        assert_eq!(ctx.label_deps_of(n, a).map(Vec::as_slice), Some(&[][..]));
+    }
+
+    #[test]
+    fn add_label_with_deps_normalises_and_persists() {
+        // Deps are stored sorted + deduped; lockstep with the label.
+        let (pool, a, _) = pool_with_a_and_not_a();
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        // Intentionally unsorted with a duplicate — the API should
+        // canonicalise.
+        ctx.add_label_with_deps(n, a, &[3, 1, 1, 2]);
+        assert_eq!(
+            ctx.label_deps_of(n, a).map(Vec::as_slice),
+            Some(&[1u32, 2, 3][..])
+        );
+    }
+
+    #[test]
+    fn rollback_drops_label_and_its_deps_in_lockstep() {
+        // After a checkpointed add_label_with_deps and a rollback, both
+        // labels[] and label_deps[] must shrink by one.
+        let (pool, a, _) = pool_with_a_and_not_a();
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        let cp = ctx.checkpoint();
+        ctx.add_label_with_deps(n, a, &[7]);
+        assert_eq!(ctx.graph().node(n).labels(), &[a]);
+        assert_eq!(ctx.label_deps_of(n, a).map(Vec::as_slice), Some(&[7u32][..]));
+        ctx.rollback_to(cp);
+        assert!(ctx.graph().node(n).labels().is_empty());
+        assert!(ctx.label_deps_of(n, a).is_none());
+    }
+
+    #[test]
+    fn push_pop_branch_round_trip() {
+        // Branch ids monotonic-increasing; active_branches reflects
+        // push/pop discipline.
+        let pool = ConceptPool::new();
+        let mut ctx = TableauContext::new(&pool);
+        assert!(ctx.active_branches().is_empty());
+        let b0 = ctx.push_branch();
+        let b1 = ctx.push_branch();
+        assert_eq!(b0, 0);
+        assert_eq!(b1, 1);
+        assert_eq!(ctx.active_branches(), &[0, 1]);
+        ctx.pop_branch();
+        assert_eq!(ctx.active_branches(), &[0]);
+        let b2 = ctx.push_branch();
+        // Branch ids don't reuse popped values.
+        assert_eq!(b2, 2);
+        ctx.pop_branch();
+        ctx.pop_branch();
+        assert!(ctx.active_branches().is_empty());
     }
 
     #[test]

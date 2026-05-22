@@ -1,0 +1,18 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/81_equivclasses_three_member_compound_sat>
+    Declaration(Class(:Test))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    # 3-member EquivalentClasses with one compound: forces every
+    # ordered pair to go through `lower_sub_class_of`, including
+    # `Test ⊑ ∃r.(A⊓B)` (Tseitin), `∃r.(A⊓B) ⊑ Test`,
+    # `Test ⊑ C`, `C ⊑ Test`, `∃r.(A⊓B) ⊑ C`, `C ⊑ ∃r.(A⊓B)`.
+    EquivalentClasses(:Test :C ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B)))
+)

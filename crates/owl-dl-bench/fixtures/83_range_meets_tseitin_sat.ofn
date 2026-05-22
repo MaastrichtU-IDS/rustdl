@@ -1,0 +1,20 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/83_range_meets_tseitin_sat>
+    Declaration(Class(:Test))
+    Declaration(Class(:Animal))
+    Declaration(Class(:Cute))
+    Declaration(Class(:Puppy))
+    Declaration(ObjectProperty(:owns))
+    # Range axiom interacts with a Tseitin synthetic body: the
+    # synthetic for `Animal ⊓ Cute` should pick up the role's
+    # range as a subsumer just like any other class would.
+    ObjectPropertyRange(:owns :Puppy)
+    SubClassOf(:Puppy :Animal)
+    SubClassOf(:Puppy :Cute)
+    EquivalentClasses(:Test ObjectSomeValuesFrom(:owns ObjectIntersectionOf(:Animal :Cute)))
+)

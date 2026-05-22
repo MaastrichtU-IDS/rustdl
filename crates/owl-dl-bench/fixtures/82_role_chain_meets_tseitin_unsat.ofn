@@ -1,0 +1,26 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/82_role_chain_meets_tseitin_unsat>
+    Declaration(Class(:Test))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Mid))
+    Declaration(Class(:Tail))
+    Declaration(ObjectProperty(:r))
+    # Chain rule + Tseitin + DisjointClasses + bot propagation in
+    # the same closure pass.
+    DisjointClasses(:A :B)
+    TransitiveObjectProperty(:r)
+    SubClassOf(:Tail :A)
+    SubClassOf(:Tail :B)
+    SubClassOf(:Mid ObjectSomeValuesFrom(:r :Tail))
+    # Tail is unsat (DisjointClasses ⇒ ⊥), so Mid ⊑ ∃r.<unsat> is
+    # unsat. Test ≡ ∃r.(A ⊓ Mid) — the Tseitin synthetic includes
+    # Mid as a subsumer, and Mid is unsat, so the synthetic is
+    # unsat, hence Test is unsat.
+    EquivalentClasses(:Test ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :Mid)))
+)

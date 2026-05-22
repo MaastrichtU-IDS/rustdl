@@ -1,0 +1,20 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/84_disjoint_through_subsumer_chain_unsat>
+    Declaration(Class(:Test))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Mid))
+    # Multi-hop subsumer chain + disjointness: Test ⊑ Mid ⊑ A and
+    # Test ⊑ B, with A and B disjoint. The closure's
+    # subsumer-transitive unsat propagation should flag Test even
+    # though no single told axiom mentions both A and B.
+    DisjointClasses(:A :B)
+    SubClassOf(:Mid :A)
+    SubClassOf(:Test :Mid)
+    SubClassOf(:Test :B)
+)

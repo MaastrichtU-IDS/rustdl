@@ -493,3 +493,27 @@ file = "80_tseitin_compound_body_disjoint_unsat.ofn"
 description = "DisjointClasses(A, B) + Y ⊑ A ⊓ B + Test ≡ ∃r.(A ⊓ B ⊓ Y) — Y is unsat, intersection has no model"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "81_equivclasses_three_member_compound_sat.ofn"
+description = "EquivalentClasses(Test, C, ∃r.(A ⊓ B)) — three-member equiv with one compound; decomposes pairwise"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "82_role_chain_meets_tseitin_unsat.ofn"
+description = "TransitiveObjectProperty(r) + DisjointClasses(A,B) + Test ≡ ∃r.(A ⊓ Mid) where Mid contains an unsat tail — bot propagates through chain + Tseitin"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "83_range_meets_tseitin_sat.ofn"
+description = "ObjectPropertyRange(owns, Puppy) + Test ≡ ∃owns.(Animal ⊓ Cute) — range trigger fires on Tseitin synthetic"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "84_disjoint_through_subsumer_chain_unsat.ofn"
+description = "DisjointClasses(A, B) + Test ⊑ Mid ⊑ A + Test ⊑ B — multi-hop subsumer chain triggers disjointness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

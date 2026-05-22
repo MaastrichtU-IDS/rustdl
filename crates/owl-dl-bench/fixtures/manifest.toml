@@ -391,3 +391,27 @@ file = "63_uncle_role_chain_existential_sat.ofn"
 description = "hasParent ∘ hasBrother ⊑ hasUncle; {alice} ⊓ ∃hasUncle.{carol} — chain provides witness"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "64_symmetric_role_witness_unsat.ofn"
+description = "SymmetricObjectProperty(r); r(a,b), A(a), ∀r.¬A(b) — symmetry routes ¬A back to a"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "65_functional_role_merges_unsat.ofn"
+description = "FunctionalObjectProperty(r); r(a,b), r(a,c), DifferentIndividuals(b,c) — ≤1 forces b=c, clashes with distinctness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "66_inverse_functional_merges_unsat.ofn"
+description = "InverseFunctionalObjectProperty(r); r(a,c), r(b,c), DifferentIndividuals(a,b) — ≤1 r⁻ forces a=b, distinct clashes"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "67_functional_role_no_clash_sat.ofn"
+description = "FunctionalObjectProperty(r); r(a,b), r(a,c) without distinctness — ≤1 merges b and c"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

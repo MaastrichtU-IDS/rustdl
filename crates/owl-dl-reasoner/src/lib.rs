@@ -22,8 +22,8 @@ use thiserror::Error;
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
     AbsorbedTBox, Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId,
-    InternalOntology, RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms,
-    nnf_complement,
+    InternalOntology, Role, RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb,
+    nnf_axioms, nnf_complement,
 };
 use owl_dl_tableau::{NodeId, TableauContext};
 
@@ -105,6 +105,7 @@ pub fn is_class_satisfiable_internal(
         return Err(ReasonError::UnknownClass(class_iri.to_owned()));
     };
 
+    expand_role_characteristics(&mut internal);
     let hierarchy = build_role_hierarchy(&internal);
     let inverse_pairs = collect_inverse_pairs(&internal);
     let chain_axioms = collect_chain_axioms(&internal)?;
@@ -357,6 +358,55 @@ fn collect_chain_axioms(
         }
     }
     Ok(chains)
+}
+
+/// Lower the simple role-characteristic axioms into the equivalent
+/// concept- and inverse-axiom forms the rest of the pipeline already
+/// handles. This runs before [`nnf_axioms`] so the new axioms ride
+/// through normalization + absorption like any other input.
+///
+/// Lowerings (Phase 5 part S — "simple" SROIQ role characteristics):
+/// - `SymmetricRole(Named(r))` ⇒ `InverseObjectProperties(r, r)` — a
+///   role that is its own inverse is symmetric. Picked up by
+///   [`collect_inverse_pairs`].
+/// - `FunctionalRole(Named(r))` ⇒ `SubClassOf(⊤, Max(1, r, ⊤))`.
+/// - `InverseFunctionalRole(Named(r))` ⇒ `SubClassOf(⊤, Max(1, r⁻, ⊤))`.
+///
+/// Inverse-polarity inputs (`SymmetricRole(Inverse(r))`) are
+/// semantically equivalent to the same-named axiom but we don't bother
+/// special-casing — converter only emits named-role characteristics
+/// today.
+///
+/// Original axioms are kept in `internal.axioms` so that downstream
+/// passes (e.g., reverse conversion) still see them; the lowered
+/// duplicates are appended.
+fn expand_role_characteristics(internal: &mut InternalOntology) {
+    let top = internal.concepts.top();
+    let mut additions: Vec<Axiom> = Vec::new();
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SymmetricRole(role) if !role.is_inverse() => {
+                additions.push(Axiom::InverseObjectProperties(*role, *role));
+            }
+            Axiom::FunctionalRole(role) if !role.is_inverse() => {
+                let max1 = internal.concepts.max(1, *role, top);
+                additions.push(Axiom::SubClassOf {
+                    sub: top,
+                    sup: max1,
+                });
+            }
+            Axiom::InverseFunctionalRole(role) if !role.is_inverse() => {
+                let inv = Role::inverse(role.role_id());
+                let max1 = internal.concepts.max(1, inv, top);
+                additions.push(Axiom::SubClassOf {
+                    sub: top,
+                    sup: max1,
+                });
+            }
+            _ => {}
+        }
+    }
+    internal.axioms.extend(additions);
 }
 
 /// Collect declared inverse-role pairs from `InverseObjectProperties`

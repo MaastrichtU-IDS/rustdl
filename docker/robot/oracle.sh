@@ -77,9 +77,16 @@ set -e
 cat "$LOG" >&2
 
 # If our test IRI shows up in an "unsatisfiable: <iri>" line, that's
-# the verdict. Otherwise: if ROBOT exited 0, the ontology has no
-# unsat classes and our test class is satisfiable.
+# the verdict.
 if grep -qE "unsatisfiable:[[:space:]]+${TEST_IRI}([[:space:]]|$)" "$LOG"; then
+    echo "unsat"
+    exit 0
+fi
+
+# Ontology-level inconsistency: every class is unsatisfiable (no
+# model exists). ROBOT prints "The ontology is inconsistent" and
+# exits non-zero without listing individual classes.
+if grep -qE "The ontology is inconsistent" "$LOG"; then
     echo "unsat"
     exit 0
 fi

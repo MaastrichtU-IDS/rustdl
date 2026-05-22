@@ -13,16 +13,24 @@
 //! ontology?". Limited to pure ALC for now; later phases extend to
 //! `ALCHIQ` and full `SROIQ(D)`.
 
+use std::collections::HashMap;
+
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
 use thiserror::Error;
 
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
-    AbsorbedTBox, Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology,
-    RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms, nnf_complement,
+    AbsorbedTBox, Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId,
+    InternalOntology, RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms,
+    nnf_complement,
 };
-use owl_dl_tableau::TableauContext;
+use owl_dl_tableau::{NodeId, TableauContext};
+
+/// Recursion depth cap for the search driver — generous and
+/// defensive. Real ALCHIQ inputs terminate via pair blocking long
+/// before this matters.
+const MAX_SEARCH_DEPTH: usize = 256;
 
 /// Errors that can surface from the public reasoning API.
 #[derive(Debug, Error)]
@@ -102,14 +110,139 @@ pub fn is_class_satisfiable_internal(
     // up the canonical id via `pool.bot_id()`. Cheap & idempotent.
     let _ = internal.concepts.bot();
     let complements = precompute_max_complements(&mut internal.concepts);
+    let abox = collect_abox(&mut internal);
     decide(
         &internal.concepts,
         &tbox,
         &hierarchy,
         &inverse_pairs,
         &complements,
+        &abox,
         class_id,
     )
+}
+
+/// Pre-resolved `ABox` state, ready to seed into the tableau context.
+/// All `ConceptId` fields are interned in the pool by
+/// [`collect_abox`] (the last stage to mutate the pool); the tableau
+/// then runs with a frozen pool.
+#[derive(Default, Debug)]
+struct Abox {
+    /// `(individual, Nominal(individual)_id)` — one entry per
+    /// individual referenced in any `ABox` axiom. Each gets a root
+    /// node seeded with the nominal label before the test class is
+    /// added.
+    individuals: Vec<(IndividualId, ConceptId)>,
+    /// `(individual, class_concept_id)` from `ClassAssertion`.
+    class_assertions: Vec<(IndividualId, ConceptId)>,
+    /// `(from_individual, role_id, to_individual)` from
+    /// `ObjectPropertyAssertion`. Role polarity has been normalized:
+    /// an inverse-role assertion swaps subject/object so the role
+    /// stored here is always forward.
+    property_assertions: Vec<(IndividualId, RoleId, IndividualId)>,
+    /// `(individual, ∀r.¬{b}_concept_id)` from
+    /// `NegativeObjectPropertyAssertion`. Encoded as a label that
+    /// will be propagated by `apply_forall` along any matching
+    /// edge — any actual r-relation to `b`'s nominal causes a
+    /// `Not(Nominal(b))` / `Nominal(b)` clash.
+    negative_property_assertions: Vec<(IndividualId, ConceptId)>,
+    /// `(a, b)` pairs from `SameIndividual(a, b, ...)`. Decomposed
+    /// pairwise — the tableau merges `b` into `a` for each pair.
+    same_pairs: Vec<(IndividualId, IndividualId)>,
+    /// `(a, b)` pairs from `DifferentIndividuals(a, b, ...)`.
+    /// Likewise pairwise; the tableau marks them distinct.
+    different_pairs: Vec<(IndividualId, IndividualId)>,
+}
+
+fn collect_abox(internal: &mut InternalOntology) -> Abox {
+    use std::collections::HashSet;
+    let mut abox = Abox::default();
+    let mut seen: HashSet<IndividualId> = HashSet::new();
+    let record_individual = |ind: IndividualId,
+                             pool: &mut ConceptPool,
+                             seen: &mut HashSet<IndividualId>,
+                             abox: &mut Abox| {
+        if seen.insert(ind) {
+            let nom = pool.nominal(ind);
+            abox.individuals.push((ind, nom));
+        }
+    };
+    // First pass: enumerate every individual referenced and intern
+    // its Nominal expression.
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::ClassAssertion { individual, .. } => {
+                record_individual(*individual, &mut internal.concepts, &mut seen, &mut abox);
+            }
+            Axiom::ObjectPropertyAssertion {
+                subject, object, ..
+            }
+            | Axiom::NegativeObjectPropertyAssertion {
+                subject, object, ..
+            } => {
+                record_individual(*subject, &mut internal.concepts, &mut seen, &mut abox);
+                record_individual(*object, &mut internal.concepts, &mut seen, &mut abox);
+            }
+            Axiom::SameIndividual(inds) | Axiom::DifferentIndividuals(inds) => {
+                for ind in inds {
+                    record_individual(*ind, &mut internal.concepts, &mut seen, &mut abox);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Second pass: derive concrete assertions / clashes / pairs.
+    // We collect axiom references in a local Vec to avoid double-
+    // borrowing internal during the body.
+    let axioms: Vec<Axiom> = internal.axioms.clone();
+    for ax in &axioms {
+        match ax {
+            Axiom::ClassAssertion { class, individual } => {
+                abox.class_assertions.push((*individual, *class));
+            }
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                let (from, to) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                abox.property_assertions.push((from, role.role_id(), to));
+            }
+            Axiom::NegativeObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                // Encode `(subject, object) ∉ role` as
+                // `{subject} ⊑ ∀role.¬{object}`. Polarity of the
+                // role passes through unchanged.
+                let nom_b = internal.concepts.nominal(*object);
+                let not_nom_b = internal.concepts.not(nom_b);
+                let forall = internal.concepts.all(*role, not_nom_b);
+                abox.negative_property_assertions.push((*subject, forall));
+            }
+            Axiom::SameIndividual(inds) => {
+                for i in 0..inds.len() {
+                    for j in (i + 1)..inds.len() {
+                        abox.same_pairs.push((inds[i], inds[j]));
+                    }
+                }
+            }
+            Axiom::DifferentIndividuals(inds) => {
+                for i in 0..inds.len() {
+                    for j in (i + 1)..inds.len() {
+                        abox.different_pairs.push((inds[i], inds[j]));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    abox
 }
 
 /// Pre-compute NNF complements for every body appearing in a
@@ -189,19 +322,18 @@ fn collect_inverse_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
     pairs
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decide(
     pool: &ConceptPool,
     tbox: &AbsorbedTBox,
     hierarchy: &RoleHierarchy,
     inverse_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
+    abox: &Abox,
     class_id: ClassId,
 ) -> Result<bool, ReasonError> {
-    // The Atomic-of-class concept; interning is cheap and idempotent
-    // — if the class appears anywhere in the TBox the id is already
-    // in the pool, otherwise this just registers it.
     let mut pool = pool.clone();
-    let concept: ConceptId = pool.atomic(class_id);
+    let test_concept: ConceptId = pool.atomic(class_id);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
     for &(r, s) in inverse_pairs {
         ctx.declare_inverse_pair(r, s);
@@ -209,7 +341,69 @@ fn decide(
     for &(body, comp) in complements {
         ctx.set_complement(body, comp);
     }
-    ctx.is_satisfiable(concept).ok_or(ReasonError::NoVerdict)
+
+    // Phase 5 `ABox` seeding. Order matters:
+    // 1. Create a nominal root for each individual.
+    // 2. DifferentIndividuals — mark before any merges so a later
+    //    SameIndividual on the same pair is detected as a clash.
+    // 3. SameIndividual merges; failed merges (declared distinct)
+    //    flag the surviving node with ⊥.
+    // 4. ClassAssertion / NegativeObjectPropertyAssertion labels.
+    // 5. ObjectPropertyAssertion edges between nominal roots.
+    // Then add the test class to a fresh anonymous root and run.
+    let mut roots: HashMap<IndividualId, NodeId> = HashMap::new();
+    for &(ind, nom) in &abox.individuals {
+        let node = ctx.new_node();
+        ctx.add_label(node, nom);
+        ctx.assign_nominal(ind, node);
+        roots.insert(ind, node);
+    }
+    for &(left, right) in &abox.different_pairs {
+        if let (Some(&nleft), Some(&nright)) = (roots.get(&left), roots.get(&right)) {
+            let nleft = ctx.resolve(nleft);
+            let nright = ctx.resolve(nright);
+            ctx.mark_distinct(nleft, nright);
+        }
+    }
+    for &(left, right) in &abox.same_pairs {
+        if let (Some(&nleft), Some(&nright)) = (roots.get(&left), roots.get(&right)) {
+            let target = ctx.resolve(nleft);
+            let source = ctx.resolve(nright);
+            if target == source {
+                continue;
+            }
+            if !ctx.merge_into(source, target)
+                && let Some(bot) = ctx.pool().bot_id()
+            {
+                ctx.add_label(target, bot);
+            }
+        }
+    }
+    for &(ind, c) in &abox.class_assertions {
+        if let Some(&n) = roots.get(&ind) {
+            let target = ctx.resolve(n);
+            ctx.add_label(target, c);
+        }
+    }
+    for &(ind, c) in &abox.negative_property_assertions {
+        if let Some(&n) = roots.get(&ind) {
+            let target = ctx.resolve(n);
+            ctx.add_label(target, c);
+        }
+    }
+    for &(from, role, to) in &abox.property_assertions {
+        if let (Some(&nf), Some(&nt)) = (roots.get(&from), roots.get(&to)) {
+            let from_n = ctx.resolve(nf);
+            let to_n = ctx.resolve(nt);
+            ctx.add_edge(from_n, role, to_n);
+        }
+    }
+
+    // Now the test class on a fresh anonymous root.
+    let test_root = ctx.new_node();
+    ctx.add_label(test_root, test_concept);
+
+    owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH).ok_or(ReasonError::NoVerdict)
 }
 
 #[cfg(test)]
@@ -330,6 +524,42 @@ Ontology(<http://rustdl.test/test>\n\
     EquivalentClasses(:Test ObjectIntersectionOf(\
         ObjectSomeValuesFrom(:r :A) \
         ObjectAllValuesFrom(ObjectInverseOf(:s) ObjectComplementOf(:A))))\n\
+)\n"
+        ));
+        assert!(!check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn abox_class_assertion_propagates_to_nominal() {
+        // ClassAssertion(A, alice); Test ≡ {alice} ⊓ ¬A — unsat
+        // because the `ABox` forces alice into A.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:Test))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    ClassAssertion(:A :alice)\n\
+    EquivalentClasses(:Test ObjectIntersectionOf(\
+        ObjectOneOf(:alice) ObjectComplementOf(:A)))\n\
+)\n"
+        ));
+        assert!(!check(&onto, "http://rustdl.test/Test"));
+    }
+
+    #[test]
+    fn abox_same_and_different_is_inconsistent() {
+        // SameIndividual + DifferentIndividuals on the same pair —
+        // the ontology has no model. Any class query should be unsat.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Test))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    Declaration(NamedIndividual(:bob))\n\
+    DifferentIndividuals(:alice :bob)\n\
+    SameIndividual(:alice :bob)\n\
+    EquivalentClasses(:Test ObjectOneOf(:alice))\n\
 )\n"
         ));
         assert!(!check(&onto, "http://rustdl.test/Test"));

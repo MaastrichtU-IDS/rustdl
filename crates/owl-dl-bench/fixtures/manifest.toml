@@ -331,3 +331,33 @@ file = "53_nominal_merges_witnesses_sat.ofn"
 description = "∃r.(A⊓{alice}) ⊓ ∃r.(B⊓{alice}) — two witnesses merge into one carrying A and B"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "54_abox_class_assertion_clash_unsat.ofn"
+description = "ClassAssertion(A, alice); {alice} ⊓ ¬A — ABox class assertion clashes with concept"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "55_abox_property_assertion_sat.ofn"
+description = "ObjectPropertyAssertion(r, alice, bob); ∃r.{bob} at alice — direct ABox edge witnesses ∃"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "56_abox_negative_property_unsat.ofn"
+description = "ObjectPropertyAssertion(r,alice,bob) + NegativeObjectPropertyAssertion(r,alice,bob) — direct contradiction"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "57_abox_same_individual_sat.ofn"
+description = "SameIndividual(alice,al); A(alice), B(al); {alice} ⊓ A ⊓ B — merged root carries both"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "58_abox_different_individuals_unsat.ofn"
+description = "DifferentIndividuals(alice,bob) + SameIndividual(alice,bob) — inequality clash on merge"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

@@ -1,0 +1,19 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/57_abox_same_individual_sat>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Test))
+    Declaration(NamedIndividual(:alice))
+    Declaration(NamedIndividual(:al))
+    ClassAssertion(:A :alice)
+    ClassAssertion(:B :al)
+    SameIndividual(:alice :al)
+    EquivalentClasses(:Test
+        ObjectIntersectionOf(ObjectOneOf(:alice) :A :B)
+    )
+)

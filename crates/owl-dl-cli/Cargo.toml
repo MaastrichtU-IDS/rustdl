@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 owl-dl-reasoner.workspace = true
+horned-owl.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

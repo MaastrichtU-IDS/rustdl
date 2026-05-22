@@ -1496,6 +1496,49 @@ mod tests {
     }
 
     #[test]
+    fn backjumping_unsat_carries_empty_deps_when_clash_is_root() {
+        // L(x) = {A, ¬A} — clash is present in the *root* state
+        // before any `⊔` branching could happen. `search` should
+        // return `Unsat(empty)` — empty deps mean the clash didn't
+        // depend on any branch decision. Phase 4 commit 5 invariant.
+        let (pool, a, not_a) = pool_with_a_and_not_a();
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        ctx.add_label(x, a);
+        ctx.add_label(x, not_a);
+        let result = search::search(&mut ctx, 16);
+        assert!(
+            matches!(result, search::SearchVerdict::Unsat(ref deps) if deps.is_empty()),
+            "expected Unsat(empty deps) for a root-level clash, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn backjumping_unsat_inside_branch_keeps_state_clean() {
+        // L(x) = {A, ¬A, A ⊔ B}. The clash on `{A, ¬A}` is
+        // pre-branch — even after `branch()` allocates a `branch_id`
+        // and tries adding A, the saturation finds the clash with
+        // *zero* deps (neither label depends on `branch_id`). Because
+        // `branch_id ∉ {}`, back-jumping fires: branch() returns
+        // Unsat without trying the second disjunct.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let not_a = pool.not(a);
+        let or_ab = pool.or([a, b]);
+        let mut ctx = TableauContext::new(&pool);
+        let x = ctx.new_node();
+        ctx.add_label(x, a);
+        ctx.add_label(x, not_a);
+        ctx.add_label(x, or_ab);
+        let result = search::search(&mut ctx, 16);
+        assert!(
+            matches!(result, search::SearchVerdict::Unsat(_)),
+            "expected Unsat, got {result:?}"
+        );
+    }
+
+    #[test]
     fn or_with_forall_clash_backtracks() {
         // ∀R.(A ⊓ ¬A) ⊔ ⊤ — the first disjunct propagates a clash
         // to the R-successor; backtrack and the second succeeds.

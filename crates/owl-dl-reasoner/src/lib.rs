@@ -21,9 +21,8 @@ use thiserror::Error;
 
 use owl_dl_core::convert::{ConversionError, convert_ontology};
 use owl_dl_core::{
-    AbsorbedTBox, Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId,
-    InternalOntology, Role, RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb,
-    nnf_axioms, nnf_complement,
+    AbsorbedTBox, Axiom, ConceptExpr, ConceptId, ConceptPool, IndividualId, InternalOntology, Role,
+    RoleHierarchy, RoleHierarchyBuilder, RoleId, SubRolePath, absorb, nnf_axioms, nnf_complement,
 };
 use owl_dl_tableau::{NodeId, TableauContext};
 
@@ -98,13 +97,100 @@ pub fn is_class_satisfiable<A: ForIRI>(
 ///
 /// See [`ReasonError`].
 pub fn is_class_satisfiable_internal(
-    mut internal: InternalOntology,
+    internal: InternalOntology,
     class_iri: &str,
 ) -> Result<bool, ReasonError> {
-    let Some(class_id) = internal.vocabulary.class_id(class_iri) else {
-        return Err(ReasonError::UnknownClass(class_iri.to_owned()));
-    };
+    let class_id = internal
+        .vocabulary
+        .class_id(class_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    run_satisfiability(internal, move |pool| pool.atomic(class_id))
+}
 
+/// Decide whether `ontology` is consistent — i.e. whether it has any
+/// model at all. Reduces to satisfiability of `⊤` under the full
+/// `TBox` + `ABox`.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_consistent<A: ForIRI>(ontology: &SetOntology<A>) -> Result<bool, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_consistent_internal(internal)
+}
+
+/// Internal entry point that takes the already-lowered ontology.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_consistent_internal(internal: InternalOntology) -> Result<bool, ReasonError> {
+    run_satisfiability(internal, ConceptPool::top)
+}
+
+/// Decide whether `sub_iri ⊑ super_iri` holds in `ontology`. Standard
+/// reduction: subsumption holds iff `sub ⊓ ¬sup` is *unsatisfiable*.
+///
+/// Returns `Ok(true)` if `sub ⊑ sup`, `Ok(false)` if there is a model
+/// in which some `sub`-instance is not a `sup`-instance.
+///
+/// # Errors
+///
+/// See [`ReasonError`]. Either IRI not declared as a class surfaces as
+/// [`ReasonError::UnknownClass`].
+pub fn is_subclass_of<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    sub_iri: &str,
+    super_iri: &str,
+) -> Result<bool, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_subclass_of_internal(internal, sub_iri, super_iri)
+}
+
+/// Internal entry point that takes the already-lowered ontology.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_subclass_of_internal(
+    internal: InternalOntology,
+    sub_iri: &str,
+    super_iri: &str,
+) -> Result<bool, ReasonError> {
+    let sub_id = internal
+        .vocabulary
+        .class_id(sub_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(sub_iri.to_owned()))?;
+    let super_id = internal
+        .vocabulary
+        .class_id(super_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(super_iri.to_owned()))?;
+    // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
+    // `sub`-instance also makes it a `sup`-instance.
+    let sat = run_satisfiability(internal, move |pool| {
+        let sub_concept = pool.atomic(sub_id);
+        let super_concept = pool.atomic(super_id);
+        let not_super = pool.not(super_concept);
+        pool.and(vec![sub_concept, not_super])
+    })?;
+    Ok(!sat)
+}
+
+/// Shared end-of-pipeline runner: takes a (possibly mutated)
+/// `InternalOntology`, runs the full normalize/absorb/`ABox`-seed
+/// pipeline once, and asks the tableau whether `build_test_concept`
+/// produces a satisfiable concept against the rest of the model.
+///
+/// The closure is invoked *after* the pool has been cloned for the
+/// tableau run, so the concept it returns is guaranteed to live in
+/// the pool the tableau will use.
+fn run_satisfiability<F>(
+    mut internal: InternalOntology,
+    build_test_concept: F,
+) -> Result<bool, ReasonError>
+where
+    F: FnOnce(&mut ConceptPool) -> ConceptId,
+{
     expand_role_characteristics(&mut internal);
     let hierarchy = build_role_hierarchy(&internal);
     let inverse_pairs = collect_inverse_pairs(&internal);
@@ -129,7 +215,7 @@ pub fn is_class_satisfiable_internal(
         &disjoint_role_pairs,
         &complements,
         &abox,
-        class_id,
+        build_test_concept,
     )
 }
 
@@ -488,7 +574,7 @@ fn collect_inverse_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decide(
+fn decide<F>(
     pool: &ConceptPool,
     tbox: &AbsorbedTBox,
     hierarchy: &RoleHierarchy,
@@ -498,10 +584,13 @@ fn decide(
     disjoint_role_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
-    class_id: ClassId,
-) -> Result<bool, ReasonError> {
+    build_test_concept: F,
+) -> Result<bool, ReasonError>
+where
+    F: FnOnce(&mut ConceptPool) -> ConceptId,
+{
     let mut pool = pool.clone();
-    let test_concept: ConceptId = pool.atomic(class_id);
+    let test_concept: ConceptId = build_test_concept(&mut pool);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
     for &(r, s) in inverse_pairs {
         ctx.declare_inverse_pair(r, s);
@@ -863,6 +952,89 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let err = is_class_satisfiable(&onto, "http://rustdl.test/Nope")
             .expect_err("unknown class should error");
+        assert!(matches!(err, ReasonError::UnknownClass(_)));
+    }
+
+    #[test]
+    fn empty_ontology_is_consistent() {
+        let onto = parse(&format!("{HEADER}Ontology(<http://rustdl.test/test>\n)\n"));
+        assert!(is_consistent(&onto).expect("verdict"));
+    }
+
+    #[test]
+    fn contradictory_abox_is_inconsistent() {
+        // SameIndividual + DifferentIndividuals on the same pair —
+        // no model exists.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(NamedIndividual(:alice))\n\
+    Declaration(NamedIndividual(:bob))\n\
+    DifferentIndividuals(:alice :bob)\n\
+    SameIndividual(:alice :bob)\n\
+)\n"
+        ));
+        assert!(!is_consistent(&onto).expect("verdict"));
+    }
+
+    #[test]
+    fn explicit_subclassof_axiom_entails_subsumption() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        assert!(
+            is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/B").expect("verdict")
+        );
+    }
+
+    #[test]
+    fn transitive_subclassof_is_entailed() {
+        // A ⊑ B, B ⊑ C ⇒ A ⊑ C
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        assert!(
+            is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/C").expect("verdict")
+        );
+    }
+
+    #[test]
+    fn unrelated_classes_are_not_subclass() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+)\n"
+        ));
+        assert!(
+            !is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/B")
+                .expect("verdict")
+        );
+    }
+
+    #[test]
+    fn subclass_of_unknown_class_errors() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+)\n"
+        ));
+        let err = is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/Nope")
+            .expect_err("unknown sup should error");
         assert!(matches!(err, ReasonError::UnknownClass(_)));
     }
 }

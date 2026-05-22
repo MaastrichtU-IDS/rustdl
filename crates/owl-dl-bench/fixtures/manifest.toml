@@ -445,3 +445,27 @@ file = "72_reflexive_irreflexive_conflict_unsat.ofn"
 description = "ReflexiveObjectProperty(r) + IrreflexiveObjectProperty(r) — Self(r) ∧ ¬Self(r) on every node"
 test_class = "http://rustdl.test/Test"
 expected = "unsat"
+
+[[fixture]]
+file = "73_asymmetric_role_clash_unsat.ofn"
+description = "AsymmetricObjectProperty(r); r(a,b) ∧ r(b,a) on distinct individuals — asymmetry violated"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "74_asymmetric_role_one_way_sat.ofn"
+description = "AsymmetricObjectProperty(r); r(a,b) only — no reverse edge, asymmetry holds"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "75_disjoint_properties_clash_unsat.ofn"
+description = "DisjointObjectProperties(r,s); r(a,b) ∧ s(a,b) — both pairs to same target violates disjointness"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "76_disjoint_properties_distinct_targets_sat.ofn"
+description = "DisjointObjectProperties(r,s); r(a,b) ∧ s(a,c) with b ≠ c — distinct targets, disjointness holds"
+test_class = "http://rustdl.test/Test"
+expected = "sat"

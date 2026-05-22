@@ -702,3 +702,83 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
         RuleOutcome::NoChange
     }
 }
+
+/// Cross-edge role-axiom clash checks for SROIQ's role characteristics
+/// that don't reduce to concept axioms:
+/// - `AsymmetricObjectProperty(r)`: at every node `x`, if both
+///   `x —r→ y` and `y —r→ x` exist for some `y`, then `r(x,y)` and
+///   `r(y,x)` together violate asymmetry — flag `⊥`.
+/// - `DisjointObjectProperties(r, s)`: at every node `x`, if both
+///   `x —r→ y` and `x —s→ y` exist, the two pairs collapse — flag `⊥`.
+///
+/// Sub-role propagation is left to the role hierarchy: the axiom
+/// declarations name *atomic* roles, so the asymmetry / disjointness
+/// holds for the literal `RoleId`. (Sub-roles inherit the constraint
+/// upstream from the SROIQ legality conditions; we don't enforce that
+/// here, the input is assumed regular.)
+///
+/// Skipped at blocked nodes — the blocking ancestor witnesses any
+/// edge configuration by structural inclusion.
+pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    if ctx.asymmetric_roles().is_empty() && ctx.disjoint_role_pairs().is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    let Some(bot) = ctx.pool().bot_id() else {
+        return RuleOutcome::NoChange;
+    };
+    if ctx.graph().node(node).has_label(bot) {
+        return RuleOutcome::NoChange;
+    }
+    let outgoing: Vec<(RoleId, NodeId)> = ctx.graph().node(node).edges().to_vec();
+    let mut violated = false;
+    // Asymmetric: for each outgoing r-edge to y, look for an r-edge
+    // back from y to node.
+    for &r in ctx.asymmetric_roles() {
+        for &(role, y) in &outgoing {
+            if role != r || y == node {
+                continue;
+            }
+            let back_exists = ctx
+                .graph()
+                .node(y)
+                .edges()
+                .iter()
+                .any(|&(rr, tt)| rr == r && tt == node);
+            if back_exists {
+                violated = true;
+                break;
+            }
+        }
+        if violated {
+            break;
+        }
+    }
+    if !violated {
+        // Disjoint: for each unordered pair (r, s), look for outgoing
+        // edges of both roles to the same target.
+        for &(r, s) in ctx.disjoint_role_pairs() {
+            let mut r_targets: Vec<NodeId> = outgoing
+                .iter()
+                .filter_map(|&(rr, t)| if rr == r { Some(t) } else { None })
+                .collect();
+            let s_targets: Vec<NodeId> = outgoing
+                .iter()
+                .filter_map(|&(rr, t)| if rr == s { Some(t) } else { None })
+                .collect();
+            r_targets.sort();
+            r_targets.dedup();
+            if s_targets.iter().any(|t| r_targets.binary_search(t).is_ok()) {
+                violated = true;
+                break;
+            }
+        }
+    }
+    if violated && ctx.add_label(node, bot) {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}

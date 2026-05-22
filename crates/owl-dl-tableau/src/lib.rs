@@ -34,8 +34,8 @@ mod trail;
 pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
-    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_chains,
-    apply_role_rules, apply_self_restriction,
+    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
+    apply_role_chains, apply_role_rules, apply_self_restriction,
 };
 pub use saturate::{SaturationResult, saturate};
 pub use search::search;
@@ -83,6 +83,16 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// as `(r, r, r)`. The [`apply_role_chains`] rule walks two
     /// consecutive named-role edges and adds the implied `sup` edge.
     chains: Vec<(RoleId, RoleId, RoleId)>,
+    /// Roles declared `AsymmetricObjectProperty`. The
+    /// [`apply_role_axioms`] rule flags `⊥` at any node that has both
+    /// an outgoing `r`-edge and an incoming `r`-edge to/from the same
+    /// neighbour (i.e. both `node —r→ x` and `x —r→ node`).
+    asymmetric_roles: Vec<RoleId>,
+    /// Pairs of roles declared mutually disjoint (decomposed from
+    /// `DisjointObjectProperties` n-ary axioms). The
+    /// [`apply_role_axioms`] rule flags `⊥` when a node has both an
+    /// `r`-edge and an `s`-edge to the same neighbour.
+    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     graph: CompletionGraph,
     trail: TableauTrail,
 }
@@ -100,6 +110,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             inverse_pairs: HashMap::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
+            asymmetric_roles: Vec::new(),
+            disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -118,6 +130,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             inverse_pairs: HashMap::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
+            asymmetric_roles: Vec::new(),
+            disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -141,6 +155,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             inverse_pairs: HashMap::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
+            asymmetric_roles: Vec::new(),
+            disjoint_role_pairs: Vec::new(),
             graph: CompletionGraph::new(),
             trail: TableauTrail::new(),
         }
@@ -201,6 +217,42 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn chains(&self) -> &[(RoleId, RoleId, RoleId)] {
         &self.chains
+    }
+
+    /// Declare `r` as `AsymmetricObjectProperty`. The
+    /// [`apply_role_axioms`](crate::apply_role_axioms) rule then
+    /// rejects any node carrying both directions of `r` to/from the
+    /// same neighbour.
+    pub fn declare_asymmetric_role(&mut self, r: RoleId) -> &mut Self {
+        if !self.asymmetric_roles.contains(&r) {
+            self.asymmetric_roles.push(r);
+        }
+        self
+    }
+
+    /// Declare `r` and `s` as `DisjointObjectProperties` (one
+    /// unordered pair). The [`apply_role_axioms`](crate::apply_role_axioms)
+    /// rule rejects any node with both an `r`- and an `s`-edge to the
+    /// same neighbour. Stored once; the rule symmetrizes when
+    /// iterating.
+    pub fn declare_disjoint_role_pair(&mut self, r: RoleId, s: RoleId) -> &mut Self {
+        if r != s
+            && !self.disjoint_role_pairs.contains(&(r, s))
+            && !self.disjoint_role_pairs.contains(&(s, r))
+        {
+            self.disjoint_role_pairs.push((r, s));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn asymmetric_roles(&self) -> &[RoleId] {
+        &self.asymmetric_roles
+    }
+
+    #[must_use]
+    pub fn disjoint_role_pairs(&self) -> &[(RoleId, RoleId)] {
+        &self.disjoint_role_pairs
     }
 
     /// Lookup the pre-registered NNF complement of `body`.

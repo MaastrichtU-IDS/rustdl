@@ -108,6 +108,8 @@ pub fn is_class_satisfiable_internal(
     expand_role_characteristics(&mut internal);
     let hierarchy = build_role_hierarchy(&internal);
     let inverse_pairs = collect_inverse_pairs(&internal);
+    let asymmetric_roles = collect_asymmetric_roles(&internal);
+    let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
     let chain_axioms = collect_chain_axioms(&internal)?;
     let normalized = nnf_axioms(&mut internal);
     let tbox = absorb(&normalized, &mut internal.concepts);
@@ -123,6 +125,8 @@ pub fn is_class_satisfiable_internal(
         &hierarchy,
         &inverse_pairs,
         &chain_axioms,
+        &asymmetric_roles,
+        &disjoint_role_pairs,
         &complements,
         &abox,
         class_id,
@@ -431,6 +435,44 @@ fn expand_role_characteristics(internal: &mut InternalOntology) {
     internal.axioms.extend(additions);
 }
 
+/// Collect roles declared `AsymmetricObjectProperty`. Inverse-typed
+/// declarations resolve to the same underlying `RoleId` (the
+/// asymmetry constraint is about the unordered role pair regardless
+/// of source polarity).
+fn collect_asymmetric_roles(internal: &InternalOntology) -> Vec<RoleId> {
+    let mut out = Vec::new();
+    for ax in &internal.axioms {
+        if let Axiom::AsymmetricRole(role) = ax {
+            out.push(role.role_id());
+        }
+    }
+    out
+}
+
+/// Decompose every `DisjointObjectProperties(r, s, …)` axiom into its
+/// pairwise constituents. Reflexive entries `(r, r)` (degenerate
+/// `Disjoint(r)`) are skipped — they'd assert the role is disjoint
+/// from itself, which is only satisfiable when no pair is in `r`. We
+/// leave that diagnosis to higher-level validators rather than seed
+/// universal clashes.
+fn collect_disjoint_role_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
+    let mut pairs = Vec::new();
+    for ax in &internal.axioms {
+        if let Axiom::DisjointObjectProperties(roles) = ax {
+            for i in 0..roles.len() {
+                for j in (i + 1)..roles.len() {
+                    let a = roles[i].role_id();
+                    let b = roles[j].role_id();
+                    if a != b {
+                        pairs.push((a, b));
+                    }
+                }
+            }
+        }
+    }
+    pairs
+}
+
 /// Collect declared inverse-role pairs from `InverseObjectProperties`
 /// axioms. Each axiom `InverseObjectProperties(r, s)` contributes one
 /// `(r.role_id(), s.role_id())` pair; the tableau context populates
@@ -452,6 +494,8 @@ fn decide(
     hierarchy: &RoleHierarchy,
     inverse_pairs: &[(RoleId, RoleId)],
     chain_axioms: &[(RoleId, RoleId, RoleId)],
+    asymmetric_roles: &[RoleId],
+    disjoint_role_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
     class_id: ClassId,
@@ -464,6 +508,12 @@ fn decide(
     }
     for &(r1, r2, sup) in chain_axioms {
         ctx.declare_chain_axiom(r1, r2, sup);
+    }
+    for &r in asymmetric_roles {
+        ctx.declare_asymmetric_role(r);
+    }
+    for &(r, s) in disjoint_role_pairs {
+        ctx.declare_disjoint_role_pair(r, s);
     }
     for &(body, comp) in complements {
         ctx.set_complement(body, comp);

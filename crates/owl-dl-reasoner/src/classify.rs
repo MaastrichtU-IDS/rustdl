@@ -151,32 +151,35 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
 
+    // Run the EL saturation engine once up-front. Its closure is
+    // *sound* (every entry is a genuine entailment, and every
+    // `is_unsatisfiable` flag is a real ⊥) but only complete for the
+    // EL fragment of the input — so we use it as a fast positive
+    // oracle and fall back to the tableau when the closure has
+    // nothing to say.
+    let closure = saturate(internal);
+
     // First pass: which classes are individually unsatisfiable? An
     // unsat class `C` is `⊑ ⊥` and therefore `⊑ D` for every `D` —
-    // record that directly without rerunning the tableau n more
-    // times.
+    // record that directly. Saturation's bot-detection flags many of
+    // these without ever invoking the tableau; the rest fall back to
+    // a per-class satisfiability probe.
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
     let mut satisfiable: Vec<bool> = vec![false; n];
-    for (i, iri) in classes.iter().enumerate() {
-        let sat = run_satisfiability(internal.clone(), |pool| {
-            pool.atomic(owl_dl_core::ClassId::new(
-                u32::try_from(i).expect("class index fits in u32"),
-            ))
-        })?;
-        let _ = iri; // silence clippy if future passes drop the iri use
+    for (i, _iri) in classes.iter().enumerate() {
+        let class_id =
+            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        if closure.is_unsatisfiable(class_id) {
+            unsatisfiable_idxs.insert(i);
+            continue;
+        }
+        let sat = run_satisfiability(internal.clone(), move |pool| pool.atomic(class_id))?;
         if sat {
             satisfiable[i] = true;
         } else {
             unsatisfiable_idxs.insert(i);
         }
     }
-
-    // Run the EL saturation engine once. Its closure is *sound*
-    // (every entry is a genuine entailment) but only complete for
-    // the EL fragment of the input — so we use it as a fast positive
-    // oracle and fall back to the tableau when the closure has
-    // nothing to say.
-    let closure = saturate(internal);
 
     // Second pass: pairwise subsumption. Skip rows where `i` is
     // unsatisfiable (it subsumes everything trivially — fill the

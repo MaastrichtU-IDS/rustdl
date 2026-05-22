@@ -78,10 +78,9 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
             // Pre-compute the set of super-roles of this fact's role
             // once — the trigger's role is acceptable iff it is one
             // of them (reflexive + transitive role hierarchy).
-            let supers: Vec<RoleId> = role_super.get(&fact.role).map_or_else(
-                || vec![fact.role],
-                |set| set.iter().copied().collect(),
-            );
+            let supers: Vec<RoleId> = role_super
+                .get(&fact.role)
+                .map_or_else(|| vec![fact.role], |set| set.iter().copied().collect());
             for trigger in &rules.existential_triggers {
                 if !supers.contains(&trigger.role) {
                     continue;
@@ -107,6 +106,28 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
                     if subsumers.add(x, trigger.head) {
                         changed = true;
                     }
+                }
+            }
+        }
+        // Disjointness ⇒ unsat (Bot detection). For every disjoint
+        // pair `(A, B)` and every class `X` whose subsumer set
+        // already contains both `A` and `B`, mark `X` as
+        // unsatisfiable. Skip work for already-flagged classes.
+        for &(a, b) in &rules.disjoint_pairs {
+            let candidates: Vec<ClassId> = subsumers
+                .table
+                .iter()
+                .filter_map(|(x, s)| {
+                    if !subsumers.unsatisfiable.contains(x) && s.contains(&a) && s.contains(&b) {
+                        Some(*x)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for x in candidates {
+                if subsumers.unsatisfiable.insert(x) {
+                    changed = true;
                 }
             }
         }
@@ -146,12 +167,17 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
 #[derive(Debug, Default, Clone)]
 pub struct Subsumers {
     table: HashMap<ClassId, HashSet<ClassId>>,
+    /// Classes the saturation has proven equivalent to `⊥` —
+    /// derived from `DisjointClasses(A, B)` axioms where the closure
+    /// shows some class has both `A` and `B` as subsumers.
+    unsatisfiable: HashSet<ClassId>,
 }
 
 impl Subsumers {
     fn with_capacity(n: usize) -> Self {
         Self {
             table: HashMap::with_capacity(n),
+            unsatisfiable: HashSet::new(),
         }
     }
 
@@ -174,6 +200,19 @@ impl Subsumers {
             .map(|set| set.iter().copied().collect())
             .unwrap_or_default()
     }
+
+    /// True iff saturation proved `c` is empty in every model (i.e.
+    /// `c ⊑ ⊥`).
+    #[must_use]
+    pub fn is_unsatisfiable(&self, c: ClassId) -> bool {
+        self.unsatisfiable.contains(&c)
+    }
+
+    /// Every class flagged as `⊑ ⊥` by the saturation pass.
+    #[must_use]
+    pub fn unsatisfiable_classes(&self) -> Vec<ClassId> {
+        self.unsatisfiable.iter().copied().collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -191,6 +230,9 @@ struct ElRules {
     /// atomic-named-atomic shapes. Read as "any class with an
     /// existential `role`-successor in `body` is also in `head`."
     existential_triggers: Vec<ExistentialTrigger>,
+    /// Pairwise disjoint atomic-class pairs, decomposed from n-ary
+    /// `DisjointClasses` axioms. Read as `A ⊓ B ⊑ ⊥`.
+    disjoint_pairs: Vec<(ClassId, ClassId)>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -241,6 +283,20 @@ fn collect_el_rules(internal: &InternalOntology) -> ElRules {
                                 .atomic_subsumptions
                                 .push(AtomicSubsumption { sub: *a, sup: *b });
                         }
+                    }
+                }
+            }
+            Axiom::DisjointClasses(members) => {
+                let atomics: Vec<ClassId> = members
+                    .iter()
+                    .filter_map(|c| match internal.concepts.get(*c) {
+                        ConceptExpr::Atomic(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect();
+                for i in 0..atomics.len() {
+                    for j in (i + 1)..atomics.len() {
+                        rules.disjoint_pairs.push((atomics[i], atomics[j]));
                     }
                 }
             }
@@ -574,6 +630,26 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Pet"), class(&internal, "Reachable")));
+    }
+
+    #[test]
+    fn disjoint_classes_makes_intersection_unsat() {
+        // DisjointClasses(A, B); X ⊑ A; X ⊑ B ⇒ X is unsat.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:X))\n\
+    DisjointClasses(:A :B)\n\
+    SubClassOf(:X :A)\n\
+    SubClassOf(:X :B)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.is_unsatisfiable(class(&internal, "X")));
+        assert!(!subs.is_unsatisfiable(class(&internal, "A")));
+        assert!(!subs.is_unsatisfiable(class(&internal, "B")));
     }
 
     #[test]

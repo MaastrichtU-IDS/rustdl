@@ -51,108 +51,173 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let mut changed = true;
     while changed {
         changed = false;
-        // Direct told subsumers: A ⊑ B.
-        for rule in &rules.atomic_subsumptions {
-            if subsumers.add(rule.sub, rule.sup) {
+        changed |= apply_atomic_subsumptions(&mut subsumers, &rules);
+        changed |= apply_conjunctive_triggers(&mut subsumers, &rules);
+        changed |= apply_existential_propagation(&mut subsumers, &rules, &role_super);
+        changed |= apply_domain_and_range(&mut subsumers, &rules, &role_super);
+        changed |= apply_disjointness(&mut subsumers, &rules);
+        changed |= apply_transitivity(&mut subsumers);
+    }
+    subsumers
+}
+
+/// Direct told subsumers: `A ⊑ B`.
+fn apply_atomic_subsumptions(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
+    let mut changed = false;
+    for rule in &rules.atomic_subsumptions {
+        if subsumers.add(rule.sub, rule.sup) {
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Conjunctive triggers: if `X` has every `bᵢ` among its subsumers,
+/// it gains the trigger's `head`.
+fn apply_conjunctive_triggers(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
+    let mut changed = false;
+    let len = subsumers.table.len();
+    for trigger in &rules.conjunctive_triggers {
+        for i in 0..len {
+            let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+            if trigger.bodies.iter().all(|b| subsumers.contains(id, *b))
+                && subsumers.add(id, trigger.head)
+            {
                 changed = true;
             }
         }
-        // Conjunctive triggers: if X has every B_i in its subsumers,
-        // it gains the trigger's head.
-        for trigger in &rules.conjunctive_triggers {
-            let len = subsumers.table.len();
-            for i in 0..len {
-                let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
-                if trigger.bodies.iter().all(|b| subsumers.contains(id, *b))
-                    && subsumers.add(id, trigger.head)
-                {
-                    changed = true;
-                }
+    }
+    changed
+}
+
+/// CR5: existential propagation. For every fact `(A, r, Y)` —
+/// meaning `A ⊑ ∃r.Y` — and every trigger `(r', Z, W)` with `r ⊑ r'`,
+/// if `Z` is already a subsumer of `Y`, every class that has `A`
+/// among its subsumers also gains `W`.
+fn apply_existential_propagation(
+    subsumers: &mut Subsumers,
+    rules: &ElRules,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+) -> bool {
+    let mut changed = false;
+    for fact in &rules.existential_facts {
+        let supers = supers_of(role_super, fact.role);
+        for trigger in &rules.existential_triggers {
+            if !supers.contains(&trigger.role) {
+                continue;
             }
-        }
-        // Existential propagation (Kazakov CR5): for every fact
-        // (A, r, Y) — meaning A ⊑ ∃r.Y — and every trigger (r, Z, W)
-        // — meaning ∃r.Z ⊑ W — if Z is already a subsumer of Y,
-        // every class that has A among its subsumers also gains W.
-        for fact in &rules.existential_facts {
-            // Pre-compute the set of super-roles of this fact's role
-            // once — the trigger's role is acceptable iff it is one
-            // of them (reflexive + transitive role hierarchy).
-            let supers: Vec<RoleId> = role_super
-                .get(&fact.role)
-                .map_or_else(|| vec![fact.role], |set| set.iter().copied().collect());
-            for trigger in &rules.existential_triggers {
-                if !supers.contains(&trigger.role) {
-                    continue;
-                }
-                if !subsumers.contains(fact.target, trigger.body) {
-                    continue;
-                }
-                // Propagate W to every X with A ∈ subsumers(X). We
-                // snapshot the table to avoid mutating under
-                // iteration.
-                let candidates: Vec<ClassId> = subsumers
-                    .table
-                    .iter()
-                    .filter_map(|(x, s)| {
-                        if s.contains(&fact.sub) {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                for x in candidates {
-                    if subsumers.add(x, trigger.head) {
-                        changed = true;
-                    }
-                }
+            if !subsumers.contains(fact.target, trigger.body) {
+                continue;
             }
-        }
-        // Disjointness ⇒ unsat (Bot detection). For every disjoint
-        // pair `(A, B)` and every class `X` whose subsumer set
-        // already contains both `A` and `B`, mark `X` as
-        // unsatisfiable. Skip work for already-flagged classes.
-        for &(a, b) in &rules.disjoint_pairs {
-            let candidates: Vec<ClassId> = subsumers
-                .table
-                .iter()
-                .filter_map(|(x, s)| {
-                    if !subsumers.unsatisfiable.contains(x) && s.contains(&a) && s.contains(&b) {
-                        Some(*x)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let candidates = classes_with_subsumer(subsumers, fact.sub);
             for x in candidates {
-                if subsumers.unsatisfiable.insert(x) {
+                if subsumers.add(x, trigger.head) {
                     changed = true;
                 }
             }
         }
-        // Transitivity: if D ∈ subsumers(C) and E ∈ subsumers(D),
-        // add E to subsumers(C). Snapshot to avoid mutating under
-        // iteration.
-        let snapshot: Vec<(ClassId, Vec<ClassId>)> = subsumers
-            .table
-            .iter()
-            .map(|(k, v)| (*k, v.iter().copied().collect()))
-            .collect();
-        for (c, ds) in &snapshot {
-            for d in ds {
-                if let Some(es) = subsumers.table.get(d) {
-                    let new_subs: Vec<ClassId> = es.iter().copied().collect();
-                    for e in new_subs {
-                        if subsumers.add(*c, e) {
+    }
+    changed
+}
+
+/// Property domain + range. For every existential fact `(A, r, Y)`:
+/// - `domain(r')` ∈ subsumers(X) for every `X` with `A` in its
+///   subsumers and every `r' ⊒ r`;
+/// - `range(r')` ∈ subsumers(Y) for every `r' ⊒ r`.
+fn apply_domain_and_range(
+    subsumers: &mut Subsumers,
+    rules: &ElRules,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+) -> bool {
+    let mut changed = false;
+    for fact in &rules.existential_facts {
+        let supers = supers_of(role_super, fact.role);
+        for super_role in &supers {
+            if let Some(domains) = rules.role_domains.get(super_role) {
+                let candidates = classes_with_subsumer(subsumers, fact.sub);
+                for &dom in domains {
+                    for x in &candidates {
+                        if subsumers.add(*x, dom) {
                             changed = true;
                         }
                     }
                 }
             }
+            if let Some(ranges) = rules.role_ranges.get(super_role) {
+                for &rng in ranges {
+                    if subsumers.add(fact.target, rng) {
+                        changed = true;
+                    }
+                }
+            }
         }
     }
+    changed
+}
+
+/// `DisjointClasses(A, B)` ⇒ every class with both `A` and `B` as
+/// subsumers is flagged as unsatisfiable.
+fn apply_disjointness(subsumers: &mut Subsumers, rules: &ElRules) -> bool {
+    let mut changed = false;
+    for &(a, b) in &rules.disjoint_pairs {
+        let candidates: Vec<ClassId> = subsumers
+            .table
+            .iter()
+            .filter_map(|(x, s)| {
+                if !subsumers.unsatisfiable.contains(x) && s.contains(&a) && s.contains(&b) {
+                    Some(*x)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for x in candidates {
+            if subsumers.unsatisfiable.insert(x) {
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Transitive closure of the current `subsumers` relation.
+fn apply_transitivity(subsumers: &mut Subsumers) -> bool {
+    let mut changed = false;
+    let snapshot: Vec<(ClassId, Vec<ClassId>)> = subsumers
+        .table
+        .iter()
+        .map(|(k, v)| (*k, v.iter().copied().collect()))
+        .collect();
+    for (c, ds) in &snapshot {
+        for d in ds {
+            if let Some(es) = subsumers.table.get(d) {
+                let new_subs: Vec<ClassId> = es.iter().copied().collect();
+                for e in new_subs {
+                    if subsumers.add(*c, e) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// Look up the reflexive + transitive super-role closure for `r`,
+/// falling back to `[r]` if the closure has no entry (defensive).
+fn supers_of(role_super: &HashMap<RoleId, HashSet<RoleId>>, r: RoleId) -> Vec<RoleId> {
+    role_super
+        .get(&r)
+        .map_or_else(|| vec![r], |set| set.iter().copied().collect())
+}
+
+/// Snapshot every class id whose subsumer set currently contains `c`.
+fn classes_with_subsumer(subsumers: &Subsumers, c: ClassId) -> Vec<ClassId> {
     subsumers
+        .table
+        .iter()
+        .filter_map(|(x, s)| if s.contains(&c) { Some(*x) } else { None })
+        .collect()
 }
 
 /// Subsumer closure: for each class `C`, the set of named classes
@@ -233,6 +298,17 @@ struct ElRules {
     /// Pairwise disjoint atomic-class pairs, decomposed from n-ary
     /// `DisjointClasses` axioms. Read as `A ⊓ B ⊑ ⊥`.
     disjoint_pairs: Vec<(ClassId, ClassId)>,
+    /// Per-role domain classes: `role_domains[r]` holds the atomic
+    /// classes `C` such that any `r`-source belongs to `C`. Lowered
+    /// from `ObjectPropertyDomain(r, C)` with named `r` and atomic
+    /// `C`. Equivalent to `∃r.⊤ ⊑ C`.
+    role_domains: HashMap<RoleId, Vec<ClassId>>,
+    /// Per-role range classes: `role_ranges[r]` holds the atomic
+    /// classes `C` such that any `r`-target belongs to `C`. Lowered
+    /// from `ObjectPropertyRange(r, C)` with named `r` and atomic
+    /// `C`. Equivalent to `⊤ ⊑ ∀r.C`; in EL we only consult it on
+    /// edges that actually appear (the existential-fact targets).
+    role_ranges: HashMap<RoleId, Vec<ClassId>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -298,6 +374,28 @@ fn collect_el_rules(internal: &InternalOntology) -> ElRules {
                     for j in (i + 1)..atomics.len() {
                         rules.disjoint_pairs.push((atomics[i], atomics[j]));
                     }
+                }
+            }
+            Axiom::ObjectPropertyDomain { role, domain } => {
+                if !role.is_inverse()
+                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
+                {
+                    rules
+                        .role_domains
+                        .entry(role.role_id())
+                        .or_default()
+                        .push(*id);
+                }
+            }
+            Axiom::ObjectPropertyRange { role, range } => {
+                if !role.is_inverse()
+                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*range)
+                {
+                    rules
+                        .role_ranges
+                        .entry(role.role_id())
+                        .or_default()
+                        .push(*id);
                 }
             }
             _ => {}
@@ -630,6 +728,45 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Pet"), class(&internal, "Reachable")));
+    }
+
+    #[test]
+    fn property_domain_propagates_to_subjects() {
+        // ObjectPropertyDomain(hasOwner, Person); Pet ⊑ ∃hasOwner.Dog
+        // ⇒ Pet ⊑ Person (anything with a hasOwner-edge is a Person).
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Pet))\n\
+    Declaration(Class(:Dog))\n\
+    Declaration(Class(:Person))\n\
+    Declaration(ObjectProperty(:hasOwner))\n\
+    ObjectPropertyDomain(:hasOwner :Person)\n\
+    SubClassOf(:Pet ObjectSomeValuesFrom(:hasOwner :Dog))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Pet"), class(&internal, "Person")));
+    }
+
+    #[test]
+    fn property_range_propagates_to_targets() {
+        // ObjectPropertyRange(hasOwner, Person); Pet ⊑ ∃hasOwner.Dog
+        // ⇒ Dog ⊑ Person (every hasOwner-target is a Person — and
+        // Dog appears as such a target via Pet's existential).
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Pet))\n\
+    Declaration(Class(:Dog))\n\
+    Declaration(Class(:Person))\n\
+    Declaration(ObjectProperty(:hasOwner))\n\
+    ObjectPropertyRange(:hasOwner :Person)\n\
+    SubClassOf(:Pet ObjectSomeValuesFrom(:hasOwner :Dog))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Dog"), class(&internal, "Person")));
     }
 
     #[test]

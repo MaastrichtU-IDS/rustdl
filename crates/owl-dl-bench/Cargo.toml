@@ -32,3 +32,11 @@ owl-dl-reasoner.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies.whelk]
+git = "https://github.com/INCATools/whelk-rs"
+optional = true
+
+[features]
+default = []
+whelk-compare = ["dep:whelk"]

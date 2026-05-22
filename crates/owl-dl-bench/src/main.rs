@@ -63,6 +63,18 @@ enum Command {
         #[arg(long)]
         quiet: bool,
     },
+    /// In-process comparison against `whelk-rs` (another EL
+    /// reasoner in Rust), running both engines on the same input.
+    /// Available only when built with `--features whelk-compare`.
+    #[cfg(feature = "whelk-compare")]
+    CompareWhelk {
+        /// Path to the OWL functional-syntax ontology.
+        file: PathBuf,
+        /// Number of timing iterations (default 5; first is warmup
+        /// and dropped).
+        #[arg(long, default_value = "5")]
+        iters: usize,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -157,7 +169,68 @@ fn main() -> Result<()> {
             run_classify(&onto)?;
         }
         Command::Corpus { dir, quiet } => run_corpus(&dir, quiet)?,
+        #[cfg(feature = "whelk-compare")]
+        Command::CompareWhelk { file, iters } => run_compare_whelk(&file, iters)?,
     }
+    Ok(())
+}
+
+#[cfg(feature = "whelk-compare")]
+fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
+    use whelk::whelk::owl::translate_ontology;
+    use whelk::whelk::reasoner::assert as whelk_assert;
+
+    anyhow::ensure!(iters >= 2, "need at least 2 iters (first is warmup)");
+    let ontology = parse_ofn(path)?;
+    println!("file: {}", path.display());
+    println!("iters: {iters} (first iteration discarded as warmup)\n");
+
+    // Time rustdl `classify`.
+    let mut rustdl_samples: Vec<std::time::Duration> = Vec::with_capacity(iters);
+    let mut last_rustdl_stats = None;
+    for _ in 0..iters {
+        let start = Instant::now();
+        let h = classify(&ontology).context("rustdl classify")?;
+        let elapsed = start.elapsed();
+        last_rustdl_stats = Some((h.classes().len(), h.stats()));
+        rustdl_samples.push(elapsed);
+    }
+
+    // Time whelk: translate_ontology + assert (the saturation step).
+    let mut whelk_samples: Vec<std::time::Duration> = Vec::with_capacity(iters);
+    let mut last_whelk_subsumptions: usize = 0;
+    for _ in 0..iters {
+        let start = Instant::now();
+        let translated = translate_ontology(&ontology);
+        let state = whelk_assert(&translated);
+        let elapsed = start.elapsed();
+        last_whelk_subsumptions = state.named_subsumptions().len();
+        whelk_samples.push(elapsed);
+    }
+
+    // Drop the warmup iteration (first) and report.
+    let summary = |label: &str, samples: &[std::time::Duration]| {
+        let trimmed = &samples[1..];
+        let total: std::time::Duration = trimmed.iter().sum();
+        let mean = total / u32::try_from(trimmed.len()).expect("iter count fits");
+        let min = trimmed.iter().min().copied().unwrap_or_default();
+        let max = trimmed.iter().max().copied().unwrap_or_default();
+        println!("{label:<10} mean={mean:>9.3?}  min={min:>9.3?}  max={max:>9.3?}");
+    };
+    summary("rustdl", &rustdl_samples);
+    summary("whelk", &whelk_samples);
+    if let Some((classes, stats)) = last_rustdl_stats {
+        println!();
+        println!(
+            "rustdl: classes={classes} pure_el_mode={} sat_sub={} tab_sub={} sat_unsat={} tab_unsat={}",
+            stats.pure_el_mode,
+            stats.saturation_subsumption_hits,
+            stats.tableau_subsumption_calls,
+            stats.saturation_unsat_hits,
+            stats.tableau_unsat_calls,
+        );
+    }
+    println!("whelk: derived {last_whelk_subsumptions} named subsumptions");
     Ok(())
 }
 

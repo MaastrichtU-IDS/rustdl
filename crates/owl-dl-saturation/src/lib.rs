@@ -494,12 +494,70 @@ struct ExistentialTrigger {
     head: ClassId,
 }
 
+/// Tseitin-style allocator for synthetic atomic classes that stand
+/// in for compound `And(of atomics)` bodies inside existential
+/// positions.
+///
+/// When the lowerer sees `∃r.(B₁ ⊓ … ⊓ Bₙ)` (where every `Bᵢ` is
+/// atomic) it requests a synthetic `F` from this allocator. The
+/// allocator returns a stable id for that body and, on first
+/// introduction, emits two paired clauses into the EL rule set:
+///
+/// - `F ⊑ Bᵢ` for each operand (so anything provably-`F` inherits
+///   each operand as a subsumer);
+/// - `B₁ ⊓ … ⊓ Bₙ ⊑ F` (a conjunctive trigger, so anything that
+///   has all of the operands as subsumers also has `F`).
+///
+/// Together those clauses define `F ≡ B₁ ⊓ … ⊓ Bₙ`, so the existing
+/// CR5 propagation over `∃r.F` produces exactly the same closure as
+/// it would on `∃r.(B₁ ⊓ … ⊓ Bₙ)`. Synthetic class ids start at
+/// `num_original_classes` and never collide with user-declared
+/// class ids; they don't leak into the public `Subsumers` API
+/// because callers iterate over `0..num_classes` only.
+#[derive(Debug)]
+struct TseitinAllocator {
+    next_id: u32,
+    by_body: HashMap<Vec<ClassId>, ClassId>,
+}
+
+impl TseitinAllocator {
+    fn new(num_original_classes: usize) -> Self {
+        Self {
+            next_id: u32::try_from(num_original_classes).expect("class count fits in u32"),
+            by_body: HashMap::new(),
+        }
+    }
+
+    fn introduce(&mut self, mut body: Vec<ClassId>, rules: &mut ElRules) -> ClassId {
+        body.sort();
+        body.dedup();
+        if let Some(&existing) = self.by_body.get(&body) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        for &b in &body {
+            rules.atomic_subsumptions.push(AtomicSubsumption {
+                sub: synthetic,
+                sup: b,
+            });
+        }
+        rules.conjunctive_triggers.push(ConjunctiveTrigger {
+            bodies: body.clone(),
+            head: synthetic,
+        });
+        self.by_body.insert(body, synthetic);
+        synthetic
+    }
+}
+
 fn collect_el_rules(internal: &InternalOntology) -> ElRules {
     let mut rules = ElRules::default();
+    let mut tseitin = TseitinAllocator::new(internal.vocabulary.num_classes());
     for ax in &internal.axioms {
         match ax {
             Axiom::SubClassOf { sub, sup } => {
-                lower_sub_class_of(*sub, *sup, &internal.concepts, &mut rules);
+                lower_sub_class_of(*sub, *sup, &internal.concepts, &mut rules, &mut tseitin);
             }
             Axiom::EquivalentClasses(members) => {
                 let atomics: Vec<ClassId> = members
@@ -581,7 +639,13 @@ fn collect_el_rules(internal: &InternalOntology) -> ElRules {
 /// and conjunctive triggers. Anything that doesn't fit (existentials,
 /// disjunction, complement, cardinality, ...) is silently dropped —
 /// the orchestrator handles those via tableau fallback.
-fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules: &mut ElRules) {
+fn lower_sub_class_of(
+    sub: ConceptId,
+    sup: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) {
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
             for atomic_sup in atomic_operands_on_right(sup, pool) {
@@ -590,8 +654,9 @@ fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules:
                     sup: atomic_sup,
                 });
             }
-            // Atomic ⊑ ∃r.Y: existential fact.
-            if let Some((role, target)) = atomic_existential(sup, pool) {
+            // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
+            // synthetic atomic if the body is a compound And.
+            if let Some((role, target)) = atomic_existential(sup, pool, rules, tseitin) {
                 rules.existential_facts.push(ExistentialFact {
                     sub: *sub_id,
                     role,
@@ -602,7 +667,7 @@ fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules:
             // operand of a top-level And on the right.
             if let ConceptExpr::And(operands) = pool.get(sup) {
                 for op in operands {
-                    if let Some((role, target)) = atomic_existential(*op, pool) {
+                    if let Some((role, target)) = atomic_existential(*op, pool, rules, tseitin) {
                         rules.existential_facts.push(ExistentialFact {
                             sub: *sub_id,
                             role,
@@ -624,18 +689,19 @@ fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules:
             }
         }
         ConceptExpr::Some(role, body) => {
-            // ∃r.B ⊑ C: existential trigger. Only named-role + atomic-
-            // body shapes are in scope.
+            // ∃r.B ⊑ C: existential trigger. Named role only; the
+            // body may be atomic or an `And` of atomics, in which
+            // case Tseitin introduces a synthetic atomic stand-in.
             if role.is_inverse() {
                 return;
             }
-            let ConceptExpr::Atomic(body_id) = pool.get(*body) else {
+            let Some(body_id) = atomic_or_tseitin_body(*body, pool, rules, tseitin) else {
                 return;
             };
             for head in atomic_operands_on_right(sup, pool) {
                 rules.existential_triggers.push(ExistentialTrigger {
                     role: role.role_id(),
-                    body: *body_id,
+                    body: body_id,
                     head,
                 });
             }
@@ -644,19 +710,44 @@ fn lower_sub_class_of(sub: ConceptId, sup: ConceptId, pool: &ConceptPool, rules:
     }
 }
 
-/// Extract `(role_id, target_class_id)` from a concept of the shape
-/// `∃<named-role>.<atomic-class>`; `None` for any other shape.
-fn atomic_existential(c: ConceptId, pool: &ConceptPool) -> Option<(RoleId, ClassId)> {
+/// Extract `(role_id, target_class_id)` from `∃<named-role>.<body>`
+/// where `body` is either an atomic class or an `And` of atomics
+/// (Tseitin introduces a synthetic atomic stand-in in the latter
+/// case). Returns `None` for inverse roles or any other shape.
+fn atomic_existential(
+    c: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) -> Option<(RoleId, ClassId)> {
     let ConceptExpr::Some(role, body) = pool.get(c) else {
         return None;
     };
     if role.is_inverse() {
         return None;
     }
-    let ConceptExpr::Atomic(body_id) = pool.get(*body) else {
-        return None;
-    };
-    Some((role.role_id(), *body_id))
+    let body_id = atomic_or_tseitin_body(*body, pool, rules, tseitin)?;
+    Some((role.role_id(), body_id))
+}
+
+/// Lower a concept used as an existential's body to a single atomic
+/// class id: if it's already atomic, return it; if it's an `And` of
+/// all-atomic operands, Tseitin-introduce a synthetic class that's
+/// equivalent to the intersection and return that.
+fn atomic_or_tseitin_body(
+    body: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) -> Option<ClassId> {
+    match pool.get(body) {
+        ConceptExpr::Atomic(id) => Some(*id),
+        ConceptExpr::And(operands) => {
+            let atomics = atomic_classes(operands, pool)?;
+            Some(tseitin.introduce(atomics, rules))
+        }
+        _ => None,
+    }
 }
 
 fn atomic_classes(ids: &[ConceptId], pool: &ConceptPool) -> Option<Vec<ClassId>> {
@@ -1041,6 +1132,61 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(subs.is_unsatisfiable(class(&internal, "X")));
         assert!(!subs.is_unsatisfiable(class(&internal, "A")));
         assert!(!subs.is_unsatisfiable(class(&internal, "B")));
+    }
+
+    #[test]
+    fn tseitin_introduces_synthetic_for_compound_existential_body() {
+        // X ⊑ ∃r.(B ⊓ C); ∃r.B_and_C_synth ⊑ W shouldn't be needed
+        // — the trigger we have is over the *atomic* subsumers of
+        // the synthetic, so any class with both B and C as
+        // subsumers picks up the synthetic, and the trigger fires
+        // from there.
+        //
+        // The reverse path: X has the existential fact (X, r, S)
+        // where S is the synthetic. We trigger on
+        // ∃r.B ⊑ W (note: trigger body is B, not the synthetic).
+        // Because S ⊑ B (Tseitin emits this), B ∈ subsumers(S), so
+        // the existing CR5 fires the trigger on X.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:W))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :C)))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :B) :W)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "X"), class(&internal, "W")));
+    }
+
+    #[test]
+    fn tseitin_trigger_side_compound_body_classifies() {
+        // Symmetric: ∃r.(B ⊓ C) ⊑ W (compound body on the trigger
+        // side). X has B and C as subsumers and an r-edge to
+        // anything in B ⊓ C. With Tseitin the trigger body becomes
+        // the synthetic S; we still need an existential fact whose
+        // target has S in its subsumers.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X))\n\
+    Declaration(Class(:Y))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:W))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:Y :B)\n\
+    SubClassOf(:Y :C)\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :Y))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :C)) :W)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "X"), class(&internal, "W")));
     }
 
     #[test]

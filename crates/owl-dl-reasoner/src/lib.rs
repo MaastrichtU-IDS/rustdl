@@ -67,6 +67,21 @@ use owl_dl_tableau::{NodeId, TableauContext};
 /// before this matters.
 const MAX_SEARCH_DEPTH: usize = 256;
 
+/// Per-query instrumentation: did the EL closure alone answer this
+/// query, or did the tableau have to run? Returned alongside the
+/// boolean verdict by the `_with_stats` variants of the public
+/// reasoning entry points.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QueryStats {
+    /// `true` iff the EL saturation closure was sufficient to
+    /// produce the verdict — no tableau call was made.
+    pub answered_by_saturation: bool,
+    /// `true` iff this run took the pure-EL fast path (the closure
+    /// is also complete for the input, so a closure miss is itself
+    /// the verdict).
+    pub pure_el_mode: bool,
+}
+
 /// Errors that can surface from the public reasoning API.
 #[derive(Debug, Error)]
 pub enum ReasonError {
@@ -136,6 +151,28 @@ pub fn is_class_satisfiable_internal(
     internal: InternalOntology,
     class_iri: &str,
 ) -> Result<bool, ReasonError> {
+    is_class_satisfiable_internal_full(internal, class_iri).map(|(b, _)| b)
+}
+
+/// Stats-returning variant of [`is_class_satisfiable`]; the verdict
+/// is paired with a [`QueryStats`] recording whether the EL closure
+/// answered alone.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_class_satisfiable_with_stats<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+) -> Result<(bool, QueryStats), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_class_satisfiable_internal_full(internal, class_iri)
+}
+
+fn is_class_satisfiable_internal_full(
+    internal: InternalOntology,
+    class_iri: &str,
+) -> Result<(bool, QueryStats), ReasonError> {
     let class_id = internal
         .vocabulary
         .class_id(class_iri)
@@ -146,13 +183,33 @@ pub fn is_class_satisfiable_internal(
     // the closure is also complete, so a *lack* of `⊑ ⊥` is itself
     // the verdict.
     let closure = owl_dl_saturation::saturate(&internal);
+    let pure_el = classify::is_pure_el(&internal);
     if closure.is_unsatisfiable(class_id) {
-        return Ok(false);
+        return Ok((
+            false,
+            QueryStats {
+                answered_by_saturation: true,
+                pure_el_mode: pure_el,
+            },
+        ));
     }
-    if classify::is_pure_el(&internal) {
-        return Ok(true);
+    if pure_el {
+        return Ok((
+            true,
+            QueryStats {
+                answered_by_saturation: true,
+                pure_el_mode: true,
+            },
+        ));
     }
-    run_satisfiability(internal, move |pool| pool.atomic(class_id))
+    let sat = run_satisfiability(internal, move |pool| pool.atomic(class_id))?;
+    Ok((
+        sat,
+        QueryStats {
+            answered_by_saturation: false,
+            pure_el_mode: false,
+        },
+    ))
 }
 
 /// Decide whether `ontology` is consistent — i.e. whether it has any
@@ -173,7 +230,38 @@ pub fn is_consistent<A: ForIRI>(ontology: &SetOntology<A>) -> Result<bool, Reaso
 ///
 /// See [`ReasonError`].
 pub fn is_consistent_internal(internal: InternalOntology) -> Result<bool, ReasonError> {
-    run_satisfiability(internal, ConceptPool::top)
+    is_consistent_internal_full(internal).map(|(b, _)| b)
+}
+
+/// Stats-returning variant of [`is_consistent`].
+///
+/// `is_consistent` always goes through the tableau today because the
+/// EL closure can't soundly answer "every model is empty" without
+/// `⊤`-sub-class lowering — so the returned stats will currently
+/// report `answered_by_saturation: false`. Surfacing the field
+/// anyway keeps the API symmetric and ready for a future fast path.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_consistent_with_stats<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<(bool, QueryStats), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_consistent_internal_full(internal)
+}
+
+fn is_consistent_internal_full(
+    internal: InternalOntology,
+) -> Result<(bool, QueryStats), ReasonError> {
+    let consistent = run_satisfiability(internal, ConceptPool::top)?;
+    Ok((
+        consistent,
+        QueryStats {
+            answered_by_saturation: false,
+            pure_el_mode: false,
+        },
+    ))
 }
 
 /// Decide whether `sub_iri ⊑ super_iri` holds in `ontology`. Standard
@@ -205,6 +293,28 @@ pub fn is_subclass_of_internal(
     sub_iri: &str,
     super_iri: &str,
 ) -> Result<bool, ReasonError> {
+    is_subclass_of_internal_full(internal, sub_iri, super_iri).map(|(b, _)| b)
+}
+
+/// Stats-returning variant of [`is_subclass_of`].
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_subclass_of_with_stats<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    sub_iri: &str,
+    super_iri: &str,
+) -> Result<(bool, QueryStats), ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_subclass_of_internal_full(internal, sub_iri, super_iri)
+}
+
+fn is_subclass_of_internal_full(
+    internal: InternalOntology,
+    sub_iri: &str,
+    super_iri: &str,
+) -> Result<(bool, QueryStats), ReasonError> {
     let sub_id = internal
         .vocabulary
         .class_id(sub_iri)
@@ -213,9 +323,14 @@ pub fn is_subclass_of_internal(
         .vocabulary
         .class_id(super_iri)
         .ok_or_else(|| ReasonError::UnknownClass(super_iri.to_owned()))?;
+    let pure_el = classify::is_pure_el(&internal);
+    let sat_stats = QueryStats {
+        answered_by_saturation: true,
+        pure_el_mode: pure_el,
+    };
     // Reflexive shortcut.
     if sub_id == super_id {
-        return Ok(true);
+        return Ok((true, sat_stats));
     }
     // Saturation fast path: the EL closure is sound (every entry is a
     // genuine entailment) but only complete for the EL fragment of the
@@ -224,17 +339,17 @@ pub fn is_subclass_of_internal(
     // tableau still needs to run.
     let closure = owl_dl_saturation::saturate(&internal);
     if closure.contains(sub_id, super_id) {
-        return Ok(true);
+        return Ok((true, sat_stats));
     }
     // If `sub` is itself unsat in the closure, every superclass —
     // including `super` — vacuously subsumes it.
     if closure.is_unsatisfiable(sub_id) {
-        return Ok(true);
+        return Ok((true, sat_stats));
     }
     // Pure-EL inputs: the closure is complete, so a miss is the
     // verdict, no tableau needed.
-    if classify::is_pure_el(&internal) {
-        return Ok(false);
+    if pure_el {
+        return Ok((false, sat_stats));
     }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
@@ -244,7 +359,13 @@ pub fn is_subclass_of_internal(
         let not_super = pool.not(super_concept);
         pool.and(vec![sub_concept, not_super])
     })?;
-    Ok(!sat)
+    Ok((
+        !sat,
+        QueryStats {
+            answered_by_saturation: false,
+            pure_el_mode: false,
+        },
+    ))
 }
 
 /// Shared end-of-pipeline runner: takes a (possibly mutated)
@@ -1067,6 +1188,53 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         assert!(check(&onto, "http://rustdl.test/A"));
+    }
+
+    #[test]
+    fn query_stats_pure_el_answered_by_saturation() {
+        // Pure EL ontology — every query should be answered by the
+        // closure with `pure_el_mode == true`.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        let (verdict, stats) =
+            is_subclass_of_with_stats(&onto, "http://rustdl.test/A", "http://rustdl.test/B")
+                .expect("verdict");
+        assert!(verdict);
+        assert!(stats.answered_by_saturation);
+        assert!(stats.pure_el_mode);
+
+        let (sat, sat_stats) =
+            is_class_satisfiable_with_stats(&onto, "http://rustdl.test/A").expect("verdict");
+        assert!(sat);
+        assert!(sat_stats.answered_by_saturation);
+        assert!(sat_stats.pure_el_mode);
+    }
+
+    #[test]
+    fn query_stats_hybrid_falls_through_to_tableau() {
+        // Disjunction lives outside the EL fragment; the subsumption
+        // check should fall through to the tableau and the stats
+        // should reflect that.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A ObjectUnionOf(:B :C))\n\
+)\n"
+        ));
+        let (_verdict, stats) =
+            is_subclass_of_with_stats(&onto, "http://rustdl.test/A", "http://rustdl.test/B")
+                .expect("verdict");
+        assert!(!stats.pure_el_mode);
+        assert!(!stats.answered_by_saturation);
     }
 
     #[test]

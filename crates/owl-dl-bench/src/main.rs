@@ -51,6 +51,14 @@ enum Command {
         #[arg(long, default_value = "1")]
         anchors: usize,
     },
+    /// Walk a directory of .ofn ontologies, classify each, report
+    /// per-file and aggregate stats. Used to see how the
+    /// saturation/tableau orchestrator behaves on a real fixture
+    /// corpus.
+    Corpus {
+        /// Directory containing .ofn ontologies.
+        dir: PathBuf,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -143,6 +151,81 @@ fn main() -> Result<()> {
                 read(&mut reader, ParserConfiguration::default())
                     .map_err(|e| anyhow::anyhow!("synthesised ontology failed to parse: {e}"))?;
             run_classify(&onto)?;
+        }
+        Command::Corpus { dir } => run_corpus(&dir)?,
+    }
+    Ok(())
+}
+
+fn run_corpus(dir: &Path) -> Result<()> {
+    let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|e| {
+            e.file_type().is_file() && e.path().extension().and_then(|s| s.to_str()) == Some("ofn")
+        })
+        .map(|e| e.path().to_owned())
+        .collect();
+    paths.sort();
+    let total = paths.len();
+    let mut total_classes = 0usize;
+    let mut total_pure_el = 0usize;
+    let mut total_sat_sub = 0usize;
+    let mut total_tab_sub = 0usize;
+    let mut total_sat_unsat = 0usize;
+    let mut total_tab_unsat = 0usize;
+    let mut total_elapsed = std::time::Duration::ZERO;
+    let mut failures: Vec<(PathBuf, String)> = Vec::new();
+    for path in &paths {
+        match parse_ofn(path).and_then(|onto| {
+            let start = Instant::now();
+            let h = classify(&onto).context("classify")?;
+            Ok((h, start.elapsed()))
+        }) {
+            Ok((h, elapsed)) => {
+                let stats = h.stats();
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+                println!(
+                    "{:50} classes={:4} mode={:6} sat-sub={:5} tab-sub={:5} sat-unsat={:3} tab-unsat={:3} {:>9.3?}",
+                    name,
+                    h.classes().len(),
+                    if stats.pure_el_mode { "EL" } else { "hybrid" },
+                    stats.saturation_subsumption_hits,
+                    stats.tableau_subsumption_calls,
+                    stats.saturation_unsat_hits,
+                    stats.tableau_unsat_calls,
+                    elapsed,
+                );
+                total_classes += h.classes().len();
+                if stats.pure_el_mode {
+                    total_pure_el += 1;
+                }
+                total_sat_sub += stats.saturation_subsumption_hits;
+                total_tab_sub += stats.tableau_subsumption_calls;
+                total_sat_unsat += stats.saturation_unsat_hits;
+                total_tab_unsat += stats.tableau_unsat_calls;
+                total_elapsed += elapsed;
+            }
+            Err(e) => failures.push((path.clone(), format!("{e:#}"))),
+        }
+    }
+    println!();
+    println!("# corpus summary");
+    println!(
+        "  files: {total}   successful: {ok}   failures: {fail}",
+        ok = total - failures.len(),
+        fail = failures.len()
+    );
+    println!("  classes (sum): {total_classes}");
+    println!("  pure-EL files: {total_pure_el} / {total}");
+    println!("  subsumption queries: saturation={total_sat_sub} tableau={total_tab_sub}");
+    println!("  satisfiability probes: saturation={total_sat_unsat} tableau={total_tab_unsat}");
+    println!("  wall clock (sum): {total_elapsed:.3?}");
+    if !failures.is_empty() {
+        println!();
+        println!("# failures");
+        for (path, msg) in failures {
+            println!("  {}: {msg}", path.display());
         }
     }
     Ok(())

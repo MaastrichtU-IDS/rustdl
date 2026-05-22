@@ -5,28 +5,49 @@
 //! we re-implement against our own IR (see `owl-dl-core`) to avoid IR-boundary
 //! copies in the hot loop.
 //!
-//! ## Phase 6 scaffold — what this commit covers
+//! ## What this engine covers
 //!
-//! A minimal saturation closure over the *atomic*-class subset of the
-//! input ontology:
+//! Subsumer closure over the atomic-class subset of the input
+//! ontology, with the supporting EL rules wired into one fixed-point
+//! loop:
 //!
-//! - Atomic `SubClassOf(A, B)` is told-subsumption fact.
+//! - Atomic `SubClassOf(A, B)` — told subsumption.
 //! - `SubClassOf(A, ObjectIntersectionOf([B₁, …, Bₙ]))` distributes
-//!   to `A ⊑ Bᵢ` for each atomic `Bᵢ`.
-//! - `SubClassOf(ObjectIntersectionOf([B₁, …, Bₙ]), C)` triggers a
-//!   conjunctive subsumption: any class that has all `Bᵢ` as
-//!   subsumers also has `C`.
-//! - `EquivalentClasses(A₁, …, Aₙ)` decomposes pairwise.
-//! - Closure is taken under transitivity.
+//!   to `A ⊑ Bᵢ` for each atomic operand.
+//! - `SubClassOf(ObjectIntersectionOf([B₁, …, Bₙ]), C)` — conjunctive
+//!   trigger; any class with all `Bᵢ` as subsumers gains `C`.
+//! - `EquivalentClasses(A₁, …, Aₙ)` — decomposed pairwise.
+//! - **CR5 existential propagation** for `∃r.Y` on either side of a
+//!   `SubClassOf`; the chain rule grows the existential-fact set
+//!   in-loop so further hops compose. Facts are indexed by subject
+//!   class so the chain inner loop is `O(|subsumers(target)| ·
+//!   |facts_per_sub|)` rather than `O(|facts|)`.
+//! - **Tseitin introduction** for compound existential bodies
+//!   `∃r.(B₁ ⊓ … ⊓ Bₙ)`: a synthetic atomic stand-in is allocated
+//!   above the user vocabulary, paired with `F ≡ B₁ ⊓ … ⊓ Bₙ`
+//!   clauses, so the rewritten `∃r.F` rides the same CR5 path.
+//! - **CR9 role hierarchy** — sub-role / equivalent-role decls + a
+//!   reflexive-transitive closure built once, consulted in CR5 and
+//!   chain rules.
+//! - **Length-2 role chains + `TransitiveObjectProperty`** materialise
+//!   derived `(A, sup, C)` existential facts; longer chains and
+//!   inverse-role chains are out of scope (rejected upstream).
+//! - **`ObjectPropertyDomain` / `Range`** propagate to subject /
+//!   target classes through the cached super-role closure.
+//! - **`DisjointClasses` → Bot detection** flags classes equivalent
+//!   to `⊥`.
+//! - Closure under transitivity at every round.
 //!
-//! Out of scope for this scaffold:
-//! - `ObjectSomeValuesFrom` propagation (Kazakov's CR5–CR8).
-//! - Role hierarchies and role chains (CR9–CR11).
-//! - The non-EL parts: union, complement, cardinality, nominals.
+//! Still outside the engine (the orchestrator falls back to the
+//! tableau for these): disjunction, complement, cardinality,
+//! nominals, inverse roles in any position, role characteristics
+//! that expand to cardinality (`Functional`, `InverseFunctional`,
+//! etc.), `ABox` assertions, role chains of length ≠ 2.
 //!
-//! When the engine sees an axiom outside the supported fragment, it
-//! silently drops it; the orchestrator (separate commit) will fall
-//! back to the tableau for queries that depend on those axioms.
+//! Axioms outside the supported fragment are silently dropped; the
+//! reasoner orchestrator decides whether to take the saturation-only
+//! fast path (when *every* axiom is in scope) or fall through to
+//! tableau on the misses.
 
 use std::collections::{HashMap, HashSet};
 

@@ -1,29 +1,45 @@
 //! Tableau engine for SROIQ.
 //!
-//! Phase 2 starts with ALC and grows to ALCHIQ (Phase 3), receives its
-//! optimization stack in Phase 4, and adds nominals + complex role
-//! hierarchies in Phase 5.
+//! ## What this engine covers
 //!
-//! ## Phase 2 commit 1: infrastructure only
+//! Concept satisfiability under a `TBox` / `ABox` / role hierarchy
+//! over the full SROIQ surface implemented today:
 //!
-//! This commit lands the storage layer:
+//! - ALC core: `⊓`, `⊔`, `∀`, `∃`, residual GCIs.
+//! - ALCH: role hierarchy and inverse-role pair-blocking.
+//! - ALCHIQ: qualified `≥n` / `≤n` cardinality with successor
+//!   merging, plus the choose rule.
+//! - SROIQ extras: nominals (`{a}`) and individual merging,
+//!   `ObjectHasSelf`, `Reflexive` / `Irreflexive` / `Asymmetric`
+//!   characteristics, `DisjointObjectProperties`, length-2 role
+//!   chains, `TransitiveObjectProperty`, full `ABox` (class
+//!   assertions, property assertions, negative property assertions,
+//!   `SameIndividual`, `DifferentIndividuals`).
 //!
-//! - [`CompletionGraph`] with [`NodeId`]-indexed nodes carrying sorted
-//!   label lists and edge lists.
+//! ## Core types
+//!
+//! - [`CompletionGraph`] with [`NodeId`]-indexed nodes carrying
+//!   sorted label lists, outgoing/incoming edge lists, inequality
+//!   marks, and `merged_into` redirects.
 //! - [`TableauTrail`] with log-and-undo backtracking via
 //!   [`Checkpoint`] markers.
 //! - [`TableauContext`] — the only sanctioned mutation interface;
-//!   every label addition, edge addition, or node creation goes
-//!   through it and is recorded on the trail.
+//!   every label addition, edge addition, node creation, distinct
+//!   mark, nominal assignment, and merge goes through it and is
+//!   recorded on the trail.
 //! - Clash detection: [`TableauContext::clash_in`] checks `Bot` in
 //!   the label set or a complementary `c` / `Not(c)` pair.
-//! - Stub [`TableauContext::is_satisfiable`] that handles only the
-//!   trivial top-level shapes (`Top`, `Bot`, `Atomic`, `Nominal`,
-//!   `Not(Atomic)`). Real ⊓ / ⊔ / ∃ / ∀ rules arrive in later
-//!   Phase 2 commits.
+//! - [`saturate`] — fixed-point rule sweep; [`search`] — the
+//!   backtracking driver for `⊔` and the choose rule.
 //!
-//! The crate compiles and tests pass, but it cannot yet decide
-//! satisfiability of any non-trivial concept.
+//! ## Out of scope for now
+//!
+//! - Role chains of length ≠ 2 and any chain involving an inverse
+//!   role (rejected upstream as `RoleChainUnsupported`).
+//! - Datatypes (the `owl-dl-datatypes` crate is scaffolded but not
+//!   wired into clash detection yet).
+//! - Phase 4 optimisation stack (dependency-directed backtracking,
+//!   lazy unfolding integration, priority queue over rules).
 
 mod graph;
 mod rules;

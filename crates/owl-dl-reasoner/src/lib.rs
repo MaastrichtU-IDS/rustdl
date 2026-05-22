@@ -1,17 +1,44 @@
 //! Hybrid saturation+tableau OWL DL reasoner — the public API surface.
 //!
-//! End-users depend on this crate. Internally it orchestrates `owl-dl-core`
-//! (IR, preprocessing), `owl-dl-saturation` (EL fragment),
-//! `owl-dl-tableau` (SROIQ), and `owl-dl-datatypes` (concrete domains).
+//! End-users depend on this crate. Internally it orchestrates
+//! `owl-dl-core` (IR, preprocessing), `owl-dl-saturation` (EL
+//! fragment), `owl-dl-tableau` (SROIQ), and `owl-dl-datatypes`
+//! (concrete domains).
 //!
-//! ## Scope today
+//! ## Public API
 //!
-//! As of Phase 2 commit 6 the only public entry point is
-//! [`is_class_satisfiable`]: given a parsed horned-owl ontology and a
-//! class IRI, run the full normalization+absorption+tableau pipeline
-//! and answer "is this class non-empty in some model of the
-//! ontology?". Limited to pure ALC for now; later phases extend to
-//! `ALCHIQ` and full `SROIQ(D)`.
+//! - [`is_class_satisfiable`] — concept satisfiability.
+//! - [`is_consistent`] — does the KB have any model.
+//! - [`is_subclass_of`] — KB ⊨ sub ⊑ super (via the standard
+//!   `sub ⊓ ¬sup` reduction).
+//! - [`is_instance_of`] / [`instances_of`] — entailed class
+//!   memberships of declared individuals.
+//! - [`classify`] — full atomic-class hierarchy with equivalences,
+//!   direct super-classes, and the unsat-class set. Returns
+//!   [`ClassificationStats`] tracking how many queries each engine
+//!   handled.
+//! - [`realize`] — per-individual entailed types + Hasse leaves.
+//!
+//! ## Orchestrator
+//!
+//! Every entry point that issues at least one tableau query first
+//! runs the EL saturation engine (sound but only complete for the
+//! supported EL fragment) and short-circuits on a hit. When the
+//! entire ontology lives inside that fragment, [`classify_internal`]
+//! takes a saturation-only fast path with zero tableau calls
+//! (`stats.pure_el_mode == true`).
+//!
+//! `PreparedOntology::from_internal` snapshots the post-expand /
+//! NNF / absorb / `ABox`-seed state once so the pairwise
+//! classification loop reuses it across queries instead of
+//! re-running the pipeline per pair. The pairwise loop runs in
+//! parallel via rayon.
+//!
+//! ## DL fragment coverage
+//!
+//! The tableau side handles `SROIQ` (Phase 5 complete except full
+//! role-chain automata — length-2 chains + `TransitiveRole` only).
+//! Datatypes are scaffolded but not wired into reasoning yet.
 
 mod classify;
 mod realize;

@@ -5,10 +5,23 @@ A sound, complete, performant OWL 2 DL reasoner in Rust. Target: parity with
 [Konclude](http://www.derivo.de/produkte/konclude/) (tableau + saturation hybrid,
 C++) on the ORE benchmarks.
 
-**Status:** Phase 0 scaffolding (Day 1-2 of the 30-day plan). No reasoning
-implemented yet. See
-[`owl-dl-reasoner-rust-strategy-v2.md`](owl-dl-reasoner-rust-strategy-v2.md)
-for the full strategy.
+**Status:** Phases 0–5 complete; Phase 6 (EL saturation engine + hybrid
+orchestrator) operational. End-to-end reasoning over SROIQ on the tableau
+side, with a consequence-based EL saturation closure that handles told
+subsumption, conjunctive triggers, existential propagation (CR5), role
+hierarchy (CR9), length-2 role chains + transitive properties, property
+domain/range, Tseitin introduction for compound `∃` bodies, and Bot
+detection via DisjointClasses. The orchestrator consults the closure first
+and takes a saturation-only fast path when the input lives entirely inside
+the EL fragment; otherwise it falls back to the tableau on misses.
+
+Public API (`owl-dl-reasoner`): `is_class_satisfiable`, `is_consistent`,
+`is_subclass_of`, `is_instance_of`, `instances_of`, `classify`, `realize`.
+CLI (`rustdl`) exposes each as a subcommand. `owl-dl-bench` is a separate
+binary with `classify` / `synthetic-el` / `corpus` for harness work.
+
+See [`owl-dl-reasoner-rust-strategy-v2.md`](owl-dl-reasoner-rust-strategy-v2.md)
+for the full multi-year strategy.
 
 ## Architecture
 

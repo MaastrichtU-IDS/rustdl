@@ -1,0 +1,33 @@
+Prefix(:=<http://rustdl.test/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+Ontology(<http://rustdl.test/fixture/87_nested_or_back_jumping_unsat>
+    Declaration(Class(:A1))
+    Declaration(Class(:A2))
+    Declaration(Class(:A3))
+    Declaration(Class(:B1))
+    Declaration(Class(:B2))
+    Declaration(Class(:B3))
+    Declaration(Class(:Test))
+    # Every A_i forces ⊥ via a contradictory ∀-target on
+    # a self-pointer — independent of B-disjunction state.
+    SubClassOf(:A1 ObjectIntersectionOf(:A1 ObjectComplementOf(:A1)))
+    SubClassOf(:A2 ObjectIntersectionOf(:A1 ObjectComplementOf(:A1)))
+    SubClassOf(:A3 ObjectIntersectionOf(:A1 ObjectComplementOf(:A1)))
+    # Test forces a nested choice over A_i × B_j. With chronological
+    # backtracking the search explores 3 × 3 = 9 paths. With Phase 4
+    # back-jumping the clash on each A_i path doesn't depend on the
+    # B-branch decision, so the search returns Unsat after 3 paths.
+    # Either way the verdict is unsat — this fixture pins the
+    # invariant + protects against a future tableau change quietly
+    # breaking the DDB short-circuit.
+    EquivalentClasses(:Test
+        ObjectIntersectionOf(
+            ObjectUnionOf(:A1 :A2 :A3)
+            ObjectUnionOf(:B1 :B2 :B3)
+        )
+    )
+)

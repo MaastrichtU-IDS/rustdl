@@ -529,3 +529,9 @@ file = "86_role_chain_with_inverse_first_sat.ofn"
 description = "inverse(hasChild) ∘ hasSibling ⊑ hasNiece — inverse first position; chain provides the hasNiece witness"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "87_nested_or_back_jumping_unsat.ofn"
+description = "nested 3×3 disjunction where each A_i is itself unsat — exercises Phase 4 DDB: clash deps exclude the B-branch so back-jumping skips 6 of the 9 paths"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

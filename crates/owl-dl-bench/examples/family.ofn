@@ -1,0 +1,39 @@
+Prefix(:=<http://example.test/family/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+
+# A small family ontology that intentionally lives outside the
+# pure-EL fragment: it uses ObjectUnionOf (disjunction) plus
+# InverseObjectProperties — both of which the saturation engine
+# doesn't handle. The orchestrator therefore drops to hybrid mode
+# and the tableau adjudicates.
+
+Ontology(<http://example.test/family>
+    Declaration(ObjectProperty(:hasParent))
+    Declaration(ObjectProperty(:hasChild))
+    InverseObjectProperties(:hasParent :hasChild)
+
+    Declaration(Class(:Person))
+    Declaration(Class(:Man))
+    Declaration(Class(:Woman))
+    Declaration(Class(:Male))
+    Declaration(Class(:Female))
+    Declaration(Class(:Parent))
+    Declaration(Class(:Mother))
+    Declaration(Class(:Father))
+
+    # Sex partition (disjunction + disjointness — non-EL).
+    DisjointClasses(:Male :Female)
+    EquivalentClasses(:Person ObjectUnionOf(:Male :Female))
+
+    # Gendered persons.
+    EquivalentClasses(:Man ObjectIntersectionOf(:Person :Male))
+    EquivalentClasses(:Woman ObjectIntersectionOf(:Person :Female))
+
+    # Parents: someone with at least one child.
+    EquivalentClasses(:Parent ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasChild :Person)))
+    EquivalentClasses(:Mother ObjectIntersectionOf(:Woman :Parent))
+    EquivalentClasses(:Father ObjectIntersectionOf(:Man :Parent))
+)

@@ -22,7 +22,7 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify, instances_of, is_class_satisfiable, is_consistent,
-    is_instance_of, is_subclass_of, realize,
+    is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
 };
 
 #[derive(Parser, Debug)]
@@ -84,6 +84,17 @@ enum Command {
     Realize {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
+    },
+    /// Decide SUB ⊑ SUP and report which engine (EL saturation or
+    /// tableau) produced the verdict. Useful for understanding
+    /// orchestrator behaviour on real ontologies.
+    Explain {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+        /// Full IRI of the sub-class.
+        sub: String,
+        /// Full IRI of the super-class.
+        sup: String,
     },
 }
 
@@ -214,6 +225,27 @@ fn main() -> Result<()> {
             let onto = parse_ofn(&file)?;
             let r = realize(&onto).context("realize")?;
             print_realization(&r);
+        }
+        Command::Explain { file, sub, sup } => {
+            let onto = parse_ofn(&file)?;
+            let (verdict, stats) = is_subclass_of_with_stats(&onto, &sub, &sup)
+                .context("is_subclass_of_with_stats")?;
+            let answered_by = if stats.answered_by_saturation {
+                "saturation"
+            } else {
+                "tableau"
+            };
+            let completeness = if stats.pure_el_mode {
+                " (input is pure EL; closure is complete)"
+            } else if stats.answered_by_saturation {
+                " (closure produced a positive witness)"
+            } else {
+                " (closure didn't witness it; tableau adjudicated)"
+            };
+            println!(
+                "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
+                answer = if verdict { "yes" } else { "no" },
+            );
         }
     }
     Ok(())

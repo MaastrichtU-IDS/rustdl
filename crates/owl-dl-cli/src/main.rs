@@ -98,7 +98,16 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
 
 fn print_classification(h: &Classification) {
     let classes = h.classes();
+    let stats = h.stats();
     println!("# classes: {}", classes.len());
+    println!(
+        "# subsumption: saturation={} tableau={}",
+        stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
+    );
+    println!(
+        "# satisfiability probes: saturation={} tableau={}",
+        stats.saturation_unsat_hits, stats.tableau_unsat_calls
+    );
     let unsat = h.unsatisfiable_classes();
     if !unsat.is_empty() {
         println!("# unsatisfiable: {}", unsat.len());

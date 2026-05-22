@@ -35,6 +35,27 @@ pub struct Classification {
     /// as a row-major bit-vector via `Vec<bool>`.
     entailed: Vec<Vec<bool>>,
     unsatisfiable_idxs: HashSet<usize>,
+    stats: ClassificationStats,
+}
+
+/// Per-call instrumentation: who decided what during the pairwise
+/// classification loop. Useful for understanding when the EL
+/// saturation oracle is pulling its weight versus when the tableau
+/// is doing the work.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClassificationStats {
+    /// Pairwise subsumption queries answered `yes` by saturation's
+    /// EL closure (no tableau call issued).
+    pub saturation_subsumption_hits: usize,
+    /// Pairwise subsumption queries that the saturation closure did
+    /// not witness, dispatched to the tableau.
+    pub tableau_subsumption_calls: usize,
+    /// Classes flagged as `⊑ ⊥` by saturation directly (no per-class
+    /// tableau probe issued).
+    pub saturation_unsat_hits: usize,
+    /// Classes that needed a per-class tableau satisfiability probe
+    /// (saturation had no opinion).
+    pub tableau_unsat_calls: usize,
 }
 
 impl Classification {
@@ -94,6 +115,14 @@ impl Classification {
             })
             .map(|j| self.classes[j].as_str())
             .collect()
+    }
+
+    /// Per-call instrumentation for this classification: how many
+    /// subsumption queries each engine handled, and how many
+    /// unsatisfiable classes each engine flagged.
+    #[must_use]
+    pub fn stats(&self) -> ClassificationStats {
+        self.stats
     }
 
     /// All declared classes that are equivalent to `⊥` — i.e. classes
@@ -166,13 +195,16 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
     // a per-class satisfiability probe.
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
     let mut satisfiable: Vec<bool> = vec![false; n];
+    let mut stats = ClassificationStats::default();
     for (i, _iri) in classes.iter().enumerate() {
         let class_id =
             owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
         if closure.is_unsatisfiable(class_id) {
             unsatisfiable_idxs.insert(i);
+            stats.saturation_unsat_hits += 1;
             continue;
         }
+        stats.tableau_unsat_calls += 1;
         let sat = run_satisfiability(internal.clone(), move |pool| pool.atomic(class_id))?;
         if sat {
             satisfiable[i] = true;
@@ -211,8 +243,10 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
             // `i ⊑ j`, we're done — skip the tableau pass.
             if closure.contains(sub_class, super_class) {
                 entailed[i][j] = true;
+                stats.saturation_subsumption_hits += 1;
                 continue;
             }
+            stats.tableau_subsumption_calls += 1;
             let sub = &classes[i];
             let sup = &classes[j];
             entailed[i][j] = is_subclass_of_internal(internal.clone(), sub, sup)?;
@@ -224,6 +258,7 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
         index,
         entailed,
         unsatisfiable_idxs,
+        stats,
     })
 }
 
@@ -307,5 +342,36 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let h = classify(&onto).expect("classification");
         assert!(h.unsatisfiable_classes().contains(&"http://rustdl.test/A"));
+    }
+
+    #[test]
+    fn classify_stats_show_saturation_carries_pure_el() {
+        // Pure EL: A ⊑ B ⊑ C ⊑ D. Saturation should handle every
+        // (non-reflexive, non-self) pairwise subsumption query
+        // without dispatching to the tableau.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+    SubClassOf(:C :D)\n\
+)\n"
+        ));
+        let h = classify(&onto).expect("classification");
+        let stats = h.stats();
+        // 4 classes, 4*3 = 12 ordered non-reflexive pairs.
+        assert_eq!(
+            stats.saturation_subsumption_hits + stats.tableau_subsumption_calls,
+            12
+        );
+        // Every entailed pair was held by saturation. The
+        // non-subsumed pairs (e.g., C ⊑ A) still go to the tableau
+        // because EL saturation only answers `yes` — a miss means
+        // "ask the tableau."
+        assert!(stats.saturation_subsumption_hits > 0);
     }
 }

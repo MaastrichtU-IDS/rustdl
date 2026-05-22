@@ -403,6 +403,28 @@ fn expand_role_characteristics(internal: &mut InternalOntology) {
                     sup: max1,
                 });
             }
+            Axiom::ReflexiveRole(role) => {
+                // ⊤ ⊑ Self(r) — every individual carries the
+                // self-restriction concept; the tableau's
+                // `apply_self_restriction` then materializes the
+                // self-edge.
+                let self_r = internal.concepts.self_restriction(*role);
+                additions.push(Axiom::SubClassOf {
+                    sub: top,
+                    sup: self_r,
+                });
+            }
+            Axiom::IrreflexiveRole(role) => {
+                // ⊤ ⊑ ¬Self(r) — every individual is constrained to
+                // not have an r-self-edge. NNF-safe: `Not(Self)` is
+                // already in NNF.
+                let self_r = internal.concepts.self_restriction(*role);
+                let not_self = internal.concepts.not(self_r);
+                additions.push(Axiom::SubClassOf {
+                    sub: top,
+                    sup: not_self,
+                });
+            }
             _ => {}
         }
     }

@@ -615,3 +615,90 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     }
     RuleOutcome::Applied
 }
+
+/// Self-restriction rule for SROIQ's `ObjectHasSelf` concept.
+///
+/// Two halves at one node:
+/// - **Positive:** for every `SelfRestriction(r)` in `L(node)`, ensure
+///   a self-edge `node —r→ node` (or any sub-role / inverse-equivalent
+///   self-edge already witnessing it). Since `r(x, x) ⇔ r⁻(x, x)` for
+///   any self pair, an inverse-role wanted is satisfied by the named
+///   self-edge through [`TableauContext::edge_satisfies`].
+/// - **Negative:** for every `Not(SelfRestriction(r))` in `L(node)`,
+///   if any existing self-edge `node —s→ node` satisfies `r`, the
+///   model would have to both contain and forbid `r(node, node)` —
+///   add `⊥` to flag the clash. (The `Bot` label is what
+///   [`TableauContext::clash_in`] looks for; adding it surfaces the
+///   clash on the next sweep iteration.)
+///
+/// Skipped at blocked nodes: the blocking ancestor witnesses any
+/// self-restriction by label inclusion plus the (well-known)
+/// self-loop-respecting pair-blocking discipline.
+pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    // Snapshot the relevant label data; release the immutable borrow
+    // before mutating.
+    let mut positives: Vec<Role> = Vec::new();
+    let mut negatives: Vec<Role> = Vec::new();
+    for &c in ctx.graph().node(node).labels() {
+        match ctx.pool().get(c) {
+            ConceptExpr::SelfRestriction(role) => positives.push(*role),
+            ConceptExpr::Not(inner) => {
+                if let ConceptExpr::SelfRestriction(role) = ctx.pool().get(*inner) {
+                    negatives.push(*role);
+                }
+            }
+            _ => {}
+        }
+    }
+    if positives.is_empty() && negatives.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    // Helper: does any outgoing self-edge of `node` satisfy `wanted`?
+    let self_edges: Vec<RoleId> = ctx
+        .graph()
+        .node(node)
+        .edges()
+        .iter()
+        .filter_map(|&(r, t)| if t == node { Some(r) } else { None })
+        .collect();
+    let satisfies_any =
+        |wanted: Role, edges: &[RoleId], ctx: &TableauContext<'_, '_, '_>| -> bool {
+            edges
+                .iter()
+                .any(|&r| ctx.edge_satisfies(Role::Named(r), wanted))
+        };
+    let mut applied = false;
+    // Negatives first — a fresh positive added below could shadow an
+    // existing self-edge into clash, but the standard pattern is to
+    // check before mutating. We flag `⊥` when an existing self-edge
+    // already satisfies the negated role.
+    let bot_id = ctx.pool().bot_id();
+    for wanted in &negatives {
+        if satisfies_any(*wanted, &self_edges, ctx)
+            && let Some(bot) = bot_id
+            && ctx.add_label(node, bot)
+        {
+            applied = true;
+        }
+    }
+    for wanted in positives {
+        if satisfies_any(wanted, &self_edges, ctx) {
+            continue;
+        }
+        // Self-edge polarity is irrelevant for the model (the same
+        // pair is its own inverse), so always materialize as a named
+        // forward edge on the underlying role id. The negative-self
+        // check above will catch any clash introduced this sweep on
+        // the next pass.
+        ctx.add_edge(node, wanted.role_id(), node);
+        applied = true;
+    }
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}

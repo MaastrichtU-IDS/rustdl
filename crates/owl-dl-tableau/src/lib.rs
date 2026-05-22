@@ -35,7 +35,7 @@ pub use graph::{CompletionGraph, Node, NodeId};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
     apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_chains,
-    apply_role_rules,
+    apply_role_rules, apply_self_restriction,
 };
 pub use saturate::{SaturationResult, saturate};
 pub use search::search;

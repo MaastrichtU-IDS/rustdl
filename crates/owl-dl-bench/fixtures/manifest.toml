@@ -415,3 +415,33 @@ file = "67_functional_role_no_clash_sat.ofn"
 description = "FunctionalObjectProperty(r); r(a,b), r(a,c) without distinctness — ≤1 merges b and c"
 test_class = "http://rustdl.test/Test"
 expected = "sat"
+
+[[fixture]]
+file = "68_self_restriction_witness_sat.ofn"
+description = "Test ≡ ObjectHasSelf(r) — fresh node with Self(r); rule materializes the r-self-edge"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "69_self_restriction_negation_unsat.ofn"
+description = "Test ≡ ObjectHasSelf(r) ⊓ ¬ObjectHasSelf(r) — direct Self ∧ ¬Self clash"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "70_irreflexive_blocks_self_unsat.ofn"
+description = "IrreflexiveObjectProperty(r) + Test ≡ Self(r) — irreflexivity contradicts the self-restriction"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"
+
+[[fixture]]
+file = "71_reflexive_role_sat.ofn"
+description = "ReflexiveObjectProperty(r); {a} ⊓ ∃r.{a} — reflexivity provides the r-self-witness"
+test_class = "http://rustdl.test/Test"
+expected = "sat"
+
+[[fixture]]
+file = "72_reflexive_irreflexive_conflict_unsat.ofn"
+description = "ReflexiveObjectProperty(r) + IrreflexiveObjectProperty(r) — Self(r) ∧ ¬Self(r) on every node"
+test_class = "http://rustdl.test/Test"
+expected = "unsat"

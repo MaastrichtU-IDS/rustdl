@@ -1184,3 +1184,31 @@ that is dominated by the per-pair 200 ms timeout.
 `RUSTDL_TRACE=1` itself is kept as debug infrastructure
 alongside `RUSTDL_COUNTERS=1`; both are runtime-gated with a
 single atomic load on the off-path.
+
+## §7 — Real-corpus wall times after 2026-05-25 session
+
+After the five perf commits landed on `main` (`8c3fefa`, `2d843ae`,
+`5208c2b`, `8ec9480`, `d0a4fc1`):
+
+| Workload | Old | New | Notes |
+|---|---|---|---|
+| sulo-stripped (17 classes) | 0.49 s (n=10 med) | **0.23 s** | Convergent; per-call wins compound (top-down + early-presence) |
+| pizza (99 classes) | DNF >300 s `--pair-timeout-ms 200` | **29 s** | Timeout-bound on 1172 pairs; top-down default did the lifting (was 58 s with `--top-down` opt-in pre-flip) |
+| family-stripped (45 classes) | hard error (length-3 chains) | **8.9 s** | Coverage unlock landed earlier in the day (`5f7bb51`) |
+| ro-stripped (854 KB) | hard error (SWRL Rule) | **~28 s** | Coverage unlock landed earlier in the day (`31a5b99`) |
+| GO basic (51 937 classes, pure-EL) | 17 s baseline (apples-to-bench-elapsed) | **24 s** wall (median) | Pure-EL closure ~13 s + the BufWriter-bounded 11 s of formatting 58 k output lines |
+| sio-stripped (1 585 classes) | DNF >120 s | **266 s** | 33 394 timed-out pairs out of 33 399 tableau calls (99.985 % timeout rate); same architectural pattern as pizza |
+
+Reference reasoners on the same box (`bench-results/multi-reasoner-20260524-223957.txt`, ROBOT-docker harness):
+
+| Workload | HermiT | Pellet | Konclude | rustdl now |
+|---|---|---|---|---|
+| sulo-stripped | 3.94 s | 3.36 s | 0.95 s | **0.23 s** ← rustdl wins |
+| sio-stripped | 69 s | 4.45 s | 1.57 s | 266 s ← 3.9× slower than HermiT, 170× slower than Konclude |
+| pizza | 4.53 s | 3.44 s | 1.44 s | 29 s ← 6.5× slower than HermiT |
+
+`pair-timeout` × `pair-count` is the asymptotic floor on the
+timeout-bound workloads (pizza, sio-stripped, big-RO). All three
+sit at >99 % timeout rate; closing the gap to HermiT requires the
+architectural levers documented in §6 (lazy unfolding, model
+caching, anywhere blocking, module extraction, hypertableau).

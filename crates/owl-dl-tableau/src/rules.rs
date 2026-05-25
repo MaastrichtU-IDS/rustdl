@@ -23,6 +23,7 @@ use crate::TableauContext;
 use crate::deps::union;
 use crate::graph::{DepSet, NodeId};
 use owl_dl_core::{ConceptExpr, ConceptId, Role, RoleId};
+use smallvec::SmallVec;
 
 /// What happened when a rule was asked to apply at a node.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -48,15 +49,24 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     // Snapshot (operand, deps) pairs first to release the graph
     // borrow before any `add_label_with_deps` mutates the node. The
     // conclusion's deps inherit from the triggering `And` label.
+    //
+    // Skip conjuncts that are already labels — they'd round-trip
+    // through `add_label_with_deps` and return `false` after paying
+    // the deps clone. The current label set is sorted by
+    // construction, so the presence check is one binary search per
+    // conjunct.
     let pending: Vec<(ConceptId, DepSet)> = {
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
+        let labels = n.labels();
         let mut out = Vec::new();
-        for (pos, &c) in n.labels().iter().enumerate() {
+        for (pos, &c) in labels.iter().enumerate() {
             if let ConceptExpr::And(args) = pool.get(c) {
                 let deps = &n.label_deps[pos];
                 for &arg in args {
-                    out.push((arg, deps.clone()));
+                    if labels.binary_search(&arg).is_err() {
+                        out.push((arg, deps.clone()));
+                    }
                 }
             }
         }
@@ -148,17 +158,27 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     // Trigger class + the deps of the `Atomic(trigger)` label that
     // licenses each rule firing. Conclusion deps inherit from the
     // triggering atomic label.
-    let triggers: Vec<(owl_dl_core::ClassId, DepSet)> = {
+    //
+    // We also snapshot the current label set so the pending-list
+    // construction below can skip conclusions that are already
+    // present — those would round-trip through `add_label_with_deps`
+    // and return `false` anyway, but a deps clone has already been
+    // paid. Filtering early saves the clone on every duplicate; on
+    // pizza this rule's clone chain is the top exclusive-time frame.
+    let (label_snapshot, triggers) = {
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
-        n.labels()
+        let triggers: Vec<(owl_dl_core::ClassId, DepSet)> = n
+            .labels()
             .iter()
             .enumerate()
             .filter_map(|(pos, &c)| match pool.get(c) {
                 ConceptExpr::Atomic(cls) => Some((*cls, n.label_deps[pos].clone())),
                 _ => None,
             })
-            .collect()
+            .collect();
+        let label_snapshot: SmallVec<[ConceptId; 8]> = n.labels().iter().copied().collect();
+        (label_snapshot, triggers)
     };
     if triggers.is_empty() {
         return RuleOutcome::NoChange;
@@ -170,7 +190,7 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
         let mut out = Vec::new();
         for (trigger, deps) in &triggers {
             for rule in &tbox.concept_rules {
-                if rule.trigger == *trigger {
+                if rule.trigger == *trigger && label_snapshot.binary_search(&rule.conclusion).is_err() {
                     out.push((rule.conclusion, deps.clone()));
                 }
             }
@@ -181,7 +201,9 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
         for (trigger, deps) in &triggers {
             if let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) {
                 for &c in conclusions {
-                    out.push((c, deps.clone()));
+                    if label_snapshot.binary_search(&c).is_err() {
+                        out.push((c, deps.clone()));
+                    }
                 }
             }
         }

@@ -11,7 +11,7 @@
 //! goes to stderr.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -123,36 +123,47 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
 }
 
 fn print_classification(h: &Classification) {
+    let stdout = std::io::stdout();
+    let mut out = BufWriter::with_capacity(1 << 16, stdout.lock());
+    let _ = write_classification(&mut out, h);
+    let _ = out.flush();
+}
+
+fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::Result<()> {
     let classes = h.classes();
     let stats = h.stats();
-    println!("# classes: {}", classes.len());
-    println!(
+    writeln!(out, "# classes: {}", classes.len())?;
+    writeln!(
+        out,
         "# mode: {}",
         if stats.pure_el_mode {
             "pure EL (saturation-only)"
         } else {
             "hybrid (saturation + tableau)"
         }
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "# subsumption: saturation={} tableau={}",
         stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "# satisfiability probes: saturation={} tableau={}",
         stats.saturation_unsat_hits, stats.tableau_unsat_calls
-    );
+    )?;
     if stats.timed_out_pairs > 0 {
-        println!(
+        writeln!(
+            out,
             "# timed-out pairs: {} (defaulted to not-subsumed)",
             stats.timed_out_pairs
-        );
+        )?;
     }
     let unsat = h.unsatisfiable_classes();
     if !unsat.is_empty() {
-        println!("# unsatisfiable: {}", unsat.len());
+        writeln!(out, "# unsatisfiable: {}", unsat.len())?;
         for iri in unsat {
-            println!("unsat\t{iri}");
+            writeln!(out, "unsat\t{iri}")?;
         }
     }
     // Equivalence groups: print each non-trivial group once.
@@ -163,7 +174,7 @@ fn print_classification(h: &Classification) {
         }
         let equivs = h.equivalent_classes(c);
         if equivs.len() > 1 {
-            println!("equiv\t{}", equivs.join("\t"));
+            writeln!(out, "equiv\t{}", equivs.join("\t"))?;
             for iri in &equivs {
                 printed.insert(iri);
             }
@@ -173,9 +184,10 @@ fn print_classification(h: &Classification) {
     for c in classes {
         let directs = h.direct_subsumers(c);
         for sup in directs {
-            println!("direct\t{c}\t{sup}");
+            writeln!(out, "direct\t{c}\t{sup}")?;
         }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

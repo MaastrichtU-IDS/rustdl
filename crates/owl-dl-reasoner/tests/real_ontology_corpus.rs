@@ -302,6 +302,43 @@ fn family_no_false_unsat() {
 }
 
 // ----------------------------------------------------------------------
+// GO (Gene Ontology — 51,937 classes, pure EL)
+//
+// GO is the scale-test: ~52 k classes, pure EL (only SubClassOf +
+// a handful of TransitiveObjectProperty + SubObjectPropertyOf), no
+// disjunction / negation / cardinality / nominals. The classifier
+// takes the pure-EL fast path — closure of the EL saturation engine
+// only, no tableau probing — and emits the full direct-subsumption
+// hierarchy. Validates that the session's changes didn't regress the
+// EL fragment.
+
+/// GO classify completes and reports zero unsat. No HermiT equality
+/// assertion at scale (GO has tens of thousands of direct
+/// subsumptions; line-equality is brittle), just "finishes + no
+/// false positives + finds a reasonable amount of subsumption."
+#[test]
+#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/go-basic.ofn")]
+fn go_pure_el_classify() {
+    let path = Path::new("../../ontologies/real/go-basic.ofn");
+    if !path.exists() {
+        eprintln!("skip: {} not present", path.display());
+        return;
+    }
+    let onto = load(path);
+    let c = classify(&onto).expect("classify GO returns Ok");
+    assert!(c.unsatisfiable_classes().is_empty(), "GO should have no unsat");
+    // Sanity: at least 50 k classes get classified, and the closure
+    // finds well over 100 k subsumption entailments (sub + super
+    // relations).
+    assert!(c.classes().len() >= 50_000, "GO class count looks wrong: {}", c.classes().len());
+    assert!(
+        c.stats().saturation_subsumption_hits >= 100_000,
+        "GO closure should find at least 100 k saturation subsumptions; got {}",
+        c.stats().saturation_subsumption_hits,
+    );
+}
+
+// ----------------------------------------------------------------------
 // RO (Relation Ontology — 58 classes, SROIQ + SWRL + length-N chains)
 //
 // RO carries 25 `DLSafeRule` (SWRL) axioms encoding ABox-level

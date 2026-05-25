@@ -77,24 +77,71 @@ impl SearchVerdict {
     }
 }
 
+/// Single-shot env check: `RUSTDL_TRACE=1` enables one-line stderr
+/// dumps in `search` and `branch`. Off path is a single atomic load.
+fn trace_enabled() -> bool {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static STATE: AtomicU8 = AtomicU8::new(0); // 0=unknown, 1=off, 2=on
+    let s = STATE.load(Ordering::Relaxed);
+    if s == 0 {
+        let on = std::env::var("RUSTDL_TRACE").as_deref() == Ok("1");
+        STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+        on
+    } else {
+        s == 2
+    }
+}
+
 /// Drive deterministic saturation interleaved with `⊔` branching.
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
     if max_depth == 0 || ctx.check_deadline() {
+        if trace_enabled() {
+            eprintln!("# trace search depth=0_or_deadline");
+        }
         return SearchVerdict::DepthLimit;
     }
     match saturate(ctx, SATURATE_ITERS) {
-        SaturationResult::Clash(_, deps) => SearchVerdict::Unsat(deps),
+        SaturationResult::Clash(_, deps) => {
+            if trace_enabled() {
+                eprintln!(
+                    "# trace search depth={max_depth} clash=immediate deps={}",
+                    deps.len()
+                );
+            }
+            SearchVerdict::Unsat(deps)
+        }
         SaturationResult::Stalled => SearchVerdict::DepthLimit,
         SaturationResult::Stable => {
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
             if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
+                if trace_enabled() {
+                    eprintln!(
+                        "# trace search depth={max_depth} disj node={} options={} graph_nodes={}",
+                        node.index(),
+                        disjuncts.len(),
+                        ctx.graph().len()
+                    );
+                }
                 return branch(ctx, max_depth, node, &disjuncts, &or_deps);
             }
             // Step 2: choose rule for `≤n R.C` — pick a neighbour
             // that doesn't yet have `C` or `¬C` and branch.
             if let Some((node, c, c_neg)) = first_open_choose(ctx) {
+                if trace_enabled() {
+                    eprintln!(
+                        "# trace search depth={max_depth} choose node={} graph_nodes={}",
+                        node.index(),
+                        ctx.graph().len()
+                    );
+                }
                 return branch(ctx, max_depth, node, &[c, c_neg], &DepSet::new());
+            }
+            if trace_enabled() {
+                eprintln!(
+                    "# trace search depth={max_depth} sat graph_nodes={}",
+                    ctx.graph().len()
+                );
             }
             SearchVerdict::Sat
         }
@@ -133,9 +180,17 @@ fn branch(
     // assignment and merging.
     let ordered = reorder_disjuncts(ctx, node, options);
 
-    for d in &ordered {
+    let total_opts = ordered.len();
+    for (opt_idx, d) in ordered.iter().enumerate() {
         if early_return.is_some() {
             break;
+        }
+        if trace_enabled() {
+            eprintln!(
+                "# trace branch depth={max_depth} my_id={my_id} pick={}/{total_opts} disj={}",
+                opt_idx + 1,
+                d.index()
+            );
         }
         // (CDBL lookup intentionally not wired here — see the
         // `learned_nogoods` doc on [`crate::TableauContext`] and

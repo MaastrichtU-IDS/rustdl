@@ -1132,3 +1132,55 @@ principled answer.
    one (probably one with fewest dependencies on hasIngredient
    role chains). Trim pizza.ofn to a minimal repro and unit-test
    the resulting expected verdicts against HermiT.
+
+## §6 — Pizza search-tree diagnosis (2026-05-25)
+
+After landing the three per-call wins
+(`8c3fefa` / `2d843ae` / `5208c2b` — top-down default, early
+presence check, inverse-pairs Vec) pizza wall stayed flat at
+~29 s with `--pair-timeout-ms 200`. The advisor pushed for
+investigation over yet another speculative optimization;
+`RUSTDL_TRACE=1` was added to `search`/`branch` and a 200 ms
+NamedPizza sat probe captured 1560 trace lines. Findings:
+
+| Metric | Value |
+|---|---|
+| Unique disjunctions hit | 38 |
+| Branchings per top disjunction | up to **75** |
+| Unique nodes visited | 25 (graph_nodes peaks at **92**) |
+| Disjunction arity | uniformly **2** (binary, not wide) |
+| `is_blocked_true` over 510 k calls | **0** |
+
+The pattern is *not* wide disjunction-search (which is what the
+MOMS-style heuristic refinement targets — a refinement was
+tried at this point and shipped no measurable change, then
+reverted). It's *deep* binary search over a model that doesn't
+block. Every `∃R.X` creates a new successor; each successor
+inherits residual GCIs and gets its own binary disjunctions;
+pair-blocking cannot fire because each ∃-witness carries a
+distinct topping subclass label, so `L(y) ⊆ L(x')` never holds
+across siblings. The model grows monotonically until depth
+hits the 256 cap or the deadline fires.
+
+This is the structural pattern HermiT and Konclude solve with
+lazy unfolding and model caching; ELK avoids it by being EL+
+only. None of those are session-scoped fixes. Concretely the
+levers ranked by expected wall impact on this pattern:
+
+| Lever | Expected pizza impact | Effort |
+|---|---|---|
+| Lazy unfolding (Motik 2008) | large — successors stop carrying inherited residual GCIs | multi-week |
+| Model caching (build Pizza once, reuse) | large — cuts every `is_subclass(Pizza, _)` probe | ~1 week |
+| Anywhere blocking (subset, not pair) | medium — pizza siblings still don't subset each other, so smaller than expected | 2–3 days |
+| Module extraction | medium — most `is_subclass(A, B)` probes skipped when signatures don't overlap | ~1 week |
+| Hypertableau | very large — resolution-style, much smaller branching factor | multi-month |
+
+For convergent (non-timeout-bound) workloads the per-call wins
+already shipped *do* reduce CPU consumption (1.4 M
+`add_label_calls` → 256 k on the same NamedPizza probe).
+They're worth keeping. The point is they cannot shorten a wall
+that is dominated by the per-pair 200 ms timeout.
+
+`RUSTDL_TRACE=1` itself is kept as debug infrastructure
+alongside `RUSTDL_COUNTERS=1`; both are runtime-gated with a
+single atomic load on the off-path.

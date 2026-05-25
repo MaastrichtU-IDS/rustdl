@@ -50,8 +50,8 @@ fn with_profile<F: FnOnce() -> Result<()> + Send + 'static>(body: F) -> Result<(
         .report()
         .build()
         .map_err(|e| anyhow!("pprof report: {e}"))?;
-    let file = std::fs::File::create(&path)
-        .with_context(|| format!("creating flamegraph at {path}"))?;
+    let file =
+        std::fs::File::create(&path).with_context(|| format!("creating flamegraph at {path}"))?;
     report
         .flamegraph(file)
         .map_err(|e| anyhow!("flamegraph write: {e}"))?;
@@ -90,7 +90,7 @@ enum Command {
         file: PathBuf,
     },
     /// Single-class satisfiability probe — useful with
-    /// `--features profile` to get a flamegraph of one decide() call
+    /// `--features profile` to get a flamegraph of one `decide()` call
     /// without the parallel pair-loop noise.
     Sat {
         /// Path to the OWL functional-syntax ontology.
@@ -284,7 +284,11 @@ fn run(cli: Cli) -> Result<()> {
             let onto = parse_ofn(&file)?;
             run_classify(&onto)?;
         }
-        Command::Sat { file, iri, deadline_ms } => {
+        Command::Sat {
+            file,
+            iri,
+            deadline_ms,
+        } => {
             let onto = parse_ofn(&file)?;
             let start = Instant::now();
             let verdict = match deadline_ms {
@@ -331,8 +335,6 @@ fn run(cli: Cli) -> Result<()> {
     }
     Ok(())
 }
-
-
 
 #[cfg(feature = "whelk-compare")]
 fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
@@ -510,9 +512,7 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize) -> Result<()> {
     println!("  subsumption queries: saturation={total_sat_sub} tableau={total_tab_sub}");
     println!("  satisfiability probes: saturation={total_sat_unsat} tableau={total_tab_unsat}");
     if repeats > 1 {
-        println!(
-            "  wall clock (sum of medians, {repeats} repeats each): {total_elapsed:.3?}"
-        );
+        println!("  wall clock (sum of medians, {repeats} repeats each): {total_elapsed:.3?}");
     } else {
         println!("  wall clock (sum): {total_elapsed:.3?}");
     }

@@ -12,7 +12,7 @@
 //! rule invocations were no-ops, and the new deps-tracking work
 //! (2026-05-25) made each no-op call more expensive (more
 //! [`DepSet`] cloning and unioning). The dirty bit caps total work
-//! at O(deltas) per saturate() call instead of O(passes × nodes ×
+//! at O(deltas) per `saturate()` call instead of O(passes × nodes ×
 //! rules). See `docs/perf-2026-05-24-new-server.md` §5.
 //!
 //! ## Rule coverage

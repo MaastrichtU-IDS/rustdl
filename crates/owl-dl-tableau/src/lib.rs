@@ -527,7 +527,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// Mutable accessor for the completion graph. Used by the
     /// saturator's worklist plumbing — clearing the `dirty` bit on
     /// the node about to be processed, and marking all nodes dirty
-    /// at the start of each saturate() call.
+    /// at the start of each `saturate()` call.
     pub fn graph_mut(&mut self) -> &mut CompletionGraph {
         &mut self.graph
     }
@@ -582,12 +582,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// with `deps` — the [`crate::DepSet`] of the `∃R.C` label that
     /// licensed this generation. Used by `apply_exists` to propagate
     /// branch-decision provenance through fresh witnesses.
-    pub fn new_successor_with_deps(
-        &mut self,
-        from: NodeId,
-        role: RoleId,
-        deps: &[u32],
-    ) -> NodeId {
+    pub fn new_successor_with_deps(&mut self, from: NodeId, role: RoleId, deps: &[u32]) -> NodeId {
         let prior_len = self.graph.len();
         let id = self
             .graph
@@ -608,12 +603,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 
     /// Dep-aware variant of [`Self::new_predecessor`].
-    pub fn new_predecessor_with_deps(
-        &mut self,
-        to: NodeId,
-        role: RoleId,
-        deps: &[u32],
-    ) -> NodeId {
+    pub fn new_predecessor_with_deps(&mut self, to: NodeId, role: RoleId, deps: &[u32]) -> NodeId {
         let prior_len = self.graph.len();
         let id = self
             .graph
@@ -639,6 +629,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `y` may demand a label at `parent(y)` that subset-blocking
     /// can't see. Pair blocking restores soundness for `ALCHI`.
     #[must_use]
+    #[allow(clippy::similar_names)]
     pub fn is_blocked(&self, y: NodeId) -> bool {
         crate::bump_counter!(self, is_blocked_calls);
         let yb = self.graph.blocking(y);
@@ -646,7 +637,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             return false;
         };
         let yl_sig = yb.label_sig;
-        let ypl_sig = self.graph.blocking(yp_id).label_sig;
+        let yp_sig = self.graph.blocking(yp_id).label_sig;
 
         // Iterate strict tree-ancestors of y via the dense
         // `blocking` summary (24 bytes/node, ≥2 entries per cache
@@ -677,17 +668,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 && xr == yr
             {
                 if (yl_sig & !xb.label_sig) != 0
-                    || (ypl_sig & !self.graph.blocking(xp_id).label_sig) != 0
+                    || (yp_sig & !self.graph.blocking(xp_id).label_sig) != 0
                 {
                     crate::bump_counter!(self, is_blocked_prefilter_rejects);
                 } else {
                     crate::bump_counter!(self, is_blocked_subset_scans);
-                    let yn_labels = &self.graph.node(y).labels;
-                    let xn_labels = &self.graph.node(x_prime_id).labels;
-                    if is_subset_sorted(yn_labels, xn_labels) {
-                        let ypn_labels = &self.graph.node(yp_id).labels;
-                        let xpn_labels = &self.graph.node(xp_id).labels;
-                        if is_subset_sorted(ypn_labels, xpn_labels) {
+                    let y_labels = &self.graph.node(y).labels;
+                    let x_labels = &self.graph.node(x_prime_id).labels;
+                    if is_subset_sorted(y_labels, x_labels) {
+                        let yp_labels = &self.graph.node(yp_id).labels;
+                        let xp_labels = &self.graph.node(xp_id).labels;
+                        if is_subset_sorted(yp_labels, xp_labels) {
                             crate::bump_counter!(self, is_blocked_true);
                             return true;
                         }
@@ -732,12 +723,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// branch-decision-derived labels). On duplicate add the existing
     /// `DepSet` is preserved — widening will arrive with the per-rule
     /// propagation commit (see `docs/phase4-backjumping-plan.md`).
-    pub fn add_label_with_deps(
-        &mut self,
-        node: NodeId,
-        c: ConceptId,
-        deps: &[u32],
-    ) -> bool {
+    pub fn add_label_with_deps(&mut self, node: NodeId, c: ConceptId, deps: &[u32]) -> bool {
         crate::bump_counter!(self, add_label_calls);
         debug_assert!(
             is_nnf(c, self.pool),
@@ -782,23 +768,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// decisions whose firing produced this edge) to both the
     /// outgoing and the mirror incoming slot. Phase 4 DDB will read
     /// these on clash to compute the clash's full dependency set.
-    pub fn add_edge_with_deps(
-        &mut self,
-        from: NodeId,
-        role: RoleId,
-        target: NodeId,
-        deps: &[u32],
-    ) {
+    pub fn add_edge_with_deps(&mut self, from: NodeId, role: RoleId, target: NodeId, deps: &[u32]) {
         self.add_edge_inner(from, role, target, deps);
     }
 
-    fn add_edge_inner(
-        &mut self,
-        from: NodeId,
-        role: RoleId,
-        target: NodeId,
-        deps: &[u32],
-    ) {
+    fn add_edge_inner(&mut self, from: NodeId, role: RoleId, target: NodeId, deps: &[u32]) {
         crate::bump_counter!(self, add_edge_calls);
         let mut owned: crate::graph::DepSet = crate::graph::DepSet::from_slice(deps);
         owned.sort_unstable();
@@ -903,7 +877,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// missing the branch ids that licensed the merge in the first
     /// place, and the search back-jumps past them. (Pizza
     /// `:NamedPizza` false-positive 2026-05-25.)
-    #[allow(clippy::missing_panics_doc)]
+    #[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
     pub fn merge_into_with_deps(
         &mut self,
         source: NodeId,
@@ -1248,7 +1222,10 @@ mod tests {
         let mut ctx = TableauContext::new(&pool);
         let n = ctx.new_node();
         ctx.add_label(n, a);
-        assert_eq!(ctx.label_deps_of(n, a).map(|d| d.as_slice()), Some(&[][..]));
+        assert_eq!(
+            ctx.label_deps_of(n, a).map(smallvec::SmallVec::as_slice),
+            Some(&[][..])
+        );
     }
 
     #[test]
@@ -1261,7 +1238,7 @@ mod tests {
         // canonicalise.
         ctx.add_label_with_deps(n, a, &[3, 1, 1, 2]);
         assert_eq!(
-            ctx.label_deps_of(n, a).map(|d| d.as_slice()),
+            ctx.label_deps_of(n, a).map(smallvec::SmallVec::as_slice),
             Some(&[1u32, 2, 3][..])
         );
     }
@@ -1276,7 +1253,10 @@ mod tests {
         let cp = ctx.checkpoint();
         ctx.add_label_with_deps(n, a, &[7]);
         assert_eq!(ctx.graph().node(n).labels(), &[a]);
-        assert_eq!(ctx.label_deps_of(n, a).map(|d| d.as_slice()), Some(&[7u32][..]));
+        assert_eq!(
+            ctx.label_deps_of(n, a).map(smallvec::SmallVec::as_slice),
+            Some(&[7u32][..])
+        );
         ctx.rollback_to(cp);
         assert!(ctx.graph().node(n).labels().is_empty());
         assert!(ctx.label_deps_of(n, a).is_none());
@@ -1295,8 +1275,14 @@ mod tests {
         let n = ctx.new_node();
         ctx.add_label_with_deps(n, and_ab, &[5]);
         let _ = apply_and(&mut ctx, n);
-        assert_eq!(ctx.label_deps_of(n, a).map(|d| d.as_slice()), Some(&[5u32][..]));
-        assert_eq!(ctx.label_deps_of(n, b).map(|d| d.as_slice()), Some(&[5u32][..]));
+        assert_eq!(
+            ctx.label_deps_of(n, a).map(smallvec::SmallVec::as_slice),
+            Some(&[5u32][..])
+        );
+        assert_eq!(
+            ctx.label_deps_of(n, b).map(smallvec::SmallVec::as_slice),
+            Some(&[5u32][..])
+        );
     }
 
     #[test]

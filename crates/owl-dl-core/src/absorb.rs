@@ -637,17 +637,11 @@ mod tests {
         // Index reachable from each trigger.
         let a_id = cid(&o, "A");
         let d_id = cid(&o, "D");
-        let from_a = t
-            .concept_rules_by_trigger
-            .get(&a_id)
-            .expect("A indexed");
+        let from_a = t.concept_rules_by_trigger.get(&a_id).expect("A indexed");
         assert_eq!(from_a.len(), 2);
         assert!(from_a.contains(&b));
         assert!(from_a.contains(&cc));
-        let from_d = t
-            .concept_rules_by_trigger
-            .get(&d_id)
-            .expect("D indexed");
+        let from_d = t.concept_rules_by_trigger.get(&d_id).expect("D indexed");
         assert_eq!(from_d, &vec![e]);
         // Triggers not present in the index ⇒ not in any rule.
         assert!(!t.concept_rules_by_trigger.contains_key(&cid(&o, "B")));
@@ -665,7 +659,10 @@ mod tests {
         let nom_a = o.concepts.nominal(ind_a);
         let nom_b = o.concepts.nominal(ind_b);
         o.axioms.push(Axiom::SubClassOf { sub: nom_a, sup: b });
-        o.axioms.push(Axiom::SubClassOf { sub: nom_a, sup: cc });
+        o.axioms.push(Axiom::SubClassOf {
+            sub: nom_a,
+            sup: cc,
+        });
         o.axioms.push(Axiom::SubClassOf { sub: nom_b, sup: d });
         let t = run(&mut o);
         assert_eq!(t.nominal_rules.len(), 3);
@@ -676,10 +673,7 @@ mod tests {
         assert_eq!(from_a.len(), 2);
         assert!(from_a.contains(&b));
         assert!(from_a.contains(&cc));
-        assert_eq!(
-            t.nominal_rules_by_individual.get(&ind_b),
-            Some(&vec![d])
-        );
+        assert_eq!(t.nominal_rules_by_individual.get(&ind_b), Some(&vec![d]));
     }
 
     #[test]
@@ -696,10 +690,8 @@ mod tests {
             sub: a,
             sup: all_r_b,
         });
-        o.axioms.push(Axiom::ObjectPropertyRange {
-            role: r,
-            range: cc,
-        });
+        o.axioms
+            .push(Axiom::ObjectPropertyRange { role: r, range: cc });
         let t = run(&mut o);
         assert_eq!(t.role_rules.len(), 2);
         assert_eq!(t.unguarded_role_rules.len(), 1);

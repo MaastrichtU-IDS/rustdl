@@ -455,6 +455,7 @@ pub fn convert_component<A: ForIRI>(
         // predicates — so silently dropping them is sound for the
         // `classify` use case. A future `swrl` feature gate could
         // materialise them via tableau extensions if needed.
+        #[allow(clippy::match_same_arms)]
         C::Rule(_) => Ok(None),
     }
 }

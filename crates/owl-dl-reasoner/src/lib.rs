@@ -765,7 +765,7 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
 /// Family ontology has 4 length-3 chains (cousins, great-relatives)
 /// whose super-roles only appear in role-axiom declarations, not in
 /// any class definition — so classification under this skip matches
-/// HermiT on the class hierarchy. Inverse roles in any position
+/// `HermiT` on the class hierarchy. Inverse roles in any position
 /// (including the super-role) are accepted; the tableau's chain
 /// rule reads each position's polarity to choose edge direction.
 fn collect_chain_axioms(
@@ -1061,7 +1061,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
     /// empty `clash_deps`, which the back-jumping search treated as
     /// "branch-independent unsat" and back-jumped past the licensing
     /// disjunction (the `:S ⊔ ∀hs.¬:Hot` choice introduced by
-    /// absorbing the equivalence). HermiT says `:A` is sat; rustdl
+    /// absorbing the equivalence). `HermiT` says `:A` is sat; rustdl
     /// agreed only after the fix.
     ///
     /// Pattern:
@@ -1077,7 +1077,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
     /// fixed 2026-05-25. Minimal repro of the
     /// `VegetarianTopping ≡ PizzaTopping ⊓ (CheeseTopping ⊔ … ⊔
     /// VegetableTopping)` shape: `:A` is `:F` is `:PT`; `:F` is
-    /// disjoint with the union members. HermiT says `:A` is sat.
+    /// disjoint with the union members. `HermiT` says `:A` is sat.
     /// Bug was in [`crate::search::branch`]: when asserting a
     /// disjunct, it used only `[my_id]` as deps instead of the
     /// parent `Or` label's deps ∪ `my_id`. A clash on a nested
@@ -1117,7 +1117,7 @@ EquivalentClasses(:V ObjectIntersectionOf(:PT ObjectUnionOf(:C :N)))\n\
     /// hasBase-successor as the same individual. The merge then
     /// moves `:Pizza` (which was added with deps=[] from initial
     /// concept-rule chain) to the merged node where it triggers
-    /// disjointness (Pizza ⊓ PizzaBase ⊑ ⊥), producing a clash with
+    /// disjointness (`Pizza ⊓ PizzaBase ⊑ ⊥`), producing a clash with
     /// empty `clash_deps`. Back-jumping skips past every branch
     /// because `[]` doesn't contain any `my_id` — `:NamedPizza`
     /// wrongly reported unsat.
@@ -1136,7 +1136,7 @@ EquivalentClasses(:V ObjectIntersectionOf(:PT ObjectUnionOf(:C :N)))\n\
     /// `k < witnesses.len()`, producing false-positive unsats on
     /// the 22-class cluster around `:SIO_000450` ("axis").
     ///
-    /// Minimal repro (HermiT: sat):
+    /// Minimal repro (`HermiT`: sat):
     ///   :A ⊑ :B; :B ⊑ :C
     ///   :X508 ⊑ :X532
     ///   :C ⊑ =2 :r.:X532   (Min(2) + Max(2))

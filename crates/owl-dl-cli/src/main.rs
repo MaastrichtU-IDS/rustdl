@@ -22,8 +22,8 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify, classify_top_down, classify_top_down_with_timeout,
-    classify_with_timeout, instances_of, is_class_satisfiable, is_consistent,
-    is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
+    classify_with_timeout, instances_of, is_class_satisfiable, is_consistent, is_instance_of,
+    is_subclass_of, is_subclass_of_with_stats, realize,
 };
 
 #[derive(Parser, Debug)]

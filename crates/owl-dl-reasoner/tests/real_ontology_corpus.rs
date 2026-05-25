@@ -1,3 +1,10 @@
+// Test docs reference reasoner names (HermiT, Konclude) and bare
+// ontology IRIs, neither of which read better in backticks; the
+// per-test breakdowns are also not authored as rustdoc, so the
+// lazy-continuation rule produces noise here. Silence both at file
+// scope; correctness lints still apply.
+#![allow(clippy::doc_markdown, clippy::doc_lazy_continuation)]
+
 //! Real-ontology feature tests. Each test loads a known-shape
 //! ontology from `tests/fixtures/` or `ontologies/real/`, classifies
 //! it, and asserts that the unsatisfiable-class set matches the
@@ -28,8 +35,7 @@ use std::time::Duration;
 
 /// Load an `.ofn` file from a path and return a `SetOntology`.
 fn load(path: &Path) -> SetOntology<RcStr> {
-    let src = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut reader = Cursor::new(src);
     let (ontology, _prefixes) =
         read(&mut reader, ParserConfiguration::default()).expect("ontology parses");
@@ -39,7 +45,10 @@ fn load(path: &Path) -> SetOntology<RcStr> {
 /// Classify, return the sorted set of unsatisfiable-class IRIs.
 fn unsat_set(onto: &SetOntology<RcStr>) -> BTreeSet<String> {
     let c = classify(onto).expect("classify returns Ok");
-    c.unsatisfiable_classes().iter().map(|s| s.to_string()).collect()
+    c.unsatisfiable_classes()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// Same as `unsat_set` but with a per-pair tableau deadline — sound
@@ -48,7 +57,10 @@ fn unsat_set(onto: &SetOntology<RcStr>) -> BTreeSet<String> {
 fn unsat_set_timed(onto: &SetOntology<RcStr>, per_pair_ms: u64) -> BTreeSet<String> {
     let c = classify_with_timeout(onto, Duration::from_millis(per_pair_ms))
         .expect("classify_with_timeout returns Ok");
-    c.unsatisfiable_classes().iter().map(|s| s.to_string()).collect()
+    c.unsatisfiable_classes()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// Top-down classifier with per-pair deadline. The default O(n²)
@@ -58,7 +70,10 @@ fn unsat_set_timed(onto: &SetOntology<RcStr>, per_pair_ms: u64) -> BTreeSet<Stri
 fn unsat_set_top_down(onto: &SetOntology<RcStr>, per_pair_ms: u64) -> BTreeSet<String> {
     let c = classify_top_down_with_timeout(onto, Duration::from_millis(per_pair_ms))
         .expect("classify_top_down_with_timeout returns Ok");
-    c.unsatisfiable_classes().iter().map(|s| s.to_string()).collect()
+    c.unsatisfiable_classes()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// Pizza (full, raw): HermiT (via ROBOT v1.9.6) reports exactly two
@@ -73,7 +88,10 @@ fn unsat_set_top_down(onto: &SetOntology<RcStr>, per_pair_ms: u64) -> BTreeSet<S
 /// of the comparison is captured below with `#[ignore]` until that
 /// bug is fixed.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)"
+)]
 fn pizza_unsat_includes_hermit_truth() {
     let path = Path::new("../../ontologies/real/pizza.ofn");
     if !path.exists() {
@@ -103,7 +121,10 @@ fn pizza_unsat_includes_hermit_truth() {
 /// same area surface against the real ontology, not just the
 /// minimal repros.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)"
+)]
 fn pizza_known_satisfiable_toppings() {
     let path = Path::new("../../ontologies/real/pizza.ofn");
     if !path.exists() {
@@ -135,7 +156,10 @@ fn pizza_known_satisfiable_toppings() {
 /// `--features real-corpus` build (pizza classify is now ~58 s wall
 /// with `--pair-timeout-ms 200`).
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)"
+)]
 fn pizza_unsat_matches_hermit_exactly() {
     let path = Path::new("../../ontologies/real/pizza.ofn");
     if !path.exists() {
@@ -149,10 +173,11 @@ fn pizza_unsat_matches_hermit_exactly() {
         "http://www.co-ode.org/ontologies/pizza/pizza.owl#IceCream",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(ToString::to_string)
     .collect();
     assert_eq!(
-        unsat, expected,
+        unsat,
+        expected,
         "pizza unsat set ({} classes) differs from HermiT ({} classes); extras: {:?}; missing: {:?}",
         unsat.len(),
         expected.len(),
@@ -164,7 +189,10 @@ fn pizza_unsat_matches_hermit_exactly() {
 /// SULO (stripped, data-property axioms removed via ROBOT):
 /// HermiT reports zero unsat classes. Should hold for rustdl too.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sulo-stripped.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/sulo-stripped.ofn"
+)]
 fn sulo_no_false_unsat() {
     let path = Path::new("../../ontologies/real/sulo-stripped.ofn");
     if !path.exists() {
@@ -219,7 +247,10 @@ fn functional_equiv_some_fixture_is_sat() {
 /// 2026-05-25 cycle-guard + branching-reorder work; before, the
 /// N² pair-loop classifier ran out of patience on 1585 classes.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/sio-stripped.ofn"
+)]
 fn sio_top_down_finishes() {
     let path = Path::new("../../ontologies/real/sio-stripped.ofn");
     if !path.exists() {
@@ -248,7 +279,10 @@ fn sio_top_down_finishes() {
 /// to the first `n` witnesses — see `apply_min` in
 /// `crates/owl-dl-tableau/src/rules.rs`.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/sio-stripped.ofn"
+)]
 fn sio_matches_hermit_exactly() {
     let path = Path::new("../../ontologies/real/sio-stripped.ofn");
     if !path.exists() {
@@ -284,7 +318,10 @@ fn sio_matches_hermit_exactly() {
 /// length-N chain skip. Top-down classifier finishes in ~8.7 s vs
 /// HermiT's ~42 s.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/family-stripped.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/family-stripped.ofn"
+)]
 fn family_no_false_unsat() {
     let path = Path::new("../../ontologies/real/family-stripped.ofn");
     if !path.exists() {
@@ -317,7 +354,10 @@ fn family_no_false_unsat() {
 /// subsumptions; line-equality is brittle), just "finishes + no
 /// false positives + finds a reasonable amount of subsumption."
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/go-basic.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/go-basic.ofn"
+)]
 fn go_pure_el_classify() {
     let path = Path::new("../../ontologies/real/go-basic.ofn");
     if !path.exists() {
@@ -326,11 +366,18 @@ fn go_pure_el_classify() {
     }
     let onto = load(path);
     let c = classify(&onto).expect("classify GO returns Ok");
-    assert!(c.unsatisfiable_classes().is_empty(), "GO should have no unsat");
+    assert!(
+        c.unsatisfiable_classes().is_empty(),
+        "GO should have no unsat"
+    );
     // Sanity: at least 50 k classes get classified, and the closure
     // finds well over 100 k subsumption entailments (sub + super
     // relations).
-    assert!(c.classes().len() >= 50_000, "GO class count looks wrong: {}", c.classes().len());
+    assert!(
+        c.classes().len() >= 50_000,
+        "GO class count looks wrong: {}",
+        c.classes().len()
+    );
     assert!(
         c.stats().saturation_subsumption_hits >= 100_000,
         "GO closure should find at least 100 k saturation subsumptions; got {}",
@@ -362,7 +409,10 @@ fn go_pure_el_classify() {
 /// finds 180 subsumption entailments via the EL closure plus
 /// whatever the pair-loop completes within budget.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/ro-stripped.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/ro-stripped.ofn"
+)]
 fn ro_no_false_unsat() {
     let path = Path::new("../../ontologies/real/ro-stripped.ofn");
     if !path.exists() {
@@ -383,7 +433,10 @@ fn ro_no_false_unsat() {
 /// the now-fixed false-unsat cluster (450–463, 521–524, 902–903,
 /// 1173, 1178). HermiT classifies it sat; rustdl does too post-fix.
 #[test]
-#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/sio-stripped.ofn"
+)]
 fn sio_axis_is_sat() {
     let path = Path::new("../../ontologies/real/sio-stripped.ofn");
     if !path.exists() {

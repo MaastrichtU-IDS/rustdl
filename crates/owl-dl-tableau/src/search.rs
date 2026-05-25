@@ -252,6 +252,17 @@ fn branch(
 ///   already labelled. Try last; the branch will UNSAT quickly via
 ///   the trivial label-pair clash.
 ///
+/// A "leaf" disjunct decomposes only into `Not(_)` labels — no
+/// atomic-class triggers, no existentials, no merging. Used by the
+/// score-0 case in `reorder_disjuncts`.
+fn is_leaf_compound(pool: &ConceptPool, c: ConceptId) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Not(_) => true,
+        ConceptExpr::And(args) => args.iter().all(|&a| is_leaf_compound(pool, a)),
+        _ => false,
+    }
+}
+
 /// Stable secondary key on original index keeps the
 /// literal-complements optimisation downstream deterministic.
 fn reorder_disjuncts(
@@ -261,17 +272,6 @@ fn reorder_disjuncts(
 ) -> Vec<ConceptId> {
     let pool = ctx.pool();
     let labels = ctx.graph().node(node).labels();
-
-    fn is_leaf_compound(pool: &ConceptPool, c: ConceptId) -> bool {
-        // A "leaf" disjunct decomposes only into `Not(_)` labels —
-        // no atomic-class triggers, no existentials, no merging.
-        // Used by the score-0 case below.
-        match pool.get(c) {
-            ConceptExpr::Not(_) => true,
-            ConceptExpr::And(args) => args.iter().all(|&a| is_leaf_compound(pool, a)),
-            _ => false,
-        }
-    }
 
     let score = |d: ConceptId| -> u8 {
         // 3: would clash immediately.
@@ -283,10 +283,8 @@ fn reorder_disjuncts(
                     return 3;
                 }
             }
-            ConceptExpr::Not(inner) => {
-                if labels.binary_search(inner).is_ok() {
-                    return 3;
-                }
+            ConceptExpr::Not(inner) if labels.binary_search(inner).is_ok() => {
+                return 3;
             }
             _ => {}
         }

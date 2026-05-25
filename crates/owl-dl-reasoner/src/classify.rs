@@ -786,8 +786,7 @@ fn find_direct_parents_top_down(
             stats.saturation_subsumption_hits += 1;
             true
         } else {
-            subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, stats)?
-                .unwrap_or_default()
+            subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, stats)?.unwrap_or_default()
         };
         if !subsumed {
             continue;
@@ -1141,7 +1140,10 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         assert_top_down_matches_naive(&onto);
         let h = classify_top_down(&onto).expect("td classify");
-        assert!(!h.stats().pure_el_mode, "expected hybrid mode for this fixture");
+        assert!(
+            !h.stats().pure_el_mode,
+            "expected hybrid mode for this fixture"
+        );
         let iri_a = "http://rustdl.test/A";
         let iri_b = "http://rustdl.test/B";
         assert!(h.is_subclass(iri_a, iri_b), "A ⊑ B should hold");

@@ -285,8 +285,8 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
     // not been finalized — guarded by both partitions being empty
     // *and* `role_rules` being non-empty (i.e. a hand-built TBox that
     // skipped `finalize`).
-    let use_index = !(tbox.unguarded_role_rules.is_empty()
-        && tbox.guarded_role_rules_by_guard.is_empty());
+    let use_index =
+        !(tbox.unguarded_role_rules.is_empty() && tbox.guarded_role_rules_by_guard.is_empty());
     // `(target_node, conclusion_label, deps)`. Unguarded rules
     // inherit only the matching edge's deps. Guarded rules also
     // include the deps of the guard atomic on `node`.
@@ -432,9 +432,7 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
             .iter()
             .enumerate()
             .filter_map(|(pos, &c)| match pool.get(c) {
-                ConceptExpr::Some(role, body) => {
-                    Some((*role, *body, n.label_deps[pos].clone()))
-                }
+                ConceptExpr::Some(role, body) => Some((*role, *body, n.label_deps[pos].clone())),
                 _ => None,
             })
             .collect()
@@ -642,9 +640,8 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 let b = c_neighbours[j];
                 if !ctx.are_distinct(a, b) {
                     // Compute precise merge-condition deps for this pair.
-                    let merge_deps: DepSet = compute_max_merge_deps(
-                        ctx, node, role, body, a, b, &max_deps,
-                    );
+                    let merge_deps: DepSet =
+                        compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps);
                     if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {
                         applied = true;
                         merged = true;
@@ -653,9 +650,7 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                 }
             }
         }
-        if !merged
-            && let Some(bot) = ctx.pool().bot_id()
-        {
+        if !merged && let Some(bot) = ctx.pool().bot_id() {
             // Conservative deps for the clash: union of the Max
             // label's deps and every active branch decision. The
             // contributing neighbour edges + their `body` labels also

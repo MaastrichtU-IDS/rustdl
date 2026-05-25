@@ -54,7 +54,7 @@ pub(crate) fn inc(c: &Cell<u64>) {
 
 /// Add `n` (used for batch counters like body-loop iterations).
 /// Kept available for callers that want to count by something other
-/// than 1; currently no in-tree callsite. Allow dead_code so adding
+/// than 1; currently no in-tree callsite. Allow `dead_code` so adding
 /// counters elsewhere doesn't require a separate cleanup pass.
 #[allow(dead_code)]
 #[inline]
@@ -80,7 +80,10 @@ impl RuleCounters {
             ("apply_exists", self.apply_exists.get()),
             ("apply_min", self.apply_min.get()),
             ("apply_max", self.apply_max.get()),
-            ("apply_nominal_assignment", self.apply_nominal_assignment.get()),
+            (
+                "apply_nominal_assignment",
+                self.apply_nominal_assignment.get(),
+            ),
             ("apply_role_chains", self.apply_role_chains.get()),
             (
                 "apply_role_chains_body_iters",
@@ -97,7 +100,10 @@ impl RuleCounters {
                 "is_blocked_prefilter_rejects",
                 self.is_blocked_prefilter_rejects.get(),
             ),
-            ("is_blocked_subset_scans", self.is_blocked_subset_scans.get()),
+            (
+                "is_blocked_subset_scans",
+                self.is_blocked_subset_scans.get(),
+            ),
         ];
         let total: u64 = entries.iter().map(|(_, v)| *v).sum();
         if total == 0 {
@@ -111,4 +117,3 @@ impl RuleCounters {
         }
     }
 }
-

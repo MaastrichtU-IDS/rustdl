@@ -338,8 +338,7 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
                 IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
             let mut types: Vec<&str> = Vec::new();
             for (class_idx, class_iri) in &satisfiable {
-                let class_id =
-                    ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
+                let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
                 if instance_check_with_closure(
                     internal,
                     &closure,

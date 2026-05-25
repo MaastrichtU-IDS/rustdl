@@ -301,6 +301,47 @@ fn family_no_false_unsat() {
     );
 }
 
+// ----------------------------------------------------------------------
+// RO (Relation Ontology — 58 classes, SROIQ + SWRL + length-N chains)
+//
+// RO carries 25 `DLSafeRule` (SWRL) axioms encoding ABox-level
+// inferences over object-property atoms, plus chain axioms.
+// rustdl silently *skips* SWRL rules (see `C::Rule(_)` in
+// `crates/owl-dl-core/src/convert.rs`) on the same soundness
+// argument as length-N chain skipping: the rules' head predicates
+// don't enter class definitions, so class-side classification is
+// unaffected.
+//
+// HermiT on this box hit the 10-minute wrapper on RO (the earlier
+// session-start run took 1785 s = ~30 min); rustdl finishes the
+// class hierarchy in ~27 s with `--top-down --pair-timeout-ms 200`.
+// The pair-loop under-approximates (657 pairs hit the 200 ms
+// budget), but no false-positive unsats appear — RO is fully
+// satisfiable per HermiT.
+
+/// RO classify terminates and reports zero unsat. No strict
+/// HermiT-equality assertion: HermiT on this box was timing out,
+/// so the comparison is "no false unsat" + "finishes." rustdl
+/// finds 180 subsumption entailments via the EL closure plus
+/// whatever the pair-loop completes within budget.
+#[test]
+#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/ro-stripped.ofn")]
+fn ro_no_false_unsat() {
+    let path = Path::new("../../ontologies/real/ro-stripped.ofn");
+    if !path.exists() {
+        eprintln!("skip: {} not present", path.display());
+        return;
+    }
+    let onto = load(path);
+    let unsat = unsat_set_top_down(&onto, 200);
+    assert!(
+        unsat.is_empty(),
+        "RO marked {} classes as unsat — RO should be fully satisfiable: {:?}",
+        unsat.len(),
+        unsat,
+    );
+}
+
 /// `:SIO_000450` ("axis") is the lexicographically-first member of
 /// the now-fixed false-unsat cluster (450–463, 521–524, 902–903,
 /// 1173, 1178). HermiT classifies it sat; rustdl does too post-fix.

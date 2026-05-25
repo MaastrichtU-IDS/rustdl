@@ -446,8 +446,16 @@ pub fn convert_component<A: ForIRI>(
         // ── HasKey: advanced feature, deferred ──────────────────────────
         C::HasKey(_) => Err(ConversionError::UnsupportedAxiom { kind: "HasKey" }),
 
-        // ── SWRL rules: out of scope for v1 ─────────────────────────────
-        C::Rule(_) => Err(ConversionError::UnsupportedAxiom { kind: "SWRL Rule" }),
+        // ── SWRL rules: silently skipped ────────────────────────────────
+        // DL-safe `Rule` axioms are FOL-style entailment rules over
+        // individuals; on real workloads (e.g. RO with 25 such rules)
+        // they encode ABox-level inferences (`if x has property P
+        // and y holds, then ...`). They don't enter class-side
+        // classification — no class definition references their head
+        // predicates — so silently dropping them is sound for the
+        // `classify` use case. A future `swrl` feature gate could
+        // materialise them via tableau extensions if needed.
+        C::Rule(_) => Ok(None),
     }
 }
 

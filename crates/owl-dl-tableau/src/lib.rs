@@ -106,12 +106,16 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     pool: &'pool ConceptPool,
     tbox: Option<&'tbox AbsorbedTBox>,
     hierarchy: Option<&'hier RoleHierarchy>,
-    /// Declared inverse pairs: `r → s` means an `InverseObjectProperties(r, s)`
-    /// axiom in the source ontology. The map is symmetric (both
-    /// directions populated). Owned by the context rather than
-    /// borrowed because it's small (one entry per declared pair) and
-    /// avoiding a fourth lifetime keeps the API tractable.
-    inverse_pairs: HashMap<RoleId, RoleId>,
+    /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
+    /// axiom in the source ontology. Stored symmetrically (both
+    /// `(r, s)` and `(s, r)` are pushed) so `are_declared_inverses`
+    /// is a single linear scan. Vec rather than HashMap because real
+    /// ontologies declare ≤ a handful of inverses (pizza: 3 pairs →
+    /// 6 entries) where linear scan on `u32` equality beats hashing
+    /// by an order of magnitude — `are_declared_inverses` was the
+    /// second-hottest frame in pizza flamegraphs (14 %, dominated
+    /// by `make_hash<RoleId>` / `find_inner`).
+    inverse_pairs: Vec<(RoleId, RoleId)>,
     /// NNF complement table: `body → nnf(¬body)`. Populated by the
     /// reasoner facade for every `body` appearing in a
     /// `Max(_, _, body)` expression, so `apply_choose` can branch
@@ -188,7 +192,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             pool,
             tbox: None,
             hierarchy: None,
-            inverse_pairs: HashMap::new(),
+            inverse_pairs: Vec::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -215,7 +219,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             pool,
             tbox: Some(tbox),
             hierarchy: None,
-            inverse_pairs: HashMap::new(),
+            inverse_pairs: Vec::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -247,7 +251,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             pool,
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
-            inverse_pairs: HashMap::new(),
+            inverse_pairs: Vec::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -408,8 +412,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// between `Role::Named(r)` and `Role::Inverse(s)` (or vice
     /// versa). The map is populated symmetrically.
     pub fn declare_inverse_pair(&mut self, r: RoleId, s: RoleId) -> &mut Self {
-        self.inverse_pairs.insert(r, s);
-        self.inverse_pairs.insert(s, r);
+        // Dedup so a caller that double-declares doesn't bloat the
+        // linear scan. Each direction is stored once.
+        if !self.inverse_pairs.contains(&(r, s)) {
+            self.inverse_pairs.push((r, s));
+        }
+        if !self.inverse_pairs.contains(&(s, r)) {
+            self.inverse_pairs.push((s, r));
+        }
         self
     }
 
@@ -417,7 +427,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `InverseObjectProperties` axiom.
     #[must_use]
     pub fn are_declared_inverses(&self, r: RoleId, s: RoleId) -> bool {
-        self.inverse_pairs.get(&r) == Some(&s)
+        // Fast path: most ontologies declare 0–3 inverse pairs.
+        // Linear scan on `u32` equality beats `HashMap::get` at this
+        // size and avoids the make_hash/find_inner chain that
+        // dominated apply_max in pizza flamegraphs.
+        if self.inverse_pairs.is_empty() {
+            return false;
+        }
+        self.inverse_pairs.iter().any(|&(a, b)| a == r && b == s)
     }
 
     /// Register the NNF complement of `body`. Must be called before

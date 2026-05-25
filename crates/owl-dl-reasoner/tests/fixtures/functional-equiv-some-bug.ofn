@@ -1,0 +1,16 @@
+Prefix(:=<http://example.org/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://example.org/min-bug>
+Declaration(Class(:A))
+Declaration(Class(:PT))
+Declaration(Class(:S))
+Declaration(Class(:Hot))
+Declaration(Class(:Mild))
+Declaration(ObjectProperty(:hs))
+
+SubClassOf(:A :PT)
+SubClassOf(:A ObjectSomeValuesFrom(:hs :Mild))
+FunctionalObjectProperty(:hs)
+EquivalentClasses(:S ObjectIntersectionOf(:PT ObjectSomeValuesFrom(:hs :Hot)))
+DisjointClasses(:Hot :Mild)
+)

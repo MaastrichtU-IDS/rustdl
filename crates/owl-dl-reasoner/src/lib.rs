@@ -143,6 +143,37 @@ pub fn is_class_satisfiable<A: ForIRI>(
     is_class_satisfiable_internal(internal, class_iri)
 }
 
+/// Like [`is_class_satisfiable`] but the tableau run is bounded by
+/// `deadline`. Returns `Ok(Some(sat))` if the tableau reached a
+/// verdict before the deadline elapsed, or `Ok(None)` on timeout.
+/// EL-closure / pure-EL fast paths are checked first and never
+/// time out.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_class_satisfiable_with_timeout<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+    deadline: std::time::Duration,
+) -> Result<Option<bool>, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    let class_id = internal
+        .vocabulary
+        .class_id(class_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let closure = owl_dl_saturation::saturate(&internal);
+    if closure.is_unsatisfiable(class_id) {
+        return Ok(Some(false));
+    }
+    if classify::is_pure_el(&internal) {
+        return Ok(Some(true));
+    }
+    let prepared = PreparedOntology::from_internal(internal)?;
+    let when = std::time::Instant::now() + deadline;
+    prepared.decide_with_deadline(when, move |pool| pool.atomic(class_id))
+}
+
 /// Internal entry point that takes the already-lowered ontology.
 /// Exposed for tests that want to assemble an `InternalOntology` by
 /// hand or share one across multiple satisfiability checks.
@@ -1014,6 +1045,122 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
     fn check(onto: &SetOntology<RcStr>, iri: &str) -> bool {
         is_class_satisfiable(onto, iri).expect("verdict returned")
+    }
+
+    /// Regression for the pizza false-positive-unsat bug fixed
+    /// 2026-05-25. Minimal repro extracted from pizza.ofn via ROBOT
+    /// STAR extraction + axiom-level bisection. Bug was in
+    /// [`TableauContext::merge_into`]: it copied source-node labels
+    /// without their [`DepSet`]s, so a merge-induced clash returned
+    /// empty `clash_deps`, which the back-jumping search treated as
+    /// "branch-independent unsat" and back-jumped past the licensing
+    /// disjunction (the `:S ⊔ ∀hs.¬:Hot` choice introduced by
+    /// absorbing the equivalence). HermiT says `:A` is sat; rustdl
+    /// agreed only after the fix.
+    ///
+    /// Pattern:
+    ///   :A ⊑ :PT
+    ///   :A ⊑ ∃hs.Mild
+    ///   FunctionalObjectProperty(:hs)
+    ///   :S ≡ :PT ⊓ ∃hs.Hot
+    ///   Disjoint(:Hot, :Mild)
+    ///
+    /// Each axiom is essential — dropping any one yields the
+    /// correct `sat` verdict (verified by bisection).
+    /// Regression for the second pizza false-positive-unsat bug
+    /// fixed 2026-05-25. Minimal repro of the
+    /// `VegetarianTopping ≡ PizzaTopping ⊓ (CheeseTopping ⊔ … ⊔
+    /// VegetableTopping)` shape: `:A` is `:F` is `:PT`; `:F` is
+    /// disjoint with the union members. HermiT says `:A` is sat.
+    /// Bug was in [`crate::search::branch`]: when asserting a
+    /// disjunct, it used only `[my_id]` as deps instead of the
+    /// parent `Or` label's deps ∪ `my_id`. A clash on a nested
+    /// branch then returned `clash_deps` missing the outer branch's
+    /// id, and back-jumping skipped past the licensing disjunction.
+    #[test]
+    fn pizza_equiv_pizzatopping_union_should_be_sat() {
+        let onto = parse(
+            "Prefix(:=<http://example.org/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(<http://example.org/min-veg>\n\
+Declaration(Class(:A))\n\
+Declaration(Class(:F))\n\
+Declaration(Class(:PT))\n\
+Declaration(Class(:V))\n\
+Declaration(Class(:C))\n\
+Declaration(Class(:N))\n\
+SubClassOf(:A :F)\n\
+SubClassOf(:F :PT)\n\
+SubClassOf(:C :PT)\n\
+SubClassOf(:N :PT)\n\
+DisjointClasses(:C :F :N)\n\
+EquivalentClasses(:V ObjectIntersectionOf(:PT ObjectUnionOf(:C :N)))\n\
+)\n",
+        );
+        assert!(
+            check(&onto, "http://example.org/A"),
+            "A should be satisfiable (matches HermiT) but rustdl returned unsat"
+        );
+    }
+
+    /// Regression for the named-pizza false-positive unsat fixed
+    /// 2026-05-25. With both `:DomainConcept` reverse-equiv (Country
+    /// nominals branching) and `:Pizza ⊑ ∃:hasBase.:PizzaBase`
+    /// generating a successor that also gets the same branching,
+    /// `apply_nominal_assignment` ends up merging the root and the
+    /// hasBase-successor as the same individual. The merge then
+    /// moves `:Pizza` (which was added with deps=[] from initial
+    /// concept-rule chain) to the merged node where it triggers
+    /// disjointness (Pizza ⊓ PizzaBase ⊑ ⊥), producing a clash with
+    /// empty `clash_deps`. Back-jumping skips past every branch
+    /// because `[]` doesn't contain any `my_id` — `:NamedPizza`
+    /// wrongly reported unsat.
+    ///
+    /// Fix: `merge_into_with_deps(source, target, merge_deps)` —
+    /// the merge condition's deps (union of both sides' nominal
+    /// label deps) flow into every moved label / edge, so a
+    /// post-merge clash inherits them. Both `apply_nominal_assignment`
+    /// and `apply_max` now pass the precise merge-condition deps.
+    #[test]
+    fn pizza_named_pizza_country_should_be_sat() {
+        // Use the saved 84-line STAR-extraction fixture — small
+        // enough to be in-tree, large enough to exercise the
+        // role-characteristics chain that the original synthetic
+        // 10-axiom repros couldn't reproduce.
+        let src = include_str!("../tests/fixtures/named-pizza-country-bug.ofn");
+        let onto = parse(src);
+        assert!(
+            check(
+                &onto,
+                "http://www.co-ode.org/ontologies/pizza/pizza.owl#NamedPizza"
+            ),
+            ":NamedPizza should be sat (matches HermiT) — merge-deps regression"
+        );
+    }
+
+    #[test]
+    fn pizza_functional_equiv_some_should_be_sat() {
+        let onto = parse(
+            "Prefix(:=<http://example.org/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(<http://example.org/min-bug>\n\
+Declaration(Class(:A))\n\
+Declaration(Class(:PT))\n\
+Declaration(Class(:S))\n\
+Declaration(Class(:Hot))\n\
+Declaration(Class(:Mild))\n\
+Declaration(ObjectProperty(:hs))\n\
+SubClassOf(:A :PT)\n\
+SubClassOf(:A ObjectSomeValuesFrom(:hs :Mild))\n\
+FunctionalObjectProperty(:hs)\n\
+EquivalentClasses(:S ObjectIntersectionOf(:PT ObjectSomeValuesFrom(:hs :Hot)))\n\
+DisjointClasses(:Hot :Mild)\n\
+)\n",
+        );
+        assert!(
+            check(&onto, "http://example.org/A"),
+            "A should be satisfiable (matches HermiT) but rustdl returned unsat"
+        );
     }
 
     #[test]

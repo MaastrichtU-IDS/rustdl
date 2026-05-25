@@ -257,7 +257,6 @@ pub(crate) fn classify_internal_with_timeout(
             let class_id =
                 owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
             if closure.is_unsatisfiable(class_id) {
-                // (idx, is_sat, used_saturation)
                 Ok((i, false, true))
             } else if let Some(timeout) = per_pair_timeout {
                 let deadline = Instant::now() + timeout;

@@ -101,7 +101,24 @@ pull request constitutes acceptance of this. We do not require a separate CLA.
 
 Total target: ~24-36 months to ORE-competitive performance.
 
+## Real-ontology corpus
+
+A small set of public ontologies (SIO, SULO, family, pizza, RO, GO) lives
+outside the repo and is pulled on demand:
+
+```sh
+./scripts/fetch-real-ontologies.sh
+./target/release/owl-dl-bench corpus ontologies/real --repeats 5
+```
+
+See [`docs/real-ontology-corpus.md`](docs/real-ontology-corpus.md)
+for sources, formats, the ROBOT-based conversion, and how to add
+new entries. Files land in `ontologies/real/` which is gitignored.
+
 ## References
 
-- Strategy v2: [`owl-dl-reasoner-rust-strategy-v2.md`](owl-dl-reasoner-rust-strategy-v2.md)
-- Strategy v1 (kept for diff): [`owl-dl-reasoner-rust-strategy.md`](owl-dl-reasoner-rust-strategy.md)
+- Strategy v2: [`docs/owl-dl-reasoner-rust-strategy-v2.md`](docs/owl-dl-reasoner-rust-strategy-v2.md)
+- Strategy v1 (kept for diff): [`docs/owl-dl-reasoner-rust-strategy.md`](docs/owl-dl-reasoner-rust-strategy.md)
+- Performance plan: [`docs/outperform-hermit-plan.md`](docs/outperform-hermit-plan.md)
+- Latest perf snapshot: [`docs/perf-2026-05-24-new-server.md`](docs/perf-2026-05-24-new-server.md)
+- Real-ontology corpus: [`docs/real-ontology-corpus.md`](docs/real-ontology-corpus.md)

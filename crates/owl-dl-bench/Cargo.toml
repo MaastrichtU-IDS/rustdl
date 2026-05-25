@@ -37,6 +37,16 @@ workspace = true
 git = "https://github.com/INCATools/whelk-rs"
 optional = true
 
+[dependencies.pprof]
+version = "0.14"
+features = ["flamegraph"]
+optional = true
+
 [features]
 default = []
 whelk-compare = ["dep:whelk"]
+profile = ["dep:pprof"]
+# Forward owl-dl-tableau's per-rule counters. Enable for the same
+# diagnostic builds as `profile`; activate at runtime with
+# RUSTDL_COUNTERS=1.
+counters = ["owl-dl-reasoner/counters"]

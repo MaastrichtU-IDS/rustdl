@@ -192,6 +192,19 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
                 "LabelAdded undo: label_deps shorter than labels"
             );
             n.label_deps.remove(pos);
+            // `label_sig` is the OR of `label_sig_bit` over `labels`.
+            // Removing one concept may or may not clear its bit (if no
+            // other label hashes to the same position). Recompute from
+            // scratch — O(|labels|), same order as the binary_search
+            // above, so no asymptotic cost on rollback.
+            let new_sig = crate::graph::label_sig_of(&n.labels);
+            graph.blocking_mut(node).label_sig = new_sig;
+            // Conservatively clear the residual-saturation memo:
+            // any label removal might have removed a residual. The
+            // next `apply_residual_gcis` call will re-materialize
+            // (binary-search-confirmed no-op for residuals still
+            // present, real insert for the one(s) just rolled back).
+            graph.set_residuals_saturated(node, false);
         }
         TrailEntry::EdgeAdded { from, role, target } => {
             // Pop the outgoing edge at `from`.
@@ -279,6 +292,10 @@ fn undo(entry: &TrailEntry, graph: &mut CompletionGraph) {
             let n = graph.node_mut(node);
             n.parent = prior_parent;
             n.parent_role = prior_parent_role;
+            // Mirror into the cache-dense blocking summary.
+            let b = graph.blocking_mut(node);
+            b.parent = prior_parent;
+            b.parent_role = prior_parent_role;
         }
         TrailEntry::NominalAssigned { individual, prior } => match prior {
             Some(node) => {

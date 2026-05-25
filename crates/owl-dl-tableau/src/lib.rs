@@ -41,12 +41,36 @@
 //! - Phase 4 optimisation stack (dependency-directed backtracking,
 //!   lazy unfolding integration, priority queue over rules).
 
+#[cfg(feature = "counters")]
+mod counters;
 mod deps;
 mod graph;
 mod rules;
 mod saturate;
 mod search;
 mod trail;
+
+/// Bump `ctx.counters.$field` by 1 under the `counters` feature.
+/// No-op otherwise (the macro body is removed at preprocessing time
+/// via `cfg`). Defined at the crate root so callers can write
+/// `crate::bump_counter!(ctx, apply_and)` regardless of feature state.
+#[macro_export]
+macro_rules! bump_counter {
+    ($ctx:expr, $field:ident) => {{
+        #[cfg(feature = "counters")]
+        $crate::counters::inc(&$ctx.counters.$field);
+    }};
+}
+
+/// Add `n` to `ctx.counters.$field` under the `counters` feature.
+/// No-op otherwise.
+#[macro_export]
+macro_rules! add_counter {
+    ($ctx:expr, $field:ident, $n:expr) => {{
+        #[cfg(feature = "counters")]
+        $crate::counters::add(&$ctx.counters.$field, $n);
+    }};
+}
 
 pub use graph::{CompletionGraph, DepSet, Node, NodeId};
 pub use rules::{
@@ -132,6 +156,26 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Monotonic counter handing out the next `branch_id`. Reset to
     /// zero per tableau run; lives as long as the context.
     next_branch_id: u32,
+    /// Conflict-driven learned no-goods. Each entry says: at `node`,
+    /// the disjunct `bad_disjunct` of an `Or` whose pool id is
+    /// `or_label` was tried and failed with a clash whose deps —
+    /// after subtracting the trying branch's own `my_id` — were
+    /// `preconditions`. The implication: whenever `preconditions ⊆
+    /// active_branches`, asserting `bad_disjunct` at `node` is known
+    /// unsat under the current context, so [`crate::search::branch`]
+    /// skips it without paying for the checkpoint/recurse/rollback.
+    ///
+    /// Persists across rollbacks (that's the whole point — learning
+    /// survives backtracking). Bounded by branch-failure events
+    /// during one tableau run; rate-limited indirectly by the search
+    /// depth cap. See `docs/perf-2026-05-24-new-server.md` §5.
+    learned_nogoods: Vec<(NodeId, ConceptId, ConceptId, crate::graph::DepSet)>,
+    /// Per-rule call counters, populated under `cfg(feature =
+    /// "counters")`. Dumped to stderr in `Drop` when
+    /// `RUSTDL_COUNTERS=1`. Zero cost in non-counter builds (field
+    /// is omitted from the struct).
+    #[cfg(feature = "counters")]
+    counters: crate::counters::RuleCounters,
 }
 
 impl<'pool> TableauContext<'pool, 'static, 'static> {
@@ -155,6 +199,9 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             deadline_hit: false,
             active_branches: Vec::new(),
             next_branch_id: 0,
+            learned_nogoods: Vec::new(),
+            #[cfg(feature = "counters")]
+            counters: crate::counters::RuleCounters::default(),
         }
     }
 }
@@ -179,6 +226,9 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             deadline_hit: false,
             active_branches: Vec::new(),
             next_branch_id: 0,
+            learned_nogoods: Vec::new(),
+            #[cfg(feature = "counters")]
+            counters: crate::counters::RuleCounters::default(),
         }
     }
 }
@@ -208,6 +258,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             deadline_hit: false,
             active_branches: Vec::new(),
             next_branch_id: 0,
+            learned_nogoods: Vec::new(),
+            #[cfg(feature = "counters")]
+            counters: crate::counters::RuleCounters::default(),
         }
     }
 
@@ -257,6 +310,49 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn active_branches(&self) -> &[u32] {
         &self.active_branches
+    }
+
+    /// Look up a conflict-driven no-good for `(node, or_label, disjunct)`.
+    /// Returns `Some(preconditions)` if any learned entry's
+    /// preconditions are a subset of the current `active_branches`,
+    /// meaning the disjunct is known unsat in this context and
+    /// [`crate::search::branch`] can skip it. Returns `None` if no
+    /// applicable no-good exists.
+    #[doc(hidden)]
+    pub fn nogood_blocks(
+        &self,
+        node: NodeId,
+        or_label: ConceptId,
+        disjunct: ConceptId,
+    ) -> Option<&crate::graph::DepSet> {
+        let active = self.active_branches.as_slice();
+        for (n, ol, d, precond) in &self.learned_nogoods {
+            if *n != node || *ol != or_label || *d != disjunct {
+                continue;
+            }
+            if precond.iter().all(|p| active.contains(p)) {
+                return Some(precond);
+            }
+        }
+        None
+    }
+
+    /// Record a conflict-driven no-good. Called by
+    /// [`crate::search::branch`] when a disjunct's failure carries
+    /// `clash_deps` that include the trying branch's `my_id`; the
+    /// stored `preconditions` are `clash_deps − {my_id}` (the
+    /// ancestor branch decisions that the failure additionally
+    /// depended on).
+    #[doc(hidden)]
+    pub fn record_nogood(
+        &mut self,
+        node: NodeId,
+        or_label: ConceptId,
+        disjunct: ConceptId,
+        preconditions: crate::graph::DepSet,
+    ) {
+        self.learned_nogoods
+            .push((node, or_label, disjunct, preconditions));
     }
 
     /// Read the [`crate::DepSet`] of label `c` on `node`, if present.
@@ -428,6 +524,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         &self.graph
     }
 
+    /// Mutable accessor for the completion graph. Used by the
+    /// saturator's worklist plumbing — clearing the `dirty` bit on
+    /// the node about to be processed, and marking all nodes dirty
+    /// at the start of each saturate() call.
+    pub fn graph_mut(&mut self) -> &mut CompletionGraph {
+        &mut self.graph
+    }
+
+    /// Set the residual-saturation memo on `node`. Called from
+    /// [`crate::apply_residual_gcis`] after a full materialisation
+    /// pass; lets subsequent calls short-circuit.
+    pub fn mark_residuals_saturated(&mut self, node: NodeId) {
+        self.graph.set_residuals_saturated(node, true);
+    }
+
     #[must_use]
     pub fn trail(&self) -> &TableauTrail {
         &self.trail
@@ -529,34 +640,76 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// can't see. Pair blocking restores soundness for `ALCHI`.
     #[must_use]
     pub fn is_blocked(&self, y: NodeId) -> bool {
-        let yn = self.graph.node(y);
-        let (Some(yp_id), Some(yr)) = (yn.parent(), yn.parent_role()) else {
+        crate::bump_counter!(self, is_blocked_calls);
+        let yb = self.graph.blocking(y);
+        let (Some(yp_id), Some(yr)) = (yb.parent, yb.parent_role) else {
             return false;
         };
-        let yl = yn.labels();
-        let ypn = self.graph.node(yp_id);
-        let ypl = ypn.labels();
+        let yl_sig = yb.label_sig;
+        let ypl_sig = self.graph.blocking(yp_id).label_sig;
 
-        // Iterate strict tree-ancestors of y (starting at yp_id, walking
-        // upward through `parent`). x' is a valid blocking candidate
-        // when its own creator/role match yp/yr and the two subset
-        // checks pass.
+        // Iterate strict tree-ancestors of y via the dense
+        // `blocking` summary (24 bytes/node, ≥2 entries per cache
+        // line) instead of the ~200-byte `Node`. This is the
+        // exclusive-time hot path post-B.4 on pizza-shaped inputs.
+        //
+        // Subset prefilter: a sound necessary condition for
+        // `L(y) ⊆ L(x')` is `yl_sig & !x_sig == 0` — if any bit set
+        // in `yl_sig` is missing from the candidate's signature, at
+        // least one label is missing too. Same for `L(parent(y)) ⊆
+        // L(parent(x'))`. Only candidates that pass both prefilters
+        // pay for a full `Node` load and the linear subset scan.
         let mut x_prime_id = yp_id;
-        loop {
-            let xn = self.graph.node(x_prime_id);
-            if let (Some(xp_id), Some(xr)) = (xn.parent(), xn.parent_role())
+        // Cycle detector. Strict tree-ancestors of y must be all
+        // distinct; revisiting any node means parent pointers formed
+        // a cycle. In debug, that's an invariant violation — fail
+        // loudly with the chain so the creating mutation can be
+        // identified. In release, fall back to a step-cap and return
+        // "not blocked" so callers don't hang. This is a workaround,
+        // not a fix: see TODO(blocking-cycle).
+        let max_steps = self.graph.len();
+        let mut visited: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
+        let mut chain: Vec<NodeId> = vec![x_prime_id];
+        let _ = (&mut visited, &mut chain); // referenced in debug_assert
+        for _step in 0..=max_steps {
+            let xb = self.graph.blocking(x_prime_id);
+            if let (Some(xp_id), Some(xr)) = (xb.parent, xb.parent_role)
                 && xr == yr
             {
-                let xpn = self.graph.node(xp_id);
-                if is_subset_sorted(yl, xn.labels()) && is_subset_sorted(ypl, xpn.labels()) {
-                    return true;
+                if (yl_sig & !xb.label_sig) != 0
+                    || (ypl_sig & !self.graph.blocking(xp_id).label_sig) != 0
+                {
+                    crate::bump_counter!(self, is_blocked_prefilter_rejects);
+                } else {
+                    crate::bump_counter!(self, is_blocked_subset_scans);
+                    let yn_labels = &self.graph.node(y).labels;
+                    let xn_labels = &self.graph.node(x_prime_id).labels;
+                    if is_subset_sorted(yn_labels, xn_labels) {
+                        let ypn_labels = &self.graph.node(yp_id).labels;
+                        let xpn_labels = &self.graph.node(xp_id).labels;
+                        if is_subset_sorted(ypn_labels, xpn_labels) {
+                            crate::bump_counter!(self, is_blocked_true);
+                            return true;
+                        }
+                    }
                 }
             }
-            match xn.parent() {
-                Some(next) => x_prime_id = next,
+            match xb.parent {
+                Some(next) => {
+                    debug_assert!(
+                        visited.insert(x_prime_id),
+                        "parent-pointer cycle: y={} chain={:?} revisiting={}",
+                        y.index(),
+                        chain.iter().map(|n| n.index()).collect::<Vec<_>>(),
+                        x_prime_id.index()
+                    );
+                    chain.push(next);
+                    x_prime_id = next;
+                }
                 None => return false,
             }
         }
+        false
     }
 
     /// Add concept `c` to `node`'s label list if not already present.
@@ -585,6 +738,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         c: ConceptId,
         deps: &[u32],
     ) -> bool {
+        crate::bump_counter!(self, add_label_calls);
         debug_assert!(
             is_nnf(c, self.pool),
             "TableauContext::add_label received non-NNF concept"
@@ -594,12 +748,19 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             Ok(_) => false,
             Err(pos) => {
                 n.labels.insert(pos, c);
-                let mut owned: crate::graph::DepSet = deps.to_vec();
+                let mut owned: crate::graph::DepSet = crate::graph::DepSet::from_slice(deps);
                 owned.sort_unstable();
                 owned.dedup();
                 n.label_deps.insert(pos, owned);
+                self.graph.blocking_mut(node).label_sig |= crate::graph::label_sig_bit(c);
                 self.trail
                     .record(TrailEntry::LabelAdded { node, concept: c });
+                crate::bump_counter!(self, add_label_inserted);
+                // Worklist: any rule keyed on the node's label set
+                // (and-decomposition, ∀-propagation, atomic-class
+                // triggers, existentials, cardinality, …) must
+                // re-fire after a new label appears.
+                self.graph.set_dirty(node, true);
                 true
             }
         }
@@ -638,7 +799,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         target: NodeId,
         deps: &[u32],
     ) {
-        let mut owned: crate::graph::DepSet = deps.to_vec();
+        crate::bump_counter!(self, add_edge_calls);
+        let mut owned: crate::graph::DepSet = crate::graph::DepSet::from_slice(deps);
         owned.sort_unstable();
         owned.dedup();
         let from_node = self.graph.node_mut(from);
@@ -649,6 +811,14 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         target_node.in_edge_deps.push(owned);
         self.trail
             .record(TrailEntry::EdgeAdded { from, role, target });
+        // Worklist: rules that read edges on either endpoint must
+        // re-fire (apply_forall, apply_role_*, apply_role_chains,
+        // apply_exists witness check, apply_min/max cardinality
+        // counting).
+        self.graph.set_dirty(from, true);
+        if target != from {
+            self.graph.set_dirty(target, true);
+        }
     }
 
     /// Mark `a` and `b` as denoting distinct individuals. Symmetric.
@@ -713,31 +883,87 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// distinct (signalling an inequality clash to the caller).
     /// All mutations are recorded on the trail so rollback restores
     /// the prior state.
+    /// Convenience wrapper: merge with no extra merge-condition deps.
+    /// Equivalent to `merge_into_with_deps(source, target, &[])`. Use
+    /// `merge_into_with_deps` when the merge is conditional on branch
+    /// decisions whose ids should follow the moved labels and edges.
     #[allow(clippy::missing_panics_doc)]
     pub fn merge_into(&mut self, source: NodeId, target: NodeId) -> bool {
+        self.merge_into_with_deps(source, target, &[])
+    }
+
+    /// Like [`Self::merge_into`] but every label and edge moved from
+    /// `source` to `target` has `merge_deps` unioned into its
+    /// `DepSet`. Use when the *reason* for merging — typically the
+    /// deps of the two nominal labels in `apply_nominal_assignment`,
+    /// or of the `≤n R.C` label plus matching edges in `apply_max`
+    /// — is conditional on prior branch decisions. Without these the
+    /// soundness invariant for dependency-directed back-jumping is
+    /// violated: a clash after the merge can return `clash_deps`
+    /// missing the branch ids that licensed the merge in the first
+    /// place, and the search back-jumps past them. (Pizza
+    /// `:NamedPizza` false-positive 2026-05-25.)
+    #[allow(clippy::missing_panics_doc)]
+    pub fn merge_into_with_deps(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        merge_deps: &[u32],
+    ) -> bool {
         debug_assert_ne!(source, target, "merge_into: source and target must differ");
         if self.are_distinct(source, target) {
             return false;
         }
+        // The target absorbs everything from the source — labels,
+        // edges, inequalities, child parent-pointers. All of those
+        // are downstream mutations that mark target dirty themselves;
+        // we set it here as well to ensure the post-merge node gets
+        // re-visited even if the merge happened to move no labels.
+        self.graph.set_dirty(target, true);
+        // Helper: union a label/edge's per-element DepSet with the
+        // merge-condition deps so the moved item depends on both
+        // "this label/edge was at the source" and "the source was
+        // merged into the target."
+        let with_merge = |elt_deps: &crate::graph::DepSet| -> crate::graph::DepSet {
+            crate::deps::union(elt_deps, &crate::graph::DepSet::from_slice(merge_deps))
+        };
         // Snapshot source's state before mutating. We use clones so
         // the loops don't borrow the graph mutably during iteration.
-        let source_labels: Vec<ConceptId> = self.graph.node(source).labels.to_vec();
+        // Labels are paired with their `DepSet` so the merge preserves
+        // the per-label dependency-directed-backjumping invariant —
+        // dropping deps here would make label-clash detection on the
+        // merged node return an empty `clash_deps`, which the search
+        // back-jumps *past* the licensing disjunction instead of
+        // letting the alternative disjunct fire (pizza regression
+        // 2026-05-25, see `pizza_functional_equiv_some_should_be_sat`
+        // and `docs/perf-2026-05-24-new-server.md` §5).
+        let source_labels: Vec<(ConceptId, crate::graph::DepSet)> = {
+            let n = self.graph.node(source);
+            n.labels
+                .iter()
+                .zip(n.label_deps.iter())
+                .map(|(c, d)| (*c, d.clone()))
+                .collect()
+        };
         let source_out: Vec<(RoleId, NodeId)> = self.graph.node(source).edges.to_vec();
         let source_in: Vec<(RoleId, NodeId)> = self.graph.node(source).in_edges.to_vec();
         let source_ineq: Vec<NodeId> = self.graph.node(source).inequalities.to_vec();
 
-        // 1. Replay labels on target via add_label (LabelAdded trail
-        //    entries; idempotent).
-        for c in source_labels {
-            self.add_label(target, c);
+        // 1. Replay labels on target with their deps so back-jumping
+        //    can identify which branch the merge-clash depends on.
+        //    Union with `merge_deps` — the labels are at the target
+        //    *because* the merge happened, so the merge condition's
+        //    deps belong here too.
+        for (c, deps) in source_labels {
+            let final_deps = with_merge(&deps);
+            self.add_label_with_deps(target, c, final_deps.as_slice());
         }
 
         // 2. Re-anchor outgoing edges: for each (r, x) in source.edges,
-        //    remove it and add (r, x) on target. This works even when
-        //    x == source (self-loop) — handled by the in_position
-        //    bookkeeping.
+        //    remove it and add (r, x) on target carrying the same
+        //    DepSet — dropping it here is the edge-side analogue of the
+        //    label-deps bug fixed in step 1 (pizza regression).
         for (role, x) in source_out {
-            // Find this edge's positions and remove.
             let from_pos = self
                 .graph
                 .node(source)
@@ -752,21 +978,25 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 .iter()
                 .position(|&e| e == (role, source))
                 .expect("mirror in-edge present at merge time");
+            // Capture the edge's DepSet before we remove it.
+            let prior_edge_deps = self
+                .graph
+                .node(source)
+                .edge_deps
+                .get(from_pos)
+                .cloned()
+                .unwrap_or_default();
             self.remove_edge_recorded(source, role, x, from_pos, in_pos);
-            // Add (role, x') where x' = x unless x was source (a
-            // self-loop turns into target —r→ target).
             let new_target = if x == source { target } else { x };
-            self.add_edge_inner(target, role, new_target, &[]);
+            let final_deps = with_merge(&prior_edge_deps);
+            self.add_edge_inner(target, role, new_target, final_deps.as_slice());
         }
 
-        // 3. Re-anchor incoming edges: each (r, y) in source.in_edges
-        //    means y —r→ source exists. Remove it and add y —r→ target.
+        // 3. Re-anchor incoming edges with their DepSets (same fix as
+        //    step 2 on the inverse side).
         for (role, y) in source_in {
-            // y may itself be merged; resolve so we don't operate on
-            // a redirect.
             let y_eff = self.resolve(y);
             if y_eff == source {
-                // Self-loop already handled above.
                 continue;
             }
             let from_pos = self
@@ -783,8 +1013,16 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 .iter()
                 .position(|&e| e == (role, y))
                 .expect("source in-edge present at merge time");
+            let prior_edge_deps = self
+                .graph
+                .node(y_eff)
+                .edge_deps
+                .get(from_pos)
+                .cloned()
+                .unwrap_or_default();
             self.remove_edge_recorded(y_eff, role, source, from_pos, in_pos);
-            self.add_edge_inner(y_eff, role, target, &[]);
+            let final_deps = with_merge(&prior_edge_deps);
+            self.add_edge_inner(y_eff, role, target, final_deps.as_slice());
         }
 
         // 4. Carry inequalities. mark_distinct is symmetric and
@@ -808,6 +1046,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 let prior_parent = Some(source);
                 let prior_parent_role = self.graph.node(nid).parent_role();
                 self.graph.node_mut(nid).parent = Some(target);
+                // Mirror the parent update into the cache-dense
+                // blocking summary; `is_blocked` walks ancestors via
+                // this array, and a stale entry would cause it to
+                // miss or false-find a blocker — both unsound.
+                self.graph.blocking_mut(nid).parent = Some(target);
                 self.trail.record(TrailEntry::ParentRewritten {
                     node: nid,
                     prior_parent,
@@ -853,6 +1096,13 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             prior_edge_deps,
             prior_in_edge_deps,
         });
+        // Edge removal changes the edge set on both endpoints — rules
+        // keyed on edges (apply_forall, apply_role_*, apply_exists
+        // witness, cardinality counting) need to re-fire.
+        self.graph.set_dirty(from, true);
+        if target != from {
+            self.graph.set_dirty(target, true);
+        }
     }
 
     /// Return true if `node` contains a clash:
@@ -922,6 +1172,19 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     }
 }
 
+#[cfg(feature = "counters")]
+impl Drop for TableauContext<'_, '_, '_> {
+    fn drop(&mut self) {
+        if std::env::var("RUSTDL_COUNTERS").as_deref() == Ok("1") {
+            // Label each dump with the worker thread id so a parallel
+            // classify run's interleaved blocks can be sorted out
+            // post-hoc.
+            let tid = std::thread::current().id();
+            self.counters.dump(&format!("thread={tid:?}"));
+        }
+    }
+}
+
 /// Linear-time subset check for two ascending-sorted slices.
 fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
     let mut i = 0;
@@ -985,7 +1248,7 @@ mod tests {
         let mut ctx = TableauContext::new(&pool);
         let n = ctx.new_node();
         ctx.add_label(n, a);
-        assert_eq!(ctx.label_deps_of(n, a).map(Vec::as_slice), Some(&[][..]));
+        assert_eq!(ctx.label_deps_of(n, a).map(|d| d.as_slice()), Some(&[][..]));
     }
 
     #[test]
@@ -998,7 +1261,7 @@ mod tests {
         // canonicalise.
         ctx.add_label_with_deps(n, a, &[3, 1, 1, 2]);
         assert_eq!(
-            ctx.label_deps_of(n, a).map(Vec::as_slice),
+            ctx.label_deps_of(n, a).map(|d| d.as_slice()),
             Some(&[1u32, 2, 3][..])
         );
     }
@@ -1013,7 +1276,7 @@ mod tests {
         let cp = ctx.checkpoint();
         ctx.add_label_with_deps(n, a, &[7]);
         assert_eq!(ctx.graph().node(n).labels(), &[a]);
-        assert_eq!(ctx.label_deps_of(n, a).map(Vec::as_slice), Some(&[7u32][..]));
+        assert_eq!(ctx.label_deps_of(n, a).map(|d| d.as_slice()), Some(&[7u32][..]));
         ctx.rollback_to(cp);
         assert!(ctx.graph().node(n).labels().is_empty());
         assert!(ctx.label_deps_of(n, a).is_none());
@@ -1032,8 +1295,8 @@ mod tests {
         let n = ctx.new_node();
         ctx.add_label_with_deps(n, and_ab, &[5]);
         let _ = apply_and(&mut ctx, n);
-        assert_eq!(ctx.label_deps_of(n, a).map(Vec::as_slice), Some(&[5u32][..]));
-        assert_eq!(ctx.label_deps_of(n, b).map(Vec::as_slice), Some(&[5u32][..]));
+        assert_eq!(ctx.label_deps_of(n, a).map(|d| d.as_slice()), Some(&[5u32][..]));
+        assert_eq!(ctx.label_deps_of(n, b).map(|d| d.as_slice()), Some(&[5u32][..]));
     }
 
     #[test]

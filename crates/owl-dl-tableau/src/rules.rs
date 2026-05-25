@@ -44,6 +44,7 @@ pub enum RuleOutcome {
 /// release the borrow on the graph before calling `add_label` (which
 /// also borrows `&mut`).
 pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_and);
     // Snapshot (operand, deps) pairs first to release the graph
     // borrow before any `add_label_with_deps` mutates the node. The
     // conclusion's deps inherit from the triggering `And` label.
@@ -88,6 +89,7 @@ pub fn apply_and(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// `(target, concept)` pair before touching `add_label` so the
 /// graph-read and graph-write borrows don't overlap.
 pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_forall);
     // `(target, body, deps)` triples. Conclusion deps = deps of the
     // `All`-label ∪ deps of the matching edge (outgoing or incoming).
     let pending: Vec<(NodeId, ConceptId, DepSet)> = {
@@ -136,6 +138,7 @@ pub fn apply_forall(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
 ///
 /// Returns [`RuleOutcome::NoChange`] when the context has no `TBox`.
 pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_concept_rules);
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -208,6 +211,7 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
 /// implemented here). Kept in the driver so the integration point is
 /// stable for Phase 5.
 pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_nominal_rules);
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -270,6 +274,7 @@ pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
 /// `guard` is `None` or [`ConceptExpr::Atomic(guard)`] is in
 /// `L(node)`.
 pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_role_rules);
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
@@ -370,10 +375,21 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
 /// Idempotent: subsequent passes are O(|residuals|) lookups with no
 /// graph mutation once each node already carries the residuals.
 pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_residual_gcis);
     let Some(tbox) = ctx.tbox() else {
         return RuleOutcome::NoChange;
     };
     if tbox.residual_gcis.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    // Per-node memo: once every residual GCI has been materialized
+    // on `node`, subsequent calls are deterministic no-ops. Avoids
+    // the ~10 M wasted `add_label` binary-search probes per 15 s
+    // that pizza counters showed (see
+    // `docs/perf-2026-05-24-new-server.md` Phase A.1). Cleared on
+    // any `LabelAdded` rollback for this node — conservative but
+    // trivially correct.
+    if ctx.graph().residuals_saturated(node) {
         return RuleOutcome::NoChange;
     }
     let pending: Vec<ConceptId> = tbox.residual_gcis.clone();
@@ -383,6 +399,7 @@ pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
             applied = true;
         }
     }
+    ctx.mark_residuals_saturated(node);
     if applied {
         RuleOutcome::Applied
     } else {
@@ -403,6 +420,7 @@ pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
 /// Returns [`RuleOutcome::Applied`] if any successor was created or
 /// re-used by adding a new label.
 pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_exists);
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -479,6 +497,7 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
 ///    until the count reaches `n`. All witnesses (existing ∪ fresh)
 ///    are then marked pairwise distinct.
 pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_min);
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -564,6 +583,7 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// The choose rule is in [`crate::search`]: this rule assumes the
 /// neighbours' `C`/`¬C` labelling is already decided.
 pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_max);
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -601,15 +621,25 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             continue;
         }
         // Find a mergeable pair (not already known distinct).
+        // The merge is conditional on: (a) the `≤n R.C` label being
+        // on this node (max_deps) and (b) both neighbours existing as
+        // R-witnesses carrying C (their edge deps + body-label deps).
+        // Pass that union as merge_deps so moved labels carry it.
         let mut merged = false;
         'pairs: for i in 0..c_neighbours.len() {
             for j in (i + 1)..c_neighbours.len() {
                 let a = c_neighbours[i];
                 let b = c_neighbours[j];
-                if !ctx.are_distinct(a, b) && ctx.merge_into(b, a) {
-                    applied = true;
-                    merged = true;
-                    break 'pairs;
+                if !ctx.are_distinct(a, b) {
+                    // Compute precise merge-condition deps for this pair.
+                    let merge_deps: DepSet = compute_max_merge_deps(
+                        ctx, node, role, body, a, b, &max_deps,
+                    );
+                    if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {
+                        applied = true;
+                        merged = true;
+                        break 'pairs;
+                    }
                 }
             }
         }
@@ -641,6 +671,51 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
     }
 }
 
+/// Compute the precise [`DepSet`] of branch decisions that licensed
+/// merging neighbours `a` and `b` of `node` under a `≤n R.C`
+/// constraint. The merge depends on: the cardinality label
+/// (`max_deps`), the two R-edges that put `a`/`b` in the witness set,
+/// and the body labels on each side. Each of those was added with a
+/// `DepSet`; the union is the precise reason the search now needs to
+/// collapse the two witnesses, and it must flow into every label /
+/// edge moved by [`TableauContext::merge_into_with_deps`] so a
+/// post-merge clash carries the branch ids back to back-jumping.
+fn compute_max_merge_deps(
+    ctx: &TableauContext<'_, '_, '_>,
+    node: NodeId,
+    role: Role,
+    body: ConceptId,
+    a: NodeId,
+    b: NodeId,
+    max_deps: &DepSet,
+) -> DepSet {
+    let mut deps = max_deps.clone();
+    // Edge deps for both witnesses + body-label deps on both sides.
+    let n = ctx.graph().node(node);
+    let pool_role = role;
+    for w in [a, b] {
+        // First matching edge in either direction satisfying `role`.
+        for (pos, &(er, t)) in n.edges.iter().enumerate() {
+            if t == w && ctx.edge_satisfies(Role::Named(er), pool_role) {
+                deps = union(&deps, &n.edge_deps[pos]);
+                break;
+            }
+        }
+        for (pos, &(er, src)) in n.in_edges.iter().enumerate() {
+            if src == w && ctx.edge_satisfies(Role::Inverse(er), pool_role) {
+                deps = union(&deps, &n.in_edge_deps[pos]);
+                break;
+            }
+        }
+        // Body label deps on the witness.
+        let wn = ctx.graph().node(w);
+        if let Ok(p) = wn.labels.binary_search(&body) {
+            deps = union(&deps, &wn.label_deps[p]);
+        }
+    }
+    deps
+}
+
 /// Nominal-assignment rule: when `node` is labelled `Nominal(a)`,
 /// either claim `node` as the canonical witness of individual `a`
 /// (if no prior claim exists) or merge `node` with the existing
@@ -657,23 +732,31 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
 /// corresponding nominal nodes; a forced merge between distinct
 /// nodes then returns `false` and the caller flags the clash.
 pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
-    // Collect Nominal(a) individuals from this node's labels.
-    let individuals: Vec<owl_dl_core::IndividualId> = ctx
-        .graph()
-        .node(node)
-        .labels()
-        .iter()
-        .filter_map(|&c| match ctx.pool().get(c) {
-            ConceptExpr::Nominal(i) => Some(*i),
-            _ => None,
-        })
-        .collect();
+    crate::bump_counter!(ctx, apply_nominal_assignment);
+    // Collect (individual, deps of its Nominal label) pairs. The deps
+    // matter for the merge-condition: when this nominal label collides
+    // with the same nominal on a different node, the resulting merge
+    // depends on *both* nominal labels' branch decisions. Passing
+    // those to `merge_into_with_deps` so the moved labels/edges carry
+    // them is the soundness invariant the search relies on.
+    let individuals: Vec<(owl_dl_core::IndividualId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        n.labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Nominal(i) => Some((*i, n.label_deps[pos].clone())),
+                _ => None,
+            })
+            .collect()
+    };
     if individuals.is_empty() {
         return RuleOutcome::NoChange;
     }
     let mut applied = false;
     let resolved_node = ctx.resolve(node);
-    for ind in individuals {
+    for (ind, here_nom_deps) in individuals {
         match ctx.graph().nominal_node(ind) {
             None => {
                 ctx.assign_nominal(ind, resolved_node);
@@ -682,21 +765,34 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
             Some(other) => {
                 let other_res = ctx.resolve(other);
                 if other_res != resolved_node {
-                    // Merge other_res into resolved_node. If the
-                    // merge is rejected (declared distinct), the
-                    // caller surfaces the clash via the next
-                    // iteration's clash_in check — we still need
-                    // to flag the node with ⊥.
-                    if !ctx.merge_into(other_res, resolved_node)
+                    // Find the matching nominal label's deps on the
+                    // other node. The merge-condition deps = union of
+                    // both sides' nominal-label deps.
+                    let other_nom_deps: DepSet = {
+                        let other_node = ctx.graph().node(other_res);
+                        let pool = ctx.pool();
+                        other_node
+                            .labels()
+                            .iter()
+                            .enumerate()
+                            .find_map(|(p, &c)| match pool.get(c) {
+                                ConceptExpr::Nominal(i) if *i == ind => {
+                                    Some(other_node.label_deps[p].clone())
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or_default()
+                    };
+                    let merge_deps: DepSet = union(&here_nom_deps, &other_nom_deps);
+                    // Merge other_res into resolved_node, threading
+                    // the merge-condition deps so moved labels/edges
+                    // carry them.
+                    if !ctx.merge_into_with_deps(other_res, resolved_node, merge_deps.as_slice())
                         && let Some(bot) = ctx.pool().bot_id()
                     {
-                        // Conservative deps: the merge-clash depends
-                        // on whatever branch decisions placed the two
-                        // colliding `Nominal(_)` labels. Their precise
-                        // deps would be the right tag, but
-                        // `active_branches()` is a sound over-approx
-                        // that keeps the soundness invariant.
-                        let deps: DepSet = ctx.active_branches().to_vec();
+                        // Conservative deps for the failed-merge clash:
+                        // active branches ⊇ the precise merge-cond deps.
+                        let deps: DepSet = DepSet::from_slice(ctx.active_branches());
                         ctx.add_label_with_deps(resolved_node, bot, &deps);
                     }
                     // After merging, update the nominal map so
@@ -734,6 +830,10 @@ pub fn apply_nominal_assignment(ctx: &mut TableauContext<'_, '_, '_>, node: Node
 /// witnesses any chain-derived edge by label inclusion.
 #[allow(clippy::too_many_lines)]
 pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_role_chains);
+    if ctx.check_deadline() {
+        return RuleOutcome::NoChange;
+    }
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -741,9 +841,6 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         return RuleOutcome::NoChange;
     }
     let chains: Vec<(Role, Role, Role)> = ctx.chains().to_vec();
-    // Collect the node's neighbours in *both* polarities, dragging
-    // along each edge's `DepSet` so the chain-derived edge can inherit
-    // their union.
     let outgoing: Vec<(RoleId, NodeId, DepSet)> = {
         let n = ctx.graph().node(node);
         n.edges
@@ -760,7 +857,14 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
             .map(|(pos, &(r, t))| (r, t, n.in_edge_deps[pos].clone()))
             .collect()
     };
-    let mut pending: Vec<(Role, NodeId, DepSet)> = Vec::new();
+    // Pending chain-derived edges keyed by `(sup, tail_res)`. The
+    // earlier Vec + linear `iter_mut().find()` was O(P) per tail and
+    // the outer (mid, tail) iteration is O(K²), making the
+    // structure O(K² · P) per call. HashMap brings the find to O(1)
+    // and the call to O(K² + P). Showed up at ~17 % of CPU on the
+    // pizza `:NamedPizza` flamegraph (post-reorder).
+    let mut pending: std::collections::HashMap<(Role, NodeId), DepSet> =
+        std::collections::HashMap::new();
     for (r1, r2, sup) in chains {
         // Step 1: find every `mid` reachable from `node` via the
         // first chain position, together with the edge deps.
@@ -787,6 +891,9 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
                 .collect(),
         };
         for (mid, head_deps) in mids {
+            if ctx.check_deadline() {
+                return RuleOutcome::NoChange;
+            }
             let mid_res = ctx.resolve(mid);
             // Step 2: tail walk through `mid_res` carrying that edge's
             // deps too.
@@ -820,28 +927,26 @@ pub fn apply_role_chains(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
                 }
             };
             for (tail, tail_deps) in tails {
+                crate::bump_counter!(ctx, apply_role_chains_body_iters);
+                if ctx.check_deadline() {
+                    return RuleOutcome::NoChange;
+                }
                 let tail_res = ctx.resolve(tail);
                 if chain_edge_already_present(ctx, node, sup, tail_res) {
                     continue;
                 }
                 let combined = union(&head_deps, &tail_deps);
-                // If a (sup, tail_res) is already pending, union the
-                // deps in — same chain target reachable through
-                // multiple branches contributes the union.
-                if let Some(existing) =
-                    pending.iter_mut().find(|(s, t, _)| *s == sup && *t == tail_res)
-                {
-                    existing.2 = union(&existing.2, &combined);
-                } else {
-                    pending.push((sup, tail_res, combined));
-                }
+                pending
+                    .entry((sup, tail_res))
+                    .and_modify(|d| *d = union(d, &combined))
+                    .or_insert(combined);
             }
         }
     }
     if pending.is_empty() {
         return RuleOutcome::NoChange;
     }
-    for (sup, tail, deps) in pending {
+    for ((sup, tail), deps) in pending {
         // Polarity of `sup` chooses which direction we materialise:
         // Named(r)  ⇒ outgoing r-edge from node to tail.
         // Inverse(r) ⇒ outgoing r-edge from tail to node (which
@@ -898,6 +1003,7 @@ fn chain_edge_already_present(
 /// self-restriction by label inclusion plus the (well-known)
 /// self-loop-respecting pair-blocking discipline.
 pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_self_restriction);
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -988,6 +1094,7 @@ pub fn apply_self_restriction(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId
 /// Skipped at blocked nodes — the blocking ancestor witnesses any
 /// edge configuration by structural inclusion.
 pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
+    crate::bump_counter!(ctx, apply_role_axioms);
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
@@ -1051,7 +1158,7 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         // the `outgoing` snapshot above; `active_branches()` is a
         // sound over-approximation that keeps the soundness
         // invariant.
-        let deps: DepSet = ctx.active_branches().to_vec();
+        let deps: DepSet = DepSet::from_slice(ctx.active_branches());
         if ctx.add_label_with_deps(node, bot, &deps) {
             return RuleOutcome::Applied;
         }

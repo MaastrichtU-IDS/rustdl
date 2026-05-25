@@ -30,7 +30,7 @@
 use crate::TableauContext;
 use crate::graph::{DepSet, NodeId};
 use crate::saturate::{SaturationResult, saturate};
-use owl_dl_core::{ConceptExpr, ConceptId};
+use owl_dl_core::{ConceptExpr, ConceptId, ConceptPool};
 
 /// Hard cap on the saturation fixed-point loop within each
 /// deterministic phase. Phase 2 pre-blocking has no real risk of
@@ -88,13 +88,13 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
         SaturationResult::Stable => {
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
-            if let Some((node, disjuncts)) = first_open_disjunction(ctx) {
-                return branch(ctx, max_depth, node, &disjuncts);
+            if let Some((node, _or_label, disjuncts, or_deps)) = first_open_disjunction(ctx) {
+                return branch(ctx, max_depth, node, &disjuncts, &or_deps);
             }
             // Step 2: choose rule for `≤n R.C` — pick a neighbour
             // that doesn't yet have `C` or `¬C` and branch.
             if let Some((node, c, c_neg)) = first_open_choose(ctx) {
-                return branch(ctx, max_depth, node, &[c, c_neg]);
+                return branch(ctx, max_depth, node, &[c, c_neg], &DepSet::new());
             }
             SearchVerdict::Sat
         }
@@ -106,9 +106,10 @@ fn branch(
     max_depth: usize,
     node: NodeId,
     options: &[ConceptId],
+    parent_deps: &[u32],
 ) -> SearchVerdict {
     let my_id = ctx.push_branch();
-    let mut combined: DepSet = Vec::new();
+    let mut combined: DepSet = DepSet::new();
     let mut depth_limited = false;
     let mut early_return: Option<SearchVerdict> = None;
     // Restricted semantic branching companion. When option `d_j`
@@ -120,17 +121,57 @@ fn branch(
     // to pay for themselves (see `docs/phase4-backjumping-plan.md`).
     let mut literal_complements: Vec<ConceptId> = Vec::new();
 
-    for d in options {
+    // Reorder disjuncts: try first those that don't *obviously* clash
+    // with an existing label at `node`. A disjunct is "obvious clash"
+    // when asserting it produces a contradictory `(C, ¬C)` pair with
+    // a label already present. Doing the cheap-sat branch first cuts
+    // the search tree on workloads with absorbed disjunctions where
+    // one branch is structurally satisfiable and the other generates
+    // expensive downstream work — notably the Country / nominal
+    // pattern on pizza, where the `(¬{a} ⊓ … ⊓ ¬{e})` disjunct is a
+    // direct sat while the `:Country` disjunct fans out into nominal
+    // assignment and merging.
+    let ordered = reorder_disjuncts(ctx, node, options);
+
+    for d in &ordered {
         if early_return.is_some() {
             break;
         }
+        // (CDBL lookup intentionally not wired here — see the
+        // `learned_nogoods` doc on [`crate::TableauContext`] and
+        // `docs/perf-2026-05-24-new-server.md` §5. The naive
+        // "precond ⊆ active ⇒ skip" rule is unsound on pizza —
+        // verdict went from 2 unsat to 0 unsat — because the
+        // preconditions don't fully capture *which* node labels
+        // produced the clash; in particular, two no-goods recorded
+        // in different sub-trees can fire jointly at a node that's
+        // actually sat. A correct implementation needs to key
+        // no-goods on a richer fingerprint than just `(node,
+        // or_label, disjunct, precond)` — the smallest unsat-
+        // explaining label sub-set is the principled choice but
+        // requires deps on labels-as-evidence the current trail
+        // doesn't track.)
         let cp = ctx.checkpoint();
+        // Each disjunct carries: (a) the parent disjunction's deps —
+        // without them an inner clash returns `clash_deps` missing
+        // the outer branch's id and back-jumping skips past it, and
+        // (b) this branch's `my_id` so the inner search can attribute
+        // any clash to this specific disjunct choice.
+        let combined_deps: DepSet = {
+            let mut d = DepSet::from_slice(parent_deps);
+            if d.binary_search(&my_id).is_err() {
+                let pos = d.binary_search(&my_id).unwrap_or_else(|p| p);
+                d.insert(pos, my_id);
+            }
+            d
+        };
         // Assert prior failed disjuncts' literal complements.
         for &comp in &literal_complements {
-            ctx.add_label_with_deps(node, comp, &[my_id]);
+            ctx.add_label_with_deps(node, comp, combined_deps.as_slice());
         }
-        // The labelled disjunct depends on *this* branch decision.
-        ctx.add_label_with_deps(node, *d, &[my_id]);
+        // The labelled disjunct depends on *this* branch decision and
+        // every reason the parent disjunction was at this node.
+        ctx.add_label_with_deps(node, *d, combined_deps.as_slice());
         match search(ctx, max_depth - 1) {
             SearchVerdict::Sat => {
                 // Found a model; keep state, exit early. State is
@@ -155,6 +196,10 @@ fn branch(
                             combined.insert(pos, x);
                         }
                     }
+                    // (Recording side of conflict-driven learning
+                    // is wired but the lookup is unsound, so the
+                    // recording would be free-allocated garbage. See
+                    // the corresponding comment on the lookup side.)
                     // Carry forward the failed disjunct's literal
                     // complement (if it has one registered) so the
                     // next iteration short-circuits any rebirth of
@@ -184,6 +229,83 @@ fn branch(
         // of ancestor deps in `combined`.
         SearchVerdict::Unsat(combined)
     }
+}
+
+/// Reorder the disjuncts of an open `Or` to try the *cheapest* one
+/// first — the branch most likely to satisfy with the least
+/// downstream work. The score (lower is better) classifies each
+/// disjunct by how much rule activity its assertion is expected to
+/// trigger:
+///
+/// - `0` — leaf-class: a `Not(_)` or an `And` whose conjuncts are
+///   all leaf-class. Adding them just inserts inert labels (no
+///   concept-rule trigger, no existential to expand, no merge).
+///   The pizza Country reverse-equiv disjunction has one such
+///   conjunction — `(¬{a} ⊓ ¬{b} ⊓ … ⊓ ¬{e})` — and trying it first
+///   discovers the SAT model immediately instead of exploring the
+///   `:Country → :DC ⊓ OneOf(…)` cascade of the sibling disjunct.
+/// - `1` — atomic that *doesn't* obviously clash. Triggers concept-
+///   rules but is otherwise simple. Most pizza-shaped disjunctions.
+/// - `2` — compound (`Some`/`Min`/`Max`/etc.) likely to generate
+///   nodes or fire merges. Most expensive in practice.
+/// - `3` — obvious immediate clash: the disjunct's complement is
+///   already labelled. Try last; the branch will UNSAT quickly via
+///   the trivial label-pair clash.
+///
+/// Stable secondary key on original index keeps the
+/// literal-complements optimisation downstream deterministic.
+fn reorder_disjuncts(
+    ctx: &TableauContext<'_, '_, '_>,
+    node: NodeId,
+    options: &[ConceptId],
+) -> Vec<ConceptId> {
+    let pool = ctx.pool();
+    let labels = ctx.graph().node(node).labels();
+
+    fn is_leaf_compound(pool: &ConceptPool, c: ConceptId) -> bool {
+        // A "leaf" disjunct decomposes only into `Not(_)` labels —
+        // no atomic-class triggers, no existentials, no merging.
+        // Used by the score-0 case below.
+        match pool.get(c) {
+            ConceptExpr::Not(_) => true,
+            ConceptExpr::And(args) => args.iter().all(|&a| is_leaf_compound(pool, a)),
+            _ => false,
+        }
+    }
+
+    let score = |d: ConceptId| -> u8 {
+        // 3: would clash immediately.
+        match pool.get(d) {
+            ConceptExpr::Atomic(_) | ConceptExpr::Nominal(_) => {
+                if let Some(neg) = ctx.complement_of(d)
+                    && labels.binary_search(&neg).is_ok()
+                {
+                    return 3;
+                }
+            }
+            ConceptExpr::Not(inner) => {
+                if labels.binary_search(inner).is_ok() {
+                    return 3;
+                }
+            }
+            _ => {}
+        }
+        if is_leaf_compound(pool, d) {
+            return 0;
+        }
+        match pool.get(d) {
+            ConceptExpr::Atomic(_) | ConceptExpr::Nominal(_) => 1,
+            _ => 2,
+        }
+    };
+
+    let mut indexed: Vec<(u8, usize, ConceptId)> = options
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| (score(d), i, d))
+        .collect();
+    indexed.sort_by_key(|&(s, i, _)| (s, i));
+    indexed.into_iter().map(|(_, _, d)| d).collect()
 }
 
 /// True iff `c` is a cheap literal — atomic, nominal,
@@ -241,17 +363,30 @@ fn first_open_choose(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Concep
 /// "First" is well-defined: nodes are visited in arena order, labels
 /// in sorted order. Stable choice keeps the search deterministic for
 /// reproducible tests; smarter heuristics arrive in Phase 4.
-fn first_open_disjunction(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, Vec<ConceptId>)> {
+fn first_open_disjunction(
+    ctx: &TableauContext<'_, '_, '_>,
+) -> Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> {
     let pool = ctx.pool();
     let graph = ctx.graph();
     for idx in 0..graph.len() {
-        let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
-        let labels = graph.node(node).labels();
-        for &c in labels {
+        let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        let node = graph.node(node_id);
+        let labels = node.labels();
+        for (pos, &c) in labels.iter().enumerate() {
             if let ConceptExpr::Or(args) = pool.get(c)
                 && !args.iter().any(|d| labels.binary_search(d).is_ok())
             {
-                return Some((node, args.to_vec()));
+                // Return the parent Or's label id (for conflict-
+                // driven learning keyed by `(node, or_label,
+                // disjunct)`) and its `DepSet` so the search can
+                // attach the parent's deps to each disjunct it
+                // asserts. Without the deps, a clash deep inside a
+                // chosen disjunct returns `clash_deps` missing the
+                // dependency on "this disjunction was at this node
+                // in the first place" and back-jumping skips past
+                // it — the soundness gap chased on pizza (2026-05-25).
+                let or_deps = node.label_deps[pos].clone();
+                return Some((node_id, c, args.to_vec(), or_deps));
             }
         }
     }

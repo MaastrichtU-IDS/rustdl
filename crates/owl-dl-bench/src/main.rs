@@ -17,6 +17,57 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+
+/// Wrap `body` in a pprof CPU profiler when the `profile` feature is
+/// enabled and `RUSTDL_PROFILE=path/to/flamegraph.svg` is set. Sampling
+/// is signal-based (SIGPROF), so it works without `perf_event_paranoid`
+/// changes.
+///
+/// `RUSTDL_PROFILE_SECONDS` (default 60) bounds the wall-clock budget:
+/// after that many seconds the flamegraph is written and the process
+/// exits with code 0, killing any still-running work. Useful for
+/// workloads like pizza.ofn that don't finish naturally.
+///
+/// No-op when the env var is unset or the feature is off.
+#[cfg(feature = "profile")]
+fn with_profile<F: FnOnce() -> Result<()> + Send + 'static>(body: F) -> Result<()> {
+    use anyhow::anyhow;
+    let Ok(path) = std::env::var("RUSTDL_PROFILE") else {
+        return body();
+    };
+    let secs: u64 = std::env::var("RUSTDL_PROFILE_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    let guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(199)
+        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+        .build()
+        .map_err(|e| anyhow!("pprof start: {e}"))?;
+    let handle = std::thread::spawn(body);
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    let report = guard
+        .report()
+        .build()
+        .map_err(|e| anyhow!("pprof report: {e}"))?;
+    let file = std::fs::File::create(&path)
+        .with_context(|| format!("creating flamegraph at {path}"))?;
+    report
+        .flamegraph(file)
+        .map_err(|e| anyhow!("flamegraph write: {e}"))?;
+    eprintln!("flamegraph written to {path} after {secs}s wall");
+    // If the body finished before the timer, prefer its result.
+    if handle.is_finished() {
+        return handle.join().expect("classify thread panicked");
+    }
+    // Body still running — write the report and exit cleanly.
+    std::process::exit(0);
+}
+
+#[cfg(not(feature = "profile"))]
+fn with_profile<F: FnOnce() -> Result<()> + Send + 'static>(body: F) -> Result<()> {
+    body()
+}
 use clap::{Parser, Subcommand};
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read;
@@ -37,6 +88,24 @@ enum Command {
     Classify {
         /// Path to the OWL functional-syntax ontology.
         file: PathBuf,
+    },
+    /// Single-class satisfiability probe — useful with
+    /// `--features profile` to get a flamegraph of one decide() call
+    /// without the parallel pair-loop noise.
+    Sat {
+        /// Path to the OWL functional-syntax ontology.
+        file: PathBuf,
+        /// Full IRI of the class to probe.
+        iri: String,
+        /// Optional cooperative wall-clock deadline in milliseconds.
+        /// Without it, the probe runs unbounded; with it, the tableau
+        /// returns `None` after the budget and we report
+        /// `verdict: timeout`. Letting the bench return cleanly is
+        /// also what lets the `counters` feature dump its histogram
+        /// on Drop — `timeout(1)` SIGTERM kills the process before
+        /// the Drop runs, so use this instead.
+        #[arg(long)]
+        deadline_ms: Option<u64>,
     },
     /// Generate a synthetic EL chain ontology in memory and classify
     /// it. Useful as a baseline for the saturation engine on inputs
@@ -206,10 +275,38 @@ fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
+    with_profile(|| run(cli))
+}
+
+fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Classify { file } => {
             let onto = parse_ofn(&file)?;
             run_classify(&onto)?;
+        }
+        Command::Sat { file, iri, deadline_ms } => {
+            let onto = parse_ofn(&file)?;
+            let start = Instant::now();
+            let verdict = match deadline_ms {
+                None => Some(
+                    owl_dl_reasoner::is_class_satisfiable(&onto, &iri)
+                        .context("rustdl sat probe")?,
+                ),
+                Some(ms) => owl_dl_reasoner::is_class_satisfiable_with_timeout(
+                    &onto,
+                    &iri,
+                    std::time::Duration::from_millis(ms),
+                )
+                .context("rustdl sat probe")?,
+            };
+            let elapsed = start.elapsed();
+            println!("class: {iri}");
+            match verdict {
+                Some(true) => println!("verdict: sat"),
+                Some(false) => println!("verdict: unsat"),
+                None => println!("verdict: timeout"),
+            }
+            println!("wall: {:.3} ms", elapsed.as_secs_f64() * 1000.0);
         }
         Command::SyntheticEl {
             classes,
@@ -234,6 +331,8 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
+
+
 
 #[cfg(feature = "whelk-compare")]
 fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {

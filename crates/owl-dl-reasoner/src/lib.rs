@@ -1121,6 +1121,47 @@ EquivalentClasses(:V ObjectIntersectionOf(:PT ObjectUnionOf(:C :N)))\n\
     /// label deps) flow into every moved label / edge, so a
     /// post-merge clash inherits them. Both `apply_nominal_assignment`
     /// and `apply_max` now pass the precise merge-condition deps.
+    /// Regression for the `apply_min` over-assert bug fixed
+    /// 2026-05-25 (the SIO bug). When `Min(n, R, body)` fires after
+    /// subclass propagation has put `body` on additional existing
+    /// R-witnesses, the rule was pairwise-marking *all* witnesses
+    /// distinct — not just the `n` it commits to. The resulting
+    /// over-constraint blocked any `Max(k, R, body)` merge with
+    /// `k < witnesses.len()`, producing false-positive unsats on
+    /// the 22-class cluster around `:SIO_000450` ("axis").
+    ///
+    /// Minimal repro (HermiT: sat):
+    ///   :A ⊑ :B; :B ⊑ :C
+    ///   :X508 ⊑ :X532
+    ///   :C ⊑ =2 :r.:X532   (Min(2) + Max(2))
+    ///   :B ⊑ =1 :r.:X508   (Min(1) + Max(1))
+    /// A satisfying model has two :r-successors: one of type
+    /// {:X508, :X532}, one of type {:X532} only.
+    #[test]
+    fn sio_apply_min_over_assert_should_be_sat() {
+        let onto = parse(
+            "Prefix(:=<http://example.org/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(<http://example.org/min-card>\n\
+Declaration(Class(:A))\n\
+Declaration(Class(:B))\n\
+Declaration(Class(:C))\n\
+Declaration(Class(:X508))\n\
+Declaration(Class(:X532))\n\
+Declaration(ObjectProperty(:r))\n\
+SubClassOf(:A :B)\n\
+SubClassOf(:B :C)\n\
+SubClassOf(:X508 :X532)\n\
+SubClassOf(:C ObjectExactCardinality(2 :r :X532))\n\
+SubClassOf(:B ObjectExactCardinality(1 :r :X508))\n\
+)\n",
+        );
+        assert!(
+            check(&onto, "http://example.org/A"),
+            ":A should be sat (matches HermiT); apply_min was over-asserting distinctness"
+        );
+    }
+
     #[test]
     fn pizza_named_pizza_country_should_be_sat() {
         // Use the saved 84-line STAR-extraction fixture — small

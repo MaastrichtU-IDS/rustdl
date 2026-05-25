@@ -239,16 +239,17 @@ fn sio_top_down_finishes() {
     );
 }
 
-/// SIO classify currently reports false-positive unsats. This test
-/// caps the count at the *current* baseline (22). A future
-/// soundness fix should let the count drop (and the test continue
-/// passing, since `<=` allows zero); a regression that introduces
-/// *new* false-positives in the same area will surface here. The
-/// test will move to a strict `== 0` assertion when the underlying
-/// rule-interaction bug lands.
+/// SIO classify reports exactly the HermiT-correct unsat set — zero
+/// unsatisfiable classes. Used to be 22 false-positives traced to
+/// `apply_min` over-asserting pairwise distinctness on every
+/// firing (including witnesses brought in by subclass propagation
+/// e.g. `:X508 ⊑ :X532` adding `:X532` to a node that was already
+/// a `Min(2, :r, :X532)` witness). The fix limits pairwise marking
+/// to the first `n` witnesses — see `apply_min` in
+/// `crates/owl-dl-tableau/src/rules.rs`.
 #[test]
 #[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
-fn sio_unsat_count_within_known_baseline() {
+fn sio_matches_hermit_exactly() {
     let path = Path::new("../../ontologies/real/sio-stripped.ofn");
     if !path.exists() {
         eprintln!("skip: {} not present", path.display());
@@ -256,39 +257,30 @@ fn sio_unsat_count_within_known_baseline() {
     }
     let onto = load(path);
     let unsat = unsat_set_top_down(&onto, 200);
-    // HermiT says zero; the current rustdl baseline is 22 false-
-    // positives. Anything higher means the cluster has grown — a
-    // regression of the same bug class, or a new one.
-    const RUSTDL_BASELINE_FALSE_UNSATS: usize = 22;
     assert!(
-        unsat.len() <= RUSTDL_BASELINE_FALSE_UNSATS,
-        "SIO unsat count {} exceeds known baseline {}; new false-positives: {:?}",
+        unsat.is_empty(),
+        "SIO unsat count {} (HermiT says 0); false-positives: {:?}",
         unsat.len(),
-        RUSTDL_BASELINE_FALSE_UNSATS,
         unsat,
     );
 }
 
-/// `:SIO_000450` ("axis") is the lexicographically-first class in
-/// the false-unsat cluster — easiest entry point for someone
-/// minimal-reproducing the bug. HermiT reports it sat. rustdl
-/// currently reports it unsat. This test will green when the
-/// `ObjectExactCardinality + inverse-role existential` bug lands;
-/// `#[should_panic]` captures the current state so accidental
-/// fixes (or regressions in the opposite direction) surface.
+/// `:SIO_000450` ("axis") is the lexicographically-first member of
+/// the now-fixed false-unsat cluster (450–463, 521–524, 902–903,
+/// 1173, 1178). HermiT classifies it sat; rustdl does too post-fix.
 #[test]
-#[should_panic(expected = "SIO_000450 should be sat")]
 #[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
-fn sio_axis_should_be_sat() {
+fn sio_axis_is_sat() {
     let path = Path::new("../../ontologies/real/sio-stripped.ofn");
     if !path.exists() {
-        panic!("SIO_000450 should be sat (corpus missing — skipped vacuously)");
+        eprintln!("skip: {} not present", path.display());
+        return;
     }
     let onto = load(path);
     let unsat = unsat_set_top_down(&onto, 200);
     let axis = "http://semanticscience.org/resource/SIO_000450";
     assert!(
         !unsat.contains(axis),
-        "SIO_000450 should be sat (HermiT confirms); rustdl flagged it unsat",
+        "SIO_000450 should be sat (matches HermiT); regression of the apply_min over-assert bug",
     );
 }

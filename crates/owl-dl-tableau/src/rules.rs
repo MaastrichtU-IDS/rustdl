@@ -549,10 +549,20 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             all_witnesses.push(fresh);
             applied = true;
         }
-        // Pairwise-mark all witnesses distinct. mark_distinct is
-        // idempotent and a no-op when a == b, so this is safe.
-        for i in 0..all_witnesses.len() {
-            for j in (i + 1)..all_witnesses.len() {
+        // Pairwise-mark *up to* n witnesses distinct — only the n
+        // we commit to as the Min(n) constraint's satisfying set,
+        // not every R-witness with body that happens to be at the
+        // node. Over-asserting distinctness when existing R-witnesses
+        // already exceed n (e.g. a concept-rule chain like
+        // `:X508 ⊑ :X532` added :X532 to a node that's now showing
+        // up as an extra :X532-witness for `Min(2, :r, :X532)`)
+        // poisons downstream `Max(k, :r, :X532)` merges by marking
+        // pairs distinct that the search needs to be free to merge.
+        // SIO_000450 et al. tripped exactly this. See
+        // `docs/perf-2026-05-24-new-server.md` §5.
+        let commit_count = (n as usize).min(all_witnesses.len());
+        for i in 0..commit_count {
+            for j in (i + 1)..commit_count {
                 if !ctx.are_distinct(all_witnesses[i], all_witnesses[j]) {
                     ctx.mark_distinct(all_witnesses[i], all_witnesses[j]);
                     applied = true;

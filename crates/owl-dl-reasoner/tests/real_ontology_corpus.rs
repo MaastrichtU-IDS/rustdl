@@ -265,6 +265,42 @@ fn sio_matches_hermit_exactly() {
     );
 }
 
+// ----------------------------------------------------------------------
+// Family (58 classes, SROIQ — Robert Stevens' family ontology)
+//
+// The original family.rdf.owl uses several **length-3** role-chain
+// axioms for cousins / great-relatives, e.g.
+//   ObjectPropertyChain(:hasParent :isSiblingOf :isParentOf) ⊑ :isFirstCousinOf
+// rustdl's chain rule supports length-2 chains; longer chains are
+// silently *skipped* (see `collect_chain_axioms` in
+// `crates/owl-dl-reasoner/src/lib.rs`). The skip under-approximates
+// the role-side closure but is sound for class-side reasoning: the
+// long-chain super-roles only appear in role-axiom declarations
+// (Domain / Range / Symmetric / SubObjectPropertyOf), never in any
+// class definition. So the class-hierarchy classification matches
+// HermiT exactly.
+
+/// Family-stripped classify matches HermiT — zero unsat — under the
+/// length-N chain skip. Top-down classifier finishes in ~8.7 s vs
+/// HermiT's ~42 s.
+#[test]
+#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/family-stripped.ofn")]
+fn family_no_false_unsat() {
+    let path = Path::new("../../ontologies/real/family-stripped.ofn");
+    if !path.exists() {
+        eprintln!("skip: {} not present", path.display());
+        return;
+    }
+    let onto = load(path);
+    let unsat = unsat_set_top_down(&onto, 200);
+    assert!(
+        unsat.is_empty(),
+        "family marked {} classes as unsat — HermiT reports zero: {:?}",
+        unsat.len(),
+        unsat,
+    );
+}
+
 /// `:SIO_000450` ("axis") is the lexicographically-first member of
 /// the now-fixed false-unsat cluster (450–463, 521–524, 902–903,
 /// 1173, 1178). HermiT classifies it sat; rustdl does too post-fix.

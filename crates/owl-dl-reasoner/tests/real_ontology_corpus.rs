@@ -19,7 +19,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{classify, classify_with_timeout};
+use owl_dl_reasoner::{classify, classify_top_down_with_timeout, classify_with_timeout};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Cursor;
@@ -48,6 +48,16 @@ fn unsat_set(onto: &SetOntology<RcStr>) -> BTreeSet<String> {
 fn unsat_set_timed(onto: &SetOntology<RcStr>, per_pair_ms: u64) -> BTreeSet<String> {
     let c = classify_with_timeout(onto, Duration::from_millis(per_pair_ms))
         .expect("classify_with_timeout returns Ok");
+    c.unsatisfiable_classes().iter().map(|s| s.to_string()).collect()
+}
+
+/// Top-down classifier with per-pair deadline. The default O(n²)
+/// pair-loop classifier doesn't finish on workloads with thousands
+/// of classes (SIO has 1585); the top-down path walks the partial
+/// hierarchy in O(n · depth · branching) tableau calls.
+fn unsat_set_top_down(onto: &SetOntology<RcStr>, per_pair_ms: u64) -> BTreeSet<String> {
+    let c = classify_top_down_with_timeout(onto, Duration::from_millis(per_pair_ms))
+        .expect("classify_top_down_with_timeout returns Ok");
     c.unsatisfiable_classes().iter().map(|s| s.to_string()).collect()
 }
 
@@ -181,5 +191,104 @@ fn functional_equiv_some_fixture_is_sat() {
     assert!(
         !unsat.contains("http://example.org/A"),
         "fixture flagged :A unsat — merge-into deps regression. unsat set: {unsat:?}",
+    );
+}
+
+// ----------------------------------------------------------------------
+// SIO (1585 classes, SROIQ — semanticscience integrated ontology)
+//
+// HermiT (via ROBOT v1.9.6 docker) classifies SIO in ~200 s wall and
+// reports **zero unsatisfiable classes** — `sio-stripped.ofn` is
+// fully satisfiable. rustdl's default pair-loop classifier doesn't
+// finish (N² = ~2.5 M pair tests at 200 ms each), but the top-down
+// classifier walks the partial hierarchy and currently finishes in
+// ~272 s with **22 false-positive unsats** clustered tightly:
+//   SIO_000450..000463, SIO_000521..000524, SIO_000902..000903,
+//   SIO_001173, SIO_001178.
+// These cluster around the
+// "two `ObjectExactCardinality(1, R, X)` constraints + an inverse-
+// role existential" shape on `directed line segment` ⊏ `geometric
+// entity`. It's a different SROIQ-rule-interaction bug class than
+// the 2026-05-25 pizza fixes addressed (apply_min / apply_max
+// cardinality merging through inverse roles). See
+// `docs/perf-2026-05-24-new-server.md` for the bisection notes.
+
+/// SIO classify under `--top-down` finishes. No soundness claim
+/// here — just that the run terminates within a generous wall
+/// budget. This was a *new* property as of the
+/// 2026-05-25 cycle-guard + branching-reorder work; before, the
+/// N² pair-loop classifier ran out of patience on 1585 classes.
+#[test]
+#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
+fn sio_top_down_finishes() {
+    let path = Path::new("../../ontologies/real/sio-stripped.ofn");
+    if !path.exists() {
+        eprintln!("skip: {} not present", path.display());
+        return;
+    }
+    let onto = load(path);
+    let start = std::time::Instant::now();
+    let _ = unsat_set_top_down(&onto, 200);
+    let wall = start.elapsed();
+    // Generous: HermiT does it in ~200 s; rustdl in ~272 s. The cap
+    // exists only to flag a *regression to a hang*, not to track
+    // perf at second-level granularity (variance is high).
+    assert!(
+        wall < Duration::from_secs(20 * 60),
+        "SIO top-down classify took {wall:?} — perf regression vs ~272 s baseline",
+    );
+}
+
+/// SIO classify currently reports false-positive unsats. This test
+/// caps the count at the *current* baseline (22). A future
+/// soundness fix should let the count drop (and the test continue
+/// passing, since `<=` allows zero); a regression that introduces
+/// *new* false-positives in the same area will surface here. The
+/// test will move to a strict `== 0` assertion when the underlying
+/// rule-interaction bug lands.
+#[test]
+#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
+fn sio_unsat_count_within_known_baseline() {
+    let path = Path::new("../../ontologies/real/sio-stripped.ofn");
+    if !path.exists() {
+        eprintln!("skip: {} not present", path.display());
+        return;
+    }
+    let onto = load(path);
+    let unsat = unsat_set_top_down(&onto, 200);
+    // HermiT says zero; the current rustdl baseline is 22 false-
+    // positives. Anything higher means the cluster has grown — a
+    // regression of the same bug class, or a new one.
+    const RUSTDL_BASELINE_FALSE_UNSATS: usize = 22;
+    assert!(
+        unsat.len() <= RUSTDL_BASELINE_FALSE_UNSATS,
+        "SIO unsat count {} exceeds known baseline {}; new false-positives: {:?}",
+        unsat.len(),
+        RUSTDL_BASELINE_FALSE_UNSATS,
+        unsat,
+    );
+}
+
+/// `:SIO_000450` ("axis") is the lexicographically-first class in
+/// the false-unsat cluster — easiest entry point for someone
+/// minimal-reproducing the bug. HermiT reports it sat. rustdl
+/// currently reports it unsat. This test will green when the
+/// `ObjectExactCardinality + inverse-role existential` bug lands;
+/// `#[should_panic]` captures the current state so accidental
+/// fixes (or regressions in the opposite direction) surface.
+#[test]
+#[should_panic(expected = "SIO_000450 should be sat")]
+#[cfg_attr(not(feature = "real-corpus"), ignore = "needs ontologies/real/sio-stripped.ofn")]
+fn sio_axis_should_be_sat() {
+    let path = Path::new("../../ontologies/real/sio-stripped.ofn");
+    if !path.exists() {
+        panic!("SIO_000450 should be sat (corpus missing — skipped vacuously)");
+    }
+    let onto = load(path);
+    let unsat = unsat_set_top_down(&onto, 200);
+    let axis = "http://semanticscience.org/resource/SIO_000450";
+    assert!(
+        !unsat.contains(axis),
+        "SIO_000450 should be sat (HermiT confirms); rustdl flagged it unsat",
     );
 }

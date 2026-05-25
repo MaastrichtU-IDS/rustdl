@@ -24,5 +24,19 @@ tracing.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 
+[features]
+default = []
+# Forward owl-dl-tableau's per-rule counters; see that crate's
+# `counters` feature docs.
+counters = ["owl-dl-tableau/counters"]
+# Enable real-ontology corpus integration tests (`tests/real_ontology_corpus.rs`).
+# Off by default because pizza.ofn / sulo-stripped.ofn / sio-stripped.ofn live
+# in `ontologies/real/` and are gitignored (fetched by
+# `scripts/fetch-real-ontologies.sh`); on machines without the corpus those
+# tests would skip silently anyway, but the feature gate keeps default
+# `cargo test` fast and self-contained. Enable with
+# `cargo test --features real-corpus`.
+real-corpus = []
+
 [lints]
 workspace = true

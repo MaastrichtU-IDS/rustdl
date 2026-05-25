@@ -109,7 +109,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
     /// axiom in the source ontology. Stored symmetrically (both
     /// `(r, s)` and `(s, r)` are pushed) so `are_declared_inverses`
-    /// is a single linear scan. Vec rather than HashMap because real
+    /// is a single linear scan. `Vec` rather than `HashMap` because real
     /// ontologies declare ≤ a handful of inverses (pizza: 3 pairs →
     /// 6 entries) where linear scan on `u32` equality beats hashing
     /// by an order of magnitude — `are_declared_inverses` was the

@@ -190,7 +190,9 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
         let mut out = Vec::new();
         for (trigger, deps) in &triggers {
             for rule in &tbox.concept_rules {
-                if rule.trigger == *trigger && label_snapshot.binary_search(&rule.conclusion).is_err() {
+                if rule.trigger == *trigger
+                    && label_snapshot.binary_search(&rule.conclusion).is_err()
+                {
                     out.push((rule.conclusion, deps.clone()));
                 }
             }

@@ -247,8 +247,9 @@ fn main() -> Result<()> {
             let onto = parse_ofn(&file)?;
             let timeout = pair_timeout_ms.map(std::time::Duration::from_millis);
             let h = match (n2_classify, timeout) {
-                (true, Some(t)) => classify_n2_with_timeout(&onto, t)
-                    .context("classify_n2_with_timeout")?,
+                (true, Some(t)) => {
+                    classify_n2_with_timeout(&onto, t).context("classify_n2_with_timeout")?
+                }
                 (true, None) => classify_n2(&onto).context("classify_n2")?,
                 (false, Some(t)) => {
                     classify_with_timeout(&onto, t).context("classify_with_timeout")?

@@ -347,6 +347,37 @@ pub fn is_subclass_of_with_stats<A: ForIRI>(
     is_subclass_of_internal_full(internal, sub_iri, super_iri)
 }
 
+/// Saturation-only counterpart of [`is_subclass_of`]. Skips the
+/// `sub ⊓ ¬sup` tableau probe and answers purely from the EL
+/// closure: `true` iff the closure contains the subsumption or
+/// proves `sub` unsatisfiable. Sound under-approximation: positive
+/// answers are genuine, negatives may be missed positives the full
+/// classifier would catch.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_subclass_of_saturation_only<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    sub_iri: &str,
+    super_iri: &str,
+) -> Result<bool, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    let sub_id = internal
+        .vocabulary
+        .class_id(sub_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(sub_iri.to_owned()))?;
+    let super_id = internal
+        .vocabulary
+        .class_id(super_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(super_iri.to_owned()))?;
+    if sub_id == super_id {
+        return Ok(true);
+    }
+    let closure = owl_dl_saturation::saturate(&internal);
+    Ok(closure.contains(sub_id, super_id) || closure.is_unsatisfiable(sub_id))
+}
+
 fn is_subclass_of_internal_full(
     internal: InternalOntology,
     sub_iri: &str,

@@ -24,7 +24,8 @@ use owl_dl_reasoner::{
     Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
     classify_saturation_only, classify_with_timeout, instances_of, instances_of_saturation_only,
     is_class_satisfiable, is_consistent, is_instance_of, is_instance_of_saturation_only,
-    is_subclass_of, is_subclass_of_with_stats, realize, realize_saturation_only,
+    is_subclass_of, is_subclass_of_saturation_only, is_subclass_of_with_stats, realize,
+    realize_saturation_only,
 };
 
 #[derive(Parser, Debug)]
@@ -60,6 +61,12 @@ enum Command {
         sub: String,
         /// Full IRI of the super-class.
         sup: String,
+        /// Skip the `sub ⊓ ¬sup` tableau probe and answer only from
+        /// the EL closure. Sound under-approximation: a `yes` is
+        /// genuine; `no` may be a missed positive that the full
+        /// classifier would detect.
+        #[arg(long)]
+        saturation_only: bool,
     },
     /// Compute the full class hierarchy of the ontology.
     Classify {
@@ -266,9 +273,19 @@ fn main() -> Result<()> {
                 is_class_satisfiable(&onto, &class_iri).context("is_class_satisfiable")?;
             println!("{}", if verdict { "sat" } else { "unsat" });
         }
-        Command::Subclass { file, sub, sup } => {
+        Command::Subclass {
+            file,
+            sub,
+            sup,
+            saturation_only,
+        } => {
             let onto = parse_ofn(&file)?;
-            let verdict = is_subclass_of(&onto, &sub, &sup).context("is_subclass_of")?;
+            let verdict = if saturation_only {
+                is_subclass_of_saturation_only(&onto, &sub, &sup)
+                    .context("is_subclass_of_saturation_only")?
+            } else {
+                is_subclass_of(&onto, &sub, &sup).context("is_subclass_of")?
+            };
             println!("{}", if verdict { "yes" } else { "no" });
         }
         Command::Classify {

@@ -23,7 +23,9 @@ use owl_dl_core::convert::convert_ontology;
 use owl_dl_core::{Axiom, ClassId, ConceptExpr, IndividualId, InternalOntology};
 use owl_dl_saturation::{Subsumers, saturate};
 
-use crate::{PreparedOntology, ReasonError, classify_internal};
+use crate::PreparedOntology;
+use crate::ReasonError;
+use crate::classify::classify_top_down_internal;
 
 /// `(entailed_types, hasse_leaves)` for one individual — returned
 /// by the parallel realisation worker so the outer loop can stitch
@@ -290,7 +292,12 @@ pub fn realize<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Realization, Reas
 ///
 /// See [`ReasonError`].
 pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, ReasonError> {
-    let hierarchy = classify_internal(internal)?;
+    // Use the top-down classifier — the same default as the public
+    // `classify` entry. The N² pair-sweep that this previously
+    // called (`classify_internal`) DNFs on real ontologies and
+    // forced any realize call on SIO-scale inputs to time out
+    // before per-individual probing ever started.
+    let hierarchy = classify_top_down_internal(internal, None)?;
     let class_iris: Vec<String> = (0..internal.vocabulary.num_classes())
         .map(|i| {
             internal

@@ -121,6 +121,31 @@ Diagnostic env knobs:
   for understanding what the tableau is doing on a single probe.
   Off-path is one atomic load; safe to ship enabled.
 
+## Benchmarking
+
+[`scripts/bench-rustdl-modes.sh`](scripts/bench-rustdl-modes.sh)
+runs the real-ontology corpus across all three `classify` modes
+(default, `--pair-timeout-ms`, `--saturation-only`) and produces
+a comparison table + TSV under `bench-results/`. Env vars:
+
+```sh
+REPS=5 PAIR_TIMEOUT_MS=200 WALL_CAP_S=600 \
+  scripts/bench-rustdl-modes.sh
+```
+
+`docs/perf-2026-05-24-new-server.md` §8 has the head-to-head
+against HermiT / Pellet / Konclude using the ROBOT-docker
+harness.
+
+## Architecture roadmap
+
+[`docs/architecture-roadmap.md`](docs/architecture-roadmap.md)
+consolidates the multi-week levers needed to close the default-
+mode gap to HermiT on SROIQ-heavy inputs (lazy unfolding, deep
+model caching, real ⊥-locality module extraction, etc.) and
+records the architectural attempts that have already been
+measured to dead-end.
+
 ## Licensing
 
 This project is dual-licensed under [Apache-2.0](LICENSE-APACHE) **OR**

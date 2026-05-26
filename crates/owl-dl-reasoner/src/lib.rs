@@ -56,6 +56,50 @@ pub use realize::{
     realize_internal, realize_saturation_only, realize_saturation_only_internal,
 };
 
+/// Compute a sparse summary of the signature-locality partition
+/// (see [`docs/module-extraction-plan.md`]). Counts and the
+/// largest-component-size are the diagnostics most useful for
+/// deciding whether the partition will actually skip pair-queries
+/// — if one component dominates, the filter has nothing to do.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalityStats {
+    pub num_classes: usize,
+    pub num_components: usize,
+    pub largest_component: usize,
+    pub singleton_components: usize,
+}
+
+/// Build the locality partition for `ontology` and summarise it.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn locality_stats<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<LocalityStats, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let n_classes = internal.vocabulary.num_classes();
+    let partition = owl_dl_core::locality::LocalityPartition::build(
+        &internal.axioms,
+        &internal.concepts,
+        n_classes,
+    );
+    let mut sizes: HashMap<u32, usize> = HashMap::new();
+    for i in 0..n_classes {
+        let cid = owl_dl_core::ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+        *sizes.entry(partition.component(cid)).or_insert(0) += 1;
+    }
+    let num_components = partition.num_components();
+    let largest_component = sizes.values().copied().max().unwrap_or(0);
+    let singleton_components = sizes.values().filter(|&&s| s == 1).count();
+    Ok(LocalityStats {
+        num_classes: n_classes,
+        num_components,
+        largest_component,
+        singleton_components,
+    })
+}
+
 use std::collections::HashMap;
 
 use horned_owl::model::ForIRI;

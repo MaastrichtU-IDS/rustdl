@@ -12,6 +12,7 @@ pub mod convert;
 pub mod convert_back;
 pub mod definitions;
 pub mod ir;
+pub mod locality;
 pub mod normalize;
 pub mod ontology;
 pub mod role_hierarchy;

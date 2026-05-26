@@ -156,6 +156,15 @@ enum Command {
         /// Full IRI of the super-class.
         sup: String,
     },
+    /// Print signature-locality statistics: number of classes,
+    /// number of connected components in the co-occurrence graph,
+    /// and the size of the largest component. Diagnostic for the
+    /// module-extraction pre-filter (see
+    /// `docs/module-extraction-plan.md`).
+    LocalityStats {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -376,6 +385,23 @@ fn main() -> Result<()> {
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },
             );
+        }
+        Command::LocalityStats { file } => {
+            let onto = parse_ofn(&file)?;
+            let stats = owl_dl_reasoner::locality_stats(&onto).context("locality_stats")?;
+            println!("# classes:    {}", stats.num_classes);
+            println!("# components: {}", stats.num_components);
+            println!("# largest:    {}", stats.largest_component);
+            println!("# singletons: {}", stats.singleton_components);
+            // Class counts fit comfortably in f64 mantissa (52 bits)
+            // for any realistic ontology; the cast is fine here.
+            #[allow(clippy::cast_precision_loss)]
+            let dominance = if stats.num_classes == 0 {
+                0.0
+            } else {
+                stats.largest_component as f64 / stats.num_classes as f64
+            };
+            println!("# dominance:  {:.1}%", dominance * 100.0);
         }
     }
     Ok(())

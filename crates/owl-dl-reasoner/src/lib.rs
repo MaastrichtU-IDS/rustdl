@@ -45,8 +45,8 @@ mod realize;
 
 pub use classify::{
     Classification, ClassificationStats, classify, classify_internal, classify_n2,
-    classify_n2_with_timeout, classify_top_down, classify_top_down_with_timeout,
-    classify_with_timeout,
+    classify_n2_with_timeout, classify_saturation_only, classify_top_down,
+    classify_top_down_with_timeout, classify_with_timeout,
 };
 pub use realize::{
     Realization, instances_of, instances_of_internal, is_instance_of, is_instance_of_internal,

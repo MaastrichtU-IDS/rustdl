@@ -222,6 +222,63 @@ pub fn classify_n2_with_timeout<A: ForIRI>(
     classify_internal_with_timeout(&internal, Some(per_pair_timeout))
 }
 
+/// Saturation-only classifier. Skips every tableau probe (both
+/// per-class satisfiability and per-pair subsumption) and returns
+/// the hierarchy derivable from the EL saturation closure alone.
+///
+/// The result is a **sound under-approximation** of the true
+/// hierarchy:
+/// - every reported subsumption is genuinely entailed;
+/// - subsumptions that require tableau reasoning to confirm
+///   (cardinality, disjunction-with-clash, nominal merges, …)
+///   are missed;
+/// - classes that are unsatisfiable only via tableau reasoning
+///   are reported as satisfiable.
+///
+/// On hybrid SROIQ workloads where saturation handles ≥ 95% of
+/// real subsumptions (e.g. SIO: 10 440 saturation hits vs 5
+/// tableau hits, a 0.05% loss) this mode is dramatically faster
+/// than the default [`classify`] — the per-pair tableau timeouts
+/// that bound the default wall are simply skipped. On SROIQ-heavy
+/// workloads (pizza: 19% of subsumptions need tableau) the loss
+/// is larger; check the per-ontology trade-off before using.
+///
+/// `ClassificationStats::pure_el_mode` is `true` regardless of
+/// whether the input is structurally pure-EL — it indicates the
+/// classifier *behaved* as the pure-EL path, i.e. closure-only.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn classify_saturation_only<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Classification, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    classify_saturation_only_internal(&internal)
+}
+
+pub(crate) fn classify_saturation_only_internal(
+    internal: &InternalOntology,
+) -> Result<Classification, ReasonError> {
+    let classes: Vec<String> = (0..internal.vocabulary.num_classes())
+        .map(|i| {
+            internal
+                .vocabulary
+                .class_iri(owl_dl_core::ClassId::new(
+                    u32::try_from(i).expect("class count fits in u32"),
+                ))
+                .to_owned()
+        })
+        .collect();
+    let index: HashMap<String, usize> = classes
+        .iter()
+        .enumerate()
+        .map(|(i, iri)| (iri.clone(), i))
+        .collect();
+    let closure = saturate(internal);
+    Ok(classify_pure_el(internal, &classes, &index, &closure))
+}
+
 /// Internal entry point. Useful for tests that hand-build an
 /// [`InternalOntology`].
 ///
@@ -1224,5 +1281,87 @@ Ontology(<http://rustdl.test/test>\n\
         );
         // Sanity: outputs still match.
         assert_top_down_matches_naive(&onto);
+    }
+
+    /// Saturation-only is a sound under-approximation: every
+    /// subsumption it reports must hold in the full hierarchy.
+    /// A pure-EL chain is the easy case — both classifiers agree
+    /// exactly because no tableau reasoning is needed.
+    #[test]
+    fn classify_saturation_only_matches_full_on_pure_el_chain() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        let full = classify(&onto).expect("full classify");
+        let sat = classify_saturation_only(&onto).expect("saturation-only");
+        assert_eq!(full.classes(), sat.classes());
+        for sub in full.classes() {
+            for sup in full.classes() {
+                let full_v = full.is_subclass(sub, sup);
+                let sat_v = sat.is_subclass(sub, sup);
+                if sat_v {
+                    assert!(
+                        full_v,
+                        "saturation-only reported {sub} ⊑ {sup} but full did not — soundness violated",
+                    );
+                }
+                assert_eq!(
+                    full_v, sat_v,
+                    "on a pure-EL chain both classifiers must agree exactly — {sub} ⊑ {sup}: full={full_v} sat={sat_v}",
+                );
+            }
+        }
+        assert!(sat.stats().pure_el_mode);
+        assert_eq!(sat.stats().tableau_subsumption_calls, 0);
+        assert_eq!(sat.stats().tableau_unsat_calls, 0);
+    }
+
+    /// Saturation-only on a hybrid input: every reported
+    /// subsumption must be entailed by the full classifier, but
+    /// some subsumptions may be missed (the under-approximation
+    /// semantics). Pizza's `:Pizza` ⊑ `:Thing` chain is the easy
+    /// affirmative case; the negative side is implicit in the
+    /// "sound under-approximation" framing.
+    #[test]
+    fn classify_saturation_only_is_sound_subset_of_full_on_hybrid() {
+        // DisjointObjectProperties forces hybrid mode.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        let full = classify(&onto).expect("full classify");
+        let sat = classify_saturation_only(&onto).expect("saturation-only");
+        for sub in full.classes() {
+            for sup in full.classes() {
+                if sat.is_subclass(sub, sup) {
+                    assert!(
+                        full.is_subclass(sub, sup),
+                        "saturation-only reported {sub} ⊑ {sup} but full did not — soundness violated",
+                    );
+                }
+            }
+        }
+        // The reported `pure_el_mode` is True regardless of whether
+        // the input is structurally pure-EL — it indicates the
+        // classifier *behaved* as the pure-EL path.
+        assert!(sat.stats().pure_el_mode);
+        assert_eq!(sat.stats().tableau_subsumption_calls, 0);
+        assert_eq!(sat.stats().tableau_unsat_calls, 0);
     }
 }

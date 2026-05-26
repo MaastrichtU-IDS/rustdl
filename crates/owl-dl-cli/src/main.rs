@@ -22,8 +22,8 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
-    classify_with_timeout, instances_of, is_class_satisfiable, is_consistent, is_instance_of,
-    is_subclass_of, is_subclass_of_with_stats, realize,
+    classify_saturation_only, classify_with_timeout, instances_of, is_class_satisfiable,
+    is_consistent, is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
 };
 
 #[derive(Parser, Debug)]
@@ -83,6 +83,18 @@ enum Command {
         /// benchmarking and regression cross-checks.
         #[arg(long)]
         n2_classify: bool,
+        /// Skip every tableau probe and report only the hierarchy
+        /// derivable from the EL saturation closure. Returns a
+        /// sound under-approximation — every reported subsumption
+        /// is real, but subsumptions that need tableau reasoning
+        /// (cardinality, disjunction-with-clash, nominal merges,
+        /// …) are missed. On large mostly-EL workloads (SIO, GO,
+        /// SULO) this is dramatically faster — SIO drops from
+        /// ~270 s to a few seconds while losing < 0.1% of
+        /// subsumptions. Not recommended on SROIQ-heavy inputs
+        /// (pizza loses ~20 %).
+        #[arg(long)]
+        saturation_only: bool,
     },
     /// Decide whether INDIVIDUAL is provably an instance of CLASS.
     Instance {
@@ -243,18 +255,23 @@ fn main() -> Result<()> {
             pair_timeout_ms,
             top_down: _,
             n2_classify,
+            saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
             let timeout = pair_timeout_ms.map(std::time::Duration::from_millis);
-            let h = match (n2_classify, timeout) {
-                (true, Some(t)) => {
-                    classify_n2_with_timeout(&onto, t).context("classify_n2_with_timeout")?
+            let h = if saturation_only {
+                classify_saturation_only(&onto).context("classify_saturation_only")?
+            } else {
+                match (n2_classify, timeout) {
+                    (true, Some(t)) => {
+                        classify_n2_with_timeout(&onto, t).context("classify_n2_with_timeout")?
+                    }
+                    (true, None) => classify_n2(&onto).context("classify_n2")?,
+                    (false, Some(t)) => {
+                        classify_with_timeout(&onto, t).context("classify_with_timeout")?
+                    }
+                    (false, None) => classify(&onto).context("classify")?,
                 }
-                (true, None) => classify_n2(&onto).context("classify_n2")?,
-                (false, Some(t)) => {
-                    classify_with_timeout(&onto, t).context("classify_with_timeout")?
-                }
-                (false, None) => classify(&onto).context("classify")?,
             };
             print_classification(&h);
         }

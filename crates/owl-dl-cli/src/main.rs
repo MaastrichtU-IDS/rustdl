@@ -24,6 +24,7 @@ use owl_dl_reasoner::{
     Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
     classify_saturation_only, classify_with_timeout, instances_of, is_class_satisfiable,
     is_consistent, is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
+    realize_saturation_only,
 };
 
 #[derive(Parser, Debug)]
@@ -116,6 +117,13 @@ enum Command {
     Realize {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
+        /// Skip every tableau probe (both classify and per-individual
+        /// instance check) and report only the type assignments
+        /// derivable from the EL saturation closure + told class
+        /// assertions. Sound under-approximation — symmetric to the
+        /// `classify --saturation-only` flag.
+        #[arg(long)]
+        saturation_only: bool,
     },
     /// Decide SUB ⊑ SUP and report which engine (EL saturation or
     /// tableau) produced the verdict. Useful for understanding
@@ -292,9 +300,16 @@ fn main() -> Result<()> {
                 println!("{iri}");
             }
         }
-        Command::Realize { file } => {
+        Command::Realize {
+            file,
+            saturation_only,
+        } => {
             let onto = parse_ofn(&file)?;
-            let r = realize(&onto).context("realize")?;
+            let r = if saturation_only {
+                realize_saturation_only(&onto).context("realize_saturation_only")?
+            } else {
+                realize(&onto).context("realize")?
+            };
             print_realization(&r);
         }
         Command::Explain { file, sub, sup } => {

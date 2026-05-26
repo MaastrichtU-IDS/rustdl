@@ -25,7 +25,7 @@ use owl_dl_saturation::{Subsumers, saturate};
 
 use crate::PreparedOntology;
 use crate::ReasonError;
-use crate::classify::classify_top_down_internal;
+use crate::classify::{classify_saturation_only_internal, classify_top_down_internal};
 
 /// `(entailed_types, hasse_leaves)` for one individual — returned
 /// by the parallel realisation worker so the outer loop can stitch
@@ -113,6 +113,22 @@ fn instance_check_with_closure(
         pool.and(vec![nom, not_cls])
     })?;
     Ok(!sat)
+}
+
+/// Saturation-only counterpart to [`instance_check_with_closure`].
+/// Reports `true` iff a told class of `individual_id` already has
+/// `class_id` in its EL-closure subsumer set. Skips the
+/// `{a} ⊓ ¬C` tableau probe entirely — sound under-approximation
+/// matching [`crate::classify_saturation_only`].
+fn instance_check_closure_only(
+    internal: &InternalOntology,
+    closure: &Subsumers,
+    class_id: ClassId,
+    individual_id: IndividualId,
+) -> bool {
+    told_classes_of(internal, individual_id)
+        .into_iter()
+        .any(|told| closure.contains(told, class_id))
 }
 
 /// Collect every atomic class that `individual_id` is *told* to
@@ -284,6 +300,110 @@ impl Realization {
 pub fn realize<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Realization, ReasonError> {
     let internal = convert_ontology(ontology)?;
     realize_internal(&internal)
+}
+
+/// Saturation-only realization. Skips every tableau probe (both
+/// during classification and during per-individual type inference)
+/// and reports only the type assignments derivable from the EL
+/// closure and told class assertions.
+///
+/// Returns a sound under-approximation of [`realize`]: every
+/// `(individual, class)` pair reported is genuinely entailed, but
+/// memberships that need tableau reasoning to confirm
+/// (cardinality, disjunction-with-clash, …) are missed. On large
+/// mostly-EL workloads this is dramatically faster than [`realize`]
+/// — symmetric to [`crate::classify_saturation_only`].
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn realize_saturation_only<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Realization, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    realize_saturation_only_internal(&internal)
+}
+
+/// Internal entry point for [`realize_saturation_only`]. Skips
+/// every tableau probe.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn realize_saturation_only_internal(
+    internal: &InternalOntology,
+) -> Result<Realization, ReasonError> {
+    let hierarchy = classify_saturation_only_internal(internal)?;
+    let class_iris: Vec<String> = (0..internal.vocabulary.num_classes())
+        .map(|i| {
+            internal
+                .vocabulary
+                .class_iri(ClassId::new(
+                    u32::try_from(i).expect("class count fits in u32"),
+                ))
+                .to_owned()
+        })
+        .collect();
+    let unsat: HashSet<&str> = hierarchy.unsatisfiable_classes().into_iter().collect();
+    let satisfiable: Vec<(usize, &str)> = class_iris
+        .iter()
+        .enumerate()
+        .filter(|(_, iri)| !unsat.contains(iri.as_str()))
+        .map(|(i, iri)| (i, iri.as_str()))
+        .collect();
+
+    let individual_iris: Vec<String> = (0..internal.vocabulary.num_individuals())
+        .map(|i| {
+            internal
+                .vocabulary
+                .individual_iri(IndividualId::new(
+                    u32::try_from(i).expect("individual count fits in u32"),
+                ))
+                .to_owned()
+        })
+        .collect();
+
+    let closure = saturate(internal);
+
+    let per_individual: Vec<IndivResult> = individual_iris
+        .par_iter()
+        .enumerate()
+        .map(|(idx, _iri)| {
+            let individual_id =
+                IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
+            let mut types: Vec<&str> = Vec::new();
+            for (class_idx, class_iri) in &satisfiable {
+                let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
+                if instance_check_closure_only(internal, &closure, class_id, individual_id) {
+                    types.push(class_iri);
+                }
+            }
+            let leaves: Vec<String> = types
+                .iter()
+                .filter(|&&cls| {
+                    !types.iter().any(|&other| {
+                        other != cls
+                            && hierarchy.is_subclass(other, cls)
+                            && !hierarchy.is_subclass(cls, other)
+                    })
+                })
+                .map(|s| (*s).to_owned())
+                .collect();
+            let types_owned: Vec<String> = types.into_iter().map(str::to_owned).collect();
+            (types_owned, leaves)
+        })
+        .collect();
+    let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
+    let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
+    for (iri, (types_owned, leaves)) in individual_iris.iter().zip(per_individual) {
+        entailed_types.insert(iri.clone(), types_owned);
+        most_specific_types.insert(iri.clone(), leaves);
+    }
+    Ok(Realization {
+        individuals: individual_iris,
+        entailed_types,
+        most_specific_types,
+    })
 }
 
 /// Internal entry point.
@@ -552,5 +672,49 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(entailed.iter().any(|c| c == "http://rustdl.test/B"));
         let leaves = r.most_specific_types(alice);
         assert_eq!(leaves, vec!["http://rustdl.test/A".to_owned()]);
+    }
+
+    /// `realize_saturation_only` is a sound under-approximation of
+    /// `realize`: every reported `(individual, class)` pair must
+    /// hold under the full realization. On a pure-told-types
+    /// scenario (alice : A; A ⊑ B) both agree exactly.
+    #[test]
+    fn realize_saturation_only_matches_full_on_told_chain() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    SubClassOf(:A :B)\n\
+    ClassAssertion(:A :alice)\n\
+)\n"
+        ));
+        let full = realize(&onto).expect("full realization");
+        let sat = realize_saturation_only(&onto).expect("saturation-only");
+        let alice = "http://rustdl.test/alice";
+        let full_types: HashSet<&str> = full
+            .entailed_types(alice)
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let sat_types: HashSet<&str> = sat
+            .entailed_types(alice)
+            .iter()
+            .map(String::as_str)
+            .collect();
+        // Soundness: sat-only ⊆ full.
+        for t in &sat_types {
+            assert!(
+                full_types.contains(t),
+                "saturation-only reported {t} but full did not — soundness violated",
+            );
+        }
+        // On a pure-told chain both modes should agree exactly.
+        assert_eq!(full_types, sat_types);
+        assert_eq!(
+            sat.most_specific_types(alice),
+            vec!["http://rustdl.test/A".to_owned()],
+        );
     }
 }

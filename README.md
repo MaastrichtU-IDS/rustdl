@@ -57,7 +57,7 @@ xtask/                # Build automation (corpus fetch, license inventory, ...)
 
 ```sh
 # Build everything
-cargo build --workspace
+cargo build --workspace --release
 
 # Run lint and format checks
 cargo fmt --all -- --check
@@ -68,6 +68,46 @@ cargo test --workspace
 ```
 
 Requires Rust 1.88+.
+
+## Using `rustdl`
+
+```sh
+# Full classification (sound + complete; the default)
+./target/release/rustdl classify path/to/ontology.ofn
+
+# Same with a per-pair tableau deadline — sound under-approximation
+# that's robust against pathological SROIQ inputs. Pairs that exceed
+# the budget default to "not subsumed".
+./target/release/rustdl classify --pair-timeout-ms 200 path/to/ontology.ofn
+
+# Saturation-only mode — skips every tableau probe. Closure-only
+# under-approximation: every reported subsumption holds, but
+# subsumptions that need tableau reasoning are missed. Dramatically
+# faster on mostly-EL inputs:
+#
+#                   default          --saturation-only   edge loss
+#   sulo-stripped   0.23 s           0.01 s              0
+#   pizza           28.9 s           0.03 s              20.6 %
+#   sio-stripped    266 s            0.22 s              0.19 %
+#
+# See docs/perf-2026-05-24-new-server.md §8 for the full table
+# vs HermiT/Pellet/Konclude.
+./target/release/rustdl classify --saturation-only path/to/ontology.ofn
+
+# Other queries
+./target/release/rustdl consistent path/to/ontology.ofn
+./target/release/rustdl sat        path/to/ontology.ofn <class-iri>
+./target/release/rustdl subclass   path/to/ontology.ofn <sub-iri> <sup-iri>
+./target/release/rustdl realize    path/to/ontology.ofn
+```
+
+Diagnostic env knobs:
+
+- `RUSTDL_COUNTERS=1` — dump per-rule call counts to stderr on
+  `TableauContext::drop`. Requires `--features counters` at build time.
+- `RUSTDL_TRACE=1` — one stderr line per `search`/`branch` decision
+  for understanding what the tableau is doing on a single probe.
+  Off-path is one atomic load; safe to ship enabled.
 
 ## Licensing
 

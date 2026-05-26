@@ -99,6 +99,12 @@ Requires Rust 1.88+.
 ./target/release/rustdl sat        path/to/ontology.ofn <class-iri>
 ./target/release/rustdl subclass   path/to/ontology.ofn <sub-iri> <sup-iri>
 ./target/release/rustdl realize    path/to/ontology.ofn
+
+# Realize accepts the same --saturation-only flag (skips every
+# tableau probe in both classify and per-individual instance check).
+# family-stripped's 300+ individuals realize in 0.16 s with the
+# flag vs. DNF without.
+./target/release/rustdl realize --saturation-only path/to/ontology.ofn
 ```
 
 Diagnostic env knobs:

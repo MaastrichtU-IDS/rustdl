@@ -186,6 +186,87 @@ integration), revert per the [`moms-plan.md`](moms-plan.md) §A
 lesson — shipping a model caching implementation that doesn't
 reduce timeouts is the same mistake as MOMS with more code.
 
+## §B — Phase 2 design re-think (2026-05-26, post-Phase-1)
+
+After shipping the data structure in `c249bb0`, a second look at
+Phase 2's mechanics surfaced a soundness wrinkle that wasn't
+called out in the plan:
+
+**The cached root labels witness `key ⊓ extra_prior`, not `key`
+alone.** When the tableau saturates `C ⊓ ¬D`, the root labels at
+the end include both `C`-derived propagation and `¬D` plus
+whatever rules `¬D` triggered. They are *not* a clean witness
+for `C` that future queries can freely extend.
+
+For a future probe `key ⊓ extra_new`:
+
+| State | Verdict | Note |
+|---|---|---|
+| `extra_new ∈ root_labels` | Sat (sound) | model already satisfies it |
+| `complement(extra_new) ∈ root_labels` | Fall through to full tableau | could be sat or unsat; cache can't tell |
+| neither | Fall through to full tableau | most common; can't tell cheaply |
+
+On classify's pair-loop the typical extra is `¬D_j` for a
+varying `D_j`. The probability that the previous probe's labels
+already contain `¬D_j` for some other `j'` is low — only when
+the closure entails `C ⊑ ¬D_j` (i.e., `C` and `D_j` are disjoint),
+which is the case the saturation closure already handled before
+dispatching to the tableau. So the cache hits would happen
+mostly on pairs that aren't reaching the tableau in the first
+place.
+
+**This is the same failure shape as MOMS:** the implementation
+would be sound but wouldn't move the headline wall numbers, and
+the `moms-plan.md` §A revert criterion would fire.
+
+### What HermiT actually does (and what Phase 2 should design toward)
+
+HermiT's model caching is deeper than "root-labels intersection":
+
+1. **Cache full model structure**, including R-successors and
+   their label sets, not just the root.
+2. **Lazy expansion**: when a new query needs to verify a
+   constraint not yet expanded in the cached model (e.g.,
+   `∃R.X` whose body was never decomposed), expand it
+   incrementally, sharing the `C`-derived work that's already
+   been done.
+3. **Cross-query reuse**: a cached model of `C` is the starting
+   point for *every* query of shape `C ⊓ D`, with `D`'s
+   constraints layered on top of the shared core.
+
+Phase 2 as originally written (root-labels only) is to (1) what
+the static-MOMS attempt was to real cross-disjunction
+analysis — necessary but not sufficient.
+
+### Revised phasing
+
+**Phase 2a (one session)**: Capture and cache full sub-tree
+structure, not just root labels. Add a `ModelSnapshot` that
+records every node's labels and every edge in the satisfying
+completion graph.
+
+**Phase 2b (one session)**: Implement the lookup as a "replay"
+— construct a fresh tableau, seed it with the cached snapshot,
+add the new extra, run search. Faster than starting from
+scratch because the deterministic deps-tracking work has
+already been done.
+
+**Phase 2c (later)**: Lazy expansion — only replay the parts of
+the cached snapshot the new query touches.
+
+Total Phase 2 scope: 2-3 sessions, not 1. Each session lands a
+testable partial. The Phase 1 data structure stays as-is; the
+`CachedModel` type grows to hold `ModelSnapshot` instead of just
+`root_labels`.
+
+### Acceptance — addendum
+
+The §A criterion (revert if pizza/SIO walls don't move) stands.
+Phase 2a alone is not expected to move walls — it's
+infrastructure. Phase 2b is the first phase where wall
+improvements should be measurable; if 2b ships without moving
+either pizza or SIO walls, revert both.
+
 ## Open questions
 
 - **Test-concept shape.** Pair queries build `And([C, Not(D)])`.

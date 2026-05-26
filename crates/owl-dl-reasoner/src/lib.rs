@@ -69,6 +69,68 @@ pub struct LocalityStats {
     pub singleton_components: usize,
 }
 
+/// Sparse summary of the absorbed `TBox` shape — how many rules
+/// of each kind survive absorption, and how the residual GCIs
+/// break down by top-level `ConceptExpr` variant. Used by the
+/// `rustdl tbox-stats` CLI to inform the lazy-unfolding plan; see
+/// `docs/lazy-unfolding-plan.md`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TBoxStats {
+    pub concept_rules: usize,
+    pub nominal_rules: usize,
+    pub role_rules_guarded: usize,
+    pub role_rules_unguarded: usize,
+    pub residual_gcis: usize,
+    /// Residual GCIs whose body is a top-level `Or(_)` — these
+    /// are the universal disjunctions that drive the pizza
+    /// search-tree explosion (one Or per residual × one
+    /// branching decision per node).
+    pub residual_or_count: usize,
+    /// Residual GCIs whose body is `Atomic(_)` — pure
+    /// "everything is a C" assertions; cheap because they don't
+    /// branch.
+    pub residual_atomic_count: usize,
+    /// Residual GCIs of other shapes (`And`, `Some`, `Min`,
+    /// `Max`, `Not`, `SelfRestriction`, `Nominal`) — buckets
+    /// kept summed because each is rarer.
+    pub residual_other_count: usize,
+}
+
+/// Build the absorbed `TBox` for `ontology` and summarise its
+/// shape.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn tbox_stats<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<TBoxStats, ReasonError> {
+    use owl_dl_core::ConceptExpr;
+    let mut internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let normalized = owl_dl_core::normalize::nnf_axioms(&mut internal);
+    let tbox = owl_dl_core::absorb::absorb(&normalized, &mut internal.concepts);
+    let mut stats = TBoxStats {
+        concept_rules: tbox.concept_rules.len(),
+        nominal_rules: tbox.nominal_rules.len(),
+        role_rules_guarded: tbox
+            .guarded_role_rules_by_guard
+            .values()
+            .map(Vec::len)
+            .sum(),
+        role_rules_unguarded: tbox.unguarded_role_rules.len(),
+        residual_gcis: tbox.residual_gcis.len(),
+        ..TBoxStats::default()
+    };
+    for &gci in &tbox.residual_gcis {
+        match internal.concepts.get(gci) {
+            ConceptExpr::Or(_) => stats.residual_or_count += 1,
+            ConceptExpr::Atomic(_) => stats.residual_atomic_count += 1,
+            _ => stats.residual_other_count += 1,
+        }
+    }
+    Ok(stats)
+}
+
 /// Build the locality partition for `ontology` and summarise it.
 ///
 /// # Errors

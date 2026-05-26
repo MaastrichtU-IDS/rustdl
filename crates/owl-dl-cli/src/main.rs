@@ -165,6 +165,13 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
+    /// Print absorbed-TBox statistics: rule counts and the
+    /// residual-GCI shape breakdown. Diagnostic for the lazy-
+    /// unfolding plan (see `docs/lazy-unfolding-plan.md`).
+    TboxStats {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -385,6 +392,18 @@ fn main() -> Result<()> {
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },
             );
+        }
+        Command::TboxStats { file } => {
+            let onto = parse_ofn(&file)?;
+            let stats = owl_dl_reasoner::tbox_stats(&onto).context("tbox_stats")?;
+            println!("# concept_rules:        {}", stats.concept_rules);
+            println!("# nominal_rules:        {}", stats.nominal_rules);
+            println!("# role_rules_guarded:   {}", stats.role_rules_guarded);
+            println!("# role_rules_unguarded: {}", stats.role_rules_unguarded);
+            println!("# residual_gcis:        {}", stats.residual_gcis);
+            println!("#   residual_or:        {}", stats.residual_or_count);
+            println!("#   residual_atomic:    {}", stats.residual_atomic_count);
+            println!("#   residual_other:     {}", stats.residual_other_count);
         }
         Command::LocalityStats { file } => {
             let onto = parse_ofn(&file)?;

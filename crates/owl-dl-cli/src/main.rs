@@ -172,6 +172,14 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
+    /// Classify each residual GCI by its lazy-unfolding trigger
+    /// (`Eager` / `DeferOr` / `DeferNot` / `DeferAll` / `EagerExists`) and
+    /// print the histogram. Bounds the expected win from
+    /// lazy-unfolding Phase 2 — see `docs/lazy-unfolding-plan.md`.
+    ResidualTriggers {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -404,6 +412,28 @@ fn main() -> Result<()> {
             println!("#   residual_or:        {}", stats.residual_or_count);
             println!("#   residual_atomic:    {}", stats.residual_atomic_count);
             println!("#   residual_other:     {}", stats.residual_other_count);
+        }
+        Command::ResidualTriggers { file } => {
+            let onto = parse_ofn(&file)?;
+            let stats =
+                owl_dl_reasoner::residual_trigger_stats(&onto).context("residual_trigger_stats")?;
+            println!("# residuals_total:    {}", stats.total);
+            println!("# eager:              {}", stats.eager);
+            println!("# defer_or:           {}", stats.defer_or);
+            println!("# defer_not:          {}", stats.defer_not);
+            println!("# defer_all:          {}", stats.defer_all);
+            println!(
+                "# eager_∃_cardinal:   {}",
+                stats.eager_exists_or_cardinality
+            );
+            println!("# deferred_total:     {}", stats.deferred());
+            #[allow(clippy::cast_precision_loss)]
+            let frac = if stats.total == 0 {
+                0.0
+            } else {
+                stats.deferred() as f64 / stats.total as f64
+            };
+            println!("# deferred_fraction:  {:.1}%", frac * 100.0);
         }
         Command::LocalityStats { file } => {
             let onto = parse_ofn(&file)?;

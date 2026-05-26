@@ -96,6 +96,26 @@ pub struct TBoxStats {
     pub residual_other_count: usize,
 }
 
+/// Build the absorbed `TBox` and classify every residual GCI's
+/// trigger per [`owl_dl_core::residual_trigger`]. The result is
+/// the histogram needed to decide whether the lazy-unfolding
+/// Phase-2 integration will move walls — see
+/// `docs/lazy-unfolding-plan.md`.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn residual_trigger_stats<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<owl_dl_core::residual_trigger::ResidualTriggerStats, ReasonError> {
+    let mut internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let normalized = owl_dl_core::normalize::nnf_axioms(&mut internal);
+    let tbox = owl_dl_core::absorb::absorb(&normalized, &mut internal.concepts);
+    let (_triggers, stats) =
+        owl_dl_core::residual_trigger::classify_residuals(&tbox.residual_gcis, &internal.concepts);
+    Ok(stats)
+}
+
 /// Build the absorbed `TBox` for `ontology` and summarise its
 /// shape.
 ///

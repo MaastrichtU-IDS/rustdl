@@ -15,6 +15,7 @@ pub mod ir;
 pub mod locality;
 pub mod normalize;
 pub mod ontology;
+pub mod residual_trigger;
 pub mod role_hierarchy;
 pub mod told;
 pub mod transform;

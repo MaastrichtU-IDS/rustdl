@@ -169,7 +169,8 @@ sessions' direction. Each lever has its own plan doc on landing.
 | Model caching (root labels) | 2026-05-26 | Phase 1 shipped, Phase 2 rethink | [`model-caching-plan.md`](model-caching-plan.md) §B |
 | Syntactic module extraction | 2026-05-26 | Phase 1 shipped, integration not warranted | [`module-extraction-plan.md`](module-extraction-plan.md) §A |
 | `--saturation-only` user-facing mode | 2026-05-26 | shipped, 5 entry points | n/a |
-| Lever A — lazy unfold of residual GCIs | future | not started | TBD |
+| Lazy-fire residual GCIs when a disjunct is already labelled | 2026-05-26 | attempted, reverted (zero wall change on pizza/SIO/family — residual Or-with-already-present-disjunct is rare in practice) | inline in this doc |
+| Lever A — lazy unfold of residual GCIs (proper trigger analysis) | future | not started | TBD |
 | Lever B — successor-trigger pruning | future | not started | TBD |
 | Lever C — deep model caching (Phase 2a/2b/2c) | future | Phase 1 shipped | [`model-caching-plan.md`](model-caching-plan.md) |
 | Lever D — real ⊥-locality modules | future | not started | TBD |

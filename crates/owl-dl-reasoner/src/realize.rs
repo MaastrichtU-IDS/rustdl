@@ -77,6 +77,52 @@ pub fn is_instance_of_internal(
     instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)
 }
 
+/// Saturation-only counterpart of [`is_instance_of`]. Reports
+/// `true` iff the closure derived from told class assertions
+/// already entails membership; the `{a} ⊓ ¬C` tableau probe is
+/// skipped. Sound under-approximation: positive answers are
+/// genuinely entailed, but memberships that need tableau
+/// reasoning are missed.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_instance_of_saturation_only<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+    individual_iri: &str,
+) -> Result<bool, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    is_instance_of_saturation_only_internal(&internal, class_iri, individual_iri)
+}
+
+/// Internal entry point for [`is_instance_of_saturation_only`].
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn is_instance_of_saturation_only_internal(
+    internal: &InternalOntology,
+    class_iri: &str,
+    individual_iri: &str,
+) -> Result<bool, ReasonError> {
+    let class_id = internal
+        .vocabulary
+        .class_id(class_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let individual_id = internal
+        .vocabulary
+        .individual_id(individual_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(individual_iri.to_owned()))?;
+    let closure = saturate(internal);
+    Ok(instance_check_closure_only(
+        internal,
+        &closure,
+        class_id,
+        individual_id,
+    ))
+}
+
 /// Single instance check that consults the saturation closure first.
 ///
 /// Three saturation fast paths, all of which short-circuit the
@@ -239,6 +285,48 @@ pub fn instances_of_internal(
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
         if instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)? {
+            out.push(internal.vocabulary.individual_iri(individual_id).to_owned());
+        }
+    }
+    Ok(out)
+}
+
+/// Saturation-only counterpart of [`instances_of`]. Returns the
+/// list of individuals provably in `class_iri` via the EL closure
+/// alone — every tableau probe is skipped. Sound
+/// under-approximation; large `ABox` queries that do not finish under the
+/// default path remain tractable here.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn instances_of_saturation_only<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    class_iri: &str,
+) -> Result<Vec<String>, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    instances_of_saturation_only_internal(&internal, class_iri)
+}
+
+/// Internal entry point for [`instances_of_saturation_only`].
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn instances_of_saturation_only_internal(
+    internal: &InternalOntology,
+    class_iri: &str,
+) -> Result<Vec<String>, ReasonError> {
+    let class_id = internal
+        .vocabulary
+        .class_id(class_iri)
+        .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    let closure = saturate(internal);
+    let mut out = Vec::new();
+    for idx in 0..internal.vocabulary.num_individuals() {
+        let individual_id =
+            IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
+        if instance_check_closure_only(internal, &closure, class_id, individual_id) {
             out.push(internal.vocabulary.individual_iri(individual_id).to_owned());
         }
     }

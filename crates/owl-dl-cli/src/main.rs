@@ -22,9 +22,9 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
-    classify_saturation_only, classify_with_timeout, instances_of, is_class_satisfiable,
-    is_consistent, is_instance_of, is_subclass_of, is_subclass_of_with_stats, realize,
-    realize_saturation_only,
+    classify_saturation_only, classify_with_timeout, instances_of, instances_of_saturation_only,
+    is_class_satisfiable, is_consistent, is_instance_of, is_instance_of_saturation_only,
+    is_subclass_of, is_subclass_of_with_stats, realize, realize_saturation_only,
 };
 
 #[derive(Parser, Debug)]
@@ -105,6 +105,13 @@ enum Command {
         class_iri: String,
         /// Full IRI of the individual.
         individual_iri: String,
+        /// Skip the `{a} ⊓ ¬C` tableau probe and answer only from
+        /// told class assertions + the EL saturation closure.
+        /// Sound under-approximation: a `yes` is genuine; `no` may
+        /// be a missed positive that the full classifier would
+        /// detect.
+        #[arg(long)]
+        saturation_only: bool,
     },
     /// List every individual provably in CLASS.
     Instances {
@@ -112,6 +119,12 @@ enum Command {
         file: PathBuf,
         /// Full IRI of the class.
         class_iri: String,
+        /// Skip every per-individual tableau probe; list only the
+        /// individuals the EL closure proves are members. Sound
+        /// under-approximation. Counterpart to
+        /// `classify --saturation-only` for `ABox` queries.
+        #[arg(long)]
+        saturation_only: bool,
     },
     /// Realize the ontology: per-individual most-specific entailed types.
     Realize {
@@ -287,15 +300,29 @@ fn main() -> Result<()> {
             file,
             class_iri,
             individual_iri,
+            saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
-            let verdict =
-                is_instance_of(&onto, &class_iri, &individual_iri).context("is_instance_of")?;
+            let verdict = if saturation_only {
+                is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
+                    .context("is_instance_of_saturation_only")?
+            } else {
+                is_instance_of(&onto, &class_iri, &individual_iri).context("is_instance_of")?
+            };
             println!("{}", if verdict { "yes" } else { "no" });
         }
-        Command::Instances { file, class_iri } => {
+        Command::Instances {
+            file,
+            class_iri,
+            saturation_only,
+        } => {
             let onto = parse_ofn(&file)?;
-            let members = instances_of(&onto, &class_iri).context("instances_of")?;
+            let members = if saturation_only {
+                instances_of_saturation_only(&onto, &class_iri)
+                    .context("instances_of_saturation_only")?
+            } else {
+                instances_of(&onto, &class_iri).context("instances_of")?
+            };
             for iri in members {
                 println!("{iri}");
             }

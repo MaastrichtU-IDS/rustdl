@@ -49,8 +49,10 @@ pub use classify::{
     classify_top_down_with_timeout, classify_with_timeout,
 };
 pub use realize::{
-    Realization, instances_of, instances_of_internal, is_instance_of, is_instance_of_internal,
-    realize, realize_internal, realize_saturation_only, realize_saturation_only_internal,
+    Realization, instances_of, instances_of_internal, instances_of_saturation_only,
+    instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
+    is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
+    realize_internal, realize_saturation_only, realize_saturation_only_internal,
 };
 
 use std::collections::HashMap;

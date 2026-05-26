@@ -124,6 +124,18 @@ impl Role {
 pub struct ConceptId(u32);
 
 impl ConceptId {
+    /// Wrap a raw index into a `ConceptId`. The index must
+    /// correspond to a `ConceptExpr` already interned in the
+    /// pool this id will be used against; misuse yields panics
+    /// or wrong-concept lookups, not unsafety. Mirrors
+    /// [`ClassId::new`] / [`RoleId::new`] for callers (notably
+    /// the tests in `crate::model_cache`) that need to mint ids
+    /// without a pool round-trip.
+    #[must_use]
+    pub const fn new(idx: u32) -> Self {
+        Self(idx)
+    }
+
     #[must_use]
     pub const fn index(self) -> u32 {
         self.0

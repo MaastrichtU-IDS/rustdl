@@ -1074,6 +1074,7 @@ dependencies = [
 name = "owl-dl-reasoner"
 version = "0.0.1"
 dependencies = [
+ "dashmap",
  "horned-owl",
  "owl-dl-core",
  "owl-dl-datatypes",

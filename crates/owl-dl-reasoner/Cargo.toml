@@ -18,6 +18,7 @@ owl-dl-tableau.workspace = true
 owl-dl-datatypes.workspace = true
 horned-owl.workspace = true
 rayon.workspace = true
+dashmap.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

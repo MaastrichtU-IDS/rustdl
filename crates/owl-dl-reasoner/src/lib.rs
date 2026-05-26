@@ -41,6 +41,7 @@
 //! Datatypes are scaffolded but not wired into reasoning yet.
 
 mod classify;
+mod model_cache;
 mod realize;
 
 pub use classify::{
@@ -477,6 +478,14 @@ pub(crate) struct PreparedOntology {
     disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     complements: Vec<(ConceptId, ConceptId)>,
     abox: Abox,
+    /// Phase 1 scaffolding for the satisfying-model cache. The
+    /// field is shipped now so [`crate::PreparedOntology::decide`]
+    /// callers can be wired one at a time in Phase 2 without a
+    /// signature change. See [`docs/model-caching-plan.md`] for
+    /// the full design and the §A revert criterion if the cache
+    /// doesn't move pizza/SIO walls.
+    #[allow(dead_code)]
+    model_cache: model_cache::ModelCache,
 }
 
 impl PreparedOntology {
@@ -509,6 +518,7 @@ impl PreparedOntology {
             disjoint_role_pairs,
             complements,
             abox,
+            model_cache: model_cache::ModelCache::new(),
         })
     }
 

@@ -98,13 +98,19 @@ Requires Rust 1.88+.
 ./target/release/rustdl consistent path/to/ontology.ofn
 ./target/release/rustdl sat        path/to/ontology.ofn <class-iri>
 ./target/release/rustdl subclass   path/to/ontology.ofn <sub-iri> <sup-iri>
+./target/release/rustdl instance   path/to/ontology.ofn <class-iri> <individual-iri>
+./target/release/rustdl instances  path/to/ontology.ofn <class-iri>
 ./target/release/rustdl realize    path/to/ontology.ofn
 
-# Realize accepts the same --saturation-only flag (skips every
-# tableau probe in both classify and per-individual instance check).
-# family-stripped's 300+ individuals realize in 0.16 s with the
-# flag vs. DNF without.
-./target/release/rustdl realize --saturation-only path/to/ontology.ofn
+# --saturation-only is accepted by every "does X hold?" query —
+# skips the tableau probe and answers from the EL closure only.
+# Sound under-approximation; missed positives are possible but no
+# false positives. Useful when the default would DNF or take too
+# long on a SROIQ-heavy ABox.
+./target/release/rustdl subclass  --saturation-only path/to/ontology.ofn <sub> <sup>
+./target/release/rustdl instance  --saturation-only path/to/ontology.ofn <cls> <ind>
+./target/release/rustdl instances --saturation-only path/to/ontology.ofn <cls>
+./target/release/rustdl realize   --saturation-only path/to/ontology.ofn
 ```
 
 Diagnostic env knobs:

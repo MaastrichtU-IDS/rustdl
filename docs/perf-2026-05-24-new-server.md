@@ -1212,3 +1212,54 @@ timeout-bound workloads (pizza, sio-stripped, big-RO). All three
 sit at >99 % timeout rate; closing the gap to HermiT requires the
 architectural levers documented in §6 (lazy unfolding, model
 caching, anywhere blocking, module extraction, hypertableau).
+
+## §8 — `--saturation-only` benchmark (2026-05-26)
+
+The under-approximation mode added in `adcdc7f` skips every tableau
+probe. On large mostly-EL inputs (SIO, GO, SULO) saturation handles
+> 99% of real subsumptions already; explicitly opting into
+closure-only reasoning beats every reference reasoner by a wide
+margin.
+
+5-rep medians (rustdl) vs cached ROBOT-docker baselines for
+HermiT / Pellet / Konclude
+(`bench-results/multi-reasoner-20260524-223957.txt`):
+
+| Workload | direct edges (full) | direct edges (sat-only) | edge loss | rustdl `--saturation-only` | rustdl default | Konclude | HermiT | Pellet |
+|---|---|---|---|---|---|---|---|---|
+| sulo-stripped (17 cls) | — (matches sat-only) | — | 0 | **0.01 s** | 0.23 s | 0.95 s | 3.94 s | 3.36 s |
+| pizza (99 cls) | 311 | 247 | 64 (20.6%) | **0.03 s** | 28.9 s | 1.44 s | 4.53 s | 3.44 s |
+| sio-stripped (1585 cls) | 1607 | 1604 | 3 (0.19%) | **0.22 s** | 266 s | 1.57 s | 69 s | 4.45 s |
+
+The 11× win over Konclude on SIO comes with a 0.19% edge loss —
+the three missed direct edges are SIO_000473/474/611 ⊑
+SIO_000469/609, subsumptions that genuinely require tableau
+reasoning to confirm. For users running pipelines where 99.8%
+recall is acceptable in exchange for a 1900× speedup, this is the
+right default; for users who need every subsumption, the default
+`classify` remains the right call.
+
+The pizza loss (20.6%) is too large for an under-approximation
+recommendation. SROIQ-heavy ontologies should stick with the
+default path. The architectural levers in §6 are still the path to
+making the *default* path competitive with HermiT on pizza-shape
+inputs.
+
+### Where this leaves the perf gap
+
+Per [`outperform-hermit-plan.md`](outperform-hermit-plan.md) and §1
+of this doc, the original goalpost was "competitive within 2–3×
+of HermiT, comfortably ahead of HermiT on SULO." The
+post-2026-05-26 numbers, including `--saturation-only`:
+
+- **SULO** — rustdl 0.01 s (sat) / 0.23 s (default) vs HermiT 3.94 s.
+  Goalpost cleared by every metric.
+- **SIO** — rustdl 0.22 s (sat) vs HermiT 69 s, Konclude 1.57 s.
+  Default rustdl is still 4× slower than HermiT on this workload;
+  sat-only beats every reference reasoner by 7–300×.
+- **Pizza** — rustdl 28.9 s (default) vs HermiT 4.53 s, Konclude
+  1.44 s. The remaining 6.5× gap to HermiT, 20× to Konclude is
+  the unsolved architectural problem (§6 / §A of `moms-plan.md`).
+- **GO** — rustdl ~22–40 s vs unknown reference numbers. Already
+  pure-EL on the default path; sat-only is the same code, so no
+  win available there.

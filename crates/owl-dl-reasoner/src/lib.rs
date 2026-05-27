@@ -488,6 +488,10 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     // Fresh id space: past every class used in clauses and the
     // vocabulary. `q` first, then complement classes.
     let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+    // `HF4a`: nominal classes occupy `[num_classes, num_classes + num_individuals)`
+    // (matching the clausifier's `nominal_base`), so the engine's NN-rule
+    // can recognise singleton labels.
+    let num_individuals = u32::try_from(internal.vocabulary.num_individuals()).unwrap_or(0);
     let mut next_fresh = fresh_class_id(&base).index().max(num_classes);
     let q = ClassId::new(next_fresh);
     next_fresh += 1;
@@ -564,8 +568,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
 
             let deadline = per_pair_timeout.map(|t| std::time::Instant::now() + t);
             let start = std::time::Instant::now();
-            let mut engine =
-                HyperEngine::new(&clauses, q).with_sub_roles(sub_role_hierarchy.clone());
+            let mut engine = HyperEngine::new(&clauses, q)
+                .with_sub_roles(sub_role_hierarchy.clone())
+                .with_nominals(num_classes, num_individuals);
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -2225,6 +2230,68 @@ SubClassOf(ObjectSomeValuesFrom(:S :B) :D)\n)\n"
         assert!(
             holds("A", "D"),
             "A ⊑ D must be derivable: R ⊑ S so A's R-successor satisfies ∃S.B ⊑ D"
+        );
+    }
+
+    /// HF4 canary (nominals as true singletons / NN-rule). `A ⊑ ≥2 R.{o}`
+    /// is **unsatisfiable**: `{o}` is a singleton, so two R-successors
+    /// both `{o}` must be the *same* individual — they cannot be the 2
+    /// distinct fillers `≥2` requires. Composes with `HF3a`: `≥2`
+    /// generates two `≠` successors both labelled `{o}`; the NN-rule
+    /// merges same-nominal nodes; the `≠` then clashes. Today `{o}` is a
+    /// plain atomic class (sound under-approximation that loses the
+    /// singleton), so `A` is wrongly Sat and `A ⊑ B` (which holds only
+    /// because `A` is unsat) is missed. `HF4a`'s NN-rule makes it pass.
+    /// See `docs/hypertableau-hf4-scoping.md`.
+    #[test]
+    fn hyper_subsumption_probe_nominal_singleton_cardinality() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\n\
+Declaration(NamedIndividual(:o))\nDeclaration(ObjectProperty(:R))\n\
+SubClassOf(:A ObjectMinCardinality(2 :R ObjectOneOf(:o)))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("A", "B"),
+            "A ⊑ B must hold because A is unsat: ≥2 R.{{o}} with {{o}} a singleton"
+        );
+    }
+
+    /// `HF4a` over-merge guard (sibling of the singleton canary).
+    /// `A ⊑ ≥1 R.{o} ⊓ ≤1 R.{o}` is **Sat**: one nominal successor
+    /// satisfies both bounds, so the NN-rule must *not* fire (there is
+    /// only one `{o}`-node). `A ⊑ B` (unrelated `B`) must therefore
+    /// **not** be reported — pins that the NN-rule fires only on
+    /// distinct same-nominal nodes, not spuriously.
+    #[test]
+    fn hyper_subsumption_probe_nominal_singleton_no_overmerge() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\n\
+Declaration(NamedIndividual(:o))\nDeclaration(ObjectProperty(:R))\n\
+SubClassOf(:A ObjectIntersectionOf(\
+ObjectMinCardinality(1 :R ObjectOneOf(:o)) \
+ObjectMaxCardinality(1 :R ObjectOneOf(:o))))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let reported = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            !reported("A", "B"),
+            "A ⊑ B must NOT be reported: A is sat (one {{o}}-successor, no merge)"
         );
     }
 

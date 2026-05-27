@@ -172,6 +172,12 @@ pub struct HyperEngine<'c> {
     /// to merge a `≠` pair (a forced such merge is a clash — what makes
     /// `≥2 ⊓ ≤1` unsat). Captured by save/restore.
     neq: Vec<(HNode, HNode)>,
+    /// `HF4a` nominal class range `[start, start + count)`. A class id in
+    /// this range names a singleton `{a}`, so any two distinct nodes
+    /// carrying it must be the *same* individual — the NN-rule merges
+    /// them (clashing if they are `≠`). `None` ⇒ no nominals (every
+    /// class is ordinary), the pre-HF4 behaviour.
+    nominals: Option<(u32, u32)>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -262,6 +268,26 @@ impl<'c> HyperEngine<'c> {
             representative: vec![HNode(0)],
             sub_roles: None,
             neq: Vec::new(),
+            nominals: None,
+        }
+    }
+
+    /// Supply the `HF4a` nominal class range `[start, start + count)` so
+    /// the NN-rule merges distinct nodes carrying the same singleton.
+    #[must_use]
+    pub fn with_nominals(mut self, start: u32, count: u32) -> Self {
+        self.nominals = Some((start, count));
+        self
+    }
+
+    /// Whether class `c` names a singleton nominal `{a}` (`HF4a`).
+    fn is_nominal(&self, c: ClassId) -> bool {
+        match self.nominals {
+            Some((start, count)) => {
+                let i = c.index();
+                i >= start && i < start.saturating_add(count)
+            }
+            None => false,
         }
     }
 
@@ -397,6 +423,11 @@ impl<'c> HyperEngine<'c> {
     fn process_event(&mut self, ev: Event) -> FireOutcome {
         match ev {
             Event::Label(n, c) => {
+                // `HF4a` NN-rule: a singleton nominal on `n` merges any
+                // other node carrying it (clashing if they are `≠`).
+                if matches!(self.apply_nn_rule(n, c), FireOutcome::Clash) {
+                    return FireOutcome::Clash;
+                }
                 let key = c.index() as usize;
                 // Clauses with `c` as an `X`-class fire at `n`.
                 let n_x = self.indexes.x_trigger.get(key).map_or(0, Vec::len);
@@ -1050,6 +1081,36 @@ impl<'c> HyperEngine<'c> {
             }
         }
         FireOutcome::Changed
+    }
+
+    /// `HF4a` NN-rule: node `n` just gained the singleton nominal `c`, so
+    /// any *other* node also carrying `{c}` is the same individual and
+    /// must merge into `n` (a forced merge — clashes if they are `≠`,
+    /// which is exactly how `≥2 R.{o}` becomes unsat). Deterministic, so
+    /// it runs in the Horn fixpoint on the triggering `Label` event.
+    /// TODO(`HF4b`): nominal-under-`∀` propagation (`∀R.{o}` seeding `{o}`
+    /// onto an existing successor), nominal-aware blocking, and the
+    /// multi-predecessor in-edge redirect on merge are deferred — the
+    /// corpus's nominal path (`∃`-witness reuse of a single `{o}`) does
+    /// not exercise them.
+    fn apply_nn_rule(&mut self, n: HNode, c: ClassId) -> FireOutcome {
+        if !self.is_nominal(c) {
+            return FireOutcome::NoChange;
+        }
+        let rn = self.resolve(n);
+        let other = (0..self.nodes.len())
+            .map(|i| HNode(u32::try_from(i).expect("fits u32")))
+            .find(|&m| self.resolve(m) == m && m != rn && self.nodes[m.index()].has(c));
+        match other {
+            Some(m) => {
+                if self.merge(rn, m) {
+                    FireOutcome::Clash
+                } else {
+                    FireOutcome::Changed
+                }
+            }
+            None => FireOutcome::NoChange,
+        }
     }
 
     /// Number of nodes in the completion graph (diagnostic).

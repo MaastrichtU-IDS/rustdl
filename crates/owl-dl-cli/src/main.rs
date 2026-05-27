@@ -188,6 +188,22 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
+    /// Hypertableau Phase H2b wall probe: run the hyperresolution
+    /// engine's concept-satisfiability decision once per named class
+    /// and report timing + branching. NOTE: a *performance probe*,
+    /// not a correctness claim — the clausifier defers
+    /// cardinality/nominals, so `Sat` is not sound for the full
+    /// ontology (`Unsat` is). See `docs/hypertableau-scoping.md`.
+    HyperSat {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+        /// Max branching-recursion depth.
+        #[arg(long, default_value_t = 256)]
+        depth: usize,
+        /// Per-class wall budget in ms (0 = unbounded).
+        #[arg(long, default_value_t = 5000)]
+        per_class_timeout_ms: u64,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -453,6 +469,96 @@ fn main() -> Result<()> {
             println!("# bottom_headed:    {}", stats.bottom_headed);
             println!("# with_exists_head: {}", stats.with_exists_head);
             println!("# deferred:         {}", stats.deferred);
+        }
+        Command::HyperSat {
+            file,
+            depth,
+            per_class_timeout_ms,
+        } => {
+            use owl_dl_reasoner::HyperResult;
+            let onto = parse_ofn(&file)?;
+            let timeout = (per_class_timeout_ms > 0)
+                .then(|| std::time::Duration::from_millis(per_class_timeout_ms));
+            let probe = owl_dl_reasoner::hyper_sat_probe(&onto, depth, timeout)
+                .context("hyper_sat_probe")?;
+            let cs = &probe.clause_stats;
+            println!("# PERFORMANCE PROBE (not a soundness claim):");
+            println!("#   clausifier defers {} axiom(s); dropping them only", cs.deferred);
+            println!("#   removes constraints, so Unsat is sound for the full");
+            println!("#   ontology but Sat is NOT. See hypertableau-scoping.md §H2b.");
+            println!("# clauses_total:    {}", cs.total);
+            println!("# disjunctive:      {}", cs.disjunctive);
+            println!("# deferred:         {}", cs.deferred);
+            println!("# depth_cap:        {depth}");
+            println!(
+                "# per_class_timeout: {}",
+                if per_class_timeout_ms == 0 {
+                    "none".to_string()
+                } else {
+                    format!("{per_class_timeout_ms}ms")
+                }
+            );
+
+            let n = probe.results.len();
+            let (mut sat, mut unsat, mut stalled) = (0u64, 0u64, 0u64);
+            // "branched" = a class whose decision actually exercised
+            // hypertableau branching (the only ones that say anything
+            // about the engine vs. the default's per-class sat).
+            let mut branched = 0u64;
+            let mut branched_walls: Vec<f64> = Vec::new();
+            let mut total_wall = 0.0f64;
+            let mut max_depth_reached = 0u32;
+            let mut total_branches = 0u64;
+            for r in &probe.results {
+                match r.result {
+                    HyperResult::Sat => sat += 1,
+                    HyperResult::Unsat => unsat += 1,
+                    HyperResult::Stalled => stalled += 1,
+                }
+                total_wall += r.wall_ms;
+                total_branches += r.stats.branches_taken;
+                max_depth_reached = max_depth_reached.max(r.stats.max_branch_depth);
+                if r.stats.branches_taken > 0 {
+                    branched += 1;
+                    branched_walls.push(r.wall_ms);
+                }
+            }
+            println!("# classes:          {n}");
+            println!("# sat:              {sat}");
+            println!("# unsat:            {unsat}");
+            println!("# stalled:          {stalled}");
+            println!("# total_wall_ms:    {total_wall:.1}");
+            println!("# total_branches:   {total_branches}");
+            println!("# max_depth_reached:{max_depth_reached}");
+            println!("# classes_branched: {branched}   <-- HEADLINE: only these probe the engine");
+            if branched > 0 {
+                branched_walls.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let max = branched_walls.last().copied().unwrap_or(0.0);
+                let sum: f64 = branched_walls.iter().sum();
+                #[allow(clippy::cast_precision_loss)]
+                let mean = sum / branched_walls.len() as f64;
+                println!("# branched_wall_ms_mean: {mean:.2}");
+                println!("# branched_wall_ms_max:  {max:.2}");
+            }
+            // The slowest / branchiest classes — the interesting tail.
+            let mut by_interest: Vec<&owl_dl_reasoner::HyperSatClassResult> =
+                probe.results.iter().collect();
+            by_interest.sort_by(|a, b| {
+                (b.stats.branches_taken, b.wall_ms.to_bits())
+                    .cmp(&(a.stats.branches_taken, a.wall_ms.to_bits()))
+            });
+            println!("# --- top classes by branching ---");
+            for r in by_interest.iter().take(15).filter(|r| r.stats.branches_taken > 0) {
+                println!(
+                    "#   {:?} wall={:.2}ms branches={} restores={} depth={}  {}",
+                    r.result,
+                    r.wall_ms,
+                    r.stats.branches_taken,
+                    r.stats.restores,
+                    r.stats.max_branch_depth,
+                    r.iri,
+                );
+            }
         }
         Command::LocalityStats { file } => {
             let onto = parse_ofn(&file)?;

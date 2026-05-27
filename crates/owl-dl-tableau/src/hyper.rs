@@ -27,6 +27,7 @@
 
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role, RoleId};
+use std::time::Instant;
 
 /// Binding of a body's role-successor variable to a node, when the
 /// body has a role atom `R(x,y)`; `None` for body shapes on `x` only.
@@ -90,11 +91,29 @@ pub enum HyperResult {
     Stalled,
 }
 
-/// The Horn hyperresolution engine. Holds the completion graph and
-/// the clause set (borrowed).
+/// Per-run search instrumentation, read after [`HyperEngine::decide`]
+/// to interpret a wall measurement: a `Sat` reached with
+/// `branches_taken == 0` was decided by pure Horn propagation and
+/// says nothing about hypertableau branching (see
+/// `docs/hypertableau-scoping.md` §H2b).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchStats {
+    /// Disjuncts asserted across the whole search (decisions made).
+    pub branches_taken: u64,
+    /// Failed branches whose graph was restored (`Unsat`/`Stalled`).
+    pub restores: u64,
+    /// Deepest branch nesting reached (0 ⇒ no branching).
+    pub max_branch_depth: u32,
+}
+
+/// The hyperresolution engine. Holds the completion graph and the
+/// clause set (borrowed), plus per-run search instrumentation.
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
     nodes: Vec<HyperNode>,
+    stats: SearchStats,
+    init_depth: usize,
+    deadline: Option<Instant>,
 }
 
 impl<'c> HyperEngine<'c> {
@@ -110,7 +129,16 @@ impl<'c> HyperEngine<'c> {
         Self {
             clauses,
             nodes: vec![root_node],
+            stats: SearchStats::default(),
+            init_depth: 0,
+            deadline: None,
         }
+    }
+
+    /// Search instrumentation from the last [`decide`] call.
+    #[must_use]
+    pub fn stats(&self) -> SearchStats {
+        self.stats
     }
 
     /// True iff every clause is Horn (≤1 head atom). H1 only
@@ -193,10 +221,29 @@ impl<'c> HyperEngine<'c> {
     /// branch decisively succeeded (so we must not claim `Unsat`).
     #[must_use]
     pub fn decide(&mut self, max_depth: usize) -> HyperResult {
+        self.decide_with_deadline(max_depth, None)
+    }
+
+    /// As [`decide`], but abort with `Stalled` once `deadline` passes
+    /// (wall-clock budget per call). Resets [`stats`].
+    #[must_use]
+    pub fn decide_with_deadline(
+        &mut self,
+        max_depth: usize,
+        deadline: Option<Instant>,
+    ) -> HyperResult {
+        self.stats = SearchStats::default();
+        self.init_depth = max_depth;
+        self.deadline = deadline;
         self.solve(max_depth)
     }
 
     fn solve(&mut self, depth: usize) -> HyperResult {
+        if let Some(dl) = self.deadline
+            && Instant::now() >= dl
+        {
+            return HyperResult::Stalled;
+        }
         match self.horn_fixpoint(FIXPOINT_ITERS) {
             HyperResult::Unsat => return HyperResult::Unsat,
             HyperResult::Stalled => return HyperResult::Stalled,
@@ -209,18 +256,27 @@ impl<'c> HyperEngine<'c> {
             // Branching needed but the budget is exhausted — undetermined.
             return HyperResult::Stalled;
         }
+        let level = u32::try_from(self.init_depth - depth + 1).unwrap_or(u32::MAX);
+        if level > self.stats.max_branch_depth {
+            self.stats.max_branch_depth = level;
+        }
         let head_len = self.clauses[ci].head.len();
         let mut any_stalled = false;
         for k in 0..head_len {
             let head_atom = self.clauses[ci].head[k];
             let saved = self.nodes.clone();
+            self.stats.branches_taken += 1;
             let _ = self.apply_head_atom(head_atom, node, ybind);
             match self.solve(depth - 1) {
                 // Keep the satisfiable branch's graph; do not restore.
                 HyperResult::Sat => return HyperResult::Sat,
-                HyperResult::Unsat => self.nodes = saved,
+                HyperResult::Unsat => {
+                    self.nodes = saved;
+                    self.stats.restores += 1;
+                }
                 HyperResult::Stalled => {
                     self.nodes = saved;
+                    self.stats.restores += 1;
                     any_stalled = true;
                 }
             }
@@ -847,6 +903,40 @@ mod tests {
         assert_eq!(e.decide(64), HyperResult::Sat);
         assert!(e.root_labels().contains(&cls(1)));
         assert!(!e.root_labels().contains(&cls(2)));
+    }
+
+    /// Instrumentation: branching tracked when it happens, zero on
+    /// pure-Horn input (the "fast but branches==0 says nothing" guard
+    /// for the H2b wall measurement).
+    #[test]
+    fn stats_track_branching_and_are_zero_on_horn() {
+        // Horn: no branches.
+        let horn = vec![DlClause {
+            body: vec![Atom::Class(cls(0), X)],
+            head: vec![Atom::Class(cls(1), X)],
+        }];
+        let mut e = HyperEngine::new(&horn, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert_eq!(e.stats().branches_taken, 0);
+        assert_eq!(e.stats().max_branch_depth, 0);
+
+        // Disjunction with a clashing first branch: ≥2 disjuncts
+        // asserted, ≥1 restore, depth ≥1.
+        let disj = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(1), X)],
+                head: vec![],
+            },
+        ];
+        let mut e = HyperEngine::new(&disj, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert_eq!(e.stats().branches_taken, 2);
+        assert_eq!(e.stats().restores, 1);
+        assert_eq!(e.stats().max_branch_depth, 1);
     }
 
     /// `decide` reduces to the Horn fixpoint when the clause set is

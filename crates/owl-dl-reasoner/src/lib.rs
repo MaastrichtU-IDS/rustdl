@@ -118,6 +118,80 @@ pub fn clause_stats<A: horned_owl::model::ForIRI>(
     Ok(stats)
 }
 
+pub use owl_dl_tableau::hyper::{HyperResult, SearchStats};
+
+/// Per-class concept-satisfiability result from the hypertableau
+/// engine ([`owl_dl_tableau::hyper`]), for the H2b wall measurement.
+#[derive(Debug, Clone)]
+pub struct HyperSatClassResult {
+    /// The named class tested as the root concept.
+    pub iri: String,
+    /// `decide`'s verdict over the **clausifiable fragment**.
+    pub result: owl_dl_tableau::hyper::HyperResult,
+    /// Wall time for this class (milliseconds).
+    pub wall_ms: f64,
+    /// Search instrumentation (branches taken, restores, depth).
+    pub stats: owl_dl_tableau::hyper::SearchStats,
+}
+
+/// Summary of a [`hyper_sat_probe`] run.
+#[derive(Debug, Clone)]
+pub struct HyperSatProbe {
+    /// Per-class results, in vocabulary order.
+    pub results: Vec<HyperSatClassResult>,
+    /// Clause-set shape (so the deferred count is visible alongside).
+    pub clause_stats: owl_dl_core::clause::ClauseStats,
+}
+
+/// Run the hypertableau engine's concept-satisfiability decision
+/// ([`owl_dl_tableau::hyper::HyperEngine::decide`]) once per named
+/// class, timing each, for the H2b wall measurement (see
+/// `docs/hypertableau-scoping.md`).
+///
+/// **This is a performance probe, not a correctness claim.** The
+/// H1c clausifier defers cardinality/nominals, so the clause set is
+/// an under-approximation of the ontology. Dropping axioms only
+/// *removes* constraints, hence `Models(full) ⊆ Models(fragment)`:
+/// a `Unsat` verdict is sound for the full ontology, but a `Sat`
+/// verdict is **not** (the full ontology may still be unsatisfiable
+/// via a dropped axiom). Use this to ask "does `decide` terminate
+/// quickly with branching exercised", not "is class C satisfiable".
+///
+/// `max_depth` bounds branching recursion; `per_class_timeout` (if
+/// set) is the wall budget per class, after which the result is
+/// `Stalled`.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    max_depth: usize,
+    per_class_timeout: Option<std::time::Duration>,
+) -> Result<HyperSatProbe, ReasonError> {
+    use owl_dl_tableau::hyper::HyperEngine;
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let (clauses, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+    let mut results = Vec::with_capacity(internal.vocabulary.num_classes());
+    for (class_id, iri) in internal.vocabulary.classes() {
+        let mut engine = HyperEngine::new(&clauses, class_id);
+        let deadline = per_class_timeout.map(|t| std::time::Instant::now() + t);
+        let start = std::time::Instant::now();
+        let result = engine.decide_with_deadline(max_depth, deadline);
+        let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+        results.push(HyperSatClassResult {
+            iri: iri.to_string(),
+            result,
+            wall_ms,
+            stats: engine.stats(),
+        });
+    }
+    Ok(HyperSatProbe {
+        results,
+        clause_stats,
+    })
+}
+
 /// Build the absorbed `TBox` and classify every residual GCI's
 /// trigger per [`owl_dl_core::residual_trigger`]. The result is
 /// the histogram needed to decide whether the lazy-unfolding

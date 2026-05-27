@@ -380,6 +380,50 @@ default. This is the experiment the whole effort exists to run; if
 the walls don't move, the moms-plan §A criterion applies (revert
 rather than ship working-but-unhelpful machinery).
 
+## §H2b — wall probe (`rustdl hyper-sat`), first results
+
+`HyperEngine::decide` is instrumented (`SearchStats`:
+`branches_taken`, `restores`, `max_branch_depth`) and exposed via
+`owl_dl_reasoner::hyper_sat_probe` + the `rustdl hyper-sat` CLI,
+which runs concept-satisfiability per named class with a per-class
+wall budget. **It is a performance probe, not a correctness claim:**
+the H1c clausifier defers cardinality/nominals, so the clause set is
+an under-approximation. Dropping axioms only removes constraints, so
+`Models(full) ⊆ Models(fragment)` — a `Unsat` verdict is sound for
+the full ontology, but a `Sat` verdict is **not**. The headline
+metric is `classes_branched` (classes whose decision actually
+exercised branching); a fast `Sat` with `branches_taken == 0` was
+pure Horn propagation and says nothing about hypertableau.
+
+First measurements (this server, depth 256, 5 s per-class budget):
+
+**pizza** (702 clauses, 25 disjunctive, 17 deferred): 99 classes in
+**12.3 ms total**, but only **2 classes branched** (depth 1). This
+is expected, not a disappointment: pizza's diagnosed wall is in
+**pair subsumption** `sat(A ⊓ ¬B)`, not bare `sat(A)` — a single
+named root rarely entails the antecedents of the covering
+disjunctions, so they never open. Reaching the pizza wall needs
+**H2c**: inject `¬B` at the root (fresh `Q` with `Q→A`, `Q∧B→⊥`,
+seed root `Q`) — a small clausifier add, not H3.
+
+**sio-stripped** (2474 clauses, 41 disjunctive, 91 deferred): 1585
+classes in **16.3 s total**, **817 classes branched**, max branch
+depth **14**, zero `Stalled`. Slowest branched class 316 ms. The
+default reasoner's `sat` on the two branchiest classes **times out
+> 20 s** (one ran 135 s then errored). So on SIO the engine *does*
+exercise real branching and finishes fast where the default stalls.
+
+**This is not yet a wall-moved claim.** The confound: the dropped 91
+axioms could be where the default spends its time, in which case
+hyper "wins" only by skipping the hard part. The discriminator is
+**answer agreement**: SIO returned 0 unsat across 1585 classes — if
+a reference reasoner (Konclude on
+`ontologies/real/konclude-input/sio-stripped.owx`) finds *any*
+genuinely unsatisfiable class, the drop is load-bearing and the
+result is inconclusive until H3 (cardinality). If Konclude also
+returns 0 unsat, the drop is innocent and the bare-sat wall genuinely
+moved. **Pending that comparison** (see §A criterion).
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

@@ -483,7 +483,10 @@ fn main() -> Result<()> {
                 .context("hyper_sat_probe")?;
             let cs = &probe.clause_stats;
             println!("# PERFORMANCE PROBE (not a soundness claim):");
-            println!("#   clausifier defers {} axiom(s); dropping them only", cs.deferred);
+            println!(
+                "#   clausifier defers {} axiom(s); dropping them only",
+                cs.deferred
+            );
             println!("#   removes constraints, so Unsat is sound for the full");
             println!("#   ontology but Sat is NOT. See hypertableau-scoping.md §H2b.");
             println!("# clauses_total:    {}", cs.total);
@@ -532,7 +535,8 @@ fn main() -> Result<()> {
             println!("# max_depth_reached:{max_depth_reached}");
             println!("# classes_branched: {branched}   <-- HEADLINE: only these probe the engine");
             if branched > 0 {
-                branched_walls.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                branched_walls
+                    .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 let max = branched_walls.last().copied().unwrap_or(0.0);
                 let sum: f64 = branched_walls.iter().sum();
                 #[allow(clippy::cast_precision_loss)]
@@ -548,7 +552,11 @@ fn main() -> Result<()> {
                     .cmp(&(a.stats.branches_taken, a.wall_ms.to_bits()))
             });
             println!("# --- top classes by branching ---");
-            for r in by_interest.iter().take(15).filter(|r| r.stats.branches_taken > 0) {
+            for r in by_interest
+                .iter()
+                .take(15)
+                .filter(|r| r.stats.branches_taken > 0)
+            {
                 println!(
                     "#   {:?} wall={:.2}ms branches={} restores={} depth={}  {}",
                     r.result,

@@ -264,6 +264,49 @@ Takeaways:
   the right default there; hypertableau would just reproduce the
   saturation closure.
 
+## §H1 / §H1b — Horn engine shipped; clausifier foundation must change
+
+**H1 (shipped, `da54c5b`):** a standalone Horn hyperresolution
+engine (`owl-dl-tableau::hyper`). Clause-body matching (class
+atoms on `x`, a role atom binding a successor `y`, and class atoms
+on `y` — the `R(x,y) ∧ E(y) → F(x)` back-prop shape), ∃-generation
+with witness reuse, anywhere blocking. 7 unit tests, all green,
+including `existential_backprop_derives_subsumer_on_root` (the
+engine derives `C ⊑ F` from the hand-clausified `∃R.E ⊑ F`).
+
+**H1b finding (the important one): clausifying from the absorbed
+TBox is the wrong foundation.** The end-to-end cross-check
+(engine on the clausifier's output vs the EL entailment) **fails**
+on `∃R.E ⊑ F`. `clause-stats` shows why: that axiom lands in the
+`deferred` bucket. Absorption rewrites `∃R.E ⊑ F` into the
+disjunctive residual `⊤ ⊑ ∀R.¬E ⊔ F` — a tableau-friendly form —
+and the clausifier can't turn that disjunction into the Horn
+clause `R(x,y) ∧ E(y) → F(x)` the engine needs. So the engine is
+EL-complete (proved with hand-built clauses) but the *pipeline*
+isn't, because the clausifier loses ∃-on-LHS.
+
+The fix is **structural-transformation clausification from the NNF
+axioms** (Motik §4), recognising `∃`/`∀`/`⊓`/`⊔` by polarity
+directly, instead of clausifying the already-absorbed TBox. The
+absorbed-TBox route was a fine H0 shortcut for *measuring* clause
+shapes, but it bakes in tableau-specific disjunctive choices that
+are wrong for hyperresolution.
+
+Revised phase order:
+
+- **H1c (new, next):** rebuild the clausifier as a
+  structural transformation over NNF axioms. Then the ignored
+  spec `hyper_horn_matches_el_closure_with_existential_backprop`
+  must pass, and a broader cross-check — hyper-engine root labels
+  vs `owl-dl-saturation` closure on GO/anatomy — must match
+  exactly. *Only then is H1 truly validated.*
+- H2 (disjunctive branching) and beyond proceed on the rebuilt
+  clausifier.
+
+This is exactly the kind of foundational correction the phased,
+gated approach is meant to surface early — before branching is
+layered on a clausifier that silently drops axioms.
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

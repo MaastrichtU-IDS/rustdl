@@ -1250,6 +1250,68 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         is_class_satisfiable(onto, iri).expect("verdict returned")
     }
 
+    /// Hypertableau Phase H1b cross-check + KNOWN-GAP marker.
+    ///
+    /// The Horn hyperresolution *engine* handles the `∃R.E ⊑ F`
+    /// back-propagation shape (proved by
+    /// `hyper::tests::existential_backprop_derives_subsumer_on_root`
+    /// with a hand-built clause). But the H0 clausifier — which
+    /// builds clauses from the *absorbed* `TBox` — does **not**
+    /// produce the needed `R(x,y) ∧ E(y) → F(x)` clause: absorption
+    /// turns `∃R.E ⊑ F` into the disjunctive residual
+    /// `⊤ ⊑ ∀R.¬E ⊔ F`, which the clausifier defers
+    /// (`clause-stats` shows it in the `deferred` bucket). So this
+    /// end-to-end cross-check fails today.
+    ///
+    /// This is the H1b finding: **clausifying from the absorbed
+    /// `TBox` is the wrong foundation** — it makes tableau-specific
+    /// disjunctive choices that lose the clean Horn EL clauses. The
+    /// fix is structural-transformation clausification from the NNF
+    /// axioms (Motik §4), recognising `∃` on the LHS directly. Kept
+    /// as an `#[ignore]`d executable spec: un-ignore it when the
+    /// clausifier is rebuilt. See `docs/hypertableau-scoping.md`
+    /// §H1b.
+    #[test]
+    #[ignore = "clausify-from-absorbed defers ∃-on-LHS; needs structural-transformation clausifier (H1b finding)"]
+    fn hyper_horn_matches_el_closure_with_existential_backprop() {
+        use owl_dl_core::clause::clausify;
+        use owl_dl_core::convert::convert_ontology;
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+
+        // C ⊑ ∃R.D,  D ⊑ E,  ∃R.E ⊑ F  ⊨  C ⊑ F.
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:C))\nDeclaration(Class(:D))\nDeclaration(Class(:E))\n\
+Declaration(Class(:F))\nDeclaration(ObjectProperty(:r))\n\
+SubClassOf(:C ObjectSomeValuesFrom(:r :D))\n\
+SubClassOf(:D :E)\n\
+SubClassOf(ObjectSomeValuesFrom(:r :E) :F)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let clauses = clausify(&internal);
+        assert!(
+            HyperEngine::all_horn(&clauses),
+            "pure-EL ontology must clausify to all-Horn"
+        );
+        let c_id = internal
+            .vocabulary
+            .class_id("http://rustdl.test/C")
+            .expect("C interned");
+        let f_id = internal
+            .vocabulary
+            .class_id("http://rustdl.test/F")
+            .expect("F interned");
+        let mut engine = HyperEngine::new(&clauses, c_id);
+        assert_eq!(engine.run(4096), HyperResult::Sat);
+        assert!(
+            engine.root_labels().contains(&f_id),
+            "hyper engine must derive C ⊑ F via ∃R.E ⊑ F back-propagation; \
+             root labels = {:?}",
+            engine.root_labels()
+        );
+    }
+
     /// Regression for the pizza false-positive-unsat bug fixed
     /// 2026-05-25. Minimal repro extracted from pizza.ofn via ROBOT
     /// STAR extraction + axiom-level bisection. Bug was in

@@ -175,40 +175,58 @@ impl<'c> HyperEngine<'c> {
         }
     }
 
-    /// Fire one clause with `x = node`. Handles the body shapes the
-    /// H0 clausifier produces: class atoms on `x`, plus at most one
-    /// role atom `R(x,y)` that binds a successor `y`.
+    /// Fire one clause with `x = node`. Handles the two body shapes
+    /// the clausifier produces: class atoms on `x`, and at most one
+    /// role atom `R(x,y)` binding a successor `y` (with optional
+    /// class atoms on `y` — the EL back-propagation shape
+    /// `R(x,y) ∧ E(y) → F(x)` from `∃R.E ⊑ F`). Bodies with two
+    /// role atoms, equality, or a class on a third variable are not
+    /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
-        let clause = &self.clauses[ci];
-        // Partition the body: class atoms on x, and an optional
-        // role atom R(x, y).
+        // Collect the body structure into owned data so the
+        // immutable clause borrow is dropped before `fire_head`'s
+        // mutable borrow.
         let mut role_atom: Option<(Role, Var)> = None;
-        for atom in &clause.body {
-            match atom {
-                Atom::Class(c, v) if *v == X => {
-                    if !self.nodes[node.index()].has(*c) {
-                        return FireOutcome::NoChange;
+        let mut y_classes: Vec<(ClassId, Var)> = Vec::new();
+        {
+            let clause = &self.clauses[ci];
+            for atom in &clause.body {
+                match atom {
+                    Atom::Class(c, v) if *v == X => {
+                        if !self.nodes[node.index()].has(*c) {
+                            return FireOutcome::NoChange;
+                        }
                     }
+                    Atom::Role(r, u, v) if *u == X => {
+                        if role_atom.is_some() {
+                            // Two role atoms in one body — not in the
+                            // clausifier's output; defer.
+                            return FireOutcome::NoChange;
+                        }
+                        role_atom = Some((*r, *v));
+                    }
+                    // Class atom on a non-`x` variable: a constraint
+                    // on the role-successor. Checked after binding.
+                    Atom::Class(c, v) => y_classes.push((*c, *v)),
+                    // Equality / inverse-role bodies: later phases.
+                    _ => return FireOutcome::NoChange,
                 }
-                Atom::Role(r, u, v) if *u == X => {
-                    role_atom = Some((*r, *v));
-                }
-                // Body shapes outside the H0 clausifier output
-                // (class on a non-x var, equality, multi-role) —
-                // H1 doesn't match them; skip conservatively.
-                _ => return FireOutcome::NoChange,
             }
         }
 
         match role_atom {
             None => {
-                // Single-variable body matched at `node`. Fire head
-                // with x = node.
+                // No successor variable to bind. Any class-on-`y`
+                // atom is then unbindable, so the clause can't match.
+                if !y_classes.is_empty() {
+                    return FireOutcome::NoChange;
+                }
                 self.fire_head(ci, node, None)
             }
             Some((r, yvar)) => {
-                // Body needs a successor: for each edge node -r-> m
-                // (named-role match), bind y = m and fire.
+                // For each edge node -r-> m (named-role match), bind
+                // y = m, check the class-on-`y` constraints at `m`,
+                // then fire.
                 let edges: Vec<HNode> = self.nodes[node.index()]
                     .edges
                     .iter()
@@ -217,6 +235,12 @@ impl<'c> HyperEngine<'c> {
                     .collect();
                 let mut changed = false;
                 for m in edges {
+                    let matched = y_classes
+                        .iter()
+                        .all(|(c, v)| *v == yvar && self.nodes[m.index()].has(*c));
+                    if !matched {
+                        continue;
+                    }
                     match self.fire_head(ci, node, Some((yvar, m))) {
                         FireOutcome::Clash => return FireOutcome::Clash,
                         FireOutcome::Changed => changed = true,
@@ -428,6 +452,46 @@ mod tests {
         assert_eq!(e.run(1024), HyperResult::Sat);
         // Two nodes: root {A}, successor {B,C}.
         assert_eq!(e.node_count(), 2);
+    }
+
+    #[test]
+    fn existential_backprop_derives_subsumer_on_root() {
+        // The EL `∃R.E ⊑ F` shape, hand-clausified as
+        // `R(x,y) ∧ E(y) → F(x)`. With C ⊑ ∃R.D, D ⊑ E, the root
+        // (C) must gain F via back-propagation from its successor.
+        // Proves the engine handles class-atoms on the successor
+        // variable in a body (the fire_clause class-on-y fix),
+        // independent of the clausifier (which doesn't yet produce
+        // this clause from ∃-on-LHS — see hyper Phase H1b note).
+        let r = Role::Named(RoleId::new(0));
+        let c = cls(0);
+        let d = cls(1);
+        let e_cls = cls(2);
+        let f = cls(3);
+        let clauses = vec![
+            // C(x) → ∃R.D(x)
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Exists(r, d, X)],
+            },
+            // D(x) → E(x)
+            DlClause {
+                body: vec![Atom::Class(d, X)],
+                head: vec![Atom::Class(e_cls, X)],
+            },
+            // R(x,y) ∧ E(y) → F(x)
+            DlClause {
+                body: vec![Atom::Role(r, X, 1), Atom::Class(e_cls, 1)],
+                head: vec![Atom::Class(f, X)],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, c);
+        assert_eq!(engine.run(1024), HyperResult::Sat);
+        assert!(
+            engine.root_labels().contains(&f),
+            "root must gain F via ∃R.E⊑F back-prop; labels={:?}",
+            engine.root_labels()
+        );
     }
 
     #[test]

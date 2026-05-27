@@ -29,6 +29,21 @@ Across SHOIN / SROIFV / SRI / SRIQ the hyperresolution engine matches
 Konclude's hierarchy exactly on every TBox-subsumption ontology
 tested, with zero false positives.
 
+**Second-reasoner cross-check (HermiT via ROBOT).** To confirm the
+agreement isn't a Konclude-specific artefact, the same diff was run
+against HermiT where feasible:
+- **sulo-stripped (SRI):** hyper vs HermiT — **100 %, 0 false
+  positives** (local-name normalised; ROBOT emits abbreviated IRIs).
+  Independent confirmation of the Konclude result.
+- **pizza:** ROBOT refuses to classify an incoherent ontology, but
+  HermiT flags the **same two unsatisfiable classes**
+  (`CheeseyVegetableTopping`, `IceCream`) that Konclude and the hyper
+  engine find — partial confirmation.
+- **ro-stripped (SROIFV):** HermiT **hung > 9 min** (killed) where
+  Konclude classifies in 2 ms and hyper instantly — a HermiT
+  pathological case (inverse + functional), no agreement data, but an
+  incidental sign hyper/Konclude beat HermiT here.
+
 **Scope limitation found:** `family-stripped` is **inconsistent**
 (Konclude confirms — 1848 ABox assertions, ABox-driven). The engine is
 **TBox-only** (no ABox/individual reasoning beyond nominals-as-classes),

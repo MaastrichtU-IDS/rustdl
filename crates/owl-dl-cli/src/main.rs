@@ -180,6 +180,14 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
+    /// Print DL-clause shape statistics (hypertableau Phase H0):
+    /// total clauses, Horn vs disjunctive, ⊥-headed, ∃-headed,
+    /// and deferred (constructs the H0 clausifier doesn't yet
+    /// handle). See `docs/hypertableau-scoping.md`.
+    ClauseStats {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -435,6 +443,16 @@ fn main() -> Result<()> {
                 stats.deferred() as f64 / stats.total as f64
             };
             println!("# deferred_fraction:  {:.1}%", frac * 100.0);
+        }
+        Command::ClauseStats { file } => {
+            let onto = parse_ofn(&file)?;
+            let stats = owl_dl_reasoner::clause_stats(&onto).context("clause_stats")?;
+            println!("# clauses_total:    {}", stats.total);
+            println!("# horn:             {}", stats.horn);
+            println!("# disjunctive:      {}", stats.disjunctive);
+            println!("# bottom_headed:    {}", stats.bottom_headed);
+            println!("# with_exists_head: {}", stats.with_exists_head);
+            println!("# deferred:         {}", stats.deferred);
         }
         Command::LocalityStats { file } => {
             let onto = parse_ofn(&file)?;

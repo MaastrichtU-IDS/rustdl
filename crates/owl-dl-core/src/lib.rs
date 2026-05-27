@@ -8,6 +8,7 @@
 //! full plan.
 
 pub mod absorb;
+pub mod clause;
 pub mod convert;
 pub mod convert_back;
 pub mod definitions;

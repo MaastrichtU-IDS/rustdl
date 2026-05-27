@@ -101,6 +101,23 @@ pub struct TBoxStats {
     pub concept_rule_or_count: usize,
 }
 
+/// Clausify the ontology into DL-clauses and return the shape
+/// histogram (hypertableau Phase H0 — see
+/// `docs/hypertableau-scoping.md`). Produces no reasoning; the
+/// stats measure clause-shape distribution and clausifier
+/// coverage (`deferred`) across the corpus.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn clause_stats<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<owl_dl_core::clause::ClauseStats, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let (_clauses, stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+    Ok(stats)
+}
+
 /// Build the absorbed `TBox` and classify every residual GCI's
 /// trigger per [`owl_dl_core::residual_trigger`]. The result is
 /// the histogram needed to decide whether the lazy-unfolding

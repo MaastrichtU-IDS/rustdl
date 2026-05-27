@@ -13,6 +13,58 @@ Earlier docs:
 - [`model-caching-plan.md`](model-caching-plan.md) — root-labels caching + Phase-2 rethink.
 - [`module-extraction-plan.md`](module-extraction-plan.md) — syntactic locality + corpus measurement.
 
+## ⚠ 2026-05-27 finding: per-class `sat(A)` does NOT converge on pizza/SIO
+
+A model-caching idea looked promising: the classify per-class
+unsat probe runs `sat(A)` for every class; if that converges, we
+could cache A's satisfying model and answer each pair `sat(A ⊓
+¬B)` by checking whether `B` is in the model (a model of `A`
+lacking `B` soundly witnesses `A ⋢ B`). This sidesteps the
+[`model-caching-plan.md`](model-caching-plan.md) §A objection
+because it caches from the *pure* `sat(A)` probe, not a pair
+probe.
+
+**Measured and falsified.** `owl-dl-bench sat --deadline-ms 5000`
+on SIO classes (`SIO_000000`, `_000004`, `_000009`) **all time
+out at 5 s**. The tableau cannot build a model of a *single* SIO
+class, never mind a pair. So:
+
+- The classify per-class probes on SIO silently time out (treated
+  as satisfiable via `unwrap_or(true)` — correct, since SIO has no
+  unsat classes, but via timeout not via a completed model).
+- There is no completed model to cache. **Model caching (Lever C)
+  is dead for SIO** — and by the same explosion, for pizza.
+
+**Root cause: blocking never fires** (`is_blocked_true = 0` on
+pizza, per `perf-2026-05-24-new-server.md` §6). The naive tableau
+grows models whose label sets stay pairwise non-subset (pizza
+toppings, SIO's deep class structure), so pair-blocking can't cap
+growth. Under naive SROIQ tableau, model size is worst-case
+exponential; pizza/SIO classes hit that worst case.
+
+**Consequence for the roadmap.** Every lever that depends on a
+*completed model* (caching, snapshot/replay) is out for pizza/SIO.
+Every *per-step* efficiency lever (MOMS, lazy unfolding,
+module-extraction, inverse-Vec, early-presence) has been measured
+not to move timeout-bound walls. The remaining levers that could
+actually make pizza/SIO classes *converge* are:
+
+1. **Hypertableau** (Motik 2008) — smaller branching by
+   construction; the algorithm HermiT uses. Multi-month rewrite of
+   the tableau core.
+2. **Anywhere/core blocking strong enough to fire on
+   pizza/SIO-shaped models** — research-grade; naive subset
+   blocking demonstrably doesn't fire here.
+3. **Accept `--saturation-only`** as the production answer for
+   mostly-EL workloads (SIO 266 s → 0.22 s, sound
+   under-approximation, 0.19 % edge loss). Already shipped.
+
+(3) is the pragmatic truth today. (1)/(2) are the only paths to
+default-mode parity and both are multi-month. **Lazy unfolding
+(Lever A, shipped) remains the right call for
+convergent-pair-dominated workloads like family (−28 %)** — those
+DO build models, so shrinking them helps.
+
 ## Grounded diagnosis (data, not assumptions)
 
 `rustdl tbox-stats` on the corpus:

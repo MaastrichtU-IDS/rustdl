@@ -98,3 +98,21 @@ clausification (§1) + inverse-aware matching (§2) to make it pass,
 then double-blocking (§3) with its own cyclic canary. Each step gated
 by its crafted test; the corpus is the no-regression guard, not the
 completeness gate.
+
+## §7 — Progress
+
+- **Inverse-aware matching (§2) — DONE** (`b5f6762`). `enumerate_matches`
+  now unions outgoing edges with incoming `preds` whose `flip()` matches
+  the wanted role, so following `R⁻` walks `R`-predecessors. The canary
+  (§4.1) passes and is a live regression test. Corpus 0-FP held and
+  **counts are identical to baseline** (pizza 695, ro 158, sulo 51) —
+  the corpus is inert to inverse propagation, confirming §0. Sound for
+  `Unsat` (∀R⁻ derives genuine consequences).
+- **RBox inverse-pair clausification (§1) — PENDING.** The canary uses
+  an *inline* `∀ObjectInverseOf(R).C`, which needs no RBox. Named
+  inverses via `InverseObjectProperties(R,S)` (where `S ≡ R⁻`) are still
+  dropped by the clausifier — needed for ontologies that use the named
+  inverse `S`. This is the next HF2 step (plus role hierarchy / §1).
+- **Double-blocking (§3) — PENDING.** Required for SAT-soundness
+  (anywhere-blocking is unsound with inverses for *model construction*,
+  not for the `Unsat`-only probe). Needs its own cyclic canary (§4.3).

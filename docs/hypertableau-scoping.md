@@ -529,6 +529,14 @@ Neither is "tune heuristics"; both are real clausifier+engine work.
 H3a confirms the diagnosis was causal and clears the cheap third of
 the pizza gap with zero engine risk.
 
+**H3b is scoped** in [`hypertableau-h3b-scoping.md`](hypertableau-h3b-scoping.md):
+the antecedent-`∀`/`¬` family (50 of the 77 residual misses) is
+unlocked not by deriving universals positively but by expanding
+`¬sup` in NNF and asserting it Q-gated at the root, plus minimal
+negative literals (complement classes). The full 77-miss
+categorisation: H3b family 50, min-cardinality 20 (H3c),
+two-role-chain body 5 (engine matching), nominal 2.
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

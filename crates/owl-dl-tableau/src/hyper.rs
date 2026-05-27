@@ -58,10 +58,88 @@ impl HNode {
     }
 }
 
+/// A set of branch *decision levels* a derivation depends on, for
+/// dependency-directed backjumping. A `u128` bitset (decision levels
+/// 0..128) plus an `overflow` flag: once branching exceeds 128 levels
+/// the set degrades to "depends on everything" — conservative, so the
+/// solver falls back to chronological backtracking rather than risking
+/// an unsound backjump. Empty (`EMPTY`) is the common case: every label
+/// derived before any branching depends on no decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct DepSet {
+    bits: u128,
+    overflow: bool,
+}
+
+impl DepSet {
+    const EMPTY: DepSet = DepSet {
+        bits: 0,
+        overflow: false,
+    };
+
+    /// "Depends on everything" — the conservative dep-set for clashes
+    /// whose precise provenance isn't tracked (merge `≠`, NN-rule).
+    /// Forces chronological backtracking (no backjump past), which is
+    /// always sound.
+    const ALL: DepSet = DepSet {
+        bits: 0,
+        overflow: true,
+    };
+
+    fn singleton(level: u32) -> DepSet {
+        if level < 128 {
+            DepSet {
+                bits: 1u128 << level,
+                overflow: false,
+            }
+        } else {
+            DepSet {
+                bits: 0,
+                overflow: true,
+            }
+        }
+    }
+
+    /// `true` if `level` is in the set — conservatively `true` on
+    /// overflow (so the solver won't backjump past it).
+    fn contains(self, level: u32) -> bool {
+        self.overflow || (level < 128 && (self.bits & (1u128 << level)) != 0)
+    }
+
+    fn union(self, other: DepSet) -> DepSet {
+        DepSet {
+            bits: self.bits | other.bits,
+            overflow: self.overflow || other.overflow,
+        }
+    }
+
+    fn insert(self, level: u32) -> DepSet {
+        self.union(DepSet::singleton(level))
+    }
+
+    /// Drop `level` from the set (used when a decision is *exhausted* —
+    /// proved Unsat for all its disjuncts). No-op on overflow (keeps the
+    /// conservative "depends on all" — never under-counts).
+    fn remove(self, level: u32) -> DepSet {
+        if self.overflow || level >= 128 {
+            self
+        } else {
+            DepSet {
+                bits: self.bits & !(1u128 << level),
+                overflow: false,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct HyperNode {
     /// Class atoms true at this node — sorted by id, deduped.
     labels: Vec<ClassId>,
+    /// Backjumping dependency sets, parallel to `labels` (same index):
+    /// `label_deps[i]` is the set of decision levels `labels[i]`'s
+    /// derivation depends on. Empty before any branching.
+    label_deps: Vec<DepSet>,
     /// Outgoing role edges `(role, target)`.
     edges: Vec<(Role, HNode)>,
     /// Incoming role edges `(role, source)` — the reverse of `edges`,
@@ -81,6 +159,12 @@ struct HyperNode {
     /// Creation order index — used by anywhere blocking ("blocked
     /// by an *earlier* node"). Equal to the node's own index here.
     order: u32,
+    /// Backjumping: the decision dep-set this node was *created* under
+    /// (the `∃`/`≥n` that generated it). A clause matching this node via
+    /// a role atom depends on the node existing, hence on `birth_deps` —
+    /// without this, domain-style `R(x,y) → D(x)` clauses under-count
+    /// their deps and cause unsound backjumps. Root node: `EMPTY`.
+    birth_deps: DepSet,
 }
 
 impl HyperNode {
@@ -90,14 +174,27 @@ impl HyperNode {
             .is_ok()
     }
 
-    /// Insert a class label; returns true if newly added.
-    fn add(&mut self, c: ClassId) -> bool {
+    /// Insert a class label with its backjumping dep-set; returns true
+    /// if newly added. On an already-present label the existing dep-set
+    /// is **kept** (the "keep first" rule — narrower is sound; widening
+    /// to the union would defeat backjumping when a label is re-derived
+    /// along multiple branches).
+    fn add(&mut self, c: ClassId, deps: DepSet) -> bool {
         match self.labels.binary_search_by_key(&c.index(), |l| l.index()) {
             Ok(_) => false,
             Err(pos) => {
                 self.labels.insert(pos, c);
+                self.label_deps.insert(pos, deps);
                 true
             }
+        }
+    }
+
+    /// The dep-set of label `c` at this node (`EMPTY` if absent).
+    fn deps_of(&self, c: ClassId) -> DepSet {
+        match self.labels.binary_search_by_key(&c.index(), |l| l.index()) {
+            Ok(pos) => self.label_deps[pos],
+            Err(_) => DepSet::EMPTY,
         }
     }
 }
@@ -178,6 +275,13 @@ pub struct HyperEngine<'c> {
     /// them (clashing if they are `≠`). `None` ⇒ no nominals (every
     /// class is ordinary), the pre-HF4 behaviour.
     nominals: Option<(u32, u32)>,
+    /// Backjumping: the dep-set of the most recent clash, set at each
+    /// clash site just before returning [`FireOutcome::Clash`] and read
+    /// by [`HyperEngine::solve`] after [`HyperEngine::horn_fixpoint`]
+    /// reports `Unsat`. Decision-free clashes (the Horn-only path) leave
+    /// it `EMPTY`, so a subsumption proved without branching propagates
+    /// "depends on no decision".
+    clash_deps: DepSet,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -256,7 +360,7 @@ impl<'c> HyperEngine<'c> {
             order: 0,
             ..HyperNode::default()
         };
-        root_node.add(root);
+        root_node.add(root, DepSet::EMPTY);
         Self {
             clauses,
             nodes: vec![root_node],
@@ -269,6 +373,7 @@ impl<'c> HyperEngine<'c> {
             sub_roles: None,
             neq: Vec::new(),
             nominals: None,
+            clash_deps: DepSet::EMPTY,
         }
     }
 
@@ -309,11 +414,11 @@ impl<'c> HyperEngine<'c> {
         r
     }
 
-    /// Add class `c` to node `n`, emitting a [`Event::Label`] on a
-    /// *first* add (so its newly-enabled clauses fire). Returns whether
-    /// the label was newly added.
-    fn add_label(&mut self, n: HNode, c: ClassId) -> bool {
-        if self.nodes[n.index()].add(c) {
+    /// Add class `c` to node `n` with backjumping dep-set `deps`,
+    /// emitting a [`Event::Label`] on a *first* add (so its newly-enabled
+    /// clauses fire). Returns whether the label was newly added.
+    fn add_label(&mut self, n: HNode, c: ClassId, deps: DepSet) -> bool {
+        if self.nodes[n.index()].add(c, deps) {
             self.worklist.push(Event::Label(n, c));
             true
         } else {
@@ -526,33 +631,53 @@ impl<'c> HyperEngine<'c> {
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
-        // Disjunctive-head branching (H2).
+        // Disjunctive-head branching (H2) with dependency-directed
+        // backjumping. The decision level of this frame is `d`; the
+        // asserted disjunct inherits the clause body's dep-set ∪ {d}.
         if let Some((ci, node, binding)) = self.find_open_disjunction() {
             if depth == 0 {
                 return HyperResult::Stalled;
             }
             self.track_depth(depth);
+            let d = u32::try_from(self.init_depth - depth).unwrap_or(u32::MAX);
+            let body_deps = self.clause_body_deps(ci, node, &binding);
+            let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
             let mut any_stalled = false;
+            let mut combined = DepSet::EMPTY;
             for k in 0..head_len {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
-                let _ = self.apply_head_atom(head_atom, node, &binding);
+                let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return HyperResult::Sat,
-                    HyperResult::Unsat => self.restore(saved),
+                    HyperResult::Unsat => {
+                        let child_deps = self.clash_deps;
+                        self.restore(saved);
+                        if !child_deps.contains(d) {
+                            // This decision wasn't responsible for the
+                            // clash — backjump: propagate the child's
+                            // dep-set up, skipping the remaining
+                            // disjuncts (and this whole decision).
+                            self.clash_deps = child_deps;
+                            return HyperResult::Unsat;
+                        }
+                        combined = combined.union(child_deps);
+                    }
                     HyperResult::Stalled => {
                         self.restore(saved);
                         any_stalled = true;
                     }
                 }
             }
-            return if any_stalled {
-                HyperResult::Stalled
-            } else {
-                HyperResult::Unsat
-            };
+            if any_stalled {
+                return HyperResult::Stalled;
+            }
+            // Every disjunct failed with `d` in its clash deps: the
+            // decision is exhausted, so drop `d` from the propagated set.
+            self.clash_deps = combined.remove(d);
+            return HyperResult::Unsat;
         }
         // `≤n` merge branching (H3c): merge one pair of the violating
         // node's successors per branch, recursing.
@@ -586,11 +711,16 @@ impl<'c> HyperEngine<'c> {
                     }
                 }
             }
-            return if any_stalled {
-                HyperResult::Stalled
-            } else {
-                HyperResult::Unsat
-            };
+            if any_stalled {
+                return HyperResult::Stalled;
+            }
+            // `≤n` merge provenance isn't tracked precisely, so report
+            // a conservative "depends on everything" — the parent frame
+            // then backtracks chronologically past this merge decision
+            // (sound; no backjump). Backjumping through merge decisions
+            // is future work (interacts with the in-edge redirect gap).
+            self.clash_deps = DepSet::ALL;
+            return HyperResult::Unsat;
         }
         HyperResult::Sat
     }
@@ -748,11 +878,22 @@ impl<'c> HyperEngine<'c> {
             return false;
         }
         if self.are_neq(s_i, s_j) {
-            return true; // ≠ violated — merging is impossible.
+            // ≠ violated — merging is impossible. Conservative deps
+            // (precise `≠`/merge provenance isn't tracked).
+            self.clash_deps = DepSet::ALL;
+            return true;
         }
         self.representative[s_j.index()] = s_i;
-        for c in self.nodes[s_j.index()].labels.clone() {
-            self.add_label(s_i, c);
+        let s_j_labels: Vec<(ClassId, DepSet)> = {
+            let nj = &self.nodes[s_j.index()];
+            nj.labels
+                .iter()
+                .copied()
+                .zip(nj.label_deps.iter().copied())
+                .collect()
+        };
+        for (c, c_deps) in s_j_labels {
+            self.add_label(s_i, c, c_deps);
         }
         for (r, t) in self.nodes[s_j.index()].edges.clone() {
             self.nodes[s_i.index()].edges.push((r, t));
@@ -790,7 +931,8 @@ impl<'c> HyperEngine<'c> {
         };
         let mut changed = false;
         for binding in bindings {
-            match self.fire_head(ci, node, &binding) {
+            let body_deps = self.clause_body_deps(ci, node, &binding);
+            match self.fire_head(ci, node, &binding, body_deps) {
                 FireOutcome::Clash => return FireOutcome::Clash,
                 FireOutcome::Changed => changed = true,
                 FireOutcome::NoChange => {}
@@ -801,6 +943,29 @@ impl<'c> HyperEngine<'c> {
         } else {
             FireOutcome::NoChange
         }
+    }
+
+    /// The backjumping dep-set of clause `ci`'s body under `binding`:
+    /// the union of the dep-sets of every body *class* atom at its bound
+    /// node (role atoms carry no decision dependency). This is the
+    /// dep-set a derived head inherits, and the clash dep-set for a
+    /// `body → ⊥` clause.
+    fn clause_body_deps(&self, ci: usize, xnode: HNode, binding: &Binding) -> DepSet {
+        // Every node the clause body touches contributes its `birth_deps`
+        // (a role atom depends on its successor existing), and every body
+        // class atom contributes its label deps.
+        let mut deps = self.nodes[xnode.index()].birth_deps;
+        for &(_, node) in binding {
+            deps = deps.union(self.nodes[node.index()].birth_deps);
+        }
+        for atom in &self.clauses[ci].body {
+            if let Atom::Class(c, v) = atom
+                && let Some(node) = resolve_var(*v, xnode, binding)
+            {
+                deps = deps.union(self.nodes[node.index()].deps_of(*c));
+            }
+        }
+        deps
     }
 
     /// Match clause `ci`'s body with `x = node`, enumerating every
@@ -904,29 +1069,45 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Assert the (single, Horn) head atom. `binding` maps the body's
-    /// non-`X` variables to nodes.
-    fn fire_head(&mut self, ci: usize, xnode: HNode, binding: &Binding) -> FireOutcome {
+    /// non-`X` variables to nodes; `body_deps` is the clause body's
+    /// backjumping dep-set (the head inherits it; a `body → ⊥` clash
+    /// records it).
+    fn fire_head(
+        &mut self,
+        ci: usize,
+        xnode: HNode,
+        binding: &Binding,
+        body_deps: DepSet,
+    ) -> FireOutcome {
         let clause = &self.clauses[ci];
         if clause.head.is_empty() {
-            // body → ⊥ : the body matched, so this is a clash.
+            // body → ⊥ : the body matched, so this is a clash. Record
+            // the dep-set so `solve` can backjump.
+            self.clash_deps = body_deps;
             return FireOutcome::Clash;
         }
         // Horn: exactly one head atom (caller gated on is_horn).
         let head = clause.head[0];
-        self.apply_head_atom(head, xnode, binding)
+        self.apply_head_atom(head, xnode, binding, body_deps)
     }
 
     /// Assert one head atom (`Class` label or `∃` successor) at the
     /// resolved binding. Shared by Horn firing and disjunctive
     /// branching. Never reports a clash itself — clashes surface when
     /// a `body → ⊥` clause subsequently fires in [`horn_fixpoint`].
-    fn apply_head_atom(&mut self, head: Atom, xnode: HNode, binding: &Binding) -> FireOutcome {
+    fn apply_head_atom(
+        &mut self,
+        head: Atom,
+        xnode: HNode,
+        binding: &Binding,
+        deps: DepSet,
+    ) -> FireOutcome {
         match head {
             Atom::Class(c, v) => {
                 let Some(target) = resolve_var(v, xnode, binding) else {
                     return FireOutcome::NoChange;
                 };
-                if self.add_label(target, c) {
+                if self.add_label(target, c, deps) {
                     FireOutcome::Changed
                 } else {
                     FireOutcome::NoChange
@@ -936,7 +1117,7 @@ impl<'c> HyperEngine<'c> {
                 let Some(src) = resolve_var(v, xnode, binding) else {
                     return FireOutcome::NoChange;
                 };
-                self.fire_exists(src, role, cls)
+                self.fire_exists(src, role, cls, deps)
             }
             Atom::AtMost(role, qual, n, v) => {
                 let Some(target) = resolve_var(v, xnode, binding) else {
@@ -954,7 +1135,7 @@ impl<'c> HyperEngine<'c> {
                 let Some(target) = resolve_var(v, xnode, binding) else {
                     return FireOutcome::NoChange;
                 };
-                self.generate_at_least(target, role, qual, n)
+                self.generate_at_least(target, role, qual, n, deps)
             }
             // TODO(HF3): self-loop `Role(x,x)` heads and `≈` equality
             // not yet realised — no-op (sound for `Unsat`: an
@@ -966,7 +1147,7 @@ impl<'c> HyperEngine<'c> {
     /// `∃role.cls` at `src`: reuse an existing role-successor that
     /// already carries `cls`; otherwise (if `src` isn't blocked)
     /// create a fresh successor seeded with `cls`.
-    fn fire_exists(&mut self, src: HNode, role: Role, cls: ClassId) -> FireOutcome {
+    fn fire_exists(&mut self, src: HNode, role: Role, cls: ClassId, deps: DepSet) -> FireOutcome {
         // Witness reuse: any role-matching successor already in cls.
         let has_witness = self.nodes[src.index()].edges.iter().any(|(er, t)| {
             role_matches(*er, role, self.sub_roles.as_ref()) && self.nodes[t.index()].has(cls)
@@ -980,13 +1161,15 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         let succ = self.new_node();
+        self.nodes[succ.index()].birth_deps = deps;
         self.nodes[src.index()].edges.push((role, succ));
         self.nodes[succ.index()].preds.push((role, src));
         // The new edge fires role-triggered clauses at `src`; the seed
         // label fires the successor's clauses (and, via Event::Label,
         // back-prop at `src`).
         self.worklist.push(Event::Edge(src, role, succ));
-        self.add_label(succ, cls);
+        // The seed label inherits the ∃'s body dep-set.
+        self.add_label(succ, cls, deps);
         FireOutcome::Changed
     }
 
@@ -1032,6 +1215,7 @@ impl<'c> HyperEngine<'c> {
         role: Role,
         qual: Option<ClassId>,
         n: u32,
+        deps: DepSet,
     ) -> FireOutcome {
         if n == 0 || role.is_inverse() {
             return FireOutcome::NoChange;
@@ -1067,11 +1251,12 @@ impl<'c> HyperEngine<'c> {
         let mut fresh = Vec::with_capacity(n as usize);
         for _ in 0..n {
             let succ = self.new_node();
+            self.nodes[succ.index()].birth_deps = deps;
             self.nodes[x.index()].edges.push((role, succ));
             self.nodes[succ.index()].preds.push((role, x));
             self.worklist.push(Event::Edge(x, role, succ));
             if let Some(q) = qual {
-                self.add_label(succ, q);
+                self.add_label(succ, q, deps);
             }
             fresh.push(succ);
         }
@@ -1906,5 +2091,72 @@ mod tests {
         let mut e = HyperEngine::new(&clauses, cls(0));
         assert_eq!(e.decide(64), HyperResult::Sat);
         assert_eq!(e.root_labels(), &[cls(0), cls(1), cls(2)]);
+    }
+
+    /// `DepSet` algebra — the off-by-one surface for unsound pruning.
+    #[test]
+    fn depset_operations() {
+        assert!(!DepSet::EMPTY.contains(0));
+        // singleton / contains / insert
+        let s = DepSet::singleton(3);
+        assert!(s.contains(3) && !s.contains(2) && !s.contains(4));
+        assert_ne!(s, DepSet::EMPTY);
+        let s = s.insert(0).insert(5);
+        assert!(s.contains(0) && s.contains(3) && s.contains(5) && !s.contains(1));
+        // union
+        let u = DepSet::singleton(1).union(DepSet::singleton(8));
+        assert!(u.contains(1) && u.contains(8) && !u.contains(2));
+        // remove clears exactly one level (the exhausted-decision rule)
+        let r = u.remove(8);
+        assert!(r.contains(1) && !r.contains(8));
+        assert_eq!(DepSet::singleton(1).remove(1), DepSet::EMPTY);
+        // remove of an absent level is a no-op
+        assert!(DepSet::singleton(1).remove(2).contains(1));
+        // overflow is conservative: contains everything, remove is inert
+        assert!(DepSet::ALL.contains(0) && DepSet::ALL.contains(127) && DepSet::ALL.contains(200));
+        assert!(DepSet::ALL.remove(5).contains(5));
+        assert_ne!(DepSet::ALL, DepSet::EMPTY);
+        // level >= 128 degrades to overflow (conservative)
+        assert!(DepSet::singleton(200).contains(0)); // overflow ⇒ contains all
+    }
+
+    /// Backjumping canary: `n` independent root disjunctions
+    /// `R ⊑ ⊓ᵢ(Aᵢ ⊔ Bᵢ)`, where only the **first and last** pair clash
+    /// (all four combinations of `{A₁,B₁} × {Aₙ,Bₙ}` are `⊥`), so `R` is
+    /// unsat. The `n-2` middle disjunctions are irrelevant to the clash.
+    /// Chronological backtracking re-explores those `2^(n-2)` irrelevant
+    /// combinations; dependency-directed backjumping recognises the
+    /// clash depends only on decisions 1 and `n` and closes `R` in a
+    /// linear number of branches. The branch-count bound is what the
+    /// backjumping phase must satisfy — it fails (blows up) today.
+    #[test]
+    fn backjumping_collapses_irrelevant_middle_decisions() {
+        const N: u32 = 8;
+        let root = cls(0);
+        let a = |i: u32| cls(2 * i - 1); // Aᵢ
+        let b = |i: u32| cls(2 * i); // Bᵢ
+        let mut clauses = Vec::new();
+        for i in 1..=N {
+            clauses.push(DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Class(a(i), X), Atom::Class(b(i), X)],
+            });
+        }
+        // First (1) and last (N) pair clash in all four combinations.
+        for &first in &[a(1), b(1)] {
+            for &last in &[a(N), b(N)] {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(first, X), Atom::Class(last, X)],
+                    head: vec![],
+                });
+            }
+        }
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(256), HyperResult::Unsat);
+        let branches = e.stats().branches_taken;
+        assert!(
+            branches <= 4 * u64::from(N),
+            "backjumping should close R in O(N) branches, got {branches} (2^(N-2) = blowup)"
+        );
     }
 }

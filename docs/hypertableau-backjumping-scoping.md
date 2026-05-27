@@ -75,6 +75,27 @@ path, lifting the H4 wedge's `Unsat`-only restriction. **HF5 is gated on
 this phase**; without it, wiring leaves the 93 hard pairs slow and moves
 the wall only partially.
 
+## §3.5 — Shipped (disjunction backjumping)
+
+Dependency-directed backjumping over the disjunction trail, dep-sets as
+a `u128` bitset (`DepSet`, overflow ⇒ conservative). Result on pizza:
+**4:44 → 13.2 s (~21×)**, the 91 slow `SpicyPizza` pairs collapsed to
+`<10 ms`, one of the two stalls resolved; corpus unchanged (695 / 158 /
+51, **0 FP**); SIO 0.95 s. The `≤n`-merge branch stays conservative
+(`DepSet::ALL`, chronological) — backjumping through merge decisions is
+future work.
+
+**The bug that proves the discipline:** the first cut tracked dep-sets
+on labels only and **regressed pizza to 753 with 58 false positives**
+(`Topping ⊑ VegetarianPizza` — unsound backjump). Cause: a clause
+matching a successor via a role atom (domain-style `R(x,y) → D(x)`)
+depends on that successor *existing* — created under a decision — but
+the dep-set missed it (no class atom on `y` to carry it). Fix: a
+per-node **`birth_deps`** (the decision dep-set a node was created
+under), unioned in `clause_body_deps` for every bound node. The corpus
+0-FP check caught it; the 85 hand-built branching tests did **not** —
+the corpus is the soundness net for dep propagation.
+
 ## §4 — Risk / honesty
 
 Backjumping is a real implementation effort (trail + dep-set

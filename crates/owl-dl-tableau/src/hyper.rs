@@ -131,6 +131,48 @@ pub struct HyperEngine<'c> {
     stats: SearchStats,
     init_depth: usize,
     deadline: Option<Instant>,
+    /// Horn-clause index by *representative trigger* — the first
+    /// `Class(_, X)` body atom's class. `trigger_index[c.index()]`
+    /// lists the Horn clauses that can only fire at a node carrying
+    /// class `c`. A clause needs *all* its `X`-classes present, but
+    /// the representative being absent already rules it out, so the
+    /// fixpoint only attempts trigger-present clauses instead of the
+    /// whole clause set (see the §profiling note in the doc).
+    trigger_index: Vec<Vec<usize>>,
+    /// Horn clauses with no `X`-class body atom (role-only / `⊤`
+    /// bodies) — no trigger, so attempted at every node.
+    untriggered: Vec<usize>,
+}
+
+/// Build the Horn-clause trigger index: clauses keyed by their first
+/// `Class(_, X)` body atom (the representative trigger), plus the
+/// untriggered (no-`X`-class) Horn clauses. Non-Horn clauses are
+/// branch points handled by `find_open_disjunction`, not indexed here.
+fn build_trigger_index(clauses: &[DlClause]) -> (Vec<Vec<usize>>, Vec<usize>) {
+    let repr = |cl: &DlClause| -> Option<usize> {
+        cl.body.iter().find_map(|a| match a {
+            Atom::Class(c, v) if *v == X => Some(c.index() as usize),
+            _ => None,
+        })
+    };
+    let max_trigger = clauses
+        .iter()
+        .filter(|cl| cl.is_horn())
+        .filter_map(repr)
+        .max()
+        .map_or(0, |m| m + 1);
+    let mut index: Vec<Vec<usize>> = vec![Vec::new(); max_trigger];
+    let mut untriggered = Vec::new();
+    for (ci, cl) in clauses.iter().enumerate() {
+        if !cl.is_horn() {
+            continue;
+        }
+        match repr(cl) {
+            Some(c) => index[c].push(ci),
+            None => untriggered.push(ci),
+        }
+    }
+    (index, untriggered)
 }
 
 impl<'c> HyperEngine<'c> {
@@ -143,12 +185,15 @@ impl<'c> HyperEngine<'c> {
             ..HyperNode::default()
         };
         root_node.add(root);
+        let (trigger_index, untriggered) = build_trigger_index(clauses);
         Self {
             clauses,
             nodes: vec![root_node],
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
+            trigger_index,
+            untriggered,
         }
     }
 
@@ -361,12 +406,22 @@ impl<'c> HyperEngine<'c> {
         false
     }
 
-    /// Try every clause with the central variable bound to `node`.
+    /// Fire the Horn clauses that can match at `node`: the untriggered
+    /// ones plus those whose representative trigger class is present in
+    /// the node's labels (via [`trigger_index`]) — not the whole clause
+    /// set. A clause whose trigger is absent cannot fire, so this is
+    /// complete; [`match_body`] still verifies the rest of each body.
     fn fire_clauses_at(&mut self, node: HNode) -> FireOutcome {
+        // Collect candidate clause indices first (so the immutable
+        // label borrow is released before `fire_clause`'s mutation).
+        let mut cands: Vec<usize> = self.untriggered.clone();
+        for &l in &self.nodes[node.index()].labels {
+            if let Some(v) = self.trigger_index.get(l.index() as usize) {
+                cands.extend_from_slice(v);
+            }
+        }
         let mut changed = false;
-        // Clause indices snapshot is the static clause set; safe to
-        // iterate while mutating the graph.
-        for ci in 0..self.clauses.len() {
+        for ci in cands {
             match self.fire_clause(ci, node) {
                 FireOutcome::Clash => return FireOutcome::Clash,
                 FireOutcome::Changed => changed = true,

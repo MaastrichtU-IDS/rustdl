@@ -585,15 +585,29 @@ on which clauses could possibly fire. `node_clones` is 2 147, so the
 save/restore-vs-trail question is irrelevant here; the trail would
 save nothing. This is clause-iteration, not branching cost.
 
-**Next target — semi-naive Horn evaluation with clause indexing.**
-Index clauses by the body class atoms (the trigger); when a node gains
-a label, only re-attempt clauses whose body mentions that label
-(semi-naive / given-clause evaluation), instead of re-scanning the
-whole clause set every pass. This directly attacks the 1.35 B. (A
-secondary, smaller win: `match_body` now allocates per call — the
-multi-role refactor's `eval_order` builds `bound`/`order`/`used` Vecs
-on the hot path; avoid for the common 0–1 role body.) This is the
-data-chosen H4-enabling increment, not cardinality (H3c) or nominals.
+**Clause indexing (shipped).** Index Horn clauses by their
+*representative trigger* — the first `Class(_, X)` body atom's class.
+`fire_clauses_at` now tries only the untriggered clauses plus those
+whose trigger is among the node's labels, not the whole clause set. A
+clause whose required trigger class is absent cannot fire, so the
+index misses no firings; `match_body` still verifies each full body.
+
+| SIO bare-sat | before | after index |
+|---|---|---|
+| wall | 23.6 s | **6.0 s** (3.9×) |
+| match_attempts | 1.35 B | **52 M** (26×) |
+| answers | 1585 sat / 0 unsat | identical |
+
+Pizza answers unchanged (671 subsumptions, 24 misses, **0 false
+positives**). The Konclude gap on SIO narrowed from ~116× to ~43×.
+
+**Still on the table** (further search-quality work, each smaller):
+*semi-naive* evaluation (a worklist of newly-derived labels, so a
+clause fires only when a body label is *newly* added, not re-attempted
+every pass — `fixpoint_passes` is 27 636 and candidates are recomputed
+each pass); avoiding `match_body`'s per-call `eval_order` allocation on
+0–1-role bodies; and indexing `find_open_disjunction`. After those,
+H4 (flip behind `--hypertableau`) becomes realistic.
 
 ## 9. Recommended entry point
 

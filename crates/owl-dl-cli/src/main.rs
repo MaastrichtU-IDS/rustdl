@@ -621,7 +621,12 @@ fn main() -> Result<()> {
                     format!("{per_pair_timeout_ms}ms")
                 }
             );
+            println!("# complements:      {}", probe.complements_introduced);
             println!("# pairs_tested:     {}", probe.pairs_tested);
+            println!(
+                "# pairs_via_expansion: {}   (H3b ¬sup; rest used bare-complement fallback)",
+                probe.pairs_via_expansion
+            );
             println!(
                 "# subsumptions:     {}   (sound lower bound)",
                 probe.subsumptions

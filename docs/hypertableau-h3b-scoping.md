@@ -118,17 +118,31 @@ of `atomic` → `Class(A)`, `¬atomic` → `Class(Ā)`, `∃R.atomic` →
 this set (nested deeper, cardinality, nominal) **defers the pair**
 (counted), exactly as elsewhere — never silently dropped.
 
-## §4 — Validation plan
+## §4 — Validation plan & result (shipped)
 
 Re-run `hyper-classify-probe pizza.ofn --dump-subsumptions`; diff vs
 Konclude closure (the §H2c methodology).
 
-- **Expect:** misses drop from 77 by ~50 (the VegPizza family) to ~27.
-- **Require:** still **0 false positives** (soundness preserved).
-- **Residual after H3b:** InterestingPizza (20, H3c cardinality),
-  SpicyPizzaEquivalent (5, multi-role body), RealItalianPizza (2,
-  nominal). If the drop isn't ~50, the encoding is wrong — investigate,
-  don't paper over (the H3a discipline).
+**Result:** misses **77 → 29** (48 unlocked — the entire
+antecedent-`∀`/`¬` family), **0 false positives**, completeness
+**89 % → 95.8 %**. `pairs_via_expansion = 490` (the rest used the bare
+complement fallback), 5 complement classes introduced.
+
+One mid-flight correction (diagnosed before shipping, per the H3a
+discipline): the first cut dropped only 37, not ~50. The shortfall was
+`VegetarianPizzaEquivalent2 ≡ Pizza ⊓ ∀hT.(Cheese ⊔ … ⊔ Veg)`, whose
+`¬` produces `∃hT.(¬Cheese ⊓ … ⊓ ¬Veg)` — an `∃` over a *conjunction of
+negated literals*, outside the original §3 set (it fell back, soundly).
+Adding a structural name `N ⊑ ⊓literals` for the `∃`-inner (§3
+extension) unlocked its 11.
+
+**Residual 29 (the genuinely hard set):**
+- InterestingPizza (20) — min-cardinality `≥3 hasTopping` (H3c).
+- SpicyPizzaEquivalent (5) — two-role-chain body, engine `match_body`
+  single-role limit (§5, separate).
+- RealItalianPizza (2) + the two pizzas reaching ThinAndCrispyPizza
+  *transitively through* RealItalianPizza (Napoletana, Veneziana) —
+  all blocked by the `hasValue` nominal (4 total, nominals phase).
 
 ## §5 — Explicitly out of scope
 

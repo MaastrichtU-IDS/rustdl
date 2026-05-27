@@ -208,37 +208,156 @@ fn fresh_class_id(clauses: &[owl_dl_core::clause::DlClause]) -> owl_dl_core::ir:
     owl_dl_core::ir::ClassId::new(max)
 }
 
-/// Decide `sub ⊑ sup` over the clausified fragment by the standard
-/// reduction to unsatisfiability of `sub ⊓ ¬sup`, encoded with a
-/// fresh helper concept `q`: `q → sub` and `q ∧ sup → ⊥`. Seeding
-/// the root with `q` makes it an individual that is `sub` and *not*
-/// `sup`; if the ontology forces `sup` on it the `⊥` clause clashes.
-///
-/// `clauses` must already include `q`-free base clauses; the two
-/// `q`-clauses are appended and popped by the caller's reused `Vec`.
-fn decide_subsumption(
+/// Get-or-allocate the complement class `Ā` for atomic `a`, emitting
+/// the clash clause `A(x) ∧ Ā(x) → ⊥` to `clauses` on first use. The
+/// complement is a positive label the engine treats normally; the
+/// clash clause is what makes asserting `Ā` refute a derived `A`.
+/// Sound for *refutation only* (we assert `Ā`, never derive it from
+/// the absence of `A`). See `docs/hypertableau-h3b-scoping.md` §2.
+fn complement_of(
+    a: owl_dl_core::ir::ClassId,
+    complements: &mut std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId>,
     clauses: &mut Vec<owl_dl_core::clause::DlClause>,
-    base_len: usize,
-    sub: owl_dl_core::ir::ClassId,
-    sup: owl_dl_core::ir::ClassId,
-    q: owl_dl_core::ir::ClassId,
-    max_depth: usize,
-    deadline: Option<std::time::Instant>,
-) -> (HyperResult, SearchStats) {
+    next_fresh: &mut u32,
+) -> owl_dl_core::ir::ClassId {
     use owl_dl_core::clause::{Atom, DlClause, X};
-    use owl_dl_tableau::hyper::HyperEngine;
-    clauses.truncate(base_len);
+    use owl_dl_core::ir::ClassId;
+    if let Some(&c) = complements.get(&a) {
+        return c;
+    }
+    let c = ClassId::new(*next_fresh);
+    *next_fresh += 1;
+    complements.insert(a, c);
     clauses.push(DlClause {
-        body: vec![Atom::Class(q, X)],
-        head: vec![Atom::Class(sub, X)],
-    });
-    clauses.push(DlClause {
-        body: vec![Atom::Class(q, X), Atom::Class(sup, X)],
+        body: vec![Atom::Class(a, X), Atom::Class(c, X)],
         head: vec![],
     });
-    let mut engine = HyperEngine::new(clauses, q);
-    let result = engine.decide_with_deadline(max_depth, deadline);
-    (result, engine.stats())
+    c
+}
+
+/// Translate one disjunct of `NNF(¬sup-definition)` into a head atom,
+/// or `None` if it falls outside the supported set (caller falls back
+/// to the bare-complement test). Supported: `atomic` → `Class(A)`,
+/// `¬atomic` → `Class(Ā)`, `∃R.atomic` → `Exists(R,A)`, `∃R.¬atomic`
+/// → `Exists(R,Ā)`. See `docs/hypertableau-h3b-scoping.md` §3.
+fn encode_neg_disjunct(
+    d: owl_dl_core::ir::ConceptId,
+    pool: &owl_dl_core::ConceptPool,
+    complements: &mut std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId>,
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+    next_fresh: &mut u32,
+) -> Option<owl_dl_core::clause::Atom> {
+    use owl_dl_core::ConceptExpr;
+    use owl_dl_core::clause::{Atom, X};
+    match pool.get(d) {
+        ConceptExpr::Atomic(a) => Some(Atom::Class(*a, X)),
+        ConceptExpr::Not(inner) => match pool.get(*inner) {
+            ConceptExpr::Atomic(a) => Some(Atom::Class(
+                complement_of(*a, complements, clauses, next_fresh),
+                X,
+            )),
+            _ => None,
+        },
+        ConceptExpr::Some(role, inner) => match pool.get(*inner) {
+            ConceptExpr::Atomic(a) => Some(Atom::Exists(*role, *a, X)),
+            ConceptExpr::Not(i2) => match pool.get(*i2) {
+                ConceptExpr::Atomic(a) => Some(Atom::Exists(
+                    *role,
+                    complement_of(*a, complements, clauses, next_fresh),
+                    X,
+                )),
+                _ => None,
+            },
+            // `∃R.(L1 ⊓ … ⊓ Lk)` with `Li` literals (atomic / ¬atomic):
+            // name the conjunction with a fresh `N ⊑ ⊓Li` and assert
+            // `∃R.N`. The `VegetarianPizzaEquivalent2` shape
+            // `∃hT.(¬Cheese ⊓ … ⊓ ¬Veg)`. `N` is a sound under-name
+            // (anything `N` satisfies every literal), fresh, so it
+            // never affects other reasoning — refutation stays sound.
+            ConceptExpr::And(parts) => {
+                let parts: Vec<owl_dl_core::ir::ConceptId> = parts.to_vec();
+                let lits = name_literal_conjunction(&parts, pool, clauses, next_fresh)?;
+                Some(Atom::Exists(*role, lits, X))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Allocate a fresh class `N` with `N ⊑ ⊓parts` where every part is a
+/// literal (`atomic` → `N → A`, `¬atomic` → `N ∧ A → ⊥`). Returns
+/// `None` (no clauses emitted) if any part is non-literal. Used to
+/// name the inner concept of an `∃R.(…)` disjunct (§3 extension).
+fn name_literal_conjunction(
+    parts: &[owl_dl_core::ir::ConceptId],
+    pool: &owl_dl_core::ConceptPool,
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+    next_fresh: &mut u32,
+) -> Option<owl_dl_core::ir::ClassId> {
+    use owl_dl_core::ConceptExpr;
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_core::ir::ClassId;
+    // Reject early if any part is non-literal — emit nothing.
+    let mut lits: Vec<(ClassId, bool)> = Vec::with_capacity(parts.len());
+    for &p in parts {
+        match pool.get(p) {
+            ConceptExpr::Atomic(a) => lits.push((*a, true)),
+            ConceptExpr::Not(inner) => match pool.get(*inner) {
+                ConceptExpr::Atomic(a) => lits.push((*a, false)),
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    let n = ClassId::new(*next_fresh);
+    *next_fresh += 1;
+    for (a, positive) in lits {
+        if positive {
+            // N(x) → A(x)
+            clauses.push(DlClause {
+                body: vec![Atom::Class(n, X)],
+                head: vec![Atom::Class(a, X)],
+            });
+        } else {
+            // N(x) ∧ A(x) → ⊥  (N implies ¬A)
+            clauses.push(DlClause {
+                body: vec![Atom::Class(n, X), Atom::Class(a, X)],
+                head: vec![],
+            });
+        }
+    }
+    Some(n)
+}
+
+/// Encode `NNF(¬def)` as the Q-gated disjunctive head atoms for the
+/// H3b subsumption test, or `None` if any top-level disjunct is
+/// untranslatable (caller falls back). The disjunction's atoms are
+/// later emitted as `Q(x) → d1 ∨ … ∨ dk` — gated on `Q` so the
+/// constraint binds only the root (never generated successors).
+fn encode_neg_definition(
+    neg: owl_dl_core::ir::ConceptId,
+    pool: &owl_dl_core::ConceptPool,
+    complements: &mut std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId>,
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+    next_fresh: &mut u32,
+) -> Option<Vec<owl_dl_core::clause::Atom>> {
+    use owl_dl_core::ConceptExpr;
+    let disjuncts: Vec<owl_dl_core::ir::ConceptId> = match pool.get(neg) {
+        ConceptExpr::Or(parts) => parts.to_vec(),
+        _ => vec![neg],
+    };
+    let mut out = Vec::with_capacity(disjuncts.len());
+    for d in disjuncts {
+        out.push(encode_neg_disjunct(
+            d,
+            pool,
+            complements,
+            clauses,
+            next_fresh,
+        )?);
+    }
+    Some(out)
 }
 
 /// One subsumption-pair result from [`hyper_subsumption_probe`].
@@ -277,6 +396,12 @@ pub struct HyperSubProbe {
     pub max_branch_depth: u32,
     /// Total wall across all pairs (milliseconds).
     pub total_wall_ms: f64,
+    /// Pairs whose `sup` used the H3b `¬sup`-expansion encoding
+    /// (`sup` had a translatable definition). The rest used the bare
+    /// `Q ∧ sup → ⊥` fallback.
+    pub pairs_via_expansion: u64,
+    /// Complement classes introduced for negative literals (§2).
+    pub complements_introduced: usize,
     /// Clause-set shape (deferred count visible alongside).
     pub clause_stats: owl_dl_core::clause::ClauseStats,
 }
@@ -296,6 +421,32 @@ pub struct HyperSubProbe {
 ///
 /// `per_pair_timeout`, if set, bounds each pair's wall.
 ///
+/// Pre-pass for [`hyper_subsumption_probe`]: for each defined `sup`,
+/// expand `NNF(¬def)` into Q-gated disjunct atoms, appending any
+/// complement/structural clash clauses to `clauses` (once). Returns
+/// the per-`sup` disjunct atoms for the sups whose `¬def` fully
+/// translated; the rest fall back to the bare-complement test.
+fn build_sup_neg_map(
+    vocab: &[(owl_dl_core::ir::ClassId, String)],
+    defs: &owl_dl_core::definitions::Definitions,
+    pool: &mut owl_dl_core::ConceptPool,
+    complements: &mut std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId>,
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+    next_fresh: &mut u32,
+) -> std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<owl_dl_core::clause::Atom>> {
+    let mut sup_neg = std::collections::HashMap::new();
+    for (sup, _) in vocab {
+        let Some(def) = defs.body_of(*sup) else {
+            continue;
+        };
+        let neg = owl_dl_core::normalize::nnf_complement(def, pool);
+        if let Some(atoms) = encode_neg_definition(neg, pool, complements, clauses, next_fresh) {
+            sup_neg.insert(*sup, atoms);
+        }
+    }
+    sup_neg
+}
+
 /// # Errors
 ///
 /// See [`ReasonError`].
@@ -304,16 +455,45 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     max_depth: usize,
     per_pair_timeout: Option<std::time::Duration>,
 ) -> Result<HyperSubProbe, ReasonError> {
-    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_core::ir::ClassId;
+    use owl_dl_tableau::hyper::HyperEngine;
+
+    let mut internal = owl_dl_core::convert::convert_ontology(ontology)?;
     let (base, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
-    let q = fresh_class_id(&base);
-    let base_len = base.len();
-    let mut clauses = base;
-    let vocab: Vec<(owl_dl_core::ir::ClassId, String)> = internal
+    let defs = owl_dl_core::definitions::extract_definitions(&internal);
+
+    // Fresh id space: past every class used in clauses and the
+    // vocabulary. `q` first, then complement classes.
+    let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+    let mut next_fresh = fresh_class_id(&base).index().max(num_classes);
+    let q = ClassId::new(next_fresh);
+    next_fresh += 1;
+
+    let vocab: Vec<(ClassId, String)> = internal
         .vocabulary
         .classes()
         .map(|(id, iri)| (id, iri.to_string()))
         .collect();
+
+    let mut clauses = base;
+    let mut complements: std::collections::HashMap<ClassId, ClassId> =
+        std::collections::HashMap::new();
+
+    // Pre-pass: for each defined `sup`, expand `NNF(¬def)` into Q-gated
+    // disjunct atoms (§1/§3). Complement clash clauses (§2) are
+    // appended to `clauses` here, once — so the engine's clause set is
+    // monotonic across the pair loop below.
+    let sup_neg = build_sup_neg_map(
+        &vocab,
+        &defs,
+        &mut internal.concepts,
+        &mut complements,
+        &mut clauses,
+        &mut next_fresh,
+    );
+    // base clauses + complement clash clauses — fixed for every pair.
+    let fixed_len = clauses.len();
 
     let mut probe = HyperSubProbe {
         results: Vec::new(),
@@ -323,6 +503,8 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
         stalled: 0,
         max_branch_depth: 0,
         total_wall_ms: 0.0,
+        pairs_via_expansion: 0,
+        complements_introduced: complements.len(),
         clause_stats,
     };
     for (sub, sub_iri) in &vocab {
@@ -330,14 +512,41 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if sub == sup {
                 continue;
             }
+            clauses.truncate(fixed_len);
+            clauses.push(DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(*sub, X)],
+            });
+            // H3b: if `sup` has a translatable definition, assert the
+            // Q-gated `¬sup` disjunction; else fall back to the bare
+            // `Q ∧ sup → ⊥` complement test (H2c behaviour).
+            let via_expansion = if let Some(atoms) = sup_neg.get(sup) {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(q, X)],
+                    head: atoms.clone(),
+                });
+                true
+            } else {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(q, X), Atom::Class(*sup, X)],
+                    head: vec![],
+                });
+                false
+            };
+
             let deadline = per_pair_timeout.map(|t| std::time::Instant::now() + t);
             let start = std::time::Instant::now();
-            let (result, stats) =
-                decide_subsumption(&mut clauses, base_len, *sub, *sup, q, max_depth, deadline);
+            let mut engine = HyperEngine::new(&clauses, q);
+            let result = engine.decide_with_deadline(max_depth, deadline);
+            let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+
             probe.pairs_tested += 1;
             probe.total_wall_ms += wall_ms;
             probe.max_branch_depth = probe.max_branch_depth.max(stats.max_branch_depth);
+            if via_expansion {
+                probe.pairs_via_expansion += 1;
+            }
             if result == HyperResult::Unsat {
                 probe.subsumptions += 1;
             }
@@ -1599,6 +1808,64 @@ ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
         assert!(
             holds("Cheese", "Vegetarian"),
             "Cheese ⊑ Vegetarian must be derivable after antecedent distribution"
+        );
+    }
+
+    /// H3b ¬sup-expansion fires: `A ≡ B ⊓ ¬C`, `D ⊑ B`, `D` disjoint
+    /// `C` ⊨ `D ⊑ A`. Refuting `D ⊓ ¬A` needs expanding
+    /// `¬A = ¬B ⊔ C`: the `¬B` branch clashes (`D ⊑ B`), the `C`
+    /// branch clashes (`D`⊓`C` disjoint). Bare `D ∧ A → ⊥` could not
+    /// derive this — it would need `A` positively.
+    #[test]
+    fn hyper_subsumption_probe_expands_negated_definition() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\n\
+Declaration(Class(:C))\nDeclaration(Class(:D))\n\
+EquivalentClasses(:A ObjectIntersectionOf(:B ObjectComplementOf(:C)))\n\
+SubClassOf(:D :B)\nDisjointClasses(:C :D)\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        assert!(probe.pairs_via_expansion > 0, "¬sup expansion must be used");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("D", "A"),
+            "D ⊑ A must derive via expanding ¬A = ¬B ⊔ C"
+        );
+    }
+
+    /// H3b Q-gating: the `¬sup` disjunction must bind only the root,
+    /// never generated successors. `sub ≡ ∃R.A`, `sup ≡ ¬∃R.A` are
+    /// disjoint but neither subsumes the other, so `sub ⊑ sup` must be
+    /// `Sat` (not reported). If `¬sup` leaked onto the `R`-successor,
+    /// the engine would clash spuriously and wrongly report `Unsat`.
+    #[test]
+    fn hyper_subsumption_probe_q_gating_no_spurious_subsumption() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(ObjectProperty(:r))\n\
+Declaration(Class(:Sub))\nDeclaration(Class(:Sup))\n\
+EquivalentClasses(:Sub ObjectSomeValuesFrom(:r :A))\n\
+EquivalentClasses(:Sup ObjectComplementOf(ObjectSomeValuesFrom(:r :A)))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let reported = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        // Sub = ∃r.A, Sup = ¬∃r.A — genuinely disjoint, NOT subsuming.
+        assert!(
+            !reported("Sub", "Sup"),
+            "Sub ⊑ Sup must NOT be reported (Q-gating leak would clash the r-successor)"
         );
     }
 

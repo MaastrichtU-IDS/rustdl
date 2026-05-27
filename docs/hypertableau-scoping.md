@@ -538,11 +538,28 @@ at the root (`Q(x) → d1 ∨ … ∨ dk`), with minimal negative literals
 for `∃R.(⊓literals)`. The engine is untouched — it's all probe-side
 encoding. Validated vs Konclude: pizza misses **77 → 29**, 48
 unlocked (the entire antecedent-`∀`/`¬` family), **0 false positives**,
-completeness **89 % → 95.8 %**. The clean residual 29 is the genuinely
-hard set: min-cardinality 20 (`InterestingPizza ≡ ≥3 hasTopping`, H3c),
-two-role-chain body 5 (`SpicyPizzaEquivalent`, engine `match_body`
-single-role limit), nominal 4 (`RealItalianPizza`'s `hasValue` and the
-two pizzas that reach `ThinAndCrispyPizza` transitively through it).
+completeness **89 % → 95.8 %**.
+
+**Multi-role body matching is shipped** (the first engine change since
+H2). The clausifier already *emitted* Horn clauses with chained role
+atoms (`A(x) ∧ R(x,y) ∧ B(y) ∧ S(y,z) ∧ C(z) → D(x)` — the
+`SpicyPizzaEquivalent` shape), but `match_body` only matched a single
+role atom. It now enumerates every homomorphism of the body's
+variable-tree into the graph: `eval_order` topologically sorts the
+role atoms (each non-`X` var is the target of one role atom whose
+source is already bound — a tree rooted at `X`), and a recursive
+descent binds successors and checks class constraints. The single-var
+`Ybind` became a sorted `Binding = Vec<(Var, HNode)>`; unsupported
+shapes (equality, non-tree, > `MAX_BODY_VARS`) return `None` (deferred,
+counted). Validated vs Konclude: pizza misses **29 → 24**
+(SpicyPizzaEquivalent's 5), **0 false positives**, completeness
+**95.8 % → 96.5 %**.
+
+The clean residual 24 is the two genuinely-hard remaining mechanisms:
+min-cardinality 20 (`InterestingPizza ≡ ≥3 hasTopping`, H3c — the
+`≤n`/`≥n` successor merging, interacts with branching), and nominals 4
+(`RealItalianPizza`'s `hasValue` + the two pizzas reaching
+`ThinAndCrispyPizza` transitively through it).
 
 ## 9. Recommended entry point
 

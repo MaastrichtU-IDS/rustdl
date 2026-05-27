@@ -29,9 +29,18 @@ use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role, RoleId};
 use std::time::Instant;
 
-/// Binding of a body's role-successor variable to a node, when the
-/// body has a role atom `R(x,y)`; `None` for body shapes on `x` only.
-type Ybind = Option<(Var, HNode)>;
+/// A match binding: the body's non-`X` successor variables mapped to
+/// graph nodes, sorted by variable. `X` is implicit (always the match
+/// root), so an empty binding is a body on `X` only. Bodies are trees
+/// rooted at `X` (each non-`X` var is the target of exactly one role
+/// atom whose source is already bound), so a binding is one complete
+/// homomorphism of the body's variable-tree into the graph.
+type Binding = Vec<(Var, HNode)>;
+
+/// Defensive cap on the number of body variables `match_body` will
+/// bind; bodies above it are treated as unsupported (deferred). Real
+/// clausifier bodies are 1–3 vars; this guards pathological inputs.
+const MAX_BODY_VARS: usize = 8;
 
 /// Defensive cap on the Horn-fixpoint inner loop during branching
 /// search. Anywhere blocking bounds the graph, so a real fixpoint is
@@ -249,7 +258,7 @@ impl<'c> HyperEngine<'c> {
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
-        let Some((ci, node, ybind)) = self.find_open_disjunction() else {
+        let Some((ci, node, binding)) = self.find_open_disjunction() else {
             return HyperResult::Sat;
         };
         if depth == 0 {
@@ -266,7 +275,7 @@ impl<'c> HyperEngine<'c> {
             let head_atom = self.clauses[ci].head[k];
             let saved = self.nodes.clone();
             self.stats.branches_taken += 1;
-            let _ = self.apply_head_atom(head_atom, node, ybind);
+            let _ = self.apply_head_atom(head_atom, node, &binding);
             match self.solve(depth - 1) {
                 // Keep the satisfiable branch's graph; do not restore.
                 HyperResult::Sat => return HyperResult::Sat,
@@ -294,7 +303,7 @@ impl<'c> HyperEngine<'c> {
     /// some node-binding and **none** of whose head disjuncts is
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
-    fn find_open_disjunction(&self) -> Option<(usize, HNode, Ybind)> {
+    fn find_open_disjunction(&self) -> Option<(usize, HNode, Binding)> {
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             for ci in 0..self.clauses.len() {
@@ -304,9 +313,9 @@ impl<'c> HyperEngine<'c> {
                 let Some(bindings) = self.match_body(ci, node) else {
                     continue;
                 };
-                for yb in bindings {
-                    if !self.any_head_satisfied(ci, node, yb) {
-                        return Some((ci, node, yb));
+                for binding in bindings {
+                    if !self.any_head_satisfied(ci, node, &binding) {
+                        return Some((ci, node, binding));
                     }
                 }
             }
@@ -316,8 +325,8 @@ impl<'c> HyperEngine<'c> {
 
     /// True iff some head disjunct of clause `ci` already holds at
     /// the given binding (class label present, or `∃` witness found).
-    fn any_head_satisfied(&self, ci: usize, xnode: HNode, ybind: Ybind) -> bool {
-        let resolve = |v: Var| resolve_var(v, xnode, ybind);
+    fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
+        let resolve = |v: Var| resolve_var(v, xnode, binding);
         for head in &self.clauses[ci].head {
             match head {
                 Atom::Class(c, v) => {
@@ -377,8 +386,8 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         };
         let mut changed = false;
-        for yb in bindings {
-            match self.fire_head(ci, node, yb) {
+        for binding in bindings {
+            match self.fire_head(ci, node, &binding) {
                 FireOutcome::Clash => return FireOutcome::Clash,
                 FireOutcome::Changed => changed = true,
                 FireOutcome::NoChange => {}
@@ -391,77 +400,96 @@ impl<'c> HyperEngine<'c> {
         }
     }
 
-    /// Match clause `ci`'s body with `x = node`. Returns `None` if a
-    /// class-on-`x` atom is absent (clause inapplicable), or an
-    /// unsupported body shape is present (two role atoms, equality,
-    /// inverse — deferred). Otherwise returns the successor bindings:
-    /// `[None]` for a body with no role atom, or one `Some((y, m))`
-    /// per role-successor `m` that satisfies the class-on-`y`
-    /// constraints (empty if none match).
-    fn match_body(&self, ci: usize, node: HNode) -> Option<Vec<Ybind>> {
-        let mut role_atom: Option<(Role, Var)> = None;
-        let mut y_classes: Vec<(ClassId, Var)> = Vec::new();
+    /// Match clause `ci`'s body with `x = node`, enumerating every
+    /// homomorphism of the body's variable-tree into the graph.
+    ///
+    /// Returns `None` when the body shape is **unsupported** (an
+    /// equality/inverse atom, or a non-tree variable structure — a var
+    /// that isn't reachable from `X` through role atoms, a var bound by
+    /// two role atoms, or more than [`MAX_BODY_VARS`] vars). Otherwise
+    /// returns every complete [`Binding`] (the non-`X` vars mapped to
+    /// nodes) satisfying all role and class atoms — an **empty** vec
+    /// when the shape is fine but nothing matches (a missing `X`-class
+    /// or a role with no qualifying successor). This `None`-vs-empty
+    /// distinction is the unsupported-vs-no-match boundary.
+    fn match_body(&self, ci: usize, node: HNode) -> Option<Vec<Binding>> {
+        let mut role_atoms: Vec<(Role, Var, Var)> = Vec::new();
+        let mut other_classes: Vec<(ClassId, Var)> = Vec::new();
         let clause = &self.clauses[ci];
         for atom in &clause.body {
             match atom {
                 Atom::Class(c, v) if *v == X => {
                     if !self.nodes[node.index()].has(*c) {
-                        return None;
+                        // X-class absent: shape OK, no match.
+                        return Some(Vec::new());
                     }
                 }
-                Atom::Role(r, u, v) if *u == X => {
-                    if role_atom.is_some() {
-                        // Two role atoms in one body — not in the
-                        // clausifier's output; defer.
-                        return None;
-                    }
-                    role_atom = Some((*r, *v));
-                }
-                // Class atom on a non-`x` variable: a constraint on
-                // the role-successor. Checked after binding.
-                Atom::Class(c, v) => y_classes.push((*c, *v)),
+                Atom::Role(r, u, v) => role_atoms.push((*r, *u, *v)),
+                Atom::Class(c, v) => other_classes.push((*c, *v)),
                 // Equality / inverse-role bodies: later phases.
                 _ => return None,
             }
         }
 
-        match role_atom {
-            None => {
-                // No successor variable to bind. A class-on-`y` atom
-                // is then unbindable, so the clause can't match.
-                if y_classes.is_empty() {
-                    Some(vec![None])
-                } else {
-                    Some(vec![])
-                }
+        // Topological order on the variable-tree: each role atom is
+        // processed only once its source var is already bound. `None`
+        // if the body isn't a tree rooted at `X` (cycle, disconnected,
+        // or a var bound twice) or has too many vars.
+        let order = eval_order(&role_atoms)?;
+        let plan = MatchPlan {
+            role_atoms: &role_atoms,
+            order: &order,
+            other_classes: &other_classes,
+        };
+
+        let mut out = Vec::new();
+        let mut binding: Binding = Vec::new();
+        self.enumerate_matches(node, &plan, 0, &mut binding, &mut out);
+        Some(out)
+    }
+
+    /// Recursively bind role-atom targets to graph successors in
+    /// `plan.order`, then (when all are bound) emit the binding if
+    /// every class-on-successor constraint holds.
+    fn enumerate_matches(
+        &self,
+        node: HNode,
+        plan: &MatchPlan<'_>,
+        i: usize,
+        binding: &mut Binding,
+        out: &mut Vec<Binding>,
+    ) {
+        if i == plan.order.len() {
+            let ok = plan.other_classes.iter().all(|(c, v)| {
+                resolve_var(*v, node, binding).is_some_and(|m| self.nodes[m.index()].has(*c))
+            });
+            if ok {
+                let mut b = binding.clone();
+                b.sort_unstable_by_key(|&(v, _)| v);
+                out.push(b);
             }
-            Some((r, yvar)) => {
-                // For each edge node -r-> m (named-role match), bind
-                // y = m and keep it if the class-on-`y` constraints
-                // hold at `m`.
-                let mut binds = Vec::new();
-                let edges: Vec<HNode> = self.nodes[node.index()]
-                    .edges
-                    .iter()
-                    .filter(|(er, _)| role_matches(*er, r))
-                    .map(|(_, t)| *t)
-                    .collect();
-                for m in edges {
-                    let matched = y_classes
-                        .iter()
-                        .all(|(c, v)| *v == yvar && self.nodes[m.index()].has(*c));
-                    if matched {
-                        binds.push(Some((yvar, m)));
-                    }
-                }
-                Some(binds)
-            }
+            return;
+        }
+        let (role, src_var, tgt_var) = plan.role_atoms[plan.order[i]];
+        let Some(src) = resolve_var(src_var, node, binding) else {
+            return;
+        };
+        let targets: Vec<HNode> = self.nodes[src.index()]
+            .edges
+            .iter()
+            .filter(|(er, _)| role_matches(*er, role))
+            .map(|(_, t)| *t)
+            .collect();
+        for m in targets {
+            binding.push((tgt_var, m));
+            self.enumerate_matches(node, plan, i + 1, binding, out);
+            binding.pop();
         }
     }
 
-    /// Assert the (single, Horn) head atom. `ybind` maps the body's
-    /// successor variable to a node when present.
-    fn fire_head(&mut self, ci: usize, xnode: HNode, ybind: Ybind) -> FireOutcome {
+    /// Assert the (single, Horn) head atom. `binding` maps the body's
+    /// non-`X` variables to nodes.
+    fn fire_head(&mut self, ci: usize, xnode: HNode, binding: &Binding) -> FireOutcome {
         let clause = &self.clauses[ci];
         if clause.head.is_empty() {
             // body → ⊥ : the body matched, so this is a clash.
@@ -469,17 +497,17 @@ impl<'c> HyperEngine<'c> {
         }
         // Horn: exactly one head atom (caller gated on is_horn).
         let head = clause.head[0];
-        self.apply_head_atom(head, xnode, ybind)
+        self.apply_head_atom(head, xnode, binding)
     }
 
     /// Assert one head atom (`Class` label or `∃` successor) at the
     /// resolved binding. Shared by Horn firing and disjunctive
     /// branching. Never reports a clash itself — clashes surface when
     /// a `body → ⊥` clause subsequently fires in [`horn_fixpoint`].
-    fn apply_head_atom(&mut self, head: Atom, xnode: HNode, ybind: Ybind) -> FireOutcome {
+    fn apply_head_atom(&mut self, head: Atom, xnode: HNode, binding: &Binding) -> FireOutcome {
         match head {
             Atom::Class(c, v) => {
-                let Some(target) = resolve_var(v, xnode, ybind) else {
+                let Some(target) = resolve_var(v, xnode, binding) else {
                     return FireOutcome::NoChange;
                 };
                 if self.nodes[target.index()].add(c) {
@@ -489,7 +517,7 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             Atom::Exists(role, cls, v) => {
-                let Some(src) = resolve_var(v, xnode, ybind) else {
+                let Some(src) = resolve_var(v, xnode, binding) else {
                     return FireOutcome::NoChange;
                 };
                 self.fire_exists(src, role, cls)
@@ -542,16 +570,60 @@ enum FireOutcome {
     NoChange,
 }
 
-/// Resolve a clause variable to a graph node given the `x`-binding
-/// and the optional successor `y`-binding. `None` if the variable is
-/// a `y` that isn't bound (e.g. a head `y` with no role body atom).
-fn resolve_var(v: Var, xnode: HNode, ybind: Ybind) -> Option<HNode> {
+/// The fixed structure of a body match: the role atoms, a
+/// topological evaluation order over them, and the class-on-successor
+/// constraints. Built once per `match_body` call, borrowed by the
+/// recursive [`HyperEngine::enumerate_matches`].
+struct MatchPlan<'p> {
+    role_atoms: &'p [(Role, Var, Var)],
+    order: &'p [usize],
+    other_classes: &'p [(ClassId, Var)],
+}
+
+/// Order role atoms so every atom's source variable is bound before
+/// it (BFS from `X`). `None` if the variables don't form a tree rooted
+/// at `X` (unbindable source, duplicate target, or more than
+/// [`MAX_BODY_VARS`] vars) — an unsupported shape.
+fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Option<Vec<usize>> {
+    let mut bound: Vec<Var> = vec![X];
+    let mut order = Vec::with_capacity(role_atoms.len());
+    let mut used = vec![false; role_atoms.len()];
+    while order.len() < role_atoms.len() {
+        let mut progressed = false;
+        for (i, (_, u, v)) in role_atoms.iter().enumerate() {
+            if used[i] || !bound.contains(u) {
+                continue;
+            }
+            if bound.contains(v) {
+                // `v` already bound ⇒ not a tree (two role atoms
+                // target the same var, or a cycle). Unsupported.
+                return None;
+            }
+            used[i] = true;
+            bound.push(*v);
+            order.push(i);
+            progressed = true;
+            if bound.len() > MAX_BODY_VARS {
+                return None;
+            }
+        }
+        if !progressed {
+            // Remaining atoms have unbindable sources (disconnected
+            // from `X`). Unsupported.
+            return None;
+        }
+    }
+    Some(order)
+}
+
+/// Resolve a clause variable to a graph node: `X` is the match root
+/// `xnode`; any other variable is looked up in `binding`. `None` if an
+/// unbound non-`X` variable (e.g. a head var with no body role atom).
+fn resolve_var(v: Var, xnode: HNode, binding: &[(Var, HNode)]) -> Option<HNode> {
     if v == X {
         Some(xnode)
-    } else if let Some((yv, yn)) = ybind {
-        (v == yv).then_some(yn)
     } else {
-        None
+        binding.iter().find(|(bv, _)| *bv == v).map(|&(_, n)| n)
     }
 }
 
@@ -903,6 +975,47 @@ mod tests {
         assert_eq!(e.decide(64), HyperResult::Sat);
         assert!(e.root_labels().contains(&cls(1)));
         assert!(!e.root_labels().contains(&cls(2)));
+    }
+
+    /// Multi-role body (two-role chain): `A(x) ∧ R(x,y) ∧ B(y) ∧
+    /// S(y,z) ∧ C(z) → D(x)`. With `A ⊑ ∃R.B`, `B ⊑ ∃S.C` the root
+    /// (A) gains a chain `x —R→ y(B) —S→ z(C)`, so the chain clause
+    /// fires and the root gains D. The `SpicyPizzaEquivalent` shape.
+    #[test]
+    fn multi_role_chain_body_fires() {
+        let role_r = Role::Named(RoleId::new(0));
+        let role_s = Role::Named(RoleId::new(1));
+        let (ca, cb, cc, cd) = (cls(0), cls(1), cls(2), cls(3));
+        let clauses = vec![
+            // A(x) → ∃R.B(x)
+            DlClause {
+                body: vec![Atom::Class(ca, X)],
+                head: vec![Atom::Exists(role_r, cb, X)],
+            },
+            // B(x) → ∃S.C(x)
+            DlClause {
+                body: vec![Atom::Class(cb, X)],
+                head: vec![Atom::Exists(role_s, cc, X)],
+            },
+            // A(x) ∧ R(x,y) ∧ B(y) ∧ S(y,z) ∧ C(z) → D(x)
+            DlClause {
+                body: vec![
+                    Atom::Class(ca, X),
+                    Atom::Role(role_r, X, 1),
+                    Atom::Class(cb, 1),
+                    Atom::Role(role_s, 1, 2),
+                    Atom::Class(cc, 2),
+                ],
+                head: vec![Atom::Class(cd, X)],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, ca);
+        assert_eq!(engine.run(1024), HyperResult::Sat);
+        assert!(
+            engine.root_labels().contains(&cd),
+            "root must gain D via the two-role chain; labels={:?}",
+            engine.root_labels()
+        );
     }
 
     /// Instrumentation: branching tracked when it happens, zero on

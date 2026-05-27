@@ -116,6 +116,67 @@ With provenance, clash explanation becomes:
 clashes that involve successor structure, keyed on a richer
 fingerprint. Only if Phase 3 plateaus.
 
+## §A — Phase 2b/3 integration attempt (2026-05-27): sound but 0 hits
+
+Wired the full record + lookup on top of the Phase 1/2a
+primitives and gated on the pizza regression:
+
+- **Recording**: at a clash where `my_id` contributed, translate
+  `clash_deps` → disjunct concepts via `clash_decision_labels`,
+  run `verify_node_local_clash` on the set, and if it clashes
+  node-locally, store it as a label-set no-good.
+- **Lookup**: before asserting disjunct `D` at node `N`, skip `D`
+  if `S ⊆ L(N) ∪ {D}` for some recorded no-good `S` containing
+  `D`.
+
+**Soundness held** — pizza still reported exactly 2 unsat
+(`CheeseyVegetableTopping`, `IceCream`), matching HermiT. This is
+the key result: the label-set + node-local-verify design is sound
+where the original branch-id CDBL was not (that one went 2 → 0).
+
+**But it was ineffective — 0 lookup hits.** Debug counters on the
+NamedPizza sat probe: 22 no-goods recorded (sizes 3-5), **zero**
+lookup hits. Walls flat (pizza 29 s, family 6.3 s).
+
+### Why 0 hits — the keying bug
+
+`clash_decision_labels(clash_deps)` gathers the disjunct concepts
+from *every* branch id in the clash's dependency set. Those
+decisions were made at **different nodes** across the search tree
+(a clash at node `N` can depend on a disjunct chosen at an
+ancestor and propagated via `∀`). `verify_node_local_clash` then
+puts them all on *one* isolated node and — correctly — finds they
+clash there. So the no-good is *sound* ("these labels co-located
+⇒ clash") but **never matches**, because in the real search no
+single node ever accumulates that cross-node set.
+
+### The fix: node-keyed no-goods
+
+The no-good must be the **clash node's own decision labels**, not
+the whole dependency chain's. That requires:
+
+1. Propagate the clash *node* up through `search`/`branch` (today
+   `SaturationResult::Clash(node, deps)` carries it, but the
+   conversion to `SearchVerdict::Unsat(deps)` drops the node).
+2. At record time, intersect the decision concepts with
+   `L(clash_node)` — keep only decisions actually present at the
+   clash node. That set genuinely co-occurs there, so the no-good
+   can match when the same labels recur at another node.
+3. (Still gate with `verify_node_local_clash` for the
+   edge-dependence check.)
+
+### Status
+
+Reverted the 2b/3 wiring; kept the tested primitives
+(`clash_decision_labels`, `verify_node_local_clash`,
+`record_decision`). Phase 2b/3 redone with node-keyed no-goods is
+the next increment — and note that even a *hitting* CDBL is still
+bounded by the timeout-bound nature of pizza/SIO: pruning
+branches *within* a pair's search may not make the pair converge
+inside the 200 ms budget. The honest expectation is that CDBL,
+done right, helps **convergent** workloads (like lazy unfolding
+helped family) more than the timeout-bound ones.
+
 ## Soundness invariants (enforced by tests every phase)
 
 - All ≥260 in-tree unit tests pass.

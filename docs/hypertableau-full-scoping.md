@@ -86,10 +86,23 @@ which keeps `Unsat` sound (an unenforced head only weakens the theory);
 corpus-wide. Re-validated: SIO 1585 sat/0 unsat, pizza 695/695, **0
 false positives** unchanged.
 
-**Remaining HF1: the `antecedent` category** (pizza 6, SIO 4, ro 2,
-family 1) + family's 1 `head-or-disjunct`. `∀`/`¬` on the sub-side
-clausify to disjunctive `∃`-head clauses (the H3b complement
-machinery); antecedent cardinality is the harder residue. Next.
+**`head_atom_for` naming + `¬∃R.Self` (shipped).** Compound head
+disjuncts (`∀`/`≥n`/`≤n`/nested) are now *named* (`Q ⊑ disjunct`) and
+`¬∃R.Self` becomes `Q ∧ R(x,x) → ⊥`, clearing the `head-or-disjunct`
+bucket (family 2→1). Pizza/SIO agreement unchanged (0 FP).
+
+**The `antecedent` category needs ABSORPTION, not internalization
+(empirical finding).** Internalizing a hard-antecedent GCI as
+`⊤ ⊑ ¬sub ⊔ sup` is sound and reaches `deferred == 0`, but the
+`⊤`-headed clauses fire at *every* node, and `¬∀ → ∃` generates
+successors everywhere — **measured to explode the search: SIO bare-sat
+0.45 s → did-not-finish (>7 min)**. Reverted. The proper fix keeps the
+GCI as a *triggered rule* (absorption — rustdl already has an `absorb`
+module for the existing tableau); that is HF1's next sub-phase, and
+why the `Clausifier` now owns a mutable pool (interning prep). Until
+then the `antecedent` category stays deferred (sound: a dropped GCI
+only weakens the theory). Remaining deferred: pizza 6, SIO 4, ro 2,
+family 1 — all `antecedent`.
 
 
 Every SROIQ construct produces clauses **entailment-equivalent** to

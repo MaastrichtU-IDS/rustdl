@@ -99,8 +99,11 @@ impl DlClause {
 /// Clausifier state. Allocates fresh structural-name [`ClassId`]s
 /// starting past the vocabulary's real classes; these have no IRI
 /// (internal Tseitin names) but are valid clause atoms.
-struct Clausifier<'a> {
-    pool: &'a ConceptPool,
+struct Clausifier {
+    /// Owned (clone of the input pool) so the clausifier can *intern*
+    /// new concepts — needed by the upcoming absorption sub-phase for
+    /// hard-antecedent GCIs (`∀`/`¬`/cardinality on the sub-side).
+    pool: ConceptPool,
     clauses: Vec<DlClause>,
     next_fresh: u32,
     /// Base id of the nominal-class region: a nominal `{a}` is treated
@@ -122,8 +125,8 @@ struct Clausifier<'a> {
     deferred_kinds: std::collections::BTreeMap<&'static str, usize>,
 }
 
-impl<'a> Clausifier<'a> {
-    fn new(pool: &'a ConceptPool, first_fresh: u32, nominal_base: u32) -> Self {
+impl Clausifier {
+    fn new(pool: ConceptPool, first_fresh: u32, nominal_base: u32) -> Self {
         Self {
             pool,
             clauses: Vec::new(),
@@ -288,6 +291,15 @@ impl<'a> Clausifier<'a> {
                     self.clausify_consequent(body, sup, X);
                 }
             }
+            // Hard antecedent (`∀`/`¬`/cardinality/`Self`): can't be a
+            // conjunctive body. Internalizing to `⊤ ⊑ ¬sub ⊔ sup` is
+            // sound and reaches `deferred == 0`, but the resulting
+            // `⊤`-headed clauses fire at *every* node — measured to
+            // explode the search (SIO bare-sat 0.45 s → did-not-finish),
+            // because `¬∀ → ∃` generates successors everywhere. This
+            // needs **absorption** (keep the GCI as a triggered rule),
+            // not eager internalization — its own HF1 sub-phase. Until
+            // then, defer (sound: a dropped GCI only weakens the theory).
             None => self.defer("antecedent"),
         }
     }
@@ -403,7 +415,10 @@ impl<'a> Clausifier<'a> {
             }
             ConceptExpr::And(parts) => {
                 // body → (P1 ⊓ … ⊓ Pn): one clause per conjunct.
-                for &p in parts {
+                // Copy out (the owned pool means the scrutinee borrow
+                // would otherwise block the `&mut self` recursion).
+                let parts: Vec<ConceptId> = parts.to_vec();
+                for p in parts {
                     self.emit_head(body.clone(), p, var);
                 }
             }
@@ -411,8 +426,9 @@ impl<'a> Clausifier<'a> {
                 // body → (D1 ∨ … ∨ Dn): a single disjunctive-head
                 // clause. Each disjunct must map to a single head
                 // atom; compound disjuncts get a structural name.
+                let parts: Vec<ConceptId> = parts.to_vec();
                 let mut head: Vec<Atom> = Vec::with_capacity(parts.len());
-                for &p in parts {
+                for p in parts {
                     if let Some(atom) = self.head_atom_for(p, var) {
                         head.push(atom);
                     } else {
@@ -424,10 +440,11 @@ impl<'a> Clausifier<'a> {
             }
             ConceptExpr::Some(role, inner) => {
                 // body → ∃role.inner(var). Name `inner` if compound.
-                if let Some(cls) = self.atomic_name_of(*inner) {
+                let (role, inner) = (*role, *inner);
+                if let Some(cls) = self.atomic_name_of(inner) {
                     self.clauses.push(DlClause {
                         body,
-                        head: vec![Atom::Exists(*role, cls, var)],
+                        head: vec![Atom::Exists(role, cls, var)],
                     });
                 } else {
                     self.defer("head-exists-inner");
@@ -512,19 +529,31 @@ impl<'a> Clausifier<'a> {
         if let Some(cls) = self.class_id_of(c) {
             return Some(Atom::Class(cls, var));
         }
-        match self.pool.get(c) {
+        // Copy out the role/inner ids (the owned pool means the
+        // scrutinee borrow would otherwise block the `&mut self` calls).
+        let expr = self.pool.get(c).clone();
+        match expr {
             ConceptExpr::Some(role, inner) => {
-                let cls = self.atomic_name_of(*inner)?;
-                Some(Atom::Exists(*role, cls, var))
+                let cls = self.atomic_name_of(inner)?;
+                Some(Atom::Exists(role, cls, var))
             }
             ConceptExpr::Not(inner) => {
                 // ¬A as a disjunct: name it with a fresh class Q
                 // and the auxiliary clause Q ⊓ A → ⊥, i.e. Q means
                 // "¬A". (H1 treats Q as the negative literal.)
-                if let Some(a) = self.class_id_of(*inner) {
+                if let Some(a) = self.class_id_of(inner) {
                     let q = self.fresh_class();
                     self.clauses.push(DlClause {
                         body: vec![Atom::Class(q, var), Atom::Class(a, var)],
+                        head: Vec::new(),
+                    });
+                    Some(Atom::Class(q, var))
+                } else if let ConceptExpr::SelfRestriction(role) = *self.pool.get(inner) {
+                    // ¬∃R.Self: name it `Q` with `Q ∧ R(x,x) → ⊥`
+                    // (a `Q`-node must have no `R`-self-loop).
+                    let q = self.fresh_class();
+                    self.clauses.push(DlClause {
+                        body: vec![Atom::Class(q, var), Atom::Role(role, var, var)],
                         head: Vec::new(),
                     });
                     Some(Atom::Class(q, var))
@@ -532,7 +561,11 @@ impl<'a> Clausifier<'a> {
                     None
                 }
             }
-            _ => None,
+            // Any other compound disjunct (`∀`/`≥n`/`≤n`/`Self`/nested
+            // `Or`): name it with a fresh `Q ⊑ disjunct` and use `Q` as
+            // the head atom. `atomic_name_of` clausifies `Q ⊑ disjunct`
+            // (via `emit_head`), which now covers all these shapes.
+            _ => self.atomic_name_of(c).map(|q| Atom::Class(q, var)),
         }
     }
 
@@ -573,7 +606,7 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
     let first_fresh = num_classes
         .checked_add(num_individuals)
         .expect("class+individual count fits in u32");
-    let mut c = Clausifier::new(&internal.concepts, first_fresh, nominal_base);
+    let mut c = Clausifier::new(internal.concepts, first_fresh, nominal_base);
     for ax in &normalized {
         c.clausify_axiom(ax);
     }
@@ -595,7 +628,7 @@ pub fn deferred_census(internal: &InternalOntology) -> Vec<(&'static str, usize)
     let first_fresh = num_classes
         .checked_add(num_individuals)
         .expect("class+individual count fits in u32");
-    let mut c = Clausifier::new(&internal.concepts, first_fresh, num_classes);
+    let mut c = Clausifier::new(internal.concepts, first_fresh, num_classes);
     for ax in &normalized {
         c.clausify_axiom(ax);
     }

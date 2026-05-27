@@ -177,6 +177,59 @@ inside the 200 ms budget. The honest expectation is that CDBL,
 done right, helps **convergent** workloads (like lazy unfolding
 helped family) more than the timeout-bound ones.
 
+## §B — Node-keyed integration (2026-05-27): validated, low-volume, reverted
+
+Fixed the §A keying bug and re-ran the full record+lookup:
+
+- Added `SearchVerdict::Unsat(DepSet, Option<NodeId>)` to carry the
+  clash node up (`SaturationResult::Clash` has it; the old `Unsat`
+  conversion dropped it).
+- Added `clash_decision_labels_at(clash_deps, clash_node)` — the
+  node-keyed translator: only the decision concepts that are *also
+  labels of the clash node*, so the no-good is a set that genuinely
+  co-occurs there.
+- Recorded (gated by `verify_node_local_clash`) and looked up as in
+  §A.
+
+**Result: the keying fix worked.** Debug counters on NamedPizza:
+**0 hits → 19 hits** (store grew, lookups matched). Soundness held
+— pizza stayed at 2 unsat matching HermiT; all 57 tableau tests
+passed.
+
+**But still no wall movement.** Pizza flat (29 s), family flat
+(6.3 s). 19 hits against ~12 k branch points per probe is far too
+few to make a timeout-bound pair converge. This is the
+session-wide invariant again
+([[rustdl-convergent-vs-timeout]] / `session-summary-2026-05-27.md`):
+even a *correct, hitting* CDBL doesn't move timeout-bound walls.
+
+**Reverted** to the Phase 1 + 2a primitives (`f346dd5`), per the
+§A acceptance criterion (revert on zero wall movement). The
+validated integration lives in git history. Two reasons not to
+ship it as-is:
+1. Zero measured benefit on any workload; the per-clash
+   `verify_node_local_clash` adds cost whose downside is within the
+   measurement noise band — i.e. unquantified, not proven free.
+2. Keeping working-but-unhelpful machinery erodes the "is this
+   load-bearing?" clarity the rest of the session's clean reverts
+   preserved.
+
+### What would raise the hit rate (the real next lever)
+
+The recorded no-goods are the clash node's *full* decision-label
+set. **Minimal unsat-core extraction** — record the smallest
+subset that still clashes node-locally — would produce more
+general no-goods that match far more often. That's the principled
+SAT-solver move (1-UIP learns a *minimal* clause, not the whole
+trail). It's also more work (subset minimisation per clash) and,
+per the invariant above, still wouldn't move pizza/SIO's
+timeout-bound walls — its payoff would be on convergent workloads.
+
+Net: CDBL is now **proven sound and proven to hit** (the two hard
+parts). It is **not** proven to help any wall, and on the target
+timeout-bound workloads it structurally can't without making whole
+pairs converge — which is hypertableau territory.
+
 ## Soundness invariants (enforced by tests every phase)
 
 - All ≥260 in-tree unit tests pass.

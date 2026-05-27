@@ -219,6 +219,11 @@ enum Command {
         /// Per-pair wall budget in ms (0 = unbounded).
         #[arg(long, default_value_t = 5000)]
         per_pair_timeout_ms: u64,
+        /// Print every entailed (`Unsat`) subsumption as a `sub\tsup`
+        /// TSV line (prefixed `S\t`) for set comparison against a
+        /// reference reasoner's hierarchy closure.
+        #[arg(long)]
+        dump_subsumptions: bool,
     },
 }
 
@@ -588,6 +593,7 @@ fn main() -> Result<()> {
             file,
             depth,
             per_pair_timeout_ms,
+            dump_subsumptions,
         } => {
             let onto = parse_ofn(&file)?;
             let timeout = (per_pair_timeout_ms > 0)
@@ -637,6 +643,13 @@ fn main() -> Result<()> {
                 (b.stats.branches_taken, b.wall_ms.to_bits())
                     .cmp(&(a.stats.branches_taken, a.wall_ms.to_bits()))
             });
+            if dump_subsumptions {
+                for r in &probe.results {
+                    if r.result == owl_dl_reasoner::HyperResult::Unsat {
+                        println!("S\t{}\t{}", r.sub, r.sup);
+                    }
+                }
+            }
             println!("# --- top pairs by branching ---");
             for r in by_interest.iter().take(15) {
                 println!(

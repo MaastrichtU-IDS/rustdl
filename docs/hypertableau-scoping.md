@@ -437,6 +437,57 @@ Two honest caveats:
    (pair-subsumption with `¬B` injection) is the probe that reaches
    it.
 
+## §H2c — pair-subsumption probe (`hyper-classify-probe`)
+
+`hyper-sat` showed pizza's wall is *not* in bare `sat(A)`. H2c
+reaches it: subsumption `sub ⊑ sup` is decided by the standard
+reduction to unsatisfiability of `sub ⊓ ¬sup`, encoded with a fresh
+helper concept `q`: `q → sub` and `q ∧ sup → ⊥`, seeding the root
+with `q`. `owl_dl_reasoner::hyper_subsumption_probe` runs it over
+every ordered class pair; `rustdl hyper-classify-probe FILE` exposes
+it (`--dump-subsumptions` emits the entailed pairs for set
+comparison). Same asymmetry: `Unsat` (subsumption holds) is sound
+for the full ontology, `Sat` (not subsumed) is not, so the
+`subsumptions` count is a sound **lower bound** on the true hierarchy.
+
+**Result on pizza (validated against Konclude's closure):**
+
+- **Sound:** 0 false positives across all 581 reported subsumptions
+  — every one is in Konclude's hierarchy closure.
+- **84 % complete:** hyper finds 581 of Konclude's 695 closure pairs
+  (over the same 99 named classes). The **114 misses cluster on
+  exactly the deferred constructs**: `X ⊑ InterestingPizza`
+  (`≡ Pizza ⊓ hasTopping min 3` — min-cardinality, deferred),
+  `X ⊑ VegetarianTopping` / `VegetarianPizza` (∀-completion of the
+  topping closure). Confirmed causal, not a bug.
+- **Reaches the wall:** 192 pairs branch (vs bare-sat's 2); the probe
+  finishes all 9702 pairs in 1.14 s where the default `classify`
+  times out > 30 s.
+
+**Pizza's wall is NOT yet claimed moved.** Unlike SIO, pizza's
+dropped axioms are **load-bearing** — the 1.14 s is partly speed from
+skipping the hard 16 % (the cardinality/∀ subsumptions). This is the
+hollow-win risk, made concrete. The gate is **H3** (cardinality + ∀-
+completion clausification), *not* heuristics or deeper depth — the
+missing axioms are the binding constraint. §A does not say revert
+(the probe is sound and SIO is a genuine win); it says block the
+pizza wall claim until H3.
+
+### SIO vs pizza — the load-bearing distinction
+
+Both probes reach the engine and both have a deferred-axiom count, so
+they look alike. The discriminator outcome is **opposite**, and that
+is the finding that matters for future work:
+
+| | deferred drop | agreement vs Konclude | verdict |
+|---|---|---|---|
+| **SIO** (bare-sat) | **innocent** | 0 missed unsat (both 0 unsat) | wall moved — claim it |
+| **pizza** (pair-sub) | **load-bearing** | 114/695 missed, all cardinality/∀ | gated on H3 |
+
+The lesson: a fast hyper result is only a win once answer-agreement
+against a reference reasoner rules out the axiom-drop confound. SIO
+passed; pizza is pending H3.
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

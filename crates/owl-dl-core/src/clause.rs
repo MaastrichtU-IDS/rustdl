@@ -99,22 +99,29 @@ struct Clausifier<'a> {
     pool: &'a ConceptPool,
     clauses: Vec<DlClause>,
     next_fresh: u32,
+    /// Base id of the nominal-class region: a nominal `{a}` is treated
+    /// as the atomic class `nominal_base + a.index()`. Reserved
+    /// `[num_classes, num_classes + num_individuals)`, before structural
+    /// names. Treating a nominal as a plain class is a sound
+    /// under-approximation for the refutation direction (it only loses
+    /// the singleton-equality constraint, which can only *add* clashes).
+    nominal_base: u32,
     /// Next fresh clause variable, reset per axiom (X is always 0;
     /// successors introduced by nested `∃`/`∀` take 1, 2, …).
     next_var: Var,
     /// Constructs not yet handled (antecedent `∀`/`Or`/`Not`,
-    /// cardinality, nominals, deep shapes). Counted, not
-    /// clausified — surfaced by [`ClauseStats`] so coverage is
-    /// measurable.
+    /// cardinality, deep shapes). Counted, not clausified — surfaced
+    /// by [`ClauseStats`] so coverage is measurable.
     deferred: usize,
 }
 
 impl<'a> Clausifier<'a> {
-    fn new(pool: &'a ConceptPool, first_fresh: u32) -> Self {
+    fn new(pool: &'a ConceptPool, first_fresh: u32, nominal_base: u32) -> Self {
         Self {
             pool,
             clauses: Vec::new(),
             next_fresh: first_fresh,
+            nominal_base,
             next_var: X + 1,
             deferred: 0,
         }
@@ -127,6 +134,17 @@ impl<'a> Clausifier<'a> {
             .checked_add(1)
             .expect("fresh class id overflow");
         id
+    }
+
+    /// The atomic class naming `c` directly: `c` itself if atomic, or
+    /// the reserved nominal class for a nominal `{a}`. `None` for
+    /// compound concepts (which need a structural name instead).
+    fn class_id_of(&self, c: ConceptId) -> Option<ClassId> {
+        match self.pool.get(c) {
+            ConceptExpr::Atomic(a) => Some(*a),
+            ConceptExpr::Nominal(i) => Some(ClassId::new(self.nominal_base + i.index())),
+            _ => None,
+        }
     }
 
     fn fresh_var(&mut self) -> Var {
@@ -268,10 +286,14 @@ impl<'a> Clausifier<'a> {
     /// cardinality/nominal — deferred) or the cross-product exceeds
     /// [`ANTECEDENT_DNF_CAP`] (deferred rather than blow up).
     fn encode_antecedent(&mut self, c: ConceptId, var: Var) -> Option<Vec<Vec<Atom>>> {
+        // Atomic / nominal antecedent atom: a single one-literal body.
+        if let Some(cls) = self.class_id_of(c) {
+            return Some(vec![vec![Atom::Class(cls, var)]]);
+        }
         match self.pool.get(c) {
             // `⊤`: a single empty-conjunction alternative.
             ConceptExpr::Top => Some(vec![Vec::new()]),
-            ConceptExpr::Atomic(a) => Some(vec![vec![Atom::Class(*a, var)]]),
+            // `Atomic`/`Nominal` handled by the early return above.
             ConceptExpr::And(parts) => {
                 // Cross-product: each conjunct contributes alternatives;
                 // the And's alternatives are all combinations.
@@ -324,13 +346,15 @@ impl<'a> Clausifier<'a> {
                 }
                 Some(out)
             }
-            // Antecedent `∀`/`Not`/cardinality/nominal: deferred to
-            // later hypertableau phases (H3 ∀-in-body / cardinality).
+            // Antecedent `∀`/`Not`/cardinality: deferred to later
+            // phases (H3 ∀-in-body / cardinality). `Atomic`/`Nominal`
+            // are handled by the early return above.
             ConceptExpr::All(_, _)
             | ConceptExpr::Not(_)
             | ConceptExpr::Bot
             | ConceptExpr::Min(_, _, _)
             | ConceptExpr::Max(_, _, _)
+            | ConceptExpr::Atomic(_)
             | ConceptExpr::Nominal(_)
             | ConceptExpr::SelfRestriction(_) => None,
         }
@@ -356,10 +380,11 @@ impl<'a> Clausifier<'a> {
                     head: Vec::new(),
                 });
             }
-            ConceptExpr::Atomic(a) => {
+            ConceptExpr::Atomic(_) | ConceptExpr::Nominal(_) => {
+                let cls = self.class_id_of(head_concept).expect("atomic/nominal");
                 self.clauses.push(DlClause {
                     body,
-                    head: vec![Atom::Class(*a, var)],
+                    head: vec![Atom::Class(cls, var)],
                 });
             }
             ConceptExpr::And(parts) => {
@@ -406,9 +431,9 @@ impl<'a> Clausifier<'a> {
                 // body → ¬C  ≡  body ∧ C → ⊥. Only handled when
                 // `C` is atomic (the common disjointness shape);
                 // a nested negation under NNF shouldn't occur.
-                if let ConceptExpr::Atomic(a) = self.pool.get(*inner) {
+                if let Some(a) = self.class_id_of(*inner) {
                     let mut b = body;
-                    b.push(Atom::Class(*a, var));
+                    b.push(Atom::Class(a, var));
                     self.clauses.push(DlClause {
                         body: b,
                         head: Vec::new(),
@@ -417,11 +442,10 @@ impl<'a> Clausifier<'a> {
                     self.deferred += 1;
                 }
             }
-            // Cardinality, nominals, self-restriction: deferred to
-            // later hypertableau phases (H3). Counted for coverage.
+            // Cardinality, self-restriction: deferred to later phases
+            // (H3). Counted for coverage.
             ConceptExpr::Min(_, _, _)
             | ConceptExpr::Max(_, _, _)
-            | ConceptExpr::Nominal(_)
             | ConceptExpr::SelfRestriction(_) => {
                 self.deferred += 1;
             }
@@ -432,8 +456,10 @@ impl<'a> Clausifier<'a> {
     /// Returns `None` if the disjunct can't be expressed as one
     /// atom yet (caller defers).
     fn head_atom_for(&mut self, c: ConceptId, var: Var) -> Option<Atom> {
+        if let Some(cls) = self.class_id_of(c) {
+            return Some(Atom::Class(cls, var));
+        }
         match self.pool.get(c) {
-            ConceptExpr::Atomic(a) => Some(Atom::Class(*a, var)),
             ConceptExpr::Some(role, inner) => {
                 let cls = self.atomic_name_of(*inner)?;
                 Some(Atom::Exists(*role, cls, var))
@@ -442,10 +468,10 @@ impl<'a> Clausifier<'a> {
                 // ¬A as a disjunct: name it with a fresh class Q
                 // and the auxiliary clause Q ⊓ A → ⊥, i.e. Q means
                 // "¬A". (H1 treats Q as the negative literal.)
-                if let ConceptExpr::Atomic(a) = self.pool.get(*inner) {
+                if let Some(a) = self.class_id_of(*inner) {
                     let q = self.fresh_class();
                     self.clauses.push(DlClause {
-                        body: vec![Atom::Class(q, var), Atom::Class(*a, var)],
+                        body: vec![Atom::Class(q, var), Atom::Class(a, var)],
                         head: Vec::new(),
                     });
                     Some(Atom::Class(q, var))
@@ -461,8 +487,8 @@ impl<'a> Clausifier<'a> {
     /// else a fresh structural name `Q` with `Q ⊑ c` clausified so
     /// the successor seeded with `Q` carries `c`'s consequences.
     fn atomic_name_of(&mut self, c: ConceptId) -> Option<ClassId> {
-        if let ConceptExpr::Atomic(a) = self.pool.get(c) {
-            return Some(*a);
+        if let Some(cls) = self.class_id_of(c) {
+            return Some(cls);
         }
         // Fresh Q with Q(x) → c(x). Bounded recursion via emit_head.
         let q = self.fresh_class();
@@ -484,9 +510,17 @@ pub fn clausify(internal: &InternalOntology) -> Vec<DlClause> {
 pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, ClauseStats) {
     let mut internal = internal.clone();
     let normalized = nnf_axioms(&mut internal);
-    let first_fresh =
+    let num_classes =
         u32::try_from(internal.vocabulary.num_classes()).expect("class count fits in u32");
-    let mut c = Clausifier::new(&internal.concepts, first_fresh);
+    let num_individuals =
+        u32::try_from(internal.vocabulary.num_individuals()).expect("individual count fits in u32");
+    // Reserve `[num_classes, num_classes + num_individuals)` for the
+    // nominal classes; structural names start after them.
+    let nominal_base = num_classes;
+    let first_fresh = num_classes
+        .checked_add(num_individuals)
+        .expect("class+individual count fits in u32");
+    let mut c = Clausifier::new(&internal.concepts, first_fresh, nominal_base);
     for ax in &normalized {
         c.clausify_axiom(ax);
     }

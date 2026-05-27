@@ -1849,6 +1849,30 @@ SubClassOf(:D :B)\nDisjointClasses(:C :D)\n)\n"
         );
     }
 
+    /// Nominals (`hasValue`): `A ≡ P ⊓ ∃r.{o}`, `B ⊑ P`, `B ⊑ ∃r.{o}`
+    /// ⊨ `B ⊑ A`. The nominal `{o}` is clausified as an atomic class,
+    /// so the `⊒`-direction `P ⊓ ∃r.{o} ⊑ A` derives `A` on `B`. The
+    /// `RealItalianPizza` shape.
+    #[test]
+    fn hyper_subsumption_probe_handles_nominal_has_value() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:P))\n\
+Declaration(ObjectProperty(:r))\nDeclaration(NamedIndividual(:o))\n\
+EquivalentClasses(:A ObjectIntersectionOf(:P ObjectHasValue(:r :o)))\n\
+SubClassOf(:B :P)\nSubClassOf(:B ObjectHasValue(:r :o))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(holds("B", "A"), "B ⊑ A must derive via the nominal {{o}}");
+    }
+
     /// H3b Q-gating: the `¬sup` disjunction must bind only the root,
     /// never generated successors. `sub ≡ ∃R.A`, `sup ≡ ¬∃R.A` are
     /// disjoint but neither subsumes the other, so `sub ⊑ sup` must be

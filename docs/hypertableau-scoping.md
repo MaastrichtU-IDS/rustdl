@@ -555,7 +555,24 @@ counted). Validated vs Konclude: pizza misses **29 → 24**
 (SpicyPizzaEquivalent's 5), **0 false positives**, completeness
 **95.8 % → 96.5 %**.
 
-The clean residual 24 is the two genuinely-hard remaining mechanisms:
+**Nominals / `hasValue` (shipped) — pizza is now 100 %.** A nominal
+`{a}` is clausified as an **ordinary atomic class** (reserved id region
+`[num_classes, num_classes+num_individuals)`). The `⊒`-direction of a
+`hasValue` definition then becomes a Horn back-prop clause —
+`RealItalianPizza ≡ Pizza ⊓ ∃hCO.{Italy}` gives
+`Pizza(x) ∧ hCO(x,y) ∧ {Italy}(y) → RealItalianPizza(x)` — so a pizza
+with `∃hCO.{Italy}` (Napoletana, Veneziana) derives it directly; the
+`ThinAndCrispyPizza` subsumptions follow transitively. Treating a
+nominal as a plain class drops only the singleton-equality constraint,
+which can only *add* clashes, so it stays sound (0 false positives).
+No reasoner change needed — the `¬sup` `∀`-disjunct is untranslatable,
+so the probe falls back to the bare-complement test, which the Horn
+clause satisfies. Validated vs Konclude: pizza misses **4 → 0**,
+**695 / 695 subsumptions, 0 false positives** — the full hierarchy.
+Pizza `deferred` dropped 17 → 7 (cardinality/self-restriction remain,
+none load-bearing for the corpus).
+
+The (now-cleared) residual 24 was the two genuinely-hard mechanisms:
 min-cardinality 20 (`InterestingPizza ≡ ≥3 hasTopping`, **H3c — scoped
 in [`hypertableau-cardinality-scoping.md`](hypertableau-cardinality-scoping.md)**:
 the `≤n` successor-merge rule, the first structure-mutating engine

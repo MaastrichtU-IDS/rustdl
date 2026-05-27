@@ -830,21 +830,24 @@ SubClassOf(:C ObjectHasSelf(:r))\n)\n"
         ));
         assert_eq!(stats.deferred, 0, "no deferral expected; stats={stats:?}");
         assert!(
-            clauses
+            clauses.iter().any(|c| c
+                .head
                 .iter()
-                .any(|c| c.head.iter().any(|a| matches!(a, Atom::AtLeast(_, Some(_), 2, _)))),
+                .any(|a| matches!(a, Atom::AtLeast(_, Some(_), 2, _)))),
             "expected an AtLeast(_,Some,2,_) head"
         );
         assert!(
-            clauses
+            clauses.iter().any(|c| c
+                .head
                 .iter()
-                .any(|c| c.head.iter().any(|a| matches!(a, Atom::AtMost(_, Some(_), 1, _)))),
+                .any(|a| matches!(a, Atom::AtMost(_, Some(_), 1, _)))),
             "expected an AtMost(_,Some,1,_) head"
         );
         assert!(
-            clauses
+            clauses.iter().any(|c| c
+                .head
                 .iter()
-                .any(|c| c.head.iter().any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
+                .any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
             "expected a self-loop Role(x,x) head"
         );
     }

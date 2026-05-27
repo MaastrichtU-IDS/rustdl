@@ -413,16 +413,29 @@ default reasoner's `sat` on the two branchiest classes **times out
 > 20 s** (one ran 135 s then errored). So on SIO the engine *does*
 exercise real branching and finishes fast where the default stalls.
 
-**This is not yet a wall-moved claim.** The confound: the dropped 91
-axioms could be where the default spends its time, in which case
-hyper "wins" only by skipping the hard part. The discriminator is
-**answer agreement**: SIO returned 0 unsat across 1585 classes — if
-a reference reasoner (Konclude on
-`ontologies/real/konclude-input/sio-stripped.owx`) finds *any*
-genuinely unsatisfiable class, the drop is load-bearing and the
-result is inconclusive until H3 (cardinality). If Konclude also
-returns 0 unsat, the drop is innocent and the bare-sat wall genuinely
-moved. **Pending that comparison** (see §A criterion).
+**Discriminator resolved — the wall moved on SIO bare-sat.** The
+confound was that the dropped 91 axioms could be where the default
+spends its time. The test is answer agreement: Konclude (full
+ontology, all axioms) on
+`ontologies/real/konclude-input/sio-stripped.owx` classifies in
+**136 ms** and finds **0 unsatisfiable classes** (1606 SubClassOf
+axioms; the only `owl:Nothing` mention is its declaration). Hyper —
+over the fragment, *minus* the 91 deferred axioms — also returns **0
+unsat**. The verdicts agree, so the drop is innocent here: the 91
+axioms introduce no unsatisfiability hyper could miss. Therefore
+hyper's 16.3 s (vs the default's > 135 s on a single class) is a
+genuine architecture win on SIO bare concept-satisfiability, not an
+artefact of skipping work. The §A criterion is satisfied for this
+probe.
+
+Two honest caveats:
+1. **Hyper is still ~100× slower than Konclude** (16.3 s vs 0.14 s).
+   The naive save/restore search has no ordering heuristics, no
+   trail, and no dependency-directed backjumping — that gap is the
+   real follow-up work, not the existence of a win.
+2. **Pizza's wall is untouched** by bare-sat (see above) — H2c
+   (pair-subsumption with `¬B` injection) is the probe that reaches
+   it.
 
 ## 9. Recommended entry point
 

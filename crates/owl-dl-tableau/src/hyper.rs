@@ -67,6 +67,10 @@ struct HyperNode {
     /// so a label added here can re-queue its predecessors (the
     /// back-propagation wake-up for semi-naive evaluation).
     preds: Vec<(Role, HNode)>,
+    /// `≤n` constraints `(role, qualifier, bound)` attached to this
+    /// node (H3c). Enforced by the merge rule when the node has more
+    /// matching `role`-successors than `bound`.
+    at_most: Vec<(Role, Option<ClassId>, u32)>,
     /// Creation order index — used by anywhere blocking ("blocked
     /// by an *earlier* node"). Equal to the node's own index here.
     order: u32,
@@ -143,6 +147,11 @@ pub struct HyperEngine<'c> {
     /// clauses), which is what prunes the re-fire cost. See
     /// `docs/hypertableau-seminaive-scoping.md`.
     worklist: Vec<Event>,
+    /// Union-find over nodes for the `≤n` merge rule (H3c): when node
+    /// `j` is merged into `i`, `representative[j] = i`. Identity for
+    /// un-merged nodes. Resolve role-successors through this when
+    /// counting/following edges so a merged node is seen once.
+    representative: Vec<HNode>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -204,7 +213,8 @@ fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
                 Atom::Class(c, v) if *v == X => push(&mut ix.x_trigger, c.index() as usize, ci),
                 Atom::Class(c, _) => push(&mut ix.succ_trigger, c.index() as usize, ci),
                 Atom::Role(r, _, _) => push(&mut ix.role_trigger, role_id_index(*r), ci),
-                Atom::Exists(..) | Atom::Equal(..) => {}
+                // Head-only atoms never appear in a (Horn) body.
+                Atom::Exists(..) | Atom::AtMost(..) | Atom::Equal(..) => {}
             }
         }
     }
@@ -229,7 +239,18 @@ impl<'c> HyperEngine<'c> {
             deadline: None,
             indexes: build_clause_indexes(clauses),
             worklist: Vec::new(),
+            representative: vec![HNode(0)],
         }
+    }
+
+    /// Resolve a node through the merge union-find to its canonical
+    /// representative (H3c). Identity for un-merged nodes.
+    fn resolve(&self, n: HNode) -> HNode {
+        let mut r = n;
+        while self.representative[r.index()] != r {
+            r = self.representative[r.index()];
+        }
+        r
     }
 
     /// Add class `c` to node `n`, emitting a [`Event::Label`] on a
@@ -264,6 +285,7 @@ impl<'c> HyperEngine<'c> {
             ..HyperNode::default()
         });
         let n = HNode(id);
+        self.representative.push(n);
         // Fire empty-body (`⊤ → …`) clauses at the new node.
         if !self.indexes.empty_body.is_empty() {
             self.worklist.push(Event::NodeNew(n));
@@ -311,6 +333,11 @@ impl<'c> HyperEngine<'c> {
         self.worklist.clear();
         for idx in 0..self.nodes.len() {
             let n = HNode(u32::try_from(idx).expect("fits u32"));
+            // Skip merged-away (non-canonical) nodes — their facts live
+            // on the representative.
+            if self.resolve(n) != n {
+                continue;
+            }
             if !self.indexes.empty_body.is_empty() {
                 self.worklist.push(Event::NodeNew(n));
             }
@@ -438,46 +465,84 @@ impl<'c> HyperEngine<'c> {
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
-        let Some((ci, node, binding)) = self.find_open_disjunction() else {
-            return HyperResult::Sat;
-        };
-        if depth == 0 {
-            // Branching needed but the budget is exhausted — undetermined.
-            return HyperResult::Stalled;
+        // Disjunctive-head branching (H2).
+        if let Some((ci, node, binding)) = self.find_open_disjunction() {
+            if depth == 0 {
+                return HyperResult::Stalled;
+            }
+            self.track_depth(depth);
+            let head_len = self.clauses[ci].head.len();
+            let mut any_stalled = false;
+            for k in 0..head_len {
+                let head_atom = self.clauses[ci].head[k];
+                let saved = self.save();
+                self.stats.branches_taken += 1;
+                let _ = self.apply_head_atom(head_atom, node, &binding);
+                match self.solve(depth - 1) {
+                    HyperResult::Sat => return HyperResult::Sat,
+                    HyperResult::Unsat => self.restore(saved),
+                    HyperResult::Stalled => {
+                        self.restore(saved);
+                        any_stalled = true;
+                    }
+                }
+            }
+            return if any_stalled {
+                HyperResult::Stalled
+            } else {
+                HyperResult::Unsat
+            };
         }
+        // `≤n` merge branching (H3c): merge one pair of the violating
+        // node's successors per branch, recursing.
+        if let Some((_node, succs)) = self.find_open_at_most() {
+            if depth == 0 {
+                return HyperResult::Stalled;
+            }
+            self.track_depth(depth);
+            let mut any_stalled = false;
+            for i in 0..succs.len() {
+                for j in (i + 1)..succs.len() {
+                    let saved = self.save();
+                    self.stats.branches_taken += 1;
+                    self.merge(succs[i], succs[j]);
+                    match self.solve(depth - 1) {
+                        HyperResult::Sat => return HyperResult::Sat,
+                        HyperResult::Unsat => self.restore(saved),
+                        HyperResult::Stalled => {
+                            self.restore(saved);
+                            any_stalled = true;
+                        }
+                    }
+                }
+            }
+            return if any_stalled {
+                HyperResult::Stalled
+            } else {
+                HyperResult::Unsat
+            };
+        }
+        HyperResult::Sat
+    }
+
+    fn track_depth(&mut self, depth: usize) {
         let level = u32::try_from(self.init_depth - depth + 1).unwrap_or(u32::MAX);
         if level > self.stats.max_branch_depth {
             self.stats.max_branch_depth = level;
         }
-        let head_len = self.clauses[ci].head.len();
-        let mut any_stalled = false;
-        for k in 0..head_len {
-            let head_atom = self.clauses[ci].head[k];
-            let saved = self.nodes.clone();
-            self.stats.node_clones += 1;
-            self.stats.branches_taken += 1;
-            let _ = self.apply_head_atom(head_atom, node, &binding);
-            match self.solve(depth - 1) {
-                // Keep the satisfiable branch's graph; do not restore.
-                HyperResult::Sat => return HyperResult::Sat,
-                HyperResult::Unsat => {
-                    self.nodes = saved;
-                    self.stats.restores += 1;
-                }
-                HyperResult::Stalled => {
-                    self.nodes = saved;
-                    self.stats.restores += 1;
-                    any_stalled = true;
-                }
-            }
-        }
-        // Every disjunct failed. If any was merely undetermined we
-        // cannot soundly conclude Unsat.
-        if any_stalled {
-            HyperResult::Stalled
-        } else {
-            HyperResult::Unsat
-        }
+    }
+
+    /// Snapshot the mutable graph state for branch save/restore: the
+    /// nodes and the merge union-find (both revert on a failed branch).
+    fn save(&mut self) -> (Vec<HyperNode>, Vec<HNode>) {
+        self.stats.node_clones += 1;
+        (self.nodes.clone(), self.representative.clone())
+    }
+
+    fn restore(&mut self, saved: (Vec<HyperNode>, Vec<HNode>)) {
+        self.nodes = saved.0;
+        self.representative = saved.1;
+        self.stats.restores += 1;
     }
 
     /// Find an *open* disjunctive clause: one whose body matches at
@@ -526,10 +591,90 @@ impl<'c> HyperEngine<'c> {
                         return true;
                     }
                 }
+                Atom::AtMost(role, qual, n, v) => {
+                    // Satisfied (no branch needed) if this `≤n` is
+                    // already *asserted* on the node — we committed to
+                    // this disjunct, and enforcement is now
+                    // `find_open_at_most`'s job — or if it trivially
+                    // holds (≤n matching successors already).
+                    if let Some(src) = resolve(*v)
+                        && (self.nodes[src.index()]
+                            .at_most
+                            .contains(&(*role, *qual, *n))
+                            || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize)
+                    {
+                        return true;
+                    }
+                }
                 Atom::Equal(..) | Atom::Role(..) => {}
             }
         }
         false
+    }
+
+    /// The *distinct* (representative-resolved) `role`-successors of
+    /// `node`, filtered by the optional class qualifier.
+    fn distinct_role_succ(&self, node: HNode, role: Role, qual: Option<ClassId>) -> Vec<HNode> {
+        let mut seen: Vec<HNode> = Vec::new();
+        for (er, t) in &self.nodes[node.index()].edges {
+            if !role_matches(*er, role) {
+                continue;
+            }
+            let rt = self.resolve(*t);
+            if let Some(q) = qual
+                && !self.nodes[rt.index()].has(q)
+            {
+                continue;
+            }
+            if !seen.contains(&rt) {
+                seen.push(rt);
+            }
+        }
+        seen
+    }
+
+    /// Find a node with a violated `≤n` constraint: more distinct
+    /// matching `role`-successors than the bound. Returns the
+    /// canonical node and its (resolved, distinct) successor list to
+    /// branch merges over. Only canonical (un-merged) nodes are checked.
+    fn find_open_at_most(&self) -> Option<(HNode, Vec<HNode>)> {
+        for idx in 0..self.nodes.len() {
+            let node = HNode(u32::try_from(idx).expect("fits u32"));
+            if self.resolve(node) != node {
+                continue;
+            }
+            for &(role, qual, n) in &self.nodes[idx].at_most {
+                let succs = self.distinct_role_succ(node, role, qual);
+                if succs.len() > n as usize {
+                    return Some((node, succs));
+                }
+            }
+        }
+        None
+    }
+
+    /// Merge node `s_j` into `s_i` for the `≤n` rule (H3c): union
+    /// `s_j`'s labels (through [`add_label`], so the disjointness clause
+    /// fires on incompatible merges), redirect its out-edges and
+    /// `≤n` constraints, and point `s_j` at `s_i` in the union-find.
+    /// First-phase scope: merges happen only among a root's direct
+    /// successors, whose sole predecessor is the root (already linked
+    /// to `s_i`), so predecessor redirection is unnecessary.
+    fn merge(&mut self, s_i: HNode, s_j: HNode) {
+        self.representative[s_j.index()] = s_i;
+        for c in self.nodes[s_j.index()].labels.clone() {
+            self.add_label(s_i, c);
+        }
+        for (r, t) in self.nodes[s_j.index()].edges.clone() {
+            self.nodes[s_i.index()].edges.push((r, t));
+            self.nodes[t.index()].preds.push((r, s_i));
+            self.worklist.push(Event::Edge(s_i, r, t));
+        }
+        for c in self.nodes[s_j.index()].at_most.clone() {
+            if !self.nodes[s_i.index()].at_most.contains(&c) {
+                self.nodes[s_i.index()].at_most.push(c);
+            }
+        }
     }
 
     /// Fire one clause with `x = node`. Handles the two body shapes
@@ -685,7 +830,19 @@ impl<'c> HyperEngine<'c> {
                 };
                 self.fire_exists(src, role, cls)
             }
-            // Equality heads (≤n) are H3; not produced yet.
+            Atom::AtMost(role, qual, n, v) => {
+                let Some(target) = resolve_var(v, xnode, binding) else {
+                    return FireOutcome::NoChange;
+                };
+                let c = (role, qual, n);
+                if self.nodes[target.index()].at_most.contains(&c) {
+                    FireOutcome::NoChange
+                } else {
+                    self.nodes[target.index()].at_most.push(c);
+                    FireOutcome::Changed
+                }
+            }
+            // Equality heads are H3 (≥n generation); not produced yet.
             Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
         }
     }
@@ -1184,6 +1341,94 @@ mod tests {
             "root must gain D via the two-role chain; labels={:?}",
             engine.root_labels()
         );
+    }
+
+    // ---- H3c: ≤n merge ----
+
+    /// `≤1 R` with two disjoint `R`-successors is Unsat: the merge
+    /// rule must identify them, and `A ⊓ B → ⊥` clashes. `C ⊑ ∃R.A`,
+    /// `C ⊑ ∃R.B`, `A ⊓ B ⊑ ⊥`, `C ⊑ ≤1 R`.
+    #[test]
+    fn at_most_one_with_two_disjoint_successors_is_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let (root, ca, cb) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, ca, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cb, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(ca, X), Atom::Class(cb, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// `≤2 R` with two successors is Sat — no merge needed.
+    #[test]
+    fn at_most_two_with_two_successors_is_sat() {
+        let role = Role::Named(RoleId::new(0));
+        let (root, ca, cb) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, ca, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cb, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(ca, X), Atom::Class(cb, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 2, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Sat);
+    }
+
+    /// `≤2 R` with three pairwise-disjoint successors is Unsat (the
+    /// `InterestingPizza` shape): every pairwise merge clashes.
+    #[test]
+    fn at_most_two_with_three_disjoint_successors_is_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let (root, ca, cb, cd) = (cls(0), cls(1), cls(2), cls(3));
+        let bot2 = |lhs, rhs| DlClause {
+            body: vec![Atom::Class(lhs, X), Atom::Class(rhs, X)],
+            head: vec![],
+        };
+        let exists = |inner| DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::Exists(role, inner, X)],
+        };
+        let clauses = vec![
+            exists(ca),
+            exists(cb),
+            exists(cd),
+            bot2(ca, cb),
+            bot2(ca, cd),
+            bot2(cb, cd),
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 2, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
     }
 
     /// Instrumentation: branching tracked when it happens, zero on

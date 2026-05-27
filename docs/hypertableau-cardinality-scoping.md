@@ -104,6 +104,23 @@ now. When successor merges are added, blocking must be re-evaluated on
 merge (recompute, or invalidate blocked-ness when an ancestor gains a
 label). Out of scope for phase 1; flagged so it isn't forgotten.
 
+## Result (shipped)
+
+Implemented per this design. Validated vs Konclude: pizza misses
+**24 → 4** (the 20 `InterestingPizza` unlocked, exactly as predicted),
+subsumptions 671 → 691, **0 false positives**; SIO unchanged (1585
+sat / 0 unsat, ~0.46 s). The pizza hierarchy is now **99.4 %** of
+Konclude's closure — only the 4 nominal misses remain.
+
+One bug found-and-fixed during validation (the first cut left misses
+at 24): after branching into the `≤n` disjunct, `any_head_satisfied`
+checked whether `≤n` *holds* (it doesn't — the constraint is
+violated, that's the point), so `find_open_disjunction` re-opened the
+same disjunction forever → `Stalled`, never deriving `Unsat`. Fix:
+the `AtMost` disjunct counts as *satisfied* once the constraint is
+**asserted** on the node (we committed to that disjunct); enforcement
+is then `find_open_at_most`'s job, not the disjunction's.
+
 ## §6 — Validation
 
 - **Pizza:** misses **24 → 4** (the 20 `InterestingPizza` unlocked),

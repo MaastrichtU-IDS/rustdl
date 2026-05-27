@@ -281,6 +281,15 @@ fn encode_neg_disjunct(
             }
             _ => None,
         },
+        // `≤n R.C` (NNF of `¬(≥(n+1) R.C)`) → an at-most constraint.
+        // Unqualified when the qualifier is `⊤` (the pizza
+        // `InterestingPizza` shape `≤2 hasTopping`); a named-class
+        // qualifier is carried through, anything else defers.
+        ConceptExpr::Max(n, role, inner) => match pool.get(*inner) {
+            ConceptExpr::Top => Some(Atom::AtMost(*role, None, *n, X)),
+            ConceptExpr::Atomic(a) => Some(Atom::AtMost(*role, Some(*a), *n, X)),
+            _ => None,
+        },
         _ => None,
     }
 }

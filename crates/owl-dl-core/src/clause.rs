@@ -61,6 +61,10 @@ pub enum Atom {
     /// (`∃R.A(v)`). The hypertableau generation step (H1) realises
     /// it by creating a successor.
     Exists(Role, ClassId, Var),
+    /// Head-only: `v` has at most `n` `R`-successors (in class `A`
+    /// when the qualifier is `Some`, else unqualified). The `≤n`
+    /// constraint for cardinality (H3c); enforced by the merge rule.
+    AtMost(Role, Option<ClassId>, u32, Var),
     /// `u ≈ v` — equality, for `≤n` / functional reasoning (H3).
     Equal(Var, Var),
 }

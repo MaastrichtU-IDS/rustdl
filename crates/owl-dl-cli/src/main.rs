@@ -533,6 +533,9 @@ fn main() -> Result<()> {
             let mut total_wall = 0.0f64;
             let mut max_depth_reached = 0u32;
             let mut total_branches = 0u64;
+            let mut total_match_attempts = 0u64;
+            let mut total_node_clones = 0u64;
+            let mut total_fixpoint_passes = 0u64;
             for r in &probe.results {
                 match r.result {
                     HyperResult::Sat => sat += 1,
@@ -541,6 +544,9 @@ fn main() -> Result<()> {
                 }
                 total_wall += r.wall_ms;
                 total_branches += r.stats.branches_taken;
+                total_match_attempts += r.stats.match_attempts;
+                total_node_clones += r.stats.node_clones;
+                total_fixpoint_passes += r.stats.fixpoint_passes;
                 max_depth_reached = max_depth_reached.max(r.stats.max_branch_depth);
                 if r.stats.branches_taken > 0 {
                     branched += 1;
@@ -554,6 +560,10 @@ fn main() -> Result<()> {
             println!("# total_wall_ms:    {total_wall:.1}");
             println!("# total_branches:   {total_branches}");
             println!("# max_depth_reached:{max_depth_reached}");
+            println!("# --- profiling counters (search-quality work) ---");
+            println!("# match_attempts:   {total_match_attempts}  (clause×node Horn match tries)");
+            println!("# node_clones:      {total_node_clones}  (save/restore — trail target)");
+            println!("# fixpoint_passes:  {total_fixpoint_passes}");
             println!("# classes_branched: {branched}   <-- HEADLINE: only these probe the engine");
             if branched > 0 {
                 branched_walls

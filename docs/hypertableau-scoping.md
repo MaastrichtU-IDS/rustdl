@@ -561,6 +561,40 @@ min-cardinality 20 (`InterestingPizza ≡ ≥3 hasTopping`, H3c — the
 (`RealItalianPizza`'s `hasValue` + the two pizzas reaching
 `ThinAndCrispyPizza` transitively through it).
 
+## Search quality — profiling toward H4 (the Konclude gap)
+
+With pizza at 96.5 % completeness, the remaining barrier to flipping
+the engine on (H4) is speed: SIO bare-sat is ~116× slower than
+Konclude. Before guessing the fix (trail vs heuristics vs other), the
+engine was instrumented (`SearchStats`: `match_attempts`,
+`node_clones`, `fixpoint_passes`) and run on the full SIO `hyper-sat`
+load (`perf`/samply unavailable — `perf_event_paranoid=4`, no sudo —
+so operation counters, not a sampler).
+
+**The profile is decisive and overturns the trail hypothesis:**
+
+| counter | SIO bare-sat (1585 classes, ~23 s) |
+|---|---|
+| **match_attempts** | **1 350 534 374** (clause×node Horn match tries) |
+| node_clones | 2 147 |
+| fixpoint_passes | 21 768 |
+
+The cost is **1.35 billion `match_body` attempts** — the Horn fixpoint
+re-scans all 2 474 clauses at every node on every pass, with no index
+on which clauses could possibly fire. `node_clones` is 2 147, so the
+save/restore-vs-trail question is irrelevant here; the trail would
+save nothing. This is clause-iteration, not branching cost.
+
+**Next target — semi-naive Horn evaluation with clause indexing.**
+Index clauses by the body class atoms (the trigger); when a node gains
+a label, only re-attempt clauses whose body mentions that label
+(semi-naive / given-clause evaluation), instead of re-scanning the
+whole clause set every pass. This directly attacks the 1.35 B. (A
+secondary, smaller win: `match_body` now allocates per call — the
+multi-role refactor's `eval_order` builds `bound`/`order`/`used` Vecs
+on the hot path; avoid for the common 0–1 role body.) This is the
+data-chosen H4-enabling increment, not cardinality (H3c) or nominals.
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

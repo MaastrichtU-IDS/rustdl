@@ -113,6 +113,14 @@ pub struct SearchStats {
     pub restores: u64,
     /// Deepest branch nesting reached (0 ⇒ no branching).
     pub max_branch_depth: u32,
+    /// `match_body` calls — every (clause × node) match attempt in the
+    /// Horn fixpoint. Profiling counter for the search-quality work.
+    pub match_attempts: u64,
+    /// `self.nodes` clones (one per branch decision). Profiling
+    /// counter: the save/restore cost the trail would remove.
+    pub node_clones: u64,
+    /// `horn_fixpoint` outer-loop passes summed across the search.
+    pub fixpoint_passes: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -194,6 +202,7 @@ impl<'c> HyperEngine<'c> {
     /// the caller's job ([`solve`]).
     fn horn_fixpoint(&mut self, max_iters: usize) -> HyperResult {
         for _ in 0..max_iters {
+            self.stats.fixpoint_passes += 1;
             let mut changed = false;
             // Snapshot node count; new successors are processed on
             // the next outer pass.
@@ -274,6 +283,7 @@ impl<'c> HyperEngine<'c> {
         for k in 0..head_len {
             let head_atom = self.clauses[ci].head[k];
             let saved = self.nodes.clone();
+            self.stats.node_clones += 1;
             self.stats.branches_taken += 1;
             let _ = self.apply_head_atom(head_atom, node, &binding);
             match self.solve(depth - 1) {
@@ -382,6 +392,7 @@ impl<'c> HyperEngine<'c> {
         if !self.clauses[ci].is_horn() {
             return FireOutcome::NoChange;
         }
+        self.stats.match_attempts += 1;
         let Some(bindings) = self.match_body(ci, node) else {
             return FireOutcome::NoChange;
         };

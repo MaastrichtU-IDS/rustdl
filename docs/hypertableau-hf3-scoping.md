@@ -39,7 +39,33 @@ Part of [`hypertableau-full-scoping.md`](hypertableau-full-scoping.md) §HF3.
   nodes — a forced such merge is a **clash** (can't fit `n+1` pairwise-
   distinct fillers under `≤n`). This is what makes `≥2 ⊓ ≤1` unsat.
 
-### HF3b — termination (`≤`-before-`≥` ordering)
+### HF3b — termination (`≤`-before-`≥` ordering) — **mostly achieved by construction**
+
+**Finding (verify-not-build).** The HF3a generation design already
+delivers HF3b's termination + the regen-hole closure for the cases
+checked. Four adversarial probes (engine tests `hf3b_probe_*`) all pass:
+(A) existing `∃` successor + `≥2 ⊓ ≤1` → Unsat; (B) non-root cardinality
+clash → Unsat; (C) cyclic `≥2 R.A ⊓ ≤1 R.A` → terminates Unsat;
+(D) the *exact* `TODO`-warned skip case (two distinct `∃` successors
+both `C`, `≥2 ⊓ ≤1`) → Unsat. The invariant: count-based *skip* never
+sets fire-once, and generation always adds `≠`-witnesses, so a `≤n`
+merge can't collapse below `n` once generation has fired, and can still
+fire after a merge if it was skipped. So HF3b shrinks to: **(1)** the
+four probes as regression tests (done), **(2)** the invariant comment in
+`generate_at_least` (done), **(3)** a citation note — the Motik et al.
+literal `≤`-before-`≥` rule priority *coincides* with the achieved
+behavior, so the "soundness by Motik et al." claim holds without new
+code. Scope of the claim: HF3a (no inverse `≥n`, no nominal cardinality,
+anywhere blocking) — **not** a general SROIQ termination theorem.
+
+**Genuinely-open HF3 gap:** the `≤n` merge does not redirect a merged
+node's *in*-edges (the H3c root-only scope cut). Probe B passed because
+its node is tree-shaped (single predecessor); multi-predecessor merging
+only arises with inverse-edge back-propagation, which intersects what
+HF2 deferred and the corpus doesn't exercise. Left for HF2-double-
+blocking / HF4.
+
+#### (original plan, retained for reference)
 
 - Cyclic `≥` (e.g. `A ⊑ ≥2 R.A`) must terminate. Two guards:
   1. **Generate only when needed:** `≥n` fires only if `x` lacks `n`

@@ -988,11 +988,13 @@ impl<'c> HyperEngine<'c> {
     /// `HF3a` `≥n role.qual` generation at `x`: create `n` fresh,
     /// pairwise-`≠` `role`-successors seeded with `qual`. Deterministic
     /// (not a branch point), so it runs in the Horn fixpoint via
-    /// [`Self::apply_head_atom`]. Fire-once per `(role, qual, n)` at a
-    /// node (so it can't loop), gated by blocking (a blocked node
-    /// generates nothing — termination). Inverse-role `≥n` is deferred
-    /// (TODO HF3): generating predecessors is a separate path the
-    /// corpus doesn't exercise.
+    /// [`Self::apply_head_atom`]. Three guards, in order: **count-based**
+    /// (skip if `x` already has `n` distinct `qual`-successors — the
+    /// load-bearing one for performance), **fire-once** per
+    /// `(role, qual, n)` (regen defense), and **blocking** (a blocked
+    /// node generates nothing — termination). Inverse-role `≥n` is
+    /// deferred (TODO HF3): generating predecessors is a separate path
+    /// the corpus doesn't exercise.
     fn generate_at_least(
         &mut self,
         x: HNode,
@@ -1010,12 +1012,16 @@ impl<'c> HyperEngine<'c> {
         // `InterestingPizza`, which already has its toppings via `∃`)
         // from ballooning the `≤n` merge tree past the search budget.
         // `distinct_role_succ` resolves through the merge map.
-        // TODO(`HF3b`): when existing successors aren't pairwise `≠`, a
-        // later `≤n` merge can drop the count below `n`; fire-once then
-        // blocks regeneration (incomplete `Sat` in that adversarial
-        // case). The principled fix is `≤`-before-`≥` ordering + `≠`-to-
-        // existing on top-up. The corpus doesn't hit it (disjoint
-        // fillers clash on merge instead of merging).
+        //
+        // Regen-hole invariant (verified by probes A–D in tests):
+        // count-based skip + generate-`n`-fresh + fire-once-only-on-fire
+        // jointly avoid an incomplete `Sat`. Generation never sets
+        // fire-once without also adding the `≠`-witnesses, so once it has
+        // fired a later `≤n` merge can't drop `distinct < n`; and if it
+        // was *skipped*, fire-once is unset, so the rule can still fire
+        // after a merge reduces the count. Scope of this claim: HF3a
+        // (no inverse `≥n`, no nominal-induced cardinality, anywhere
+        // blocking) — not a general SROIQ termination theorem.
         if self.distinct_role_succ(x, role, qual).len() >= n as usize {
             return FireOutcome::NoChange;
         }
@@ -1608,6 +1614,119 @@ mod tests {
         }];
         let mut e = HyperEngine::new(&clauses, a);
         assert_eq!(e.decide(64), HyperResult::Sat);
+    }
+
+    /// `HF3b` probe A: count-based hole. `A ⊑ ∃R.C`, `A ⊑ ≥2 R.C`,
+    /// `A ⊑ ≤1 R.C` — should be Unsat (≥2 ⊓ ≤1 contradict) even with a
+    /// pre-existing `∃` successor.
+    #[test]
+    fn hf3b_probe_existing_succ_plus_geq_leq_is_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, c) = (cls(0), cls(1));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtLeast(role, Some(c), 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, Some(c), 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, a);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// `HF3b` probe B: non-root cardinality. `A ⊑ ∃R.B`, `B ⊑ ≥2 S.C`,
+    /// `B ⊑ ≤1 S.C` — the `B`-node is a *successor* of the root; its
+    /// `≥2 ⊓ ≤1` clash must propagate (making `A` unsat).
+    #[test]
+    fn hf3b_probe_nonroot_cardinality_clash_is_unsat() {
+        let (role_r, role_s) = (Role::Named(RoleId::new(0)), Role::Named(RoleId::new(1)));
+        let (ca, cb, cc) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(ca, X)],
+                head: vec![Atom::Exists(role_r, cb, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cb, X)],
+                head: vec![Atom::AtLeast(role_s, Some(cc), 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cb, X)],
+                head: vec![Atom::AtMost(role_s, Some(cc), 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, ca);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// `HF3b` probe C: termination ping-pong. Cyclic `A ⊑ ≥2 R.A` with
+    /// `A ⊑ ≤1 R.A` — generation then forced `≠` merge clash; must
+    /// terminate as Unsat (not loop via generate↔merge).
+    #[test]
+    fn hf3b_probe_cyclic_geq_leq_terminates_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let a = cls(0);
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtLeast(role, Some(a), 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, Some(a), 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, a);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// `HF3b` probe D: the exact `TODO`-warned skip case. Two *distinct*
+    /// `∃` successors both `C` (so `≥2 R.C` is count-satisfied and
+    /// generation is skipped, leaving them un-`≠`), then `≤1 R.C`
+    /// merges them — must still be Unsat. Works because the count-based
+    /// skip does **not** set fire-once, so after the merge drops the
+    /// count, generation fires (creating `≠` successors) and the next
+    /// `≤1` merge clashes. Confirms the regen hole flagged for `HF3b`
+    /// is not reachable under the generate-`n`-fresh design.
+    #[test]
+    fn hf3b_probe_skip_then_merge_is_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, c, c1, c2) = (cls(0), cls(1), cls(2), cls(3));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c1, X)],
+                head: vec![Atom::Class(c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c2, X)],
+                head: vec![Atom::Class(c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtLeast(role, Some(c), 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, Some(c), 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, a);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
     }
 
     /// `≤2 R` with two successors is Sat — no merge needed.

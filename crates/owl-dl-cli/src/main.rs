@@ -204,6 +204,22 @@ enum Command {
         #[arg(long, default_value_t = 5000)]
         per_class_timeout_ms: u64,
     },
+    /// Hypertableau Phase H2c wall probe: decide every ordered
+    /// class-pair subsumption via the hyperresolution engine (¬B
+    /// injection) and report timing + branching. This reaches the
+    /// pizza wall that bare `hyper-sat` does not. Same probe caveat:
+    /// an entailed (`Unsat`) verdict is sound for the full ontology,
+    /// "not subsumed" is not. See `docs/hypertableau-scoping.md` §H2c.
+    HyperClassifyProbe {
+        /// Path to an OWL functional-syntax (.ofn) ontology.
+        file: PathBuf,
+        /// Max branching-recursion depth.
+        #[arg(long, default_value_t = 256)]
+        depth: usize,
+        /// Per-pair wall budget in ms (0 = unbounded).
+        #[arg(long, default_value_t = 5000)]
+        per_pair_timeout_ms: u64,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -565,6 +581,73 @@ fn main() -> Result<()> {
                     r.stats.restores,
                     r.stats.max_branch_depth,
                     r.iri,
+                );
+            }
+        }
+        Command::HyperClassifyProbe {
+            file,
+            depth,
+            per_pair_timeout_ms,
+        } => {
+            let onto = parse_ofn(&file)?;
+            let timeout = (per_pair_timeout_ms > 0)
+                .then(|| std::time::Duration::from_millis(per_pair_timeout_ms));
+            let probe = owl_dl_reasoner::hyper_subsumption_probe(&onto, depth, timeout)
+                .context("hyper_subsumption_probe")?;
+            let cs = &probe.clause_stats;
+            println!("# PERFORMANCE PROBE (not a complete classifier):");
+            println!(
+                "#   clausifier defers {} axiom(s); Unsat (subsumption",
+                cs.deferred
+            );
+            println!("#   holds) is sound for the full ontology, 'not subsumed'");
+            println!("#   is NOT. subsumptions is a sound LOWER BOUND on the");
+            println!("#   true hierarchy. See hypertableau-scoping.md §H2c.");
+            println!("# clauses_total:    {}", cs.total);
+            println!("# disjunctive:      {}", cs.disjunctive);
+            println!("# deferred:         {}", cs.deferred);
+            println!("# depth_cap:        {depth}");
+            println!(
+                "# per_pair_timeout: {}",
+                if per_pair_timeout_ms == 0 {
+                    "none".to_string()
+                } else {
+                    format!("{per_pair_timeout_ms}ms")
+                }
+            );
+            println!("# pairs_tested:     {}", probe.pairs_tested);
+            println!(
+                "# subsumptions:     {}   (sound lower bound)",
+                probe.subsumptions
+            );
+            println!(
+                "# pairs_branched:   {}   <-- HEADLINE: only these probe the engine",
+                probe.pairs_branched
+            );
+            println!("# stalled:          {}", probe.stalled);
+            println!("# max_depth_reached:{}", probe.max_branch_depth);
+            println!("# total_wall_ms:    {:.1}", probe.total_wall_ms);
+            // Slowest / branchiest pairs — the interesting tail.
+            let mut by_interest: Vec<&owl_dl_reasoner::HyperSubResult> = probe
+                .results
+                .iter()
+                .filter(|r| r.stats.branches_taken > 0)
+                .collect();
+            by_interest.sort_by(|a, b| {
+                (b.stats.branches_taken, b.wall_ms.to_bits())
+                    .cmp(&(a.stats.branches_taken, a.wall_ms.to_bits()))
+            });
+            println!("# --- top pairs by branching ---");
+            for r in by_interest.iter().take(15) {
+                println!(
+                    "#   {:?} wall={:.2}ms branches={} restores={} depth={}  {} <= {}",
+                    r.result,
+                    r.wall_ms,
+                    r.stats.branches_taken,
+                    r.stats.restores,
+                    r.stats.max_branch_depth,
+                    r.sub,
+                    r.sup,
                 );
             }
         }

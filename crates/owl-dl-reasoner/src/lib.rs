@@ -192,6 +192,176 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
     })
 }
 
+/// Smallest `ClassId` strictly greater than every class index that
+/// appears in `clauses` — a fresh id usable for the subsumption
+/// probe's helper concept `Q`.
+fn fresh_class_id(clauses: &[owl_dl_core::clause::DlClause]) -> owl_dl_core::ir::ClassId {
+    use owl_dl_core::clause::Atom;
+    let mut max = 0u32;
+    for cl in clauses {
+        for atom in cl.body.iter().chain(cl.head.iter()) {
+            if let Atom::Class(c, _) | Atom::Exists(_, c, _) = atom {
+                max = max.max(c.index() + 1);
+            }
+        }
+    }
+    owl_dl_core::ir::ClassId::new(max)
+}
+
+/// Decide `sub ⊑ sup` over the clausified fragment by the standard
+/// reduction to unsatisfiability of `sub ⊓ ¬sup`, encoded with a
+/// fresh helper concept `q`: `q → sub` and `q ∧ sup → ⊥`. Seeding
+/// the root with `q` makes it an individual that is `sub` and *not*
+/// `sup`; if the ontology forces `sup` on it the `⊥` clause clashes.
+///
+/// `clauses` must already include `q`-free base clauses; the two
+/// `q`-clauses are appended and popped by the caller's reused `Vec`.
+fn decide_subsumption(
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+    base_len: usize,
+    sub: owl_dl_core::ir::ClassId,
+    sup: owl_dl_core::ir::ClassId,
+    q: owl_dl_core::ir::ClassId,
+    max_depth: usize,
+    deadline: Option<std::time::Instant>,
+) -> (HyperResult, SearchStats) {
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_tableau::hyper::HyperEngine;
+    clauses.truncate(base_len);
+    clauses.push(DlClause {
+        body: vec![Atom::Class(q, X)],
+        head: vec![Atom::Class(sub, X)],
+    });
+    clauses.push(DlClause {
+        body: vec![Atom::Class(q, X), Atom::Class(sup, X)],
+        head: vec![],
+    });
+    let mut engine = HyperEngine::new(clauses, q);
+    let result = engine.decide_with_deadline(max_depth, deadline);
+    (result, engine.stats())
+}
+
+/// One subsumption-pair result from [`hyper_subsumption_probe`].
+#[derive(Debug, Clone)]
+pub struct HyperSubResult {
+    /// Sub-class IRI.
+    pub sub: String,
+    /// Super-class IRI.
+    pub sup: String,
+    /// `Unsat` ⇒ `sub ⊑ sup` (sound for the full ontology); `Sat` ⇒
+    /// not entailed *over the fragment* (NOT sound for the full
+    /// ontology); `Stalled` ⇒ budget exhausted.
+    pub result: HyperResult,
+    /// Wall time for this pair (milliseconds).
+    pub wall_ms: f64,
+    /// Search instrumentation.
+    pub stats: SearchStats,
+}
+
+/// Summary of a [`hyper_subsumption_probe`] run.
+#[derive(Debug, Clone)]
+pub struct HyperSubProbe {
+    /// Only the *interesting* pairs are retained (those that branched
+    /// or whose verdict was `Unsat`/`Stalled`) to bound output; the
+    /// counters below summarise the full N² sweep.
+    pub results: Vec<HyperSubResult>,
+    /// Total ordered pairs tested (`n·(n−1)`).
+    pub pairs_tested: u64,
+    /// Pairs decided `Unsat` (i.e. entailed subsumptions found).
+    pub subsumptions: u64,
+    /// Pairs whose decision exercised branching (`branches_taken>0`).
+    pub pairs_branched: u64,
+    /// Pairs that hit the budget (`Stalled`).
+    pub stalled: u64,
+    /// Deepest branch nesting across all pairs.
+    pub max_branch_depth: u32,
+    /// Total wall across all pairs (milliseconds).
+    pub total_wall_ms: f64,
+    /// Clause-set shape (deferred count visible alongside).
+    pub clause_stats: owl_dl_core::clause::ClauseStats,
+}
+
+/// Run the hypertableau subsumption test ([`decide_subsumption`])
+/// over **every ordered pair** of named classes, for the H2c pizza
+/// wall measurement (see `docs/hypertableau-scoping.md`). This is the
+/// analog of `classify`'s pair loop, but routed through the
+/// hyperresolution engine.
+///
+/// **Performance probe, not a complete classifier.** As with
+/// [`hyper_sat_probe`], deferred axioms make the clause set an
+/// under-approximation: an `Unsat` (subsumption-holds) verdict is
+/// sound for the full ontology, but `Sat` (not-subsumed) is not. So
+/// the reported `subsumptions` count is a sound *lower bound* on the
+/// true hierarchy.
+///
+/// `per_pair_timeout`, if set, bounds each pair's wall.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    max_depth: usize,
+    per_pair_timeout: Option<std::time::Duration>,
+) -> Result<HyperSubProbe, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let (base, clause_stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+    let q = fresh_class_id(&base);
+    let base_len = base.len();
+    let mut clauses = base;
+    let vocab: Vec<(owl_dl_core::ir::ClassId, String)> = internal
+        .vocabulary
+        .classes()
+        .map(|(id, iri)| (id, iri.to_string()))
+        .collect();
+
+    let mut probe = HyperSubProbe {
+        results: Vec::new(),
+        pairs_tested: 0,
+        subsumptions: 0,
+        pairs_branched: 0,
+        stalled: 0,
+        max_branch_depth: 0,
+        total_wall_ms: 0.0,
+        clause_stats,
+    };
+    for (sub, sub_iri) in &vocab {
+        for (sup, sup_iri) in &vocab {
+            if sub == sup {
+                continue;
+            }
+            let deadline = per_pair_timeout.map(|t| std::time::Instant::now() + t);
+            let start = std::time::Instant::now();
+            let (result, stats) =
+                decide_subsumption(&mut clauses, base_len, *sub, *sup, q, max_depth, deadline);
+            let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+            probe.pairs_tested += 1;
+            probe.total_wall_ms += wall_ms;
+            probe.max_branch_depth = probe.max_branch_depth.max(stats.max_branch_depth);
+            if result == HyperResult::Unsat {
+                probe.subsumptions += 1;
+            }
+            if result == HyperResult::Stalled {
+                probe.stalled += 1;
+            }
+            if stats.branches_taken > 0 {
+                probe.pairs_branched += 1;
+            }
+            // Retain only interesting pairs to bound memory/output.
+            if stats.branches_taken > 0 || result != HyperResult::Sat {
+                probe.results.push(HyperSubResult {
+                    sub: sub_iri.clone(),
+                    sup: sup_iri.clone(),
+                    result,
+                    wall_ms,
+                    stats,
+                });
+            }
+        }
+    }
+    Ok(probe)
+}
+
 /// Build the absorbed `TBox` and classify every residual GCI's
 /// trigger per [`owl_dl_core::residual_trigger`]. The result is
 /// the histogram needed to decide whether the lazy-unfolding
@@ -1371,6 +1541,36 @@ SubClassOf(ObjectSomeValuesFrom(:r :E) :F)\n\
              root labels = {:?}",
             engine.root_labels()
         );
+    }
+
+    /// Hypertableau Phase H2c: the `¬B`-injection subsumption probe
+    /// decides entailed subsumptions (`Unsat`) and correctly rejects
+    /// non-entailed ones (`Sat`). `A ⊑ B ⊑ C` ⊨ `A ⊑ C` but ⊭ `C ⊑ A`.
+    #[test]
+    fn hyper_subsumption_probe_finds_transitive_and_rejects_converse() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:C))\n\
+SubClassOf(:A :B)\nSubClassOf(:B :C)\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        // A⊑C is entailed (transitively) ⇒ Unsat reported.
+        assert!(holds("A", "C"), "A ⊑ C must be found");
+        assert!(holds("A", "B"), "A ⊑ B must be found");
+        assert!(holds("B", "C"), "B ⊑ C must be found");
+        // The converse C⊑A is not entailed ⇒ never reported as Unsat.
+        assert!(!holds("C", "A"), "C ⊑ A must NOT be reported");
+        assert!(!holds("C", "B"), "C ⊑ B must NOT be reported");
+        // 3 classes ⇒ 6 ordered pairs; 3 are entailed subsumptions.
+        assert_eq!(probe.pairs_tested, 6);
+        assert_eq!(probe.subsumptions, 3);
     }
 
     /// Regression for the pizza false-positive-unsat bug fixed

@@ -336,6 +336,50 @@ sound, mostly-complete clausifier and a validated Horn engine, the
 next phase is **H2 — disjunctive-head branching** (and the pizza/
 SIO wall measurement that is the whole effort's payoff check).
 
+## §H2 — disjunctive-head branching (shipped)
+
+The engine ([`owl-dl-tableau::hyper`]) gained backtracking search
+over disjunctive-head clauses via [`HyperEngine::decide(max_depth)`],
+making it a complete decision procedure for the Horn + disjunctive
+fragment the H1c clausifier produces (cardinality/nominals still
+deferred to H3). Mechanics:
+
+- Horn propagation runs to fixpoint (`horn_fixpoint`); non-Horn
+  clauses are skipped there (`fire_clause` guards on `is_horn`).
+- `find_open_disjunction` then looks for a disjunctive clause whose
+  body matches a node-binding and whose head disjuncts are **all**
+  unsatisfied there. A clause with an already-true disjunct is *not*
+  a branch point (avoids redundant branching).
+- Each disjunct is asserted in turn over a **saved copy** of the
+  node vector (`self.nodes.clone()`); the search recurses. Restore
+  happens only on a failed (`Unsat`/`Stalled`) branch — a `Sat`
+  branch keeps its completion, so `root_labels()` stays meaningful.
+  (Save/restore over a trail: correctness-first; trail-based undo is
+  a perf follow-up if H2b validates the approach on real walls.)
+- Both Horn firing and branching assert through one shared
+  `apply_head_atom`, so `∃`-head disjuncts get the same witness-reuse
+  + anywhere-blocking treatment.
+
+**Three-valued result lattice** (soundness-critical): `Sat` if *any*
+branch is satisfiable; `Unsat` only if *every* branch is decisively
+unsatisfiable; `Stalled` if a branch hit the depth/iteration bound
+and no branch decisively succeeded — so a depth-limited run can
+never report a false `Unsat`. Eight unit tests cover first-branch
+sat, restore-to-second-branch, exhaustive-failure unsat, multi-level
+backtracking (sat-deep and unsat), satisfied-disjunct-skipped,
+depth-bound→`Stalled`-not-`Unsat`, and `decide`≡`run` on Horn input.
+
+Heuristic ordering (which open clause, which disjunct first) is
+"first encountered, head order" — a deliberate non-choice; tuning is
+a follow-up, not part of this increment.
+
+**Next — H2b (measurement, the payoff check):** wire `decide`
+behind a per-class / per-pair classify loop, clausify pizza + SIO,
+and measure the hypertableau wall against the saturation+tableau
+default. This is the experiment the whole effort exists to run; if
+the walls don't move, the moms-plan §A criterion applies (revert
+rather than ship working-but-unhelpful machinery).
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

@@ -1,11 +1,14 @@
-//! Hyperresolution engine — hypertableau Phase H1 (Horn-only).
+//! Hyperresolution engine — hypertableau Phases H1 (Horn) + H2
+//! (disjunctive-head branching).
 //!
 //! See [`docs/hypertableau-scoping.md`](../../docs/hypertableau-scoping.md).
-//! This is the first phase that *reasons*: it runs Horn-only
+//! This is the first phase that *reasons*: it runs Horn
 //! hyperresolution (DL-clauses with ≤1 head atom — no branching)
 //! over a minimal class-labelled completion graph, with anywhere
-//! blocking to terminate cyclic `∃`. Disjunctive heads (branching)
-//! arrive in H2.
+//! blocking to terminate cyclic `∃`. H2 adds backtracking search
+//! over disjunctive-head clauses ([`HyperEngine::decide`]): Horn
+//! propagation runs to fixpoint, then an open disjunction is split
+//! and each disjunct tried in turn with save/restore of the graph.
 //!
 //! It is **not** wired into the reasoner facade or the default
 //! tableau — it's a standalone engine, validated in isolation
@@ -24,6 +27,15 @@
 
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role, RoleId};
+
+/// Binding of a body's role-successor variable to a node, when the
+/// body has a role atom `R(x,y)`; `None` for body shapes on `x` only.
+type Ybind = Option<(Var, HNode)>;
+
+/// Defensive cap on the Horn-fixpoint inner loop during branching
+/// search. Anywhere blocking bounds the graph, so a real fixpoint is
+/// reached well under this; hitting it yields `Stalled`, not `Unsat`.
+const FIXPOINT_ITERS: usize = 100_000;
 
 /// Node id in the hyper completion graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -133,9 +145,17 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Run Horn hyperresolution to fixpoint. `max_iters` bounds the
-    /// outer loop defensively.
+    /// outer loop defensively. Disjunctive (non-Horn) clauses are
+    /// skipped here — use [`HyperEngine::decide`] for branching.
     #[must_use]
     pub fn run(&mut self, max_iters: usize) -> HyperResult {
+        self.horn_fixpoint(max_iters)
+    }
+
+    /// Saturate under the Horn fragment. Non-Horn clauses are
+    /// ignored ([`fire_clause`] guards on `is_horn`); branching is
+    /// the caller's job ([`solve`]).
+    fn horn_fixpoint(&mut self, max_iters: usize) -> HyperResult {
         for _ in 0..max_iters {
             let mut changed = false;
             // Snapshot node count; new successors are processed on
@@ -154,6 +174,116 @@ impl<'c> HyperEngine<'c> {
             }
         }
         HyperResult::Stalled
+    }
+
+    /// Decide satisfiability of the root concept over the **full**
+    /// (Horn + disjunctive) clause set by backtracking search.
+    ///
+    /// Each step saturates under Horn propagation, then if an *open*
+    /// disjunctive clause remains (body matched, no head disjunct yet
+    /// satisfied) it branches: each disjunct is asserted in turn over
+    /// a saved copy of the graph, recursing. Restore happens only on
+    /// a failed (`Unsat`/`Stalled`) branch, so a `Sat` branch keeps
+    /// its completion intact (and `root_labels` is meaningful after).
+    ///
+    /// `max_depth` bounds branching recursion. The three-valued
+    /// result respects it: `Sat` if any branch is satisfiable;
+    /// `Unsat` only if **every** branch is decisively unsatisfiable;
+    /// `Stalled` if a branch hit the depth/iteration bound and no
+    /// branch decisively succeeded (so we must not claim `Unsat`).
+    #[must_use]
+    pub fn decide(&mut self, max_depth: usize) -> HyperResult {
+        self.solve(max_depth)
+    }
+
+    fn solve(&mut self, depth: usize) -> HyperResult {
+        match self.horn_fixpoint(FIXPOINT_ITERS) {
+            HyperResult::Unsat => return HyperResult::Unsat,
+            HyperResult::Stalled => return HyperResult::Stalled,
+            HyperResult::Sat => {}
+        }
+        let Some((ci, node, ybind)) = self.find_open_disjunction() else {
+            return HyperResult::Sat;
+        };
+        if depth == 0 {
+            // Branching needed but the budget is exhausted — undetermined.
+            return HyperResult::Stalled;
+        }
+        let head_len = self.clauses[ci].head.len();
+        let mut any_stalled = false;
+        for k in 0..head_len {
+            let head_atom = self.clauses[ci].head[k];
+            let saved = self.nodes.clone();
+            let _ = self.apply_head_atom(head_atom, node, ybind);
+            match self.solve(depth - 1) {
+                // Keep the satisfiable branch's graph; do not restore.
+                HyperResult::Sat => return HyperResult::Sat,
+                HyperResult::Unsat => self.nodes = saved,
+                HyperResult::Stalled => {
+                    self.nodes = saved;
+                    any_stalled = true;
+                }
+            }
+        }
+        // Every disjunct failed. If any was merely undetermined we
+        // cannot soundly conclude Unsat.
+        if any_stalled {
+            HyperResult::Stalled
+        } else {
+            HyperResult::Unsat
+        }
+    }
+
+    /// Find an *open* disjunctive clause: one whose body matches at
+    /// some node-binding and **none** of whose head disjuncts is
+    /// already satisfied there. A clause with a satisfied disjunct is
+    /// not a branch point — skipping it avoids redundant branching.
+    fn find_open_disjunction(&self) -> Option<(usize, HNode, Ybind)> {
+        for idx in 0..self.nodes.len() {
+            let node = HNode(u32::try_from(idx).expect("fits u32"));
+            for ci in 0..self.clauses.len() {
+                if self.clauses[ci].is_horn() {
+                    continue;
+                }
+                let Some(bindings) = self.match_body(ci, node) else {
+                    continue;
+                };
+                for yb in bindings {
+                    if !self.any_head_satisfied(ci, node, yb) {
+                        return Some((ci, node, yb));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// True iff some head disjunct of clause `ci` already holds at
+    /// the given binding (class label present, or `∃` witness found).
+    fn any_head_satisfied(&self, ci: usize, xnode: HNode, ybind: Ybind) -> bool {
+        let resolve = |v: Var| resolve_var(v, xnode, ybind);
+        for head in &self.clauses[ci].head {
+            match head {
+                Atom::Class(c, v) => {
+                    if let Some(t) = resolve(*v)
+                        && self.nodes[t.index()].has(*c)
+                    {
+                        return true;
+                    }
+                }
+                Atom::Exists(role, cls, v) => {
+                    if let Some(src) = resolve(*v)
+                        && self.nodes[src.index()].edges.iter().any(|(er, t)| {
+                            role_matches(*er, *role) && self.nodes[t.index()].has(*cls)
+                        })
+                    {
+                        return true;
+                    }
+                }
+                Atom::Equal(..) | Atom::Role(..) => {}
+            }
+        }
+        false
     }
 
     /// Try every clause with the central variable bound to `node`.
@@ -183,101 +313,117 @@ impl<'c> HyperEngine<'c> {
     /// role atoms, equality, or a class on a third variable are not
     /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
-        // Collect the body structure into owned data so the
-        // immutable clause borrow is dropped before `fire_head`'s
-        // mutable borrow.
+        // Disjunctive clauses are branch points, not Horn-fired here.
+        if !self.clauses[ci].is_horn() {
+            return FireOutcome::NoChange;
+        }
+        let Some(bindings) = self.match_body(ci, node) else {
+            return FireOutcome::NoChange;
+        };
+        let mut changed = false;
+        for yb in bindings {
+            match self.fire_head(ci, node, yb) {
+                FireOutcome::Clash => return FireOutcome::Clash,
+                FireOutcome::Changed => changed = true,
+                FireOutcome::NoChange => {}
+            }
+        }
+        if changed {
+            FireOutcome::Changed
+        } else {
+            FireOutcome::NoChange
+        }
+    }
+
+    /// Match clause `ci`'s body with `x = node`. Returns `None` if a
+    /// class-on-`x` atom is absent (clause inapplicable), or an
+    /// unsupported body shape is present (two role atoms, equality,
+    /// inverse — deferred). Otherwise returns the successor bindings:
+    /// `[None]` for a body with no role atom, or one `Some((y, m))`
+    /// per role-successor `m` that satisfies the class-on-`y`
+    /// constraints (empty if none match).
+    fn match_body(&self, ci: usize, node: HNode) -> Option<Vec<Ybind>> {
         let mut role_atom: Option<(Role, Var)> = None;
         let mut y_classes: Vec<(ClassId, Var)> = Vec::new();
-        {
-            let clause = &self.clauses[ci];
-            for atom in &clause.body {
-                match atom {
-                    Atom::Class(c, v) if *v == X => {
-                        if !self.nodes[node.index()].has(*c) {
-                            return FireOutcome::NoChange;
-                        }
+        let clause = &self.clauses[ci];
+        for atom in &clause.body {
+            match atom {
+                Atom::Class(c, v) if *v == X => {
+                    if !self.nodes[node.index()].has(*c) {
+                        return None;
                     }
-                    Atom::Role(r, u, v) if *u == X => {
-                        if role_atom.is_some() {
-                            // Two role atoms in one body — not in the
-                            // clausifier's output; defer.
-                            return FireOutcome::NoChange;
-                        }
-                        role_atom = Some((*r, *v));
-                    }
-                    // Class atom on a non-`x` variable: a constraint
-                    // on the role-successor. Checked after binding.
-                    Atom::Class(c, v) => y_classes.push((*c, *v)),
-                    // Equality / inverse-role bodies: later phases.
-                    _ => return FireOutcome::NoChange,
                 }
+                Atom::Role(r, u, v) if *u == X => {
+                    if role_atom.is_some() {
+                        // Two role atoms in one body — not in the
+                        // clausifier's output; defer.
+                        return None;
+                    }
+                    role_atom = Some((*r, *v));
+                }
+                // Class atom on a non-`x` variable: a constraint on
+                // the role-successor. Checked after binding.
+                Atom::Class(c, v) => y_classes.push((*c, *v)),
+                // Equality / inverse-role bodies: later phases.
+                _ => return None,
             }
         }
 
         match role_atom {
             None => {
-                // No successor variable to bind. Any class-on-`y`
-                // atom is then unbindable, so the clause can't match.
-                if !y_classes.is_empty() {
-                    return FireOutcome::NoChange;
+                // No successor variable to bind. A class-on-`y` atom
+                // is then unbindable, so the clause can't match.
+                if y_classes.is_empty() {
+                    Some(vec![None])
+                } else {
+                    Some(vec![])
                 }
-                self.fire_head(ci, node, None)
             }
             Some((r, yvar)) => {
                 // For each edge node -r-> m (named-role match), bind
-                // y = m, check the class-on-`y` constraints at `m`,
-                // then fire.
+                // y = m and keep it if the class-on-`y` constraints
+                // hold at `m`.
+                let mut binds = Vec::new();
                 let edges: Vec<HNode> = self.nodes[node.index()]
                     .edges
                     .iter()
                     .filter(|(er, _)| role_matches(*er, r))
                     .map(|(_, t)| *t)
                     .collect();
-                let mut changed = false;
                 for m in edges {
                     let matched = y_classes
                         .iter()
                         .all(|(c, v)| *v == yvar && self.nodes[m.index()].has(*c));
-                    if !matched {
-                        continue;
-                    }
-                    match self.fire_head(ci, node, Some((yvar, m))) {
-                        FireOutcome::Clash => return FireOutcome::Clash,
-                        FireOutcome::Changed => changed = true,
-                        FireOutcome::NoChange => {}
+                    if matched {
+                        binds.push(Some((yvar, m)));
                     }
                 }
-                if changed {
-                    FireOutcome::Changed
-                } else {
-                    FireOutcome::NoChange
-                }
+                Some(binds)
             }
         }
     }
 
     /// Assert the (single, Horn) head atom. `ybind` maps the body's
     /// successor variable to a node when present.
-    fn fire_head(&mut self, ci: usize, xnode: HNode, ybind: Option<(Var, HNode)>) -> FireOutcome {
+    fn fire_head(&mut self, ci: usize, xnode: HNode, ybind: Ybind) -> FireOutcome {
         let clause = &self.clauses[ci];
         if clause.head.is_empty() {
             // body → ⊥ : the body matched, so this is a clash.
             return FireOutcome::Clash;
         }
-        // Horn: exactly one head atom (caller gated on all_horn).
+        // Horn: exactly one head atom (caller gated on is_horn).
         let head = clause.head[0];
-        let resolve = |v: Var| -> Option<HNode> {
-            if v == X {
-                Some(xnode)
-            } else if let Some((yv, yn)) = ybind {
-                if v == yv { Some(yn) } else { None }
-            } else {
-                None
-            }
-        };
+        self.apply_head_atom(head, xnode, ybind)
+    }
+
+    /// Assert one head atom (`Class` label or `∃` successor) at the
+    /// resolved binding. Shared by Horn firing and disjunctive
+    /// branching. Never reports a clash itself — clashes surface when
+    /// a `body → ⊥` clause subsequently fires in [`horn_fixpoint`].
+    fn apply_head_atom(&mut self, head: Atom, xnode: HNode, ybind: Ybind) -> FireOutcome {
         match head {
             Atom::Class(c, v) => {
-                let Some(target) = resolve(v) else {
+                let Some(target) = resolve_var(v, xnode, ybind) else {
                     return FireOutcome::NoChange;
                 };
                 if self.nodes[target.index()].add(c) {
@@ -287,12 +433,12 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             Atom::Exists(role, cls, v) => {
-                let Some(src) = resolve(v) else {
+                let Some(src) = resolve_var(v, xnode, ybind) else {
                     return FireOutcome::NoChange;
                 };
                 self.fire_exists(src, role, cls)
             }
-            // Equality heads (≤n) are H3; not produced for Horn EL.
+            // Equality heads (≤n) are H3; not produced yet.
             Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
         }
     }
@@ -338,6 +484,19 @@ enum FireOutcome {
     Clash,
     Changed,
     NoChange,
+}
+
+/// Resolve a clause variable to a graph node given the `x`-binding
+/// and the optional successor `y`-binding. `None` if the variable is
+/// a `y` that isn't bound (e.g. a head `y` with no role body atom).
+fn resolve_var(v: Var, xnode: HNode, ybind: Ybind) -> Option<HNode> {
+    if v == X {
+        Some(xnode)
+    } else if let Some((yv, yn)) = ybind {
+        (v == yv).then_some(yn)
+    } else {
+        None
+    }
 }
 
 /// Two named roles match if their underlying `RoleId`s are equal.
@@ -518,5 +677,194 @@ mod tests {
             head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
         }];
         assert!(!HyperEngine::all_horn(&disj));
+    }
+
+    // ---- H2: disjunctive-head branching ----
+
+    /// `A ⊑ B ⊔ C` with no further constraint: both disjuncts lead to
+    /// a clash-free completion, so the root is Sat. Neither B nor C is
+    /// *forced* — the first disjunct (B) is chosen and the search
+    /// succeeds immediately, so the completion carries B (not C).
+    #[test]
+    fn disjunction_sat_takes_first_branch() {
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(cls(0), X)],
+            head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+        }];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert!(e.root_labels().contains(&cls(1)));
+        assert!(!e.root_labels().contains(&cls(2)));
+    }
+
+    /// `A ⊑ B ⊔ C`, `B ⊑ ⊥`: the first disjunct clashes, the search
+    /// restores and takes the second, so the root is Sat carrying C.
+    /// Exercises the restore-on-Unsat path.
+    #[test]
+    fn disjunction_backtracks_to_second_branch() {
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+            // B ⊑ ⊥
+            DlClause {
+                body: vec![Atom::Class(cls(1), X)],
+                head: vec![],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert!(
+            e.root_labels().contains(&cls(2)),
+            "second disjunct C must survive; labels={:?}",
+            e.root_labels()
+        );
+        assert!(
+            !e.root_labels().contains(&cls(1)),
+            "first disjunct B must have been restored away; labels={:?}",
+            e.root_labels()
+        );
+    }
+
+    /// `A ⊑ B ⊔ C`, `B ⊑ ⊥`, `C ⊑ ⊥`: both disjuncts clash, so the
+    /// root is decisively Unsat (exhaustive branch failure).
+    #[test]
+    fn disjunction_both_branches_clash_is_unsat() {
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(1), X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(2), X)],
+                head: vec![],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// Multi-level backtracking — the test that catches restore bugs.
+    /// `A ⊑ B ⊔ C`, `B ⊑ D ⊔ E`, `D ⊑ ⊥`, `E ⊑ ⊥`, `C ⊑ ⊥`.
+    /// Taking B forces a nested split (D⊔E) whose disjuncts both
+    /// clash, so B is unsat; C also clashes, so the root is Unsat.
+    #[test]
+    fn nested_disjunction_exhaustive_failure_is_unsat() {
+        let bot = |c: u32| DlClause {
+            body: vec![Atom::Class(cls(c), X)],
+            head: vec![],
+        };
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(1), X)],
+                head: vec![Atom::Class(cls(3), X), Atom::Class(cls(4), X)],
+            },
+            bot(3),
+            bot(4),
+            bot(2),
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// Nested split where the deep branch is satisfiable: same shape
+    /// as above but `E` is left clash-free. Taking B then E yields a
+    /// completion, so the root is Sat carrying B and E.
+    #[test]
+    fn nested_disjunction_finds_deep_model() {
+        let bot = |c: u32| DlClause {
+            body: vec![Atom::Class(cls(c), X)],
+            head: vec![],
+        };
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(1), X)],
+                head: vec![Atom::Class(cls(3), X), Atom::Class(cls(4), X)],
+            },
+            bot(3), // D ⊑ ⊥ — first nested disjunct fails
+            bot(2), // C ⊑ ⊥ — outer second disjunct fails
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert!(e.root_labels().contains(&cls(1)));
+        assert!(e.root_labels().contains(&cls(4)));
+    }
+
+    /// Depth-bound respect: when *every* branch needs a split deeper
+    /// than `max_depth`, the result is `Stalled` (undetermined) —
+    /// never a false `Unsat`. `A ⊑ B ⊔ C`, `B ⊑ D ⊔ E`, `C ⊑ F ⊔ G`:
+    /// both outer disjuncts leave a nested disjunction open, and
+    /// `max_depth = 1` permits only the first split. Both sub-branches
+    /// stall, so the overall result is Stalled (the ontology is in
+    /// fact satisfiable — Stalled is the conservative "don't know").
+    #[test]
+    fn shallow_depth_bound_yields_stalled_not_unsat() {
+        let split = |a: u32, l: u32, r: u32| DlClause {
+            body: vec![Atom::Class(cls(a), X)],
+            head: vec![Atom::Class(cls(l), X), Atom::Class(cls(r), X)],
+        };
+        let clauses = vec![split(0, 1, 2), split(1, 3, 4), split(2, 5, 6)];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(1), HyperResult::Stalled);
+        // With enough depth the same ontology is decisively Sat.
+        let mut e2 = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e2.decide(64), HyperResult::Sat);
+    }
+
+    /// Disjunction already satisfied is not a branch point: if a head
+    /// disjunct is forced true by Horn propagation, `decide` must not
+    /// branch on it. `A ⊑ B`, `A ⊑ B ⊔ C` ⇒ Sat, and `find_open`
+    /// finds nothing because B is already present.
+    #[test]
+    fn satisfied_disjunct_is_not_a_branch_point() {
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        // Horn propagation forces B before any branching, so the
+        // disjunction is already satisfied — `decide` must not branch
+        // and therefore must not add the unforced second disjunct C.
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert!(e.root_labels().contains(&cls(1)));
+        assert!(!e.root_labels().contains(&cls(2)));
+    }
+
+    /// `decide` reduces to the Horn fixpoint when the clause set is
+    /// all-Horn: same Sat result and root labels as `run`.
+    #[test]
+    fn decide_matches_run_on_horn_input() {
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(1), X)],
+                head: vec![Atom::Class(cls(2), X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        assert_eq!(e.root_labels(), &[cls(0), cls(1), cls(2)]);
     }
 }

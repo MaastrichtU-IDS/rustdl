@@ -601,13 +601,19 @@ index misses no firings; `match_body` still verifies each full body.
 Pizza answers unchanged (671 subsumptions, 24 misses, **0 false
 positives**). The Konclude gap on SIO narrowed from ~116× to ~43×.
 
-**Still on the table** (further search-quality work, each smaller):
-*semi-naive* evaluation (a worklist of newly-derived labels, so a
-clause fires only when a body label is *newly* added, not re-attempted
-every pass — `fixpoint_passes` is 27 636 and candidates are recomputed
-each pass); avoiding `match_body`'s per-call `eval_order` allocation on
-0–1-role bodies; and indexing `find_open_disjunction`. After those,
-H4 (flip behind `--hypertableau`) becomes realistic.
+**Still on the table** (further search-quality work). The next lever
+is **semi-naive evaluation**, scoped in
+[`hypertableau-seminaive-scoping.md`](hypertableau-seminaive-scoping.md):
+fire a clause only when a body atom is *newly* derived (a worklist of
+`LabelAdded`/`EdgeAdded` events), turning ~17 re-scans/class into ~1
+drain. A cheap-allocation experiment (a role-free `match_body` fast
+path) gave **no wall change**, confirming the cost is the *count* of
+the 52 M attempts, not per-call cost — so the count is what semi-naive
+must cut. The crux is the back-prop clauses (`R(x,y) ∧ E(y) → F(x)`),
+which need predecessor tracking (reverse edges) so a successor's new
+label wakes its predecessor. Smaller follow-ups: indexing
+`find_open_disjunction`. After those, H4 (flip behind
+`--hypertableau`) becomes realistic.
 
 ## 9. Recommended entry point
 

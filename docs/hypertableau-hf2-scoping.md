@@ -108,11 +108,15 @@ completeness gate.
   **counts are identical to baseline** (pizza 695, ro 158, sulo 51) —
   the corpus is inert to inverse propagation, confirming §0. Sound for
   `Unsat` (∀R⁻ derives genuine consequences).
-- **RBox inverse-pair clausification (§1) — PENDING.** The canary uses
-  an *inline* `∀ObjectInverseOf(R).C`, which needs no RBox. Named
-  inverses via `InverseObjectProperties(R,S)` (where `S ≡ R⁻`) are still
-  dropped by the clausifier — needed for ontologies that use the named
-  inverse `S`. This is the next HF2 step (plus role hierarchy / §1).
+- **RBox inverse-pair clausification (§1) — DONE** (`build_inverse_canon`
+  / `canon_role` in clause.rs). `InverseObjectProperties(R,S)` (`S ≡ R⁻`)
+  now rewrites role `S` to `R⁻` at every clause site, so named inverses
+  reuse the engine's flip-matching. Named-inverse canary
+  (`hyper_subsumption_probe_propagates_named_inverse`) passes. Corpus
+  unchanged (ro-stripped still 158, 0 FP) — confirms inverse-inertness
+  holds even for *named* inverses. **Role hierarchy** (`SubObjectPropertyOf`,
+  super-role edges) is the remaining §1 piece, deferred for now (the
+  corpus's hierarchy isn't inverse/super-role-dependent either).
 - **Double-blocking (§3) — PENDING.** Required for SAT-soundness
   (anywhere-blocking is unsound with inverses for *model construction*,
   not for the `Unsat`-only probe). Needs its own cyclic canary (§4.3).

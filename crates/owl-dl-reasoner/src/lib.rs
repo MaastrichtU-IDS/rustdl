@@ -2158,6 +2158,38 @@ SubClassOf(:B ObjectAllValuesFrom(ObjectInverseOf(:R) :C))\n)\n"
         );
     }
 
+    /// HF2 named-inverse canary (`RBox` inverse-pair clausification).
+    /// `InverseObjectProperties(R, S)` makes `S ≡ R⁻`, so `B ⊑ ∀S.C`
+    /// is `B ⊑ ∀R⁻.C` and `A ⊑ ∃R.B` ⊨ `A ⊑ C` exactly as the inline
+    /// canary — but here the inverse comes from the `RBox`, not an inline
+    /// `ObjectInverseOf`. The clausifier rewrites role `S` to `R⁻`
+    /// (`build_inverse_canon` / `canon_role`), after which the engine's
+    /// flip-matching propagates `∀S` across the `R`-edge. See
+    /// `docs/hypertableau-hf2-scoping.md` §1.
+    #[test]
+    fn hyper_subsumption_probe_propagates_named_inverse() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:C))\n\
+Declaration(ObjectProperty(:R))\nDeclaration(ObjectProperty(:S))\n\
+InverseObjectProperties(:R :S)\n\
+SubClassOf(:A ObjectSomeValuesFrom(:R :B))\n\
+SubClassOf(:B ObjectAllValuesFrom(:S :C))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("A", "C"),
+            "A ⊑ C must be derivable: S ≡ R⁻ so ∀S.C propagates across the R-edge"
+        );
+    }
+
     /// Regression for the pizza false-positive-unsat bug fixed
     /// 2026-05-25. Minimal repro extracted from pizza.ofn via ROBOT
     /// STAR extraction + axiom-level bisection. Bug was in

@@ -30,9 +30,10 @@
 //! standard Tseitin naming, which the saturation engine already
 //! uses in limited form.
 
-use crate::ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, Role};
+use crate::ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, Role, RoleId};
 use crate::normalize::nnf_axioms;
 use crate::ontology::{Axiom, InternalOntology};
+use std::collections::HashMap;
 
 /// A clause variable. `X` (0) is the central individual; 1.. are
 /// successors introduced by role atoms.
@@ -123,10 +124,21 @@ struct Clausifier {
     /// Per-category deferral counts, for the HF1 coverage census
     /// (which constructs the sound clausifier must still handle).
     deferred_kinds: std::collections::BTreeMap<&'static str, usize>,
+    /// HF2 `RBox` inverse pairs: `InverseObjectProperties(R, S)` means
+    /// `S ≡ R⁻`, so role `S` is rewritten to `R⁻` (and `S⁻` to `R`)
+    /// wherever it enters a clause. This makes named inverses reuse the
+    /// engine's polarity-aware (flip) matching — an `S`-edge then counts
+    /// as an `R⁻`-edge. Keyed by the rewritten role's id.
+    inverse_canon: HashMap<RoleId, Role>,
 }
 
 impl Clausifier {
-    fn new(pool: ConceptPool, first_fresh: u32, nominal_base: u32) -> Self {
+    fn new(
+        pool: ConceptPool,
+        first_fresh: u32,
+        nominal_base: u32,
+        inverse_canon: HashMap<RoleId, Role>,
+    ) -> Self {
         Self {
             pool,
             clauses: Vec::new(),
@@ -135,6 +147,24 @@ impl Clausifier {
             next_var: X + 1,
             deferred: 0,
             deferred_kinds: std::collections::BTreeMap::new(),
+            inverse_canon,
+        }
+    }
+
+    /// Rewrite a role to its canonical form under the `RBox` inverse-pair
+    /// map (HF2). A role with no inverse declaration is returned
+    /// unchanged; a declared `S` (≡ `R⁻`) becomes `R⁻`, and `S⁻`
+    /// becomes `R`.
+    fn canon_role(&self, r: Role) -> Role {
+        match self.inverse_canon.get(&r.role_id()) {
+            None => r,
+            Some(&canon) => {
+                if r.is_inverse() {
+                    canon.flip()
+                } else {
+                    canon
+                }
+            }
         }
     }
 
@@ -262,16 +292,20 @@ impl Clausifier {
                 // ∃role.⊤ ⊑ domain  →  role(x,y) → domain(x)
                 self.next_var = X + 1;
                 let y = self.fresh_var();
-                self.clausify_consequent(vec![Atom::Role(*role, X, y)], *domain, X);
+                let role = self.canon_role(*role);
+                self.clausify_consequent(vec![Atom::Role(role, X, y)], *domain, X);
             }
             Axiom::ObjectPropertyRange { role, range } => {
                 // ⊤ ⊑ ∀role.range  →  role(x,y) → range(y)
                 self.next_var = X + 1;
                 let y = self.fresh_var();
-                self.clausify_consequent(vec![Atom::Role(*role, X, y)], *range, y);
+                let role = self.canon_role(*role);
+                self.clausify_consequent(vec![Atom::Role(role, X, y)], *range, y);
             }
             // RBox (role chains/characteristics), ABox, declarations:
-            // not class clauses. RBox role propagation is H3.
+            // not class clauses. `InverseObjectProperties` is consumed
+            // up front by `build_inverse_canon` (role canonicalization),
+            // so it needs no arm here. Chains/transitivity are HF3.
             _ => {}
         }
     }
@@ -418,7 +452,7 @@ impl Clausifier {
                 // occurrence's alternatives (each alternative becomes
                 // a *separate* clause, so a shared id is clause-local
                 // and sound). The H1b-gap shape, now also distributed.
-                let (role, inner) = (*role, *inner);
+                let (role, inner) = (self.canon_role(*role), *inner);
                 let y = self.fresh_var();
                 let inner_alts = self.encode_antecedent(inner, y)?;
                 let mut out = Vec::with_capacity(inner_alts.len());
@@ -497,7 +531,7 @@ impl Clausifier {
             }
             ConceptExpr::Some(role, inner) => {
                 // body → ∃role.inner(var). Name `inner` if compound.
-                let (role, inner) = (*role, *inner);
+                let (role, inner) = (self.canon_role(*role), *inner);
                 if let Some(cls) = self.atomic_name_of(inner) {
                     self.clauses.push(DlClause {
                         body,
@@ -509,7 +543,7 @@ impl Clausifier {
             }
             ConceptExpr::All(role, inner) => {
                 // body ∧ role(var, y) → inner(y).
-                let (role, inner) = (*role, *inner);
+                let (role, inner) = (self.canon_role(*role), *inner);
                 let y = self.fresh_var();
                 let mut b = body;
                 b.push(Atom::Role(role, var, y));
@@ -537,7 +571,7 @@ impl Clausifier {
             // `Unsat` stays sound). `ExactCardinality` arrives already
             // split into `Min ⊓ Max` by conversion, handled via `And`.
             ConceptExpr::Min(n, role, inner) => {
-                let (n, role, inner) = (*n, *role, *inner);
+                let (n, role, inner) = (*n, self.canon_role(*role), *inner);
                 if n == 0 {
                     return; // ≥0: trivially satisfied.
                 }
@@ -548,7 +582,7 @@ impl Clausifier {
                 });
             }
             ConceptExpr::Max(n, role, inner) => {
-                let (n, role, inner) = (*n, *role, *inner);
+                let (n, role, inner) = (*n, self.canon_role(*role), *inner);
                 let qual = self.cardinality_qualifier(inner);
                 self.clauses.push(DlClause {
                     body,
@@ -558,7 +592,7 @@ impl Clausifier {
             // `body → ∃R.Self`: assert the self-loop `R(x,x)`. The
             // engine's self-edge handling is HF3.
             ConceptExpr::SelfRestriction(role) => {
-                let role = *role;
+                let role = self.canon_role(*role);
                 self.clauses.push(DlClause {
                     body,
                     head: vec![Atom::Role(role, var, var)],
@@ -592,7 +626,7 @@ impl Clausifier {
         match expr {
             ConceptExpr::Some(role, inner) => {
                 let cls = self.atomic_name_of(inner)?;
-                Some(Atom::Exists(role, cls, var))
+                Some(Atom::Exists(self.canon_role(role), cls, var))
             }
             ConceptExpr::Not(inner) => {
                 // ¬A as a disjunct: name it with a fresh class Q
@@ -608,6 +642,7 @@ impl Clausifier {
                 } else if let ConceptExpr::SelfRestriction(role) = *self.pool.get(inner) {
                     // ¬∃R.Self: name it `Q` with `Q ∧ R(x,x) → ⊥`
                     // (a `Q`-node must have no `R`-self-loop).
+                    let role = self.canon_role(role);
                     let q = self.fresh_class();
                     self.clauses.push(DlClause {
                         body: vec![Atom::Class(q, var), Atom::Role(role, var, var)],
@@ -648,6 +683,29 @@ pub fn clausify(internal: &InternalOntology) -> Vec<DlClause> {
     clausify_with_stats(internal).0
 }
 
+/// Build the HF2 `RBox` inverse-pair canonicalization map from
+/// `InverseObjectProperties(R, S)` axioms: `S ≡ R⁻`, so rewrite role
+/// `S` to `R⁻`. Only the common both-named case is handled; cycles
+/// and re-declarations are skipped (first declaration wins).
+fn build_inverse_canon(axioms: &[Axiom]) -> HashMap<RoleId, Role> {
+    let mut m: HashMap<RoleId, Role> = HashMap::new();
+    for ax in axioms {
+        if let Axiom::InverseObjectProperties(a, b) = ax {
+            if a.is_inverse() || b.is_inverse() {
+                continue;
+            }
+            // S ≡ R⁻ : map S's id to R⁻. Skip if either role is already
+            // a key or value-base, to avoid rewrite cycles.
+            let (r, s) = (*a, *b);
+            if m.contains_key(&r.role_id()) || m.contains_key(&s.role_id()) {
+                continue;
+            }
+            m.insert(s.role_id(), r.flip());
+        }
+    }
+    m
+}
+
 /// Clausify and also return the coverage [`ClauseStats`].
 #[must_use]
 pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, ClauseStats) {
@@ -663,7 +721,8 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
     let first_fresh = num_classes
         .checked_add(num_individuals)
         .expect("class+individual count fits in u32");
-    let mut c = Clausifier::new(internal.concepts, first_fresh, nominal_base);
+    let inverse_canon = build_inverse_canon(&normalized);
+    let mut c = Clausifier::new(internal.concepts, first_fresh, nominal_base, inverse_canon);
     for ax in &normalized {
         c.clausify_axiom(ax);
     }
@@ -685,7 +744,8 @@ pub fn deferred_census(internal: &InternalOntology) -> Vec<(&'static str, usize)
     let first_fresh = num_classes
         .checked_add(num_individuals)
         .expect("class+individual count fits in u32");
-    let mut c = Clausifier::new(internal.concepts, first_fresh, num_classes);
+    let inverse_canon = build_inverse_canon(&normalized);
+    let mut c = Clausifier::new(internal.concepts, first_fresh, num_classes, inverse_canon);
     for ax in &normalized {
         c.clausify_axiom(ax);
     }

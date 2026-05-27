@@ -26,10 +26,10 @@
 use crate::TableauContext;
 use crate::graph::{DepSet, NodeId};
 use crate::rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_deferred_or_residuals, apply_exists,
-    apply_forall, apply_max, apply_min, apply_nominal_assignment, apply_nominal_rules,
-    apply_residual_gcis, apply_role_axioms, apply_role_chains, apply_role_rules,
-    apply_self_restriction,
+    RuleOutcome, apply_and, apply_concept_rules, apply_deferred_concept_or_rules,
+    apply_deferred_or_residuals, apply_exists, apply_forall, apply_max, apply_min,
+    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
+    apply_role_chains, apply_role_rules, apply_self_restriction,
 };
 
 /// Verdict from one run of [`saturate`].
@@ -153,6 +153,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
                 }
                 let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
                 if apply_deferred_or_residuals(ctx, node) == RuleOutcome::Applied {
+                    sweep_changed = true;
+                }
+                if apply_deferred_concept_or_rules(ctx, node) == RuleOutcome::Applied {
                     sweep_changed = true;
                 }
             }

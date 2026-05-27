@@ -94,6 +94,11 @@ pub struct TBoxStats {
     /// `Max`, `Not`, `SelfRestriction`, `Nominal`) — buckets
     /// kept summed because each is rarer.
     pub residual_other_count: usize,
+    /// Concept rules `A ⊑ ψ` whose conclusion `ψ` is `Or(_)`.
+    /// These are the per-trigger disjunctions; on pizza they're
+    /// the dominant branching source (the residual count is only
+    /// 4). Candidates for the Lever-A-extension lazy unfolding.
+    pub concept_rule_or_count: usize,
 }
 
 /// Build the absorbed `TBox` and classify every residual GCI's
@@ -146,6 +151,11 @@ pub fn tbox_stats<A: horned_owl::model::ForIRI>(
             ConceptExpr::Or(_) => stats.residual_or_count += 1,
             ConceptExpr::Atomic(_) => stats.residual_atomic_count += 1,
             _ => stats.residual_other_count += 1,
+        }
+    }
+    for rule in &tbox.concept_rules {
+        if matches!(internal.concepts.get(rule.conclusion), ConceptExpr::Or(_)) {
+            stats.concept_rule_or_count += 1;
         }
     }
     Ok(stats)

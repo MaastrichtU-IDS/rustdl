@@ -186,11 +186,22 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     // (conclusion, deps) pairs. Index lookup is O(triggers + hits).
     // Fall back to the linear scan only when callers built the TBox
     // by hand without calling `finalize()` — e.g., tableau unit tests.
+    //
+    // `Or(_)` conclusions are **deferred**: skipped here and
+    // materialised at saturate stable-state by
+    // [`apply_deferred_concept_or_rules`], only when no disjunct is
+    // already present. This is the Lever-A extension to per-trigger
+    // disjunctions (see `docs/lazy-unfolding-plan.md` §C); it keeps
+    // the universal-disjunction branching out of the inner
+    // saturation loop, where it otherwise propagates to every
+    // successor that inherits the trigger.
+    let pool = ctx.pool();
     let pending: Vec<(ConceptId, DepSet)> = if tbox.concept_rules_by_trigger.is_empty() {
         let mut out = Vec::new();
         for (trigger, deps) in &triggers {
             for rule in &tbox.concept_rules {
                 if rule.trigger == *trigger
+                    && !matches!(pool.get(rule.conclusion), ConceptExpr::Or(_))
                     && label_snapshot.binary_search(&rule.conclusion).is_err()
                 {
                     out.push((rule.conclusion, deps.clone()));
@@ -203,7 +214,9 @@ pub fn apply_concept_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
         for (trigger, deps) in &triggers {
             if let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) {
                 for &c in conclusions {
-                    if label_snapshot.binary_search(&c).is_err() {
+                    if !matches!(pool.get(c), ConceptExpr::Or(_))
+                        && label_snapshot.binary_search(&c).is_err()
+                    {
                         out.push((c, deps.clone()));
                     }
                 }
@@ -511,6 +524,98 @@ pub fn apply_deferred_or_residuals(
         RuleOutcome::Applied
     } else {
         RuleOutcome::NoChange
+    }
+}
+
+/// Deferred lazy-unfolding rule for concept-rule conclusions of
+/// shape `Or(_)`. `apply_concept_rules` skips Or-shaped
+/// conclusions during the inner saturation loop; this rule
+/// materialises them at saturate stable-state, mirroring
+/// [`apply_deferred_or_residuals`] but for per-trigger
+/// disjunctions (`A ⊑ Or(d1, ..., dn)` rather than `⊤ ⊑
+/// Or(...)`).
+///
+/// For every `Atomic(trigger)` label on `node`, look up the
+/// trigger's Or-shaped concept-rule conclusions and materialise
+/// each one — with the triggering atomic label's deps, so
+/// dependency-directed back-jumping stays correct — unless the
+/// node already carries the Or or one of its disjuncts.
+///
+/// Returns [`RuleOutcome::Applied`] if any Or was newly
+/// materialised.
+pub fn apply_deferred_concept_or_rules(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    node: NodeId,
+) -> RuleOutcome {
+    let Some(tbox) = ctx.tbox() else {
+        return RuleOutcome::NoChange;
+    };
+    if tbox.concept_rules.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    // Snapshot triggers (atomic labels + deps) and the current
+    // label set, releasing the graph borrow before mutation.
+    let pending: Vec<(ConceptId, DepSet)> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        let labels = n.labels();
+        let triggers: Vec<(owl_dl_core::ClassId, DepSet)> = n
+            .labels()
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &c)| match pool.get(c) {
+                ConceptExpr::Atomic(cls) => Some((*cls, n.label_deps[pos].clone())),
+                _ => None,
+            })
+            .collect();
+        if triggers.is_empty() {
+            return RuleOutcome::NoChange;
+        }
+        let mut out: Vec<(ConceptId, DepSet)> = Vec::new();
+        for (trigger, deps) in &triggers {
+            let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) else {
+                // Hand-built TBox without finalize(): fall back to a
+                // linear scan over concept_rules for this trigger.
+                for rule in &tbox.concept_rules {
+                    if rule.trigger == *trigger && needs_deferred_or(pool, rule.conclusion, labels)
+                    {
+                        out.push((rule.conclusion, deps.clone()));
+                    }
+                }
+                continue;
+            };
+            for &c in conclusions {
+                if needs_deferred_or(pool, c, labels) {
+                    out.push((c, deps.clone()));
+                }
+            }
+        }
+        out
+    };
+    let mut applied = false;
+    for (c, deps) in pending {
+        if ctx.add_label_with_deps(node, c, &deps) {
+            applied = true;
+        }
+    }
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}
+
+/// True iff `c` is an `Or(_)` that this node should materialise:
+/// the Or is not already a label, and none of its disjuncts is.
+/// Non-Or concepts return `false` (they were added eagerly by
+/// `apply_concept_rules`).
+fn needs_deferred_or(pool: &owl_dl_core::ConceptPool, c: ConceptId, labels: &[ConceptId]) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Or(args) => {
+            labels.binary_search(&c).is_err()
+                && !args.iter().any(|d| labels.binary_search(d).is_ok())
+        }
+        _ => false,
     }
 }
 

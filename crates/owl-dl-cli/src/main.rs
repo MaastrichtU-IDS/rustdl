@@ -412,6 +412,7 @@ fn main() -> Result<()> {
             println!("#   residual_or:        {}", stats.residual_or_count);
             println!("#   residual_atomic:    {}", stats.residual_atomic_count);
             println!("#   residual_other:     {}", stats.residual_other_count);
+            println!("# concept_rule_or:      {}", stats.concept_rule_or_count);
         }
         Command::ResidualTriggers { file } => {
             let onto = parse_ofn(&file)?;

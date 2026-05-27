@@ -25,8 +25,9 @@
 //! Horn fragment of the corpus cheap (see
 //! `docs/hypertableau-scoping.md` §H0).
 
+use owl_dl_core::RoleHierarchy;
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
-use owl_dl_core::ir::{ClassId, Role, RoleId};
+use owl_dl_core::ir::{ClassId, Role};
 use std::time::Instant;
 
 /// A match binding: the body's non-`X` successor variables mapped to
@@ -152,6 +153,12 @@ pub struct HyperEngine<'c> {
     /// un-merged nodes. Resolve role-successors through this when
     /// counting/following edges so a merged node is seen once.
     representative: Vec<HNode>,
+    /// HF2 role hierarchy: an `R`-edge satisfies an `S`-atom when
+    /// `R ⊑* S`. Unlike inverse pairs (an equivalence, canonicalized in
+    /// the clausifier), `⊑` is one-way, so it must be consulted at match
+    /// time. `None` ⇒ reflexive only (every role subsumes just itself),
+    /// the pre-HF2 behaviour.
+    sub_roles: Option<RoleHierarchy>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -240,7 +247,16 @@ impl<'c> HyperEngine<'c> {
             indexes: build_clause_indexes(clauses),
             worklist: Vec::new(),
             representative: vec![HNode(0)],
+            sub_roles: None,
         }
+    }
+
+    /// Supply the HF2 role hierarchy so `R`-edges satisfy `S`-atoms
+    /// when `R ⊑* S`. Without it, role matching is reflexive only.
+    #[must_use]
+    pub fn with_sub_roles(mut self, hierarchy: RoleHierarchy) -> Self {
+        self.sub_roles = Some(hierarchy);
+        self
     }
 
     /// Resolve a node through the merge union-find to its canonical
@@ -585,7 +601,8 @@ impl<'c> HyperEngine<'c> {
                 Atom::Exists(role, cls, v) => {
                     if let Some(src) = resolve(*v)
                         && self.nodes[src.index()].edges.iter().any(|(er, t)| {
-                            role_matches(*er, *role) && self.nodes[t.index()].has(*cls)
+                            role_matches(*er, *role, self.sub_roles.as_ref())
+                                && self.nodes[t.index()].has(*cls)
                         })
                     {
                         return true;
@@ -620,7 +637,7 @@ impl<'c> HyperEngine<'c> {
     fn distinct_role_succ(&self, node: HNode, role: Role, qual: Option<ClassId>) -> Vec<HNode> {
         let mut seen: Vec<HNode> = Vec::new();
         for (er, t) in &self.nodes[node.index()].edges {
-            if !role_matches(*er, role) {
+            if !role_matches(*er, role, self.sub_roles.as_ref()) {
                 continue;
             }
             let rt = self.resolve(*t);
@@ -785,11 +802,12 @@ impl<'c> HyperEngine<'c> {
         let Some(src) = resolve_var(src_var, node, binding) else {
             return;
         };
+        let hier = self.sub_roles.as_ref();
         let src_data = &self.nodes[src.index()];
         let mut targets: Vec<HNode> = src_data
             .edges
             .iter()
-            .filter(|(er, _)| role_matches(*er, role))
+            .filter(|(er, _)| role_matches(*er, role, hier))
             .map(|(_, t)| *t)
             .collect();
         // Inverse-role matching (HF2): an incoming edge `s —er→ src`
@@ -799,7 +817,7 @@ impl<'c> HyperEngine<'c> {
         // merges are root-successor-only, so a stale pred is still a
         // sound R-relationship — TODO(HF3) when general merge lands.)
         for (er, s) in &src_data.preds {
-            if role_matches(er.flip(), role) {
+            if role_matches(er.flip(), role, hier) {
                 targets.push(*s);
             }
         }
@@ -869,10 +887,9 @@ impl<'c> HyperEngine<'c> {
     /// create a fresh successor seeded with `cls`.
     fn fire_exists(&mut self, src: HNode, role: Role, cls: ClassId) -> FireOutcome {
         // Witness reuse: any role-matching successor already in cls.
-        let has_witness = self.nodes[src.index()]
-            .edges
-            .iter()
-            .any(|(er, t)| role_matches(*er, role) && self.nodes[t.index()].has(cls));
+        let has_witness = self.nodes[src.index()].edges.iter().any(|(er, t)| {
+            role_matches(*er, role, self.sub_roles.as_ref()) && self.nodes[t.index()].has(cls)
+        });
         if has_witness {
             return FireOutcome::NoChange;
         }
@@ -969,16 +986,19 @@ fn resolve_var(v: Var, xnode: HNode, binding: &[(Var, HNode)]) -> Option<HNode> 
     }
 }
 
-/// Two named roles match if their underlying `RoleId`s are equal.
-/// Inverse-role and sub-role matching are H3 refinements; H1's
-/// clausifier emits named roles only.
-fn role_matches(edge: Role, wanted: Role) -> bool {
-    fn id(r: Role) -> RoleId {
-        match r {
-            Role::Named(x) | Role::Inverse(x) => x,
-        }
+/// An `edge` satisfies a `wanted` role atom when their polarities agree
+/// and the edge's role is a sub-role of (or equal to) the wanted role.
+/// `R ⊑ S` implies `R⁻ ⊑ S⁻`, so the same-polarity + sub-role-id test
+/// covers both axes. With no hierarchy (`None`), this is reflexive —
+/// equal ids only, the pre-HF2 behaviour.
+fn role_matches(edge: Role, wanted: Role, sub_roles: Option<&RoleHierarchy>) -> bool {
+    if edge.is_inverse() != wanted.is_inverse() {
+        return false;
     }
-    edge.is_inverse() == wanted.is_inverse() && id(edge) == id(wanted)
+    match sub_roles {
+        Some(h) => h.is_sub_role(edge.role_id(), wanted.role_id()),
+        None => edge.role_id() == wanted.role_id(),
+    }
 }
 
 /// `a ⊆ b` for sorted-by-index class-id slices.

@@ -114,9 +114,17 @@ completeness gate.
   reuse the engine's flip-matching. Named-inverse canary
   (`hyper_subsumption_probe_propagates_named_inverse`) passes. Corpus
   unchanged (ro-stripped still 158, 0 FP) — confirms inverse-inertness
-  holds even for *named* inverses. **Role hierarchy** (`SubObjectPropertyOf`,
-  super-role edges) is the remaining §1 piece, deferred for now (the
-  corpus's hierarchy isn't inverse/super-role-dependent either).
+  holds even for *named* inverses.
+- **Role hierarchy (§1/§4.2) — DONE** (`role_matches` now takes the
+  `RoleHierarchy`; `HyperEngine::with_sub_roles`). One-way `R ⊑ S` can't
+  be canonicalized (unlike inverse pairs), so it's consulted at match
+  time: an `R`-edge satisfies an `S`-atom when `is_sub_role(R, S)`
+  (same polarity, since `R ⊑ S ⟹ R⁻ ⊑ S⁻`). Reuses the reasoner's
+  `build_role_hierarchy`, cloned per pair. Super-role canary
+  (`hyper_subsumption_probe_propagates_super_role`) passes. Corpus
+  unchanged (ro/sulo *have* `SubObjectPropertyOf` yet still 158/51, 0
+  FP) — hierarchy is wired+active but the corpus's probe subsumptions
+  don't depend on it. Chains/transitivity remain HF3.
 - **Double-blocking (§3) — PENDING.** Required for SAT-soundness
   (anywhere-blocking is unsound with inverses for *model construction*,
   not for the `Unsat`-only probe). Needs its own cyclic canary (§4.3).

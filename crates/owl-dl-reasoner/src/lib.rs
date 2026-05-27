@@ -517,6 +517,12 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     // base clauses + complement clash clauses — fixed for every pair.
     let fixed_len = clauses.len();
 
+    // HF2 role hierarchy: an `R`-edge satisfies an `S`-atom when
+    // `R ⊑* S`. Built from the original (pre-NNF) axioms, then cloned
+    // into each per-pair engine. (Interaction with inverse-pair
+    // canonicalization on the *same* role is an edge case — TODO HF3.)
+    let sub_role_hierarchy = build_role_hierarchy(&internal);
+
     let mut probe = HyperSubProbe {
         results: Vec::new(),
         pairs_tested: 0,
@@ -558,7 +564,8 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
 
             let deadline = per_pair_timeout.map(|t| std::time::Instant::now() + t);
             let start = std::time::Instant::now();
-            let mut engine = HyperEngine::new(&clauses, q);
+            let mut engine =
+                HyperEngine::new(&clauses, q).with_sub_roles(sub_role_hierarchy.clone());
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -2187,6 +2194,37 @@ SubClassOf(:B ObjectAllValuesFrom(:S :C))\n)\n"
         assert!(
             holds("A", "C"),
             "A ⊑ C must be derivable: S ≡ R⁻ so ∀S.C propagates across the R-edge"
+        );
+    }
+
+    /// HF2 role-hierarchy canary. `R ⊑ S`, `A ⊑ ∃R.B`, `∃S.B ⊑ D`
+    /// ⊨ `A ⊑ D`: A's R-successor `b:B` is also an S-successor (R ⊑ S),
+    /// so `∃S.B ⊑ D` fires D onto A. Needs hierarchy-aware matching —
+    /// `S(x,y)` must match an `R`-edge when `R ⊑* S` (one-way, so unlike
+    /// inverse pairs this can't be canonicalized). HF2 threads the
+    /// `RoleHierarchy` into the engine's `role_matches`. See
+    /// `docs/hypertableau-hf2-scoping.md` §1/§4.2.
+    #[test]
+    fn hyper_subsumption_probe_propagates_super_role() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:D))\n\
+Declaration(ObjectProperty(:R))\nDeclaration(ObjectProperty(:S))\n\
+SubObjectPropertyOf(:R :S)\n\
+SubClassOf(:A ObjectSomeValuesFrom(:R :B))\n\
+SubClassOf(ObjectSomeValuesFrom(:S :B) :D)\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("A", "D"),
+            "A ⊑ D must be derivable: R ⊑ S so A's R-successor satisfies ∃S.B ⊑ D"
         );
     }
 

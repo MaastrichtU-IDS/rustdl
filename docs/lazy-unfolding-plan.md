@@ -222,6 +222,44 @@ workload shows residual `Not` / `∀` GCIs worth the reactive-hook
 complexity — none in the current corpus (`rustdl
 residual-triggers` shows defer_not = defer_all = 0 everywhere).
 
+## §D — Concept-rule Or extension (2026-05-27)
+
+After Phase 2 (residual Ors), the same deferral was extended to
+per-trigger disjunctions `A ⊑ Or(d1, ..., dn)` — the concept-rule
+conclusions — since those are the dominant branching source on
+pizza (15 vs 4 residual) and a big share on SIO (50) and family
+(53). `rustdl tbox-stats` now reports `concept_rule_or`.
+
+Mechanism (`749ddd3`):
+- `apply_concept_rules` skips Or-shaped conclusions in the inner
+  loop.
+- `apply_deferred_concept_or_rules` materialises them at
+  stable-state, per Atomic trigger, with the trigger label's
+  deps (back-jumping correctness), unless the node already has
+  the Or or a disjunct.
+
+Measured (compounding on Phase 2):
+
+| Workload | baseline | +residual defer | +concept-rule defer |
+|---|---|---|---|
+| family-stripped | 8.7 s | 6.9 s | **6.3 s** (−28% total) |
+| pizza | 29 s | 29 s | 29 s (timeout-bound) |
+| SIO | 268 s | 268 s | 268 s (timeout-bound) |
+
+Verdicts unchanged: all 11 real-corpus regression tests pass,
+including `sio_matches_hermit_exactly` and
+`pizza_unsat_matches_hermit_exactly`.
+
+**Confirmed boundary.** Lazy unfolding — whether of residual or
+concept-rule Ors — helps *convergent-pair-dominated* walls
+(family: −28%) and does nothing for *timeout-bound* walls (pizza,
+SIO). This is now a thoroughly-tested invariant across the
+session: per-pair efficiency cannot shorten a wall capped by the
+per-pair timeout × non-converging-pair count. The timeout-bound
+walls need the pairs to converge — Lever B (deeper search-tree
+reduction) or Lever C (model caching), neither of which is
+per-step efficiency.
+
 ## Open questions
 
 - **Reactive cost vs sweep cost.** Reactive triggers (fire when

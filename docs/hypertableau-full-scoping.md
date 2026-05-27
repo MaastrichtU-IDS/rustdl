@@ -132,6 +132,15 @@ nested shapes the current clausifier defers.
 
 ### HF2 — Double-blocking + inverse-role propagation
 
+Scoped in detail in [`hypertableau-hf2-scoping.md`](hypertableau-hf2-scoping.md).
+Key finding from that pass: the corpus does **not** exercise inverse-
+role-dependent reasoning (the clausifier currently drops
+`InverseObjectProperties` and ro-stripped still agrees 100 %), so HF2
+buys *general* SROIQ soundness validated by **crafted tests + theory**,
+not a corpus-agreement gain. The HF2 canary
+(`hyper_subsumption_probe_propagates_inverse_universal`, `#[ignore]`d,
+fails today: `A ⊑ ∃R.B`, `B ⊑ ∀R⁻.C` ⊨ `A ⊑ C`) defines "done."
+
 - **Double-blocking, not pair-blocking.** Anywhere blocking (current)
   and pair-blocking (sound for SHIQ) are **unsound** once inverses
   interact with nominals. Go straight to the published double-blocking

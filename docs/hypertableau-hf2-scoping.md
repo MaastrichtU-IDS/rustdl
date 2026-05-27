@@ -1,0 +1,100 @@
+# HF2 — inverse roles + double-blocking (scoping)
+
+Drafted 2026-05-27. HF1 made the clausifier sound (`deferred == 0`
+corpus-wide). HF2 makes the *engine* sound for **inverse roles**,
+which forces a blocking upgrade (anywhere blocking is unsound with
+inverses). Part of the full sound+complete roadmap
+([`hypertableau-full-scoping.md`](hypertableau-full-scoping.md)).
+
+## §0 — A finding that reframes HF2's validation
+
+The corpus does **not** exercise inverse-role-dependent reasoning:
+- The clausifier currently **drops `InverseObjectProperties`** (RBox →
+  `_ => {}`), and `role_matches` requires equal polarity (an `R`-edge
+  does not satisfy an `R⁻` atom). So inverse semantics are absent.
+- Yet **ro-stripped agrees 100 % with Konclude** anyway — its named-
+  class subsumptions don't depend on the inverse axioms (the inverses
+  are declared but inert for the hierarchy).
+
+**Implication:** HF2 buys *general* SROIQ soundness (correctness on
+ontologies where inverses *do* change the hierarchy — beyond the
+corpus), not a corpus-agreement gain. Its validation therefore rests
+on **crafted tests + conformance to the published calculus**, not the
+corpus diff (which is already 100 %). This is the project's raison
+d'être (a real native reasoner, not a corpus-passer), but it's honest
+to note the remaining phases are generality, not corpus wins.
+
+## §1 — Prerequisite: clausify the RBox
+
+Inverse reasoning needs the role axioms the clausifier currently
+ignores. HF2 starts by handling, in `clausify_axiom`:
+- **`InverseObjectProperties(R, S)`** (≡ `S ≡ R⁻`): record `S` and `R⁻`
+  as the same role at match time (or rewrite `S`-atoms to `R⁻`).
+- **`SubObjectPropertyOf` / role hierarchy**: an `R`-edge also counts
+  as an `R'`-edge for super-roles `R ⊑ R'` (the existing
+  `RoleHierarchy` in `PreparedOntology` is the reference; the hyper
+  engine needs its own copy or a shared structure).
+- **Role chains, (a)symmetry, (ir)reflexivity, transitivity**: RBox
+  characteristics. Transitivity interacts with blocking (the `S` in
+  SROIQ); scope carefully — possibly its own sub-phase.
+
+Scope cut for the first HF2 increment: **inverse pairs + the role
+hierarchy** (the inert-in-corpus but common constructs). Chains and
+transitivity can be a follow-on if they prove deep.
+
+## §2 — Inverse-role propagation in the engine
+
+An `R`-edge `x —R→ y` must satisfy an `R⁻` body/head atom from `y` to
+`x`. Concretely:
+- `match_body` role-atom matching and `find_open`/`fire_exists` lookups
+  become **inverse-aware**: following `R⁻` from `y` means walking `y`'s
+  *predecessor* `R`-edges (the `preds` list already exists from the
+  semi-naive worklist — reuse it).
+- `∀R⁻.C` / `∃R⁻.C` fire across the reverse edge.
+- The `RoleHierarchy` is consulted: `role_matches` generalises to "edge
+  role is `wanted` or a sub-role of `wanted`, in the right direction."
+
+## §3 — Double-blocking (replace anywhere blocking)
+
+Anywhere blocking (`L(n) ⊆ L(m)`, `m` earlier) is **unsound with
+inverse roles**: a blocked node's inverse-role consequences on its
+predecessor aren't realised. The SROIQ-sound condition is
+**double-blocking** (Motik, Shearer & Horrocks 2009, §3.4 / pairwise
+blocking refined for inverses+nominals): block `n` by `m` only when
+`L(n)=L(m)`, `L(parent(n))=L(parent(m))`, and the connecting edge
+labels match. Go straight to the published condition — pair-blocking
+is sound for SHIQ but not once nominals (HF4) interact, and a fragile
+intermediate isn't worth it.
+- This is the riskiest part: blocking soundness is subtle and
+  non-local. Implement against the published rule, not intuition.
+
+## §4 — Validation gate (crafted, since the corpus is inert)
+
+1. A **crafted `R⁻` ontology** whose hierarchy *depends* on the inverse:
+   e.g. `A ⊑ ∃R.B`, `B ⊑ ∀R⁻.C` ⊨ `A ⊑ C`. The current engine gets
+   this **wrong** (no inverse propagation); HF2 must derive `A ⊑ C`.
+   This test is the HF2 canary — write it first, watch it fail, make it
+   pass.
+2. A **role-hierarchy** test: `R ⊑ S`, `A ⊑ ∃R.B` ⊨ `A ⊑ ∃S.B`.
+3. A **cyclic + inverse** test that anywhere-blocking would get wrong
+   but double-blocking gets right (the blocking-soundness canary).
+4. **No corpus regression:** pizza/ro/sulo/SIO agreement unchanged
+   (0 FP, completeness held) — the corpus is inert to inverses, so
+   this just guards against breakage.
+
+## §5 — Build on, scope cuts, out of scope
+
+Build on the current engine (the `preds` reverse edges are already
+there for the worklist; the `RoleHierarchy` exists in the reasoner).
+Scope cuts: chains/transitivity deferred within HF2 if deep. Out of
+scope: cardinality-in-calculus (HF3), nominals/NN-rule (HF4),
+`Sat`-soundness wiring (HF5) — HF2 is inverse + blocking only.
+
+## §6 — Recommended entry point
+
+The **crafted inverse canary test** (§4.1) first — it fails today and
+defines "done" for the core of HF2. Then RBox inverse-pair
+clausification (§1) + inverse-aware matching (§2) to make it pass,
+then double-blocking (§3) with its own cyclic canary. Each step gated
+by its crafted test; the corpus is the no-regression guard, not the
+completeness gate.

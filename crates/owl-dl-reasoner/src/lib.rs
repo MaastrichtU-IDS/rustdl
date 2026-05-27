@@ -2127,6 +2127,39 @@ EquivalentClasses(:Sup ObjectComplementOf(ObjectSomeValuesFrom(:r :A)))\n)\n"
         );
     }
 
+    /// HF2 canary (inverse-role propagation). `A ⊑ ∃R.B`,
+    /// `B ⊑ ∀R⁻.C` ⊨ `A ⊑ C`: an `A` has an `R`-successor `b:B`;
+    /// `b`'s `∀R⁻.C` forces every `R`-predecessor of `b` — including
+    /// the `A` node — to be `C`. Deriving this requires propagating
+    /// `∀R⁻` across the *reverse* edge, which the engine cannot do yet
+    /// (`role_matches` demands equal polarity, and the clausifier drops
+    /// the inverse). This test defines "done" for HF2's core: it fails
+    /// today and must pass once inverse-aware matching lands. See
+    /// `docs/hypertableau-hf2-scoping.md` §4.1.
+    #[test]
+    #[ignore = "HF2: inverse-role propagation not yet implemented"]
+    fn hyper_subsumption_probe_propagates_inverse_universal() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:C))\n\
+Declaration(ObjectProperty(:R))\n\
+SubClassOf(:A ObjectSomeValuesFrom(:R :B))\n\
+SubClassOf(:B ObjectAllValuesFrom(ObjectInverseOf(:R) :C))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("A", "C"),
+            "A ⊑ C must be derivable via ∀R⁻ propagation across the reverse edge"
+        );
+    }
+
     /// Regression for the pizza false-positive-unsat bug fixed
     /// 2026-05-25. Minimal repro extracted from pizza.ofn via ROBOT
     /// STAR extraction + axiom-level bisection. Bug was in

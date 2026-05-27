@@ -224,6 +224,14 @@ fn branch(
         for &comp in &literal_complements {
             ctx.add_label_with_deps(node, comp, combined_deps.as_slice());
         }
+        // CDBL Phase 1 (docs/cdbl-plan.md): record which disjunct
+        // concept this branch is asserting, so a downstream clash's
+        // DepSet can be translated to the structural set of disjunct
+        // concepts that caused it. Overwrites the entry for `my_id`
+        // each iteration — at clash time it reflects the disjunct
+        // currently under trial, which is exactly the one in scope.
+        // Phase-1 bookkeeping only; no lookup acts on it yet.
+        ctx.record_decision(my_id, node, *d);
         // The labelled disjunct depends on *this* branch decision and
         // every reason the parent disjunction was at this node.
         ctx.add_label_with_deps(node, *d, combined_deps.as_slice());

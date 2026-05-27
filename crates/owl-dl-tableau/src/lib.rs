@@ -175,6 +175,20 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// during one tableau run; rate-limited indirectly by the search
     /// depth cap. See `docs/perf-2026-05-24-new-server.md` §5.
     learned_nogoods: Vec<(NodeId, ConceptId, ConceptId, crate::graph::DepSet)>,
+    /// CDBL Phase 1 (see `docs/cdbl-plan.md`): for each
+    /// `branch_id` handed out by [`Self::push_branch`], the
+    /// `(node, disjunct)` decision it represents — i.e. which
+    /// disjunct concept was asserted at which node when the
+    /// branch was opened. Lets a clash's `DepSet` (branch-ids) be
+    /// translated into the *structural* set of disjunct concepts
+    /// that jointly caused the clash, via
+    /// [`Self::clash_decision_labels`]. Indexed by `branch_id`:
+    /// `decision_labels[id]` is the decision for branch `id`, or
+    /// `None` for branch ids that didn't record one (e.g. the
+    /// ≤n choose-rule branch). Grows monotonically with
+    /// `next_branch_id`; never shrinks (decisions are run-scoped
+    /// facts, like `learned_nogoods`).
+    decision_labels: Vec<Option<(NodeId, ConceptId)>>,
     /// Per-rule call counters, populated under `cfg(feature =
     /// "counters")`. Dumped to stderr in `Drop` when
     /// `RUSTDL_COUNTERS=1`. Zero cost in non-counter builds (field
@@ -205,6 +219,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             active_branches: Vec::new(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
+            decision_labels: Vec::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -232,6 +247,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             active_branches: Vec::new(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
+            decision_labels: Vec::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -264,6 +280,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             active_branches: Vec::new(),
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
+            decision_labels: Vec::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -358,6 +375,42 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     ) {
         self.learned_nogoods
             .push((node, or_label, disjunct, preconditions));
+    }
+
+    /// CDBL Phase 1: record that branch `branch_id` asserted
+    /// disjunct concept `disjunct` at `node`. Called by
+    /// [`crate::search::branch`] just before it asserts each
+    /// disjunct, so the latest entry for a branch id reflects the
+    /// choice currently under trial. The `decision_labels` vector
+    /// is indexed by branch id and grown on demand.
+    #[doc(hidden)]
+    pub fn record_decision(&mut self, branch_id: u32, node: NodeId, disjunct: ConceptId) {
+        let idx = branch_id as usize;
+        if idx >= self.decision_labels.len() {
+            self.decision_labels.resize(idx + 1, None);
+        }
+        self.decision_labels[idx] = Some((node, disjunct));
+    }
+
+    /// CDBL Phase 1: translate a clash's `DepSet` (branch ids)
+    /// into the structural set of disjunct concepts those
+    /// branches chose. This is the transferable, label-keyed form
+    /// of the run-local branch-id explanation — the basis for the
+    /// sound label-set no-goods designed in `docs/cdbl-plan.md`.
+    ///
+    /// Branch ids with no recorded decision (e.g. the ≤n
+    /// choose-rule branch) are skipped. The result is sorted +
+    /// deduped so callers can use it as a canonical key.
+    #[must_use]
+    pub fn clash_decision_labels(&self, clash_deps: &[u32]) -> Vec<ConceptId> {
+        let mut out: Vec<ConceptId> = clash_deps
+            .iter()
+            .filter_map(|&id| self.decision_labels.get(id as usize).copied().flatten())
+            .map(|(_node, disjunct)| disjunct)
+            .collect();
+        out.sort_unstable_by_key(|c: &ConceptId| c.index());
+        out.dedup();
+        out
     }
 
     /// Read the [`crate::DepSet`] of label `c` on `node`, if present.
@@ -1323,6 +1376,64 @@ mod tests {
         ctx.pop_branch();
         ctx.pop_branch();
         assert!(ctx.active_branches().is_empty());
+    }
+
+    #[test]
+    fn clash_decision_labels_translates_branch_ids_to_disjuncts() {
+        // CDBL Phase 1: record (branch → disjunct) decisions, then
+        // translate a clash DepSet (branch ids) into the structural
+        // disjunct-concept set.
+        let mut pool = ConceptPool::new();
+        let d_a = pool.atomic(ClassId::new(10));
+        let d_b = pool.atomic(ClassId::new(11));
+        let d_c = pool.atomic(ClassId::new(12));
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        let b0 = ctx.push_branch();
+        ctx.record_decision(b0, n, d_a);
+        let b1 = ctx.push_branch();
+        ctx.record_decision(b1, n, d_b);
+        let b2 = ctx.push_branch();
+        ctx.record_decision(b2, n, d_c);
+        // A clash that depended on branches 0 and 2 maps to {d_a, d_c}.
+        let labels = ctx.clash_decision_labels(&[b0, b2]);
+        assert_eq!(labels, vec![d_a, d_c]);
+        // All three branches → all three disjuncts, sorted+deduped.
+        let all = ctx.clash_decision_labels(&[b2, b0, b1]);
+        assert_eq!(all, vec![d_a, d_b, d_c]);
+    }
+
+    #[test]
+    fn clash_decision_labels_skips_undecided_and_out_of_range_branches() {
+        // Branch ids without a recorded decision (e.g. the choose
+        // rule's branch) and ids beyond the recorded range are
+        // skipped, not panicked on.
+        let mut pool = ConceptPool::new();
+        let d_a = pool.atomic(ClassId::new(5));
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        let b0 = ctx.push_branch();
+        ctx.record_decision(b0, n, d_a);
+        let b1 = ctx.push_branch(); // no record_decision for b1
+        // Clash deps reference b1 (undecided) and 99 (out of range).
+        let labels = ctx.clash_decision_labels(&[b0, b1, 99]);
+        assert_eq!(labels, vec![d_a]);
+    }
+
+    #[test]
+    fn record_decision_latest_wins_for_reused_branch_id() {
+        // branch() reuses my_id across the disjunct loop, recording
+        // each disjunct as it's tried. The latest record for a branch
+        // id reflects the choice currently under trial.
+        let mut pool = ConceptPool::new();
+        let d_first = pool.atomic(ClassId::new(1));
+        let d_second = pool.atomic(ClassId::new(2));
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        let b = ctx.push_branch();
+        ctx.record_decision(b, n, d_first);
+        ctx.record_decision(b, n, d_second); // overwrites
+        assert_eq!(ctx.clash_decision_labels(&[b]), vec![d_second]);
     }
 
     #[test]

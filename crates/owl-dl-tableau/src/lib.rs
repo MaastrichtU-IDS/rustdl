@@ -79,7 +79,7 @@ pub use rules::{
     apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
     apply_role_chains, apply_role_rules, apply_self_restriction,
 };
-pub use saturate::{SaturationResult, saturate};
+pub use saturate::{SaturationResult, saturate, verify_node_local_clash};
 pub use search::{SearchVerdict, search};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
@@ -1252,7 +1252,8 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
 mod tests {
     use super::*;
     use owl_dl_core::{
-        AbsorbedTBox, ClassId, ConceptRule, IndividualId, NominalRule, Role, RoleId, RoleRule,
+        AbsorbedTBox, ClassId, ConceptRule, IndividualId, NominalRule, Role, RoleHierarchyBuilder,
+        RoleId, RoleRule,
     };
 
     fn pool_with_a_and_not_a() -> (ConceptPool, ConceptId, ConceptId) {
@@ -1418,6 +1419,96 @@ mod tests {
         // Clash deps reference b1 (undecided) and 99 (out of range).
         let labels = ctx.clash_decision_labels(&[b0, b1, 99]);
         assert_eq!(labels, vec![d_a]);
+    }
+
+    #[test]
+    fn verify_node_local_clash_detects_complementary_pair() {
+        // {A, ¬A} co-occurring clashes node-locally.
+        let (pool, a, not_a) = pool_with_a_and_not_a();
+        let tbox = AbsorbedTBox::default();
+        let hierarchy = RoleHierarchyBuilder::with_roles(0).build();
+        assert!(verify_node_local_clash(
+            &pool,
+            &tbox,
+            &hierarchy,
+            &[a, not_a],
+            64
+        ));
+    }
+
+    #[test]
+    fn verify_node_local_clash_detects_disjointness_via_concept_rule() {
+        // A ⊑ ¬B (disjointness absorbed as a concept rule). The
+        // label-set {A, B} clashes node-locally: the rule fires
+        // `¬B` from `A`, contradicting the present `B`.
+        let mut pool = ConceptPool::new();
+        let a_cls = ClassId::new(0);
+        let b_cls = ClassId::new(1);
+        let a = pool.atomic(a_cls);
+        let b = pool.atomic(b_cls);
+        let not_b = pool.not(b);
+        let tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: a_cls,
+                conclusion: not_b,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        let mut tbox = tbox;
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(0).build();
+        assert!(verify_node_local_clash(
+            &pool,
+            &tbox,
+            &hierarchy,
+            &[a, b],
+            64
+        ));
+    }
+
+    #[test]
+    fn verify_node_local_clash_is_false_for_satisfiable_set() {
+        // {A, B} with no disjointness — node-locally satisfiable.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let tbox = AbsorbedTBox::default();
+        let hierarchy = RoleHierarchyBuilder::with_roles(0).build();
+        assert!(!verify_node_local_clash(
+            &pool,
+            &tbox,
+            &hierarchy,
+            &[a, b],
+            64
+        ));
+    }
+
+    #[test]
+    fn verify_node_local_clash_ignores_existential_only_clashes() {
+        // A ⊑ ∃R.(B ⊓ ¬B): the clash needs a successor, so it is
+        // NOT node-local — verify must return false (conservative),
+        // since the label-set {A} alone doesn't reproduce the clash
+        // without generating the successor.
+        let mut pool = ConceptPool::new();
+        let a_cls = ClassId::new(0);
+        let a = pool.atomic(a_cls);
+        let b = pool.atomic(ClassId::new(1));
+        let not_b = pool.not(b);
+        let bad = pool.and([b, not_b]);
+        let r = RoleId::new(0);
+        let some_r_bad = pool.some(Role::named(r), bad);
+        let mut tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: a_cls,
+                conclusion: some_r_bad,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(1).build();
+        // {A} alone: node-local rules add the ∃ label but do NOT
+        // generate the successor, so no clash is detected here.
+        assert!(!verify_node_local_clash(&pool, &tbox, &hierarchy, &[a], 64));
     }
 
     #[test]

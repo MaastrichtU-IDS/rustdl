@@ -181,3 +181,63 @@ fn first_clash(ctx: &TableauContext<'_, '_, '_>) -> Option<(NodeId, DepSet)> {
     }
     None
 }
+
+/// CDBL Phase 2 (see `docs/cdbl-plan.md`): decide whether a set of
+/// concept labels is **node-locally unsatisfiable** — i.e. whether
+/// asserting all of them at a single node produces a clash using
+/// only the node-local propagation rules (`⊓`-decomposition,
+/// concept/nominal rules, residual + deferred GCIs), *without* any
+/// edge propagation or successor generation.
+///
+/// This is the soundness gate for label-set no-goods. If it
+/// returns `true`, then `{labels}` co-occurring at *any* node — in
+/// any sub-tree, regardless of edges or position — clashes the same
+/// way, because the node-local rules are TBox-global and don't read
+/// edges. So `{labels}` is a sound, transferable no-good.
+///
+/// Conservative: the generative rules (`∃`, `≥n`, `≤n`) and the
+/// edge-propagation rules (`∀`, role rules, role chains) are
+/// **not** run. A clash that genuinely requires successor structure
+/// won't be detected here — that's correct (such a clash isn't
+/// node-local and the label-set alone wouldn't reproduce it), it
+/// just means we record no no-good for it. False negatives are
+/// fine; false positives would be unsound and are excluded by
+/// construction.
+///
+/// Runs against a throwaway single-node graph sharing `pool` /
+/// `tbox` / `hierarchy` by reference. `max_iters` bounds the
+/// fixpoint loop defensively (node-local rules can't grow the
+/// graph, so termination is by label-set saturation, but the cap
+/// guards against rule bugs).
+#[must_use]
+pub fn verify_node_local_clash(
+    pool: &owl_dl_core::ConceptPool,
+    tbox: &owl_dl_core::AbsorbedTBox,
+    hierarchy: &owl_dl_core::RoleHierarchy,
+    labels: &[owl_dl_core::ConceptId],
+    max_iters: usize,
+) -> bool {
+    let mut ctx = TableauContext::with_tbox_and_hierarchy(pool, tbox, hierarchy);
+    let n = ctx.new_node();
+    for &l in labels {
+        ctx.add_label(n, l);
+    }
+    for _ in 0..max_iters {
+        if ctx.clash_deps_at(n).is_some() {
+            return true;
+        }
+        let mut changed = false;
+        // Node-local rules only — no ∃/≥/≤ generation, no ∀/role
+        // edge propagation (the isolated node has no edges anyway).
+        changed |= apply_residual_gcis(&mut ctx, n) == RuleOutcome::Applied;
+        changed |= apply_and(&mut ctx, n) == RuleOutcome::Applied;
+        changed |= apply_concept_rules(&mut ctx, n) == RuleOutcome::Applied;
+        changed |= apply_nominal_rules(&mut ctx, n) == RuleOutcome::Applied;
+        changed |= apply_deferred_or_residuals(&mut ctx, n) == RuleOutcome::Applied;
+        changed |= apply_deferred_concept_or_rules(&mut ctx, n) == RuleOutcome::Applied;
+        if !changed {
+            break;
+        }
+    }
+    ctx.clash_deps_at(n).is_some()
+}

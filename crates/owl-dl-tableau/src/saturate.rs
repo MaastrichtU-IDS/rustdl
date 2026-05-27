@@ -26,9 +26,10 @@
 use crate::TableauContext;
 use crate::graph::{DepSet, NodeId};
 use crate::rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
-    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
-    apply_role_chains, apply_role_rules, apply_self_restriction,
+    RuleOutcome, apply_and, apply_concept_rules, apply_deferred_or_residuals, apply_exists,
+    apply_forall, apply_max, apply_min, apply_nominal_assignment, apply_nominal_rules,
+    apply_residual_gcis, apply_role_axioms, apply_role_chains, apply_role_rules,
+    apply_self_restriction,
 };
 
 /// Verdict from one run of [`saturate`].
@@ -134,6 +135,30 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             }
         }
         if !changed {
+            // Deterministic rules are stable. Run the lazy-unfolding
+            // sweep before declaring Stable: materialise any deferred
+            // `Or(_)` residual on nodes that don't already satisfy it.
+            // Running it here (rather than per-node in the rule block
+            // above) means every disjunct a concept-rule or
+            // ∀-propagation would have added has already landed, so
+            // the sweep only materialises Ors that genuinely need
+            // branching. If the sweep adds anything, loop again so the
+            // new open disjunctions are visible to the clash check and
+            // to `first_open_disjunction` in the search driver.
+            let mut sweep_changed = false;
+            let node_count = ctx.graph().len();
+            for idx in 0..node_count {
+                if ctx.check_deadline() {
+                    return SaturationResult::Stalled;
+                }
+                let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+                if apply_deferred_or_residuals(ctx, node) == RuleOutcome::Applied {
+                    sweep_changed = true;
+                }
+            }
+            if sweep_changed {
+                continue;
+            }
             return if let Some((node, deps)) = first_clash(ctx) {
                 SaturationResult::Clash(node, deps)
             } else {

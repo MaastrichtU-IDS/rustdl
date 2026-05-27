@@ -79,6 +79,14 @@ pub struct AbsorbedTBox {
     /// `⊤ ⊑ φ` — applied universally by the tableau, after every other
     /// pattern was tried.
     pub residual_gcis: Vec<ConceptId>,
+    /// Subset of [`Self::residual_gcis`] whose body is `Or(_)` — the
+    /// lazy-unfolding deferral candidates (see
+    /// `docs/lazy-unfolding-plan.md`). `apply_residual_gcis` skips
+    /// these (they're not materialised on every node eagerly);
+    /// `apply_deferred_or_residuals` materialises them at saturate
+    /// stable-state, but only on nodes where no disjunct is already
+    /// present. Populated by [`Self::finalize`].
+    pub deferred_or_residuals: Vec<ConceptId>,
     /// Index: every conclusion `ConceptId` that should fire for a
     /// given trigger class. Derived from `concept_rules` by
     /// [`Self::finalize`]; consulted by `apply_concept_rules` to skip
@@ -229,6 +237,27 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
         }
     }
     tbox.nominal_rules = kept;
+
+    // Lazy-unfolding split: precompute the `Or(_)`-shaped residual
+    // GCIs so the tableau can defer their materialisation to
+    // saturate stable-state instead of asserting them on every
+    // node. See `docs/lazy-unfolding-plan.md`. The eager residuals
+    // stay in `residual_gcis` and `apply_residual_gcis` skips the
+    // Or-shaped ones, which `apply_deferred_or_residuals` handles.
+    tbox.deferred_or_residuals = tbox
+        .residual_gcis
+        .iter()
+        .copied()
+        .filter(|&g| matches!(pool.get(g), ConceptExpr::Or(_)))
+        .collect();
+    // Sorted so `apply_residual_gcis` can binary_search to skip the
+    // deferred entries. The set defines *exactly* which residuals
+    // are deferred — `apply_residual_gcis` skips members,
+    // `apply_deferred_or_residuals` materialises them, so the two
+    // stay consistent even for hand-built TBoxes that never run this
+    // split (empty set ⇒ everything eager ⇒ sound, just unoptimised).
+    tbox.deferred_or_residuals
+        .sort_unstable_by_key(|c| c.index());
 
     // Rebuild the dispatch indices now that every mutator has run.
     tbox.finalize();

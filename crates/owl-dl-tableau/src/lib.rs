@@ -74,9 +74,10 @@ macro_rules! add_counter {
 
 pub use graph::{CompletionGraph, DepSet, Node, NodeId};
 pub use rules::{
-    RuleOutcome, apply_and, apply_concept_rules, apply_exists, apply_forall, apply_max, apply_min,
-    apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
-    apply_role_chains, apply_role_rules, apply_self_restriction,
+    RuleOutcome, apply_and, apply_concept_rules, apply_deferred_or_residuals, apply_exists,
+    apply_forall, apply_max, apply_min, apply_nominal_assignment, apply_nominal_rules,
+    apply_residual_gcis, apply_role_axioms, apply_role_chains, apply_role_rules,
+    apply_self_restriction,
 };
 pub use saturate::{SaturationResult, saturate};
 pub use search::{SearchVerdict, search};

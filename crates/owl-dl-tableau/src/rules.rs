@@ -393,8 +393,16 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
     }
 }
 
-/// Residual-GCI family: add every `⊤ ⊑ φ` body that survived
-/// absorption to every node's label set.
+/// Residual-GCI family: add every *eager* `⊤ ⊑ φ` body that
+/// survived absorption to every node's label set.
+///
+/// `Or(_)`-shaped residuals are **deferred** — they live in
+/// `tbox.deferred_or_residuals` and are materialised lazily by
+/// [`apply_deferred_or_residuals`] at saturate stable-state,
+/// only on nodes where no disjunct is already present. This
+/// avoids asserting a universal disjunction (and the branching it
+/// forces) on every node of the completion graph when the model
+/// would satisfy it anyway. See `docs/lazy-unfolding-plan.md`.
 ///
 /// Idempotent: subsequent passes are O(|residuals|) lookups with no
 /// graph mutation once each node already carries the residuals.
@@ -416,7 +424,19 @@ pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
     if ctx.graph().residuals_saturated(node) {
         return RuleOutcome::NoChange;
     }
-    let pending: Vec<ConceptId> = tbox.residual_gcis.clone();
+    // Eager residuals only; the deferred `Or(_)` set is materialised
+    // by `apply_deferred_or_residuals`. Skip membership is a
+    // binary_search against the sorted `deferred_or_residuals`.
+    let pending: Vec<ConceptId> = tbox
+        .residual_gcis
+        .iter()
+        .copied()
+        .filter(|c| {
+            tbox.deferred_or_residuals
+                .binary_search_by_key(&c.index(), |d| d.index())
+                .is_err()
+        })
+        .collect();
     let mut applied = false;
     for c in pending {
         if ctx.add_label(node, c) {
@@ -424,6 +444,69 @@ pub fn apply_residual_gcis(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
         }
     }
     ctx.mark_residuals_saturated(node);
+    if applied {
+        RuleOutcome::Applied
+    } else {
+        RuleOutcome::NoChange
+    }
+}
+
+/// Deferred lazy-unfolding rule for `Or(_)`-shaped residual GCIs.
+/// For each `⊤ ⊑ Or(d1, ..., dn)` deferred at absorption time,
+/// materialise the `Or` label on `node` **only if no disjunct is
+/// already present** — otherwise the disjunction is trivially
+/// satisfied and asserting it would just force a redundant
+/// branching decision.
+///
+/// Intended to run at saturate stable-state (after the
+/// deterministic rules stop firing), so that any disjunct a
+/// successor-propagation or concept-rule would add has already
+/// landed. Materialising via [`TableauContext::add_label`] keeps
+/// rollback symmetric (the trail un-asserts the Or on backtrack).
+///
+/// Returns [`RuleOutcome::Applied`] if any Or label was newly
+/// materialised — the caller must then continue saturation so the
+/// search picks the new open disjunction up for branching.
+pub fn apply_deferred_or_residuals(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    node: NodeId,
+) -> RuleOutcome {
+    let Some(tbox) = ctx.tbox() else {
+        return RuleOutcome::NoChange;
+    };
+    if tbox.deferred_or_residuals.is_empty() {
+        return RuleOutcome::NoChange;
+    }
+    // Decide which deferred Ors need materialising. An Or is needed
+    // iff none of its disjuncts is already a label of the node.
+    let to_add: Vec<ConceptId> = {
+        let n = ctx.graph().node(node);
+        let pool = ctx.pool();
+        let labels = n.labels();
+        tbox.deferred_or_residuals
+            .iter()
+            .copied()
+            .filter(|&gci| {
+                if labels.binary_search(&gci).is_ok() {
+                    // The Or itself is already a label.
+                    return false;
+                }
+                match pool.get(gci) {
+                    ConceptExpr::Or(args) => !args.iter().any(|d| labels.binary_search(d).is_ok()),
+                    // Non-Or somehow in the deferred set — be safe and
+                    // materialise it (shouldn't happen given the
+                    // absorption-time filter).
+                    _ => true,
+                }
+            })
+            .collect()
+    };
+    let mut applied = false;
+    for c in to_add {
+        if ctx.add_label(node, c) {
+            applied = true;
+        }
+    }
     if applied {
         RuleOutcome::Applied
     } else {

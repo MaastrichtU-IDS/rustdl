@@ -667,6 +667,29 @@ fn main() -> Result<()> {
             println!("# stalled:          {}", probe.stalled);
             println!("# max_depth_reached:{}", probe.max_branch_depth);
             println!("# total_wall_ms:    {:.1}", probe.total_wall_ms);
+            // Wall-distribution histogram over branched pairs — answers
+            // "how many pairs are slow?" for the HF5 wiring decision.
+            {
+                let bins = [10.0_f64, 100.0, 500.0, 1000.0, 2000.0, 5000.0];
+                let labels = [
+                    "<10ms",
+                    "<100ms",
+                    "<500ms",
+                    "<1s",
+                    "<2s",
+                    "<5s",
+                    ">=5s/stall",
+                ];
+                let mut counts = [0usize; 7];
+                for r in probe.results.iter().filter(|r| r.stats.branches_taken > 0) {
+                    let idx = bins.iter().position(|&b| r.wall_ms < b).unwrap_or(6);
+                    counts[idx] += 1;
+                }
+                println!("# --- branched-pair wall histogram ---");
+                for (lab, c) in labels.iter().zip(counts.iter()) {
+                    println!("#   {lab:>11}: {c}");
+                }
+            }
             // Slowest / branchiest pairs — the interesting tail.
             let mut by_interest: Vec<&owl_dl_reasoner::HyperSubResult> = probe
                 .results

@@ -45,6 +45,7 @@
 mod counters;
 mod deps;
 mod graph;
+pub mod hyper;
 mod rules;
 mod saturate;
 mod search;

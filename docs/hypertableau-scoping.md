@@ -556,8 +556,12 @@ counted). Validated vs Konclude: pizza misses **29 → 24**
 **95.8 % → 96.5 %**.
 
 The clean residual 24 is the two genuinely-hard remaining mechanisms:
-min-cardinality 20 (`InterestingPizza ≡ ≥3 hasTopping`, H3c — the
-`≤n`/`≥n` successor merging, interacts with branching), and nominals 4
+min-cardinality 20 (`InterestingPizza ≡ ≥3 hasTopping`, **H3c — scoped
+in [`hypertableau-cardinality-scoping.md`](hypertableau-cardinality-scoping.md)**:
+the `≤n` successor-merge rule, the first structure-mutating engine
+change; first-phase scope cut is unqualified `≤n`, merge only at the
+root binding, no `≥n` generation — exactly the 20 misses, dodging the
+blocking-after-merge and termination interactions), and nominals 4
 (`RealItalianPizza`'s `hasValue` + the two pizzas reaching
 `ThinAndCrispyPizza` transitively through it).
 

@@ -232,6 +232,38 @@ reasoner sound.
   worth it **iff** SROIQ-heavy default-mode parity is a goal in
   its own right, not just "good benchmarks on bio-ontologies."
 
+## §H0 — clausifier measurement (2026-05-27, shipped)
+
+Phase H0 is done (`4d38a22`): the DL-clausifier + `rustdl
+clause-stats`. No reasoning change. The clause-shape distribution
+across the corpus **validates the hypertableau hypothesis**:
+
+| Workload | total | Horn | disjunctive | ⊥-headed | ∃-head | deferred |
+|---|---|---|---|---|---|---|
+| pizza | 704 | 674 (96%) | **30** | 409 | 163 | 21 |
+| SULO | 62 | 58 | 4 | 24 | 6 | 11 |
+| SIO | 2379 | 2338 (98%) | **41** | 227 | 409 | 162 |
+| family | 283 | 279 | 4 | 5 | 113 | 112 |
+| RO | 232 | 218 | 14 | 13 | 10 | 171 (74%) |
+| GO | 72697 | 72697 (100%) | 0 | 0 | 14168 | 0 |
+
+Takeaways:
+- **The corpus is overwhelmingly Horn** (pizza 96 %, SIO 98 %,
+  GO 100 %). Branching concentrates in a *handful* of disjunctive
+  clauses — pizza **30**, SIO **41**. Under hyperresolution those
+  fire only on satisfied bodies; the ~96 % Horn clauses are pure
+  deterministic propagation. This is the structural reason
+  hypertableau should converge where the eager-NNF tableau
+  explodes.
+- **Deferred coverage gaps** are now quantified: RO 74 %, family
+  40 %, SIO 7 %, pizza 3 %. RO and family lean heavily on the
+  cardinality / nominal constructs H0 doesn't clausify — those are
+  H3's scope, and the numbers say H3 is load-bearing for RO/family
+  but not pizza/SIO/GO.
+- GO is pure Horn with many ∃-heads — confirms the EL fast path is
+  the right default there; hypertableau would just reproduce the
+  saturation closure.
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

@@ -291,15 +291,72 @@ impl Clausifier {
                     self.clausify_consequent(body, sup, X);
                 }
             }
-            // Hard antecedent (`∀`/`¬`/cardinality/`Self`): can't be a
-            // conjunctive body. Internalizing to `⊤ ⊑ ¬sub ⊔ sup` is
-            // sound and reaches `deferred == 0`, but the resulting
-            // `⊤`-headed clauses fire at *every* node — measured to
-            // explode the search (SIO bare-sat 0.45 s → did-not-finish),
-            // because `¬∀ → ∃` generates successors everywhere. This
-            // needs **absorption** (keep the GCI as a triggered rule),
-            // not eager internalization — its own HF1 sub-phase. Until
-            // then, defer (sound: a dropped GCI only weakens the theory).
+            // Hard antecedent (`∀`/`¬`/cardinality/`Self`): partial
+            // absorption. Split the antecedent conjuncts into *soft*
+            // (encodable as body atoms — a trigger) and *hard*, then
+            // emit `soft ⊑ ¬hard ⊔ sup` (the contrapositive of
+            // `soft ⊓ hard ⊑ sup`). The soft trigger keeps the clause
+            // from firing at every node — the eager `⊤ ⊑ ¬sub ⊔ sup`
+            // internalization without it exploded the search (SIO
+            // 0.45 s → did-not-finish). If there's no soft trigger
+            // (a purely-hard antecedent — not seen in the corpus),
+            // defer (sound: a dropped GCI only weakens the theory).
+            None => self.absorb_hard_antecedent(sub, sup),
+        }
+    }
+
+    /// Partial absorption for a GCI `sub ⊑ sup` whose antecedent
+    /// `encode_antecedent` rejected (a hard `∀`/`¬`/cardinality/`Self`
+    /// conjunct). Splits `sub`'s top-level conjuncts into soft (body
+    /// trigger) and hard, emitting `soft ⊑ (⊔ ¬hard) ⊔ sup`.
+    fn absorb_hard_antecedent(&mut self, sub: ConceptId, sup: ConceptId) {
+        let parts: Vec<ConceptId> = match self.pool.get(sub) {
+            ConceptExpr::And(ps) => ps.to_vec(),
+            _ => vec![sub],
+        };
+        // Partition: a conjunct is *soft* iff it encodes to a body
+        // (`encode_antecedent` is side-effect-free bar `next_var`).
+        let mut soft = Vec::new();
+        let mut hard = Vec::new();
+        for &p in &parts {
+            self.next_var = X + 1;
+            if self.encode_antecedent(p, X).is_some() {
+                soft.push(p);
+            } else {
+                hard.push(p);
+            }
+        }
+        if soft.is_empty() {
+            // No soft trigger: fall back to full internalization
+            // `⊤ ⊑ ¬sub ⊔ sup` (a `⊤`-headed clause). Eager and a
+            // blow-up risk in bulk, but purely-hard antecedents are
+            // rare (a handful in the corpus); measured not to explode
+            // there. Still sound.
+            let neg_sub = crate::normalize::nnf_complement(sub, &mut self.pool);
+            let head = self.pool.or(vec![neg_sub, sup]);
+            self.next_var = X + 1;
+            self.emit_head(Vec::new(), head, X);
+            return;
+        }
+        // Head = (¬hard_1 ⊔ … ⊔ ¬hard_k) ⊔ sup.
+        let mut head_parts: Vec<ConceptId> = hard
+            .iter()
+            .map(|&h| crate::normalize::nnf_complement(h, &mut self.pool))
+            .collect();
+        head_parts.push(sup);
+        let head = self.pool.or(head_parts);
+        let soft_and = if soft.len() == 1 {
+            soft[0]
+        } else {
+            self.pool.and(soft)
+        };
+        self.next_var = X + 1;
+        match self.encode_antecedent(soft_and, X) {
+            Some(bodies) => {
+                for body in bodies {
+                    self.emit_head(body, head, X);
+                }
+            }
             None => self.defer("antecedent"),
         }
     }
@@ -882,6 +939,34 @@ SubClassOf(:C ObjectHasSelf(:r))\n)\n"
                 .iter()
                 .any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
             "expected a self-loop Role(x,x) head"
+        );
+    }
+
+    /// Antecedent absorption: `A ⊓ ∀R.C ⊑ D` keeps `A` as a body
+    /// trigger and moves `∀R.C` to the head negated (`∃R.¬C`), giving
+    /// `A(x) → ∃R.¬C(x) ⊔ D(x)` — triggered (non-`⊤`) so it doesn't
+    /// fire everywhere. No deferral.
+    #[test]
+    fn hard_antecedent_is_absorbed_with_trigger() {
+        let (clauses, stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:C))\nDeclaration(Class(:D))\n\
+Declaration(ObjectProperty(:r))\n\
+SubClassOf(ObjectIntersectionOf(:A ObjectAllValuesFrom(:r :C)) :D)\n)\n"
+        ));
+        assert_eq!(stats.deferred, 0, "absorbed, not deferred; stats={stats:?}");
+        // The emitted clause is triggered: a non-empty body mentioning
+        // A on X, and a disjunctive head (∃R.¬C ⊔ D) — i.e. not Horn,
+        // not ⊤-headed.
+        assert!(
+            clauses.iter().any(|c| {
+                !c.body.is_empty()
+                    && c.body
+                        .iter()
+                        .any(|a| matches!(a, Atom::Class(_, v) if *v == X))
+                    && c.head.len() >= 2
+            }),
+            "expected a triggered disjunctive clause; clauses={clauses:?}"
         );
     }
 

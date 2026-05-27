@@ -91,18 +91,28 @@ disjuncts (`∀`/`≥n`/`≤n`/nested) are now *named* (`Q ⊑ disjunct`) and
 `¬∃R.Self` becomes `Q ∧ R(x,x) → ⊥`, clearing the `head-or-disjunct`
 bucket (family 2→1). Pizza/SIO agreement unchanged (0 FP).
 
-**The `antecedent` category needs ABSORPTION, not internalization
-(empirical finding).** Internalizing a hard-antecedent GCI as
-`⊤ ⊑ ¬sub ⊔ sup` is sound and reaches `deferred == 0`, but the
-`⊤`-headed clauses fire at *every* node, and `¬∀ → ∃` generates
-successors everywhere — **measured to explode the search: SIO bare-sat
-0.45 s → did-not-finish (>7 min)**. Reverted. The proper fix keeps the
-GCI as a *triggered rule* (absorption — rustdl already has an `absorb`
-module for the existing tableau); that is HF1's next sub-phase, and
-why the `Clausifier` now owns a mutable pool (interning prep). Until
-then the `antecedent` category stays deferred (sound: a dropped GCI
-only weakens the theory). Remaining deferred: pizza 6, SIO 4, ro 2,
-family 1 — all `antecedent`.
+**Antecedent absorption (shipped) — HF1 COMPLETE, `deferred == 0`
+corpus-wide.** Internalizing a hard-antecedent GCI as `⊤ ⊑ ¬sub ⊔ sup`
+is sound but the `⊤`-headed clause fires at *every* node and `¬∀ → ∃`
+generates successors everywhere — **measured to explode (SIO 0.45 s →
+did-not-finish)**. The fix is *partial absorption*: split the
+antecedent conjuncts into **soft** (encodable as body atoms — a
+trigger) and **hard**, emitting `soft ⊑ (⊔¬hard) ⊔ sup` — e.g.
+`A ⊓ ∀R.C ⊑ D` → `A(x) → ∃R.¬C(x) ⊔ D(x)`, triggered by `A`, so it
+*doesn't* fire everywhere. A purely-hard antecedent (no soft trigger —
+a handful, e.g. ro's 2) falls back to `⊤`-internalization, which
+doesn't explode at that scale.
+
+Result: **`deferred == 0` on the whole corpus** (pizza/SIO/ro/sulo/
+family/GO), engine still fast (SIO bare-sat 452 ms, ro 0.7 ms), and
+agreement preserved — pizza 695/695, ro 158/158, sulo 51/51 (all
+100 %, 0 FP), SIO 1585 sat / 0 unsat. HF1's gate is met: the clausifier
+now produces clauses for every SROIQ construct in the corpus.
+
+(Note: the engine's inverse-role/blocking handling is still HF2 — the
+clauses are emitted soundly, but ro's inverse-role *reasoning*
+soundness is not yet guaranteed by the calculus, only empirically
+agreeing here.)
 
 
 Every SROIQ construct produces clauses **entailment-equivalent** to

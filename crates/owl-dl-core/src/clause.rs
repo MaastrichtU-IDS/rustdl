@@ -65,6 +65,10 @@ pub enum Atom {
     /// when the qualifier is `Some`, else unqualified). The `≤n`
     /// constraint for cardinality (H3c); enforced by the merge rule.
     AtMost(Role, Option<ClassId>, u32, Var),
+    /// Head-only: `v` has at least `n` `R`-successors (in class `A`
+    /// when the qualifier is `Some`). The `≥n` constraint; realised by
+    /// the generation rule (HF3). `n ≥ 1`.
+    AtLeast(Role, Option<ClassId>, u32, Var),
     /// `u ≈ v` — equality, for `≤n` / functional reasoning (H3).
     Equal(Var, Var),
 }
@@ -452,13 +456,52 @@ impl<'a> Clausifier<'a> {
                     self.defer("head-not-nonatomic");
                 }
             }
-            // Cardinality, self-restriction: deferred to later phases
-            // (H3). Counted for coverage.
-            ConceptExpr::Min(_, _, _)
-            | ConceptExpr::Max(_, _, _)
-            | ConceptExpr::SelfRestriction(_) => {
-                self.defer("head-cardinality-self");
+            // Head cardinality (HF1): `body → ≥n R.C` / `≤n R.C`.
+            // `≥0` is trivially true; otherwise emit the constraint
+            // atom (the engine's generation/merge rules are HF3 — until
+            // then an unprocessed atom only weakens the theory, so
+            // `Unsat` stays sound). `ExactCardinality` arrives already
+            // split into `Min ⊓ Max` by conversion, handled via `And`.
+            ConceptExpr::Min(n, role, inner) => {
+                let (n, role, inner) = (*n, *role, *inner);
+                if n == 0 {
+                    return; // ≥0: trivially satisfied.
+                }
+                let qual = self.cardinality_qualifier(inner);
+                self.clauses.push(DlClause {
+                    body,
+                    head: vec![Atom::AtLeast(role, qual, n, var)],
+                });
             }
+            ConceptExpr::Max(n, role, inner) => {
+                let (n, role, inner) = (*n, *role, *inner);
+                let qual = self.cardinality_qualifier(inner);
+                self.clauses.push(DlClause {
+                    body,
+                    head: vec![Atom::AtMost(role, qual, n, var)],
+                });
+            }
+            // `body → ∃R.Self`: assert the self-loop `R(x,x)`. The
+            // engine's self-edge handling is HF3.
+            ConceptExpr::SelfRestriction(role) => {
+                let role = *role;
+                self.clauses.push(DlClause {
+                    body,
+                    head: vec![Atom::Role(role, var, var)],
+                });
+            }
+        }
+    }
+
+    /// The qualifier class for a cardinality restriction's filler:
+    /// `None` for `⊤` (unqualified), `Some(named)` for atomic/nominal,
+    /// `Some(fresh)` naming a compound filler (`Q ⊑ filler`).
+    /// `atomic_name_of` always names, so a non-`⊤` filler is always
+    /// `Some`.
+    fn cardinality_qualifier(&mut self, filler: ConceptId) -> Option<ClassId> {
+        match self.pool.get(filler) {
+            ConceptExpr::Top => None,
+            _ => self.atomic_name_of(filler),
         }
     }
 
@@ -767,6 +810,59 @@ SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
         assert!(
             stats.deferred >= 1,
             "over-cap antecedent must defer; stats={stats:?}"
+        );
+    }
+
+    // ---- HF1: head cardinality + self ----
+
+    /// `A ⊑ ≥2 R.B` / `A ⊑ ≤1 R.B` / `A ⊑ ∃R.Self` clausify to
+    /// `AtLeast` / `AtMost` / self-loop `Role(x,x)` head atoms (no
+    /// longer deferred).
+    #[test]
+    fn head_cardinality_and_self_are_clausified() {
+        let (clauses, stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:C))\n\
+Declaration(ObjectProperty(:r))\n\
+SubClassOf(:A ObjectMinCardinality(2 :r :B))\n\
+SubClassOf(:A ObjectMaxCardinality(1 :r :B))\n\
+SubClassOf(:C ObjectHasSelf(:r))\n)\n"
+        ));
+        assert_eq!(stats.deferred, 0, "no deferral expected; stats={stats:?}");
+        assert!(
+            clauses
+                .iter()
+                .any(|c| c.head.iter().any(|a| matches!(a, Atom::AtLeast(_, Some(_), 2, _)))),
+            "expected an AtLeast(_,Some,2,_) head"
+        );
+        assert!(
+            clauses
+                .iter()
+                .any(|c| c.head.iter().any(|a| matches!(a, Atom::AtMost(_, Some(_), 1, _)))),
+            "expected an AtMost(_,Some,1,_) head"
+        );
+        assert!(
+            clauses
+                .iter()
+                .any(|c| c.head.iter().any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
+            "expected a self-loop Role(x,x) head"
+        );
+    }
+
+    /// `≥0 R` is trivially true ⇒ no clause, no deferral.
+    #[test]
+    fn min_zero_cardinality_is_trivial() {
+        let (clauses, stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(ObjectProperty(:r))\n\
+SubClassOf(:A ObjectMinCardinality(0 :r))\n)\n"
+        ));
+        assert_eq!(stats.deferred, 0);
+        assert!(
+            !clauses
+                .iter()
+                .any(|c| c.head.iter().any(|a| matches!(a, Atom::AtLeast(..)))),
+            "≥0 must emit no AtLeast"
         );
     }
 }

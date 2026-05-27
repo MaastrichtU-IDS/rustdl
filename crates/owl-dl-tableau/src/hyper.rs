@@ -214,7 +214,7 @@ fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
                 Atom::Class(c, _) => push(&mut ix.succ_trigger, c.index() as usize, ci),
                 Atom::Role(r, _, _) => push(&mut ix.role_trigger, role_id_index(*r), ci),
                 // Head-only atoms never appear in a (Horn) body.
-                Atom::Exists(..) | Atom::AtMost(..) | Atom::Equal(..) => {}
+                Atom::Exists(..) | Atom::AtMost(..) | Atom::AtLeast(..) | Atom::Equal(..) => {}
             }
         }
     }
@@ -606,7 +606,10 @@ impl<'c> HyperEngine<'c> {
                         return true;
                     }
                 }
-                Atom::Equal(..) | Atom::Role(..) => {}
+                // TODO(HF3): `≥n` generation not yet enforced — never
+                // counts as already-satisfied (sound for `Unsat`: an
+                // unenforced `≥n` only weakens the theory).
+                Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => {}
             }
         }
         false
@@ -842,8 +845,10 @@ impl<'c> HyperEngine<'c> {
                     FireOutcome::Changed
                 }
             }
-            // Equality heads are H3 (≥n generation); not produced yet.
-            Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
+            // TODO(HF3): `≥n` generation, self-loop `Role(x,x)` heads,
+            // and `≈` equality not yet realised — no-op (sound for
+            // `Unsat`: an unenforced head only weakens the theory).
+            Atom::AtLeast(..) | Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
         }
     }
 

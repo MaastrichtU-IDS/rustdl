@@ -71,14 +71,25 @@ corpus:
 | family-stripped | 2 | antecedent 1, head-or-disjunct 1 |
 | sio-stripped | 87 | antecedent 4, **head-cardinality 83** |
 
-So HF1 is two categories: **head cardinality** (`≥n`/`≤n` in a
-consequent — the bulk; needs an `AtLeast` atom alongside `AtMost`,
-processed by HF3) and **antecedent** (`∀`/`¬`/cardinality on the GCI
-sub-side — ~13 total; `∀`/`¬` clausify to disjunctive `∃`-head clauses
-via the H3b complement machinery). Next HF1 increment: head cardinality
-(clears SIO's 83). Emitting cardinality atoms the engine doesn't yet
-process stays sound for `Unsat` (an ignored clause only weakens the
-theory) — correctness lands at HF3.
+So HF1 is two categories: **head cardinality** (`≥n`/`≤n`/`Self` in a
+consequent) and **antecedent** (`∀`/`¬`/cardinality on the GCI
+sub-side).
+
+**Head cardinality (shipped).** `emit_head` now clausifies
+`Min`→`AtLeast` (new atom), `Max`→`AtMost`, `≥0`→trivial,
+`ExactCardinality`→`Min⊓Max` (via `And`), and `∃R.Self`→a self-loop
+`Role(x,x)` head; qualifiers name compound fillers. `AtLeast`/`Self`
+heads are no-ops in the engine (`TODO(HF3)` — generation/self-edges),
+which keeps `Unsat` sound (an unenforced head only weakens the theory);
+`Max`→`AtMost` is *enforced* by the existing H3c merge. Census drop:
+**SIO 87→4, ro 7→2, pizza 7→6**, head-cardinality bucket now 0
+corpus-wide. Re-validated: SIO 1585 sat/0 unsat, pizza 695/695, **0
+false positives** unchanged.
+
+**Remaining HF1: the `antecedent` category** (pizza 6, SIO 4, ro 2,
+family 1) + family's 1 `head-or-disjunct`. `∀`/`¬` on the sub-side
+clausify to disjunctive `∃`-head clauses (the H3b complement
+machinery); antecedent cardinality is the harder residue. Next.
 
 
 Every SROIQ construct produces clauses **entailment-equivalent** to

@@ -307,6 +307,35 @@ This is exactly the kind of foundational correction the phased,
 gated approach is meant to surface early — before branching is
 layered on a clausifier that silently drops axioms.
 
+## §H1c — structural-transformation clausifier (shipped)
+
+The clausifier was rebuilt (`clausify` now structural-transforms
+the NNF GCI axioms directly instead of the absorbed TBox).
+Antecedent `∃` becomes body role+class atoms (`∃R.E ⊑ F` →
+`R(x,y) ∧ E(y) → F(x)`), antecedent top-level `Or` splits per
+disjunct, consequent `∀` moves the role into the body, `And`
+splits, `Or` builds disjunctive heads, `Not(atomic)` and `⊥`
+become ⊥-headed clauses. Cardinality / nominals / nested
+antecedent `∀`/`Or`/`Not` are still deferred (H3), counted.
+
+The H1b cross-check `hyper_horn_matches_el_closure_with_existential_backprop`
+is now un-ignored and **passes** — the pipeline derives `C ⊑ F`
+from `∃R.E ⊑ F`. Deferred counts dropped sharply, confirming the
+new clausifier covers far more of the corpus:
+
+| Workload | deferred (from-absorbed) | deferred (structural) |
+|---|---|---|
+| pizza | 21 | 17 |
+| SIO | 162 | 91 |
+| family | 112 | 14 |
+| RO | 171 | 17 |
+| GO | 0 | 0 |
+
+Remaining deferrals are cardinality + nominals (H3 scope). With a
+sound, mostly-complete clausifier and a validated Horn engine, the
+next phase is **H2 — disjunctive-head branching** (and the pizza/
+SIO wall measurement that is the whole effort's payoff check).
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

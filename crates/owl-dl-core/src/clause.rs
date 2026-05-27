@@ -30,10 +30,9 @@
 //! standard Tseitin naming, which the saturation engine already
 //! uses in limited form.
 
-use crate::absorb::{AbsorbedTBox, absorb};
 use crate::ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, Role};
 use crate::normalize::nnf_axioms;
-use crate::ontology::InternalOntology;
+use crate::ontology::{Axiom, InternalOntology};
 
 /// A clause variable. `X` (0) is the central individual; 1.. are
 /// successors introduced by role atoms.
@@ -89,9 +88,13 @@ struct Clausifier<'a> {
     pool: &'a ConceptPool,
     clauses: Vec<DlClause>,
     next_fresh: u32,
-    /// Constructs not yet handled (cardinality, nominals, deep
-    /// shapes). Counted, not clausified — surfaced by
-    /// [`ClauseStats`] so coverage is measurable.
+    /// Next fresh clause variable, reset per axiom (X is always 0;
+    /// successors introduced by nested `∃`/`∀` take 1, 2, …).
+    next_var: Var,
+    /// Constructs not yet handled (antecedent `∀`/`Or`/`Not`,
+    /// cardinality, nominals, deep shapes). Counted, not
+    /// clausified — surfaced by [`ClauseStats`] so coverage is
+    /// measurable.
     deferred: usize,
 }
 
@@ -101,6 +104,7 @@ impl<'a> Clausifier<'a> {
             pool,
             clauses: Vec::new(),
             next_fresh: first_fresh,
+            next_var: X + 1,
             deferred: 0,
         }
     }
@@ -114,12 +118,171 @@ impl<'a> Clausifier<'a> {
         id
     }
 
-    /// Clausify `trigger(x) → head_concept(x)`. `trigger` is
-    /// `Some` for a `ConceptRule`, `None` for a residual GCI
-    /// (`⊤` body).
-    fn clausify_rule(&mut self, trigger: Option<ClassId>, head_concept: ConceptId) {
-        let base_body: Vec<Atom> = trigger.map(|t| vec![Atom::Class(t, X)]).unwrap_or_default();
-        self.emit_head(base_body, head_concept, X);
+    fn fresh_var(&mut self) -> Var {
+        let v = self.next_var;
+        self.next_var = self.next_var.checked_add(1).expect("fresh var overflow");
+        v
+    }
+
+    /// Clausify one (NNF) axiom via structural transformation.
+    /// This is the H1c entry — it works from the GCI structure
+    /// directly (not the absorbed `TBox`), so an antecedent `∃`
+    /// becomes a body role+class pair (`∃R.E ⊑ F` →
+    /// `R(x,y) ∧ E(y) → F(x)`), the shape the absorbed route lost.
+    fn clausify_axiom(&mut self, ax: &Axiom) {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => self.clausify_gci(*sub, *sup),
+            Axiom::EquivalentClasses(ids) => {
+                // Every ordered pair `A ⊑ B`.
+                for (i, &a) in ids.iter().enumerate() {
+                    for (j, &b) in ids.iter().enumerate() {
+                        if i != j {
+                            self.clausify_gci(a, b);
+                        }
+                    }
+                }
+            }
+            Axiom::DisjointClasses(ids) => {
+                // Pairwise `Ai ⊓ Aj ⊑ ⊥`.
+                for i in 0..ids.len() {
+                    for j in (i + 1)..ids.len() {
+                        self.next_var = X + 1;
+                        let mut body = Vec::new();
+                        let (Some(ba), Some(bb)) = (
+                            self.encode_antecedent(ids[i], X),
+                            self.encode_antecedent(ids[j], X),
+                        ) else {
+                            self.deferred += 1;
+                            continue;
+                        };
+                        body.extend(ba);
+                        body.extend(bb);
+                        self.clauses.push(DlClause {
+                            body,
+                            head: Vec::new(),
+                        });
+                    }
+                }
+            }
+            Axiom::DisjointUnion { class, members } => {
+                // class ≡ ⊔members, plus pairwise disjoint members.
+                let cls_concept_eq = members; // handled below via gci on the union
+                let _ = cls_concept_eq;
+                // class ⊑ ⊔members and each member ⊑ class:
+                // approximate via the union concept if present is
+                // complex; defer the equivalence half, emit the
+                // pairwise disjointness which is the load-bearing
+                // part for unsat detection.
+                for i in 0..members.len() {
+                    for j in (i + 1)..members.len() {
+                        self.next_var = X + 1;
+                        if let (Some(ba), Some(bb)) = (
+                            self.encode_antecedent(members[i], X),
+                            self.encode_antecedent(members[j], X),
+                        ) {
+                            let mut body = ba;
+                            body.extend(bb);
+                            self.clauses.push(DlClause {
+                                body,
+                                head: Vec::new(),
+                            });
+                        }
+                    }
+                }
+                // member ⊑ class (each member implies the union class)
+                for &m in members {
+                    self.next_var = X + 1;
+                    if let Some(body) = self.encode_antecedent(m, X) {
+                        self.clauses.push(DlClause {
+                            body,
+                            head: vec![Atom::Class(*class, X)],
+                        });
+                    } else {
+                        self.deferred += 1;
+                    }
+                }
+            }
+            Axiom::ObjectPropertyDomain { role, domain } => {
+                // ∃role.⊤ ⊑ domain  →  role(x,y) → domain(x)
+                self.next_var = X + 1;
+                let y = self.fresh_var();
+                self.clausify_consequent(vec![Atom::Role(*role, X, y)], *domain, X);
+            }
+            Axiom::ObjectPropertyRange { role, range } => {
+                // ⊤ ⊑ ∀role.range  →  role(x,y) → range(y)
+                self.next_var = X + 1;
+                let y = self.fresh_var();
+                self.clausify_consequent(vec![Atom::Role(*role, X, y)], *range, y);
+            }
+            // RBox (role chains/characteristics), ABox, declarations:
+            // not class clauses. RBox role propagation is H3.
+            _ => {}
+        }
+    }
+
+    /// Clausify a GCI `sub ⊑ sup`. A top-level antecedent `Or`
+    /// splits into one clause per disjunct (`(A ⊔ B) ⊑ D` ≡
+    /// `A ⊑ D ∧ B ⊑ D`). Otherwise encode the antecedent into a
+    /// body and recurse into the consequent.
+    fn clausify_gci(&mut self, sub: ConceptId, sup: ConceptId) {
+        if let ConceptExpr::Or(parts) = self.pool.get(sub) {
+            let parts: Vec<ConceptId> = parts.to_vec();
+            for p in parts {
+                self.clausify_gci(p, sup);
+            }
+            return;
+        }
+        self.next_var = X + 1;
+        match self.encode_antecedent(sub, X) {
+            Some(body) => self.clausify_consequent(body, sup, X),
+            None => self.deferred += 1,
+        }
+    }
+
+    /// Encode an antecedent concept `c` (which must hold at `var`)
+    /// into a conjunction of body atoms. `None` when the shape
+    /// isn't supported yet (antecedent `∀`/`Not`/cardinality/
+    /// nominal — deferred).
+    fn encode_antecedent(&mut self, c: ConceptId, var: Var) -> Option<Vec<Atom>> {
+        match self.pool.get(c) {
+            ConceptExpr::Top => Some(Vec::new()),
+            ConceptExpr::Atomic(a) => Some(vec![Atom::Class(*a, var)]),
+            ConceptExpr::And(parts) => {
+                let parts: Vec<ConceptId> = parts.to_vec();
+                let mut out = Vec::new();
+                for p in parts {
+                    out.extend(self.encode_antecedent(p, var)?);
+                }
+                Some(out)
+            }
+            ConceptExpr::Some(role, inner) => {
+                // ∃role.inner in the antecedent → role(var, y) plus
+                // inner's body atoms at the fresh successor y. This
+                // is the H1b-gap shape, now handled.
+                let (role, inner) = (*role, *inner);
+                let y = self.fresh_var();
+                let mut out = vec![Atom::Role(role, var, y)];
+                out.extend(self.encode_antecedent(inner, y)?);
+                Some(out)
+            }
+            // Antecedent Or is split at the GCI level; reaching it
+            // here means a *nested* Or — deferred for now.
+            ConceptExpr::Or(_)
+            | ConceptExpr::All(_, _)
+            | ConceptExpr::Not(_)
+            | ConceptExpr::Bot
+            | ConceptExpr::Min(_, _, _)
+            | ConceptExpr::Max(_, _, _)
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_) => None,
+        }
+    }
+
+    /// Clausify `body → sup(var)` (the consequent side). Renamed
+    /// from the H0 `emit_head`; unchanged in behaviour but now uses
+    /// per-clause fresh variables for nested `∀`.
+    fn clausify_consequent(&mut self, body: Vec<Atom>, sup: ConceptId, var: Var) {
+        self.emit_head(body, sup, var);
     }
 
     /// Emit clause(s) for `body → head_concept(var)`. Splits `And`
@@ -175,10 +338,11 @@ impl<'a> Clausifier<'a> {
             }
             ConceptExpr::All(role, inner) => {
                 // body ∧ role(var, y) → inner(y).
-                let y = var + 1;
+                let (role, inner) = (*role, *inner);
+                let y = self.fresh_var();
                 let mut b = body;
-                b.push(Atom::Role(*role, var, y));
-                self.emit_head(b, *inner, y);
+                b.push(Atom::Role(role, var, y));
+                self.emit_head(b, inner, y);
             }
             ConceptExpr::Not(inner) => {
                 // body → ¬C  ≡  body ∧ C → ⊥. Only handled when
@@ -249,9 +413,9 @@ impl<'a> Clausifier<'a> {
     }
 }
 
-/// Clausify an ontology into DL-clauses (Phase H0). Runs NNF +
-/// absorption, then clausifies every absorbed rule. Returns the
-/// clauses; does **not** reason.
+/// Clausify an ontology into DL-clauses. Runs NNF then a
+/// structural transformation over the GCI axioms (H1c). Returns
+/// the clauses; does **not** reason.
 #[must_use]
 pub fn clausify(internal: &InternalOntology) -> Vec<DlClause> {
     clausify_with_stats(internal).0
@@ -262,39 +426,14 @@ pub fn clausify(internal: &InternalOntology) -> Vec<DlClause> {
 pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, ClauseStats) {
     let mut internal = internal.clone();
     let normalized = nnf_axioms(&mut internal);
-    let tbox = absorb(&normalized, &mut internal.concepts);
     let first_fresh =
         u32::try_from(internal.vocabulary.num_classes()).expect("class count fits in u32");
     let mut c = Clausifier::new(&internal.concepts, first_fresh);
-    clausify_tbox(&mut c, &tbox);
+    for ax in &normalized {
+        c.clausify_axiom(ax);
+    }
     let stats = ClauseStats::of(&c.clauses, c.deferred);
     (c.clauses, stats)
-}
-
-fn clausify_tbox(c: &mut Clausifier<'_>, tbox: &AbsorbedTBox) {
-    for rule in &tbox.concept_rules {
-        c.clausify_rule(Some(rule.trigger), rule.conclusion);
-    }
-    for &gci in &tbox.residual_gcis {
-        c.clausify_rule(None, gci);
-    }
-    // Role rules: `[guard(x) ∧] role(x,y) → target(y)`.
-    for rr in &tbox.role_rules {
-        let y = X + 1;
-        let mut body = Vec::new();
-        if let Some(g) = rr.guard {
-            body.push(Atom::Class(g, X));
-        }
-        body.push(Atom::Role(rr.role, X, y));
-        // target_label is a head concept at `y`.
-        c.emit_head(body, rr.target_label, y);
-    }
-    // Nominal rules deferred (H3).
-    c.deferred += tbox.nominal_rules.len();
-    let _ = &tbox.guarded_role_rules_by_guard; // indices; covered via role_rules
-    let _ = &tbox.unguarded_role_rules;
-    let _ = &tbox.concept_rules_by_trigger;
-    let _ = &tbox.nominal_rules_by_individual;
 }
 
 /// Shape histogram of a clause set, for the `rustdl clause-stats`

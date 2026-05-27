@@ -1250,29 +1250,16 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         is_class_satisfiable(onto, iri).expect("verdict returned")
     }
 
-    /// Hypertableau Phase H1b cross-check + KNOWN-GAP marker.
+    /// Hypertableau Phase H1c: end-to-end cross-check of the
+    /// structural-transformation clausifier + Horn engine against
+    /// the EL entailment on the `∃R.E ⊑ F` back-propagation shape.
     ///
-    /// The Horn hyperresolution *engine* handles the `∃R.E ⊑ F`
-    /// back-propagation shape (proved by
-    /// `hyper::tests::existential_backprop_derives_subsumer_on_root`
-    /// with a hand-built clause). But the H0 clausifier — which
-    /// builds clauses from the *absorbed* `TBox` — does **not**
-    /// produce the needed `R(x,y) ∧ E(y) → F(x)` clause: absorption
-    /// turns `∃R.E ⊑ F` into the disjunctive residual
-    /// `⊤ ⊑ ∀R.¬E ⊔ F`, which the clausifier defers
-    /// (`clause-stats` shows it in the `deferred` bucket). So this
-    /// end-to-end cross-check fails today.
-    ///
-    /// This is the H1b finding: **clausifying from the absorbed
-    /// `TBox` is the wrong foundation** — it makes tableau-specific
-    /// disjunctive choices that lose the clean Horn EL clauses. The
-    /// fix is structural-transformation clausification from the NNF
-    /// axioms (Motik §4), recognising `∃` on the LHS directly. Kept
-    /// as an `#[ignore]`d executable spec: un-ignore it when the
-    /// clausifier is rebuilt. See `docs/hypertableau-scoping.md`
-    /// §H1b.
+    /// The H1b finding (clausify-from-absorbed deferred `∃`-on-LHS)
+    /// is fixed by the H1c clausifier, which transforms the GCI
+    /// axioms directly: `∃R.E ⊑ F` now becomes the Horn clause
+    /// `R(x,y) ∧ E(y) → F(x)`, so the engine derives `C ⊑ F`. This
+    /// test (formerly `#[ignore]`d) now passes.
     #[test]
-    #[ignore = "clausify-from-absorbed defers ∃-on-LHS; needs structural-transformation clausifier (H1b finding)"]
     fn hyper_horn_matches_el_closure_with_existential_backprop() {
         use owl_dl_core::clause::clausify;
         use owl_dl_core::convert::convert_ontology;

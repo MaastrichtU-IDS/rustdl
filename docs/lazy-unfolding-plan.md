@@ -176,6 +176,52 @@ flag updated reactively as labels are added.
   revert per the
   [`moms-plan.md`](moms-plan.md) §A rule.
 
+## §C — Phase 2 results (2026-05-27): one win, kept
+
+Phase 2 shipped (`1b41023`): `apply_residual_gcis` skips Or-shaped
+residuals; `apply_deferred_or_residuals` materialises them at
+saturate stable-state only when no disjunct is present.
+
+Measured (3-rep median, `--pair-timeout-ms 200`):
+
+| Workload | before | after | delta |
+|---|---|---|---|
+| family-stripped | ~8.7 s | ~6.9 s | **−20 %** |
+| RO-stripped | ~27 s | ~27 s | flat |
+| SIO-stripped | ~268 s | ~268 s | flat |
+| pizza | ~29 s | ~29 s | flat (only 4 deferred residuals) |
+| GO | ~22 s | ~22 s | flat (no residuals) |
+
+Verdicts unchanged everywhere — all 55 lib tests + real-corpus
+regression (pizza/ro/family/go) pass; family's direct-edge set is
+identical to the saturation-only reference.
+
+**Why family wins but SIO/RO don't.** family's wall has a healthy
+fraction of *convergent* pairs (the tableau reaches a verdict
+before the 200 ms deadline). Lazy unfolding shrinks the per-pair
+model — fewer universal Or labels propagated to every successor —
+so those convergent pairs finish faster. SIO and RO are dominated
+by *timed-out* pairs (33 394 / 657 respectively): those pairs
+don't converge either way, and each still burns its full 200 ms
+budget. Making the futile search cheaper-per-step doesn't return
+wall when the step count is capped by the timeout, not by the
+work.
+
+This is consistent with the whole-session finding: **per-pair
+efficiency moves convergent-pair-dominated walls (family) but not
+timeout-bound walls (SIO, pizza).** The timeout-bound walls need
+the pairs to *converge* — which is Lever B (successor-trigger
+pruning, to shrink pizza's concept-rule explosion) or Lever C
+(model caching, to reuse work across pairs), not residual lazy
+unfolding.
+
+**Decision: keep Phase 2.** It meets the §A acceptance criterion
+(family > 10 %), is sound, and adds no regressions. Phase 3
+(reactive `DeferNot` / `DeferAll` triggers) is deferred until a
+workload shows residual `Not` / `∀` GCIs worth the reactive-hook
+complexity — none in the current corpus (`rustdl
+residual-triggers` shows defer_not = defer_all = 0 everywhere).
+
 ## Open questions
 
 - **Reactive cost vs sweep cost.** Reactive triggers (fire when

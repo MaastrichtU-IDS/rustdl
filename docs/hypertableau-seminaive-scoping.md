@@ -81,6 +81,28 @@ the worklist out of the cloned state entirely (the clone stays just
 `nodes`). The within-class Horn saturation — where the 52 M lives — is
 a single non-branching drain, which is the whole win.
 
+## Result (shipped)
+
+A first attempt at **node**-granularity (a dirty-node worklist reusing
+`fire_clauses_at`) was **refuted by measurement**: it re-fired *all* of
+a node's trigger-present clauses each time the node was re-dirtied, and
+a class node gains many labels, so SIO came out at 52 M → 57 M attempts
+(a slight regression). That confirmed the cost is the re-fire *count*,
+which only **event** granularity prunes — firing exactly the clauses
+the newly-derived label/edge enables, per this doc's §1–§3 design.
+
+The event model delivered:
+
+| SIO bare-sat | indexed (prior) | **event model** |
+|---|---|---|
+| wall | 6.6 s | **0.45 s** (15×) |
+| match_attempts | 52 M | **2.0 M** (26×) |
+| answers | 1585 sat / 0 unsat | identical |
+
+Pizza unchanged (671 subsumptions, 24 misses, **0 false positives**).
+Cumulative on SIO since H2b: **16.3 s → 0.45 s (~36×)**. The Konclude
+gap closed from ~116× to **~3.2×** (0.45 s vs 0.14 s).
+
 ## §5 — Validation
 
 - **Correctness is self-checking**: pizza must stay **671 subsumptions

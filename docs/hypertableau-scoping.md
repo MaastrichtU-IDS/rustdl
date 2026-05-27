@@ -601,19 +601,22 @@ index misses no firings; `match_body` still verifies each full body.
 Pizza answers unchanged (671 subsumptions, 24 misses, **0 false
 positives**). The Konclude gap on SIO narrowed from ~116× to ~43×.
 
-**Still on the table** (further search-quality work). The next lever
-is **semi-naive evaluation**, scoped in
-[`hypertableau-seminaive-scoping.md`](hypertableau-seminaive-scoping.md):
-fire a clause only when a body atom is *newly* derived (a worklist of
-`LabelAdded`/`EdgeAdded` events), turning ~17 re-scans/class into ~1
-drain. A cheap-allocation experiment (a role-free `match_body` fast
-path) gave **no wall change**, confirming the cost is the *count* of
-the 52 M attempts, not per-call cost — so the count is what semi-naive
-must cut. The crux is the back-prop clauses (`R(x,y) ∧ E(y) → F(x)`),
-which need predecessor tracking (reverse edges) so a successor's new
-label wakes its predecessor. Smaller follow-ups: indexing
-`find_open_disjunction`. After those, H4 (flip behind
-`--hypertableau`) becomes realistic.
+**Semi-naive evaluation (shipped)** — see
+[`hypertableau-seminaive-scoping.md`](hypertableau-seminaive-scoping.md).
+A worklist of `Label`/`Edge`/`NodeNew` events fires only the clauses a
+newly-derived atom enables (each clause indexed under *all* its body
+trigger atoms; back-prop uses reverse edges to wake predecessors). A
+first node-granularity attempt was refuted by measurement (it re-fired
+all of a node's clauses per re-dirty — 52 M → 57 M); event granularity
+was the real prune. Result on SIO bare-sat: **6.6 s → 0.45 s (15×)**,
+match_attempts **52 M → 2.0 M**, answers identical; pizza unchanged
+(671 / 24 / 0 FP). Cumulative since H2b: **16.3 s → 0.45 s (~36×)**,
+Konclude gap **~116× → ~3.2×**.
+
+**Still on the table** (smaller): indexing `find_open_disjunction`;
+sharing `ClauseIndexes` across the per-class engines (rebuilt each
+`new()`). After those, **H4** — flip behind `--hypertableau` — is the
+realistic next milestone.
 
 ## 9. Recommended entry point
 

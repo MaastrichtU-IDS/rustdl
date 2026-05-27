@@ -63,6 +63,10 @@ struct HyperNode {
     labels: Vec<ClassId>,
     /// Outgoing role edges `(role, target)`.
     edges: Vec<(Role, HNode)>,
+    /// Incoming role edges `(role, source)` — the reverse of `edges`,
+    /// so a label added here can re-queue its predecessors (the
+    /// back-propagation wake-up for semi-naive evaluation).
+    preds: Vec<(Role, HNode)>,
     /// Creation order index — used by anywhere blocking ("blocked
     /// by an *earlier* node"). Equal to the node's own index here.
     order: u32,
@@ -119,7 +123,7 @@ pub struct SearchStats {
     /// `self.nodes` clones (one per branch decision). Profiling
     /// counter: the save/restore cost the trail would remove.
     pub node_clones: u64,
-    /// `horn_fixpoint` outer-loop passes summed across the search.
+    /// `horn_fixpoint` worklist drains (one per call) across the search.
     pub fixpoint_passes: u64,
 }
 
@@ -131,48 +135,80 @@ pub struct HyperEngine<'c> {
     stats: SearchStats,
     init_depth: usize,
     deadline: Option<Instant>,
-    /// Horn-clause index by *representative trigger* — the first
-    /// `Class(_, X)` body atom's class. `trigger_index[c.index()]`
-    /// lists the Horn clauses that can only fire at a node carrying
-    /// class `c`. A clause needs *all* its `X`-classes present, but
-    /// the representative being absent already rules it out, so the
-    /// fixpoint only attempts trigger-present clauses instead of the
-    /// whole clause set (see the §profiling note in the doc).
-    trigger_index: Vec<Vec<usize>>,
-    /// Horn clauses with no `X`-class body atom (role-only / `⊤`
-    /// bodies) — no trigger, so attempted at every node.
-    untriggered: Vec<usize>,
+    /// Trigger indexes routing derivation events to the clauses they
+    /// newly enable (see [`ClauseIndexes`]).
+    indexes: ClauseIndexes,
+    /// Semi-naive worklist of derivation *events* (LIFO). Each event
+    /// fires only the clauses it newly enables (not all of a node's
+    /// clauses), which is what prunes the re-fire cost. See
+    /// `docs/hypertableau-seminaive-scoping.md`.
+    worklist: Vec<Event>,
 }
 
-/// Build the Horn-clause trigger index: clauses keyed by their first
-/// `Class(_, X)` body atom (the representative trigger), plus the
-/// untriggered (no-`X`-class) Horn clauses. Non-Horn clauses are
-/// branch points handled by `find_open_disjunction`, not indexed here.
-fn build_trigger_index(clauses: &[DlClause]) -> (Vec<Vec<usize>>, Vec<usize>) {
-    let repr = |cl: &DlClause| -> Option<usize> {
-        cl.body.iter().find_map(|a| match a {
-            Atom::Class(c, v) if *v == X => Some(c.index() as usize),
-            _ => None,
-        })
+/// A derivation event driving semi-naive Horn evaluation.
+#[derive(Debug, Clone, Copy)]
+enum Event {
+    /// Node `n` gained class `c`.
+    Label(HNode, ClassId),
+    /// A role edge `src —role→ tgt` was added.
+    Edge(HNode, Role, HNode),
+    /// Node `n` was created (fires empty-body / `⊤` clauses).
+    NodeNew(HNode),
+}
+
+/// Per-clause-set trigger indexes for semi-naive evaluation. Each Horn
+/// clause is indexed under **every** trigger atom in its body, so
+/// whichever atom is satisfied *last* fires the (now-complete) clause.
+/// Firing a clause whose other atoms aren't yet present is a cheap
+/// `match_body` no-op (the duplicate-fire cost, bounded by body size).
+#[derive(Debug, Default, Clone)]
+struct ClauseIndexes {
+    /// By class index: clauses with that class as an `X`-body atom.
+    x_trigger: Vec<Vec<usize>>,
+    /// By class index: clauses with that class as a successor-body atom.
+    succ_trigger: Vec<Vec<usize>>,
+    /// By role index: clauses with a body role atom on that role.
+    role_trigger: Vec<Vec<usize>>,
+    /// Clauses with an empty body (`⊤ → …`) — fire at every node.
+    empty_body: Vec<usize>,
+}
+
+fn role_id_index(r: Role) -> usize {
+    match r {
+        Role::Named(x) | Role::Inverse(x) => x.index() as usize,
+    }
+}
+
+/// Build the [`ClauseIndexes`] for the Horn clauses. Non-Horn clauses
+/// are branch points handled by `find_open_disjunction`, not indexed.
+fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
+    let mut ix = ClauseIndexes::default();
+    let push = |v: &mut Vec<Vec<usize>>, key: usize, ci: usize| {
+        if key >= v.len() {
+            v.resize(key + 1, Vec::new());
+        }
+        if v[key].last() != Some(&ci) {
+            v[key].push(ci);
+        }
     };
-    let max_trigger = clauses
-        .iter()
-        .filter(|cl| cl.is_horn())
-        .filter_map(repr)
-        .max()
-        .map_or(0, |m| m + 1);
-    let mut index: Vec<Vec<usize>> = vec![Vec::new(); max_trigger];
-    let mut untriggered = Vec::new();
     for (ci, cl) in clauses.iter().enumerate() {
         if !cl.is_horn() {
             continue;
         }
-        match repr(cl) {
-            Some(c) => index[c].push(ci),
-            None => untriggered.push(ci),
+        if cl.body.is_empty() {
+            ix.empty_body.push(ci);
+            continue;
+        }
+        for atom in &cl.body {
+            match atom {
+                Atom::Class(c, v) if *v == X => push(&mut ix.x_trigger, c.index() as usize, ci),
+                Atom::Class(c, _) => push(&mut ix.succ_trigger, c.index() as usize, ci),
+                Atom::Role(r, _, _) => push(&mut ix.role_trigger, role_id_index(*r), ci),
+                Atom::Exists(..) | Atom::Equal(..) => {}
+            }
         }
     }
-    (index, untriggered)
+    ix
 }
 
 impl<'c> HyperEngine<'c> {
@@ -185,15 +221,26 @@ impl<'c> HyperEngine<'c> {
             ..HyperNode::default()
         };
         root_node.add(root);
-        let (trigger_index, untriggered) = build_trigger_index(clauses);
         Self {
             clauses,
             nodes: vec![root_node],
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
-            trigger_index,
-            untriggered,
+            indexes: build_clause_indexes(clauses),
+            worklist: Vec::new(),
+        }
+    }
+
+    /// Add class `c` to node `n`, emitting a [`Event::Label`] on a
+    /// *first* add (so its newly-enabled clauses fire). Returns whether
+    /// the label was newly added.
+    fn add_label(&mut self, n: HNode, c: ClassId) -> bool {
+        if self.nodes[n.index()].add(c) {
+            self.worklist.push(Event::Label(n, c));
+            true
+        } else {
+            false
         }
     }
 
@@ -216,7 +263,12 @@ impl<'c> HyperEngine<'c> {
             order: id,
             ..HyperNode::default()
         });
-        HNode(id)
+        let n = HNode(id);
+        // Fire empty-body (`⊤ → …`) clauses at the new node.
+        if !self.indexes.empty_body.is_empty() {
+            self.worklist.push(Event::NodeNew(n));
+        }
+        n
     }
 
     /// Anywhere blocking: `n` is blocked if some *earlier-created*
@@ -242,29 +294,103 @@ impl<'c> HyperEngine<'c> {
         self.horn_fixpoint(max_iters)
     }
 
-    /// Saturate under the Horn fragment. Non-Horn clauses are
-    /// ignored ([`fire_clause`] guards on `is_horn`); branching is
-    /// the caller's job ([`solve`]).
+    /// Saturate under the Horn fragment by a semi-naive event drain:
+    /// re-seed the worklist from the current graph, then process each
+    /// derivation event by firing only the clauses it newly enables.
+    /// Firings emit more events (via [`add_label`]/edge creation),
+    /// cascading to fixpoint. Non-Horn clauses are branch points
+    /// ([`solve`]). `max_iters` caps total events processed defensively
+    /// (anywhere blocking bounds the graph; hitting it yields
+    /// `Stalled`). See `docs/hypertableau-seminaive-scoping.md`.
     fn horn_fixpoint(&mut self, max_iters: usize) -> HyperResult {
-        for _ in 0..max_iters {
-            self.stats.fixpoint_passes += 1;
-            let mut changed = false;
-            // Snapshot node count; new successors are processed on
-            // the next outer pass.
-            let n_count = self.nodes.len();
-            for idx in 0..n_count {
-                let node = HNode(u32::try_from(idx).expect("fits u32"));
-                match self.fire_clauses_at(node) {
-                    FireOutcome::Clash => return HyperResult::Unsat,
-                    FireOutcome::Changed => changed = true,
-                    FireOutcome::NoChange => {}
-                }
+        self.stats.fixpoint_passes += 1;
+        // Re-seed from scratch (keeps the worklist out of the cloned
+        // branch state — seminaive scoping §4). A failed branch may
+        // have left stale events; clearing here discards them and the
+        // (restored) graph re-seeds correctly.
+        self.worklist.clear();
+        for idx in 0..self.nodes.len() {
+            let n = HNode(u32::try_from(idx).expect("fits u32"));
+            if !self.indexes.empty_body.is_empty() {
+                self.worklist.push(Event::NodeNew(n));
             }
-            if !changed {
-                return HyperResult::Sat;
+            for c in self.nodes[idx].labels.clone() {
+                self.worklist.push(Event::Label(n, c));
+            }
+            for (r, m) in self.nodes[idx].edges.clone() {
+                self.worklist.push(Event::Edge(n, r, m));
             }
         }
-        HyperResult::Stalled
+        let mut steps = 0usize;
+        while let Some(ev) = self.worklist.pop() {
+            steps += 1;
+            if steps > max_iters {
+                return HyperResult::Stalled;
+            }
+            if matches!(self.process_event(ev), FireOutcome::Clash) {
+                return HyperResult::Unsat;
+            }
+        }
+        HyperResult::Sat
+    }
+
+    /// Fire the clauses an event newly enables. Reuses [`fire_clause`]
+    /// (which re-verifies the full body), so over-firing on a not-yet-
+    /// complete clause is a cheap no-op.
+    fn process_event(&mut self, ev: Event) -> FireOutcome {
+        match ev {
+            Event::Label(n, c) => {
+                let key = c.index() as usize;
+                // Clauses with `c` as an `X`-class fire at `n`.
+                let n_x = self.indexes.x_trigger.get(key).map_or(0, Vec::len);
+                for i in 0..n_x {
+                    let ci = self.indexes.x_trigger[key][i];
+                    if matches!(self.fire_clause(ci, n), FireOutcome::Clash) {
+                        return FireOutcome::Clash;
+                    }
+                }
+                // Clauses with `c` as a successor-class fire at `n`'s
+                // predecessors (back-propagation: a successor gained `c`).
+                let n_s = self.indexes.succ_trigger.get(key).map_or(0, Vec::len);
+                if n_s > 0 {
+                    let preds: Vec<HNode> = self.nodes[n.index()]
+                        .preds
+                        .iter()
+                        .map(|&(_, p)| p)
+                        .collect();
+                    for p in preds {
+                        for i in 0..n_s {
+                            let ci = self.indexes.succ_trigger[key][i];
+                            if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
+                                return FireOutcome::Clash;
+                            }
+                        }
+                    }
+                }
+            }
+            Event::Edge(src, role, _tgt) => {
+                // Clauses with a body atom on this role fire at `src`;
+                // these re-check the (now-present) successor's labels,
+                // covering the edge-added-after-label case.
+                let key = role_id_index(role);
+                let n_r = self.indexes.role_trigger.get(key).map_or(0, Vec::len);
+                for i in 0..n_r {
+                    let ci = self.indexes.role_trigger[key][i];
+                    if matches!(self.fire_clause(ci, src), FireOutcome::Clash) {
+                        return FireOutcome::Clash;
+                    }
+                }
+            }
+            Event::NodeNew(n) => {
+                for i in 0..self.indexes.empty_body.len() {
+                    let ci = self.indexes.empty_body[i];
+                    if matches!(self.fire_clause(ci, n), FireOutcome::Clash) {
+                        return FireOutcome::Clash;
+                    }
+                }
+            }
+        }
+        FireOutcome::NoChange
     }
 
     /// Decide satisfiability of the root concept over the **full**
@@ -404,35 +530,6 @@ impl<'c> HyperEngine<'c> {
             }
         }
         false
-    }
-
-    /// Fire the Horn clauses that can match at `node`: the untriggered
-    /// ones plus those whose representative trigger class is present in
-    /// the node's labels (via [`trigger_index`]) — not the whole clause
-    /// set. A clause whose trigger is absent cannot fire, so this is
-    /// complete; [`match_body`] still verifies the rest of each body.
-    fn fire_clauses_at(&mut self, node: HNode) -> FireOutcome {
-        // Collect candidate clause indices first (so the immutable
-        // label borrow is released before `fire_clause`'s mutation).
-        let mut cands: Vec<usize> = self.untriggered.clone();
-        for &l in &self.nodes[node.index()].labels {
-            if let Some(v) = self.trigger_index.get(l.index() as usize) {
-                cands.extend_from_slice(v);
-            }
-        }
-        let mut changed = false;
-        for ci in cands {
-            match self.fire_clause(ci, node) {
-                FireOutcome::Clash => return FireOutcome::Clash,
-                FireOutcome::Changed => changed = true,
-                FireOutcome::NoChange => {}
-            }
-        }
-        if changed {
-            FireOutcome::Changed
-        } else {
-            FireOutcome::NoChange
-        }
     }
 
     /// Fire one clause with `x = node`. Handles the two body shapes
@@ -576,7 +673,7 @@ impl<'c> HyperEngine<'c> {
                 let Some(target) = resolve_var(v, xnode, binding) else {
                     return FireOutcome::NoChange;
                 };
-                if self.nodes[target.index()].add(c) {
+                if self.add_label(target, c) {
                     FireOutcome::Changed
                 } else {
                     FireOutcome::NoChange
@@ -611,8 +708,13 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         let succ = self.new_node();
-        self.nodes[succ.index()].add(cls);
         self.nodes[src.index()].edges.push((role, succ));
+        self.nodes[succ.index()].preds.push((role, src));
+        // The new edge fires role-triggered clauses at `src`; the seed
+        // label fires the successor's clauses (and, via Event::Label,
+        // back-prop at `src`).
+        self.worklist.push(Event::Edge(src, role, succ));
+        self.add_label(succ, cls);
         FireOutcome::Changed
     }
 

@@ -1088,11 +1088,19 @@ impl<'c> HyperEngine<'c> {
     /// must merge into `n` (a forced merge — clashes if they are `≠`,
     /// which is exactly how `≥2 R.{o}` becomes unsat). Deterministic, so
     /// it runs in the Horn fixpoint on the triggering `Label` event.
-    /// TODO(`HF4b`): nominal-under-`∀` propagation (`∀R.{o}` seeding `{o}`
-    /// onto an existing successor), nominal-aware blocking, and the
-    /// multi-predecessor in-edge redirect on merge are deferred — the
-    /// corpus's nominal path (`∃`-witness reuse of a single `{o}`) does
-    /// not exercise them.
+    ///
+    /// `HF4b` (the deferred cousins) turns out to be achieved by
+    /// composition, not extra rules — verified by three probes:
+    /// nominal-under-`∀` propagation works because `∀R.{o}` clausifies
+    /// to `R(x,y) → {o}(y)`, whose `Label` event triggers this rule;
+    /// nominal-aware blocking is moot because same-nominal nodes *merge*
+    /// rather than one blocking the other; and multi-predecessor merge
+    /// needs no in-edge redirect because each `{o}` node back-propagates
+    /// to its own predecessor *before* the merge collapses identity. The
+    /// in-edge redirect would still be principled for inverse-heavy
+    /// ontologies with post-merge label derivation (corpus-inert, no
+    /// constructible canary fails) — deliberately not built on
+    /// speculation; revisit when HF2 double-blocking exercises in-edges.
     fn apply_nn_rule(&mut self, n: HNode, c: ClassId) -> FireOutcome {
         if !self.is_nominal(c) {
             return FireOutcome::NoChange;

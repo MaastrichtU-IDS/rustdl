@@ -38,22 +38,35 @@ pass; pizza 695 / ro 158 / sulo 51 unchanged, 0 FP (pizza's
 `RealItalianPizza ⊑ ∃hCO.{Italy}` path — single `{Italy}`-successor
 reused via `∃` witness — is undisturbed); SIO 0.92 s, 1585 sat/0 unsat.
 
-## §2 — HF4b (deferred): the hard cousins
+## §2 — HF4b: achieved by composition (verified, not built)
 
-Marked `TODO(HF4b)` in `apply_nn_rule`, not built (corpus doesn't
-exercise them):
-- **Nominal-under-`∀` propagation:** `∀R.{o}` seeding `{o}` onto an
-  *existing* successor, then NN-merging it. The HF4a canary seeds the
-  nominal directly via the `≥n` qualifier, not via `∀`-propagation.
-- **Nominal-aware blocking:** nominal nodes represent fixed individuals
-  and shouldn't be blocked; the canary's generated nominal successors
-  aren't blocked (their labels aren't a subset of the root's), so the
-  gap doesn't bite here.
-- **Multi-predecessor in-edge redirect:** NN-merging two nominal nodes
-  that each have their own predecessor leaves stale in-edges (the same
-  gap `merge`'s doc already disclaims, and that HF2 deferred). The
-  canary is tree-shaped (both successors' sole predecessor is the
-  root).
+The "hard cousins" turn out **not** to need extra rules — HF4a's NN-rule
+plus the engine's per-node `Label`-event firing already covers them.
+Three probes confirm it (all pass):
+- **Nominal-under-`∀` propagation** (`nominal_under_forall_propagates`):
+  `A ⊑ ∃R.B ⊓ ∃R.C ⊓ ∀R.{o}`, `B ⊓ C ⊑ ⊥` ⊨ `A` unsat. `∀R.{o}`
+  clausifies to `R(x,y) → {o}(y)`; the two `∃` successors both gain
+  `{o}`; the resulting `Label` events fire the NN-rule, which merges
+  them; `B ⊓ C → ⊥` clashes. Works because `∀`-seeding produces the
+  exact `Label` event the NN-rule triggers on.
+- **Nominal-aware blocking** is moot: same-nominal nodes *merge* (NN-
+  rule) rather than one blocking the other, so a nominal node is never
+  left blocked-and-unpropagated.
+- **Multi-predecessor merge** (`nominal_merge_inedge_compose`): `{o}`
+  reached two ways, `{o} ⊑ ∀R⁻.WA ⊓ ∀T⁻.WE` ⊨ both `A ⊑ WA` and
+  `E ⊑ WE`. Passes **without** an in-edge redirect, because each `{o}`
+  node back-propagates to its *own* predecessor on its `Label` event,
+  *before* the merge collapses identity — so the merged-away in-edge
+  carries nothing the survivor needed to learn later.
+
+**Residual (not built, on purpose):** an in-edge redirect on `merge`
+would be principled for inverse-heavy ontologies with *post-merge* label
+derivation — but the corpus is inert and no constructible canary fails,
+and getting in-edge bookkeeping wrong now (before HF2 double-blocking
+relies on it) is harder to debug than getting it right later with
+failing tests to drive it. Revisit when double-blocking / HF5 exercises
+in-edges. Scope honesty: HF4a + composition is sound and complete for
+the cases the corpus and these probes exercise — **not** general SROIQ.
 
 ## §3 — Out of scope / next
 

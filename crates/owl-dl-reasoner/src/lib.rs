@@ -2295,6 +2295,88 @@ ObjectMaxCardinality(1 :R ObjectOneOf(:o))))\n)\n"
         );
     }
 
+    /// `HF4b` probe: nominal-under-`∀` propagation. `A ⊑ ∃R.B ⊓ ∃R.C ⊓
+    /// ∀R.{o}` with `B ⊓ C ⊑ ⊥` ⊨ `A` unsat: the two distinct `∃`
+    /// successors both become `{o}` via `∀R.{o}` (clausified
+    /// `R(x,y) → {o}(y)`), the NN-rule merges them, and `B ⊓ C → ⊥`
+    /// clashes. Tests whether nominal-under-`∀` already composes with
+    /// the `HF4a` NN-rule (the label that `∀` seeds is the same `Label`
+    /// event the NN-rule triggers on). `D` unrelated; `A ⊑ D` holds iff
+    /// `A` is unsat.
+    #[test]
+    fn hyper_subsumption_probe_nominal_under_forall_propagates() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:C))\n\
+Declaration(Class(:D))\nDeclaration(NamedIndividual(:o))\n\
+Declaration(ObjectProperty(:R))\n\
+SubClassOf(:A ObjectIntersectionOf(\
+ObjectSomeValuesFrom(:R :B) ObjectSomeValuesFrom(:R :C) \
+ObjectAllValuesFrom(:R ObjectOneOf(:o))))\n\
+DisjointClasses(:B :C)\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("A", "D"),
+            "A ⊑ D must hold because A is unsat: ∀R.{{o}} merges the B- and C-successors"
+        );
+    }
+
+    /// `HF4b` composition probe: multi-predecessor nominal merge. `{o}` is
+    /// reached two ways — `A —R→ {o}` (root) and `E —T→ {o}` — and the
+    /// NN-rule merges those nodes. Two back-prop constraints, one per
+    /// role: `{o} ⊑ ∀R⁻.WA ⊓ ∀T⁻.WE` ⊨ both `A ⊑ WA` and `E ⊑ WE`.
+    ///
+    /// This passes **without** an in-edge redirect on merge, and that is
+    /// the point worth pinning: each `{o}` node fires its `∀R⁻`/`∀T⁻`
+    /// consequences on its own `Label` event — back-propagating to *its
+    /// own* predecessor — *before* the NN-rule collapses the two nodes.
+    /// So the merged-away node's in-edge carries no information the
+    /// survivor needed to learn later. (The in-edge redirect would still
+    /// be principled for inverse-heavy ontologies with post-merge label
+    /// derivation — corpus-inert, no constructible canary fails — so it
+    /// is deliberately not built; see `docs/hypertableau-hf4-scoping.md`
+    /// §2.) If a later change breaks the fire-before-merge ordering,
+    /// this test catches it.
+    #[test]
+    fn hyper_subsumption_probe_nominal_merge_inedge_compose() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:E))\n\
+Declaration(Class(:WA))\nDeclaration(Class(:WE))\n\
+Declaration(NamedIndividual(:o))\n\
+Declaration(ObjectProperty(:R))\nDeclaration(ObjectProperty(:S))\n\
+Declaration(ObjectProperty(:T))\n\
+SubClassOf(:A ObjectIntersectionOf(\
+ObjectSomeValuesFrom(:R ObjectOneOf(:o)) ObjectSomeValuesFrom(:S :E)))\n\
+SubClassOf(:E ObjectSomeValuesFrom(:T ObjectOneOf(:o)))\n\
+SubClassOf(ObjectOneOf(:o) ObjectIntersectionOf(\
+ObjectAllValuesFrom(ObjectInverseOf(:R) :WA) \
+ObjectAllValuesFrom(ObjectInverseOf(:T) :WE)))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("A", "WA") && holds("E", "WE"),
+            "both A ⊑ WA (R-pred) and E ⊑ WE (T-pred) must hold: A⊑WA={}, E⊑WE={}",
+            holds("A", "WA"),
+            holds("E", "WE")
+        );
+    }
+
     /// Regression for the pizza false-positive-unsat bug fixed
     /// 2026-05-25. Minimal repro extracted from pizza.ofn via ROBOT
     /// STAR extraction + axiom-level bisection. Bug was in

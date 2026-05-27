@@ -72,6 +72,12 @@ struct HyperNode {
     /// node (H3c). Enforced by the merge rule when the node has more
     /// matching `role`-successors than `bound`.
     at_most: Vec<(Role, Option<ClassId>, u32)>,
+    /// `≥n` constraints `(role, qualifier, bound)` already *generated*
+    /// at this node (`HF3a`). Fire-once tracking: the `≥n`-rule creates
+    /// `n` fresh pairwise-`≠` successors exactly once per constraint, so
+    /// it can't regenerate (which would loop). Part of node state, so
+    /// it's captured by save/restore with the rest of the node.
+    at_least_done: Vec<(Role, Option<ClassId>, u32)>,
     /// Creation order index — used by anywhere blocking ("blocked
     /// by an *earlier* node"). Equal to the node's own index here.
     order: u32,
@@ -159,6 +165,13 @@ pub struct HyperEngine<'c> {
     /// time. `None` ⇒ reflexive only (every role subsumes just itself),
     /// the pre-HF2 behaviour.
     sub_roles: Option<RoleHierarchy>,
+    /// `HF3a` node inequalities `x ≠ y`. Stored as resolved pairs at
+    /// insert time; queried through `resolve` so merges keep the
+    /// relation correct without rewriting. The `≥n`-rule marks its
+    /// generated successors pairwise `≠`; the `≤n` merge rule refuses
+    /// to merge a `≠` pair (a forced such merge is a clash — what makes
+    /// `≥2 ⊓ ≤1` unsat). Captured by save/restore.
+    neq: Vec<(HNode, HNode)>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -248,6 +261,7 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
+            neq: Vec::new(),
         }
     }
 
@@ -519,9 +533,18 @@ impl<'c> HyperEngine<'c> {
             let mut any_stalled = false;
             for i in 0..succs.len() {
                 for j in (i + 1)..succs.len() {
+                    // A `≠`-forced pair can't be merged — that branch is
+                    // unsat (the `≥n` ⋈ `≤n` clash). Skip it.
+                    if self.are_neq(succs[i], succs[j]) {
+                        continue;
+                    }
                     let saved = self.save();
                     self.stats.branches_taken += 1;
-                    self.merge(succs[i], succs[j]);
+                    if self.merge(succs[i], succs[j]) {
+                        // Merge clashed on `≠` (defensive — pre-checked).
+                        self.restore(saved);
+                        continue;
+                    }
                     match self.solve(depth - 1) {
                         HyperResult::Sat => return HyperResult::Sat,
                         HyperResult::Unsat => self.restore(saved),
@@ -549,15 +572,21 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Snapshot the mutable graph state for branch save/restore: the
-    /// nodes and the merge union-find (both revert on a failed branch).
-    fn save(&mut self) -> (Vec<HyperNode>, Vec<HNode>) {
+    /// nodes, the merge union-find, and the `≠` relation (all revert on
+    /// a failed branch).
+    fn save(&mut self) -> (Vec<HyperNode>, Vec<HNode>, Vec<(HNode, HNode)>) {
         self.stats.node_clones += 1;
-        (self.nodes.clone(), self.representative.clone())
+        (
+            self.nodes.clone(),
+            self.representative.clone(),
+            self.neq.clone(),
+        )
     }
 
-    fn restore(&mut self, saved: (Vec<HyperNode>, Vec<HNode>)) {
+    fn restore(&mut self, saved: (Vec<HyperNode>, Vec<HNode>, Vec<(HNode, HNode)>)) {
         self.nodes = saved.0;
         self.representative = saved.1;
+        self.neq = saved.2;
         self.stats.restores += 1;
     }
 
@@ -675,12 +704,21 @@ impl<'c> HyperEngine<'c> {
 
     /// Merge node `s_j` into `s_i` for the `≤n` rule (H3c): union
     /// `s_j`'s labels (through [`add_label`], so the disjointness clause
-    /// fires on incompatible merges), redirect its out-edges and
-    /// `≤n` constraints, and point `s_j` at `s_i` in the union-find.
-    /// First-phase scope: merges happen only among a root's direct
-    /// successors, whose sole predecessor is the root (already linked
-    /// to `s_i`), so predecessor redirection is unnecessary.
-    fn merge(&mut self, s_i: HNode, s_j: HNode) {
+    /// fires on incompatible merges), redirect its out-edges, and union
+    /// the `≤n`/`≥n`-done constraints. Returns `true` if the merge is a
+    /// **clash** because `s_i ≠ s_j` is forced (`HF3a`) — what makes
+    /// `≥2 ⊓ ≤1` unsat. First-phase scope: merges happen only among a
+    /// root's direct successors, whose sole predecessor is the root
+    /// (already linked to `s_i`), so predecessor redirection is
+    /// unnecessary.
+    fn merge(&mut self, s_i: HNode, s_j: HNode) -> bool {
+        let (s_i, s_j) = (self.resolve(s_i), self.resolve(s_j));
+        if s_i == s_j {
+            return false;
+        }
+        if self.are_neq(s_i, s_j) {
+            return true; // ≠ violated — merging is impossible.
+        }
         self.representative[s_j.index()] = s_i;
         for c in self.nodes[s_j.index()].labels.clone() {
             self.add_label(s_i, c);
@@ -695,6 +733,12 @@ impl<'c> HyperEngine<'c> {
                 self.nodes[s_i.index()].at_most.push(c);
             }
         }
+        for c in self.nodes[s_j.index()].at_least_done.clone() {
+            if !self.nodes[s_i.index()].at_least_done.contains(&c) {
+                self.nodes[s_i.index()].at_least_done.push(c);
+            }
+        }
+        false
     }
 
     /// Fire one clause with `x = node`. Handles the two body shapes
@@ -875,10 +919,16 @@ impl<'c> HyperEngine<'c> {
                     FireOutcome::Changed
                 }
             }
-            // TODO(HF3): `≥n` generation, self-loop `Role(x,x)` heads,
-            // and `≈` equality not yet realised — no-op (sound for
-            // `Unsat`: an unenforced head only weakens the theory).
-            Atom::AtLeast(..) | Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
+            Atom::AtLeast(role, qual, n, v) => {
+                let Some(target) = resolve_var(v, xnode, binding) else {
+                    return FireOutcome::NoChange;
+                };
+                self.generate_at_least(target, role, qual, n)
+            }
+            // TODO(HF3): self-loop `Role(x,x)` heads and `≈` equality
+            // not yet realised — no-op (sound for `Unsat`: an
+            // unenforced head only weakens the theory).
+            Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
         }
     }
 
@@ -906,6 +956,93 @@ impl<'c> HyperEngine<'c> {
         // back-prop at `src`).
         self.worklist.push(Event::Edge(src, role, succ));
         self.add_label(succ, cls);
+        FireOutcome::Changed
+    }
+
+    /// Record `a ≠ b` (`HF3a`), resolved to representatives. Idempotent.
+    fn add_neq(&mut self, a: HNode, b: HNode) {
+        let (a, b) = (self.resolve(a), self.resolve(b));
+        if a == b {
+            return;
+        }
+        let pair = (a.min(b), a.max(b));
+        if !self.neq.contains(&pair) {
+            self.neq.push(pair);
+        }
+    }
+
+    /// Whether `a ≠ b` is forced. Resolves both args *and* each stored
+    /// pair through the merge union-find, so the relation stays correct
+    /// after merges without rewriting the store.
+    fn are_neq(&self, a: HNode, b: HNode) -> bool {
+        let (ra, rb) = (self.resolve(a), self.resolve(b));
+        if ra == rb {
+            return false;
+        }
+        self.neq.iter().any(|&(p, q)| {
+            let (rp, rq) = (self.resolve(p), self.resolve(q));
+            (rp == ra && rq == rb) || (rp == rb && rq == ra)
+        })
+    }
+
+    /// `HF3a` `≥n role.qual` generation at `x`: create `n` fresh,
+    /// pairwise-`≠` `role`-successors seeded with `qual`. Deterministic
+    /// (not a branch point), so it runs in the Horn fixpoint via
+    /// [`Self::apply_head_atom`]. Fire-once per `(role, qual, n)` at a
+    /// node (so it can't loop), gated by blocking (a blocked node
+    /// generates nothing — termination). Inverse-role `≥n` is deferred
+    /// (TODO HF3): generating predecessors is a separate path the
+    /// corpus doesn't exercise.
+    fn generate_at_least(
+        &mut self,
+        x: HNode,
+        role: Role,
+        qual: Option<ClassId>,
+        n: u32,
+    ) -> FireOutcome {
+        if n == 0 || role.is_inverse() {
+            return FireOutcome::NoChange;
+        }
+        let x = self.resolve(x);
+        // Count-based guard: if `x` already has `n` distinct `qual`-R-
+        // successors (e.g. from `∃`), `≥n` is already satisfied — don't
+        // generate. This keeps cardinality-rich refutations (pizza
+        // `InterestingPizza`, which already has its toppings via `∃`)
+        // from ballooning the `≤n` merge tree past the search budget.
+        // `distinct_role_succ` resolves through the merge map.
+        // TODO(`HF3b`): when existing successors aren't pairwise `≠`, a
+        // later `≤n` merge can drop the count below `n`; fire-once then
+        // blocks regeneration (incomplete `Sat` in that adversarial
+        // case). The principled fix is `≤`-before-`≥` ordering + `≠`-to-
+        // existing on top-up. The corpus doesn't hit it (disjoint
+        // fillers clash on merge instead of merging).
+        if self.distinct_role_succ(x, role, qual).len() >= n as usize {
+            return FireOutcome::NoChange;
+        }
+        let key = (role, qual, n);
+        if self.nodes[x.index()].at_least_done.contains(&key) {
+            return FireOutcome::NoChange;
+        }
+        if self.is_blocked(x) {
+            return FireOutcome::NoChange;
+        }
+        self.nodes[x.index()].at_least_done.push(key);
+        let mut fresh = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            let succ = self.new_node();
+            self.nodes[x.index()].edges.push((role, succ));
+            self.nodes[succ.index()].preds.push((role, x));
+            self.worklist.push(Event::Edge(x, role, succ));
+            if let Some(q) = qual {
+                self.add_label(succ, q);
+            }
+            fresh.push(succ);
+        }
+        for i in 0..fresh.len() {
+            for j in (i + 1)..fresh.len() {
+                self.add_neq(fresh[i], fresh[j]);
+            }
+        }
         FireOutcome::Changed
     }
 
@@ -1409,6 +1546,68 @@ mod tests {
         ];
         let mut e = HyperEngine::new(&clauses, root);
         assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// `HF3a` canary: `≥2 R.⊤ ⊓ ≤1 R.⊤` is unsat. `≥2` must generate two
+    /// pairwise-`≠` R-successors; `≤1` then forces a merge, but the `≠`
+    /// makes the merge clash. Today `≥n` is a no-op, so this wrongly
+    /// reports Sat. See `docs/hypertableau-hf3-scoping.md` §2.
+    #[test]
+    fn at_least_two_with_at_most_one_is_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let root = cls(0);
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtLeast(role, None, 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// `HF3a` boundary canary: `≥2 R.⊤ ⊓ ≤2 R.⊤` is **Sat** (n == m, no
+    /// clash). Two `≠` successors generated, `≤2` is satisfied without
+    /// merging. Pins the off-by-one in the count comparison: `≥n` fires
+    /// at count 0 < 2, and `find_open_at_most` does not flag 2 ≤ 2.
+    #[test]
+    fn at_least_two_with_at_most_two_is_sat() {
+        let role = Role::Named(RoleId::new(0));
+        let root = cls(0);
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtLeast(role, None, 2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 2, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Sat);
+    }
+
+    /// `HF3a` termination canary: cyclic `A ⊑ ≥2 R.A` is **Sat** and must
+    /// terminate. Generation creates two `A`-successors; each carries
+    /// `{A} ⊆ {A}` of the root, so anywhere blocking blocks them and
+    /// they generate nothing further. Proves the blocking-gates-`≥n`
+    /// invariant (a no-block design would loop forever). See
+    /// `docs/hypertableau-hf3-scoping.md` §1 `HF3b`.
+    #[test]
+    fn at_least_cyclic_terminates_sat() {
+        let role = Role::Named(RoleId::new(0));
+        let a = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::AtLeast(role, Some(a), 2, X)],
+        }];
+        let mut e = HyperEngine::new(&clauses, a);
+        assert_eq!(e.decide(64), HyperResult::Sat);
     }
 
     /// `≤2 R` with two successors is Sat — no merge needed.

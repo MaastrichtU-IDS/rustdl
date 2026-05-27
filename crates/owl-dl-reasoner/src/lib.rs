@@ -1573,6 +1573,35 @@ SubClassOf(:A :B)\nSubClassOf(:B :C)\n)\n"
         assert_eq!(probe.subsumptions, 3);
     }
 
+    /// Hypertableau Phase H3a: antecedent DNF-distribution unlocks the
+    /// pizza-style covering subsumption. `Vegetarian ≡ Topping ⊓
+    /// (Cheese ⊔ Veg)`, `Cheese ⊑ Topping` ⊨ `Cheese ⊑ Vegetarian` —
+    /// previously a miss because the nested `Or` in the antecedent
+    /// conjunction was deferred.
+    #[test]
+    fn hyper_subsumption_probe_handles_distributed_covering() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:Topping))\nDeclaration(Class(:Cheese))\n\
+Declaration(Class(:Veg))\nDeclaration(Class(:Vegetarian))\n\
+SubClassOf(:Cheese :Topping)\n\
+EquivalentClasses(:Vegetarian \
+ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
+        ));
+        let probe = hyper_subsumption_probe(&onto, 64, None).expect("probe runs");
+        let holds = |sub: &str, sup: &str| {
+            probe.results.iter().any(|r| {
+                r.sub == format!("http://rustdl.test/{sub}")
+                    && r.sup == format!("http://rustdl.test/{sup}")
+                    && r.result == HyperResult::Unsat
+            })
+        };
+        assert!(
+            holds("Cheese", "Vegetarian"),
+            "Cheese ⊑ Vegetarian must be derivable after antecedent distribution"
+        );
+    }
+
     /// Regression for the pizza false-positive-unsat bug fixed
     /// 2026-05-25. Minimal repro extracted from pizza.ofn via ROBOT
     /// STAR extraction + axiom-level bisection. Bug was in

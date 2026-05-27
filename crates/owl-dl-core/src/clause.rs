@@ -41,6 +41,13 @@ pub type Var = u32;
 /// The central individual variable `x`.
 pub const X: Var = 0;
 
+/// Cap on the number of alternative bodies an antecedent may
+/// distribute into (DNF cross-product). Antecedents that would
+/// exceed it are deferred rather than blow up the clause set. Real
+/// ontologies have at most one or two `Or`s per antecedent; this is
+/// a guard against pathological inputs, not a normal-case limit.
+const ANTECEDENT_DNF_CAP: usize = 64;
+
 /// An atom in a DL-clause body or head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Atom {
@@ -143,24 +150,28 @@ impl<'a> Clausifier<'a> {
                 }
             }
             Axiom::DisjointClasses(ids) => {
-                // Pairwise `Ai ⊓ Aj ⊑ ⊥`.
+                // Pairwise `Ai ⊓ Aj ⊑ ⊥`. Each antecedent may now be
+                // a DNF; emit a ⊥-clause per alternative-pair.
                 for i in 0..ids.len() {
                     for j in (i + 1)..ids.len() {
                         self.next_var = X + 1;
-                        let mut body = Vec::new();
-                        let (Some(ba), Some(bb)) = (
+                        let (Some(alts_a), Some(alts_b)) = (
                             self.encode_antecedent(ids[i], X),
                             self.encode_antecedent(ids[j], X),
                         ) else {
                             self.deferred += 1;
                             continue;
                         };
-                        body.extend(ba);
-                        body.extend(bb);
-                        self.clauses.push(DlClause {
-                            body,
-                            head: Vec::new(),
-                        });
+                        for a in &alts_a {
+                            for b in &alts_b {
+                                let mut body = a.clone();
+                                body.extend_from_slice(b);
+                                self.clauses.push(DlClause {
+                                    body,
+                                    head: Vec::new(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -176,27 +187,33 @@ impl<'a> Clausifier<'a> {
                 for i in 0..members.len() {
                     for j in (i + 1)..members.len() {
                         self.next_var = X + 1;
-                        if let (Some(ba), Some(bb)) = (
+                        if let (Some(alts_a), Some(alts_b)) = (
                             self.encode_antecedent(members[i], X),
                             self.encode_antecedent(members[j], X),
                         ) {
-                            let mut body = ba;
-                            body.extend(bb);
-                            self.clauses.push(DlClause {
-                                body,
-                                head: Vec::new(),
-                            });
+                            for a in &alts_a {
+                                for b in &alts_b {
+                                    let mut body = a.clone();
+                                    body.extend_from_slice(b);
+                                    self.clauses.push(DlClause {
+                                        body,
+                                        head: Vec::new(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
                 // member ⊑ class (each member implies the union class)
                 for &m in members {
                     self.next_var = X + 1;
-                    if let Some(body) = self.encode_antecedent(m, X) {
-                        self.clauses.push(DlClause {
-                            body,
-                            head: vec![Atom::Class(*class, X)],
-                        });
+                    if let Some(bodies) = self.encode_antecedent(m, X) {
+                        for body in bodies {
+                            self.clauses.push(DlClause {
+                                body,
+                                head: vec![Atom::Class(*class, X)],
+                            });
+                        }
                     } else {
                         self.deferred += 1;
                     }
@@ -225,50 +242,87 @@ impl<'a> Clausifier<'a> {
     /// `A ⊑ D ∧ B ⊑ D`). Otherwise encode the antecedent into a
     /// body and recurse into the consequent.
     fn clausify_gci(&mut self, sub: ConceptId, sup: ConceptId) {
-        if let ConceptExpr::Or(parts) = self.pool.get(sub) {
-            let parts: Vec<ConceptId> = parts.to_vec();
-            for p in parts {
-                self.clausify_gci(p, sup);
-            }
-            return;
-        }
         self.next_var = X + 1;
         match self.encode_antecedent(sub, X) {
-            Some(body) => self.clausify_consequent(body, sup, X),
+            // The antecedent is a disjunction of conjunctions (DNF):
+            // `(c11⊓…) ⊔ (c21⊓…) ⊑ sup` ≡ one GCI per disjunct, each
+            // `(ci1⊓…) ⊑ sup`. Emit a consequent clause per body.
+            Some(bodies) => {
+                for body in bodies {
+                    self.clausify_consequent(body, sup, X);
+                }
+            }
             None => self.deferred += 1,
         }
     }
 
     /// Encode an antecedent concept `c` (which must hold at `var`)
-    /// into a conjunction of body atoms. `None` when the shape
-    /// isn't supported yet (antecedent `∀`/`Not`/cardinality/
-    /// nominal — deferred).
-    fn encode_antecedent(&mut self, c: ConceptId, var: Var) -> Option<Vec<Atom>> {
+    /// into **disjunctive normal form**: a list of alternative bodies,
+    /// each a conjunction of atoms. `A ⊓ (B ⊔ C)` yields `[[A,B],
+    /// [A,C]]`; the caller emits one clause per alternative. `None`
+    /// when the shape isn't supported yet (antecedent `∀`/`Not`/
+    /// cardinality/nominal — deferred) or the cross-product exceeds
+    /// [`ANTECEDENT_DNF_CAP`] (deferred rather than blow up).
+    fn encode_antecedent(&mut self, c: ConceptId, var: Var) -> Option<Vec<Vec<Atom>>> {
         match self.pool.get(c) {
-            ConceptExpr::Top => Some(Vec::new()),
-            ConceptExpr::Atomic(a) => Some(vec![Atom::Class(*a, var)]),
+            // `⊤`: a single empty-conjunction alternative.
+            ConceptExpr::Top => Some(vec![Vec::new()]),
+            ConceptExpr::Atomic(a) => Some(vec![vec![Atom::Class(*a, var)]]),
             ConceptExpr::And(parts) => {
+                // Cross-product: each conjunct contributes alternatives;
+                // the And's alternatives are all combinations.
+                let parts: Vec<ConceptId> = parts.to_vec();
+                let mut acc: Vec<Vec<Atom>> = vec![Vec::new()];
+                for p in parts {
+                    let child = self.encode_antecedent(p, var)?;
+                    let mut next = Vec::with_capacity(acc.len() * child.len());
+                    for a in &acc {
+                        for b in &child {
+                            let mut combined = a.clone();
+                            combined.extend_from_slice(b);
+                            next.push(combined);
+                        }
+                    }
+                    if next.len() > ANTECEDENT_DNF_CAP {
+                        return None;
+                    }
+                    acc = next;
+                }
+                Some(acc)
+            }
+            ConceptExpr::Or(parts) => {
+                // Union: each disjunct's alternatives, concatenated.
                 let parts: Vec<ConceptId> = parts.to_vec();
                 let mut out = Vec::new();
                 for p in parts {
                     out.extend(self.encode_antecedent(p, var)?);
+                    if out.len() > ANTECEDENT_DNF_CAP {
+                        return None;
+                    }
                 }
                 Some(out)
             }
             ConceptExpr::Some(role, inner) => {
                 // ∃role.inner in the antecedent → role(var, y) plus
-                // inner's body atoms at the fresh successor y. This
-                // is the H1b-gap shape, now handled.
+                // inner's body atoms at the fresh successor y. One
+                // fresh `y` for this occurrence, shared across the
+                // occurrence's alternatives (each alternative becomes
+                // a *separate* clause, so a shared id is clause-local
+                // and sound). The H1b-gap shape, now also distributed.
                 let (role, inner) = (*role, *inner);
                 let y = self.fresh_var();
-                let mut out = vec![Atom::Role(role, var, y)];
-                out.extend(self.encode_antecedent(inner, y)?);
+                let inner_alts = self.encode_antecedent(inner, y)?;
+                let mut out = Vec::with_capacity(inner_alts.len());
+                for alt in inner_alts {
+                    let mut body = vec![Atom::Role(role, var, y)];
+                    body.extend(alt);
+                    out.push(body);
+                }
                 Some(out)
             }
-            // Antecedent Or is split at the GCI level; reaching it
-            // here means a *nested* Or — deferred for now.
-            ConceptExpr::Or(_)
-            | ConceptExpr::All(_, _)
+            // Antecedent `∀`/`Not`/cardinality/nominal: deferred to
+            // later hypertableau phases (H3 ∀-in-body / cardinality).
+            ConceptExpr::All(_, _)
             | ConceptExpr::Not(_)
             | ConceptExpr::Bot
             | ConceptExpr::Min(_, _, _)
@@ -570,5 +624,80 @@ SubClassOf(:A ObjectAllValuesFrom(:r :B))\n)\n"
                     .iter()
                     .any(|a| matches!(a, Atom::Class(_, v) if *v != X))
         }));
+    }
+
+    // ---- H3a: antecedent DNF-distribution ----
+
+    /// `A ⊓ (B ⊔ C) ⊑ D` distributes to two Horn clauses
+    /// `A⊓B → D` and `A⊓C → D` (the `VegetarianTopping` shape: a
+    /// covering union nested inside an antecedent conjunction).
+    #[test]
+    fn antecedent_conjunction_with_or_distributes_to_horn() {
+        let (clauses, stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\n\
+Declaration(Class(:C))\nDeclaration(Class(:D))\n\
+SubClassOf(ObjectIntersectionOf(:A ObjectUnionOf(:B :C)) :D)\n)\n"
+        ));
+        // No deferral — this used to bail (nested Or in And antecedent).
+        assert_eq!(stats.deferred, 0, "should no longer defer; stats={stats:?}");
+        // Two Horn clauses, both with head D and a 2-atom body.
+        let body_classes = |c: &DlClause| -> Vec<u32> {
+            let mut v: Vec<u32> = c
+                .body
+                .iter()
+                .filter_map(|a| match a {
+                    Atom::Class(id, _) => Some(id.index()),
+                    _ => None,
+                })
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let d_clauses: Vec<&DlClause> = clauses
+            .iter()
+            .filter(|c| c.head.len() == 1 && c.body.len() == 2)
+            .collect();
+        let bodies: Vec<Vec<u32>> = d_clauses.iter().map(|c| body_classes(c)).collect();
+        // A=0,B=1,C=2,D=3 in declaration order ⇒ {A,B} and {A,C}.
+        assert!(
+            bodies.contains(&vec![0, 1]),
+            "expected A⊓B body; got {bodies:?}"
+        );
+        assert!(
+            bodies.contains(&vec![0, 2]),
+            "expected A⊓C body; got {bodies:?}"
+        );
+        assert!(
+            clauses.iter().all(DlClause::is_horn),
+            "distributed clauses must be Horn"
+        );
+    }
+
+    /// The cross-product cap: an antecedent with more `Or`-branches
+    /// than [`ANTECEDENT_DNF_CAP`] would expand to is deferred, not
+    /// exploded. Seven binary `Or`s ⇒ 2⁷ = 128 > 64 ⇒ defer.
+    #[test]
+    fn antecedent_cross_product_over_cap_defers() {
+        use std::fmt::Write;
+        let mut decls = String::new();
+        let mut ors = String::new();
+        for i in 0..7 {
+            let (l, r) = (format!("L{i}"), format!("R{i}"));
+            let _ = write!(
+                decls,
+                "Declaration(Class(:{l}))\nDeclaration(Class(:{r}))\n"
+            );
+            let _ = write!(ors, "ObjectUnionOf(:{l} :{r}) ");
+        }
+        let src = format!(
+            "{HEADER}Ontology(\nDeclaration(Class(:D))\n{decls}\
+SubClassOf(ObjectIntersectionOf({ors}) :D)\n)\n"
+        );
+        let (_clauses, stats) = clausify_ofn(&src);
+        assert!(
+            stats.deferred >= 1,
+            "over-cap antecedent must defer; stats={stats:?}"
+        );
     }
 }

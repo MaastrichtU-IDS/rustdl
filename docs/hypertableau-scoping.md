@@ -488,6 +488,47 @@ The lesson: a fast hyper result is only a win once answer-agreement
 against a reference reasoner rules out the axiom-drop confound. SIO
 passed; pizza is pending H3.
 
+## §H3a — antecedent DNF-distribution (shipped)
+
+The first slice of H3, and the cheapest. The 114 pizza misses split
+into three *different* mechanisms (counted by the superclass not
+derived): VegetarianTopping (37), the VegetarianPizza/NonVegetarian
+family (~52, antecedent-`∀` from `¬∃`), and InterestingPizza (20,
+min-cardinality). VegetarianTopping is the odd one out — it needs no
+engine work at all.
+
+`VegetarianTopping ≡ PizzaTopping ⊓ (Cheese ⊔ Fruit ⊔ … ⊔ Vegetable)`.
+The `⊒` direction puts a covering `Or` *inside* an antecedent
+conjunction. The old `encode_antecedent` returned a single
+conjunction and bailed (`None`) on a nested `Or`. H3a makes it return
+**disjunctive normal form** — a list of alternative bodies — and
+`clausify_gci` emits one consequent clause per alternative:
+`A ⊓ (B ⊔ C) ⊑ D` → `A⊓B → D`, `A⊓C → D`. These are **Horn**, so the
+engine is untouched. `And` is a cross-product, `Or` a union, `∃`
+recurses (one fresh `y` per occurrence, shared across that
+occurrence's alternatives — sound because each alternative is a
+separate, variable-local clause). A cross-product cap
+(`ANTECEDENT_DNF_CAP = 64`) defers pathological blow-ups rather than
+exploding the clause set.
+
+**Validated on pizza (vs Konclude closure):** misses **114 → 77**
+(the entire VegetarianTopping family of 37 unlocked, as predicted),
+subsumptions 581 → 618, deferred 17 → 16. Still **0 false positives**;
+completeness **84 % → 89 %**. The residual 77 are exactly the two
+harder mechanisms, each deserving its own scoped phase when started:
+
+- **antecedent-`∀`** (~52): `VegetarianPizza ≡ Pizza ⊓ ¬∃hasTopping.Fish
+  ⊓ ¬∃hasTopping.Meat`; after NNF the antecedent has `∀hasTopping.¬Fish`
+  — a universal in the clause *body*, which standard DL-clauses can't
+  express directly. Needs the hypertableau `∀`-in-body mechanism.
+- **min-cardinality** (20): `InterestingPizza ≡ Pizza ⊓ ≥3 hasTopping`
+  — the non-deterministic `≤n`/`≥n` machinery (successor merging),
+  which interacts with branching.
+
+Neither is "tune heuristics"; both are real clausifier+engine work.
+H3a confirms the diagnosis was causal and clears the cheap third of
+the pizza gap with zero engine risk.
+
 ## 9. Recommended entry point
 
 Phase H0 (clausifier + `clause-stats`) is the natural first

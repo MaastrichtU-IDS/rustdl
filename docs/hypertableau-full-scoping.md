@@ -59,6 +59,28 @@ the previous being sound.
 
 ### HF1 — Sound clausifier (no dropping, no weakening)
 
+**Census (shipped):** `rustdl clause-stats` now prints a categorised
+deferral breakdown (`deferred_census`). The HF1 target list across the
+corpus:
+
+| ontology | deferred | breakdown |
+|---|---|---|
+| sulo-stripped, go-basic | 0 | already at the gate |
+| pizza | 7 | antecedent 6, head-cardinality 1 |
+| ro-stripped | 7 | antecedent 2, head-cardinality 5 |
+| family-stripped | 2 | antecedent 1, head-or-disjunct 1 |
+| sio-stripped | 87 | antecedent 4, **head-cardinality 83** |
+
+So HF1 is two categories: **head cardinality** (`≥n`/`≤n` in a
+consequent — the bulk; needs an `AtLeast` atom alongside `AtMost`,
+processed by HF3) and **antecedent** (`∀`/`¬`/cardinality on the GCI
+sub-side — ~13 total; `∀`/`¬` clausify to disjunctive `∃`-head clauses
+via the H3b complement machinery). Next HF1 increment: head cardinality
+(clears SIO's 83). Emitting cardinality atoms the engine doesn't yet
+process stays sound for `Unsat` (an ignored clause only weakens the
+theory) — correctness lands at HF3.
+
+
 Every SROIQ construct produces clauses **entailment-equivalent** to
 the source axiom. This is the foundation: until the clause set equals
 the ontology (not a weakening), `Sat` agreement against Konclude is

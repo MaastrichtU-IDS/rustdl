@@ -118,6 +118,19 @@ pub fn clause_stats<A: horned_owl::model::ForIRI>(
     Ok(stats)
 }
 
+/// Per-category census of what the clausifier still defers — the HF1
+/// coverage target list (see `docs/hypertableau-full-scoping.md`).
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn clause_deferred_census<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<Vec<(&'static str, usize)>, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    Ok(owl_dl_core::clause::deferred_census(&internal))
+}
+
 pub use owl_dl_tableau::hyper::{HyperResult, SearchStats};
 
 /// Per-class concept-satisfiability result from the hypertableau

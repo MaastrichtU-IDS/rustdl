@@ -113,6 +113,9 @@ struct Clausifier<'a> {
     /// cardinality, deep shapes). Counted, not clausified — surfaced
     /// by [`ClauseStats`] so coverage is measurable.
     deferred: usize,
+    /// Per-category deferral counts, for the HF1 coverage census
+    /// (which constructs the sound clausifier must still handle).
+    deferred_kinds: std::collections::BTreeMap<&'static str, usize>,
 }
 
 impl<'a> Clausifier<'a> {
@@ -124,7 +127,14 @@ impl<'a> Clausifier<'a> {
             nominal_base,
             next_var: X + 1,
             deferred: 0,
+            deferred_kinds: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Record a deferral, categorised for the HF1 census.
+    fn defer(&mut self, kind: &'static str) {
+        self.deferred += 1;
+        *self.deferred_kinds.entry(kind).or_insert(0) += 1;
     }
 
     fn fresh_class(&mut self) -> ClassId {
@@ -181,7 +191,7 @@ impl<'a> Clausifier<'a> {
                             self.encode_antecedent(ids[i], X),
                             self.encode_antecedent(ids[j], X),
                         ) else {
-                            self.deferred += 1;
+                            self.defer("disjoint-antecedent");
                             continue;
                         };
                         for a in &alts_a {
@@ -237,7 +247,7 @@ impl<'a> Clausifier<'a> {
                             });
                         }
                     } else {
-                        self.deferred += 1;
+                        self.defer("disjoint-union-member");
                     }
                 }
             }
@@ -274,7 +284,7 @@ impl<'a> Clausifier<'a> {
                     self.clausify_consequent(body, sup, X);
                 }
             }
-            None => self.deferred += 1,
+            None => self.defer("antecedent"),
         }
     }
 
@@ -402,7 +412,7 @@ impl<'a> Clausifier<'a> {
                     if let Some(atom) = self.head_atom_for(p, var) {
                         head.push(atom);
                     } else {
-                        self.deferred += 1;
+                        self.defer("head-or-disjunct");
                         return;
                     }
                 }
@@ -416,7 +426,7 @@ impl<'a> Clausifier<'a> {
                         head: vec![Atom::Exists(*role, cls, var)],
                     });
                 } else {
-                    self.deferred += 1;
+                    self.defer("head-exists-inner");
                 }
             }
             ConceptExpr::All(role, inner) => {
@@ -439,7 +449,7 @@ impl<'a> Clausifier<'a> {
                         head: Vec::new(),
                     });
                 } else {
-                    self.deferred += 1;
+                    self.defer("head-not-nonatomic");
                 }
             }
             // Cardinality, self-restriction: deferred to later phases
@@ -447,7 +457,7 @@ impl<'a> Clausifier<'a> {
             ConceptExpr::Min(_, _, _)
             | ConceptExpr::Max(_, _, _)
             | ConceptExpr::SelfRestriction(_) => {
-                self.deferred += 1;
+                self.defer("head-cardinality-self");
             }
         }
     }
@@ -526,6 +536,27 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
     }
     let stats = ClauseStats::of(&c.clauses, c.deferred);
     (c.clauses, stats)
+}
+
+/// Per-category breakdown of what the clausifier still defers — the
+/// HF1 coverage census (the exact constructs the sound clausifier must
+/// learn to handle). Returns `(kind, count)` sorted by kind.
+#[must_use]
+pub fn deferred_census(internal: &InternalOntology) -> Vec<(&'static str, usize)> {
+    let mut internal = internal.clone();
+    let normalized = nnf_axioms(&mut internal);
+    let num_classes =
+        u32::try_from(internal.vocabulary.num_classes()).expect("class count fits in u32");
+    let num_individuals =
+        u32::try_from(internal.vocabulary.num_individuals()).expect("individual count fits in u32");
+    let first_fresh = num_classes
+        .checked_add(num_individuals)
+        .expect("class+individual count fits in u32");
+    let mut c = Clausifier::new(&internal.concepts, first_fresh, num_classes);
+    for ax in &normalized {
+        c.clausify_axiom(ax);
+    }
+    c.deferred_kinds.into_iter().collect()
 }
 
 /// Shape histogram of a clause set, for the `rustdl clause-stats`

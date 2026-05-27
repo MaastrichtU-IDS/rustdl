@@ -504,6 +504,11 @@ fn main() -> Result<()> {
             println!("# bottom_headed:    {}", stats.bottom_headed);
             println!("# with_exists_head: {}", stats.with_exists_head);
             println!("# deferred:         {}", stats.deferred);
+            let census =
+                owl_dl_reasoner::clause_deferred_census(&onto).context("deferred_census")?;
+            for (kind, count) in census {
+                println!("#   deferred[{kind}]: {count}");
+            }
         }
         Command::HyperSat {
             file,

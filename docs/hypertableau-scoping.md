@@ -11,6 +11,33 @@ Reasoning for Description Logics*, JAIR; the algorithm HermiT runs)
 is the established solution: it reduces the branching factor *by
 construction*.
 
+## Corpus-wide Konclude agreement (does the engine generalise?)
+
+Beyond pizza (100 %) and SIO (0 unsat), the soundness/completeness
+diff vs Konclude was run across the corpus members that both clausify
+*and* have a Konclude reference. Result — the engine generalises, **0
+false positives everywhere**:
+
+| ontology | expressivity | classes | pairs | misses | false pos |
+|---|---|---|---|---|---|
+| pizza | SHOIN | 99 | 695 | **0 (100 %)** | 0 |
+| ro-stripped | SROIFV | 58 | 158 | **0 (100 %)** | 0 |
+| sulo-stripped | SRI | 17 | 51 | **0 (100 %)** | 0 |
+| sio-stripped | SRIQ | 1585 | — (per-class) | 0 unsat agree | 0 |
+
+Across SHOIN / SROIFV / SRI / SRIQ the hyperresolution engine matches
+Konclude's hierarchy exactly on every TBox-subsumption ontology
+tested, with zero false positives.
+
+**Scope limitation found:** `family-stripped` is **inconsistent**
+(Konclude confirms — 1848 ABox assertions, ABox-driven). The engine is
+**TBox-only** (no ABox/individual reasoning beyond nominals-as-classes),
+so ABox-driven (in)consistency is out of scope — not a failure, a
+boundary. `GO` (≈40 k classes, EL) is excluded from the *pairwise*
+check (N² infeasible); a per-class or top-down EL agreement is future
+work. The small SIO sub-modules don't round-trip through ROBOT
+(`.ofn → .owx` convert fails), so they lack a Konclude reference.
+
 This doc scopes the work before any core code is written. It is
 **not** a commitment to a specific timeline; it's the map that
 de-risks a multi-month effort and lets it proceed in

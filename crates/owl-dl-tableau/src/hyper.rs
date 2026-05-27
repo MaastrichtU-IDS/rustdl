@@ -785,12 +785,24 @@ impl<'c> HyperEngine<'c> {
         let Some(src) = resolve_var(src_var, node, binding) else {
             return;
         };
-        let targets: Vec<HNode> = self.nodes[src.index()]
+        let src_data = &self.nodes[src.index()];
+        let mut targets: Vec<HNode> = src_data
             .edges
             .iter()
             .filter(|(er, _)| role_matches(*er, role))
             .map(|(_, t)| *t)
             .collect();
+        // Inverse-role matching (HF2): an incoming edge `s —er→ src`
+        // asserts `er⁻(src, s)`, so it satisfies the wanted `role`
+        // when `er.flip() == role` — i.e. following `R⁻` walks `src`'s
+        // `R`-predecessors. (Merge does not redirect in-edges yet, but
+        // merges are root-successor-only, so a stale pred is still a
+        // sound R-relationship — TODO(HF3) when general merge lands.)
+        for (er, s) in &src_data.preds {
+            if role_matches(er.flip(), role) {
+                targets.push(*s);
+            }
+        }
         for m in targets {
             binding.push((tgt_var, m));
             self.enumerate_matches(node, plan, i + 1, binding, out);

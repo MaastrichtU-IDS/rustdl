@@ -2131,13 +2131,11 @@ EquivalentClasses(:Sup ObjectComplementOf(ObjectSomeValuesFrom(:r :A)))\n)\n"
     /// `B ⊑ ∀R⁻.C` ⊨ `A ⊑ C`: an `A` has an `R`-successor `b:B`;
     /// `b`'s `∀R⁻.C` forces every `R`-predecessor of `b` — including
     /// the `A` node — to be `C`. Deriving this requires propagating
-    /// `∀R⁻` across the *reverse* edge, which the engine cannot do yet
-    /// (`role_matches` demands equal polarity, and the clausifier drops
-    /// the inverse). This test defines "done" for HF2's core: it fails
-    /// today and must pass once inverse-aware matching lands. See
+    /// `∀R⁻` across the *reverse* edge. HF2 made this pass via
+    /// inverse-aware matching in `enumerate_matches`: following `R⁻`
+    /// from a node walks its `R`-predecessors. See
     /// `docs/hypertableau-hf2-scoping.md` §4.1.
     #[test]
-    #[ignore = "HF2: inverse-role propagation not yet implemented"]
     fn hyper_subsumption_probe_propagates_inverse_universal() {
         let onto = parse(&format!(
             "{HEADER}Ontology(\n\

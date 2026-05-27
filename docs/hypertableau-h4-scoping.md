@@ -130,9 +130,59 @@ cases. Catches encoding drift before it reaches users.
 - Public API / new reasoner-mode enum changes — §3.
 - ABox/consistency acceleration — the engine is TBox-only.
 
-## §7 — Measurement to claim "H4 done"
+## §7 — Result (shipped) — and the honest reframe
 
-`classify` wall on pizza and SIO, flag-on vs flag-off, same machine.
-Expected: pizza correct + faster; SIO's previously-timed-out pairs
-resolved. That is the orchestrator-level wall-moved evidence — the
-milestone the whole effort pointed at.
+The wedge is implemented, sound, flag-gated (`--hypertableau` /
+`RUSTDL_HYPERTABLEAU`), default off. All reasoner tests pass flag-off
+(regression-impossible) **and** flag-on (no integration bug). The
+encoding-drift guard (`hyper_wedge_agrees_with_tableau`) confirms every
+pair hyper proves agrees with the complete tableau. `HyperCache::proves`
+is unit-tested in isolation.
+
+**But the pizza/SIO *classify* wall is not an `Unsat`-only problem, and
+the wedge does not move it.** Measured: `classify(pizza)` flag-on =
+4 m 38 s, **1119 timed-out pairs, 0 hyper-proven**. Diagnosis (a clean
+empirical result, not a bug — `HyperCache::proves` works in isolation):
+
+- The classify orchestrator already proves *positive* subsumptions via
+  EL saturation (353 of pizza's 695) and transitive closure. So the
+  residual pairs reaching `subsumes_via_tableau` are dominated by
+  **candidate non-subsumptions** the tableau refutes via `sat(A⊓¬sup)`.
+- That is a **model-search problem on satisfiable instances** (find a
+  model, search branches explosively) — the actual wall. Hyper's `Sat`
+  cannot be trusted to refute (unsound under dropped/deferred axioms:
+  `Models(ontology) ⊆ Models(fragment)`, so fragment-`Sat` ⇏
+  ontology-`Sat`). The `Unsat`-only wedge has no work to do here.
+- `ro-stripped` classify hangs flag-on too — the same negative-refutation
+  wall (and HermiT itself hangs on `ro-stripped`).
+
+**Complete-mode (trusting `Sat`) is not the fix.** A sound "fully
+supported" gate (0 deferred + no ABox + no per-query defer) would
+*correctly decline* exactly the wall workloads (pizza deferred=7) and
+only enable on 0-deferred ones (GO, EL — already fast via saturation).
+It helps where help isn't needed and declines where it is. Rejected.
+
+**What the wedge *does* deliver (and where the engine's value is):**
+- A sound, fast `yes` for **positive subsumptions EL saturation misses,
+  transitive closure doesn't propagate, and the tableau would run** —
+  a non-empty category on richer-TBox ontologies (pizza's positives
+  happen to factor through EL+transitivity, so pizza isn't
+  representative).
+- The engine's measured wins are **probe-shaped**: single-query
+  positive subsumption (corpus agreement, 0 FP) and **per-class
+  satisfiability** (SIO 0.45 s vs the tableau's >135 s) — real, and
+  separately deliverable as first-class APIs, *not* via the classify
+  orchestrator's negative-refutation bottleneck.
+
+So H4 ships the sound wedge (default off, documented scope), and the
+"classify wall moved" claim is **not** made — the classify wall is
+negative refutation, outside an `Unsat`-only accelerator's reach.
+
+## §8 — Next directions (not this session)
+
+1. Extend the clausifier to cover the last deferred shapes (qualified
+   `≤n`, self-restriction) so a sound complete-mode becomes safe on the
+   workloads we care about — the only path to moving the classify wall
+   with this engine.
+2. Or accept the engine's value is probe-shaped and ship single-query
+   subsumption + per-class sat as first-class reasoner APIs.

@@ -74,6 +74,10 @@ pub struct ClassificationStats {
     /// entailment matrix — sound (never reports a false positive),
     /// but may under-report subsumption.
     pub timed_out_pairs: usize,
+    /// Pairs proved subsumed by the H4 hypertableau wedge (sound
+    /// `Unsat`), skipping the tableau. Zero unless the wedge is
+    /// enabled (`RUSTDL_HYPERTABLEAU`).
+    pub hyper_proven_pairs: usize,
 }
 
 impl Classification {
@@ -923,6 +927,16 @@ fn subsumes_via_tableau(
     per_pair_timeout: Option<std::time::Duration>,
     stats: &mut ClassificationStats,
 ) -> Result<Option<bool>, ReasonError> {
+    // H4 sound-accelerator wedge: try the hyper engine first. An
+    // `Unsat` (subsumption-holds) verdict is sound for any ontology
+    // (see docs/hypertableau-h4-scoping.md §0), so trust it and skip
+    // the (slow, sometimes timing-out) tableau. A non-proof falls
+    // through to the tableau unchanged. No-op when the wedge is off.
+    let hyper_deadline = per_pair_timeout.map(|t| Instant::now() + t);
+    if prepared.hyper_proves(sub, sup, hyper_deadline) {
+        stats.hyper_proven_pairs += 1;
+        return Ok(Some(true));
+    }
     let build = move |pool: &mut ConceptPool| {
         let sub_concept = pool.atomic(sub);
         let super_concept = pool.atomic(sup);

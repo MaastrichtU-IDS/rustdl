@@ -580,6 +580,102 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     Ok(probe)
 }
 
+/// Branching-recursion depth cap for the H4 in-orchestrator hyper
+/// subsumption check (the per-pair wall budget bounds it further).
+const HYPER_WEDGE_DEPTH: usize = 256;
+
+/// Whether the hypertableau sound-accelerator wedge (H4) is enabled.
+/// Gated by the `RUSTDL_HYPERTABLEAU` env var (default off) for a
+/// release of soak time before the default flips — see
+/// `docs/hypertableau-h4-scoping.md` §3.
+#[must_use]
+pub fn hyper_wedge_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPERTABLEAU").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Cached clausified state for the H4 sound accelerator: built once
+/// per ontology (the expensive clausify + `¬sup` pre-pass), then
+/// reused across every subsumption pair. [`proves`](Self::proves)
+/// answers `sub ⊑ sup` soundly via the hyper engine — `true` only on
+/// a `Unsat` verdict, which is sound for *any* ontology (see
+/// `docs/hypertableau-h4-scoping.md` §0). A `false` means "hyper
+/// can't prove it" and the caller must fall back to the tableau.
+pub(crate) struct HyperCache {
+    /// Base clauses + complement clash clauses (the per-pair Q-clauses
+    /// are appended to a clone in `proves`).
+    clauses: Vec<owl_dl_core::clause::DlClause>,
+    /// Per-defined-`sup` `NNF(¬def)` disjunct atoms (Q-gated).
+    sup_neg: std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<owl_dl_core::clause::Atom>>,
+    /// Fresh helper concept `q` for the `sub ⊓ ¬sup` injection.
+    fresh_q: owl_dl_core::ir::ClassId,
+}
+
+impl HyperCache {
+    /// Clausify `internal` and pre-compute the `¬sup` expansions once.
+    pub(crate) fn build(internal: &InternalOntology) -> Self {
+        use owl_dl_core::ir::ClassId;
+        let mut internal = internal.clone();
+        let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let defs = owl_dl_core::definitions::extract_definitions(&internal);
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+        let mut next_fresh = fresh_class_id(&base).index().max(num_classes);
+        let fresh_q = ClassId::new(next_fresh);
+        next_fresh += 1;
+        let vocab: Vec<(ClassId, String)> = internal
+            .vocabulary
+            .classes()
+            .map(|(id, iri)| (id, iri.to_string()))
+            .collect();
+        let mut clauses = base;
+        let mut complements: std::collections::HashMap<ClassId, ClassId> =
+            std::collections::HashMap::new();
+        let sup_neg = build_sup_neg_map(
+            &vocab,
+            &defs,
+            &mut internal.concepts,
+            &mut complements,
+            &mut clauses,
+            &mut next_fresh,
+        );
+        Self {
+            clauses,
+            sup_neg,
+            fresh_q,
+        }
+    }
+
+    /// Sound subsumption test: `true` iff the hyper engine proves
+    /// `sub ⊑ sup` (`Unsat` on `sub ⊓ ¬sup`). `false` = "couldn't
+    /// prove" (`Sat`/`Stalled`/deadline) — the caller falls back.
+    pub(crate) fn proves(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> bool {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        let mut clauses = self.clauses.clone();
+        clauses.push(DlClause {
+            body: vec![Atom::Class(self.fresh_q, X)],
+            head: vec![Atom::Class(sub, X)],
+        });
+        if let Some(atoms) = self.sup_neg.get(&sup) {
+            clauses.push(DlClause {
+                body: vec![Atom::Class(self.fresh_q, X)],
+                head: atoms.clone(),
+            });
+        } else {
+            clauses.push(DlClause {
+                body: vec![Atom::Class(self.fresh_q, X), Atom::Class(sup, X)],
+                head: vec![],
+            });
+        }
+        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) == HyperResult::Unsat
+    }
+}
+
 /// Build the absorbed `TBox` and classify every residual GCI's
 /// trigger per [`owl_dl_core::residual_trigger`]. The result is
 /// the histogram needed to decide whether the lazy-unfolding
@@ -1035,6 +1131,18 @@ fn is_subclass_of_internal_full(
     if pure_el {
         return Ok((false, sat_stats));
     }
+    // H4 sound-accelerator wedge: a hyper `Unsat` proves the
+    // subsumption (sound for any ontology), skipping the tableau. A
+    // non-proof falls through. No-op when the wedge is disabled.
+    if hyper_wedge_enabled() && HyperCache::build(&internal).proves(sub_id, super_id, None) {
+        return Ok((
+            true,
+            QueryStats {
+                answered_by_saturation: false,
+                pure_el_mode: false,
+            },
+        ));
+    }
     // `sub ⊓ ¬sup` is unsatisfiable iff every model that contains a
     // `sub`-instance also makes it a `sup`-instance.
     let sat = run_satisfiability(internal, move |pool| {
@@ -1101,6 +1209,10 @@ pub(crate) struct PreparedOntology {
     /// doesn't move pizza/SIO walls.
     #[allow(dead_code)]
     model_cache: model_cache::ModelCache,
+    /// H4 sound-accelerator state (clausified clauses + `¬sup`
+    /// expansions), `Some` iff [`hyper_wedge_enabled`]. The classify
+    /// pair loop consults it before the tableau (`subsumes_via_tableau`).
+    hyper: Option<HyperCache>,
 }
 
 impl PreparedOntology {
@@ -1108,6 +1220,9 @@ impl PreparedOntology {
     /// `decide` calls only have to allocate a fresh tableau and run
     /// the search.
     pub(crate) fn from_internal(mut internal: InternalOntology) -> Result<Self, ReasonError> {
+        // H4: build the hyper cache from the un-mutated ontology
+        // (before the absorb/NNF passes below consume it), iff enabled.
+        let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
         expand_role_characteristics(&mut internal);
         let hierarchy = build_role_hierarchy(&internal);
         let inverse_pairs = collect_inverse_pairs(&internal);
@@ -1134,7 +1249,23 @@ impl PreparedOntology {
             complements,
             abox,
             model_cache: model_cache::ModelCache::new(),
+            hyper,
         })
+    }
+
+    /// H4 sound accelerator: `true` iff the hyper engine proves
+    /// `sub ⊑ sup`. Always `false` when the wedge is disabled (no
+    /// cache). A `true` is sound for any ontology; a `false` means the
+    /// caller must fall back to the tableau ([`decide`](Self::decide)).
+    pub(crate) fn hyper_proves(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> bool {
+        self.hyper
+            .as_ref()
+            .is_some_and(|hc| hc.proves(sub, sup, deadline))
     }
 
     /// Decide whether the test concept built by `build_test_concept`
@@ -1846,6 +1977,87 @@ SubClassOf(:D :B)\nDisjointClasses(:C :D)\n)\n"
         assert!(
             holds("D", "A"),
             "D ⊑ A must derive via expanding ¬A = ¬B ⊔ C"
+        );
+    }
+
+    /// H4 encoding-drift guard: the hyper Q-injection and the tableau
+    /// `sub ⊓ ¬sup` are *different encodings* of the same query. Every
+    /// pair hyper proves (`Unsat`) must agree with the complete
+    /// tableau (`is_subclass_of` = true). Catches clausifier/tableau
+    /// drift before it reaches users — the wedge's soundness contract.
+    #[test]
+    fn hyper_wedge_agrees_with_tableau() {
+        // A SROIQ-ish ontology with a covering + disjointness so the
+        // hierarchy isn't all told: Veg ≡ Topping ⊓ (Cheese ⊔ Plant);
+        // Cheese, Meat disjoint; Cheese, Plant ⊑ Topping.
+        let src = format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:Topping))\nDeclaration(Class(:Cheese))\n\
+Declaration(Class(:Plant))\nDeclaration(Class(:Meat))\nDeclaration(Class(:Veg))\n\
+SubClassOf(:Cheese :Topping)\nSubClassOf(:Plant :Topping)\nSubClassOf(:Meat :Topping)\n\
+DisjointClasses(:Cheese :Meat)\n\
+EquivalentClasses(:Veg ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Plant)))\n)\n"
+        );
+        let onto = parse(&src);
+        let internal = convert_ontology(&onto).expect("convert");
+        let cache = HyperCache::build(&internal);
+        let classes: Vec<(owl_dl_core::ir::ClassId, String)> = internal
+            .vocabulary
+            .classes()
+            .map(|(id, iri)| (id, iri.to_string()))
+            .collect();
+        for (sub, sub_iri) in &classes {
+            for (sup, sup_iri) in &classes {
+                if sub == sup {
+                    continue;
+                }
+                if cache.proves(*sub, *sup, None) {
+                    // Hyper proved it ⇒ the complete tableau must agree.
+                    let tableau =
+                        is_subclass_of_internal(internal.clone(), sub_iri, sup_iri).expect("ok");
+                    assert!(
+                        tableau,
+                        "hyper proved {sub_iri} ⊑ {sup_iri} but tableau disagrees"
+                    );
+                }
+            }
+        }
+    }
+
+    /// H4 `HyperCache::proves` works in isolation on the
+    /// distributed-covering subsumption (saturation misses it, hyper
+    /// proves it). Rules out a cache bug vs an orchestrator-wiring bug.
+    #[test]
+    fn hyper_cache_proves_distributed_covering() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:Topping))\nDeclaration(Class(:Cheese))\n\
+Declaration(Class(:Veg))\nDeclaration(Class(:Vegetarian))\n\
+SubClassOf(:Cheese :Topping)\n\
+EquivalentClasses(:Vegetarian \
+ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let cheese = internal
+            .vocabulary
+            .class_id("http://rustdl.test/Cheese")
+            .expect("interned");
+        let vegetarian = internal
+            .vocabulary
+            .class_id("http://rustdl.test/Vegetarian")
+            .expect("interned");
+        let cache = HyperCache::build(&internal);
+        assert!(
+            cache.proves(cheese, vegetarian, None),
+            "HyperCache must prove Cheese ⊑ Vegetarian"
+        );
+        let topping = internal
+            .vocabulary
+            .class_id("http://rustdl.test/Topping")
+            .expect("interned");
+        assert!(
+            !cache.proves(topping, vegetarian, None),
+            "Topping ⊑ Vegetarian must NOT be proven (not entailed)"
         );
     }
 

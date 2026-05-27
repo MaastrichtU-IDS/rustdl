@@ -101,6 +101,13 @@ enum Command {
         /// ~270 s to a few seconds while losing < 0.1% of
         /// subsumptions. Not recommended on SROIQ-heavy inputs
         /// (pizza loses ~20 %).
+        ///
+        /// To opt into the hypertableau sound-accelerator wedge (H4),
+        /// set the `RUSTDL_HYPERTABLEAU=1` environment variable — it
+        /// tries the hyperresolution engine before each tableau
+        /// subsumption probe and trusts its sound `Unsat` verdicts.
+        /// Default off. (Env var, not a flag, to avoid an `unsafe`
+        /// `set_var` under the crate's `unsafe_code` deny.)
         #[arg(long)]
         saturation_only: bool,
     },
@@ -271,6 +278,13 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             out,
             "# timed-out pairs: {} (defaulted to not-subsumed)",
             stats.timed_out_pairs
+        )?;
+    }
+    if stats.hyper_proven_pairs > 0 {
+        writeln!(
+            out,
+            "# hyper-proven pairs: {} (sound, skipped tableau)",
+            stats.hyper_proven_pairs
         )?;
     }
     let unsat = h.unsatisfiable_classes();

@@ -765,6 +765,11 @@ struct ExistentialTrigger {
 struct TseitinAllocator {
     next_id: u32,
     by_body: HashMap<Vec<ClassId>, ClassId>,
+    /// Cache for existential markers used to lower LHS conjunctions
+    /// containing existential operands (e.g. `∃R.B ⊓ A ⊑ C`). Keyed
+    /// by `(role, body_class_id)` so repeated occurrences of the same
+    /// `∃R.B` shape across different conjunctions share one marker.
+    by_existential: HashMap<(RoleId, ClassId), ClassId>,
 }
 
 impl TseitinAllocator {
@@ -772,6 +777,7 @@ impl TseitinAllocator {
         Self {
             next_id: u32::try_from(num_original_classes).expect("class count fits in u32"),
             by_body: HashMap::new(),
+            by_existential: HashMap::new(),
         }
     }
 
@@ -795,6 +801,30 @@ impl TseitinAllocator {
         });
         self.by_body.insert(body, synthetic);
         synthetic
+    }
+
+    /// Allocate (or reuse) a one-way marker class `F` for `∃R.B` used
+    /// inside an LHS conjunction. Emits the trigger `∃R.B ⊑ F`. **Does
+    /// not** emit the reverse `F ⊑ ∃R.B`: F is a marker meaning "has an
+    /// R-edge to a B", not equivalent to the existential.
+    fn introduce_existential_marker(
+        &mut self,
+        role: RoleId,
+        body: ClassId,
+        rules: &mut ElRules,
+    ) -> ClassId {
+        if let Some(&existing) = self.by_existential.get(&(role, body)) {
+            return existing;
+        }
+        let marker = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        rules.existential_triggers.push(ExistentialTrigger {
+            role,
+            body,
+            head: marker,
+        });
+        self.by_existential.insert((role, body), marker);
+        marker
     }
 }
 
@@ -973,9 +1003,43 @@ fn lower_sub_class_of(
             }
         }
         ConceptExpr::And(operands) => {
-            let Some(bodies) = atomic_classes(operands, pool) else {
+            // EL+ existential-in-conjunction lowering: each `∃R.B`
+            // operand is replaced by a Tseitin marker `F` with
+            // `∃R.B ⊑ F` emitted as an existential trigger, and `F` is
+            // added to the conjunctive body alongside the atomic
+            // operands. If *any* operand is neither atomic nor a
+            // named-role existential with an atomic-or-And body, drop
+            // the whole trigger (partial lowering would be unsound:
+            // the trigger would fire when only some of the required
+            // operands are present).
+            let mut bodies: Vec<ClassId> = Vec::with_capacity(operands.len());
+            let mut salvageable = true;
+            for &op in operands {
+                match pool.get(op) {
+                    ConceptExpr::Atomic(id) => bodies.push(*id),
+                    ConceptExpr::Some(role, body) if !role.is_inverse() => {
+                        let Some(body_id) =
+                            atomic_or_tseitin_body(*body, pool, rules, tseitin)
+                        else {
+                            salvageable = false;
+                            break;
+                        };
+                        let marker = tseitin.introduce_existential_marker(
+                            role.role_id(),
+                            body_id,
+                            rules,
+                        );
+                        bodies.push(marker);
+                    }
+                    _ => {
+                        salvageable = false;
+                        break;
+                    }
+                }
+            }
+            if !salvageable {
                 return;
-            };
+            }
             for head in atomic_operands_on_right(sup, pool) {
                 rules.conjunctive_triggers.push(ConjunctiveTrigger {
                     bodies: bodies.clone(),
@@ -1506,6 +1570,93 @@ Ontology(<http://rustdl.test/test>\n\
         // The r-witness for A is in B ⊓ C (via Range(s)); the trigger
         // `∃r.C ⊑ Has` fires.
         assert!(subs.contains(class(&internal, "A"), class(&internal, "Has")));
+    }
+
+    #[test]
+    fn lhs_conjunction_with_existential_operand_fires() {
+        // EL+ pattern from SIO: hypernym/synonym are both defined as a
+        // conjunction of an atomic class plus an existential. With sub-
+        // role relations linking the existentials' roles, one is ⊑ the
+        // other. The previous EL lowering dropped any LHS conjunction
+        // containing an existential operand and missed this entirely.
+        //
+        // - Synonym ≡ Word ⊓ ∃refersTo.Concept
+        // - Hypernym ≡ Word ⊓ ∃refersToBroader.Concept
+        // - refersToBroader ⊑ refersTo
+        // Then Hypernym ⊑ Synonym (a hypernym's referent witnesses
+        // satisfy the synonym's existential via the super-role).
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Synonym))\n\
+    Declaration(Class(:Hypernym))\n\
+    Declaration(Class(:Word))\n\
+    Declaration(Class(:Concept))\n\
+    Declaration(ObjectProperty(:refersTo))\n\
+    Declaration(ObjectProperty(:refersToBroader))\n\
+    SubObjectPropertyOf(:refersToBroader :refersTo)\n\
+    EquivalentClasses(:Synonym ObjectIntersectionOf(:Word ObjectSomeValuesFrom(:refersTo :Concept)))\n\
+    EquivalentClasses(:Hypernym ObjectIntersectionOf(:Word ObjectSomeValuesFrom(:refersToBroader :Concept)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "Hypernym"), class(&internal, "Synonym")),
+            "Hypernym ⊑ Synonym should hold via LHS-conjunctive-existential lowering"
+        );
+    }
+
+    #[test]
+    fn lhs_conjunction_existential_marker_is_shared_across_conjunctions() {
+        // Two distinct conjunctions reference the same `∃r.B` shape.
+        // The Tseitin existential-marker cache should reuse one marker
+        // F so the trigger `∃r.B ⊑ F` fires once and both conjunctive
+        // triggers fire when an A picks up F as a subsumer.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:C1))\n\
+    Declaration(Class(:C2))\n\
+    Declaration(Class(:A1))\n\
+    Declaration(Class(:A2))\n\
+    Declaration(Class(:Target))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(ObjectIntersectionOf(:A1 ObjectSomeValuesFrom(:r :B)) :C1)\n\
+    SubClassOf(ObjectIntersectionOf(:A2 ObjectSomeValuesFrom(:r :B)) :C2)\n\
+    SubClassOf(:Target :A1)\n\
+    SubClassOf(:Target :A2)\n\
+    SubClassOf(:Target ObjectSomeValuesFrom(:r :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Target"), class(&internal, "C1")));
+        assert!(subs.contains(class(&internal, "Target"), class(&internal, "C2")));
+    }
+
+    #[test]
+    fn lhs_conjunction_with_unsupported_operand_is_dropped() {
+        // If the LHS conjunction contains an operand neither atomic
+        // nor a named-role existential (here: a top-level disjunction),
+        // the whole trigger must be dropped — partial lowering would
+        // fire when only the lowerable operands match. The hypertableau
+        // path still handles the dropped axiom.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(Class(:Sink))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(ObjectIntersectionOf(:A ObjectUnionOf(:B :C) ObjectSomeValuesFrom(:r :D)) :Sink)\n\
+    SubClassOf(:A :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        // Sanity: ordinary subsumption still works after the drop.
+        assert!(!subs.contains(class(&internal, "A"), class(&internal, "Sink")));
     }
 
     #[test]

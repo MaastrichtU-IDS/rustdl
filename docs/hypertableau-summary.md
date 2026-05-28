@@ -48,7 +48,7 @@ against the transitive closure of Konclude's classification
 | pizza (SHOIN) | 43 s | 445/499, **0 FP**, 54 missed |
 | ro-stripped (SROIFV) | 27 s | 158/158, **0 FP**, 0 missed |
 | sulo-stripped (SRI) | < 1 s | 51/51, **0 FP**, 0 missed |
-| SIO (SRIQ, 1585 cls) | 13 m 22 s | 8812/8904, **0 FP**, 92 missed (FPs fixed 2026-05-28) |
+| SIO (SRIQ, 1585 cls) | 13 m 47 s | 8854/8904, **0 FP**, 50 missed (FPs fixed 2026-05-28; LHS-∃ rule closed 42 of 92 on 2026-05-29) |
 | family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
 | **GALEN (SHIF, 2748 cls)** — ORE 2015 | 2 m 20 s | 27829/27997, **0 FP**, 168 missed (99.4%) |
 | **ALEHIF+ test (168 cls)** — ORE 2015 | 31 s | 211/247, **0 FP**, 36 missed (85%) |

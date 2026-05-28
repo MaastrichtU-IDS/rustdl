@@ -69,8 +69,8 @@ use owl_dl_core::{
 #[must_use]
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let n = internal.vocabulary.num_classes();
-    let (rules, num_total_classes) = collect_el_rules(internal);
     let role_super = build_role_super(internal);
+    let (rules, num_total_classes) = collect_el_rules(internal, &role_super);
     let mut engine = WorklistEngine::new(n, num_total_classes, rules, role_super);
     engine.seed();
     engine.run();
@@ -798,35 +798,17 @@ impl TseitinAllocator {
     }
 }
 
-fn collect_el_rules(internal: &InternalOntology) -> (ElRules, usize) {
+fn collect_el_rules(
+    internal: &InternalOntology,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+) -> (ElRules, usize) {
     let mut rules = ElRules::default();
     let mut tseitin = TseitinAllocator::new(internal.vocabulary.num_classes());
+    // Pass 1: metadata that the SubClassOf lowering needs to see — in
+    // particular `role_ranges`, used below to fold range constraints
+    // into RHS existential bodies via Tseitin synthetics.
     for ax in &internal.axioms {
         match ax {
-            Axiom::SubClassOf { sub, sup } => {
-                lower_sub_class_of(*sub, *sup, &internal.concepts, &mut rules, &mut tseitin);
-            }
-            Axiom::EquivalentClasses(members) => {
-                // Decompose pairwise as mutual `SubClassOf` and route
-                // each direction through `lower_sub_class_of`. That
-                // handles compound members (e.g. `Test ≡ ∃r.(A⊓B)`)
-                // through the same path that processes told
-                // SubClassOf axioms, including the Tseitin allocator
-                // for compound existential bodies.
-                for i in 0..members.len() {
-                    for j in 0..members.len() {
-                        if i != j {
-                            lower_sub_class_of(
-                                members[i],
-                                members[j],
-                                &internal.concepts,
-                                &mut rules,
-                                &mut tseitin,
-                            );
-                        }
-                    }
-                }
-            }
             Axiom::DisjointClasses(members) => {
                 let atomics: Vec<ClassId> = members
                     .iter()
@@ -882,6 +864,62 @@ fn collect_el_rules(internal: &InternalOntology) -> (ElRules, usize) {
             _ => {}
         }
     }
+    // Build `effective_ranges[r]` = ⋃ { role_ranges[s] : r ⊑ s } using
+    // the role-super closure. A range on a super-role applies to every
+    // sub-role's successors (the witness of an r-existential is also
+    // an s-successor when r ⊑ s, so it inherits Range(s) too).
+    let mut effective_ranges: HashMap<RoleId, Vec<ClassId>> = HashMap::new();
+    for (&r, supers) in role_super {
+        let mut union: Vec<ClassId> = supers
+            .iter()
+            .flat_map(|s| rules.role_ranges.get(s).into_iter().flatten().copied())
+            .collect();
+        union.sort();
+        union.dedup();
+        if !union.is_empty() {
+            effective_ranges.insert(r, union);
+        }
+    }
+    // Pass 2: lower SubClassOf / EquivalentClasses with effective_ranges
+    // available so RHS existential bodies can be Tseitin-folded with
+    // their role's range constraint.
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                lower_sub_class_of(
+                    *sub,
+                    *sup,
+                    &internal.concepts,
+                    &mut rules,
+                    &mut tseitin,
+                    &effective_ranges,
+                );
+            }
+            Axiom::EquivalentClasses(members) => {
+                // Decompose pairwise as mutual `SubClassOf` and route
+                // each direction through `lower_sub_class_of`. That
+                // handles compound members (e.g. `Test ≡ ∃r.(A⊓B)`)
+                // through the same path that processes told
+                // SubClassOf axioms, including the Tseitin allocator
+                // for compound existential bodies.
+                for i in 0..members.len() {
+                    for j in 0..members.len() {
+                        if i != j {
+                            lower_sub_class_of(
+                                members[i],
+                                members[j],
+                                &internal.concepts,
+                                &mut rules,
+                                &mut tseitin,
+                                &effective_ranges,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     let total_classes = tseitin.next_id as usize;
     (rules, total_classes)
 }
@@ -896,6 +934,7 @@ fn lower_sub_class_of(
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) {
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
@@ -906,8 +945,11 @@ fn lower_sub_class_of(
                 });
             }
             // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
-            // synthetic atomic if the body is a compound And.
-            if let Some((role, target)) = atomic_existential(sup, pool, rules, tseitin) {
+            // synthetic atomic if the body is a compound And, OR if
+            // r has a range constraint that needs to be folded in.
+            if let Some((role, target)) =
+                atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
+            {
                 rules.existential_facts.push(ExistentialFact {
                     sub: *sub_id,
                     role,
@@ -918,7 +960,9 @@ fn lower_sub_class_of(
             // operand of a top-level And on the right.
             if let ConceptExpr::And(operands) = pool.get(sup) {
                 for op in operands {
-                    if let Some((role, target)) = atomic_existential(*op, pool, rules, tseitin) {
+                    if let Some((role, target)) =
+                        atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges)
+                    {
                         rules.existential_facts.push(ExistentialFact {
                             sub: *sub_id,
                             role,
@@ -943,6 +987,10 @@ fn lower_sub_class_of(
             // ∃r.B ⊑ C: existential trigger. Named role only; the
             // body may be atomic or an `And` of atomics, in which
             // case Tseitin introduces a synthetic atomic stand-in.
+            // Range constraints are NOT folded here: trigger bodies
+            // are matched against witness subsumers, and user classes
+            // aren't marked as subsumers of Range(R) — folding the
+            // range in would make the trigger never fire.
             if role.is_inverse() {
                 return;
             }
@@ -962,14 +1010,21 @@ fn lower_sub_class_of(
 }
 
 /// Extract `(role_id, target_class_id)` from `∃<named-role>.<body>`
-/// where `body` is either an atomic class or an `And` of atomics
-/// (Tseitin introduces a synthetic atomic stand-in in the latter
-/// case). Returns `None` for inverse roles or any other shape.
-fn atomic_existential(
+/// in **RHS** position (i.e., `A ⊑ ∃R.body`). Folds any
+/// `effective_ranges[role]` into the body via Tseitin: the witness of
+/// an R-existential is in `body ⊓ Range(R)`, so a synthetic
+/// `F ≡ body ⊓ Range(R)` stands in for the body. This is sound (the
+/// witness is constrained, not the type symbol `body` itself).
+///
+/// Returns `None` for inverse roles, non-atomic bodies, or any other
+/// shape (those are dropped from the EL fragment; the tableau path
+/// still handles them).
+fn atomic_existential_rhs(
     c: ConceptId,
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
+    effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) -> Option<(RoleId, ClassId)> {
     let ConceptExpr::Some(role, body) = pool.get(c) else {
         return None;
@@ -977,7 +1032,11 @@ fn atomic_existential(
     if role.is_inverse() {
         return None;
     }
-    let body_id = atomic_or_tseitin_body(*body, pool, rules, tseitin)?;
+    let extras = effective_ranges
+        .get(&role.role_id())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let body_id = atomic_or_tseitin_body_with_extras(*body, extras, pool, rules, tseitin)?;
     Some((role.role_id(), body_id))
 }
 
@@ -991,14 +1050,36 @@ fn atomic_or_tseitin_body(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
 ) -> Option<ClassId> {
-    match pool.get(body) {
-        ConceptExpr::Atomic(id) => Some(*id),
-        ConceptExpr::And(operands) => {
-            let atomics = atomic_classes(operands, pool)?;
-            Some(tseitin.introduce(atomics, rules))
-        }
-        _ => None,
+    atomic_or_tseitin_body_with_extras(body, &[], pool, rules, tseitin)
+}
+
+/// Like `atomic_or_tseitin_body`, but additionally folds `extras`
+/// (atomic class ids) into the synthetic body. When `extras` is
+/// non-empty, always allocates a Tseitin synthetic `F ≡ body ⊓
+/// extras…` even if `body` is itself atomic. Used at RHS existential
+/// sites to fold in `Range(R)` constraints, so the witness of an
+/// R-existential is correctly typed.
+fn atomic_or_tseitin_body_with_extras(
+    body: ConceptId,
+    extras: &[ClassId],
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) -> Option<ClassId> {
+    let body_atomics: Vec<ClassId> = match pool.get(body) {
+        ConceptExpr::Atomic(id) => vec![*id],
+        ConceptExpr::And(operands) => atomic_classes(operands, pool)?,
+        _ => return None,
+    };
+    if extras.is_empty() && body_atomics.len() == 1 {
+        return Some(body_atomics[0]);
     }
+    let mut combined: Vec<ClassId> = body_atomics;
+    combined.extend_from_slice(extras);
+    // `TseitinAllocator::introduce` sort+dedups; identical bodies map
+    // to the same synthetic, so two existentials A ⊑ ∃R.B and
+    // A' ⊑ ∃R.B with the same Range(R) share one synthetic F.
+    Some(tseitin.introduce(combined, rules))
 }
 
 fn atomic_classes(ids: &[ConceptId], pool: &ConceptPool) -> Option<Vec<ClassId>> {
@@ -1370,6 +1451,61 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(!subs.contains(class(&internal, "Dog"), class(&internal, "Person")));
+    }
+
+    #[test]
+    fn property_range_constrains_synthetic_witness_via_tseitin() {
+        // Sound counterpart of the unsound `Dog ⊑ Person` derivation:
+        // ObjectPropertyRange(hasOwner, Person) + Pet ⊑ ∃hasOwner.Dog
+        // means the hasOwner-witness of a Pet is in Dog ⊓ Person —
+        // even though Dog itself isn't subsumed by Person. The Tseitin
+        // encoding lowers the existential body to a synthetic F with
+        // F ⊑ Dog and F ⊑ Person, so the trigger
+        // `∃hasOwner.Person ⊑ HasHumanOwner` fires on Pet via F.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Pet))\n\
+    Declaration(Class(:Dog))\n\
+    Declaration(Class(:Person))\n\
+    Declaration(Class(:HasHumanOwner))\n\
+    Declaration(ObjectProperty(:hasOwner))\n\
+    ObjectPropertyRange(:hasOwner :Person)\n\
+    SubClassOf(:Pet ObjectSomeValuesFrom(:hasOwner :Dog))\n\
+    SubClassOf(ObjectSomeValuesFrom(:hasOwner :Person) :HasHumanOwner)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "Pet"), class(&internal, "HasHumanOwner")));
+        // The unsound class-level Dog ⊑ Person must still NOT hold.
+        assert!(!subs.contains(class(&internal, "Dog"), class(&internal, "Person")));
+    }
+
+    #[test]
+    fn property_range_via_super_role_constrains_witness() {
+        // Sub-role inherits its super-role's range: SubProperty(r, s),
+        // Range(s, C). A hasOwner-witness (via r) is also an s-witness,
+        // so it must be in C. The Tseitin fold should look up the
+        // super-role's range when lowering the r-existential.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:Has))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    SubObjectPropertyOf(:r :s)\n\
+    ObjectPropertyRange(:s :C)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :C) :Has)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        // The r-witness for A is in B ⊓ C (via Range(s)); the trigger
+        // `∃r.C ⊑ Has` fires.
+        assert!(subs.contains(class(&internal, "A"), class(&internal, "Has")));
     }
 
     #[test]

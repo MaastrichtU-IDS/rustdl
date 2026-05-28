@@ -76,17 +76,58 @@ fn anatomy_direct_subsumption_holds() {
 }
 
 #[test]
-fn anatomy_range_axiom_propagates_to_targets() {
-    // `ObjectPropertyRange(partOf BodyPart)` makes every partOf-target
-    // a BodyPart. Body, Head, Arm, Hand, Foot, ... all appear as
-    // partOf-targets in the ontology, so each should pick up
-    // `BodyPart` as a subsumer.
+fn anatomy_range_axiom_does_not_subsume_target_types() {
+    // The earlier version of this test asserted that `Body`, `Head`,
+    // `Arm`, ... ⊑ `BodyPart` because each appears as a partOf-target
+    // and `Range(partOf) = BodyPart`. That's the same unsound rule
+    // that produced the 38 SIO FPs traced 2026-05-28: a range axiom
+    // constrains the *instances* that are R-successors, not the
+    // *type symbol* used as the existential's target. A `Body` that
+    // is nobody's partOf-witness isn't required to be a BodyPart.
+    // Konclude agrees — none of these classes are ⊑ BodyPart in this
+    // ontology unless we add an explicit subsumption or a trigger.
+    //
+    // The sound encoding (Tseitin synthetic `F ≡ target ⊓ Range(R)`)
+    // constrains the existential's witness, not the target type. The
+    // exercise of that mechanism is covered by `anatomy_partof_trigger
+    // _fires_via_synthetic_range_fold` below.
     let onto = load();
     let h = classify(&onto).expect("classify");
     for class in ["Body", "Head", "Arm", "Hand", "Foot", "Torso"] {
         assert!(
-            h.is_subclass(&iri(class), &iri("BodyPart")),
-            "expected {class} ⊑ BodyPart via partOf range trigger",
+            !h.is_subclass(&iri(class), &iri("BodyPart")),
+            "{class} ⊑ BodyPart is NOT entailed — only its partOf-instances are BodyParts",
+        );
+    }
+}
+
+#[test]
+fn anatomy_partof_trigger_fires_via_synthetic_range_fold() {
+    // Positive cross-check that the sound range encoding actually
+    // propagates: extend the anatomy ontology with a trigger
+    // `∃partOf.BodyPart ⊑ EmbeddedPart`. Every class with a
+    // partOf-existential should pick up `EmbeddedPart` via the
+    // synthetic body F where F ⊑ <target> and F ⊑ BodyPart (the
+    // folded range from `Range(partOf) = BodyPart`).
+    use std::io::Cursor;
+
+    let base = std::fs::read_to_string(anatomy_path()).expect("read anatomy");
+    let last_paren = base
+        .rfind(')')
+        .expect("anatomy OFN ends with a closing paren");
+    let mut extended = String::with_capacity(base.len() + 200);
+    extended.push_str(&base[..last_paren]);
+    extended.push_str("    Declaration(Class(:EmbeddedPart))\n");
+    extended.push_str("    SubClassOf(ObjectSomeValuesFrom(:partOf :BodyPart) :EmbeddedPart)\n");
+    extended.push_str(&base[last_paren..]);
+    let mut reader = Cursor::new(extended);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read(&mut reader, ParserConfiguration::default()).expect("extended parses");
+    let h = classify(&onto).expect("classify");
+    for class in ["Head", "Hand", "Finger", "Toe", "Heart"] {
+        assert!(
+            h.is_subclass(&iri(class), &iri("EmbeddedPart")),
+            "{class} should be ⊑ EmbeddedPart via the synthetic body picking up Range(partOf) = BodyPart",
         );
     }
 }

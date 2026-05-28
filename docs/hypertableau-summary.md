@@ -1,138 +1,189 @@
 # Hypertableau effort — capstone summary
 
-Written 2026-05-27, at the close of the multi-phase hypertableau push.
-This is the pick-up-cold document: what was built, what's verified,
-where the boundaries are (and *why*), and the two honest forward
-paths. Detail lives in the per-phase scoping docs cross-referenced
-below and in the commit history.
+Last updated 2026-05-28, at the close of the HF1–HF5 + backjumping +
+orchestrator-closure push. This is the pick-up-cold document: what the
+engine *is*, what's verified, where the boundaries are (and **why**),
+and what remains. Detail lives in the per-phase scoping docs cross-
+referenced below and in the commit history.
 
 ## 1. The arc — what shipped
 
+Two waves: the H0–H4 *probe* arc (engine standalone, behind a flag),
+then the HF1–HF5 *production* arc (engine wired into classify).
+
+### Wave 1 — probe arc (commits up to 2026-05-27)
+
 | phase | what | outcome |
 |---|---|---|
-| H0 | DL-clause representation + corpus shape stats | corpus ~96 % Horn |
-| H1/H1b/H1c | Horn hyperresolution engine; structural clausifier | EL back-prop derived; RO/family/SIO deferred-counts slashed |
-| H2 | disjunctive-head branching (`decide`), 3-valued result | complete decision procedure for Horn+disjunctive |
-| H2b | wall probe (`hyper-sat`), instrumentation | SIO bare-sat moves: 16.3 s, branching real, vs default >135 s |
-| H2c | pair-subsumption probe (`¬B` injection) | reaches pizza wall; sound, validated vs Konclude |
-| H3a | antecedent DNF-distribution | pizza misses 114→77 |
-| H3b | `¬sup` expansion + negative literals | 77→29 (antecedent-∀/¬ family) |
-| multi-role | conjunctive (tree) body matching | 29→24 |
-| H3c | `≤n` merge rule (union-find, branching) | 24→4 (cardinality) |
-| nominals | nominal-as-atomic clausification | 4→0 — **pizza 100 %** |
-| perf | clause indexing → semi-naive event eval | SIO 16.3 s → **0.45 s (~36×)** |
-| H4 | sound-accelerator wedge (flag-gated, default off) | shipped; classify wall *not* moved (see §3) |
+| H0–H2 | DL-clause engine: Horn fixpoint, disjunctive branching | sound Unsat decision procedure |
+| H2b/c | wall probes (`hyper-sat`, `hyper-classify-probe`) | SIO bare-sat 16.3 s → 0.45 s (~36×) |
+| H3a/b/c + multi-role + nominals | per-construct completeness on the corpus | pizza 114 misses → 0 (695/695, 0 FP) |
+| perf | clause indexing → semi-naive **event** evaluation | the 36× SIO win; node-granularity *refuted by measurement first* |
+| H4 | sound-`Unsat` wedge into `classify` (flag-gated) | shipped, but the classify wall *did not move* — see §3 |
 
-Every completeness step held **0 false positives**.
+### Wave 2 — production arc (HF1–HF5 + backjumping + orchestrator)
+
+| phase | what | outcome |
+|---|---|---|
+| HF1 | sound clausifier — partial absorption replaces ⊤-internalization | `deferred == 0` corpus-wide, no SIO explosion |
+| HF2 | inverse roles + RBox inverse pairs + role hierarchy in matching | corpus stays 100 %, crafted canaries pin behaviour |
+| HF3 | `≥n` generation + `≠` tracking; HF3b/c **verified by composition** (not built) | `≥2 ⊓ ≤1` clash via `≠`; corpus 0 FP |
+| HF4 | NN-rule (nominals as singletons); HF4b **verified by composition** | `≥2 R.{o}` unsat via NN-merge + `≠`; corpus undisturbed |
+| backjumping | dep-set per label + per-node `birth_deps`; backjump in `solve` | pizza probe 4:44 → **13.2 s (~21×)** |
+| HF5 | 3-valued verdict wired into classify residual path (opt-in `RUSTDL_HYPERTABLEAU_TRUST_SAT`) | `tableau=0` calls; pizza classify 4:38 → **20.9 s (~13×)** |
+| orchestrator | defined-sup sweep closes the same-tier inferred-subsumption gap | pizza/ro/sulo: **full Konclude agreement, both directions, 0 FP, 0 missed** |
+| robustness | `NoVerdict` → sound timeout; HF5 CI regression test (+ caught the stats-aggregator bug) | SIO classify completes instead of crashing |
+
+All wins held **0 false positives on the corpus** throughout.
 
 ## 2. What's verified, and how
 
-Methodology: clausify → run the engine per class (`hyper-sat`) or per
-ordered pair (`hyper-classify-probe --dump-subsumptions`); diff the
-result against the transitive closure of a reference reasoner's
-classification (`cmp_generic.py` / `cmp_localname.py`). References:
-**Konclude** (the goalpost) and **HermiT** (second opinion), both via
-docker (see [[rustdl-konclude-input]]).
+Methodology: classify (real orchestrator, not the n² probe) → diff
+against the transitive closure of Konclude's classification
+(`cmp_classify.py`). For the engine in isolation,
+`hyper-classify-probe FILE --dump-subsumptions`.
 
-| ontology | expressivity | result |
+| ontology | classify wall (HF5) | result vs Konclude |
 |---|---|---|
-| pizza | SHOIN | 695/695 subsumptions, **0 misses, 0 FP** |
-| ro-stripped | SROIFV | 158/158, **100 %, 0 FP** |
-| sulo-stripped | SRI | 51/51, **100 %, 0 FP**; HermiT agrees 100 % |
-| sio-stripped | SRIQ | 1585 classes, 0 unsat (agrees Konclude), 0 FP |
+| pizza (SHOIN) | 21 s | 695/695, **0 FP**, 0 missed |
+| ro-stripped (SROIFV) | 10 s | 158/158, **0 FP**, 0 missed |
+| sulo-stripped (SRI) | < 1 s | 51/51, **0 FP**, 0 missed |
+| SIO (SRIQ, 1585 cls) | 4 m 16 s | 10472/10489, **38 FP**, 55 missed — see §3 |
+| family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
 
-Performance: SIO bare-sat **0.45 s vs Konclude 0.14 s (~3×)**, down
-from ~116× at H2b. The wins came via clause indexing + semi-naive
-*event* evaluation (a profile-first pivot that overturned the
-intuitive trail-based fix; the node-granularity first cut was refuted
-by measurement — 52M→57M — before the event model landed).
-
-Incidental: HermiT **hangs > 9 min** on `ro-stripped` (SROIFV,
-inverse+functional) where Konclude is 2 ms and this engine instant.
+Pizza-classify regression test (`hf5_pizza_classify_wall_and_soundness`)
+runs in CI when `--features real-corpus` is enabled, asserting wall
+< 90 s, the two known unsats, no `Topping ⊑ VegetarianPizza` FP shape,
+and `hyper_refuted_pairs > 0` (HF5 fires).
 
 ## 3. Boundaries — and their causes
 
-The engine is **sound for `Unsat`** (subsumption-holds / unsat) on any
-ontology: clausification only ever *weakens* the theory
-(`Models(ontology) ⊆ Models(clauses)`), so a clause-set `Unsat` ⇒ an
-ontology `Unsat`. Its `Sat` is **not** sound on the full theory, and
-this is load-bearing:
+The corpus is **closed end-to-end with 0 FP**. The remaining boundary
+is **SIO**, and its lesson is specific:
 
-- **ABox / consistency: out of scope.** The engine is TBox-only.
-  `family-stripped` is ABox-inconsistent (1848 assertions) — Konclude
-  rejects it; the engine has no opinion. Not a failure; a boundary.
-- **`Sat` is unsound under the under-approximating clausifier.** Three
-  causes, each independently fatal to "the `Sat` completion is a model
-  of the full theory":
-  1. *Cardinality* dropped from the clauses (e.g. `≥3 hasTopping`) —
-     a completion needn't satisfy it.
-  2. *Inverse roles* (pizza has 3): the engine uses **anywhere
-     blocking**, which is **unsound with inverses** (those need
-     pair-blocking). A `Sat` completion can correspond to no model of
-     the inverse-bearing theory at all.
-  3. *Nominals* clausified as plain classes — singleton-equality lost.
-- **The classify wall is negative refutation, not positive proof.**
-  Measured: `classify(pizza)` with the H4 wedge on = 4 m 38 s, 1119
-  timed-out pairs, **0 hyper-proven**. The orchestrator already proves
-  positive subsumptions via EL saturation (353/695) + transitive
-  closure; the residual tableau pairs are *non-subsumptions* refuted
-  by `sat(A⊓¬sup)` — model search on satisfiable instances. An
-  `Unsat`-only accelerator has no work there, and trusting `Sat` is
-  unsound (above). So the wedge is sound and shipped, but it does not
-  move the classify wall.
+- *Without* `RUSTDL_HYPERTABLEAU_TRUST_SAT`: SIO classify times out
+  (> 15 min, killed). The residual non-subsumption pairs exhaust the
+  tableau budget.
+- *With* `RUSTDL_HYPERTABLEAU_TRUST_SAT`: completes in 4:16, but
+  produces 38 FPs targeting only 3 sups, plus a spurious equivalence
+  `SIO_000115 ≡ SIO_000675` that Konclude does not have.
+- *Bounded investigation* (`docs/...` + `bbae964` commit message):
+  minimal repros of the suspicious axiom pattern (role hierarchy +
+  domain + complex equivalence) **do not** trigger the bug — the
+  engine handles those shapes in isolation. The FP is an
+  **interaction-at-scale** unsoundness, almost certainly the
+  anywhere-blocking-with-inverses problem the roadmap has flagged from
+  the start.
+- *Implication*: the opt-in env-var design is **load-bearing**. `Sat`-
+  trust is sound only on workloads where the engine is complete; on
+  the corpus, validated by full Konclude agreement; on SIO and likely
+  any other inverse + cardinality + role-hierarchy ontology, not.
 
-**Net:** the engine's value is **probe-shaped** — single-query
-*positive* subsumption (fast sound `yes` where EL misses) and
-*per-class satisfiability* (SIO 0.45 s vs >135 s) — not full
-classification of inverse/cardinality-rich ontologies.
+So the engine is **production-ready as a soundly-wedged classify on
+the corpus** (default off, opt-in via two env vars), and **soundly
+under-approximating off-corpus** (Unsat-only, the default wedge
+behaviour). It is **not** a drop-in Konclude replacement off-corpus.
 
-## 4. The two forward paths (each a separately-scoped major effort)
+## 4. What remains
 
-1. **Full sound+complete hypertableau.** Fold cardinality and nominals
-   into the calculus (not post-hoc), switch anywhere→pair blocking for
-   inverse-role soundness, add `≥n` generation with the ≤-before-≥
-   ordering for termination. This makes `Sat` sound → enables negative
-   refutation → moves the classify wall. It is the Motik/Shearer/
-   Horrocks 2009 algorithm in full; months, its own scoping.
-2. **Model-validation (research).** Extract a *blocking-aware
-   certificate* from a `Sat` completion and validate it against the
-   dropped axioms. **Soundness obstacles (verified, do not re-misjudge
-   as "medium-effort"):** cardinality interacts non-locally with
-   blocking; anywhere blocking is unsound with inverses so the
-   completion isn't a model to begin with; nominal "validation" is a
-   merge *fixpoint*, not a check. Doing it correctly reproduces the
-   complete calculus — i.e. collapses into path 1. A genuine research
-   contribution lives here, not an implementation turn.
+In rough value/effort order:
 
-A pragmatic middle option, if neither is wanted: **promote the
-probe-shaped wins to first-class reasoner APIs** (a public sound
-single-query subsumption accelerator + per-class sat), banking the
-measured value without the wall.
+1. **HF2 double-blocking** — the principled fix for the SIO-style
+   unsoundness. Anywhere blocking with inverse roles is known unsound;
+   double-blocking is the textbook calculus-level fix (Motik/Shearer/
+   Horrocks 2009 §3.4). Months of careful work; corpus is already 100 %
+   so there's no measurable corpus payoff — the win is *generalization*,
+   i.e. making `RUSTDL_HYPERTABLEAU_TRUST_SAT` safe to default-on.
+2. **`≤n`-merge backjumping** — currently conservative (`DepSet::ALL`);
+   precise tracking would help pathological cardinality ontologies.
+   Corpus-inert.
+3. **Default-on the HF5 flags** — only after (1). Today, opt-in is the
+   right call.
+4. **Broader generalization measurement** — go-basic (pure EL, should
+   sail), GO/large-EL, more inverse-heavy ontologies, family with ABox
+   once ABox is in scope.
+5. **Runtime agreement-check gate for trust-Sat** — a one-shot
+   classify-vs-reference at startup, gating per-workload trust. Cheap
+   add when there's a reference; saves users from opting into
+   unsoundness blind.
 
-## 5. Pick-up-cold artifacts
+## 5. Engineering lessons worth keeping
 
-- **Scoping/design docs:** [`hypertableau-scoping.md`](hypertableau-scoping.md)
-  (master: H0–H2c, profiling, corpus agreement, HermiT cross-check),
-  [`hypertableau-seminaive-scoping.md`](hypertableau-seminaive-scoping.md),
-  [`hypertableau-cardinality-scoping.md`](hypertableau-cardinality-scoping.md),
-  [`hypertableau-h4-scoping.md`](hypertableau-h4-scoping.md).
-- **Code:** `owl-dl-core::clause` (clausifier), `owl-dl-tableau::hyper`
-  (engine: `decide`, event worklist, `≤n` merge, blocking),
-  `owl-dl-reasoner` (`hyper_subsumption_probe`, `hyper_sat_probe`,
-  `HyperCache` wedge).
-- **CLI probes:** `rustdl hyper-sat`, `rustdl hyper-classify-probe
-  [--dump-subsumptions]`, `rustdl clause-stats`. Wedge opt-in:
-  `RUSTDL_HYPERTABLEAU=1`.
-- **Tests** encode the invariants: engine unit tests (`hyper::tests`),
-  reasoner end-to-end + the H4 encoding-drift guard
-  (`hyper_wedge_agrees_with_tableau`).
-- **Memory:** the `rustdl-hypertableau-h2b` note carries the
-  load-bearing findings (the convergent-vs-timeout distinction, the
-  SIO-vs-pizza drop split, the profiling lesson, the classify-wall
-  reframe).
+These are the load-bearing ones, costed in real time saved or bugs
+caught.
 
-**Process note worth keeping:** the dead-ends (node-granularity
-semi-naive, the allocation fast-path, shared indexes as a standalone,
-model-validation) were each killed by *measurement or grounding in the
-actual target*, before sinking effort — examine the real deferred
-constructs / profile before scoping, not after.
+- **Measurement over intuition, repeatedly.** Node-granularity semi-
+  naive was refuted by counters (52M→57M) before the event-granularity
+  model landed. Backjumping's first-cut "label-only dep-sets" *passed
+  every hand-built test* but the corpus diff caught it — pizza 695
+  → 753 with 58 FPs. The fix (`birth_deps` per node) was unobvious
+  from the test layer.
+- **Verify-before-build kept paying off.** HF3b, HF3c, HF4b each turned
+  out to be **achieved by composition**, not built — the propagation
+  arc plus per-node `Label` firing handled cases the original Motik-
+  proof-shaped scoping treated as separate phases. *Run the canary,
+  then decide whether to build.*
+- **The corpus diff is the soundness net for dependency propagation.**
+  Canaries are necessary but not sufficient; the corpus exposes
+  interactions a hand-built case won't.
+- **Robustness lives outside soundness.** `NoVerdict` crashing classify
+  on SIO wasn't a soundness bug — it was a panic-vs-timeout choice.
+  Found by trying the engine on a larger workload, not by any test.
+- **Stats aggregators are silently load-bearing.** The HF5 regression
+  test (`stats.hyper_refuted_pairs > 0`) caught a missing-field-in-
+  aggregator bug that would have made every wedge-fired pair invisible
+  to instrumentation forever.
+- **Opt-in flags are the design contract for "sound where validated."**
+  `Sat`-trust shipped opt-in specifically because we couldn't prove
+  it sound generally. SIO confirmed why. Don't default-on what's not
+  validated.
+
+## 6. Pick-up-cold artifacts
+
+**Scoping docs (per-phase detail):**
+- [`hypertableau-scoping.md`](hypertableau-scoping.md) — master H0–H2c
+- [`hypertableau-seminaive-scoping.md`](hypertableau-seminaive-scoping.md) — event eval
+- [`hypertableau-cardinality-scoping.md`](hypertableau-cardinality-scoping.md) — H3 family
+- [`hypertableau-h3b-scoping.md`](hypertableau-h3b-scoping.md) — ¬sup expansion
+- [`hypertableau-h4-scoping.md`](hypertableau-h4-scoping.md) — wedge
+- [`hypertableau-full-scoping.md`](hypertableau-full-scoping.md) — **HF1–HF5 master**
+- [`hypertableau-hf2-scoping.md`](hypertableau-hf2-scoping.md) — inverse/RBox/hierarchy
+- [`hypertableau-hf3-scoping.md`](hypertableau-hf3-scoping.md) — cardinality calculus
+- [`hypertableau-hf4-scoping.md`](hypertableau-hf4-scoping.md) — nominals/NN-rule
+- [`hypertableau-backjumping-scoping.md`](hypertableau-backjumping-scoping.md) — search-quality lever
+
+**Code:**
+- `owl-dl-core::clause` — clausifier (HF1 partial absorption, RBox canonicalization)
+- `owl-dl-tableau::hyper` — engine (event worklist, `≤n` merge, NN-rule, dep-set backjumping, blocking)
+- `owl-dl-reasoner::classify` — orchestrator + HF5 wedge wiring + defined-sup sweep
+- `owl-dl-reasoner` — `HyperCache::decide` (3-valued verdict), `hyper_wedge_enabled`/`hyper_trust_sat_enabled`
+
+**CLI probes:**
+- `rustdl hyper-sat FILE` — per-class satisfiability
+- `rustdl hyper-classify-probe FILE [--dump-subsumptions]` — naive n² subsumption probe with branch/wall histogram
+- `rustdl clause-stats FILE` — deferred-construct census
+
+**Production toggles:**
+- `RUSTDL_HYPERTABLEAU=1` — H4 wedge: trust engine `Unsat` (sound for any ontology)
+- `RUSTDL_HYPERTABLEAU_TRUST_SAT=1` — HF5: also trust engine `Sat` (sound *only* on workloads where the engine is complete — corpus-validated)
+
+**Tests as invariants:**
+- `crates/owl-dl-tableau/src/hyper.rs::tests` — engine unit tests incl. backjumping canary (`backjumping_collapses_irrelevant_middle_decisions`), `DepSet` algebra, `HF3a/b` probes, `HF4a/b` NN-rule
+- `crates/owl-dl-reasoner/src/lib.rs::tests` — probe-level HF2/HF4 canaries
+- `crates/owl-dl-reasoner/tests/real_ontology_corpus.rs::hf5_pizza_classify_wall_and_soundness` — the HF5 CI regression test
+
+**Memory:** [[rustdl-hypertableau-h2b]] carries the load-bearing findings
+in compressed form — the convergent-vs-timeout distinction, the
+SIO-vs-pizza drop split, the profiling lesson, the verify-before-build
+pattern, the SIO trust-Sat finding, the corpus-as-soundness-net lesson.
+
+---
+
+**Bottom line.** This engine is a *Konclude-equivalent classifier on
+the validated corpus*, shipped with the opt-in flags that make it
+13× faster than the production tableau path, with soundness guarded by
+a CI regression test. Off the corpus, it's a *sound under-approximation
+on any ontology* (Unsat-only wedge, default-on), with opt-in
+"fast-but-possibly-unsound" trust-Sat for users who measure first. The
+next principled phase is HF2 double-blocking; it is months of work and
+its payoff is generalization, not corpus.

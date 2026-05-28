@@ -200,7 +200,41 @@ pairs aren't tested in the residual path at all) — orchestrator work,
 not HF5.
 
 (Old gate text — "0 misses" — was the wrong target: HF5 is the residual-
-path wiring; orchestrator completeness is its own phase.)
+path wiring; orchestrator completeness is its own phase, since closed
+by the defined-sup sweep: pizza 695/695, ro 158/158, sulo 51/51, all
+0 FP, 0 missed.)
+
+**Generalization measurement — SIO (`sio-stripped`, 1585 classes)**
+concretely demonstrates why `Sat`-trust is opt-in:
+- *Without* `RUSTDL_HYPERTABLEAU_TRUST_SAT`: classify times out (>15
+  min, killed). The tableau fallback on the residual non-subsumption
+  pairs exhausts the per-pair budget on too many pairs.
+- *With* `RUSTDL_HYPERTABLEAU_TRUST_SAT`: classify completes in **4:16**
+  (4× faster than the timeout), **but produces 38 false positives**
+  (e.g. `SIO_001030 ⊑ SIO_000675`). All FPs target one of 3 sups; rustdl
+  derived a spurious equivalence `SIO_000115 ≡ SIO_000675` that
+  Konclude does not have. Likely cause: anywhere-blocking is unsound on
+  SIO's role structure (inverses + transitives + chains), so the
+  engine's `Sat` ("found a model") returns a model that isn't a model
+  of the full ontology — trusting it as "not subsumed" introduces the
+  reverse subsumption (because the *other* direction's `Unsat`-via-
+  Sat-trust-orchestration combines into an equiv).
+
+**Implication.** The opt-in design is correct and load-bearing.
+`Sat`-trust shipping default-off remains the right call until HF2
+double-blocking lands; on workloads where it can be validated against a
+reference (corpus-style), the 13× win is real; on workloads where it
+can't, the env var is the user's deliberate opt-in to "fast but
+possibly unsound." A future phase: add a one-shot agreement check
+(against a reference classification) to gate the trust-Sat behaviour
+per-workload at runtime.
+
+**Robustness fix shipped in passing.** SIO classify originally crashed
+with `ReasonError::NoVerdict` (tableau internal cap) on the larger
+workload. The orchestrator now treats `NoVerdict` from
+`subsumes_via_tableau` / per-class unsat probes as a sound timeout
+(default not-subsumed / possibly-sat) — crashing classify on a single
+oversized pair is worse than under-reporting.
 
 ## §3 — Out of scope (named, so they don't bloat)
 

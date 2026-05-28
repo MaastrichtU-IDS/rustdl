@@ -685,9 +685,18 @@ pub(crate) fn classify_top_down_internal(
                 Ok((i, false, true))
             } else if let Some(timeout) = per_pair_timeout {
                 let deadline = Instant::now() + timeout;
-                let sat = prepared
-                    .decide_with_deadline(deadline, move |pool| pool.atomic(class_id))?
-                    .unwrap_or(true);
+                // Robustness: a `NoVerdict` (tableau internal cap, hit
+                // on large workloads like SIO) is treated as "possibly
+                // satisfiable" — the class survives the unsat probe,
+                // sound under-approximation. Crashing classify on a
+                // single oversized class is worse.
+                let sat = match prepared
+                    .decide_with_deadline(deadline, move |pool| pool.atomic(class_id))
+                {
+                    Ok(Some(s)) => s,
+                    Ok(None) | Err(crate::ReasonError::NoVerdict) => true,
+                    Err(other) => return Err(other),
+                };
                 Ok((i, sat, false))
             } else {
                 let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
@@ -1068,12 +1077,22 @@ fn subsumes_via_tableau(
         }
         Some(timeout) => {
             let deadline = Instant::now() + timeout;
-            if let Some(sat) = prepared.decide_with_deadline(deadline, build)? {
-                stats.tableau_subsumption_calls += 1;
-                Ok(Some(!sat))
-            } else {
-                stats.timed_out_pairs += 1;
-                Ok(None)
+            // Robustness: a `ReasonError::NoVerdict` (tableau internal
+            // cap, e.g. on large workloads like SIO) is treated as a
+            // sound timeout — the pair defaults to "not subsumed"
+            // (sound under-approximation), counted in `timed_out_pairs`.
+            // Crashing classify on a single oversized pair is worse
+            // than under-reporting the subsumption.
+            match prepared.decide_with_deadline(deadline, build) {
+                Ok(Some(sat)) => {
+                    stats.tableau_subsumption_calls += 1;
+                    Ok(Some(!sat))
+                }
+                Ok(None) | Err(crate::ReasonError::NoVerdict) => {
+                    stats.timed_out_pairs += 1;
+                    Ok(None)
+                }
+                Err(other) => Err(other),
             }
         }
     }

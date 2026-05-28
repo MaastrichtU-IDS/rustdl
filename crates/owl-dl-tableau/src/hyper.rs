@@ -209,6 +209,15 @@ impl HyperNode {
     }
 }
 
+/// Branch save/restore snapshot — captures every mutable engine state
+/// that branching can alter, so a failed branch fully reverts.
+struct Snapshot {
+    nodes: Vec<HyperNode>,
+    representative: Vec<HNode>,
+    neq: Vec<(HNode, HNode)>,
+    block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
+}
+
 /// Outcome of a Horn hyperresolution run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HyperResult {
@@ -287,6 +296,12 @@ pub struct HyperEngine<'c> {
     /// soundness with inverse roles; without it, `RUSTDL_HYPERTABLEAU_TRUST_SAT`
     /// is corpus-only safe (see SIO finding).
     double_blocking: bool,
+    /// HF2-double-blocking performance index: nodes partitioned by
+    /// `parent_role`. Skipping incompatible candidates without scanning
+    /// the full nodes vec cuts `is_blocked` cost from O(n) to
+    /// O(bucket-size). `None` unless double-blocking is enabled (no
+    /// overhead on the default anywhere-blocking path).
+    block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
     /// `HF4a` nominal class range `[start, start + count)`. A class id in
     /// this range names a singleton `{a}`, so any two distinct nodes
     /// carrying it must be the *same* individual — the NN-rule merges
@@ -393,6 +408,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            block_index: None,
         }
     }
 
@@ -403,6 +419,7 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_double_blocking(mut self) -> Self {
         self.double_blocking = true;
+        self.block_index = Some(std::collections::HashMap::new());
         self
     }
 
@@ -493,18 +510,30 @@ impl<'c> HyperEngine<'c> {
         if self.double_blocking {
             // HF2 double-blocking (Motik et al. §3.4): require equal
             // labels + equal parent labels + equal incoming-edge role.
-            // The root is never blocked (no parent).
-            let Some(np) = ln.parent else { return false };
-            let pn_labels = &self.nodes[np.index()].labels;
-            let nr = ln.parent_role.expect("non-root has parent_role");
-            for m in &self.nodes {
-                if m.order >= ln.order {
+            // The root is never blocked (no parent). Performance:
+            // iterate only same-parent-role nodes via `block_index`
+            // (O(bucket) vs O(n) for the full scan). No clones — all
+            // accesses go through `self.nodes[..]` immutable borrows,
+            // which Rust allows concurrently.
+            let (np, nr, ln_order) = {
+                let Some(np) = ln.parent else { return false };
+                let nr = ln.parent_role.expect("non-root has parent_role");
+                (np, nr, ln.order)
+            };
+            let candidates: &[HNode] = self
+                .block_index
+                .as_ref()
+                .and_then(|ix| ix.get(&nr))
+                .map_or(&[], Vec::as_slice);
+            for &m_hnode in candidates {
+                let m = &self.nodes[m_hnode.index()];
+                if m.order >= ln_order {
                     continue;
                 }
                 let Some(mp) = m.parent else { continue };
-                let mp_labels = &self.nodes[mp.index()].labels;
-                let mr = m.parent_role.expect("non-root has parent_role");
-                if ln.labels == m.labels && *pn_labels == *mp_labels && nr == mr {
+                if self.nodes[n.index()].labels == m.labels
+                    && self.nodes[np.index()].labels == self.nodes[mp.index()].labels
+                {
                     return true;
                 }
             }
@@ -784,21 +813,24 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Snapshot the mutable graph state for branch save/restore: the
-    /// nodes, the merge union-find, and the `≠` relation (all revert on
-    /// a failed branch).
-    fn save(&mut self) -> (Vec<HyperNode>, Vec<HNode>, Vec<(HNode, HNode)>) {
+    /// nodes, the merge union-find, the `≠` relation, and (when
+    /// double-blocking is on) the parent-role partition index. All
+    /// revert on a failed branch.
+    fn save(&mut self) -> Snapshot {
         self.stats.node_clones += 1;
-        (
-            self.nodes.clone(),
-            self.representative.clone(),
-            self.neq.clone(),
-        )
+        Snapshot {
+            nodes: self.nodes.clone(),
+            representative: self.representative.clone(),
+            neq: self.neq.clone(),
+            block_index: self.block_index.clone(),
+        }
     }
 
-    fn restore(&mut self, saved: (Vec<HyperNode>, Vec<HNode>, Vec<(HNode, HNode)>)) {
-        self.nodes = saved.0;
-        self.representative = saved.1;
-        self.neq = saved.2;
+    fn restore(&mut self, saved: Snapshot) {
+        self.nodes = saved.nodes;
+        self.representative = saved.representative;
+        self.neq = saved.neq;
+        self.block_index = saved.block_index;
         self.stats.restores += 1;
     }
 
@@ -1215,6 +1247,9 @@ impl<'c> HyperEngine<'c> {
         self.nodes[succ.index()].birth_deps = deps;
         self.nodes[succ.index()].parent = Some(src);
         self.nodes[succ.index()].parent_role = Some(role);
+        if let Some(ix) = self.block_index.as_mut() {
+            ix.entry(role).or_default().push(succ);
+        }
         self.nodes[src.index()].edges.push((role, succ));
         self.nodes[succ.index()].preds.push((role, src));
         // The new edge fires role-triggered clauses at `src`; the seed
@@ -1307,6 +1342,9 @@ impl<'c> HyperEngine<'c> {
             self.nodes[succ.index()].birth_deps = deps;
             self.nodes[succ.index()].parent = Some(x);
             self.nodes[succ.index()].parent_role = Some(role);
+            if let Some(ix) = self.block_index.as_mut() {
+                ix.entry(role).or_default().push(succ);
+            }
             self.nodes[x.index()].edges.push((role, succ));
             self.nodes[succ.index()].preds.push((role, x));
             self.worklist.push(Event::Edge(x, role, succ));

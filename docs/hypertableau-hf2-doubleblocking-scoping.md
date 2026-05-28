@@ -228,23 +228,41 @@ default path is unaffected).
 
 ## §9 — What's needed to ship default-on
 
-Performance optimization is the gating phase:
+Performance optimization is the gating phase. The first lever tried —
+a **parent-role partition index** (`block_index: HashMap<Role, Vec<HNode>>`,
+plumbed through save/restore so branches don't leak HNodes) — was
+implemented and **gave no measurable speedup** (ro still 111 s with
+the index). The empirical finding rules out "candidate count is the
+bottleneck"; the cost is dominated by something else.
 
-1. **Block-index** — partition nodes by `(parent_role, label_set_hash)`
-   so `is_blocked` skips incompatible candidates without scanning. Even
-   a coarse role-only partition would cut ro from 111 s to seconds.
-2. **Incremental block-status** — recompute only when a node's labels
-   change (current code re-scans on every blocking check).
-3. **Sub-set fast paths** — many blocking checks have one side that's
-   trivially smaller; bail out without the full equality.
+**Hypothesis (not yet confirmed by profiling):** the bottleneck is the
+*number of nodes generated*, not the `is_blocked` iteration cost.
+Label-equality blocking is strictly tighter than label-subset, so
+fewer nodes are blocked → more nodes are generated → all downstream
+work (clause firing, label propagation, role matching) scales with
+node count. The block-index helps the wrong dimension.
+
+Real levers, ranked by promise:
+
+1. **Profile first.** Add counters for `is_blocked` calls,
+   labels-comparison count, generation count. The 11× ro slowdown
+   should localize to one or two of these.
+2. **Reduce generation** — a *refined* blocking condition that's
+   still sound but blocks more cases. Approximation blocking (Motik et
+   al.) is the textbook candidate; less well-known refinements exist.
+3. **Incremental block-status** — cache whether each node is blocked,
+   invalidate on label change. Skip the `is_blocked` recomputation on
+   every check.
+4. **Transitive-role short-circuits** — ro is SROIFV-heavy with
+   transitive roles; transitive chains may dominate node generation.
 
 Once ro-stripped runs in ≤ 15 s with double-blocking on, SIO is the
 real test — and only then can `RUSTDL_HYPER_DOUBLE_BLOCK` default-on,
 unlocking default-on `RUSTDL_HYPERTABLEAU_TRUST_SAT`.
 
-The naive impl ships behind the env var **as a correctness baseline
-for the optimization phase** — future readers can verify their faster
-versions agree with this one on the corpus.
+The naive impl + block-index ships behind the env var **as a
+correctness baseline for the optimization phase** — future readers can
+verify their faster versions agree with this one on the corpus.
 
 ## §9 — Pointers
 

@@ -140,6 +140,12 @@ caught.
 
 ## 6. Pick-up-cold artifacts
 
+**Dead-ends to avoid:**
+- [`hypertableau-dead-ends.md`](hypertableau-dead-ends.md) — eleven
+  measured/refuted approaches with what killed each. Read before
+  picking up the next phase — every entry was tempting on first
+  principles and cost real time.
+
 **Scoping docs (per-phase detail):**
 - [`hypertableau-scoping.md`](hypertableau-scoping.md) — master H0–H2c
 - [`hypertableau-seminaive-scoping.md`](hypertableau-seminaive-scoping.md) — event eval

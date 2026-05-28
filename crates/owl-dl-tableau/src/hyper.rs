@@ -543,9 +543,20 @@ impl<'c> HyperEngine<'c> {
                     continue;
                 };
                 self.stats.block_compares += 1;
-                if self.nodes[n.index()].labels == self.nodes[m_hnode.index()].labels
-                    && self.nodes[np.index()].labels == self.nodes[mp.index()].labels
-                {
+                // Anywhere pair-blocking (Horrocks 1998 / Motik 2009):
+                // *subset* semantics — the blocker is "at least as
+                // rich" as the blocked. Stricter than anywhere
+                // blocking (requires parent + edge-role match, so
+                // sound with inverses) but weaker than label-equality
+                // (so SROIFV-class ontologies block in tractable
+                // depth instead of generating exponentially).
+                if subset_sorted(
+                    &self.nodes[n.index()].labels,
+                    &self.nodes[m_hnode.index()].labels,
+                ) && subset_sorted(
+                    &self.nodes[np.index()].labels,
+                    &self.nodes[mp.index()].labels,
+                ) {
                     return true;
                 }
             }

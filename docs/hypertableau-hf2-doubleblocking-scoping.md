@@ -211,9 +211,9 @@ construction goes smoothly. If SIO bisection is required, add a week.
 | workload | anywhere | double-blocking | note |
 |---|---|---|---|
 | pizza | 21 s, 0 FP | 21 s, 0 FP | unchanged |
-| ro-stripped | 10 s, 0 FP | **111 s** (11×), 0 FP | **sound but slow** |
+| ro-stripped | 10 s, 0 FP | **10 s** (after subset pair-blocking), 0 FP | sound, fast |
 | sulo-stripped | 0.03 s, 0 FP | 0.03 s, 0 FP | unchanged |
-| SIO | 4:16, **38 FP** | **> 20 min timeout** | DB sound but unusable |
+| SIO | 4:16, **38 FP** | **4:49**, still 38 FP | DB sound, fast, but SIO bug isn't blocking |
 
 **Soundness verified on corpus: 0 FP under both blocking modes.** The
 implementation is correct. But the naive `is_blocked` is performance-
@@ -235,9 +235,29 @@ implemented and **gave no measurable speedup** (ro still 111 s with
 the index). The empirical finding rules out "candidate count is the
 bottleneck"; the cost is dominated by something else.
 
-**Hypothesis confirmed by profiling counters** (commit pending,
-`SearchStats::is_blocked_calls` + `block_compares`, summed across
-probe pairs):
+**Hypothesis was that label-equality was too strict — RESOLVED.** First
+cut used `==` for the pair-block label-match (per a misreading of the
+condition); the published condition is *subset* (`⊆`) — Horrocks 1998
+and Motik 2009. Switching `==` → `subset_sorted` was a one-line fix.
+Result: **ro-stripped 111 s → 10 s** (back to anywhere-blocking
+speed), corpus stays 0 FP across the board, SIO completes in 4:49
+instead of timing out. The original 11× ro slowdown is *closed*.
+
+**But the SIO 38 FPs persist unchanged** under subset pair-blocking
+— same count, same `SIO_000115 ≡ SIO_000675` spurious-equivalence
+pattern. The earlier "anywhere-blocking-with-inverses unsoundness"
+diagnosis was wrong. The SIO bug is elsewhere — most likely in the
+interaction between **inverse-role canonicalization** (clausifier
+rewrites `SIO_000674` → `Inverse(SIO_000673)`) and the **role hierarchy**
+(reasoner records `SIO_000674 ⊑ SIO_000672` on raw IDs). The hierarchy
+doesn't get the implied `SIO_000673 ⊑ SIO_000671` from canonicalization,
+which normally causes incompleteness but here may combine with the
+inverse propagation in a way that produces false `Unsat`. Real diagnosis
+is its own phase.
+
+(Profiling counters from the earlier hypothesis are still useful and
+shipped — `SearchStats::is_blocked_calls` + `block_compares`, summed
+across probe pairs. The pre-fix ro counters that motivated the fix:)
 
 | ro-stripped probe | anywhere | double-block | ratio |
 |---|---|---|---|

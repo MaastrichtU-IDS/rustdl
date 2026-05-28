@@ -618,6 +618,18 @@ pub fn hyper_wedge_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
+/// HF2 double-blocking opt-in (`RUSTDL_HYPER_DOUBLE_BLOCK`). When set,
+/// the hyper wedge engine uses the Motik et al. §3.4 pair-blocking
+/// condition (equal labels + equal parent labels + equal edge role)
+/// instead of anywhere blocking. Required for `Sat` soundness with
+/// inverse roles; the SIO finding (38 FPs under trust-Sat without it)
+/// is the motivation. Off by default; one of the validation gates for
+/// flipping it on is reducing the SIO FP count.
+#[must_use]
+pub fn hyper_double_block_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
 /// verdict (concluding "not subsumed" without consulting the tableau).
 /// `Unsat` is sound by construction for any ontology; `Sat` is sound
@@ -726,6 +738,9 @@ impl HyperCache {
             });
         }
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        if hyper_double_block_enabled() {
+            engine = engine.with_double_blocking();
+        }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,

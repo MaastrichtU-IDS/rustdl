@@ -199,12 +199,52 @@ engine test first**, un-ignore when the implementation is in place.
 Realistic total: a week of careful work, not months — *if* the canary
 construction goes smoothly. If SIO bisection is required, add a week.
 
-## §8 — What this turn delivers
+## §8 — Implementation status
 
-This scoping doc + a **failing canary placeholder** (`#[ignore]`d
-engine test that pins the target). The actual blocking-condition swap
-is the next commit's work, not this one — keeping the disciplined
-pattern: scope, gate, then build.
+**Shipped** (`HEAD`): correct-but-not-yet-performant. Per-node
+`parent`/`parent_role` plumbing, `with_double_blocking()` builder, new
+`is_blocked` branch on the field, env-var gating
+(`RUSTDL_HYPER_DOUBLE_BLOCK`), wired into `HyperCache::decide`.
+
+**Validation:**
+
+| workload | anywhere | double-blocking | note |
+|---|---|---|---|
+| pizza | 21 s, 0 FP | 21 s, 0 FP | unchanged |
+| ro-stripped | 10 s, 0 FP | **111 s** (11×), 0 FP | **sound but slow** |
+| sulo-stripped | 0.03 s, 0 FP | 0.03 s, 0 FP | unchanged |
+| SIO | 4:16, **38 FP** | **> 20 min timeout** | DB sound but unusable |
+
+**Soundness verified on corpus: 0 FP under both blocking modes.** The
+implementation is correct. But the naive `is_blocked` is performance-
+blocked at scale: label-equality is a tighter filter than subset, so
+**more nodes are generated before a blocker is found** — cumulative
+cost grows superlinearly in the number of inverse-role chains.
+
+The 86 hand-built engine tests stay green under default (anywhere)
+blocking. The HF5 pizza regression test passes (it doesn't set the
+double-blocking env var, so it exercises anywhere blocking — the
+default path is unaffected).
+
+## §9 — What's needed to ship default-on
+
+Performance optimization is the gating phase:
+
+1. **Block-index** — partition nodes by `(parent_role, label_set_hash)`
+   so `is_blocked` skips incompatible candidates without scanning. Even
+   a coarse role-only partition would cut ro from 111 s to seconds.
+2. **Incremental block-status** — recompute only when a node's labels
+   change (current code re-scans on every blocking check).
+3. **Sub-set fast paths** — many blocking checks have one side that's
+   trivially smaller; bail out without the full equality.
+
+Once ro-stripped runs in ≤ 15 s with double-blocking on, SIO is the
+real test — and only then can `RUSTDL_HYPER_DOUBLE_BLOCK` default-on,
+unlocking default-on `RUSTDL_HYPERTABLEAU_TRUST_SAT`.
+
+The naive impl ships behind the env var **as a correctness baseline
+for the optimization phase** — future readers can verify their faster
+versions agree with this one on the corpus.
 
 ## §9 — Pointers
 

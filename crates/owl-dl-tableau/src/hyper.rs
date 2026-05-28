@@ -165,6 +165,16 @@ struct HyperNode {
     /// without this, domain-style `R(x,y) → D(x)` clauses under-count
     /// their deps and cause unsound backjumps. Root node: `EMPTY`.
     birth_deps: DepSet,
+    /// HF2-double-blocking: the node that created this one via `∃`/`≥n`
+    /// (the parent in the completion tree). `None` for the root. Set
+    /// once at node creation; merge doesn't change it (the merge target
+    /// retains its own parent). Used by the double-blocking condition
+    /// to require the *parents'* labels match too (not just the nodes').
+    parent: Option<HNode>,
+    /// HF2-double-blocking: the role of the edge from `parent` to this
+    /// node. `None` for the root. Set once at creation. Used by the
+    /// double-blocking condition to require equal incoming-edge labels.
+    parent_role: Option<Role>,
 }
 
 impl HyperNode {
@@ -269,6 +279,14 @@ pub struct HyperEngine<'c> {
     /// to merge a `≠` pair (a forced such merge is a clash — what makes
     /// `≥2 ⊓ ≤1` unsat). Captured by save/restore.
     neq: Vec<(HNode, HNode)>,
+    /// HF2-double-blocking flag (opt-in via [`with_double_blocking`]).
+    /// When `true`, [`is_blocked`] uses the Motik/Shearer/Horrocks 2009
+    /// §3.4 pair-blocking variant — `L(n) = L(m)` *and*
+    /// `L(parent(n)) = L(parent(m))` *and* equal incoming-edge role —
+    /// instead of anywhere blocking's subset check. Required for `Sat`-
+    /// soundness with inverse roles; without it, `RUSTDL_HYPERTABLEAU_TRUST_SAT`
+    /// is corpus-only safe (see SIO finding).
+    double_blocking: bool,
     /// `HF4a` nominal class range `[start, start + count)`. A class id in
     /// this range names a singleton `{a}`, so any two distinct nodes
     /// carrying it must be the *same* individual — the NN-rule merges
@@ -374,7 +392,18 @@ impl<'c> HyperEngine<'c> {
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,
+            double_blocking: false,
         }
+    }
+
+    /// Opt into HF2 double-blocking — the SROIQ-sound blocking
+    /// condition required for `Sat` soundness with inverse roles. Off
+    /// by default (preserves existing-test calibration); the production
+    /// HF5 wedge enables it via `RUSTDL_HYPER_DOUBLE_BLOCK`.
+    #[must_use]
+    pub fn with_double_blocking(mut self) -> Self {
+        self.double_blocking = true;
+        self
     }
 
     /// Supply the `HF4a` nominal class range `[start, start + count)` so
@@ -461,12 +490,34 @@ impl<'c> HyperEngine<'c> {
     /// the blocking condition here; that refinement is H3).
     fn is_blocked(&self, n: HNode) -> bool {
         let ln = &self.nodes[n.index()];
-        for m in &self.nodes {
-            if m.order < ln.order && subset_sorted(&ln.labels, &m.labels) {
-                return true;
+        if self.double_blocking {
+            // HF2 double-blocking (Motik et al. §3.4): require equal
+            // labels + equal parent labels + equal incoming-edge role.
+            // The root is never blocked (no parent).
+            let Some(np) = ln.parent else { return false };
+            let pn_labels = &self.nodes[np.index()].labels;
+            let nr = ln.parent_role.expect("non-root has parent_role");
+            for m in &self.nodes {
+                if m.order >= ln.order {
+                    continue;
+                }
+                let Some(mp) = m.parent else { continue };
+                let mp_labels = &self.nodes[mp.index()].labels;
+                let mr = m.parent_role.expect("non-root has parent_role");
+                if ln.labels == m.labels && *pn_labels == *mp_labels && nr == mr {
+                    return true;
+                }
             }
+            false
+        } else {
+            // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
+            for m in &self.nodes {
+                if m.order < ln.order && subset_sorted(&ln.labels, &m.labels) {
+                    return true;
+                }
+            }
+            false
         }
-        false
     }
 
     /// Run Horn hyperresolution to fixpoint. `max_iters` bounds the
@@ -1162,6 +1213,8 @@ impl<'c> HyperEngine<'c> {
         }
         let succ = self.new_node();
         self.nodes[succ.index()].birth_deps = deps;
+        self.nodes[succ.index()].parent = Some(src);
+        self.nodes[succ.index()].parent_role = Some(role);
         self.nodes[src.index()].edges.push((role, succ));
         self.nodes[succ.index()].preds.push((role, src));
         // The new edge fires role-triggered clauses at `src`; the seed
@@ -1252,6 +1305,8 @@ impl<'c> HyperEngine<'c> {
         for _ in 0..n {
             let succ = self.new_node();
             self.nodes[succ.index()].birth_deps = deps;
+            self.nodes[succ.index()].parent = Some(x);
+            self.nodes[succ.index()].parent_role = Some(role);
             self.nodes[x.index()].edges.push((role, succ));
             self.nodes[succ.index()].preds.push((role, x));
             self.worklist.push(Event::Edge(x, role, succ));

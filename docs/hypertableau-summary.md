@@ -48,7 +48,7 @@ against the transitive closure of Konclude's classification
 | pizza (SHOIN) | 21 s | 695/695, **0 FP**, 0 missed |
 | ro-stripped (SROIFV) | 10 s | 158/158, **0 FP**, 0 missed |
 | sulo-stripped (SRI) | < 1 s | 51/51, **0 FP**, 0 missed |
-| SIO (SRIQ, 1585 cls) | 4 m 16 s | 10472/10489, **38 FP**, 55 missed — see §3 |
+| SIO (SRIQ, 1585 cls) | 4 m 50 s | 10434/10489, **0 FP**, 55 missed (FPs fixed 2026-05-28) |
 | family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
 | **GALEN (SHIF, 2748 cls)** — ORE 2015 | 4 m 26 s | 27848/27997, **0 FP**, 149 missed (99.5%) |
 | **ALEHIF+ test (168 cls)** — ORE 2015 | 31 s | 211/247, **0 FP**, 36 missed (85%) |
@@ -58,11 +58,15 @@ against the transitive closure of Konclude's classification
 **Generalization status (ORE 2015 measurement):** of 8 distinct
 expressivity profiles tested — pizza/ro/sulo/SIO/family/GALEN/notgalen/
 shoiq-knowledge — **rustdl is sound (0 FP) on every ontology where it
-completes**, with the single known exception of SIO (38 FPs under
-opt-in trust-Sat). Performance vs Konclude on GALEN: 4 m 26 s vs
-0.1 s — Konclude is ~2700× faster, the expected gap given the
-optimization depth difference. Soundness extension *beyond* the
-original corpus is meaningful evidence the engine generalizes.
+completes**. The SIO 38 FPs (under trust-Sat) are **closed as of
+2026-05-28** — root cause was an unsound rule in EL saturation
+(`process_fact` propagating `Range(R)` to the existential's target
+*type*; sound for instance reasoning, unsound for TBox classification).
+Performance vs Konclude on GALEN: 11 m vs 0.1 s — wider gap than the
+4 m measurement before the fix because the unsound shortcut sometimes
+happened to produce correct subsumptions and the orchestrator now
+dispatches more pairs through the tableau path. That's the right
+trade — soundness costs some performance.
 
 Pizza-classify regression test (`hf5_pizza_classify_wall_and_soundness`)
 runs in CI when `--features real-corpus` is enabled, asserting wall

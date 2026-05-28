@@ -266,6 +266,59 @@ Don't default-on what's not proven beyond the validation set.
 
 ---
 
+## 12. Hunting the SIO unsoundness anywhere but where it was
+
+**What was tried (five theories, all wrong).** The 38 SIO FPs under
+`RUSTDL_HYPERTABLEAU_TRUST_SAT` were misattributed in sequence:
+1. *Anywhere blocking unsound with inverses.* Implemented full HF2
+   double-blocking. Corpus sound, ro 11× slower, SIO FPs unchanged.
+2. *Label-equality too strict.* Switched to subset pair-blocking
+   (Horrocks 1998 / Motik 2009 §3.4). ro 11× recovered, SIO FPs
+   unchanged.
+3. *Canon-vs-hierarchy namespace mismatch.* `build_role_hierarchy`
+   used raw role IDs while clausifier canonicalized them. Fixed
+   (real correctness improvement, addressed a TODO). SIO FPs
+   unchanged.
+4. *Other tableau-side mechanisms.* Various profiling counters
+   shipped (`is_blocked_calls`, `block_compares`) — informative for
+   ro perf but irrelevant to the FPs.
+5. *Maybe the orchestrator's defined-sup sweep.* Tested via
+   `classify --saturation-only`: **the FPs persisted in 0.1 s with
+   no tableau at all** — locating the bug in EL saturation, not the
+   tableau path.
+
+**What killed it (theories 1-5).** Theory 5's measurement
+(`--saturation-only` reproduces the FPs at 0.1 s) ruled out everything
+above and pointed at `owl-dl-saturation`. The actual bug: `process_fact`
+propagated `ObjectPropertyRange(R, C)` to the existential's *target
+type* — so `A ⊑ ∃R.B` + `Range(R) = C` derived `B ⊑ C`. Unsound: a `B`
+that's nobody's R-successor isn't subject to the range. The unsound
+derivation was even **encoded in a passing test**
+(`property_range_propagates_to_targets`) — the test was asserting the
+bug as a feature. Konclude on the same axiom shape correctly gives
+`Dog ⊑ Thing`, `Person ⊑ Thing`, no `Dog ⊑ Person`.
+
+**The fix** was 4 lines of code (remove the `enqueue_subsumer(target,
+rng)` block) + invert the test. SIO FP count 38 → 0.
+
+**The lesson.** When first-principles theories about a bug all fail
+empirically, **change the experimental frame** rather than crafting
+the sixth theory. `classify --saturation-only` was a 30-second test
+that would have localized the bug on turn one. The tableau-side
+hunting (1-4) cost a session's worth of careful but misdirected work.
+Always isolate which *engine layer* is responsible before chasing
+specific calculus bugs in that layer.
+
+A milder lesson: **tests that encode their target's behavior as the
+expected result are not regression tests, they're regression
+amplifiers.** The unsound range propagation passed CI for the entire
+session because the test was checking the wrong thing. The Konclude
+diff on the corpus *almost* caught it (pizza/ro/sulo didn't trigger
+the unsound rule), but SIO did, and it was attributed to the wrong
+layer.
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

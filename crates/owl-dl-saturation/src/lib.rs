@@ -449,17 +449,24 @@ impl WorklistEngine {
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
         let role_supers = supers_of(&self.role_super, fact.role);
-        // Range axiom: target gains the range for every super-role.
+        // NOTE: range propagation deliberately omitted.
+        //
+        // `ObjectPropertyRange(R, C)` is sound for instance reasoning:
+        // every actual R-successor is in C. But it does NOT entail that
+        // the TYPE used as the existential's target is itself ⊑ C —
+        // only the specific instances that *are* R-successors are.
+        // From `A ⊑ ∃R.B` + `Range(R) = C`, deriving `B ⊑ C` is
+        // unsound (a `B` that isn't anyone's R-successor escapes the
+        // range obligation). The prior code emitted exactly that
+        // derivation and was the source of the 38 SIO FPs (e.g.
+        // `SIO_010085 ⊑ ∃SIO_000225.SIO_000395` + `Range(SIO_000225)
+        // = SIO_000017` was producing the false `SIO_000395 ⊑
+        // SIO_000017`). A sound range encoding would substitute the
+        // existential body with a Tseitin synthetic `B ⊓ C` —
+        // future work; safe to drop for now (the orchestrator's
+        // tableau path still handles range correctly via its own
+        // clausifier).
         for super_role in &role_supers {
-            let ranges: Vec<ClassId> = self
-                .rules
-                .role_ranges
-                .get(super_role)
-                .cloned()
-                .unwrap_or_default();
-            for rng in ranges {
-                self.enqueue_subsumer(fact.target, rng);
-            }
             // Domain axiom: every class with fact.sub as a subsumer
             // (including fact.sub itself) gains the domain.
             let domains: Vec<ClassId> = self
@@ -1339,10 +1346,17 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     #[test]
-    fn property_range_propagates_to_targets() {
+    fn property_range_does_not_force_target_type_subsumption() {
         // ObjectPropertyRange(hasOwner, Person); Pet ⊑ ∃hasOwner.Dog
-        // ⇒ Dog ⊑ Person (every hasOwner-target is a Person — and
-        // Dog appears as such a target via Pet's existential).
+        // does **not** entail Dog ⊑ Person — the range applies to
+        // *instances* that happen to be R-successors, not to the type
+        // used as the existential's target. A `Dog` that's nobody's
+        // pet escapes the range obligation. Konclude agrees: classify
+        // this ontology and you get `Dog ⊑ Thing`, `Person ⊑ Thing`,
+        // no `Dog ⊑ Person`. The previous test asserted the opposite
+        // and was the latent encoding of the 38 SIO FPs traced
+        // 2026-05-28; the unsound derivation was removed from
+        // `process_fact`.
         let internal = parse_internal(&format!(
             "{HEADER}\
 Ontology(<http://rustdl.test/test>\n\
@@ -1355,7 +1369,7 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         let subs = saturate(&internal);
-        assert!(subs.contains(class(&internal, "Dog"), class(&internal, "Person")));
+        assert!(!subs.contains(class(&internal, "Dog"), class(&internal, "Person")));
     }
 
     #[test]

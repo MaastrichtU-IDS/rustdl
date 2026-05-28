@@ -265,6 +265,19 @@ fn diff_corpus_ontology(
 }
 
 #[test]
+#[ignore = "needs ontologies/external/galen.ofn + galen-classified.owx; ~12 min wall"]
+fn galen_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/external/galen.ofn");
+    let truth = Path::new("../../ontologies/external/galen-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing GALEN fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("galen", input, truth, 200);
+    assert_eq!(fp, 0, "GALEN has FPs — soundness regression");
+}
+
+#[test]
 #[ignore = "needs ontologies/real/{pizza,ro-stripped,sulo-stripped,sio-stripped}.ofn and konclude-input/*-classified.owx"]
 fn corpus_closure_matches_konclude() {
     let base = Path::new("../../ontologies/real");

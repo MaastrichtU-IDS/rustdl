@@ -45,12 +45,12 @@ against the transitive closure of Konclude's classification
 
 | ontology | classify wall (HF5) | result vs Konclude |
 |---|---|---|
-| pizza (SHOIN) | 21 s | 695/695, **0 FP**, 0 missed |
-| ro-stripped (SROIFV) | 10 s | 158/158, **0 FP**, 0 missed |
+| pizza (SHOIN) | 43 s | 445/499, **0 FP**, 54 missed |
+| ro-stripped (SROIFV) | 27 s | 158/158, **0 FP**, 0 missed |
 | sulo-stripped (SRI) | < 1 s | 51/51, **0 FP**, 0 missed |
-| SIO (SRIQ, 1585 cls) | 4 m 50 s | 10434/10489, **0 FP**, 55 missed (FPs fixed 2026-05-28) |
+| SIO (SRIQ, 1585 cls) | 13 m 22 s | 8812/8904, **0 FP**, 92 missed (FPs fixed 2026-05-28) |
 | family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
-| **GALEN (SHIF, 2748 cls)** — ORE 2015 | 4 m 26 s | 27848/27997, **0 FP**, 149 missed (99.5%) |
+| **GALEN (SHIF, 2748 cls)** — ORE 2015 | 2 m 20 s | 27829/27997, **0 FP**, 168 missed (99.4%) |
 | **ALEHIF+ test (168 cls)** — ORE 2015 | 31 s | 211/247, **0 FP**, 36 missed (85%) |
 | notgalen (SHIF, 3087 cls) — ORE 2015 | timeout 10 min | needs bigger budget; not measured |
 | ORE SHOIF(D) test | parse error | datatypes unsupported (known limit) |
@@ -62,11 +62,25 @@ completes**. The SIO 38 FPs (under trust-Sat) are **closed as of
 2026-05-28** — root cause was an unsound rule in EL saturation
 (`process_fact` propagating `Range(R)` to the existential's target
 *type*; sound for instance reasoning, unsound for TBox classification).
-Performance vs Konclude on GALEN: 11 m vs 0.1 s — wider gap than the
-4 m measurement before the fix because the unsound shortcut sometimes
-happened to produce correct subsumptions and the orchestrator now
-dispatches more pairs through the tableau path. That's the right
-trade — soundness costs some performance.
+The sound replacement landed the same day (2da055b): fold `Range(R)`
+into the existential's body via a Tseitin synthetic `F ≡ B ⊓ Range(R)`,
+so CR5 propagation still picks up range-constrained subsumptions
+without the type-level over-approximation.
+
+Performance vs Konclude on GALEN (2026-05-28, hypertableau env vars
+on): 2 m 20 s vs 0.1 s — *faster* than the 4 m 26 s measurement
+captured before the unsoundness fix. (The 11 m number quoted in
+the f71a012 commit message was a noisy single run; a clean
+re-measurement under the same env vars shows no regression.) GALEN
+has zero `ObjectPropertyRange` axioms so the Tseitin encoding never
+fires on it; the perf result is the engine returning to baseline once
+the noisy datapoint is set aside.
+
+The corpus-wide diff harness lives in
+`crates/owl-dl-reasoner/tests/konclude_closure_diff.rs` and produces
+the FP/MISSED numbers above — handles `EquivalentClasses` (Konclude's
+report style), Thing-equivalent classes (e.g. SIO_000000 ≡ Thing),
+and unsat classes symmetrically across both sides.
 
 Pizza-classify regression test (`hf5_pizza_classify_wall_and_soundness`)
 runs in CI when `--features real-corpus` is enabled, asserting wall

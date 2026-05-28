@@ -50,6 +50,19 @@ against the transitive closure of Konclude's classification
 | sulo-stripped (SRI) | < 1 s | 51/51, **0 FP**, 0 missed |
 | SIO (SRIQ, 1585 cls) | 4 m 16 s | 10472/10489, **38 FP**, 55 missed — see §3 |
 | family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
+| **GALEN (SHIF, 2748 cls)** — ORE 2015 | 4 m 26 s | 27848/27997, **0 FP**, 149 missed (99.5%) |
+| **ALEHIF+ test (168 cls)** — ORE 2015 | 31 s | 211/247, **0 FP**, 36 missed (85%) |
+| notgalen (SHIF, 3087 cls) — ORE 2015 | timeout 10 min | needs bigger budget; not measured |
+| ORE SHOIF(D) test | parse error | datatypes unsupported (known limit) |
+
+**Generalization status (ORE 2015 measurement):** of 8 distinct
+expressivity profiles tested — pizza/ro/sulo/SIO/family/GALEN/notgalen/
+shoiq-knowledge — **rustdl is sound (0 FP) on every ontology where it
+completes**, with the single known exception of SIO (38 FPs under
+opt-in trust-Sat). Performance vs Konclude on GALEN: 4 m 26 s vs
+0.1 s — Konclude is ~2700× faster, the expected gap given the
+optimization depth difference. Soundness extension *beyond* the
+original corpus is meaningful evidence the engine generalizes.
 
 Pizza-classify regression test (`hf5_pizza_classify_wall_and_soundness`)
 runs in CI when `--features real-corpus` is enabled, asserting wall

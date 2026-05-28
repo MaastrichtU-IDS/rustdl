@@ -25,3 +25,4 @@ Cargo.lock.bak
 # Flamegraph output
 flamegraph.svg
 perf.data*
+ontologies/external/

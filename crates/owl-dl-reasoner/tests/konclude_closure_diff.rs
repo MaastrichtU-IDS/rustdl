@@ -265,7 +265,7 @@ fn diff_corpus_ontology(
 }
 
 #[test]
-#[ignore = "needs ontologies/external/galen.ofn + galen-classified.owx; ~12 min wall"]
+#[ignore = "needs ontologies/external/galen.ofn + galen-classified.owx; ~2-12 min wall depending on RUSTDL_HYPERTABLEAU env vars"]
 fn galen_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/galen.ofn");
     let truth = Path::new("../../ontologies/external/galen-classified.owx");
@@ -275,6 +275,19 @@ fn galen_closure_matches_konclude() {
     }
     let (_r, _k, fp, _m) = diff_corpus_ontology("galen", input, truth, 200);
     assert_eq!(fp, 0, "GALEN has FPs — soundness regression");
+}
+
+#[test]
+#[ignore = "needs ontologies/external/notgalen.ofn + notgalen-classified.owx; previously timed out at 10 min"]
+fn notgalen_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/external/notgalen.ofn");
+    let truth = Path::new("../../ontologies/external/notgalen-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing notgalen fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("notgalen", input, truth, 200);
+    assert_eq!(fp, 0, "notgalen has FPs — soundness regression");
 }
 
 #[test]

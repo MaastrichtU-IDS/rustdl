@@ -797,21 +797,103 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
-    // TODO(orchestrator): same-tier inferred subsumption gap. Classes
-    // with equal closure-subsumer count are invisible to each other in
-    // the parallel walk above. EL closure catches *declared*
-    // equivalences `EquivalentClasses(A, B)`, but **inferred** same-
-    // tier subsumptions are missed. On pizza this leaves 15 such pairs
-    // unfound vs Konclude (e.g. `SpicyPizza ⊑ SpicyPizzaEquivalent`
-    // — both defined by complex expressions Konclude proves equi-sat;
-    // `CheeseTopping ⊑ VegetarianTopping` via disjointness + ¬sup;
-    // `MeatyPizza ⊑ NonVegetarianPizza`). The principled fix is a
-    // within-tier wedge sweep, but the naive n²-per-tier costs
-    // **> 24 min on pizza** (large tiers × the slow wedge tail), so
-    // it needs a smarter candidate filter (e.g. tier-size bound,
-    // shared-structural-signal heuristic, or a budget-capped parallel
-    // sweep) before it can ship. HF5 wiring caps the corpus gap at 15
-    // false-negatives, not 0; closing them is a separate phase.
+    // Defined-sup sweep: same-tier inferred subsumptions are missed by
+    // the parallel walk above ("two same-tier classes don't see each
+    // other"). Empirically on pizza, **every** such missed sup is a
+    // class with an `EquivalentClasses(Name, ComplexExpr)` axiom
+    // (definitions like `VegetarianTopping ≡ Topping ⊓ ¬(Meat ⊔ Fish)`
+    // or `SpicyPizza ≡ Pizza ⊓ ∃hT.SpicyTopping`), and the gap closes
+    // when we test each candidate sub against those defined sups
+    // directly. A naive within-tier `n²` is intractable
+    // (> 24 min on pizza); restricting the sup side to defined classes
+    // cuts the cost to `defined_count × all_classes` (~1.5 k pairs on
+    // pizza), tightening the per-pair budget to 200 ms (most wedge
+    // calls finish in < 100 ms; the slow tail times out as "not
+    // subsumed" — sound under-approximation), parallel via rayon.
+    let defined_sups: Vec<usize> = {
+        let mut set: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for ax in &internal.axioms {
+            if let owl_dl_core::ontology::Axiom::EquivalentClasses(ids) = ax {
+                let has_complex = ids.iter().any(|c| {
+                    !matches!(
+                        internal.concepts.get(*c),
+                        owl_dl_core::ir::ConceptExpr::Atomic(_)
+                    )
+                });
+                if has_complex {
+                    for c in ids {
+                        if let owl_dl_core::ir::ConceptExpr::Atomic(cls) = internal.concepts.get(*c)
+                        {
+                            let i = cls.index() as usize;
+                            if i < n && !unsatisfiable_idxs.contains(&i) {
+                                set.insert(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        set.into_iter().collect()
+    };
+    let sweep_budget = std::time::Duration::from_millis(200);
+    for &sup in &defined_sups {
+        let sup_id =
+            owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));
+        // Parallel test of candidate subs. Skip pairs already known via
+        // closure or the existing direct-supers transitive closure.
+        let already_known: std::collections::HashSet<usize> = {
+            let mut s: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            // BFS down from `sup` to collect already-known subs.
+            let mut frontier = direct_children[sup].clone();
+            while let Some(c) = frontier.pop() {
+                if s.insert(c) {
+                    frontier.extend(direct_children[c].iter().copied());
+                }
+            }
+            s
+        };
+        let candidates: Vec<usize> = (0..n)
+            .filter(|&cand| cand != sup && !unsatisfiable_idxs.contains(&cand))
+            .filter(|&cand| !already_known.contains(&cand))
+            .filter(|&cand| {
+                let cand_id = owl_dl_core::ClassId::new(
+                    u32::try_from(cand).expect("class index fits in u32"),
+                );
+                !closure.contains(cand_id, sup_id)
+            })
+            .collect();
+        let probe_results: Vec<(usize, bool, ClassificationStats)> = candidates
+            .par_iter()
+            .map(|&cand| {
+                let cand_id = owl_dl_core::ClassId::new(
+                    u32::try_from(cand).expect("class index fits in u32"),
+                );
+                let mut local_stats = ClassificationStats::default();
+                let subsumed = subsumes_via_tableau(
+                    &prepared,
+                    cand_id,
+                    sup_id,
+                    Some(sweep_budget),
+                    &mut local_stats,
+                )
+                .ok()
+                .flatten()
+                .unwrap_or(false);
+                (cand, subsumed, local_stats)
+            })
+            .collect();
+        for (cand, subsumed, sd) in probe_results {
+            stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
+            stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
+            stats.timed_out_pairs += sd.timed_out_pairs;
+            stats.hyper_proven_pairs += sd.hyper_proven_pairs;
+            stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
+            if subsumed && !direct_supers[cand].contains(&sup) {
+                direct_supers[cand].push(sup);
+                direct_children[sup].push(cand);
+            }
+        }
+    }
 
     // Build the full entailment matrix. Three sources contribute:
     //

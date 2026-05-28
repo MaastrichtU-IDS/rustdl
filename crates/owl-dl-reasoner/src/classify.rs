@@ -797,6 +797,22 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    // TODO(orchestrator): same-tier inferred subsumption gap. Classes
+    // with equal closure-subsumer count are invisible to each other in
+    // the parallel walk above. EL closure catches *declared*
+    // equivalences `EquivalentClasses(A, B)`, but **inferred** same-
+    // tier subsumptions are missed. On pizza this leaves 15 such pairs
+    // unfound vs Konclude (e.g. `SpicyPizza ⊑ SpicyPizzaEquivalent`
+    // — both defined by complex expressions Konclude proves equi-sat;
+    // `CheeseTopping ⊑ VegetarianTopping` via disjointness + ¬sup;
+    // `MeatyPizza ⊑ NonVegetarianPizza`). The principled fix is a
+    // within-tier wedge sweep, but the naive n²-per-tier costs
+    // **> 24 min on pizza** (large tiers × the slow wedge tail), so
+    // it needs a smarter candidate filter (e.g. tier-size bound,
+    // shared-structural-signal heuristic, or a budget-capped parallel
+    // sweep) before it can ship. HF5 wiring caps the corpus gap at 15
+    // false-negatives, not 0; closing them is a separate phase.
+
     // Build the full entailment matrix. Three sources contribute:
     //
     // 1. **Closure seed.** Every saturation-derived subsumption is

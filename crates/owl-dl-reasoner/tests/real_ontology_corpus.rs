@@ -451,3 +451,94 @@ fn sio_axis_is_sat() {
         "SIO_000450 should be sat (matches HermiT); regression of the apply_min over-assert bug",
     );
 }
+
+/// HF5 regression: pizza classify with the hypertableau wedge + Sat-trust
+/// must (a) finish quickly (the ~21s measured wall, 90s budget for CI
+/// slack), (b) report exactly the two known unsat classes
+/// (CheeseyVegetableTopping / IceCream), (c) not regress the
+/// known-bogus FPs from the first-cut unsound backjumping
+/// (Topping ⊑ VegetarianPizza family), and (d) actually exercise HF5
+/// (`hyper_refuted_pairs > 0`). Guards the 13× classify-wall win
+/// landed in `dfc3d1e` / `ad6a185`.
+#[test]
+#[cfg_attr(
+    not(feature = "real-corpus"),
+    ignore = "needs ontologies/real/pizza.ofn (gitignored corpus)"
+)]
+#[allow(unsafe_code)] // env::set_var is `unsafe` under edition 2024
+fn hf5_pizza_classify_wall_and_soundness() {
+    // Timing-sensitive: only meaningful in release. The standard tableau
+    // also has a pre-existing debug-only `debug_assert!` (parent-pointer
+    // cycle in the blocking check) that some pizza pairs trip and that
+    // release silently skips.
+    if cfg!(debug_assertions) {
+        eprintln!("skip: HF5 regression test requires `cargo test --release`");
+        return;
+    }
+    let path = Path::new("../../ontologies/real/pizza.ofn");
+    if !path.exists() {
+        eprintln!("skip: {} not present", path.display());
+        return;
+    }
+    // SAFETY: this test is `#[ignore]`d unless the `real-corpus` feature
+    // is enabled; even then, no other test reads `RUSTDL_HYPERTABLEAU*`,
+    // so the process-wide mutation cannot race meaningfully.
+    unsafe {
+        std::env::set_var("RUSTDL_HYPERTABLEAU", "1");
+        std::env::set_var("RUSTDL_HYPERTABLEAU_TRUST_SAT", "1");
+    }
+    let onto = load(path);
+    let start = std::time::Instant::now();
+    let c = classify_with_timeout(&onto, Duration::from_secs(5))
+        .expect("classify_with_timeout returns Ok");
+    let wall = start.elapsed();
+    let stats = c.stats();
+
+    // (a) Wall budget — measured ~21 s on the dev box; 90 s gives CI slack.
+    assert!(
+        wall < Duration::from_secs(90),
+        "HF5 classify pizza took {wall:?} > 90 s — likely a wedge/backjumping regression"
+    );
+
+    // (b) Exactly two unsat classes, matching HermiT/Konclude.
+    let unsat: BTreeSet<String> = c
+        .unsatisfiable_classes()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let pizza = |s: &str| format!("http://www.co-ode.org/ontologies/pizza/pizza.owl#{s}");
+    assert!(unsat.contains(&pizza("CheeseyVegetableTopping")));
+    assert!(unsat.contains(&pizza("IceCream")));
+    assert_eq!(
+        unsat.len(),
+        2,
+        "expected exactly 2 unsat (no FP regression); got {} = {unsat:?}",
+        unsat.len()
+    );
+
+    // (c) Soundness canary: the first-cut backjumping bug regressed pizza
+    // with 58 FPs of the shape `Topping ⊑ VegetarianPizza`. Spot-check a
+    // few — for every known-topping, the direct subsumers must contain
+    // no `Pizza`-class.
+    let topping_canaries = ["PetitPoisTopping", "FishTopping", "ParmaHamTopping"];
+    for top in topping_canaries {
+        let direct = c.direct_subsumers(&pizza(top));
+        for sup in &direct {
+            assert!(
+                !sup.contains("Pizza") || sup.ends_with("PizzaTopping"),
+                "unsound subsumption {top} ⊑ {sup} — backjumping regression?"
+            );
+        }
+    }
+
+    // (d) HF5 actually fired (the wedge handled refutations, not just
+    // proofs). The classify-pizza measurement showed `tableau=0` and
+    // ~327 hyper-proven; refuted is the HF5-specific contribution.
+    assert!(
+        stats.hyper_refuted_pairs > 0,
+        "HF5 didn't fire — RUSTDL_HYPERTABLEAU_TRUST_SAT not honoured? \
+         hyper_refuted_pairs={}, hyper_proven_pairs={}",
+        stats.hyper_refuted_pairs,
+        stats.hyper_proven_pairs
+    );
+}

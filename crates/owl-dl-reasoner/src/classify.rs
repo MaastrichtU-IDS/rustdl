@@ -785,6 +785,8 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.timed_out_pairs += sd.timed_out_pairs;
+            stats.hyper_proven_pairs += sd.hyper_proven_pairs;
+            stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             for &p in &parents {
                 direct_children[p].push(c);
             }

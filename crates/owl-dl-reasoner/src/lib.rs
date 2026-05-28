@@ -618,6 +618,34 @@ pub fn hyper_wedge_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
+/// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
+/// verdict (concluding "not subsumed" without consulting the tableau).
+/// `Unsat` is sound by construction for any ontology; `Sat` is sound
+/// only if the engine is complete on the workload — empirically true on
+/// the corpus (pizza/ro/sulo: both-direction Konclude agreement, 0 FP)
+/// but **not** guaranteed off-corpus (anywhere blocking with inverses,
+/// the deferred `≤n`-merge backjumping). Opt-in via
+/// `RUSTDL_HYPERTABLEAU_TRUST_SAT`; only consulted when
+/// [`hyper_wedge_enabled`] is also true. Off ⇒ `Sat` verdicts are
+/// treated as `Unknown` (current H4 behaviour).
+#[must_use]
+pub fn hyper_trust_sat_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Three-valued verdict from the H4/HF5 hyper wedge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HyperVerdict {
+    /// `Unsat` on `sub ⊓ ¬sup` — subsumption holds. Sound for any
+    /// ontology (clausifier is sound; calculus is `Unsat`-sound).
+    Subsumed,
+    /// `Sat` on `sub ⊓ ¬sup` — subsumption does **not** hold. Sound
+    /// only when [`hyper_trust_sat_enabled`] is set (HF5).
+    NotSubsumed,
+    /// `Stalled`/budget exhausted — caller falls back to the tableau.
+    Unknown,
+}
+
 /// Cached clausified state for the H4 sound accelerator: built once
 /// per ontology (the expensive clausify + `¬sup` pre-pass), then
 /// reused across every subsumption pair. [`proves`](Self::proves)
@@ -669,15 +697,16 @@ impl HyperCache {
         }
     }
 
-    /// Sound subsumption test: `true` iff the hyper engine proves
-    /// `sub ⊑ sup` (`Unsat` on `sub ⊓ ¬sup`). `false` = "couldn't
-    /// prove" (`Sat`/`Stalled`/deadline) — the caller falls back.
-    pub(crate) fn proves(
+    /// Three-valued subsumption verdict from the hyper engine:
+    /// `Subsumed` (sound for any ontology), `NotSubsumed` (HF5 — only
+    /// trust when [`hyper_trust_sat_enabled`]), or `Unknown`
+    /// (Stalled/deadline → caller falls back).
+    pub(crate) fn decide(
         &self,
         sub: owl_dl_core::ir::ClassId,
         sup: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
-    ) -> bool {
+    ) -> HyperVerdict {
         use owl_dl_core::clause::{Atom, DlClause, X};
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
         let mut clauses = self.clauses.clone();
@@ -697,7 +726,11 @@ impl HyperCache {
             });
         }
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
-        engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) == HyperResult::Unsat
+        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+            HyperResult::Unsat => HyperVerdict::Subsumed,
+            HyperResult::Sat => HyperVerdict::NotSubsumed,
+            HyperResult::Stalled => HyperVerdict::Unknown,
+        }
     }
 }
 
@@ -1159,7 +1192,10 @@ fn is_subclass_of_internal_full(
     // H4 sound-accelerator wedge: a hyper `Unsat` proves the
     // subsumption (sound for any ontology), skipping the tableau. A
     // non-proof falls through. No-op when the wedge is disabled.
-    if hyper_wedge_enabled() && HyperCache::build(&internal).proves(sub_id, super_id, None) {
+    // (HF5 `Sat`-trust is wired in the classify path, not here.)
+    if hyper_wedge_enabled()
+        && HyperCache::build(&internal).decide(sub_id, super_id, None) == HyperVerdict::Subsumed
+    {
         return Ok((
             true,
             QueryStats {
@@ -1278,19 +1314,20 @@ impl PreparedOntology {
         })
     }
 
-    /// H4 sound accelerator: `true` iff the hyper engine proves
-    /// `sub ⊑ sup`. Always `false` when the wedge is disabled (no
-    /// cache). A `true` is sound for any ontology; a `false` means the
-    /// caller must fall back to the tableau ([`decide`](Self::decide)).
-    pub(crate) fn hyper_proves(
+    /// H4/HF5 sound accelerator: the hyper engine's three-valued
+    /// verdict for `sub ⊑ sup`, or [`HyperVerdict::Unknown`] when the
+    /// wedge is disabled. `Subsumed` is sound for any ontology;
+    /// `NotSubsumed` is sound only under [`hyper_trust_sat_enabled`]
+    /// (HF5) — the caller decides whether to trust it.
+    pub(crate) fn hyper_decide(
         &self,
         sub: owl_dl_core::ir::ClassId,
         sup: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
-    ) -> bool {
+    ) -> HyperVerdict {
         self.hyper
             .as_ref()
-            .is_some_and(|hc| hc.proves(sub, sup, deadline))
+            .map_or(HyperVerdict::Unknown, |hc| hc.decide(sub, sup, deadline))
     }
 
     /// Decide whether the test concept built by `build_test_concept`
@@ -2036,7 +2073,7 @@ EquivalentClasses(:Veg ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Plan
                 if sub == sup {
                     continue;
                 }
-                if cache.proves(*sub, *sup, None) {
+                if cache.decide(*sub, *sup, None) == HyperVerdict::Subsumed {
                     // Hyper proved it ⇒ the complete tableau must agree.
                     let tableau =
                         is_subclass_of_internal(internal.clone(), sub_iri, sup_iri).expect("ok");
@@ -2073,7 +2110,7 @@ ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
             .expect("interned");
         let cache = HyperCache::build(&internal);
         assert!(
-            cache.proves(cheese, vegetarian, None),
+            (cache.decide(cheese, vegetarian, None) == HyperVerdict::Subsumed),
             "HyperCache must prove Cheese ⊑ Vegetarian"
         );
         let topping = internal
@@ -2081,7 +2118,7 @@ ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
             .class_id("http://rustdl.test/Topping")
             .expect("interned");
         assert!(
-            !cache.proves(topping, vegetarian, None),
+            !(cache.decide(topping, vegetarian, None) == HyperVerdict::Subsumed),
             "Topping ⊑ Vegetarian must NOT be proven (not entailed)"
         );
     }

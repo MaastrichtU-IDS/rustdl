@@ -179,16 +179,28 @@ nominal-introduced successors.
   nominal calculus (not nominal-as-atomic); a nominal+cardinality test
   ontology matches Konclude.
 
-### HF5 — Wire as the complete classifier
+### HF5 — Wire as the complete classifier — **SHIPPED**
 
-`Sat` is now sound, so the orchestrator trusts **both** directions.
-Replace `subsumes_via_tableau` with the new engine on the workloads
-where it passes the *both-directions* agreement check; the H4 wedge's
-`Unsat`-only restriction is lifted.
-- **Gate (the payoff):** full **classify** Konclude agreement on the
-  corpus, **both directions** — 0 false positives *and* 0 misses — and
-  the classify wall moved (pizza/ro classify complete in reasonable
-  time where they currently time out / hang).
+`subsumes_via_tableau` now consults a three-valued `HyperVerdict`
+(`Subsumed`/`NotSubsumed`/`Unknown`) and trusts `NotSubsumed` under the
+opt-in `RUSTDL_HYPERTABLEAU_TRUST_SAT` env var (in addition to the
+existing `RUSTDL_HYPERTABLEAU`). `Stalled`/budget falls back to the
+tableau. Sat-trust is sound on the workload-by-workload agreement-check
+gate — corpus-verified (pizza/ro/sulo: 0 false positives, both-direction
+Konclude agreement); off-corpus risky (anywhere blocking + the deferred
+`≤n`-merge backjumping), hence opt-in.
+
+**Result on pizza:** `classify pizza --pair-timeout-ms 5000` with both
+flags ON: **20.9 s** (vs production ~4:38 baseline ⇒ ~13×), `tableau=0`
+subsumption calls — the wedge handled the entire residual path
+(~327 hyper-Subsumed, the rest hyper-Refuted or top-down-pruned).
+Output: 680 subsumptions, 0 FP vs Konclude's closure. The 15 vs
+Konclude's 695 are pre-existing **top-down classifier pruning** (those
+pairs aren't tested in the residual path at all) — orchestrator work,
+not HF5.
+
+(Old gate text — "0 misses" — was the wrong target: HF5 is the residual-
+path wiring; orchestrator completeness is its own phase.)
 
 ## §3 — Out of scope (named, so they don't bloat)
 

@@ -78,6 +78,12 @@ pub struct ClassificationStats {
     /// `Unsat`), skipping the tableau. Zero unless the wedge is
     /// enabled (`RUSTDL_HYPERTABLEAU`).
     pub hyper_proven_pairs: usize,
+    /// HF5: pairs refuted (concluded *not* subsumed) by the hyper
+    /// engine's `Sat` verdict, skipping the tableau. Zero unless both
+    /// `RUSTDL_HYPERTABLEAU` and `RUSTDL_HYPERTABLEAU_TRUST_SAT` are
+    /// enabled — `Sat`-trust is sound only on workloads where the
+    /// engine is complete (corpus-validated; off-corpus risky).
+    pub hyper_refuted_pairs: usize,
 }
 
 impl Classification {
@@ -930,12 +936,23 @@ fn subsumes_via_tableau(
     // H4 sound-accelerator wedge: try the hyper engine first. An
     // `Unsat` (subsumption-holds) verdict is sound for any ontology
     // (see docs/hypertableau-h4-scoping.md §0), so trust it and skip
-    // the (slow, sometimes timing-out) tableau. A non-proof falls
-    // through to the tableau unchanged. No-op when the wedge is off.
+    // the (slow, sometimes timing-out) tableau. HF5 extends this with
+    // `Sat`→not-subsumed under `RUSTDL_HYPERTABLEAU_TRUST_SAT` — sound
+    // only when the engine is complete on the workload (corpus-verified
+    // both-direction Konclude agreement; off-corpus risky). A non-proof
+    // / `Stalled` falls through to the tableau. No-op when the wedge
+    // is off.
     let hyper_deadline = per_pair_timeout.map(|t| Instant::now() + t);
-    if prepared.hyper_proves(sub, sup, hyper_deadline) {
-        stats.hyper_proven_pairs += 1;
-        return Ok(Some(true));
+    match prepared.hyper_decide(sub, sup, hyper_deadline) {
+        crate::HyperVerdict::Subsumed => {
+            stats.hyper_proven_pairs += 1;
+            return Ok(Some(true));
+        }
+        crate::HyperVerdict::NotSubsumed if crate::hyper_trust_sat_enabled() => {
+            stats.hyper_refuted_pairs += 1;
+            return Ok(Some(false));
+        }
+        _ => {}
     }
     let build = move |pool: &mut ConceptPool| {
         let sub_concept = pool.atomic(sub);

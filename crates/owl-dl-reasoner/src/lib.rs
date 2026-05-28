@@ -1588,27 +1588,63 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
     let mut builder = RoleHierarchyBuilder::with_roles(
         u32::try_from(internal.vocabulary.num_roles()).expect("vocabulary role count fits in u32"),
     );
+    // Mirror the clausifier's inverse-pair canonicalization
+    // (clause::build_inverse_canon): if `InverseObjectProperties(R, S)`
+    // is declared, the clausifier rewrites `S` to `Inverse(R)` at every
+    // clause site. The role hierarchy must use the *same* role IDs the
+    // engine sees on canonicalized edges/atoms, otherwise the
+    // hierarchy lookup misses and inverse-sub-role inferences are lost
+    // (which combined with HF5 trust-Sat can manifest as false-Unsat
+    // FPs, as on SIO).
+    let canon_map: std::collections::HashMap<RoleId, owl_dl_core::ir::Role> = {
+        let mut m = std::collections::HashMap::new();
+        for ax in &internal.axioms {
+            if let Axiom::InverseObjectProperties(a, b) = ax {
+                if a.is_inverse() || b.is_inverse() {
+                    continue;
+                }
+                if m.contains_key(&a.role_id()) || m.contains_key(&b.role_id()) {
+                    continue;
+                }
+                m.insert(b.role_id(), a.flip());
+            }
+        }
+        m
+    };
+    let canon = |r: owl_dl_core::ir::Role| -> owl_dl_core::ir::Role {
+        match canon_map.get(&r.role_id()) {
+            None => r,
+            Some(&c) => {
+                if r.is_inverse() {
+                    c.flip()
+                } else {
+                    c
+                }
+            }
+        }
+    };
+
     for ax in &internal.axioms {
         match ax {
             Axiom::SubObjectPropertyOf {
                 sub: SubRolePath::Role(sub_role),
                 sup,
             } => {
-                // Only encode the named-to-named portion of the
-                // sub-role lattice; the inverse axis still hangs
-                // off the polarity-check in `edge_satisfies`. If
-                // either side carries an inverse polarity, we'd
-                // need a Role-keyed hierarchy — defer to a later
-                // commit, but still record the underlying-id
-                // relation so same-polarity sub-role inference
-                // remains correct.
-                builder.add_sub_role(sub_role.role_id(), sup.role_id());
+                // Canonicalize both sides. If they end up at matching
+                // polarities, record the role-id inclusion (the
+                // hierarchy is on `RoleId`, with polarity handled
+                // separately by `role_matches`'s same-polarity check).
+                let cs = canon(*sub_role);
+                let ct = canon(*sup);
+                if cs.is_inverse() == ct.is_inverse() {
+                    builder.add_sub_role(cs.role_id(), ct.role_id());
+                }
             }
             Axiom::EquivalentObjectProperties(roles) => {
-                // r ≡ s ≡ … expands to pairwise sub-property both ways.
-                for a in roles {
-                    for b in roles {
-                        if a != b {
+                let cans: Vec<owl_dl_core::ir::Role> = roles.iter().map(|r| canon(*r)).collect();
+                for a in &cans {
+                    for b in &cans {
+                        if a != b && a.is_inverse() == b.is_inverse() {
                             builder.add_sub_role(a.role_id(), b.role_id());
                         }
                     }

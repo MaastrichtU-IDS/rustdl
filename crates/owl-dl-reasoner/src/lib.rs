@@ -472,6 +472,7 @@ fn build_sup_neg_map(
 /// # Errors
 ///
 /// See [`ReasonError`].
+#[allow(clippy::too_many_lines)] // probe orchestration is necessarily long
 pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     max_depth: usize,
@@ -571,6 +572,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             let mut engine = HyperEngine::new(&clauses, q)
                 .with_sub_roles(sub_role_hierarchy.clone())
                 .with_nominals(num_classes, num_individuals);
+            if hyper_double_block_enabled() {
+                engine = engine.with_double_blocking();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;

@@ -235,26 +235,49 @@ implemented and **gave no measurable speedup** (ro still 111 s with
 the index). The empirical finding rules out "candidate count is the
 bottleneck"; the cost is dominated by something else.
 
-**Hypothesis (not yet confirmed by profiling):** the bottleneck is the
-*number of nodes generated*, not the `is_blocked` iteration cost.
-Label-equality blocking is strictly tighter than label-subset, so
-fewer nodes are blocked → more nodes are generated → all downstream
-work (clause firing, label propagation, role matching) scales with
-node count. The block-index helps the wrong dimension.
+**Hypothesis confirmed by profiling counters** (commit pending,
+`SearchStats::is_blocked_calls` + `block_compares`, summed across
+probe pairs):
+
+| ro-stripped probe | anywhere | double-block | ratio |
+|---|---|---|---|
+| total_wall_ms | 255 | 846 075 (~14 min) | **3300×** |
+| is_blocked_calls | 1412 | 1 401 547 | **1000×** |
+| block_compares | 2065 | 175 813 968 | **85 000×** |
+| match_attempts | 202 813 | 3 251 462 158 | **16 000×** |
+| stalled pairs | 0 | 169 | new |
+
+The cost is **multiplicative across the whole engine**, not localised
+to `is_blocked`. `match_attempts` jumped 16 000× — the fixpoint cascades
+from many more generated nodes (label-equality is far stricter than
+label-subset, so vastly more nodes appear before any blocker matches).
+Pizza counters tell a different story: same `match_attempts`,
+`is_blocked_calls` *fewer* under double-blocking, wall unchanged — so
+pizza doesn't manifest the SROIFV explosion.
 
 Real levers, ranked by promise:
 
-1. **Profile first.** Add counters for `is_blocked` calls,
-   labels-comparison count, generation count. The 11× ro slowdown
-   should localize to one or two of these.
-2. **Reduce generation** — a *refined* blocking condition that's
-   still sound but blocks more cases. Approximation blocking (Motik et
-   al.) is the textbook candidate; less well-known refinements exist.
+1. ~~Profile first~~ **DONE** (counters shipped; see table above).
+   Bottleneck localised: it's the *generation-count explosion*, not
+   `is_blocked` per-call cost. `match_attempts` 16 000×, indicating
+   ro generates roughly that many more node-label updates under
+   label-equality blocking.
+2. **Different blocking algorithm** (the load-bearing lever). Label-
+   equality is too strict for SROIFV-class ontologies — pair-blocking
+   (Horrocks 1998, sound for SHIQ-with-inverse) or pair-wise anywhere
+   blocking (Motik et al. 2009 variant) use weaker-than-equality
+   matching conditions that should let ro's generation terminate
+   sooner while preserving inverse-soundness. Both are research-grade
+   implementations (correctness arguments depend on the specific
+   expressivity bag — SROIFV vs full SROIQ — and require careful
+   reading of the literature). Not a one-turn job.
 3. **Incremental block-status** — cache whether each node is blocked,
    invalidate on label change. Skip the `is_blocked` recomputation on
-   every check.
+   every check. Helps the per-call cost, not the underlying
+   generation count — so probably not enough on its own.
 4. **Transitive-role short-circuits** — ro is SROIFV-heavy with
    transitive roles; transitive chains may dominate node generation.
+   Probably composes with (2) rather than replacing it.
 
 Once ro-stripped runs in ≤ 15 s with double-blocking on, SIO is the
 real test — and only then can `RUSTDL_HYPER_DOUBLE_BLOCK` default-on,

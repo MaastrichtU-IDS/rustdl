@@ -667,6 +667,21 @@ fn main() -> Result<()> {
             println!("# stalled:          {}", probe.stalled);
             println!("# max_depth_reached:{}", probe.max_branch_depth);
             println!("# total_wall_ms:    {:.1}", probe.total_wall_ms);
+            // Sum profiling counters across retained pairs — diff
+            // between blocking modes localises the perf bottleneck.
+            {
+                let mut tot_blocked = 0_u64;
+                let mut tot_compares = 0_u64;
+                let mut tot_matches = 0_u64;
+                for r in &probe.results {
+                    tot_blocked += r.stats.is_blocked_calls;
+                    tot_compares += r.stats.block_compares;
+                    tot_matches += r.stats.match_attempts;
+                }
+                println!("# is_blocked_calls (sum retained):  {tot_blocked}");
+                println!("# block_compares  (sum retained):  {tot_compares}");
+                println!("# match_attempts  (sum retained):  {tot_matches}");
+            }
             // Wall-distribution histogram over branched pairs — answers
             // "how many pairs are slow?" for the HF5 wiring decision.
             {

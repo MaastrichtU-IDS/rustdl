@@ -252,6 +252,12 @@ pub struct SearchStats {
     pub node_clones: u64,
     /// `horn_fixpoint` worklist drains (one per call) across the search.
     pub fixpoint_passes: u64,
+    /// `is_blocked` invocations. HF2 double-blocking profiling: if this
+    /// dwarfs `match_attempts`, the blocking check is the bottleneck.
+    pub is_blocked_calls: u64,
+    /// Label-vector equality / subset comparisons inside `is_blocked`.
+    /// The expensive per-call cost (linear in label-set size).
+    pub block_compares: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -505,33 +511,39 @@ impl<'c> HyperEngine<'c> {
     /// successors (the witness `m` already realises everything `n`
     /// would). Sound for the Horn fragment (no inverse roles enter
     /// the blocking condition here; that refinement is H3).
-    fn is_blocked(&self, n: HNode) -> bool {
-        let ln = &self.nodes[n.index()];
+    fn is_blocked(&mut self, n: HNode) -> bool {
+        self.stats.is_blocked_calls += 1;
+        let ln_order = self.nodes[n.index()].order;
         if self.double_blocking {
             // HF2 double-blocking (Motik et al. §3.4): require equal
             // labels + equal parent labels + equal incoming-edge role.
             // The root is never blocked (no parent). Performance:
             // iterate only same-parent-role nodes via `block_index`
-            // (O(bucket) vs O(n) for the full scan). No clones — all
-            // accesses go through `self.nodes[..]` immutable borrows,
-            // which Rust allows concurrently.
-            let (np, nr, ln_order) = {
+            // (O(bucket) vs O(n) for the full scan).
+            let (np, nr) = {
+                let ln = &self.nodes[n.index()];
                 let Some(np) = ln.parent else { return false };
                 let nr = ln.parent_role.expect("non-root has parent_role");
-                (np, nr, ln.order)
+                (np, nr)
             };
-            let candidates: &[HNode] = self
+            // Snapshot the candidate list (clone to release the
+            // immutable borrow on `block_index` before we mutate stats).
+            let candidates: Vec<HNode> = self
                 .block_index
                 .as_ref()
                 .and_then(|ix| ix.get(&nr))
-                .map_or(&[], Vec::as_slice);
-            for &m_hnode in candidates {
-                let m = &self.nodes[m_hnode.index()];
-                if m.order >= ln_order {
+                .cloned()
+                .unwrap_or_default();
+            for m_hnode in candidates {
+                let m_order = self.nodes[m_hnode.index()].order;
+                if m_order >= ln_order {
                     continue;
                 }
-                let Some(mp) = m.parent else { continue };
-                if self.nodes[n.index()].labels == m.labels
+                let Some(mp) = self.nodes[m_hnode.index()].parent else {
+                    continue;
+                };
+                self.stats.block_compares += 1;
+                if self.nodes[n.index()].labels == self.nodes[m_hnode.index()].labels
                     && self.nodes[np.index()].labels == self.nodes[mp.index()].labels
                 {
                     return true;
@@ -540,8 +552,18 @@ impl<'c> HyperEngine<'c> {
             false
         } else {
             // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
-            for m in &self.nodes {
-                if m.order < ln.order && subset_sorted(&ln.labels, &m.labels) {
+            // Snapshot the node count and iterate by index to keep
+            // mutating `stats` clean of borrow conflicts.
+            let n_nodes = self.nodes.len();
+            for i in 0..n_nodes {
+                let m_order = self.nodes[i].order;
+                if m_order >= ln_order {
+                    continue;
+                }
+                self.stats.block_compares += 1;
+                let ln_labels = &self.nodes[n.index()].labels;
+                let m_labels = &self.nodes[i].labels;
+                if subset_sorted(ln_labels, m_labels) {
                     return true;
                 }
             }

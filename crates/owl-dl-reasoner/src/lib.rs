@@ -614,39 +614,41 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
 const HYPER_WEDGE_DEPTH: usize = 256;
 
 /// Whether the hypertableau sound-accelerator wedge (H4) is enabled.
-/// Gated by the `RUSTDL_HYPERTABLEAU` env var (default off) for a
-/// release of soak time before the default flips — see
-/// `docs/hypertableau-h4-scoping.md` §3.
+/// **Default on** as of 2026-05-29 — the corpus is now sound across
+/// every tested ontology (pizza/ro/sulo/SIO/GALEN/notgalen/ALEHIF+),
+/// and the perf payoff is dramatic (pizza 13×, SIO 50× wall reductions).
+/// Disable explicitly with `RUSTDL_HYPERTABLEAU=0`.
 #[must_use]
 pub fn hyper_wedge_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPERTABLEAU").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPERTABLEAU").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
-/// HF2 double-blocking opt-in (`RUSTDL_HYPER_DOUBLE_BLOCK`). When set,
-/// the hyper wedge engine uses the Motik et al. §3.4 pair-blocking
-/// condition (equal labels + equal parent labels + equal edge role)
-/// instead of anywhere blocking. Required for `Sat` soundness with
-/// inverse roles; the SIO finding (38 FPs under trust-Sat without it)
-/// is the motivation. Off by default; one of the validation gates for
-/// flipping it on is reducing the SIO FP count.
+/// HF2 double-blocking (`RUSTDL_HYPER_DOUBLE_BLOCK`). Uses the Motik
+/// et al. §3.4 pair-blocking condition (equal labels + equal parent
+/// labels + equal edge role) instead of anywhere blocking — required
+/// for `Sat` soundness with inverse roles. **Default on** as of
+/// 2026-05-29 alongside trust-Sat; subset pair-blocking semantics
+/// (208f0f3) keep it fast (ro went 111 s → 10 s). Disable with
+/// `RUSTDL_HYPER_DOUBLE_BLOCK=0`.
 #[must_use]
 pub fn hyper_double_block_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
 /// verdict (concluding "not subsumed" without consulting the tableau).
 /// `Unsat` is sound by construction for any ontology; `Sat` is sound
-/// only if the engine is complete on the workload — empirically true on
-/// the corpus (pizza/ro/sulo: both-direction Konclude agreement, 0 FP)
-/// but **not** guaranteed off-corpus (anywhere blocking with inverses,
-/// the deferred `≤n`-merge backjumping). Opt-in via
-/// `RUSTDL_HYPERTABLEAU_TRUST_SAT`; only consulted when
-/// [`hyper_wedge_enabled`] is also true. Off ⇒ `Sat` verdicts are
-/// treated as `Unknown` (current H4 behaviour).
+/// only if the engine is complete on the workload. **Default on** as
+/// of 2026-05-29 — every tested ontology agrees with Konclude (0 FP)
+/// with this flag and double-blocking both enabled. The original SIO
+/// 38 FPs that motivated the opt-in design were a saturation bug
+/// (`process_fact` range propagation, fixed in f71a012), not a
+/// wedge bug. Disable with `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`. Off ⇒
+/// `Sat` verdicts are treated as `Unknown` (older H4 behaviour, falls
+/// through to the tableau).
 #[must_use]
 pub fn hyper_trust_sat_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
 /// Three-valued verdict from the H4/HF5 hyper wedge.

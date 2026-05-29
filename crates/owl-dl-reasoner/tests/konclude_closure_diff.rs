@@ -267,6 +267,19 @@ fn diff_corpus_ontology(
 }
 
 #[test]
+#[ignore = "GALEN with 5 s per-pair timeout — measures how many MISSED are calculus-bound vs timeout-bound"]
+fn galen_closure_long_timeout() {
+    let input = Path::new("../../ontologies/external/galen.ofn");
+    let truth = Path::new("../../ontologies/external/galen-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing GALEN fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("galen-5s", input, truth, 5000);
+    assert_eq!(fp, 0, "GALEN has FPs under 5s timeout");
+}
+
+#[test]
 #[ignore = "needs ontologies/external/galen.ofn + galen-classified.owx; ~2-12 min wall depending on RUSTDL_HYPERTABLEAU env vars"]
 fn galen_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/galen.ofn");

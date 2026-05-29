@@ -59,7 +59,7 @@ longer the engine baseline once the corpus is sound under env-on.
 | family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
 | **GALEN (SHIF, 2748 cls)** — ORE 2015 | 2 m 20 s | 27849/27997, **0 FP**, 148 missed (99.5%) |
 | **ALEHIF+ test (168 cls)** — ORE 2015 | 1.76 s | 247/247, **0 FP, 0 missed (100%)** |
-| **notgalen (SHIF, 3087 cls)** — ORE 2015 | 5 m 26 s | 32661/32739, **0 FP**, 78 missed (99.8%) |
+| **notgalen (SHIF, 3087 cls)** — ORE 2015 | 10 m 23 s | 32712/32739, **0 FP**, 27 missed (**99.9 %**) — Min→∃ + Or-body fix on 2026-05-29 closed 51 of 78 |
 | ORE SHOIF(D) test | parse error | datatypes unsupported (known limit) |
 
 **Generalization status (ORE 2015 measurement):** of 8 distinct

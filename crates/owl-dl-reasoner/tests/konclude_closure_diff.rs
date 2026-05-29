@@ -278,6 +278,19 @@ fn galen_closure_matches_konclude() {
 }
 
 #[test]
+#[ignore = "needs ontologies/external/alehif-test.ofn + alehif-test-classified.owx"]
+fn alehif_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/external/alehif-test.ofn");
+    let truth = Path::new("../../ontologies/external/alehif-test-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing alehif fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("alehif-test", input, truth, 200);
+    assert_eq!(fp, 0, "alehif has FPs — soundness regression");
+}
+
+#[test]
 #[ignore = "needs ontologies/external/notgalen.ofn + notgalen-classified.owx; previously timed out at 10 min"]
 fn notgalen_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/notgalen.ofn");

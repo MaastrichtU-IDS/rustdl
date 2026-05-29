@@ -844,7 +844,16 @@ pub(crate) fn classify_top_down_internal(
         }
         set.into_iter().collect()
     };
-    let sweep_budget = std::time::Duration::from_millis(200);
+    // Sweep budget: honour the caller's per_pair_timeout so that
+    // pairs requiring more than the default 200 ms (e.g. ones that
+    // need the hyper wedge but converge in 1–5 s) aren't silently
+    // dropped to "not subsumed". Before this fix, the sweep
+    // hardcoded 200 ms regardless of the caller's request, which
+    // caused MISSED entailments on GALEN's PathologicalCondition
+    // pattern and SIO/notgalen residuals that the wedge proves
+    // sub-second via direct probe but exceed 200 ms under the
+    // top-down classifier's tier-parallel load.
+    let sweep_budget = per_pair_timeout.unwrap_or(std::time::Duration::from_millis(200));
     for &sup in &defined_sups {
         let sup_id =
             owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));

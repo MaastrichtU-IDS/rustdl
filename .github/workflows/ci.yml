@@ -1,8 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # push trigger disabled 2026-05-29 until the org Actions billing is
+  # restored — every recent push has failed with "the job was not
+  # started because recent account payments have failed or your
+  # spending limit needs to be increased." PRs and manual dispatch
+  # still trigger CI normally.
+  # push:
+  #   branches: [main]
   pull_request:
   workflow_dispatch:
 

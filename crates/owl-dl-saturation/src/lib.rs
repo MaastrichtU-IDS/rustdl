@@ -1018,17 +1018,41 @@ fn lower_sub_class_of(
                 match pool.get(op) {
                     ConceptExpr::Atomic(id) => bodies.push(*id),
                     ConceptExpr::Some(role, body) if !role.is_inverse() => {
-                        let Some(body_id) =
-                            atomic_or_tseitin_body(*body, pool, rules, tseitin)
+                        let Some(body_ids) =
+                            existential_body_alternatives(*body, pool, rules, tseitin)
                         else {
                             salvageable = false;
                             break;
                         };
-                        let marker = tseitin.introduce_existential_marker(
-                            role.role_id(),
-                            body_id,
-                            rules,
-                        );
+                        // Allocate one marker for this existential
+                        // operand. If the body is `Or(C1, ..., Cn)`
+                        // we emit one trigger `∃R.Ci ⊑ marker` per
+                        // operand, all sharing the marker so any
+                        // operand satisfies it.
+                        let marker = if body_ids.len() == 1 {
+                            tseitin.introduce_existential_marker(
+                                role.role_id(),
+                                body_ids[0],
+                                rules,
+                            )
+                        } else {
+                            let primary = tseitin.introduce_existential_marker(
+                                role.role_id(),
+                                body_ids[0],
+                                rules,
+                            );
+                            // Reuse the same marker for the alternative
+                            // bodies — emit additional triggers tying
+                            // each alternative ∃R.Cj to the same marker.
+                            for &alt_body in &body_ids[1..] {
+                                rules.existential_triggers.push(ExistentialTrigger {
+                                    role: role.role_id(),
+                                    body: alt_body,
+                                    head: primary,
+                                });
+                            }
+                            primary
+                        };
                         bodies.push(marker);
                     }
                     _ => {
@@ -1049,8 +1073,9 @@ fn lower_sub_class_of(
         }
         ConceptExpr::Some(role, body) => {
             // ∃r.B ⊑ C: existential trigger. Named role only; the
-            // body may be atomic or an `And` of atomics, in which
-            // case Tseitin introduces a synthetic atomic stand-in.
+            // body may be atomic, an `And` of atomics (Tseitin-folded),
+            // or an `Or(C1, ..., Cn)` (one trigger emitted per
+            // operand; sound because `∃r.Ci ⊑ ∃r.(C1 ⊔ ... ⊔ Cn)`).
             // Range constraints are NOT folded here: trigger bodies
             // are matched against witness subsumers, and user classes
             // aren't marked as subsumers of Range(R) — folding the
@@ -1058,15 +1083,17 @@ fn lower_sub_class_of(
             if role.is_inverse() {
                 return;
             }
-            let Some(body_id) = atomic_or_tseitin_body(*body, pool, rules, tseitin) else {
+            let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin) else {
                 return;
             };
             for head in atomic_operands_on_right(sup, pool) {
-                rules.existential_triggers.push(ExistentialTrigger {
-                    role: role.role_id(),
-                    body: body_id,
-                    head,
-                });
+                for &body_id in &body_ids {
+                    rules.existential_triggers.push(ExistentialTrigger {
+                        role: role.role_id(),
+                        body: body_id,
+                        head,
+                    });
+                }
             }
         }
         _ => {}
@@ -1090,8 +1117,16 @@ fn atomic_existential_rhs(
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) -> Option<(RoleId, ClassId)> {
-    let ConceptExpr::Some(role, body) = pool.get(c) else {
-        return None;
+    // Accept both `∃R.body` (Some) and `≥n R.body` (Min with n ≥ 1).
+    // Min(n, R, C) implies ∃R.C for n ≥ 1, so lowering Min as Some is
+    // a sound under-approximation: the saturator picks up an
+    // existential fact, the precise cardinality is left to the
+    // tableau path. Min(0, ...) is trivially true and contributes
+    // nothing — skip.
+    let (role, body) = match pool.get(c) {
+        ConceptExpr::Some(role, body) => (role, body),
+        ConceptExpr::Min(n, role, body) if *n >= 1 => (role, body),
+        _ => return None,
     };
     if role.is_inverse() {
         return None;
@@ -1115,6 +1150,34 @@ fn atomic_or_tseitin_body(
     tseitin: &mut TseitinAllocator,
 ) -> Option<ClassId> {
     atomic_or_tseitin_body_with_extras(body, &[], pool, rules, tseitin)
+}
+
+/// Return the list of alternative body class ids for an existential
+/// trigger's body. For `Atomic` / `And` returns one element. For
+/// `Or(C1, ..., Cn)` returns one element per operand (each itself
+/// lowered via `atomic_or_tseitin_body`). Used when lowering trigger
+/// LHS existentials so that `∃R.Or(C1, C2) ⊑ Head` becomes
+/// `∃R.C1 ⊑ Head` plus `∃R.C2 ⊑ Head` — sound because
+/// `∃R.Ci ⊑ ∃R.(C1 ⊔ C2)`. Returns `None` if any operand can't be
+/// lowered (drops the whole trigger, since partial coverage would
+/// fire too eagerly on some pathological shapes).
+fn existential_body_alternatives(
+    body: ConceptId,
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) -> Option<Vec<ClassId>> {
+    match pool.get(body) {
+        ConceptExpr::Or(operands) => {
+            let mut out = Vec::with_capacity(operands.len());
+            for &op in operands {
+                let id = atomic_or_tseitin_body(op, pool, rules, tseitin)?;
+                out.push(id);
+            }
+            Some(out)
+        }
+        _ => atomic_or_tseitin_body(body, pool, rules, tseitin).map(|id| vec![id]),
+    }
 }
 
 /// Like `atomic_or_tseitin_body`, but additionally folds `extras`
@@ -1657,6 +1720,109 @@ Ontology(<http://rustdl.test/test>\n\
         let subs = saturate(&internal);
         // Sanity: ordinary subsumption still works after the drop.
         assert!(!subs.contains(class(&internal, "A"), class(&internal, "Sink")));
+    }
+
+    #[test]
+    fn min_cardinality_on_rhs_lowers_to_existential() {
+        // The SIO_010008 ⊑ biopolymer pattern (smaller form): a class
+        // with `≥n R.C` on the RHS should be treated as having
+        // `∃R.C` for EL closure purposes. Sound under-approximation:
+        // `≥n R.C` implies `∃R.C` for n ≥ 1, and the EL pass then
+        // fires `∃R.C ⊑ Head` triggers correctly.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:Head))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A ObjectMinCardinality(2 :r :B))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :B) :Head)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "A"), class(&internal, "Head")),
+            "≥2 R.B on RHS should fire ∃R.B trigger"
+        );
+    }
+
+    #[test]
+    fn existential_with_union_body_on_trigger_lhs_fires_per_operand() {
+        // `∃R.Or(B, C) ⊑ Head` should fire when X has ∃R.B OR ∃R.C —
+        // sound because ∃R.B ⊑ ∃R.(B ⊔ C). The trigger lowering emits
+        // one ExistentialTrigger per Or operand, all sharing the head.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X1))\n\
+    Declaration(Class(:X2))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:Head))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r ObjectUnionOf(:B :C)) :Head)\n\
+    SubClassOf(:X1 ObjectSomeValuesFrom(:r :B))\n\
+    SubClassOf(:X2 ObjectSomeValuesFrom(:r :C))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.contains(class(&internal, "X1"), class(&internal, "Head")));
+        assert!(subs.contains(class(&internal, "X2"), class(&internal, "Head")));
+    }
+
+    #[test]
+    fn lhs_conjunction_with_union_existential_body_fires() {
+        // The SIO biopolymer pattern: `∃R.Or(...) ⊓ A ⊑ Target`. The
+        // Tseitin marker covers all operands; the conjunctive trigger
+        // fires when any operand's existential plus the atomic A both
+        // hold on a class.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Target))\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:X))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(ObjectIntersectionOf(:A ObjectSomeValuesFrom(:r ObjectUnionOf(:B :C))) :Target)\n\
+    SubClassOf(:X :A)\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "Target")),
+            "X has A and ∃r.B (a Union-operand), so X ⊑ Target via the LHS-conjunctive-Or-body rule"
+        );
+    }
+
+    #[test]
+    fn min_cardinality_with_super_role_chains_through_union() {
+        // Combined exercise of all new features: SIO_010008-style
+        // pattern. SubClassOf(A, ≥2 r.C); SubObjectPropertyOf(r, s);
+        // SubClassOf(∃s.Or(C, D), Head). Need: ≥n → ∃, super-role
+        // propagation, Or-on-trigger-LHS-body.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(Class(:Head))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    SubObjectPropertyOf(:r :s)\n\
+    SubClassOf(:A ObjectMinCardinality(2 :r :C))\n\
+    SubClassOf(ObjectSomeValuesFrom(:s ObjectUnionOf(:C :D)) :Head)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "A"), class(&internal, "Head")),
+            "A ⊑ Head via ≥2r.C → ∃r.C → ∃s.C (super-role) → ∃s.Or(C,D) → Head"
+        );
     }
 
     #[test]

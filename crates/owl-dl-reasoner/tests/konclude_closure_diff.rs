@@ -258,7 +258,9 @@ fn diff_corpus_ontology(
     for (s, t) in fp.iter().take(5) {
         eprintln!(" FP: {s} ⊑ {t}");
     }
-    for (s, t) in missed.iter().take(5) {
+    // Print all MISSED when ≤ 50, otherwise first 50.
+    let missed_limit = if missed.len() <= 50 { missed.len() } else { 50 };
+    for (s, t) in missed.iter().take(missed_limit) {
         eprintln!(" MISSED: {s} ⊑ {t}");
     }
     (rustdl.len(), konclude.len(), fp.len(), missed.len())

@@ -55,7 +55,7 @@ longer the engine baseline once the corpus is sound under env-on.
 | pizza (SHOIN) | 3.28 s / 32.80 s | 495/499 @ 200 ms / **499/499 @ 5 s**, **0 FP** (engine is 100 % complete on pizza; 4 InterestingPizza pairs need >200 ms per probe) |
 | ro-stripped (SROIFV) | 0.42 s | 158/158, **0 FP**, 0 missed |
 | sulo-stripped (SRI) | 0.02 s | 51/51, **0 FP**, 0 missed |
-| SIO (SRIQ, 1585 cls) | 17.16 s / 309.90 s | 8862/8904 (unchanged at 5 s timeout), **0 FP**, 42 missed (UnionOf in equivalence-class definitions — genuine calculus gap, not timeout-bound) |
+| SIO (SRIQ, 1585 cls) | 68.86 s | 8882/8904, **0 FP**, 22 missed (was 42 before Min→∃ + Or-body lowering 2026-05-29; residual pattern is `∃R.X` where X must chain through deeper inferences) |
 | family-stripped | 22 s | TBox-only, ABox-inconsistent — out of scope |
 | **GALEN (SHIF, 2748 cls)** — ORE 2015 | 2 m 20 s | 27849/27997, **0 FP**, 148 missed (99.5%) |
 | **ALEHIF+ test (168 cls)** — ORE 2015 | 1.76 s | 247/247, **0 FP, 0 missed (100%)** |

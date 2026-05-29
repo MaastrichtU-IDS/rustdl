@@ -304,6 +304,44 @@ fn notgalen_closure_matches_konclude() {
 }
 
 #[test]
+#[ignore = "long-timeout corpus run (5 s per-pair) — measures the engine's actual completeness ceiling, independent of the standard 200 ms harness budget"]
+fn corpus_closure_long_timeout() {
+    let base = Path::new("../../ontologies/real");
+    let cases = [
+        ("pizza", "pizza.ofn", "konclude-input/pizza-classified.owx"),
+        (
+            "ro-stripped",
+            "ro-stripped.ofn",
+            "konclude-input/ro-stripped-classified.owx",
+        ),
+        (
+            "sulo-stripped",
+            "sulo-stripped.ofn",
+            "konclude-input/sulo-stripped-classified.owx",
+        ),
+        (
+            "sio-stripped",
+            "sio-stripped.ofn",
+            "konclude-input/sio-classified.owx",
+        ),
+    ];
+    let mut any_fp = false;
+    for (label, input, truth) in cases {
+        let input_path = base.join(input);
+        let truth_path = base.join(truth);
+        if !input_path.exists() || !truth_path.exists() {
+            eprintln!("--- {label} --- SKIP: missing fixture");
+            continue;
+        }
+        let (_r, _k, fp, _m) = diff_corpus_ontology(label, &input_path, &truth_path, 5000);
+        if fp > 0 {
+            any_fp = true;
+        }
+    }
+    assert!(!any_fp, "corpus has FPs under 5s timeout — soundness regression");
+}
+
+#[test]
 #[ignore = "needs ontologies/real/{pizza,ro-stripped,sulo-stripped,sio-stripped}.ofn and konclude-input/*-classified.owx"]
 fn corpus_closure_matches_konclude() {
     let base = Path::new("../../ontologies/real");

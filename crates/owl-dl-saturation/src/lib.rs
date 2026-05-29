@@ -1195,7 +1195,32 @@ fn atomic_or_tseitin_body_with_extras(
 ) -> Option<ClassId> {
     let body_atomics: Vec<ClassId> = match pool.get(body) {
         ConceptExpr::Atomic(id) => vec![*id],
-        ConceptExpr::And(operands) => atomic_classes(operands, pool)?,
+        ConceptExpr::And(operands) => atomic_classes_with_existential_markers(
+            operands, pool, rules, tseitin,
+        )?,
+        ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
+            // Top-level nested existential as the outer body:
+            // `∃R.∃S.X` style. Introduce a marker for the inner
+            // existential and use it as the single-class body.
+            let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+            let marker = tseitin.introduce_existential_marker(
+                role.role_id(),
+                inner_id,
+                rules,
+            );
+            vec![marker]
+        }
+        ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
+            // `≥n R.X` as a nested body — sound underapproximation
+            // to ∃R.X (same lowering as `atomic_existential_rhs`).
+            let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+            let marker = tseitin.introduce_existential_marker(
+                role.role_id(),
+                inner_id,
+                rules,
+            );
+            vec![marker]
+        }
         _ => return None,
     };
     if extras.is_empty() && body_atomics.len() == 1 {
@@ -1209,11 +1234,41 @@ fn atomic_or_tseitin_body_with_extras(
     Some(tseitin.introduce(combined, rules))
 }
 
-fn atomic_classes(ids: &[ConceptId], pool: &ConceptPool) -> Option<Vec<ClassId>> {
+/// Like `atomic_classes`, but also accepts `∃R.body` and `≥n R.body`
+/// operands by introducing existential markers. Used inside the body
+/// of an existential when the body's And contains nested existentials
+/// (e.g. `∃R.(B ⊓ ∃S.C)` — the inner `∃S.C` is replaced by a marker M
+/// with `∃S.C ⊑ M`, then the outer body becomes the And of atomic
+/// operands ∪ {M}). Returns None if any operand can't be reduced to
+/// an atomic id this way.
+fn atomic_classes_with_existential_markers(
+    ids: &[ConceptId],
+    pool: &ConceptPool,
+    rules: &mut ElRules,
+    tseitin: &mut TseitinAllocator,
+) -> Option<Vec<ClassId>> {
     let mut out = Vec::with_capacity(ids.len());
     for &c in ids {
         match pool.get(c) {
             ConceptExpr::Atomic(id) => out.push(*id),
+            ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
+                let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+                let marker = tseitin.introduce_existential_marker(
+                    role.role_id(),
+                    inner_id,
+                    rules,
+                );
+                out.push(marker);
+            }
+            ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
+                let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
+                let marker = tseitin.introduce_existential_marker(
+                    role.role_id(),
+                    inner_id,
+                    rules,
+                );
+                out.push(marker);
+            }
             _ => return None,
         }
     }
@@ -1822,6 +1877,39 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             subs.contains(class(&internal, "A"), class(&internal, "Head")),
             "A ⊑ Head via ≥2r.C → ∃r.C → ∃s.C (super-role) → ∃s.Or(C,D) → Head"
+        );
+    }
+
+    #[test]
+    fn nested_existential_in_outer_body_lowers_via_marker() {
+        // SIO SIO_010038 / SIO_010410 shape: outer existential's body
+        // is `B ⊓ ∃R'.C`. With nested-existential lowering, the inner
+        // `∃R'.C` becomes a marker `M` (via `∃R'.C ⊑ M`), the outer
+        // body becomes Tseitin(`B ⊓ M`), and CR5 propagation can fire
+        // triggers on the synthetic.
+        //
+        // Setup: A ⊑ ∃r.(B ⊓ ∃s.C); B ⊑ Q; ∃r.Q ⊑ Head.
+        // The outer body's Tseitin F has Q as subsumer (via F ⊑ B ⊑ Q),
+        // and the trigger ∃r.Q ⊑ Head fires on A.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:Q))\n\
+    Declaration(Class(:Head))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B ObjectSomeValuesFrom(:s :C))))\n\
+    SubClassOf(:B :Q)\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :Q) :Head)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "A"), class(&internal, "Head")),
+            "A ⊑ Head via nested-existential body lowering"
         );
     }
 

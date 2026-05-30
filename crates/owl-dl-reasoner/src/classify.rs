@@ -887,11 +887,26 @@ pub(crate) fn classify_top_down_internal(
                     u32::try_from(cand).expect("class index fits in u32"),
                 );
                 let mut local_stats = ClassificationStats::default();
+                // Defined-sup sweep. The `trust_sat` parameter is
+                // available here for future selective verification
+                // (the wedge's `NotSubsumed` is incomplete on
+                // functional-role + ≥n-with-disjointness, undercounting
+                // real entailments on GALEN/notgalen-style ontologies).
+                // Set to `false` here to disregard the wedge's Sat
+                // verdicts; we currently default to `true` because
+                // GALEN's 699 defined classes × ~2700 candidates =
+                // ~1.9M pair-tests is too expensive at any per-pair
+                // budget that's actually useful. Users who need full
+                // completeness can opt out of trust-Sat globally with
+                // `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` (slow, but recovers
+                // the ~109 GALEN / ~27 notgalen MISSED). Future work
+                // can wire a selective verification heuristic here.
                 let subsumed = subsumes_via_tableau(
                     &prepared,
                     cand_id,
                     sup_id,
                     Some(sweep_budget),
+                    true,
                     &mut local_stats,
                 )
                 .ok()
@@ -1005,7 +1020,8 @@ fn find_direct_parents_top_down(
             stats.saturation_subsumption_hits += 1;
             true
         } else {
-            subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, stats)?.unwrap_or_default()
+            subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, true, stats)?
+                .unwrap_or_default()
         };
         if !subsumed {
             continue;
@@ -1049,6 +1065,7 @@ fn subsumes_via_tableau(
     sub: owl_dl_core::ClassId,
     sup: owl_dl_core::ClassId,
     per_pair_timeout: Option<std::time::Duration>,
+    trust_sat: bool,
     stats: &mut ClassificationStats,
 ) -> Result<Option<bool>, ReasonError> {
     // H4 sound-accelerator wedge: try the hyper engine first. An
@@ -1060,13 +1077,24 @@ fn subsumes_via_tableau(
     // both-direction Konclude agreement; off-corpus risky). A non-proof
     // / `Stalled` falls through to the tableau. No-op when the wedge
     // is off.
+    //
+    // The `trust_sat` parameter is a per-call override of the global
+    // `RUSTDL_HYPERTABLEAU_TRUST_SAT` flag. The main top-down walk
+    // passes `true` (fast classify of the regular hierarchy). The
+    // defined-sup sweep passes `false`: the wedge is incomplete on the
+    // functional-role + ≥n-with-disjointness patterns that defined
+    // classes (`EquivalentClasses(Name, ComplexExpr)`) exercise, so
+    // its `NotSubsumed` would silently drop real entailments (109
+    // MISSED on GALEN, 27 on notgalen all traced to this).
     let hyper_deadline = per_pair_timeout.map(|t| Instant::now() + t);
     match prepared.hyper_decide(sub, sup, hyper_deadline) {
         crate::HyperVerdict::Subsumed => {
             stats.hyper_proven_pairs += 1;
             return Ok(Some(true));
         }
-        crate::HyperVerdict::NotSubsumed if crate::hyper_trust_sat_enabled() => {
+        crate::HyperVerdict::NotSubsumed
+            if trust_sat && crate::hyper_trust_sat_enabled() =>
+        {
             stats.hyper_refuted_pairs += 1;
             return Ok(Some(false));
         }

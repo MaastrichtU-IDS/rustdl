@@ -44,11 +44,15 @@ single-threaded across 5 thresholds:
 
 | Threshold (ms) | Wall (s) | Wall vs baseline (1.76 s) |
 |---|---|---|
-| 1  | ~405–410 | ≈230× |
-| 5  | ~405–410 | ≈230× |
-| 10 | ~405–410 | ≈230× |
-| 20 | ~405–410 | ≈230× |
-| 30 | ~405–410 | ≈230× |
+| 1  | 404.90 | ≈230× |
+| 5  | 405.01 | ≈230× |
+| 10 | 406.85 | ≈230× |
+| 20 | 408.56 | ≈232× |
+| 30 | 409.62 | ≈233× |
+
+The 4.7-second spread across a 30× threshold range (404.90 → 409.62 s) confirms the
+flatness is strict, not approximate: the entire variance is consistent with measurement
+noise.
 
 **The wall times are flat.** This means virtually every wedge
 `NotSubsumed` verdict completes in **under 1 ms**, so a wall-time
@@ -70,6 +74,16 @@ inference; ≥n with disjointness — see `docs/handoff-2026-05-30.md`
 (`docs/superpowers/specs/2026-05-31-soundness-completeness-perf-design.md`
 §"Phase 2 — Deep completeness calculus") takes over the GALEN/notgalen
 MISSED-reduction goal.
+
+**Hardware-baseline caveat:** an independent agent re-running the sweep
+also attempted a notgalen baseline run at `RUSTDL_HYPER_TRUST_SAT_MIN_MS=0`
+(pre-Phase-1 behaviour, no new path active) — it exceeded the 1800 s
+(30 min) cap on this machine. The handoff doc estimated notgalen at ~10
+min wall; on this hardware/load that estimate doesn't hold even with
+verification disabled. The "GALEN 109 → ≤ 40 at +1–3 min" Phase 1 spec
+target was anchored to a baseline that isn't reproducible here — so the
+lever's wall-time-cost ceiling could not have been characterized on this
+machine even if the wall-time-as-filter mechanism had worked.
 
 ## Default = 0 rationale (dead-end #11 discipline)
 

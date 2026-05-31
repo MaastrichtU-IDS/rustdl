@@ -62,3 +62,15 @@ jobs:
         with:
           command: check
           arguments: --workspace
+
+  soundness-diff:
+    name: closure-diff soundness net (manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # NOTE: fixtures must be provisioned by the runner (large, gitignored).
+      # This job documents the entrypoint; provisioning is out of Phase 0 scope.
+      - run: ./scripts/run-soundness-diff.sh

@@ -2608,4 +2608,68 @@ Ontology(<http://rustdl.test/p2a/funcrole>
         assert_eq!(supers(rf), vec![rf], "r_func is its own super (reflexive)");
         assert!(supers(ru).is_empty(), "r_unrelated has no functional super");
     }
+
+    /// Phase 2b canary: minimal repro of GALEN's
+    /// `KneeJointStability ⊑ JointStability` pattern (pair_08 in the
+    /// Phase 2b.0 fixture set). The axiom shape:
+    ///
+    ///   T ≡ A ⊓ ∃R.(B ⊓ ∃S.C)
+    ///   X ≡ A ⊓ ∃R.(B ⊓ ∃S'.C')   where S' ⊑ S, C' ⊑ C
+    ///
+    /// Expected entailment: X ⊑ T. Derivation: X's R-witness is in
+    /// (B ⊓ ∃S'.C'); via sub-property S' ⊑ S, the witness is also in
+    /// ∃S.C' (CR9); via sub-class C' ⊑ C, the witness has subsumer
+    /// `∃S.C` (CR5); so the witness is in B ⊓ ∃S.C = T's R-body;
+    /// closing the conjunctive trigger that defines T.
+    ///
+    /// Phase 2b.0's analysis (docs/phase2b-galen-diagnosis.md) traced
+    /// the bug to `introduce_existential_marker`'s one-way semantics
+    /// being inadequate when the marker is reused inside a Tseitin
+    /// synthetic that needs full equivalence. This canary ASSERTS THE
+    /// GAP — the closure does NOT contain X ⊑ T pre-fix. Task 5 of
+    /// Phase 2b inverts the assertion after the fix.
+    #[test]
+    fn compound_existential_body_canary_documents_the_gap() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2b/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2b/test>
+    Declaration(Class(:T))
+    Declaration(Class(:X))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:C_sub))
+    Declaration(ObjectProperty(:R))
+    Declaration(ObjectProperty(:S))
+    Declaration(ObjectProperty(:S_sub))
+    SubObjectPropertyOf(:S_sub :S)
+    SubClassOf(:C_sub :C)
+    EquivalentClasses(:T ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S :C)))))
+    EquivalentClasses(:X ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S_sub :C_sub)))))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("canary parses");
+        let internal = convert_ontology(&set_onto).expect("canary lowers");
+        let subsumers = crate::saturate(&internal);
+        let x = internal.vocabulary.class_id("http://rustdl.test/p2b/X").expect("X declared");
+        let t = internal.vocabulary.class_id("http://rustdl.test/p2b/T").expect("T declared");
+
+        // ASSERT THE GAP — Task 5 inverts after the fix.
+        assert!(
+            !subsumers.contains(x, t),
+            "Phase 2b canary unexpectedly passed: compound existential-body \
+             lowering appears to be fixed (or the canary is wrong). If the \
+             fix landed, invert this assertion."
+        );
+    }
 }

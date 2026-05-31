@@ -140,20 +140,20 @@ struct WorklistEngine {
     /// `{A, B}` map to the same class id. Pairs `{target_i, target_j}`
     /// are deduplicated by sorted body, just like the static path.
     tseitin_runtime: TseitinAllocator,
-    /// Per-(subject, functional-super-role) accumulated witness class.
-    ///
-    /// `merged_witness[(sub, r_f)] = W` records that the current
-    /// best witness for `sub`'s `r_f`-successor is class `W`:
-    /// - initially set to the first target seen for that `(sub, r_f)` pair;
-    /// - updated to a runtime Tseitin synthetic `W' ≡ W ⊓ new_target`
-    ///   whenever a new existential fact `(sub, role_j, new_target)`
-    ///   arrives with `r_f` a functional super of `role_j` and
-    ///   `new_target ≠ W`.
-    ///
-    /// This state drives the Phase 2a witness-merge rule. The
-    /// accumulated form prevents the pairwise-product explosion that
-    /// would result from naïvely combining every pair of sub-role facts.
-    merged_witness: HashMap<(ClassId, RoleId), ClassId>,
+    /// Phase 2a EL++ witness-merge — per-`(sub, R_f)` FLAT SET of
+    /// atomic class IDs that have been accumulated into a single
+    /// `R_f`-witness. Monotonically grows; bounded by the atomic
+    /// vocabulary, so the merge rule terminates regardless of how
+    /// many sub-property facts feed in. Replaces T4's synthetic-id
+    /// tracking which non-terminated on 3+ sub-property fan-in (see
+    /// T4.5 commit message + docs/phase2a-results.md when written).
+    merged_atom_sets: HashMap<(ClassId, RoleId), std::collections::BTreeSet<ClassId>>,
+    /// Atomic-content map for every allocated synthetic (static AND
+    /// runtime). For a synthetic `F` with body `{a, b, ...}` where each
+    /// operand may itself be a synthetic, `atomic_content_of[F]` is the
+    /// transitive flattening into the original atomic vocabulary.
+    /// For non-synthetic class IDs, callers default to `{id}`.
+    atomic_content_of: HashMap<ClassId, std::collections::BTreeSet<ClassId>>,
 }
 
 impl WorklistEngine {
@@ -183,6 +183,17 @@ impl WorklistEngine {
         for _ in 0..num_total_classes {
             subsumed_by.push(FixedBitSet::with_capacity(num_total_classes));
         }
+        // Populate atomic_content_of for all static Tseitin synthetics.
+        // The bodies in tseitin.by_body are sorted Vec<ClassId>; we treat
+        // each body operand as atomic (the bodies contain only user-class IDs
+        // and existential-marker IDs from introduce_existential_marker, which
+        // are themselves above the user vocabulary but bounded).
+        let mut atomic_content_of: HashMap<ClassId, std::collections::BTreeSet<ClassId>> =
+            HashMap::new();
+        for (body, &synthetic) in &tseitin.by_body {
+            let atoms: std::collections::BTreeSet<ClassId> = body.iter().copied().collect();
+            atomic_content_of.insert(synthetic, atoms);
+        }
         Self {
             subsumers: Subsumers::with_capacity(num_total_classes),
             subsumed_by,
@@ -201,7 +212,8 @@ impl WorklistEngine {
             num_user_classes,
             num_total_classes,
             tseitin_runtime: tseitin,
-            merged_witness: HashMap::new(),
+            merged_atom_sets: HashMap::new(),
+            atomic_content_of,
         }
     }
 
@@ -235,6 +247,21 @@ impl WorklistEngine {
             .unwrap_or_default()
     }
 
+    /// Return the transitive atomic content of class `c`. For synthetics
+    /// tracked in `atomic_content_of`, returns the stored set. For any
+    /// class not in the map (i.e., a user-vocabulary atomic or an
+    /// existential marker that wasn't given an explicit entry), returns
+    /// the singleton `{c}`.
+    fn atomic_content_of_or_self(&self, c: ClassId) -> std::collections::BTreeSet<ClassId> {
+        if let Some(set) = self.atomic_content_of.get(&c) {
+            set.clone()
+        } else {
+            let mut s = std::collections::BTreeSet::new();
+            s.insert(c);
+            s
+        }
+    }
+
     /// Introduce a runtime Tseitin synthetic for the conjunction of the
     /// body's atomic classes. Returns the synthetic class id
     /// (deduplicated — passing the same sorted body twice returns the
@@ -257,14 +284,27 @@ impl WorklistEngine {
     fn introduce_runtime_synthetic(&mut self, body: Vec<ClassId>) -> ClassId {
         let before_atomic = self.rules.atomic_subsumptions.len();
         let before_conjunctive = self.rules.conjunctive_triggers.len();
+        // Capture a clone of the body before `introduce` consumes it (sorts
+        // and stores it) so we can compute atomic_content_of for the new
+        // synthetic. On the dedup path we skip this.
+        let body_clone = body.clone();
         let synthetic = self.tseitin_runtime.introduce(body, &mut self.rules);
         let s_idx = synthetic.index() as usize;
         let added_atomic = self.rules.atomic_subsumptions.len() - before_atomic;
         let added_conjunctive = self.rules.conjunctive_triggers.len() - before_conjunctive;
         if added_atomic == 0 && added_conjunctive == 0 {
-            // Dedup hit — synthetic already exists; nothing to wire up.
+            // Dedup hit — synthetic already exists; atomic_content_of already
+            // has an entry for it (populated when first allocated).
             return synthetic;
         }
+        // Track atomic content: flatten each body operand transitively into
+        // the original-vocabulary atomic class IDs. The result is a flat
+        // BTreeSet so the merge rule can use set operations directly.
+        let mut atoms = std::collections::BTreeSet::new();
+        for b in &body_clone {
+            atoms.extend(self.atomic_content_of_or_self(*b));
+        }
+        self.atomic_content_of.insert(synthetic, atoms);
         // Grow per-class state if the synthetic id exceeds current capacity.
         let needed = s_idx + 1;
         if needed > self.num_total_classes {
@@ -664,61 +704,48 @@ impl WorklistEngine {
                 }
             }
         }
-        // Phase 2a EL++ functional-role witness-merge rule.
-        //
-        // For each functional super-role `r_f` of `fact.role`, maintain
-        // an accumulated witness class `W` per `(sub, r_f)` pair.
-        //
-        // When the first fact `(sub, role_i, target)` with `role_i ⊑ r_f`
-        // arrives, record `merged_witness[(sub, r_f)] = target` — the
-        // role hierarchy already propagates `(sub, role_i, target)` to
-        // every super-role in the existential-trigger lookups, so no
-        // separate `(sub, r_f, target)` fact is needed yet.
-        //
-        // When a LATER fact `(sub, role_j, new_target)` arrives with the
-        // same `(sub, r_f)` pair and `new_target ≠ W`, derive
-        // `(sub, r_f, W')` where `W' ≡ W ⊓ new_target`. Soundness:
-        // `r_f` functional ⟹ every model's `r_f`-witness for `sub` must
-        // satisfy every constraint accumulated in `W'`.  EL++ rule CR_func
-        // (Baader/Brandt/Lutz 2005).
-        //
-        // Termination: the synthetic `W'` is a fresh class id; when the
-        // derived `(sub, r_f, W')` fact is processed later, its own
-        // `functional_supers_of` check finds `merged_witness[(sub, r_f)]
-        //  = W'` and `new_target = W'`, so the `prev == new_target`
-        // guard fires and no further fact is produced.
+        // Phase 2a EL++ functional-role witness-merge rule (T4.5
+        // atom-set redesign). For each functional super-role R_f of
+        // `fact.role`, accumulate `fact.target`'s atomic content into
+        // the (sub, R_f) atom set; if it grew (and it isn't the first
+        // arrival), allocate a synthetic for the FLAT set and emit a
+        // new fact (sub, R_f, synthetic). Termination: the atom set
+        // is monotonically bounded by the atomic vocabulary, so per
+        // (sub, R_f) the rule fires at most |atomic_vocabulary| times.
         let funcs = self.rules.functional_supers_of(fact.role).to_vec();
-        for rf in funcs {
-            let key = (fact.sub, rf);
-            match self.merged_witness.get(&key).copied() {
-                None => {
-                    // First witness for (sub, rf) — record; no new fact
-                    // needed (the existential-trigger path already handles
-                    // (sub, role, target) via role hierarchy).
-                    self.merged_witness.insert(key, fact.target);
+        if !funcs.is_empty() {
+            let new_atoms = self.atomic_content_of_or_self(fact.target);
+            for rf in funcs {
+                let key = (fact.sub, rf);
+                let prev_set = self.merged_atom_sets.entry(key).or_default();
+                let was_first = prev_set.is_empty();
+                let grew = !new_atoms.is_subset(prev_set);
+                if grew {
+                    prev_set.extend(&new_atoms);
                 }
-                Some(prev) if prev == fact.target => {
-                    // Same target already recorded; nothing to do.
+                if was_first || !grew {
+                    // First arrival is mute (the existing role-hierarchy
+                    // path covers single-role facts via existential
+                    // triggers). Non-growing is a no-op.
+                    continue;
                 }
-                Some(prev) => {
-                    // A different witness seen before — merge to W' ≡ prev ⊓ target.
-                    let new_witness = self.introduce_runtime_synthetic(vec![prev, fact.target]);
-                    // Update accumulated witness to the refined conjunction.
-                    self.merged_witness.insert(key, new_witness);
-                    // Emit (sub, r_f, W') so CR5 / existential triggers fire.
-                    let new_fact = ExistentialFact {
-                        sub: fact.sub,
-                        role: rf,
-                        target: new_witness,
-                    };
-                    let fact_key = (new_fact.sub, new_fact.role, new_fact.target);
-                    if self.seen_facts.insert(fact_key) {
-                        let new_idx = self.facts.len();
-                        self.facts.push(new_fact);
-                        self.facts_by_sub[new_fact.sub.index() as usize].push(new_idx);
-                        self.facts_by_target[new_fact.target.index() as usize].push(new_idx);
-                        self.todo_fact.push_back(new_idx);
-                    }
+                // Snapshot the now-grown set as a sorted Vec to pass
+                // to the allocator (which sorts+dedups internally, but
+                // we already have it sorted via BTreeSet).
+                let body: Vec<ClassId> = prev_set.iter().copied().collect();
+                let synthetic = self.introduce_runtime_synthetic(body);
+                let new_fact = ExistentialFact {
+                    sub: fact.sub,
+                    role: rf,
+                    target: synthetic,
+                };
+                let dedup_key = (new_fact.sub, new_fact.role, new_fact.target);
+                if self.seen_facts.insert(dedup_key) {
+                    let new_idx = self.facts.len();
+                    self.facts.push(new_fact);
+                    self.facts_by_sub[new_fact.sub.index() as usize].push(new_idx);
+                    self.facts_by_target[new_fact.target.index() as usize].push(new_idx);
+                    self.todo_fact.push_back(new_idx);
                 }
             }
         }
@@ -2340,32 +2367,15 @@ Ontology(<http://rustdl.test/p2a/test>
 
     /// Phase 2a — 3-sub-property fan-in: r_i, r_j, r_k all ⊑ functional
     /// r_func; Subject has ∃r_i.A, ∃r_j.B, ∃r_k.C; Target ≡ via
-    /// ∃r_func.(A ⊓ B ⊓ C). The witness-merge rule would need to accumulate
+    /// ∃r_func.(A ⊓ B ⊓ C). The witness-merge rule must accumulate
     /// the growing conjunction across three fact arrivals.
     ///
-    /// IGNORED (known limitation): The rule non-terminates on 3+ sub-property
-    /// fan-in due to a self-loop in the Phase 2a rule. Pattern A looping
-    /// confirmed by trace: when (sub, r_func, synthetic_N) is emitted and
-    /// later processed, `r_func` is its own functional super (reflexive), so
-    /// the rule fires again on the synthetic fact. The updated `merged_witness`
-    /// can't protect against earlier synthetic facts already in the worklist
-    /// queue; each new synthetic creates yet another, diverging unboundedly.
-    /// The 2-sub-property case (the GALEN-documented target) works because
-    /// after the first synthetic is emitted, the rule sees `prev == fact.target`
-    /// (the synthetic is the current witness) and terminates.
-    ///
-    /// GALEN has functional roles with up to 12 sub-properties (e.g.,
-    /// ProcessModifierAttribute with 12), so T6 corpus measurement must run
-    /// with the Phase 2a rule guarded or disabled on ontologies exercising
-    /// this pattern. Fix deferred to T4.5 (flattening: pre-accumulate all
-    /// sub-property targets at saturation build time rather than incrementally).
+    /// Previously ignored as a known limitation of T4's single-synthetic
+    /// tracking. Fixed in T4.5 by the atom-set redesign: `merged_atom_sets`
+    /// accumulates the flat set {A, B, C} incrementally; each arrival
+    /// checks whether the set grew; termination is bounded by the atomic
+    /// vocabulary size.
     #[test]
-    #[ignore = "Phase 2a known limitation: 3+ sub-property fan-in non-terminates \
-                (Pattern A self-loop — each emitted synthetic re-enters the rule \
-                reflexively via r_func ⊑ r_func, growing the witness chain without \
-                bound). The 2-sub-property merge (the GALEN target) works. \
-                Deferred to a potential T4.5 flattening fix. \
-                GALEN has roles with up to 12 sub-properties so T6 must guard this path."]
     fn functional_role_merge_3_sub_property_fan_in() {
         use horned_owl::io::ParserConfiguration;
         use horned_owl::io::ofn::reader::read;
@@ -2414,6 +2424,65 @@ Ontology(<http://rustdl.test/p2a3/test>
             subsumers.contains(subject, target),
             "Phase 2a 3-sub-property fan-in: the witness-merge rule failed \
              to accumulate {{A, B, C}} across three sub-property facts."
+        );
+    }
+
+    /// Phase 2a — 4-sub-property fan-in. Approximates GALEN's denser
+    /// functional roles (StatusAttribute has 5 sub-properties;
+    /// ProcessModifierAttribute has 12). Confirms atom-set redesign
+    /// scales beyond the 3-property case T4.5 was designed for.
+    #[test]
+    fn functional_role_merge_4_sub_property_fan_in() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a4/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2a4/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_k))
+    Declaration(ObjectProperty(:r_l))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubObjectPropertyOf(:r_k :r_func)
+    SubObjectPropertyOf(:r_l :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_k :C))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_l :D))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B :C :D)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a4/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a4/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a 4-sub-property fan-in: atom-set design should scale to 4 sub-properties."
         );
     }
 

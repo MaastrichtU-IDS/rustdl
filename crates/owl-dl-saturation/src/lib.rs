@@ -2055,4 +2055,67 @@ Ontology(<http://rustdl.test/test>\n\
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "A"), class(&internal, "A")));
     }
+
+    /// Phase 2a canary: synthetic mimicking GALEN's
+    /// <Region>Pathology / PathologicalCondition pattern. A functional
+    /// super-role `r_func` has two sibling sub-properties `r_i` and `r_j`.
+    /// Class `Subject` has existential edges via both sub-properties;
+    /// class `Target` is the conjunctive consumer through `r_func`.
+    ///
+    /// The expected entailment `Subject ⊑ Target` requires the EL++
+    /// functional-role witness-merge rule. This test ASSERTS THE GAP
+    /// (the entailment is missed) until Phase 2a lands the rule, at
+    /// which point Task 5 flips the assertion. Do not delete; this
+    /// canary is the regression test for the rule.
+    #[test]
+    fn functional_role_merge_canary_documents_the_gap() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2a/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _prefixes): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("canary ontology parses");
+        let internal = convert_ontology(&set_onto).expect("canary lowers to IR");
+        let subsumers = crate::saturate(&internal);
+
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a/Target")
+            .expect("Target declared");
+
+        assert!(
+            !subsumers.contains(subject, target),
+            "Phase 2a canary unexpectedly passed: the functional-role merge \
+             rule appears to be implemented (or the synthetic is wrong). \
+             If the rule is in place, invert this assertion. If not, the \
+             synthetic doesn't exercise the intended pattern — investigate."
+        );
+    }
 }

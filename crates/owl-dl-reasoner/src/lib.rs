@@ -3089,6 +3089,13 @@ Ontology(<http://rustdl.test/test>\n\
 mod hyper_trust_sat_min_ms_tests {
     use super::hyper_trust_sat_min_ms;
 
+    // SAFETY: tests in this module mutate the process-wide
+    // RUSTDL_HYPER_TRUST_SAT_MIN_MS env var. They must be run with
+    // --test-threads=1 (single-thread sequential). The helper saves
+    // and restores the previous value. No other test in the workspace
+    // reads this env var, so the mutation cannot race with unrelated
+    // tests under default `cargo test --workspace` invocations either.
+    #[allow(unsafe_code)]
     fn with_env<F: FnOnce()>(key: &str, val: Option<&str>, f: F) {
         let prev = std::env::var_os(key);
         match val {

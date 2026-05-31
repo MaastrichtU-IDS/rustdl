@@ -1369,10 +1369,13 @@ fn lower_sub_class_of(
             }
             // Phase 2b.5: a non-atomic `∃R.B` on the right (or as an
             // operand of an `And` on the right) also produces a trigger.
-            // Allocate a one-way marker via `introduce_existential_marker`
+            // Allocate a two-way marker via `introduce_equivalent_existential_marker`
             // and push a conjunctive trigger `{bodies} ⊑ marker`. Without
             // this, axioms of shape `And(...) ⊑ ∃R.B` are silently dropped
             // because `atomic_operands_on_right` returns [] for `Some`.
+            // One-way would consume an R-witness rather than create one, so
+            // the chain `Y ⊑ {bodies} → Y ⊑ marker → ... → Y has R-witness`
+            // requires the marker to emit the fact (M, R, body).
             // See docs/phase2b-trace2.md for the diagnostic.
             let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
                 ConceptExpr::Some(role, body) if !role.is_inverse() => {
@@ -2816,7 +2819,7 @@ Ontology(<http://rustdl.test/p2bA/test>
     ///   2. A ⊓ B ⊑ ∃R.C (the failing axiom)
     ///   3. ∃R.C ⊑ T (existential trigger that consumes the witness)
     ///
-    /// ASSERTS THE GAP — Task 6.5 inverts after the fix.
+    /// ASSERTS THE FIX (Phase 2b.5 active).
     #[test]
     fn lhs_and_with_existential_rhs_canary_recovers_entailment() {
         use horned_owl::io::ParserConfiguration;

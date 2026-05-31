@@ -1653,6 +1653,10 @@ Ontology(<http://rustdl.test/test>\n\
             stats.hyper_refuted_fast_pairs, 0,
             "selective verify fired despite threshold=0; stats = {stats:?}"
         );
+        assert!(
+            stats.hyper_refuted_pairs > 0,
+            "wedge was never exercised — test ontology doesn't reach the trusted-NotSubsumed arm; stats = {stats:?}"
+        );
     }
 
     /// Saturation-only on a hybrid input: every reported

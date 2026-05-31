@@ -669,8 +669,27 @@ pub fn hyper_trust_sat_enabled() -> bool {
 /// (`docs/hypertableau-dead-ends.md` §3) was killed at 8000 CPU-min;
 /// the threshold is the filter that makes the verification tractable
 /// (fast-`NotSubsumed` pairs are a small fraction of all pairs).
+///
+/// **Caching:** in non-test builds the env var is read once per process
+/// (first call) and cached in a `OnceLock` thereafter. Subsequent
+/// mutations of the env var have no effect until the process restarts.
+/// In test builds (`cfg(test)`) the cache is bypassed so unit tests
+/// can mutate the env var per-test.
 #[must_use]
 pub fn hyper_trust_sat_min_ms() -> u64 {
+    #[cfg(not(test))]
+    {
+        use std::sync::OnceLock;
+        static CACHED: OnceLock<u64> = OnceLock::new();
+        *CACHED.get_or_init(read_hyper_trust_sat_min_ms_env)
+    }
+    #[cfg(test)]
+    {
+        read_hyper_trust_sat_min_ms_env()
+    }
+}
+
+fn read_hyper_trust_sat_min_ms_env() -> u64 {
     std::env::var("RUSTDL_HYPER_TRUST_SAT_MIN_MS")
         .ok()
         .filter(|s| !s.is_empty())

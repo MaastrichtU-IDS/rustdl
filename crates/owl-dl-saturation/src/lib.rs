@@ -713,6 +713,38 @@ struct ElRules {
     /// and inverse-role chains are dropped — those stay in the
     /// tableau's lane.
     chain_axioms: Vec<(RoleId, RoleId, RoleId)>,
+    /// Roles declared `FunctionalObjectProperty(...)`. Indexed by role
+    /// id (dense bitset for O(1) lookup). Phase 2a EL++ rule input.
+    functional_roles: FixedBitSet,
+    /// Per-role precomputed list of FUNCTIONAL super-roles in the
+    /// transitive closure: `functional_supers_of[r]` lists every
+    /// functional role `R_f` such that `r ⊑ R_f` (reflexive: r itself
+    /// if functional). Precomputed once at collection time so the
+    /// runtime worklist rule doesn't re-walk `role_super` on every new
+    /// existential fact. Empty for roles with no functional ancestor.
+    functional_supers_of: Vec<Vec<RoleId>>,
+}
+
+// Phase 2a: accessors are populated but not yet consulted by any rule;
+// Task 4 wires the witness-merge rule. Suppress dead-code lint until then.
+#[allow(dead_code)]
+impl ElRules {
+    /// True if `r` is declared `FunctionalObjectProperty`.
+    fn is_functional(&self, r: RoleId) -> bool {
+        let i = r.index() as usize;
+        i < self.functional_roles.len() && self.functional_roles.contains(i)
+    }
+
+    /// Precomputed: every functional role `R_f` with `r ⊑ R_f`.
+    /// Empty slice if `r` has no functional ancestor.
+    fn functional_supers_of(&self, r: RoleId) -> &[RoleId] {
+        let i = r.index() as usize;
+        if let Some(v) = self.functional_supers_of.get(i) {
+            v.as_slice()
+        } else {
+            &[]
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -951,6 +983,35 @@ fn collect_el_rules(
         }
     }
     let total_classes = tseitin.next_id as usize;
+
+    // Phase 2a: collect functional-role declarations and precompute
+    // the per-role list of functional super-roles (the index the
+    // runtime witness-merge rule consults on every new existential
+    // fact arrival).
+    let num_roles = internal.vocabulary.num_roles();
+    rules.functional_roles = FixedBitSet::with_capacity(num_roles);
+    for ax in &internal.axioms {
+        if let Axiom::FunctionalRole(role) = ax
+            && !role.is_inverse()
+        {
+            let idx = role.role_id().index() as usize;
+            if idx < num_roles {
+                rules.functional_roles.insert(idx);
+            }
+        }
+    }
+    rules.functional_supers_of = vec![Vec::new(); num_roles];
+    for r_idx in 0..num_roles {
+        let r = RoleId::new(u32::try_from(r_idx).expect("role id fits in u32"));
+        let mut supers: Vec<RoleId> = role_super
+            .get(&r)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        supers.retain(|s| rules.is_functional(*s));
+        supers.sort_unstable_by_key(|r| r.index());
+        rules.functional_supers_of[r_idx] = supers;
+    }
+
     (rules, total_classes)
 }
 
@@ -2117,5 +2178,59 @@ Ontology(<http://rustdl.test/p2a/test>
              If the rule is in place, invert this assertion. If not, the \
              synthetic doesn't exercise the intended pattern — investigate."
         );
+    }
+
+    /// Phase 2a Task 3: verify that `collect_el_rules` builds the
+    /// `functional_roles` bitset and `functional_supers_of` index correctly
+    /// on a simple 4-role / 1-declared-functional / 2-sub-properties ontology.
+    #[test]
+    fn collect_el_rules_records_functional_roles_and_their_supers() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a/>)
+Ontology(<http://rustdl.test/p2a/funcrole>
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_unrelated))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let role_super = crate::build_role_super(&internal);
+        let (rules, _num_total) = crate::collect_el_rules(&internal, &role_super);
+
+        let id = |iri: &str| {
+            internal
+                .vocabulary
+                .role_id(iri)
+                .expect("role declared")
+        };
+        let rf = id("http://rustdl.test/p2a/r_func");
+        let ri = id("http://rustdl.test/p2a/r_i");
+        let rj = id("http://rustdl.test/p2a/r_j");
+        let ru = id("http://rustdl.test/p2a/r_unrelated");
+
+        assert!(rules.is_functional(rf), "r_func is declared functional");
+        assert!(!rules.is_functional(ri));
+        assert!(!rules.is_functional(rj));
+        assert!(!rules.is_functional(ru));
+
+        let supers = |r| rules.functional_supers_of(r).to_vec();
+        assert_eq!(supers(ri), vec![rf], "r_i ⊑ r_func and r_func is functional");
+        assert_eq!(supers(rj), vec![rf], "r_j ⊑ r_func");
+        assert_eq!(supers(rf), vec![rf], "r_func is its own super (reflexive)");
+        assert!(supers(ru).is_empty(), "r_unrelated has no functional super");
     }
 }

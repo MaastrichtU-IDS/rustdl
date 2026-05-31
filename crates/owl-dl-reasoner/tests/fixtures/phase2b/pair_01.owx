@@ -1,0 +1,2668 @@
+<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://owl.cs.man.ac.uk/dlapproximated/77af02d9-169a-4074-83f3-b4e89d13bdc5_galen.owl.owl.xml"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     ontologyIRI="http://owl.cs.man.ac.uk/dlapproximated/77af02d9-169a-4074-83f3-b4e89d13bdc5_galen.owl.owl.xml">
+    <Prefix name="owl" IRI="http://www.w3.org/2002/07/owl#"/>
+    <Prefix name="rdf" IRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>
+    <Prefix name="xml" IRI="http://www.w3.org/XML/1998/namespace"/>
+    <Prefix name="xsd" IRI="http://www.w3.org/2001/XMLSchema#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AbsolutePositionState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AbsoluteShapeState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AbstractStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ActuallyHollowBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ActuallyHollowStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AdductorMagnus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AdductorTubercle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Appearance"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#AppearanceState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ArticularSurface"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Aspect"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodyAsAWhole"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodyPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodyProcess"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodyRegion"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodySpace"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BodySubstance"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Bone"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BonyHead"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#BonyNeck"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Cartilage"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Condyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ConnectiveTissue"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#CountabilityStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#DomainCategory"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Eminence"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Epicondyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ExactlyPairedBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Extremity"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ExtremityBodyPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ExtremityLongPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Feature"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#FemoralCondyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#FemoralHead"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Femur"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GeneralLevelOfSpecification"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GeneralisedStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GeneralisedSubstance"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GenericBodyProcess"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GenericInternalStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GluteusMedius"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#GreaterTrochanter"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#HollowStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#InterCondylarFemoralNotch"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#InternalBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#InternalRegion"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#IntrinsicallyNormalBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#IntrinsicallyPhysiologicalBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#JointArticulationProcess"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LateralFemoralCondyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LateralFemoralEpicondyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LateralFemoralJointSurface"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LesserTrochanter"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LevelOfSpecification"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LinearBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#LowerExtremity"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MainExtremityBodyPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MajorBodyDivision"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MedialFemoralCondyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MedialFemoralEpicondyle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MedialFemoralJointSurface"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MedialLateralPositionState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MedicalStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MirrorImagedBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ModifierConcept"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Morphology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#MorphologyState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Muscle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDBoneDivisions"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodyPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodySubPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDMuscle"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBodyPart"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBoneDivisions"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NeckOfFemur"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#NormalOrNonNormalStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Notch"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#PairedOrUnpairedStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#PathologicalOrPhysiologicalStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#PhysicalStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#PositionState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Process"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Psoas"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Shaft"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Shape"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#ShapeState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#SkeletalStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#SolidBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#SolidStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Space"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#State"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Status"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#StructuralFeature"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#StructuralState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#StructuralStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Substance"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#SurfaceBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#SurfaceVisibilityStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Thigh"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Tissue"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TopCategory"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#Topology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TopologyState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TruelyHollowBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TruelyHollowStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TubularBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TubularSolidStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TwoAndAHalfDimensionalBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#TwoAndAHalfDimensionalStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#UnpairedBodyStructure"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#UpperLowerPositionState"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#VisibilityStatus"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#actuallyHollow"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#actuallyHollowTopology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#atLeastPartiallySpecified"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#atLeastWellSpecified"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#discrete"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#elongatedSolid"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#exactlyPaired"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#hollow"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#hollowTopology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#infinitelyDivisible"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#internal"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#laminar"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#lateral"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#leftRightPaired"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#linear"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#lowerPosition"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#mass"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#medial"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#mirrorImaged"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#normal"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#physiological"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#solidTopology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#surfaceVisible"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#topologicallySolid"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#trulyHollow"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#trulyHollowTopology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#tubular"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#tubularTopology"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#uniquelySpecified"/>
+    </Declaration>
+    <Declaration>
+        <Class IRI="http://example.org/factkb#unpaired"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#Attribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#ConstructiveAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#DomainAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#FeatureStateAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#HasDivision"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseConstructiveAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseContainmentAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDelimitingAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDomainAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseLinearContainmentAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InversePartitiveAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralPartitiveAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#IsDivisionOf"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#LocativeAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#ModifierAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#PartitiveAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#ProcessLocativeAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#SpecificationLevelAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#StatusAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralModifierAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPartitiveAttribute"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPositionModifier"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralSelectorModifier"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasFeature"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasFunction"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicPathologicalStatus"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasLayer"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasLinearDivision"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasPositionalSelector"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasShape"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasSolidDivision"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#hasUpperLowerSelector"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isAnEndOfLinearStructure"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isAtOtherEndOf"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isSpaceBoundedBy"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="http://example.org/factkb#isSurfaceDivisionOf"/>
+    </Declaration>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#ActuallyHollowBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#actuallyHollow"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#ActuallyHollowStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SolidStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#actuallyHollow"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#AdductorTubercle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Eminence"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isAtOtherEndOf"/>
+                <Class IRI="http://example.org/factkb#AdductorMagnus"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#ArticularSurface"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#InternalRegion"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasFunction"/>
+                <Class IRI="http://example.org/factkb#JointArticulationProcess"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#laminar"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Bone"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#ExactlyPairedBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                <Class IRI="http://example.org/factkb#exactlyPaired"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#FemoralCondyle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Condyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#FemoralHead"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BonyHead"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#InterCondylarFemoralNotch"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#GreaterTrochanter"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Eminence"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isAtOtherEndOf"/>
+                <Class IRI="http://example.org/factkb#GluteusMedius"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#HollowStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SolidStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#hollow"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#InterCondylarFemoralNotch"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Notch"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodySpace"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isSpaceBoundedBy"/>
+                        <Class IRI="http://example.org/factkb#LateralFemoralCondyle"/>
+                    </ObjectSomeValuesFrom>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isSpaceBoundedBy"/>
+                        <Class IRI="http://example.org/factkb#MedialFemoralCondyle"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#InternalBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+                <Class IRI="http://example.org/factkb#internal"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#IntrinsicallyNormalBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                <Class IRI="http://example.org/factkb#normal"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#IntrinsicallyPhysiologicalBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicPathologicalStatus"/>
+                <Class IRI="http://example.org/factkb#physiological"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#LateralFemoralCondyle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Condyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+                <Class IRI="http://example.org/factkb#lateral"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#LateralFemoralEpicondyle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Epicondyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+                <Class IRI="http://example.org/factkb#lateral"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#LateralFemoralJointSurface"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#LateralFemoralCondyle"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#LesserTrochanter"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Eminence"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isAtOtherEndOf"/>
+                <Class IRI="http://example.org/factkb#Psoas"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#LinearBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#linear"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#LowerExtremity"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Extremity"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasUpperLowerSelector"/>
+                <Class IRI="http://example.org/factkb#lowerPosition"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#MedialFemoralCondyle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Condyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+                <Class IRI="http://example.org/factkb#medial"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#MedialFemoralEpicondyle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Epicondyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+                <Class IRI="http://example.org/factkb#medial"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#MedialFemoralJointSurface"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#MedialFemoralCondyle"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#MirrorImagedBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                <Class IRI="http://example.org/factkb#mirrorImaged"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#NeckOfFemur"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BonyNeck"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#Femur"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#SolidBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#topologicallySolid"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#SurfaceBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+                <Class IRI="http://example.org/factkb#surfaceVisible"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#TruelyHollowBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#trulyHollow"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#TruelyHollowStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SolidStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#trulyHollow"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#TubularBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#topologicallySolid"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#TubularSolidStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SolidStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#tubular"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#TwoAndAHalfDimensionalBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#laminar"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#TwoAndAHalfDimensionalStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SolidStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#laminar"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#UnpairedBodyStructure"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                <Class IRI="http://example.org/factkb#unpaired"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#actuallyHollowTopology"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Topology"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                <Class IRI="http://example.org/factkb#actuallyHollow"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#elongatedSolid"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                <Class IRI="http://example.org/factkb#linear"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#hollowTopology"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Topology"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                <Class IRI="http://example.org/factkb#hollow"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#solidTopology"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Topology"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                <Class IRI="http://example.org/factkb#topologicallySolid"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#trulyHollowTopology"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Topology"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                <Class IRI="http://example.org/factkb#trulyHollow"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <EquivalentClasses>
+        <Class IRI="http://example.org/factkb#tubularTopology"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Topology"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                <Class IRI="http://example.org/factkb#tubular"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+    </EquivalentClasses>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#AbsolutePositionState"/>
+        <Class IRI="http://example.org/factkb#PositionState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#AbsoluteShapeState"/>
+        <Class IRI="http://example.org/factkb#ShapeState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#AbstractStatus"/>
+        <Class IRI="http://example.org/factkb#Status"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#AdductorMagnus"/>
+        <Class IRI="http://example.org/factkb#NAMEDMuscle"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+        <Class IRI="http://example.org/factkb#Shape"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Appearance"/>
+        <Class IRI="http://example.org/factkb#Morphology"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#AppearanceState"/>
+        <Class IRI="http://example.org/factkb#MorphologyState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ArticularSurface"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasLayer"/>
+            <Class IRI="http://example.org/factkb#Cartilage"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Aspect"/>
+        <Class IRI="http://example.org/factkb#ModifierConcept"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyAsAWhole"/>
+        <Class IRI="http://example.org/factkb#MajorBodyDivision"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyAsAWhole"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+            <Class IRI="http://example.org/factkb#uniquelySpecified"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyAsAWhole"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#unpaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyPart"/>
+        <Class IRI="http://example.org/factkb#BodyStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+            <Class IRI="http://example.org/factkb#normal"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyProcess"/>
+        <Class IRI="http://example.org/factkb#Process"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyRegion"/>
+        <Class IRI="http://example.org/factkb#BodyStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodySpace"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <Class IRI="http://example.org/factkb#Space"/>
+        </ObjectIntersectionOf>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodySpace"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#discrete"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodyStructure"/>
+        <Class IRI="http://example.org/factkb#SolidStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BodySubstance"/>
+        <Class IRI="http://example.org/factkb#Substance"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Bone"/>
+        <Class IRI="http://example.org/factkb#SkeletalStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BonyHead"/>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BonyHead"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+            <Class IRI="http://example.org/factkb#solidTopology"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BonyNeck"/>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#BonyNeck"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <Class IRI="http://example.org/factkb#elongatedSolid"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Cartilage"/>
+        <Class IRI="http://example.org/factkb#ConnectiveTissue"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Condyle"/>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Condyle"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSolidDivision"/>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Condyle"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ConnectiveTissue"/>
+        <Class IRI="http://example.org/factkb#Tissue"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#CountabilityStatus"/>
+        <Class IRI="http://example.org/factkb#AbstractStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#DomainCategory"/>
+        <Class IRI="http://example.org/factkb#TopCategory"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Eminence"/>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Epicondyle"/>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Epicondyle"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Extremity"/>
+        <Class IRI="http://example.org/factkb#MajorBodyDivision"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Extremity"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#Topology"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#topologicallySolid"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Extremity"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Extremity"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isSurfaceDivisionOf"/>
+            <Class IRI="http://example.org/factkb#BodyAsAWhole"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ExtremityBodyPart"/>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ExtremityBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#Topology"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#topologicallySolid"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ExtremityLongPart"/>
+        <Class IRI="http://example.org/factkb#MainExtremityBodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Feature"/>
+        <Class IRI="http://example.org/factkb#Aspect"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#AdductorTubercle"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#FemoralHead"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#GreaterTrochanter"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#InterCondylarFemoralNotch"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#LateralFemoralCondyle"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#LateralFemoralEpicondyle"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#LesserTrochanter"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#MedialFemoralCondyle"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#MedialFemoralEpicondyle"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+            <Class IRI="http://example.org/factkb#NeckOfFemur"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Femur"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+            <Class IRI="http://example.org/factkb#Thigh"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GeneralLevelOfSpecification"/>
+        <Class IRI="http://example.org/factkb#ModifierConcept"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GeneralisedStructure"/>
+        <Class IRI="http://example.org/factkb#DomainCategory"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GeneralisedSubstance"/>
+        <Class IRI="http://example.org/factkb#DomainCategory"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GenericBodyProcess"/>
+        <Class IRI="http://example.org/factkb#BodyProcess"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+        <Class IRI="http://example.org/factkb#BodyStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#discrete"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GenericInternalStructure"/>
+        <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#GluteusMedius"/>
+        <Class IRI="http://example.org/factkb#NAMEDMuscle"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#InternalRegion"/>
+        <Class IRI="http://example.org/factkb#BodyRegion"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#InternalRegion"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#discrete"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#JointArticulationProcess"/>
+        <Class IRI="http://example.org/factkb#GenericBodyProcess"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#JointArticulationProcess"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+            <Class IRI="http://example.org/factkb#normal"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#JointArticulationProcess"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicPathologicalStatus"/>
+            <Class IRI="http://example.org/factkb#physiological"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#LevelOfSpecification"/>
+        <Class IRI="http://example.org/factkb#GeneralLevelOfSpecification"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+        <Class IRI="http://example.org/factkb#Bone"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasLinearDivision"/>
+            <Class IRI="http://example.org/factkb#Shaft"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#linear"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#Topology"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#tubular"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#LongBone"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MainExtremityBodyPart"/>
+        <Class IRI="http://example.org/factkb#ExtremityBodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MainExtremityBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+            <Class IRI="http://example.org/factkb#atLeastWellSpecified"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MainExtremityBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MajorBodyDivision"/>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MedialLateralPositionState"/>
+        <Class IRI="http://example.org/factkb#AbsolutePositionState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MedicalStatus"/>
+        <Class IRI="http://example.org/factkb#StructuralStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ModifierConcept"/>
+        <Class IRI="http://example.org/factkb#DomainCategory"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Morphology"/>
+        <Class IRI="http://example.org/factkb#StructuralFeature"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#MorphologyState"/>
+        <Class IRI="http://example.org/factkb#StructuralState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Muscle"/>
+        <Class IRI="http://example.org/factkb#GenericInternalStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Muscle"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#linear"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Muscle"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#Topology"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#topologicallySolid"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDBoneDivisions"/>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodySubPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodyPart"/>
+        <Class IRI="http://example.org/factkb#BodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#discrete"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+            <Class IRI="http://example.org/factkb#internal"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodySubPart"/>
+        <Class IRI="http://example.org/factkb#BodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDMuscle"/>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Muscle"/>
+            <Class IRI="http://example.org/factkb#NAMEDInternalBodyPart"/>
+        </ObjectIntersectionOf>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+        <Class IRI="http://example.org/factkb#NAMEDBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBodyPart"/>
+        <Class IRI="http://example.org/factkb#BodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#discrete"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBodyPart"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+            <Class IRI="http://example.org/factkb#surfaceVisible"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBoneDivisions"/>
+        <Class IRI="http://example.org/factkb#NAMEDBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBoneDivisions"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#laminar"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#NormalOrNonNormalStatus"/>
+        <Class IRI="http://example.org/factkb#MedicalStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Notch"/>
+        <Class IRI="http://example.org/factkb#NAMEDSurfaceBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#PairedOrUnpairedStatus"/>
+        <Class IRI="http://example.org/factkb#AbstractStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#PathologicalOrPhysiologicalStatus"/>
+        <Class IRI="http://example.org/factkb#MedicalStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#PhysicalStructure"/>
+        <Class IRI="http://example.org/factkb#GeneralisedStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#PositionState"/>
+        <Class IRI="http://example.org/factkb#StructuralState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Process"/>
+        <Class IRI="http://example.org/factkb#DomainCategory"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Psoas"/>
+        <Class IRI="http://example.org/factkb#NAMEDMuscle"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Shaft"/>
+        <Class IRI="http://example.org/factkb#NAMEDSolidBoneDivisions"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Shaft"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#linear"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Shape"/>
+        <Class IRI="http://example.org/factkb#Morphology"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#ShapeState"/>
+        <Class IRI="http://example.org/factkb#MorphologyState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#SkeletalStructure"/>
+        <Class IRI="http://example.org/factkb#NAMEDInternalBodyPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#SolidStructure"/>
+        <Class IRI="http://example.org/factkb#PhysicalStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Space"/>
+        <Class IRI="http://example.org/factkb#SolidStructure"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Space"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#Topology"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#hollow"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#State"/>
+        <Class IRI="http://example.org/factkb#Aspect"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Status"/>
+        <Class IRI="http://example.org/factkb#Aspect"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#StructuralFeature"/>
+        <Class IRI="http://example.org/factkb#Feature"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#StructuralState"/>
+        <Class IRI="http://example.org/factkb#State"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#StructuralStatus"/>
+        <Class IRI="http://example.org/factkb#Status"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Substance"/>
+        <Class IRI="http://example.org/factkb#GeneralisedSubstance"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Substance"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#infinitelyDivisible"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#SurfaceBodyStructure"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#laminar"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#SurfaceVisibilityStatus"/>
+        <Class IRI="http://example.org/factkb#VisibilityStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Thigh"/>
+        <Class IRI="http://example.org/factkb#ExtremityLongPart"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Thigh"/>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+            <Class IRI="http://example.org/factkb#LowerExtremity"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Tissue"/>
+        <Class IRI="http://example.org/factkb#BodySubstance"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#Topology"/>
+        <Class IRI="http://example.org/factkb#Appearance"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#TopologyState"/>
+        <Class IRI="http://example.org/factkb#AppearanceState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#UpperLowerPositionState"/>
+        <Class IRI="http://example.org/factkb#AbsolutePositionState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#VisibilityStatus"/>
+        <Class IRI="http://example.org/factkb#StructuralStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#actuallyHollow"/>
+        <Class IRI="http://example.org/factkb#trulyHollow"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        <Class IRI="http://example.org/factkb#PairedOrUnpairedStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#atLeastPartiallySpecified"/>
+        <Class IRI="http://example.org/factkb#LevelOfSpecification"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#atLeastWellSpecified"/>
+        <Class IRI="http://example.org/factkb#atLeastPartiallySpecified"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#discrete"/>
+        <Class IRI="http://example.org/factkb#CountabilityStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#exactlyPaired"/>
+        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#hollow"/>
+        <Class IRI="http://example.org/factkb#TopologyState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#infinitelyDivisible"/>
+        <Class IRI="http://example.org/factkb#mass"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#internal"/>
+        <Class IRI="http://example.org/factkb#SurfaceVisibilityStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#laminar"/>
+        <Class IRI="http://example.org/factkb#AbsoluteShapeState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#lateral"/>
+        <Class IRI="http://example.org/factkb#MedialLateralPositionState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#leftRightPaired"/>
+        <Class IRI="http://example.org/factkb#exactlyPaired"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#linear"/>
+        <Class IRI="http://example.org/factkb#AbsoluteShapeState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#lowerPosition"/>
+        <Class IRI="http://example.org/factkb#UpperLowerPositionState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#mass"/>
+        <Class IRI="http://example.org/factkb#CountabilityStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#medial"/>
+        <Class IRI="http://example.org/factkb#MedialLateralPositionState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        <Class IRI="http://example.org/factkb#leftRightPaired"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#normal"/>
+        <Class IRI="http://example.org/factkb#NormalOrNonNormalStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#physiological"/>
+        <Class IRI="http://example.org/factkb#PathologicalOrPhysiologicalStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#surfaceVisible"/>
+        <Class IRI="http://example.org/factkb#SurfaceVisibilityStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#topologicallySolid"/>
+        <Class IRI="http://example.org/factkb#TopologyState"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#trulyHollow"/>
+        <Class IRI="http://example.org/factkb#hollow"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#tubular"/>
+        <Class IRI="http://example.org/factkb#actuallyHollow"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#uniquelySpecified"/>
+        <Class IRI="http://example.org/factkb#atLeastWellSpecified"/>
+    </SubClassOf>
+    <SubClassOf>
+        <Class IRI="http://example.org/factkb#unpaired"/>
+        <Class IRI="http://example.org/factkb#PairedOrUnpairedStatus"/>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#InterCondylarFemoralNotch"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#LateralFemoralCondyle"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#ArticularSurface"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+                <Class IRI="http://example.org/factkb#MedialFemoralCondyle"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyPart"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                        <Class IRI="http://example.org/factkb#normal"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+            <Class IRI="http://example.org/factkb#normal"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyPart"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyPart"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#mirrorImaged"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyPart"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyRegion"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                        <Class IRI="http://example.org/factkb#normal"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+            <Class IRI="http://example.org/factkb#normal"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyRegion"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#mirrorImaged"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                <Class IRI="http://example.org/factkb#normal"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyStructure"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                        <Class IRI="http://example.org/factkb#normal"/>
+                    </ObjectSomeValuesFrom>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#exactlyPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#exactlyPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                <Class IRI="http://example.org/factkb#normal"/>
+            </ObjectSomeValuesFrom>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyStructure"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                        <Class IRI="http://example.org/factkb#normal"/>
+                    </ObjectSomeValuesFrom>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#mirrorImaged"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#tubular"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+            <ObjectIntersectionOf>
+                <Class IRI="http://example.org/factkb#AnatomicalShape"/>
+                <ObjectSomeValuesFrom>
+                    <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                    <Class IRI="http://example.org/factkb#linear"/>
+                </ObjectSomeValuesFrom>
+            </ObjectIntersectionOf>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#BodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                <Class IRI="http://example.org/factkb#mirrorImaged"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+            <Class IRI="http://example.org/factkb#atLeastWellSpecified"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Condyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+                <Class IRI="http://example.org/factkb#MedialLateralPositionState"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Epicondyle"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+                <Class IRI="http://example.org/factkb#MedialLateralPositionState"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#Extremity"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasUpperLowerSelector"/>
+                <Class IRI="http://example.org/factkb#UpperLowerPositionState"/>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+            <Class IRI="http://example.org/factkb#atLeastWellSpecified"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+                        <Class IRI="http://example.org/factkb#normal"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+            <Class IRI="http://example.org/factkb#normal"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#BodyPart"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#mirrorImaged"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#mirrorImaged"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#GenericBodyStructure"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#InternalBodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#InternalBodyStructure"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#exactlyPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#exactlyPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SolidStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#Topology"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+                        <Class IRI="http://example.org/factkb#hollow"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+            <Class IRI="http://example.org/factkb#discrete"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubClassOf>
+        <ObjectIntersectionOf>
+            <Class IRI="http://example.org/factkb#SurfaceBodyStructure"/>
+            <ObjectSomeValuesFrom>
+                <ObjectProperty IRI="http://example.org/factkb#isSurfaceDivisionOf"/>
+                <ObjectIntersectionOf>
+                    <Class IRI="http://example.org/factkb#SurfaceBodyStructure"/>
+                    <ObjectSomeValuesFrom>
+                        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+                        <Class IRI="http://example.org/factkb#atLeastPaired"/>
+                    </ObjectSomeValuesFrom>
+                </ObjectIntersectionOf>
+            </ObjectSomeValuesFrom>
+        </ObjectIntersectionOf>
+        <ObjectSomeValuesFrom>
+            <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+            <Class IRI="http://example.org/factkb#atLeastPaired"/>
+        </ObjectSomeValuesFrom>
+    </SubClassOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#ConstructiveAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#DomainAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#DomainAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#Attribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#FeatureStateAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#ModifierAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#HasDivision"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPartitiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseConstructiveAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDomainAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseContainmentAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDelimitingAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDelimitingAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDomainAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#Attribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseLinearContainmentAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseDelimitingAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InversePartitiveAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseConstructiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseConstructiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralPartitiveAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#InversePartitiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#IsDivisionOf"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralPartitiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#LocativeAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#ConstructiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#ModifierAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#DomainAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#PartitiveAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#ConstructiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#ProcessLocativeAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#LocativeAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#SpecificationLevelAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#DomainAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#StatusAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#DomainAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralModifierAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralModifierAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#hasFeature"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPartitiveAttribute"/>
+        <ObjectProperty IRI="http://example.org/factkb#PartitiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPositionModifier"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralModifierAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralSelectorModifier"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralModifierAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasFeature"/>
+        <ObjectProperty IRI="http://example.org/factkb#FeatureStateAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasFunction"/>
+        <ObjectProperty IRI="http://example.org/factkb#ProcessLocativeAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+        <ObjectProperty IRI="http://example.org/factkb#StatusAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicPathologicalStatus"/>
+        <ObjectProperty IRI="http://example.org/factkb#StatusAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasLayer"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPartitiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasLinearDivision"/>
+        <ObjectProperty IRI="http://example.org/factkb#HasDivision"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+        <ObjectProperty IRI="http://example.org/factkb#hasPositionalSelector"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasPositionalSelector"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralSelectorModifier"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasShape"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+        <ObjectProperty IRI="http://example.org/factkb#hasShape"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasSolidDivision"/>
+        <ObjectProperty IRI="http://example.org/factkb#HasDivision"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasSpecificSolidDivision"/>
+        <ObjectProperty IRI="http://example.org/factkb#hasSolidDivision"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+        <ObjectProperty IRI="http://example.org/factkb#SpecificationLevelAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+        <ObjectProperty IRI="http://example.org/factkb#FeatureStateAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#hasUpperLowerSelector"/>
+        <ObjectProperty IRI="http://example.org/factkb#hasPositionalSelector"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isAnEndOfLinearStructure"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseLinearContainmentAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isAtOtherEndOf"/>
+        <ObjectProperty IRI="http://example.org/factkb#isAnEndOfLinearStructure"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPositionModifier"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+        <ObjectProperty IRI="http://example.org/factkb#IsDivisionOf"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isSpaceBoundedBy"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseContainmentAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+        <ObjectProperty IRI="http://example.org/factkb#isSolidDivisionOf"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isStructuralComponentOf"/>
+        <ObjectProperty IRI="http://example.org/factkb#InverseStructuralPartitiveAttribute"/>
+    </SubObjectPropertyOf>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="http://example.org/factkb#isSurfaceDivisionOf"/>
+        <ObjectProperty IRI="http://example.org/factkb#IsDivisionOf"/>
+    </SubObjectPropertyOf>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#SpecificationLevelAttribute"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#StatusAttribute"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralAppearanceModifier"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPositionModifier"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralSelectorModifier"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasCountability"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicAbnormalityStatus"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasIntrinsicPathologicalStatus"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasMedialLateralSelector"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasPositionalSelector"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasShape"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasShapeAnalagousTo"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasSpecificationLevel"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasState"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasSurfaceVisibility"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasTopology"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasUpperLowerSelector"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#isAtOtherEndOf"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#isPairedOrUnpaired"/>
+    </FunctionalObjectProperty>
+    <FunctionalObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#isSpecificSolidDivisionOf"/>
+    </FunctionalObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#ConstructiveAttribute"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#HasDivision"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#LocativeAttribute"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#PartitiveAttribute"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#ProcessLocativeAttribute"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#StructuralPartitiveAttribute"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasLayer"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasLinearDivision"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="http://example.org/factkb#hasSolidDivision"/>
+    </TransitiveObjectProperty>
+</Ontology>
+
+
+
+<!-- Generated by the OWL API (version 4.5.29) https://github.com/owlcs/owlapi -->
+

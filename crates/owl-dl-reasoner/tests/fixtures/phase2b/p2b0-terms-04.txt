@@ -1,0 +1,2 @@
+http://example.org/factkb#KneeJointRecessus
+http://example.org/factkb#HollowStructure

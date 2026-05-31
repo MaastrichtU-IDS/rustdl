@@ -1,0 +1,1766 @@
+Prefix(:=<http://owl.cs.man.ac.uk/dlapproximated/77af02d9-169a-4074-83f3-b4e89d13bdc5_galen.owl.owl.xml#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+
+Ontology(<http://owl.cs.man.ac.uk/dlapproximated/77af02d9-169a-4074-83f3-b4e89d13bdc5_galen.owl.owl.xml>
+
+Declaration(Class(<http://example.org/factkb#AbsolutePositionState>))
+Declaration(Class(<http://example.org/factkb#AbsoluteShapeState>))
+Declaration(Class(<http://example.org/factkb#AbstractStatus>))
+Declaration(Class(<http://example.org/factkb#ActualCavity>))
+Declaration(Class(<http://example.org/factkb#ActuallyHollowBodyStructure>))
+Declaration(Class(<http://example.org/factkb#ActuallyHollowStructure>))
+Declaration(Class(<http://example.org/factkb#AdductorMagnus>))
+Declaration(Class(<http://example.org/factkb#AdductorTubercle>))
+Declaration(Class(<http://example.org/factkb#AnatomicalShape>))
+Declaration(Class(<http://example.org/factkb#Appearance>))
+Declaration(Class(<http://example.org/factkb#AppearanceState>))
+Declaration(Class(<http://example.org/factkb#ArticularSurface>))
+Declaration(Class(<http://example.org/factkb#Aspect>))
+Declaration(Class(<http://example.org/factkb#BodyAsAWhole>))
+Declaration(Class(<http://example.org/factkb#BodyCavity>))
+Declaration(Class(<http://example.org/factkb#BodyHole>))
+Declaration(Class(<http://example.org/factkb#BodyPart>))
+Declaration(Class(<http://example.org/factkb#BodyProcess>))
+Declaration(Class(<http://example.org/factkb#BodyRegion>))
+Declaration(Class(<http://example.org/factkb#BodySpace>))
+Declaration(Class(<http://example.org/factkb#BodyStructure>))
+Declaration(Class(<http://example.org/factkb#BodySubstance>))
+Declaration(Class(<http://example.org/factkb#Bone>))
+Declaration(Class(<http://example.org/factkb#BonyHead>))
+Declaration(Class(<http://example.org/factkb#BonyNeck>))
+Declaration(Class(<http://example.org/factkb#CapsuleOfKnee>))
+Declaration(Class(<http://example.org/factkb#Cartilage>))
+Declaration(Class(<http://example.org/factkb#Cavity>))
+Declaration(Class(<http://example.org/factkb#ChangeInPositionState>))
+Declaration(Class(<http://example.org/factkb#CollateralLigament>))
+Declaration(Class(<http://example.org/factkb#CommonIliacVein>))
+Declaration(Class(<http://example.org/factkb#Condyle>))
+Declaration(Class(<http://example.org/factkb#ConnectiveTissue>))
+Declaration(Class(<http://example.org/factkb#CountabilityStatus>))
+Declaration(Class(<http://example.org/factkb#CruciateLigament>))
+Declaration(Class(<http://example.org/factkb#DomainCategory>))
+Declaration(Class(<http://example.org/factkb#Eminence>))
+Declaration(Class(<http://example.org/factkb#Epicondyle>))
+Declaration(Class(<http://example.org/factkb#ExactlyPairedBodyStructure>))
+Declaration(Class(<http://example.org/factkb#ExternalIliacVein>))
+Declaration(Class(<http://example.org/factkb#Extremity>))
+Declaration(Class(<http://example.org/factkb#ExtremityBodyPart>))
+Declaration(Class(<http://example.org/factkb#ExtremityJointPart>))
+Declaration(Class(<http://example.org/factkb#ExtremityLongPart>))
+Declaration(Class(<http://example.org/factkb#Feature>))
+Declaration(Class(<http://example.org/factkb#FemoralCondyle>))
+Declaration(Class(<http://example.org/factkb#FemoralHead>))
+Declaration(Class(<http://example.org/factkb#FemoralJointSurfaces>))
+Declaration(Class(<http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint>))
+Declaration(Class(<http://example.org/factkb#FemoralVein>))
+Declaration(Class(<http://example.org/factkb#Femur>))
+Declaration(Class(<http://example.org/factkb#Fibrocartilage>))
+Declaration(Class(<http://example.org/factkb#FibrousBodyStructure>))
+Declaration(Class(<http://example.org/factkb#FibrousMembrane>))
+Declaration(Class(<http://example.org/factkb#FibrousTissue>))
+Declaration(Class(<http://example.org/factkb#GeneralLevelOfSpecification>))
+Declaration(Class(<http://example.org/factkb#GeneralisedStructure>))
+Declaration(Class(<http://example.org/factkb#GeneralisedSubstance>))
+Declaration(Class(<http://example.org/factkb#GenericBodyProcess>))
+Declaration(Class(<http://example.org/factkb#GenericBodyStructure>))
+Declaration(Class(<http://example.org/factkb#GenericInternalStructure>))
+Declaration(Class(<http://example.org/factkb#GluteusMedius>))
+Declaration(Class(<http://example.org/factkb#GreaterTrochanter>))
+Declaration(Class(<http://example.org/factkb#HingeArticulationProcess>))
+Declaration(Class(<http://example.org/factkb#HingeJoint>))
+Declaration(Class(<http://example.org/factkb#Hole>))
+Declaration(Class(<http://example.org/factkb#HollowStructure>))
+Declaration(Class(<http://example.org/factkb#InterCondylarFemoralNotch>))
+Declaration(Class(<http://example.org/factkb#InternalBodyStructure>))
+Declaration(Class(<http://example.org/factkb#InternalRegion>))
+Declaration(Class(<http://example.org/factkb#IntrinsicallyNormalBodyStructure>))
+Declaration(Class(<http://example.org/factkb#IntrinsicallyPhysiologicalBodyStructure>))
+Declaration(Class(<http://example.org/factkb#Joint>))
+Declaration(Class(<http://example.org/factkb#JointArticulationProcess>))
+Declaration(Class(<http://example.org/factkb#JointCapsule>))
+Declaration(Class(<http://example.org/factkb#JointCavity>))
+Declaration(Class(<http://example.org/factkb#JointLigament>))
+Declaration(Class(<http://example.org/factkb#JointMeniscus>))
+Declaration(Class(<http://example.org/factkb#JointStability>))
+Declaration(Class(<http://example.org/factkb#Knee>))
+Declaration(Class(<http://example.org/factkb#KneeJoint>))
+Declaration(Class(<http://example.org/factkb#KneeJointCavity>))
+Declaration(Class(<http://example.org/factkb#KneeJointRecessus>))
+Declaration(Class(<http://example.org/factkb#KneeJointStability>))
+Declaration(Class(<http://example.org/factkb#LateralFemoralCondyle>))
+Declaration(Class(<http://example.org/factkb#LateralFemoralEpicondyle>))
+Declaration(Class(<http://example.org/factkb#LateralFemoralJointSurface>))
+Declaration(Class(<http://example.org/factkb#LateralMalleolus>))
+Declaration(Class(<http://example.org/factkb#LateralMeniscus>))
+Declaration(Class(<http://example.org/factkb#LateralTibialCondyle>))
+Declaration(Class(<http://example.org/factkb#LateralTibialEpicondyle>))
+Declaration(Class(<http://example.org/factkb#Leg>))
+Declaration(Class(<http://example.org/factkb#LesserTrochanter>))
+Declaration(Class(<http://example.org/factkb#LevelOfSpecification>))
+Declaration(Class(<http://example.org/factkb#Ligament>))
+Declaration(Class(<http://example.org/factkb#LigamentumPatellae>))
+Declaration(Class(<http://example.org/factkb#LimbJoint>))
+Declaration(Class(<http://example.org/factkb#LinearBodyStructure>))
+Declaration(Class(<http://example.org/factkb#LongBone>))
+Declaration(Class(<http://example.org/factkb#LowerExtremity>))
+Declaration(Class(<http://example.org/factkb#Lumen>))
+Declaration(Class(<http://example.org/factkb#MainExtremityBodyPart>))
+Declaration(Class(<http://example.org/factkb#MajorBodyDivision>))
+Declaration(Class(<http://example.org/factkb#Malleolus>))
+Declaration(Class(<http://example.org/factkb#MedialFemoralCondyle>))
+Declaration(Class(<http://example.org/factkb#MedialFemoralEpicondyle>))
+Declaration(Class(<http://example.org/factkb#MedialFemoralJointSurface>))
+Declaration(Class(<http://example.org/factkb#MedialLateralPositionState>))
+Declaration(Class(<http://example.org/factkb#MedialMalleolus>))
+Declaration(Class(<http://example.org/factkb#MedialMeniscus>))
+Declaration(Class(<http://example.org/factkb#MedialTibialCondyle>))
+Declaration(Class(<http://example.org/factkb#MedialTibialEpicondyle>))
+Declaration(Class(<http://example.org/factkb#MedicalStatus>))
+Declaration(Class(<http://example.org/factkb#Membrane>))
+Declaration(Class(<http://example.org/factkb#Meniscus>))
+Declaration(Class(<http://example.org/factkb#MeniscusOfKneeJoint>))
+Declaration(Class(<http://example.org/factkb#MirrorImagedBodyStructure>))
+Declaration(Class(<http://example.org/factkb#ModifierConcept>))
+Declaration(Class(<http://example.org/factkb#Morphology>))
+Declaration(Class(<http://example.org/factkb#MorphologyState>))
+Declaration(Class(<http://example.org/factkb#Muscle>))
+Declaration(Class(<http://example.org/factkb#NAMEDBodySubstance>))
+Declaration(Class(<http://example.org/factkb#NAMEDBoneDivisions>))
+Declaration(Class(<http://example.org/factkb#NAMEDInternalBodyPart>))
+Declaration(Class(<http://example.org/factkb#NAMEDInternalBodySubPart>))
+Declaration(Class(<http://example.org/factkb#NAMEDLigament>))
+Declaration(Class(<http://example.org/factkb#NAMEDMuscle>))
+Declaration(Class(<http://example.org/factkb#NAMEDSolidBoneDivisions>))
+Declaration(Class(<http://example.org/factkb#NAMEDSurfaceBodyPart>))
+Declaration(Class(<http://example.org/factkb#NAMEDSurfaceBoneDivisions>))
+Declaration(Class(<http://example.org/factkb#NAMEDVein>))
+Declaration(Class(<http://example.org/factkb#NeckOfFemur>))
+Declaration(Class(<http://example.org/factkb#NormalOrNonNormalStatus>))
+Declaration(Class(<http://example.org/factkb#Notch>))
+Declaration(Class(<http://example.org/factkb#PairedOrUnpairedStatus>))
+Declaration(Class(<http://example.org/factkb#Patella>))
+Declaration(Class(<http://example.org/factkb#PatellarJointSurface>))
+Declaration(Class(<http://example.org/factkb#PatelloFemoralJoint>))
+Declaration(Class(<http://example.org/factkb#PathologicalOrPhysiologicalStatus>))
+Declaration(Class(<http://example.org/factkb#PhysicalStructure>))
+Declaration(Class(<http://example.org/factkb#Plateau>))
+Declaration(Class(<http://example.org/factkb#Position>))
+Declaration(Class(<http://example.org/factkb#PositionState>))
+Declaration(Class(<http://example.org/factkb#Process>))
+Declaration(Class(<http://example.org/factkb#ProcessFeature>))
+Declaration(Class(<http://example.org/factkb#ProximalTibialArticularSurface>))
+Declaration(Class(<http://example.org/factkb#Psoas>))
+Declaration(Class(<http://example.org/factkb#Recess>))
+Declaration(Class(<http://example.org/factkb#Scope>))
+Declaration(Class(<http://example.org/factkb#SecretedSubstance>))
+Declaration(Class(<http://example.org/factkb#Secretion>))
+Declaration(Class(<http://example.org/factkb#SessamoidBone>))
+Declaration(Class(<http://example.org/factkb#Shaft>))
+Declaration(Class(<http://example.org/factkb#Shape>))
+Declaration(Class(<http://example.org/factkb#ShapeState>))
+Declaration(Class(<http://example.org/factkb#SkeletalStructure>))
+Declaration(Class(<http://example.org/factkb#SlidingArticulationProcess>))
+Declaration(Class(<http://example.org/factkb#SlidingJoint>))
+Declaration(Class(<http://example.org/factkb#SolidBodyStructure>))
+Declaration(Class(<http://example.org/factkb#SolidStructure>))
+Declaration(Class(<http://example.org/factkb#Space>))
+Declaration(Class(<http://example.org/factkb#State>))
+Declaration(Class(<http://example.org/factkb#Status>))
+Declaration(Class(<http://example.org/factkb#StructuralFeature>))
+Declaration(Class(<http://example.org/factkb#StructuralState>))
+Declaration(Class(<http://example.org/factkb#StructuralStatus>))
+Declaration(Class(<http://example.org/factkb#Substance>))
+Declaration(Class(<http://example.org/factkb#SuperiorInferiorChangeInPositionState>))
+Declaration(Class(<http://example.org/factkb#SuperiorInferiorPosition>))
+Declaration(Class(<http://example.org/factkb#SupraPatellarPouch>))
+Declaration(Class(<http://example.org/factkb#SurfaceBodyStructure>))
+Declaration(Class(<http://example.org/factkb#SurfaceVisibilityStatus>))
+Declaration(Class(<http://example.org/factkb#SynovialFluid>))
+Declaration(Class(<http://example.org/factkb#SynovialJoint>))
+Declaration(Class(<http://example.org/factkb#SynovialJointCapsule>))
+Declaration(Class(<http://example.org/factkb#SynovialMembrane>))
+Declaration(Class(<http://example.org/factkb#Thigh>))
+Declaration(Class(<http://example.org/factkb#Tibia>))
+Declaration(Class(<http://example.org/factkb#TibialInterCondylarEminence>))
+Declaration(Class(<http://example.org/factkb#TibialPlateau>))
+Declaration(Class(<http://example.org/factkb#TibialTuberosity>))
+Declaration(Class(<http://example.org/factkb#Tissue>))
+Declaration(Class(<http://example.org/factkb#TopCategory>))
+Declaration(Class(<http://example.org/factkb#Topology>))
+Declaration(Class(<http://example.org/factkb#TopologyState>))
+Declaration(Class(<http://example.org/factkb#TrueCavity>))
+Declaration(Class(<http://example.org/factkb#TruelyHollowBodyStructure>))
+Declaration(Class(<http://example.org/factkb#TruelyHollowStructure>))
+Declaration(Class(<http://example.org/factkb#TubularBodyStructure>))
+Declaration(Class(<http://example.org/factkb#TubularSolidStructure>))
+Declaration(Class(<http://example.org/factkb#TwoAndAHalfDimensionalBodyStructure>))
+Declaration(Class(<http://example.org/factkb#TwoAndAHalfDimensionalStructure>))
+Declaration(Class(<http://example.org/factkb#UnpairedBodyStructure>))
+Declaration(Class(<http://example.org/factkb#UpperLowerPositionState>))
+Declaration(Class(<http://example.org/factkb#Vein>))
+Declaration(Class(<http://example.org/factkb#VisibilityStatus>))
+Declaration(Class(<http://example.org/factkb#actuallyHollow>))
+Declaration(Class(<http://example.org/factkb#actuallyHollowTopology>))
+Declaration(Class(<http://example.org/factkb#atLeastPaired>))
+Declaration(Class(<http://example.org/factkb#atLeastPartiallySpecified>))
+Declaration(Class(<http://example.org/factkb#atLeastWellSpecified>))
+Declaration(Class(<http://example.org/factkb#discrete>))
+Declaration(Class(<http://example.org/factkb#elongatedSolid>))
+Declaration(Class(<http://example.org/factkb#exactlyPaired>))
+Declaration(Class(<http://example.org/factkb#hollow>))
+Declaration(Class(<http://example.org/factkb#hollowTopology>))
+Declaration(Class(<http://example.org/factkb#infinitelyDivisible>))
+Declaration(Class(<http://example.org/factkb#internal>))
+Declaration(Class(<http://example.org/factkb#laminar>))
+Declaration(Class(<http://example.org/factkb#lateral>))
+Declaration(Class(<http://example.org/factkb#leftRightPaired>))
+Declaration(Class(<http://example.org/factkb#linear>))
+Declaration(Class(<http://example.org/factkb#lowerPosition>))
+Declaration(Class(<http://example.org/factkb#mass>))
+Declaration(Class(<http://example.org/factkb#medial>))
+Declaration(Class(<http://example.org/factkb#mirrorImaged>))
+Declaration(Class(<http://example.org/factkb#normal>))
+Declaration(Class(<http://example.org/factkb#physiological>))
+Declaration(Class(<http://example.org/factkb#solidTopology>))
+Declaration(Class(<http://example.org/factkb#superiorly>))
+Declaration(Class(<http://example.org/factkb#surfaceVisible>))
+Declaration(Class(<http://example.org/factkb#topologicallySolid>))
+Declaration(Class(<http://example.org/factkb#trulyHollow>))
+Declaration(Class(<http://example.org/factkb#trulyHollowTopology>))
+Declaration(Class(<http://example.org/factkb#tubular>))
+Declaration(Class(<http://example.org/factkb#tubularTopology>))
+Declaration(Class(<http://example.org/factkb#uniquelySpecified>))
+Declaration(Class(<http://example.org/factkb#unpaired>))
+Declaration(ObjectProperty(<http://example.org/factkb#Attribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#ConstructiveAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#ContainmentAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#DelimitingAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#DomainAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#FeatureStateAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#FunctionalAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#HasDivision>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseConstructiveAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseContainmentAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseDelimitingAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseDomainAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseFeatureStateAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseFunctionalAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseLinearContainmentAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseLocativeAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseModifierAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InversePartitiveAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseProcessLocativeAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseProcessModifierAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseStructuralAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#InverseStructuralPartitiveAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#IsDivisionOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#LinearContainmentAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#LocativeAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#ModifierAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#PartitiveAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#ProcessLocativeAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#SpecificationLevelAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#StatusAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#StructuralAppearanceModifier>))
+Declaration(ObjectProperty(<http://example.org/factkb#StructuralAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#StructuralModifierAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#StructuralPartitiveAttribute>))
+Declaration(ObjectProperty(<http://example.org/factkb#StructuralPositionModifier>))
+Declaration(ObjectProperty(<http://example.org/factkb#StructuralSelectorModifier>))
+Declaration(ObjectProperty(<http://example.org/factkb#actsOn>))
+Declaration(ObjectProperty(<http://example.org/factkb#actsSpecificallyOn>))
+Declaration(ObjectProperty(<http://example.org/factkb#boundsSpace>))
+Declaration(ObjectProperty(<http://example.org/factkb#contains>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasAbsolutePosition>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasBlindPouchDivision>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasChangeInState>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasCountability>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasFeature>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasFrameOfReference>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasFunction>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasIntrinsicAbnormalityStatus>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasIntrinsicPathologicalStatus>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasLayer>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasLinearDivision>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasMedialLateralSelector>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasOneEndAt>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasOtherEndAt>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasPosition>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasPositionalSelector>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasShape>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasShapeAnalagousTo>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasSolidDivision>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasSpecificSolidDivision>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasSpecificationLevel>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasState>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasStructuralComponent>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasSuperiorInferiorPosition>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasSurfaceVisibility>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasTopology>))
+Declaration(ObjectProperty(<http://example.org/factkb#hasUpperLowerSelector>))
+Declaration(ObjectProperty(<http://example.org/factkb#isActedOnBy>))
+Declaration(ObjectProperty(<http://example.org/factkb#isAlphaConnectionOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isAnEndOfLinearStructure>))
+Declaration(ObjectProperty(<http://example.org/factkb#isAtOtherEndOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isBlindPouchDivisionOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isBranchOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isConnectionOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isFeatureOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isLinearStructureWithEndAt>))
+Declaration(ObjectProperty(<http://example.org/factkb#isMadeOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isPairedOrUnpaired>))
+Declaration(ObjectProperty(<http://example.org/factkb#isScopeOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isServedBy>))
+Declaration(ObjectProperty(<http://example.org/factkb#isSolidDivisionOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isSpaceBoundedBy>))
+Declaration(ObjectProperty(<http://example.org/factkb#isSpaceDefinedBy>))
+Declaration(ObjectProperty(<http://example.org/factkb#isSpecificSolidDivisionOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isSpecificStructuralComponentOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isStructuralComponentOf>))
+Declaration(ObjectProperty(<http://example.org/factkb#isSurfaceDivisionOf>))
+############################
+#   Object Properties
+############################
+
+# Object Property: <http://example.org/factkb#ConstructiveAttribute> (<http://example.org/factkb#ConstructiveAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#ConstructiveAttribute> <http://example.org/factkb#DomainAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#ConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#ContainmentAttribute> (<http://example.org/factkb#ContainmentAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#ContainmentAttribute> <http://example.org/factkb#DelimitingAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#ContainmentAttribute>)
+
+# Object Property: <http://example.org/factkb#DelimitingAttribute> (<http://example.org/factkb#DelimitingAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#DelimitingAttribute> <http://example.org/factkb#StructuralAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#DelimitingAttribute>)
+
+# Object Property: <http://example.org/factkb#DomainAttribute> (<http://example.org/factkb#DomainAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#DomainAttribute> <http://example.org/factkb#Attribute>)
+
+# Object Property: <http://example.org/factkb#FeatureStateAttribute> (<http://example.org/factkb#FeatureStateAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#FeatureStateAttribute> <http://example.org/factkb#ModifierAttribute>)
+
+# Object Property: <http://example.org/factkb#FunctionalAttribute> (<http://example.org/factkb#FunctionalAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#FunctionalAttribute> <http://example.org/factkb#ConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#HasDivision> (<http://example.org/factkb#HasDivision>)
+
+SubObjectPropertyOf(<http://example.org/factkb#HasDivision> <http://example.org/factkb#StructuralPartitiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#HasDivision>)
+
+# Object Property: <http://example.org/factkb#InverseConstructiveAttribute> (<http://example.org/factkb#InverseConstructiveAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseConstructiveAttribute> <http://example.org/factkb#InverseDomainAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseContainmentAttribute> (<http://example.org/factkb#InverseContainmentAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseContainmentAttribute> <http://example.org/factkb#InverseDelimitingAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseDelimitingAttribute> (<http://example.org/factkb#InverseDelimitingAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseDelimitingAttribute> <http://example.org/factkb#InverseStructuralAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseDomainAttribute> (<http://example.org/factkb#InverseDomainAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseDomainAttribute> <http://example.org/factkb#Attribute>)
+
+# Object Property: <http://example.org/factkb#InverseFeatureStateAttribute> (<http://example.org/factkb#InverseFeatureStateAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseFeatureStateAttribute> <http://example.org/factkb#InverseModifierAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseFunctionalAttribute> (<http://example.org/factkb#InverseFunctionalAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseFunctionalAttribute> <http://example.org/factkb#InverseConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseLinearContainmentAttribute> (<http://example.org/factkb#InverseLinearContainmentAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseLinearContainmentAttribute> <http://example.org/factkb#InverseDelimitingAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseLocativeAttribute> (<http://example.org/factkb#InverseLocativeAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseLocativeAttribute> <http://example.org/factkb#InverseConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseModifierAttribute> (<http://example.org/factkb#InverseModifierAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseModifierAttribute> <http://example.org/factkb#InverseDomainAttribute>)
+
+# Object Property: <http://example.org/factkb#InversePartitiveAttribute> (<http://example.org/factkb#InversePartitiveAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InversePartitiveAttribute> <http://example.org/factkb#InverseConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseProcessLocativeAttribute> (<http://example.org/factkb#InverseProcessLocativeAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseProcessLocativeAttribute> <http://example.org/factkb#InverseLocativeAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseProcessModifierAttribute> (<http://example.org/factkb#InverseProcessModifierAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseProcessModifierAttribute> <http://example.org/factkb#isFeatureOf>)
+
+# Object Property: <http://example.org/factkb#InverseStructuralAttribute> (<http://example.org/factkb#InverseStructuralAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseStructuralAttribute> <http://example.org/factkb#InverseConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#InverseStructuralPartitiveAttribute> (<http://example.org/factkb#InverseStructuralPartitiveAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#InverseStructuralPartitiveAttribute> <http://example.org/factkb#InversePartitiveAttribute>)
+
+# Object Property: <http://example.org/factkb#IsDivisionOf> (<http://example.org/factkb#IsDivisionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#IsDivisionOf> <http://example.org/factkb#InverseStructuralPartitiveAttribute>)
+
+# Object Property: <http://example.org/factkb#LinearContainmentAttribute> (<http://example.org/factkb#LinearContainmentAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#LinearContainmentAttribute> <http://example.org/factkb#DelimitingAttribute>)
+
+# Object Property: <http://example.org/factkb#LocativeAttribute> (<http://example.org/factkb#LocativeAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#LocativeAttribute> <http://example.org/factkb#ConstructiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#LocativeAttribute>)
+
+# Object Property: <http://example.org/factkb#ModifierAttribute> (<http://example.org/factkb#ModifierAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#ModifierAttribute> <http://example.org/factkb#DomainAttribute>)
+
+# Object Property: <http://example.org/factkb#PartitiveAttribute> (<http://example.org/factkb#PartitiveAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#PartitiveAttribute> <http://example.org/factkb#ConstructiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#PartitiveAttribute>)
+
+# Object Property: <http://example.org/factkb#ProcessLocativeAttribute> (<http://example.org/factkb#ProcessLocativeAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#ProcessLocativeAttribute> <http://example.org/factkb#LocativeAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#ProcessLocativeAttribute>)
+
+# Object Property: <http://example.org/factkb#SpecificationLevelAttribute> (<http://example.org/factkb#SpecificationLevelAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#SpecificationLevelAttribute> <http://example.org/factkb#DomainAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#SpecificationLevelAttribute>)
+
+# Object Property: <http://example.org/factkb#StatusAttribute> (<http://example.org/factkb#StatusAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StatusAttribute> <http://example.org/factkb#DomainAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#StatusAttribute>)
+
+# Object Property: <http://example.org/factkb#StructuralAppearanceModifier> (<http://example.org/factkb#StructuralAppearanceModifier>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StructuralAppearanceModifier> <http://example.org/factkb#StructuralModifierAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#StructuralAppearanceModifier>)
+
+# Object Property: <http://example.org/factkb#StructuralAttribute> (<http://example.org/factkb#StructuralAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StructuralAttribute> <http://example.org/factkb#ConstructiveAttribute>)
+
+# Object Property: <http://example.org/factkb#StructuralModifierAttribute> (<http://example.org/factkb#StructuralModifierAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StructuralModifierAttribute> <http://example.org/factkb#hasFeature>)
+
+# Object Property: <http://example.org/factkb#StructuralPartitiveAttribute> (<http://example.org/factkb#StructuralPartitiveAttribute>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StructuralPartitiveAttribute> <http://example.org/factkb#PartitiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#StructuralPartitiveAttribute>)
+
+# Object Property: <http://example.org/factkb#StructuralPositionModifier> (<http://example.org/factkb#StructuralPositionModifier>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StructuralPositionModifier> <http://example.org/factkb#StructuralModifierAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#StructuralPositionModifier>)
+
+# Object Property: <http://example.org/factkb#StructuralSelectorModifier> (<http://example.org/factkb#StructuralSelectorModifier>)
+
+SubObjectPropertyOf(<http://example.org/factkb#StructuralSelectorModifier> <http://example.org/factkb#StructuralModifierAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#StructuralSelectorModifier>)
+
+# Object Property: <http://example.org/factkb#actsOn> (<http://example.org/factkb#actsOn>)
+
+SubObjectPropertyOf(<http://example.org/factkb#actsOn> <http://example.org/factkb#FunctionalAttribute>)
+SubObjectPropertyOf(<http://example.org/factkb#actsOn> <http://example.org/factkb#ProcessLocativeAttribute>)
+
+# Object Property: <http://example.org/factkb#actsSpecificallyOn> (<http://example.org/factkb#actsSpecificallyOn>)
+
+SubObjectPropertyOf(<http://example.org/factkb#actsSpecificallyOn> <http://example.org/factkb#actsOn>)
+FunctionalObjectProperty(<http://example.org/factkb#actsSpecificallyOn>)
+
+# Object Property: <http://example.org/factkb#boundsSpace> (<http://example.org/factkb#boundsSpace>)
+
+SubObjectPropertyOf(<http://example.org/factkb#boundsSpace> <http://example.org/factkb#ContainmentAttribute>)
+
+# Object Property: <http://example.org/factkb#contains> (<http://example.org/factkb#contains>)
+
+SubObjectPropertyOf(<http://example.org/factkb#contains> <http://example.org/factkb#ContainmentAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#contains>)
+
+# Object Property: <http://example.org/factkb#hasAbsolutePosition> (<http://example.org/factkb#hasAbsolutePosition>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasAbsolutePosition> <http://example.org/factkb#hasPosition>)
+FunctionalObjectProperty(<http://example.org/factkb#hasAbsolutePosition>)
+
+# Object Property: <http://example.org/factkb#hasBlindPouchDivision> (<http://example.org/factkb#hasBlindPouchDivision>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasBlindPouchDivision> <http://example.org/factkb#hasSolidDivision>)
+
+# Object Property: <http://example.org/factkb#hasChangeInState> (<http://example.org/factkb#hasChangeInState>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasChangeInState> <http://example.org/factkb#hasState>)
+FunctionalObjectProperty(<http://example.org/factkb#hasChangeInState>)
+
+# Object Property: <http://example.org/factkb#hasCountability> (<http://example.org/factkb#hasCountability>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasCountability> <http://example.org/factkb#StructuralAppearanceModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#hasCountability>)
+
+# Object Property: <http://example.org/factkb#hasFeature> (<http://example.org/factkb#hasFeature>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasFeature> <http://example.org/factkb#FeatureStateAttribute>)
+
+# Object Property: <http://example.org/factkb#hasFrameOfReference> (<http://example.org/factkb#hasFrameOfReference>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasFrameOfReference> <http://example.org/factkb#ConstructiveAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#hasFrameOfReference>)
+
+# Object Property: <http://example.org/factkb#hasFunction> (<http://example.org/factkb#hasFunction>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasFunction> <http://example.org/factkb#ProcessLocativeAttribute>)
+
+# Object Property: <http://example.org/factkb#hasIntrinsicAbnormalityStatus> (<http://example.org/factkb#hasIntrinsicAbnormalityStatus>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#StatusAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#hasIntrinsicAbnormalityStatus>)
+
+# Object Property: <http://example.org/factkb#hasIntrinsicPathologicalStatus> (<http://example.org/factkb#hasIntrinsicPathologicalStatus>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasIntrinsicPathologicalStatus> <http://example.org/factkb#StatusAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#hasIntrinsicPathologicalStatus>)
+
+# Object Property: <http://example.org/factkb#hasLayer> (<http://example.org/factkb#hasLayer>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasLayer> <http://example.org/factkb#StructuralPartitiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#hasLayer>)
+
+# Object Property: <http://example.org/factkb#hasLinearDivision> (<http://example.org/factkb#hasLinearDivision>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasLinearDivision> <http://example.org/factkb#HasDivision>)
+TransitiveObjectProperty(<http://example.org/factkb#hasLinearDivision>)
+
+# Object Property: <http://example.org/factkb#hasMedialLateralSelector> (<http://example.org/factkb#hasMedialLateralSelector>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#hasPositionalSelector>)
+FunctionalObjectProperty(<http://example.org/factkb#hasMedialLateralSelector>)
+
+# Object Property: <http://example.org/factkb#hasOneEndAt> (<http://example.org/factkb#hasOneEndAt>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasOneEndAt> <http://example.org/factkb#isLinearStructureWithEndAt>)
+
+# Object Property: <http://example.org/factkb#hasOtherEndAt> (<http://example.org/factkb#hasOtherEndAt>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasOtherEndAt> <http://example.org/factkb#isLinearStructureWithEndAt>)
+
+# Object Property: <http://example.org/factkb#hasPosition> (<http://example.org/factkb#hasPosition>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasPosition> <http://example.org/factkb#StructuralPositionModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#hasPosition>)
+
+# Object Property: <http://example.org/factkb#hasPositionalSelector> (<http://example.org/factkb#hasPositionalSelector>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasPositionalSelector> <http://example.org/factkb#StructuralSelectorModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#hasPositionalSelector>)
+
+# Object Property: <http://example.org/factkb#hasShape> (<http://example.org/factkb#hasShape>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasShape> <http://example.org/factkb#StructuralAppearanceModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#hasShape>)
+
+# Object Property: <http://example.org/factkb#hasShapeAnalagousTo> (<http://example.org/factkb#hasShapeAnalagousTo>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasShapeAnalagousTo> <http://example.org/factkb#hasShape>)
+FunctionalObjectProperty(<http://example.org/factkb#hasShapeAnalagousTo>)
+
+# Object Property: <http://example.org/factkb#hasSolidDivision> (<http://example.org/factkb#hasSolidDivision>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasSolidDivision> <http://example.org/factkb#HasDivision>)
+TransitiveObjectProperty(<http://example.org/factkb#hasSolidDivision>)
+
+# Object Property: <http://example.org/factkb#hasSpecificSolidDivision> (<http://example.org/factkb#hasSpecificSolidDivision>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#hasSolidDivision>)
+
+# Object Property: <http://example.org/factkb#hasSpecificationLevel> (<http://example.org/factkb#hasSpecificationLevel>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasSpecificationLevel> <http://example.org/factkb#SpecificationLevelAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#hasSpecificationLevel>)
+
+# Object Property: <http://example.org/factkb#hasState> (<http://example.org/factkb#hasState>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasState> <http://example.org/factkb#FeatureStateAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#hasState>)
+
+# Object Property: <http://example.org/factkb#hasStructuralComponent> (<http://example.org/factkb#hasStructuralComponent>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#StructuralPartitiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#hasStructuralComponent>)
+
+# Object Property: <http://example.org/factkb#hasSuperiorInferiorPosition> (<http://example.org/factkb#hasSuperiorInferiorPosition>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasSuperiorInferiorPosition> <http://example.org/factkb#hasAbsolutePosition>)
+FunctionalObjectProperty(<http://example.org/factkb#hasSuperiorInferiorPosition>)
+
+# Object Property: <http://example.org/factkb#hasSurfaceVisibility> (<http://example.org/factkb#hasSurfaceVisibility>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasSurfaceVisibility> <http://example.org/factkb#StructuralAppearanceModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#hasSurfaceVisibility>)
+
+# Object Property: <http://example.org/factkb#hasTopology> (<http://example.org/factkb#hasTopology>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasTopology> <http://example.org/factkb#StructuralAppearanceModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#hasTopology>)
+
+# Object Property: <http://example.org/factkb#hasUpperLowerSelector> (<http://example.org/factkb#hasUpperLowerSelector>)
+
+SubObjectPropertyOf(<http://example.org/factkb#hasUpperLowerSelector> <http://example.org/factkb#hasPositionalSelector>)
+FunctionalObjectProperty(<http://example.org/factkb#hasUpperLowerSelector>)
+
+# Object Property: <http://example.org/factkb#isActedOnBy> (<http://example.org/factkb#isActedOnBy>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#InverseFunctionalAttribute>)
+SubObjectPropertyOf(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#InverseProcessLocativeAttribute>)
+
+# Object Property: <http://example.org/factkb#isAlphaConnectionOf> (<http://example.org/factkb#isAlphaConnectionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isAlphaConnectionOf> <http://example.org/factkb#isConnectionOf>)
+FunctionalObjectProperty(<http://example.org/factkb#isAlphaConnectionOf>)
+
+# Object Property: <http://example.org/factkb#isAnEndOfLinearStructure> (<http://example.org/factkb#isAnEndOfLinearStructure>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isAnEndOfLinearStructure> <http://example.org/factkb#InverseLinearContainmentAttribute>)
+
+# Object Property: <http://example.org/factkb#isAtOtherEndOf> (<http://example.org/factkb#isAtOtherEndOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isAtOtherEndOf> <http://example.org/factkb#isAnEndOfLinearStructure>)
+FunctionalObjectProperty(<http://example.org/factkb#isAtOtherEndOf>)
+
+# Object Property: <http://example.org/factkb#isBlindPouchDivisionOf> (<http://example.org/factkb#isBlindPouchDivisionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isBlindPouchDivisionOf> <http://example.org/factkb#isSolidDivisionOf>)
+FunctionalObjectProperty(<http://example.org/factkb#isBlindPouchDivisionOf>)
+
+# Object Property: <http://example.org/factkb#isBranchOf> (<http://example.org/factkb#isBranchOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isBranchOf> <http://example.org/factkb#InverseLinearContainmentAttribute>)
+FunctionalObjectProperty(<http://example.org/factkb#isBranchOf>)
+
+# Object Property: <http://example.org/factkb#isConnectionOf> (<http://example.org/factkb#isConnectionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isConnectionOf> <http://example.org/factkb#InverseStructuralAttribute>)
+
+# Object Property: <http://example.org/factkb#isFeatureOf> (<http://example.org/factkb#isFeatureOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isFeatureOf> <http://example.org/factkb#InverseFeatureStateAttribute>)
+
+# Object Property: <http://example.org/factkb#isLinearStructureWithEndAt> (<http://example.org/factkb#isLinearStructureWithEndAt>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isLinearStructureWithEndAt> <http://example.org/factkb#LinearContainmentAttribute>)
+
+# Object Property: <http://example.org/factkb#isMadeOf> (<http://example.org/factkb#isMadeOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isMadeOf> <http://example.org/factkb#StructuralPartitiveAttribute>)
+TransitiveObjectProperty(<http://example.org/factkb#isMadeOf>)
+
+# Object Property: <http://example.org/factkb#isPairedOrUnpaired> (<http://example.org/factkb#isPairedOrUnpaired>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#StructuralPositionModifier>)
+FunctionalObjectProperty(<http://example.org/factkb#isPairedOrUnpaired>)
+
+# Object Property: <http://example.org/factkb#isScopeOf> (<http://example.org/factkb#isScopeOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isScopeOf> <http://example.org/factkb#InverseProcessModifierAttribute>)
+
+# Object Property: <http://example.org/factkb#isServedBy> (<http://example.org/factkb#isServedBy>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isServedBy> <http://example.org/factkb#InverseStructuralAttribute>)
+
+# Object Property: <http://example.org/factkb#isSolidDivisionOf> (<http://example.org/factkb#isSolidDivisionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#IsDivisionOf>)
+
+# Object Property: <http://example.org/factkb#isSpaceBoundedBy> (<http://example.org/factkb#isSpaceBoundedBy>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isSpaceBoundedBy> <http://example.org/factkb#InverseContainmentAttribute>)
+
+# Object Property: <http://example.org/factkb#isSpaceDefinedBy> (<http://example.org/factkb#isSpaceDefinedBy>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isSpaceDefinedBy> <http://example.org/factkb#isSpaceBoundedBy>)
+
+# Object Property: <http://example.org/factkb#isSpecificSolidDivisionOf> (<http://example.org/factkb#isSpecificSolidDivisionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#isSolidDivisionOf>)
+FunctionalObjectProperty(<http://example.org/factkb#isSpecificSolidDivisionOf>)
+
+# Object Property: <http://example.org/factkb#isSpecificStructuralComponentOf> (<http://example.org/factkb#isSpecificStructuralComponentOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isSpecificStructuralComponentOf> <http://example.org/factkb#isStructuralComponentOf>)
+FunctionalObjectProperty(<http://example.org/factkb#isSpecificStructuralComponentOf>)
+
+# Object Property: <http://example.org/factkb#isStructuralComponentOf> (<http://example.org/factkb#isStructuralComponentOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#InverseStructuralPartitiveAttribute>)
+
+# Object Property: <http://example.org/factkb#isSurfaceDivisionOf> (<http://example.org/factkb#isSurfaceDivisionOf>)
+
+SubObjectPropertyOf(<http://example.org/factkb#isSurfaceDivisionOf> <http://example.org/factkb#IsDivisionOf>)
+
+
+############################
+#   Classes
+############################
+
+# Class: <http://example.org/factkb#AbsolutePositionState> (<http://example.org/factkb#AbsolutePositionState>)
+
+SubClassOf(<http://example.org/factkb#AbsolutePositionState> <http://example.org/factkb#PositionState>)
+
+# Class: <http://example.org/factkb#AbsoluteShapeState> (<http://example.org/factkb#AbsoluteShapeState>)
+
+SubClassOf(<http://example.org/factkb#AbsoluteShapeState> <http://example.org/factkb#ShapeState>)
+
+# Class: <http://example.org/factkb#AbstractStatus> (<http://example.org/factkb#AbstractStatus>)
+
+SubClassOf(<http://example.org/factkb#AbstractStatus> <http://example.org/factkb#Status>)
+
+# Class: <http://example.org/factkb#ActualCavity> (<http://example.org/factkb#ActualCavity>)
+
+EquivalentClasses(<http://example.org/factkb#ActualCavity> ObjectIntersectionOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>)))))))
+
+# Class: <http://example.org/factkb#ActuallyHollowBodyStructure> (<http://example.org/factkb#ActuallyHollowBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#ActuallyHollowBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>)))))
+
+# Class: <http://example.org/factkb#ActuallyHollowStructure> (<http://example.org/factkb#ActuallyHollowStructure>)
+
+EquivalentClasses(<http://example.org/factkb#ActuallyHollowStructure> ObjectIntersectionOf(<http://example.org/factkb#SolidStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>)))))
+
+# Class: <http://example.org/factkb#AdductorMagnus> (<http://example.org/factkb#AdductorMagnus>)
+
+SubClassOf(<http://example.org/factkb#AdductorMagnus> <http://example.org/factkb#NAMEDMuscle>)
+
+# Class: <http://example.org/factkb#AdductorTubercle> (<http://example.org/factkb#AdductorTubercle>)
+
+EquivalentClasses(<http://example.org/factkb#AdductorTubercle> ObjectIntersectionOf(<http://example.org/factkb#Eminence> ObjectSomeValuesFrom(<http://example.org/factkb#isAtOtherEndOf> <http://example.org/factkb#AdductorMagnus>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#AnatomicalShape> (<http://example.org/factkb#AnatomicalShape>)
+
+SubClassOf(<http://example.org/factkb#AnatomicalShape> <http://example.org/factkb#Shape>)
+
+# Class: <http://example.org/factkb#Appearance> (<http://example.org/factkb#Appearance>)
+
+SubClassOf(<http://example.org/factkb#Appearance> <http://example.org/factkb#Morphology>)
+
+# Class: <http://example.org/factkb#AppearanceState> (<http://example.org/factkb#AppearanceState>)
+
+SubClassOf(<http://example.org/factkb#AppearanceState> <http://example.org/factkb#MorphologyState>)
+
+# Class: <http://example.org/factkb#ArticularSurface> (<http://example.org/factkb#ArticularSurface>)
+
+EquivalentClasses(<http://example.org/factkb#ArticularSurface> ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#hasFunction> <http://example.org/factkb#JointArticulationProcess>) ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#laminar>))) ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#Bone>)))
+SubClassOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#hasLayer> <http://example.org/factkb#Cartilage>))
+
+# Class: <http://example.org/factkb#Aspect> (<http://example.org/factkb#Aspect>)
+
+SubClassOf(<http://example.org/factkb#Aspect> <http://example.org/factkb#ModifierConcept>)
+
+# Class: <http://example.org/factkb#BodyAsAWhole> (<http://example.org/factkb#BodyAsAWhole>)
+
+SubClassOf(<http://example.org/factkb#BodyAsAWhole> <http://example.org/factkb#MajorBodyDivision>)
+SubClassOf(<http://example.org/factkb#BodyAsAWhole> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificationLevel> <http://example.org/factkb#uniquelySpecified>))
+SubClassOf(<http://example.org/factkb#BodyAsAWhole> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#unpaired>))
+
+# Class: <http://example.org/factkb#BodyCavity> (<http://example.org/factkb#BodyCavity>)
+
+SubClassOf(<http://example.org/factkb#BodyCavity> ObjectIntersectionOf(<http://example.org/factkb#BodyHole> <http://example.org/factkb#Cavity>))
+SubClassOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>))))
+
+# Class: <http://example.org/factkb#BodyHole> (<http://example.org/factkb#BodyHole>)
+
+SubClassOf(<http://example.org/factkb#BodyHole> ObjectIntersectionOf(<http://example.org/factkb#BodySpace> <http://example.org/factkb#Hole>))
+
+# Class: <http://example.org/factkb#BodyPart> (<http://example.org/factkb#BodyPart>)
+
+SubClassOf(<http://example.org/factkb#BodyPart> <http://example.org/factkb#BodyStructure>)
+SubClassOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>))
+
+# Class: <http://example.org/factkb#BodyProcess> (<http://example.org/factkb#BodyProcess>)
+
+SubClassOf(<http://example.org/factkb#BodyProcess> <http://example.org/factkb#Process>)
+
+# Class: <http://example.org/factkb#BodyRegion> (<http://example.org/factkb#BodyRegion>)
+
+SubClassOf(<http://example.org/factkb#BodyRegion> <http://example.org/factkb#BodyStructure>)
+
+# Class: <http://example.org/factkb#BodySpace> (<http://example.org/factkb#BodySpace>)
+
+SubClassOf(<http://example.org/factkb#BodySpace> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> <http://example.org/factkb#Space>))
+SubClassOf(<http://example.org/factkb#BodySpace> ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#discrete>))
+
+# Class: <http://example.org/factkb#BodyStructure> (<http://example.org/factkb#BodyStructure>)
+
+SubClassOf(<http://example.org/factkb#BodyStructure> <http://example.org/factkb#SolidStructure>)
+
+# Class: <http://example.org/factkb#BodySubstance> (<http://example.org/factkb#BodySubstance>)
+
+SubClassOf(<http://example.org/factkb#BodySubstance> <http://example.org/factkb#Substance>)
+
+# Class: <http://example.org/factkb#Bone> (<http://example.org/factkb#Bone>)
+
+SubClassOf(<http://example.org/factkb#Bone> <http://example.org/factkb#SkeletalStructure>)
+
+# Class: <http://example.org/factkb#BonyHead> (<http://example.org/factkb#BonyHead>)
+
+SubClassOf(<http://example.org/factkb#BonyHead> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+SubClassOf(<http://example.org/factkb#BonyHead> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> <http://example.org/factkb#solidTopology>))
+
+# Class: <http://example.org/factkb#BonyNeck> (<http://example.org/factkb#BonyNeck>)
+
+SubClassOf(<http://example.org/factkb#BonyNeck> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+SubClassOf(<http://example.org/factkb#BonyNeck> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> <http://example.org/factkb#elongatedSolid>))
+
+# Class: <http://example.org/factkb#CapsuleOfKnee> (<http://example.org/factkb#CapsuleOfKnee>)
+
+EquivalentClasses(<http://example.org/factkb#CapsuleOfKnee> ObjectIntersectionOf(<http://example.org/factkb#FibrousMembrane> ObjectSomeValuesFrom(<http://example.org/factkb#boundsSpace> <http://example.org/factkb#KneeJointCavity>) ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#KneeJoint>)))
+
+# Class: <http://example.org/factkb#Cartilage> (<http://example.org/factkb#Cartilage>)
+
+SubClassOf(<http://example.org/factkb#Cartilage> <http://example.org/factkb#ConnectiveTissue>)
+
+# Class: <http://example.org/factkb#Cavity> (<http://example.org/factkb#Cavity>)
+
+SubClassOf(<http://example.org/factkb#Cavity> <http://example.org/factkb#Hole>)
+
+# Class: <http://example.org/factkb#ChangeInPositionState> (<http://example.org/factkb#ChangeInPositionState>)
+
+SubClassOf(<http://example.org/factkb#ChangeInPositionState> <http://example.org/factkb#PositionState>)
+
+# Class: <http://example.org/factkb#CollateralLigament> (<http://example.org/factkb#CollateralLigament>)
+
+SubClassOf(<http://example.org/factkb#CollateralLigament> <http://example.org/factkb#NAMEDLigament>)
+SubClassOf(<http://example.org/factkb#CollateralLigament> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#CommonIliacVein> (<http://example.org/factkb#CommonIliacVein>)
+
+SubClassOf(<http://example.org/factkb#CommonIliacVein> <http://example.org/factkb#NAMEDVein>)
+SubClassOf(<http://example.org/factkb#CommonIliacVein> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#Condyle> (<http://example.org/factkb#Condyle>)
+
+SubClassOf(<http://example.org/factkb#Condyle> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+SubClassOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasSolidDivision> <http://example.org/factkb#ArticularSurface>))
+SubClassOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#ConnectiveTissue> (<http://example.org/factkb#ConnectiveTissue>)
+
+SubClassOf(<http://example.org/factkb#ConnectiveTissue> <http://example.org/factkb#Tissue>)
+
+# Class: <http://example.org/factkb#CountabilityStatus> (<http://example.org/factkb#CountabilityStatus>)
+
+SubClassOf(<http://example.org/factkb#CountabilityStatus> <http://example.org/factkb#AbstractStatus>)
+
+# Class: <http://example.org/factkb#CruciateLigament> (<http://example.org/factkb#CruciateLigament>)
+
+SubClassOf(<http://example.org/factkb#CruciateLigament> <http://example.org/factkb#NAMEDLigament>)
+SubClassOf(<http://example.org/factkb#CruciateLigament> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#DomainCategory> (<http://example.org/factkb#DomainCategory>)
+
+SubClassOf(<http://example.org/factkb#DomainCategory> <http://example.org/factkb#TopCategory>)
+
+# Class: <http://example.org/factkb#Eminence> (<http://example.org/factkb#Eminence>)
+
+SubClassOf(<http://example.org/factkb#Eminence> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+
+# Class: <http://example.org/factkb#Epicondyle> (<http://example.org/factkb#Epicondyle>)
+
+SubClassOf(<http://example.org/factkb#Epicondyle> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+SubClassOf(<http://example.org/factkb#Epicondyle> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#ExactlyPairedBodyStructure> (<http://example.org/factkb#ExactlyPairedBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#ExactlyPairedBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#exactlyPaired>)))
+
+# Class: <http://example.org/factkb#ExternalIliacVein> (<http://example.org/factkb#ExternalIliacVein>)
+
+SubClassOf(<http://example.org/factkb#ExternalIliacVein> <http://example.org/factkb#NAMEDVein>)
+SubClassOf(<http://example.org/factkb#ExternalIliacVein> ObjectSomeValuesFrom(<http://example.org/factkb#isBranchOf> <http://example.org/factkb#CommonIliacVein>))
+SubClassOf(<http://example.org/factkb#ExternalIliacVein> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#Extremity> (<http://example.org/factkb#Extremity>)
+
+SubClassOf(<http://example.org/factkb#Extremity> <http://example.org/factkb#MajorBodyDivision>)
+SubClassOf(<http://example.org/factkb#Extremity> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>))))
+SubClassOf(<http://example.org/factkb#Extremity> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(<http://example.org/factkb#Extremity> ObjectSomeValuesFrom(<http://example.org/factkb#isSurfaceDivisionOf> <http://example.org/factkb#BodyAsAWhole>))
+
+# Class: <http://example.org/factkb#ExtremityBodyPart> (<http://example.org/factkb#ExtremityBodyPart>)
+
+SubClassOf(<http://example.org/factkb#ExtremityBodyPart> <http://example.org/factkb#NAMEDSurfaceBodyPart>)
+SubClassOf(<http://example.org/factkb#ExtremityBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>))))
+
+# Class: <http://example.org/factkb#ExtremityJointPart> (<http://example.org/factkb#ExtremityJointPart>)
+
+SubClassOf(<http://example.org/factkb#ExtremityJointPart> <http://example.org/factkb#MainExtremityBodyPart>)
+
+# Class: <http://example.org/factkb#ExtremityLongPart> (<http://example.org/factkb#ExtremityLongPart>)
+
+SubClassOf(<http://example.org/factkb#ExtremityLongPart> <http://example.org/factkb#MainExtremityBodyPart>)
+
+# Class: <http://example.org/factkb#Feature> (<http://example.org/factkb#Feature>)
+
+SubClassOf(<http://example.org/factkb#Feature> <http://example.org/factkb#Aspect>)
+
+# Class: <http://example.org/factkb#FemoralCondyle> (<http://example.org/factkb#FemoralCondyle>)
+
+EquivalentClasses(<http://example.org/factkb#FemoralCondyle> ObjectIntersectionOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#FemoralHead> (<http://example.org/factkb#FemoralHead>)
+
+EquivalentClasses(<http://example.org/factkb#FemoralHead> ObjectIntersectionOf(<http://example.org/factkb#BonyHead> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#FemoralJointSurfaces> (<http://example.org/factkb#FemoralJointSurfaces>)
+
+EquivalentClasses(<http://example.org/factkb#FemoralJointSurfaces> ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#LateralFemoralJointSurface>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#MedialFemoralJointSurface>)))
+
+# Class: <http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint> (<http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint>)
+
+EquivalentClasses(<http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint> ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#InterCondylarFemoralNotch>)))
+
+# Class: <http://example.org/factkb#FemoralVein> (<http://example.org/factkb#FemoralVein>)
+
+SubClassOf(<http://example.org/factkb#FemoralVein> <http://example.org/factkb#NAMEDVein>)
+SubClassOf(<http://example.org/factkb#FemoralVein> ObjectSomeValuesFrom(<http://example.org/factkb#isAlphaConnectionOf> <http://example.org/factkb#ExternalIliacVein>))
+SubClassOf(<http://example.org/factkb#FemoralVein> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#Femur> (<http://example.org/factkb#Femur>)
+
+SubClassOf(<http://example.org/factkb#Femur> <http://example.org/factkb#LongBone>)
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#AdductorTubercle>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#FemoralHead>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#GreaterTrochanter>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#InterCondylarFemoralNotch>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#LateralFemoralCondyle>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#LateralFemoralEpicondyle>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#LesserTrochanter>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#MedialFemoralCondyle>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#MedialFemoralEpicondyle>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#NeckOfFemur>))
+SubClassOf(<http://example.org/factkb#Femur> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#Thigh>))
+
+# Class: <http://example.org/factkb#Fibrocartilage> (<http://example.org/factkb#Fibrocartilage>)
+
+SubClassOf(<http://example.org/factkb#Fibrocartilage> ObjectIntersectionOf(<http://example.org/factkb#Cartilage> <http://example.org/factkb#FibrousTissue>))
+
+# Class: <http://example.org/factkb#FibrousBodyStructure> (<http://example.org/factkb#FibrousBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#FibrousBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isMadeOf> <http://example.org/factkb#FibrousTissue>)))
+
+# Class: <http://example.org/factkb#FibrousMembrane> (<http://example.org/factkb#FibrousMembrane>)
+
+EquivalentClasses(<http://example.org/factkb#FibrousMembrane> ObjectIntersectionOf(<http://example.org/factkb#Membrane> ObjectSomeValuesFrom(<http://example.org/factkb#isMadeOf> <http://example.org/factkb#FibrousTissue>)))
+
+# Class: <http://example.org/factkb#FibrousTissue> (<http://example.org/factkb#FibrousTissue>)
+
+SubClassOf(<http://example.org/factkb#FibrousTissue> <http://example.org/factkb#ConnectiveTissue>)
+
+# Class: <http://example.org/factkb#GeneralLevelOfSpecification> (<http://example.org/factkb#GeneralLevelOfSpecification>)
+
+SubClassOf(<http://example.org/factkb#GeneralLevelOfSpecification> <http://example.org/factkb#ModifierConcept>)
+
+# Class: <http://example.org/factkb#GeneralisedStructure> (<http://example.org/factkb#GeneralisedStructure>)
+
+SubClassOf(<http://example.org/factkb#GeneralisedStructure> <http://example.org/factkb#DomainCategory>)
+
+# Class: <http://example.org/factkb#GeneralisedSubstance> (<http://example.org/factkb#GeneralisedSubstance>)
+
+SubClassOf(<http://example.org/factkb#GeneralisedSubstance> <http://example.org/factkb#DomainCategory>)
+
+# Class: <http://example.org/factkb#GenericBodyProcess> (<http://example.org/factkb#GenericBodyProcess>)
+
+SubClassOf(<http://example.org/factkb#GenericBodyProcess> <http://example.org/factkb#BodyProcess>)
+
+# Class: <http://example.org/factkb#GenericBodyStructure> (<http://example.org/factkb#GenericBodyStructure>)
+
+SubClassOf(<http://example.org/factkb#GenericBodyStructure> <http://example.org/factkb#BodyStructure>)
+SubClassOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#discrete>))
+
+# Class: <http://example.org/factkb#GenericInternalStructure> (<http://example.org/factkb#GenericInternalStructure>)
+
+SubClassOf(<http://example.org/factkb#GenericInternalStructure> <http://example.org/factkb#GenericBodyStructure>)
+
+# Class: <http://example.org/factkb#GluteusMedius> (<http://example.org/factkb#GluteusMedius>)
+
+SubClassOf(<http://example.org/factkb#GluteusMedius> <http://example.org/factkb#NAMEDMuscle>)
+
+# Class: <http://example.org/factkb#GreaterTrochanter> (<http://example.org/factkb#GreaterTrochanter>)
+
+EquivalentClasses(<http://example.org/factkb#GreaterTrochanter> ObjectIntersectionOf(<http://example.org/factkb#Eminence> ObjectSomeValuesFrom(<http://example.org/factkb#isAtOtherEndOf> <http://example.org/factkb#GluteusMedius>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#HingeArticulationProcess> (<http://example.org/factkb#HingeArticulationProcess>)
+
+SubClassOf(<http://example.org/factkb#HingeArticulationProcess> <http://example.org/factkb#JointArticulationProcess>)
+
+# Class: <http://example.org/factkb#HingeJoint> (<http://example.org/factkb#HingeJoint>)
+
+EquivalentClasses(<http://example.org/factkb#HingeJoint> ObjectIntersectionOf(<http://example.org/factkb#Joint> ObjectSomeValuesFrom(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#HingeArticulationProcess>)))
+
+# Class: <http://example.org/factkb#Hole> (<http://example.org/factkb#Hole>)
+
+SubClassOf(<http://example.org/factkb#Hole> <http://example.org/factkb#Space>)
+
+# Class: <http://example.org/factkb#HollowStructure> (<http://example.org/factkb#HollowStructure>)
+
+EquivalentClasses(<http://example.org/factkb#HollowStructure> ObjectIntersectionOf(<http://example.org/factkb#SolidStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#hollow>)))))
+
+# Class: <http://example.org/factkb#InterCondylarFemoralNotch> (<http://example.org/factkb#InterCondylarFemoralNotch>)
+
+EquivalentClasses(<http://example.org/factkb#InterCondylarFemoralNotch> ObjectIntersectionOf(<http://example.org/factkb#Notch> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> ObjectIntersectionOf(<http://example.org/factkb#BodySpace> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceBoundedBy> <http://example.org/factkb#LateralFemoralCondyle>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceBoundedBy> <http://example.org/factkb#MedialFemoralCondyle>)))))
+
+# Class: <http://example.org/factkb#InternalBodyStructure> (<http://example.org/factkb#InternalBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#InternalBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasSurfaceVisibility> <http://example.org/factkb#internal>)))
+
+# Class: <http://example.org/factkb#InternalRegion> (<http://example.org/factkb#InternalRegion>)
+
+SubClassOf(<http://example.org/factkb#InternalRegion> <http://example.org/factkb#BodyRegion>)
+SubClassOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#discrete>))
+
+# Class: <http://example.org/factkb#IntrinsicallyNormalBodyStructure> (<http://example.org/factkb#IntrinsicallyNormalBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#IntrinsicallyNormalBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>)))
+
+# Class: <http://example.org/factkb#IntrinsicallyPhysiologicalBodyStructure> (<http://example.org/factkb#IntrinsicallyPhysiologicalBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#IntrinsicallyPhysiologicalBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicPathologicalStatus> <http://example.org/factkb#physiological>)))
+
+# Class: <http://example.org/factkb#Joint> (<http://example.org/factkb#Joint>)
+
+SubClassOf(<http://example.org/factkb#Joint> <http://example.org/factkb#SkeletalStructure>)
+
+# Class: <http://example.org/factkb#JointArticulationProcess> (<http://example.org/factkb#JointArticulationProcess>)
+
+SubClassOf(<http://example.org/factkb#JointArticulationProcess> <http://example.org/factkb#GenericBodyProcess>)
+SubClassOf(<http://example.org/factkb#JointArticulationProcess> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>))
+SubClassOf(<http://example.org/factkb#JointArticulationProcess> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicPathologicalStatus> <http://example.org/factkb#physiological>))
+
+# Class: <http://example.org/factkb#JointCapsule> (<http://example.org/factkb#JointCapsule>)
+
+EquivalentClasses(<http://example.org/factkb#JointCapsule> ObjectIntersectionOf(<http://example.org/factkb#FibrousMembrane> ObjectSomeValuesFrom(<http://example.org/factkb#boundsSpace> <http://example.org/factkb#JointCavity>) ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#Joint>)))
+
+# Class: <http://example.org/factkb#JointCavity> (<http://example.org/factkb#JointCavity>)
+
+EquivalentClasses(<http://example.org/factkb#JointCavity> ObjectIntersectionOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> ObjectIntersectionOf(<http://example.org/factkb#Joint> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>)))))))
+SubClassOf(<http://example.org/factkb#JointCavity> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>))))
+
+# Class: <http://example.org/factkb#JointLigament> (<http://example.org/factkb#JointLigament>)
+
+EquivalentClasses(<http://example.org/factkb#JointLigament> ObjectIntersectionOf(<http://example.org/factkb#Ligament> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#Joint>)))
+
+# Class: <http://example.org/factkb#JointMeniscus> (<http://example.org/factkb#JointMeniscus>)
+
+EquivalentClasses(<http://example.org/factkb#JointMeniscus> ObjectIntersectionOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificStructuralComponentOf> <http://example.org/factkb#Joint>)))
+
+# Class: <http://example.org/factkb#JointStability> (<http://example.org/factkb#JointStability>)
+
+EquivalentClasses(<http://example.org/factkb#JointStability> ObjectIntersectionOf(<http://example.org/factkb#Scope> ObjectSomeValuesFrom(<http://example.org/factkb#isScopeOf> ObjectIntersectionOf(<http://example.org/factkb#JointArticulationProcess> ObjectSomeValuesFrom(<http://example.org/factkb#actsOn> <http://example.org/factkb#Joint>)))))
+
+# Class: <http://example.org/factkb#Knee> (<http://example.org/factkb#Knee>)
+
+SubClassOf(<http://example.org/factkb#Knee> <http://example.org/factkb#ExtremityJointPart>)
+SubClassOf(<http://example.org/factkb#Knee> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#LowerExtremity>))
+
+# Class: <http://example.org/factkb#KneeJoint> (<http://example.org/factkb#KneeJoint>)
+
+SubClassOf(<http://example.org/factkb#KneeJoint> <http://example.org/factkb#LimbJoint>)
+SubClassOf(<http://example.org/factkb#KneeJoint> ObjectIntersectionOf(ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#CapsuleOfKnee>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> ObjectIntersectionOf(<http://example.org/factkb#SynovialMembrane> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#KneeJoint>)))))
+SubClassOf(<http://example.org/factkb#KneeJoint> ObjectIntersectionOf(ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#CollateralLigament>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#CruciateLigament>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#FemoralCondyle>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#MeniscusOfKneeJoint>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#TibialPlateau>)))
+SubClassOf(<http://example.org/factkb#KneeJoint> ObjectSomeValuesFrom(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#HingeArticulationProcess>))
+SubClassOf(<http://example.org/factkb#KneeJoint> ObjectSomeValuesFrom(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#SlidingArticulationProcess>))
+SubClassOf(<http://example.org/factkb#KneeJoint> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#Knee>))
+
+# Class: <http://example.org/factkb#KneeJointCavity> (<http://example.org/factkb#KneeJointCavity>)
+
+EquivalentClasses(<http://example.org/factkb#KneeJointCavity> ObjectIntersectionOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> <http://example.org/factkb#KneeJoint>)))
+SubClassOf(<http://example.org/factkb#KneeJointCavity> ObjectSomeValuesFrom(<http://example.org/factkb#hasBlindPouchDivision> <http://example.org/factkb#SupraPatellarPouch>))
+
+# Class: <http://example.org/factkb#KneeJointRecessus> (<http://example.org/factkb#KneeJointRecessus>)
+
+EquivalentClasses(<http://example.org/factkb#KneeJointRecessus> ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isBlindPouchDivisionOf> <http://example.org/factkb#KneeJointCavity>)))
+
+# Class: <http://example.org/factkb#KneeJointStability> (<http://example.org/factkb#KneeJointStability>)
+
+EquivalentClasses(<http://example.org/factkb#KneeJointStability> ObjectIntersectionOf(<http://example.org/factkb#Scope> ObjectSomeValuesFrom(<http://example.org/factkb#isScopeOf> ObjectIntersectionOf(<http://example.org/factkb#JointArticulationProcess> ObjectSomeValuesFrom(<http://example.org/factkb#actsSpecificallyOn> <http://example.org/factkb#KneeJoint>)))))
+
+# Class: <http://example.org/factkb#LateralFemoralCondyle> (<http://example.org/factkb#LateralFemoralCondyle>)
+
+EquivalentClasses(<http://example.org/factkb#LateralFemoralCondyle> ObjectIntersectionOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#lateral>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#LateralFemoralEpicondyle> (<http://example.org/factkb#LateralFemoralEpicondyle>)
+
+EquivalentClasses(<http://example.org/factkb#LateralFemoralEpicondyle> ObjectIntersectionOf(<http://example.org/factkb#Epicondyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#lateral>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#LateralFemoralJointSurface> (<http://example.org/factkb#LateralFemoralJointSurface>)
+
+EquivalentClasses(<http://example.org/factkb#LateralFemoralJointSurface> ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#LateralFemoralCondyle>)))
+
+# Class: <http://example.org/factkb#LateralMalleolus> (<http://example.org/factkb#LateralMalleolus>)
+
+EquivalentClasses(<http://example.org/factkb#LateralMalleolus> ObjectIntersectionOf(<http://example.org/factkb#Malleolus> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#lateral>)))
+
+# Class: <http://example.org/factkb#LateralMeniscus> (<http://example.org/factkb#LateralMeniscus>)
+
+EquivalentClasses(<http://example.org/factkb#LateralMeniscus> ObjectIntersectionOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#lateral>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificStructuralComponentOf> <http://example.org/factkb#KneeJoint>)))
+SubClassOf(<http://example.org/factkb#LateralMeniscus> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#LateralTibialCondyle> (<http://example.org/factkb#LateralTibialCondyle>)
+
+EquivalentClasses(<http://example.org/factkb#LateralTibialCondyle> ObjectIntersectionOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#lateral>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>)))
+
+# Class: <http://example.org/factkb#LateralTibialEpicondyle> (<http://example.org/factkb#LateralTibialEpicondyle>)
+
+EquivalentClasses(<http://example.org/factkb#LateralTibialEpicondyle> ObjectIntersectionOf(<http://example.org/factkb#Epicondyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#lateral>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>)))
+
+# Class: <http://example.org/factkb#Leg> (<http://example.org/factkb#Leg>)
+
+SubClassOf(<http://example.org/factkb#Leg> <http://example.org/factkb#ExtremityLongPart>)
+SubClassOf(<http://example.org/factkb#Leg> ObjectIntersectionOf(ObjectSomeValuesFrom(<http://example.org/factkb#isServedBy> <http://example.org/factkb#ExternalIliacVein>) ObjectSomeValuesFrom(<http://example.org/factkb#isServedBy> <http://example.org/factkb#FemoralVein>)))
+SubClassOf(<http://example.org/factkb#Leg> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#LowerExtremity>))
+
+# Class: <http://example.org/factkb#LesserTrochanter> (<http://example.org/factkb#LesserTrochanter>)
+
+EquivalentClasses(<http://example.org/factkb#LesserTrochanter> ObjectIntersectionOf(<http://example.org/factkb#Eminence> ObjectSomeValuesFrom(<http://example.org/factkb#isAtOtherEndOf> <http://example.org/factkb#Psoas>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#LevelOfSpecification> (<http://example.org/factkb#LevelOfSpecification>)
+
+SubClassOf(<http://example.org/factkb#LevelOfSpecification> <http://example.org/factkb#GeneralLevelOfSpecification>)
+
+# Class: <http://example.org/factkb#Ligament> (<http://example.org/factkb#Ligament>)
+
+SubClassOf(<http://example.org/factkb#Ligament> <http://example.org/factkb#GenericInternalStructure>)
+SubClassOf(<http://example.org/factkb#Ligament> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>))))
+SubClassOf(<http://example.org/factkb#Ligament> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>))))
+SubClassOf(<http://example.org/factkb#Ligament> ObjectSomeValuesFrom(<http://example.org/factkb#isMadeOf> <http://example.org/factkb#FibrousTissue>))
+
+# Class: <http://example.org/factkb#LigamentumPatellae> (<http://example.org/factkb#LigamentumPatellae>)
+
+SubClassOf(<http://example.org/factkb#LigamentumPatellae> <http://example.org/factkb#NAMEDLigament>)
+SubClassOf(<http://example.org/factkb#LigamentumPatellae> ObjectSomeValuesFrom(<http://example.org/factkb#hasOneEndAt> <http://example.org/factkb#Patella>))
+SubClassOf(<http://example.org/factkb#LigamentumPatellae> ObjectSomeValuesFrom(<http://example.org/factkb#hasOtherEndAt> ObjectIntersectionOf(<http://example.org/factkb#Eminence> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>))))
+
+# Class: <http://example.org/factkb#LimbJoint> (<http://example.org/factkb#LimbJoint>)
+
+SubClassOf(<http://example.org/factkb#LimbJoint> <http://example.org/factkb#Joint>)
+SubClassOf(<http://example.org/factkb#LimbJoint> ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#SynovialMembrane>))
+SubClassOf(<http://example.org/factkb#LimbJoint> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#LinearBodyStructure> (<http://example.org/factkb#LinearBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#LinearBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>)))))
+
+# Class: <http://example.org/factkb#LongBone> (<http://example.org/factkb#LongBone>)
+
+SubClassOf(<http://example.org/factkb#LongBone> <http://example.org/factkb#Bone>)
+SubClassOf(<http://example.org/factkb#LongBone> ObjectSomeValuesFrom(<http://example.org/factkb#hasLinearDivision> <http://example.org/factkb#Shaft>))
+SubClassOf(<http://example.org/factkb#LongBone> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>))))
+SubClassOf(<http://example.org/factkb#LongBone> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#tubular>))))
+SubClassOf(<http://example.org/factkb#LongBone> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#LowerExtremity> (<http://example.org/factkb#LowerExtremity>)
+
+EquivalentClasses(<http://example.org/factkb#LowerExtremity> ObjectIntersectionOf(<http://example.org/factkb#Extremity> ObjectSomeValuesFrom(<http://example.org/factkb#hasUpperLowerSelector> <http://example.org/factkb#lowerPosition>)))
+
+# Class: <http://example.org/factkb#Lumen> (<http://example.org/factkb#Lumen>)
+
+EquivalentClasses(<http://example.org/factkb#Lumen> ObjectIntersectionOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#tubular>)))))))
+
+# Class: <http://example.org/factkb#MainExtremityBodyPart> (<http://example.org/factkb#MainExtremityBodyPart>)
+
+SubClassOf(<http://example.org/factkb#MainExtremityBodyPart> <http://example.org/factkb#ExtremityBodyPart>)
+SubClassOf(<http://example.org/factkb#MainExtremityBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificationLevel> <http://example.org/factkb#atLeastWellSpecified>))
+SubClassOf(<http://example.org/factkb#MainExtremityBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#MajorBodyDivision> (<http://example.org/factkb#MajorBodyDivision>)
+
+SubClassOf(<http://example.org/factkb#MajorBodyDivision> <http://example.org/factkb#NAMEDSurfaceBodyPart>)
+
+# Class: <http://example.org/factkb#Malleolus> (<http://example.org/factkb#Malleolus>)
+
+SubClassOf(<http://example.org/factkb#Malleolus> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+SubClassOf(<http://example.org/factkb#Malleolus> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#MedialFemoralCondyle> (<http://example.org/factkb#MedialFemoralCondyle>)
+
+EquivalentClasses(<http://example.org/factkb#MedialFemoralCondyle> ObjectIntersectionOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#medial>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#MedialFemoralEpicondyle> (<http://example.org/factkb#MedialFemoralEpicondyle>)
+
+EquivalentClasses(<http://example.org/factkb#MedialFemoralEpicondyle> ObjectIntersectionOf(<http://example.org/factkb#Epicondyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#medial>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#MedialFemoralJointSurface> (<http://example.org/factkb#MedialFemoralJointSurface>)
+
+EquivalentClasses(<http://example.org/factkb#MedialFemoralJointSurface> ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#MedialFemoralCondyle>)))
+
+# Class: <http://example.org/factkb#MedialLateralPositionState> (<http://example.org/factkb#MedialLateralPositionState>)
+
+SubClassOf(<http://example.org/factkb#MedialLateralPositionState> <http://example.org/factkb#AbsolutePositionState>)
+
+# Class: <http://example.org/factkb#MedialMalleolus> (<http://example.org/factkb#MedialMalleolus>)
+
+EquivalentClasses(<http://example.org/factkb#MedialMalleolus> ObjectIntersectionOf(<http://example.org/factkb#Malleolus> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#medial>)))
+
+# Class: <http://example.org/factkb#MedialMeniscus> (<http://example.org/factkb#MedialMeniscus>)
+
+EquivalentClasses(<http://example.org/factkb#MedialMeniscus> ObjectIntersectionOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#medial>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificStructuralComponentOf> <http://example.org/factkb#KneeJoint>)))
+SubClassOf(<http://example.org/factkb#MedialMeniscus> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#MedialTibialCondyle> (<http://example.org/factkb#MedialTibialCondyle>)
+
+EquivalentClasses(<http://example.org/factkb#MedialTibialCondyle> ObjectIntersectionOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#medial>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>)))
+
+# Class: <http://example.org/factkb#MedialTibialEpicondyle> (<http://example.org/factkb#MedialTibialEpicondyle>)
+
+EquivalentClasses(<http://example.org/factkb#MedialTibialEpicondyle> ObjectIntersectionOf(<http://example.org/factkb#Epicondyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#medial>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>)))
+
+# Class: <http://example.org/factkb#MedicalStatus> (<http://example.org/factkb#MedicalStatus>)
+
+SubClassOf(<http://example.org/factkb#MedicalStatus> <http://example.org/factkb#StructuralStatus>)
+
+# Class: <http://example.org/factkb#Membrane> (<http://example.org/factkb#Membrane>)
+
+SubClassOf(<http://example.org/factkb#Membrane> <http://example.org/factkb#GenericInternalStructure>)
+SubClassOf(<http://example.org/factkb#Membrane> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#laminar>))))
+
+# Class: <http://example.org/factkb#Meniscus> (<http://example.org/factkb#Meniscus>)
+
+SubClassOf(<http://example.org/factkb#Meniscus> <http://example.org/factkb#GenericInternalStructure>)
+SubClassOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>))))
+SubClassOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#isMadeOf> <http://example.org/factkb#Fibrocartilage>))
+SubClassOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#MeniscusOfKneeJoint> (<http://example.org/factkb#MeniscusOfKneeJoint>)
+
+EquivalentClasses(<http://example.org/factkb#MeniscusOfKneeJoint> ObjectIntersectionOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificStructuralComponentOf> <http://example.org/factkb#KneeJoint>)))
+SubClassOf(<http://example.org/factkb#MeniscusOfKneeJoint> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+
+# Class: <http://example.org/factkb#MirrorImagedBodyStructure> (<http://example.org/factkb#MirrorImagedBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#MirrorImagedBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)))
+
+# Class: <http://example.org/factkb#ModifierConcept> (<http://example.org/factkb#ModifierConcept>)
+
+SubClassOf(<http://example.org/factkb#ModifierConcept> <http://example.org/factkb#DomainCategory>)
+
+# Class: <http://example.org/factkb#Morphology> (<http://example.org/factkb#Morphology>)
+
+SubClassOf(<http://example.org/factkb#Morphology> <http://example.org/factkb#StructuralFeature>)
+
+# Class: <http://example.org/factkb#MorphologyState> (<http://example.org/factkb#MorphologyState>)
+
+SubClassOf(<http://example.org/factkb#MorphologyState> <http://example.org/factkb#StructuralState>)
+
+# Class: <http://example.org/factkb#Muscle> (<http://example.org/factkb#Muscle>)
+
+SubClassOf(<http://example.org/factkb#Muscle> <http://example.org/factkb#GenericInternalStructure>)
+SubClassOf(<http://example.org/factkb#Muscle> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>))))
+SubClassOf(<http://example.org/factkb#Muscle> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>))))
+
+# Class: <http://example.org/factkb#NAMEDBodySubstance> (<http://example.org/factkb#NAMEDBodySubstance>)
+
+SubClassOf(<http://example.org/factkb#NAMEDBodySubstance> <http://example.org/factkb#BodySubstance>)
+
+# Class: <http://example.org/factkb#NAMEDBoneDivisions> (<http://example.org/factkb#NAMEDBoneDivisions>)
+
+SubClassOf(<http://example.org/factkb#NAMEDBoneDivisions> <http://example.org/factkb#NAMEDInternalBodySubPart>)
+
+# Class: <http://example.org/factkb#NAMEDInternalBodyPart> (<http://example.org/factkb#NAMEDInternalBodyPart>)
+
+SubClassOf(<http://example.org/factkb#NAMEDInternalBodyPart> <http://example.org/factkb#BodyPart>)
+SubClassOf(<http://example.org/factkb#NAMEDInternalBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#discrete>))
+SubClassOf(<http://example.org/factkb#NAMEDInternalBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasSurfaceVisibility> <http://example.org/factkb#internal>))
+
+# Class: <http://example.org/factkb#NAMEDInternalBodySubPart> (<http://example.org/factkb#NAMEDInternalBodySubPart>)
+
+SubClassOf(<http://example.org/factkb#NAMEDInternalBodySubPart> <http://example.org/factkb#BodyPart>)
+
+# Class: <http://example.org/factkb#NAMEDLigament> (<http://example.org/factkb#NAMEDLigament>)
+
+SubClassOf(<http://example.org/factkb#NAMEDLigament> ObjectIntersectionOf(<http://example.org/factkb#Ligament> <http://example.org/factkb#NAMEDInternalBodyPart>))
+
+# Class: <http://example.org/factkb#NAMEDMuscle> (<http://example.org/factkb#NAMEDMuscle>)
+
+SubClassOf(<http://example.org/factkb#NAMEDMuscle> ObjectIntersectionOf(<http://example.org/factkb#Muscle> <http://example.org/factkb#NAMEDInternalBodyPart>))
+
+# Class: <http://example.org/factkb#NAMEDSolidBoneDivisions> (<http://example.org/factkb#NAMEDSolidBoneDivisions>)
+
+SubClassOf(<http://example.org/factkb#NAMEDSolidBoneDivisions> <http://example.org/factkb#NAMEDBoneDivisions>)
+
+# Class: <http://example.org/factkb#NAMEDSurfaceBodyPart> (<http://example.org/factkb#NAMEDSurfaceBodyPart>)
+
+SubClassOf(<http://example.org/factkb#NAMEDSurfaceBodyPart> <http://example.org/factkb#BodyPart>)
+SubClassOf(<http://example.org/factkb#NAMEDSurfaceBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#discrete>))
+SubClassOf(<http://example.org/factkb#NAMEDSurfaceBodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasSurfaceVisibility> <http://example.org/factkb#surfaceVisible>))
+
+# Class: <http://example.org/factkb#NAMEDSurfaceBoneDivisions> (<http://example.org/factkb#NAMEDSurfaceBoneDivisions>)
+
+SubClassOf(<http://example.org/factkb#NAMEDSurfaceBoneDivisions> <http://example.org/factkb#NAMEDBoneDivisions>)
+SubClassOf(<http://example.org/factkb#NAMEDSurfaceBoneDivisions> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#laminar>))))
+
+# Class: <http://example.org/factkb#NAMEDVein> (<http://example.org/factkb#NAMEDVein>)
+
+SubClassOf(<http://example.org/factkb#NAMEDVein> ObjectIntersectionOf(<http://example.org/factkb#NAMEDInternalBodyPart> <http://example.org/factkb#Vein>))
+
+# Class: <http://example.org/factkb#NeckOfFemur> (<http://example.org/factkb#NeckOfFemur>)
+
+EquivalentClasses(<http://example.org/factkb#NeckOfFemur> ObjectIntersectionOf(<http://example.org/factkb#BonyNeck> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Femur>)))
+
+# Class: <http://example.org/factkb#NormalOrNonNormalStatus> (<http://example.org/factkb#NormalOrNonNormalStatus>)
+
+SubClassOf(<http://example.org/factkb#NormalOrNonNormalStatus> <http://example.org/factkb#MedicalStatus>)
+
+# Class: <http://example.org/factkb#Notch> (<http://example.org/factkb#Notch>)
+
+SubClassOf(<http://example.org/factkb#Notch> <http://example.org/factkb#NAMEDSurfaceBoneDivisions>)
+
+# Class: <http://example.org/factkb#PairedOrUnpairedStatus> (<http://example.org/factkb#PairedOrUnpairedStatus>)
+
+SubClassOf(<http://example.org/factkb#PairedOrUnpairedStatus> <http://example.org/factkb#AbstractStatus>)
+
+# Class: <http://example.org/factkb#Patella> (<http://example.org/factkb#Patella>)
+
+SubClassOf(<http://example.org/factkb#Patella> <http://example.org/factkb#SessamoidBone>)
+SubClassOf(<http://example.org/factkb#Patella> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#ArticularSurface>))
+SubClassOf(<http://example.org/factkb#Patella> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>))))
+SubClassOf(<http://example.org/factkb#Patella> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#PatellarJointSurface> (<http://example.org/factkb#PatellarJointSurface>)
+
+EquivalentClasses(<http://example.org/factkb#PatellarJointSurface> ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Patella>)))
+SubClassOf(<http://example.org/factkb#PatellarJointSurface> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> <http://example.org/factkb#solidTopology>))
+SubClassOf(<http://example.org/factkb#PatellarJointSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#PatelloFemoralJoint> (<http://example.org/factkb#PatelloFemoralJoint>)
+
+EquivalentClasses(<http://example.org/factkb#PatelloFemoralJoint> ObjectIntersectionOf(<http://example.org/factkb#Joint> ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#PatellarJointSurface>)))
+SubClassOf(<http://example.org/factkb#PatelloFemoralJoint> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#PathologicalOrPhysiologicalStatus> (<http://example.org/factkb#PathologicalOrPhysiologicalStatus>)
+
+SubClassOf(<http://example.org/factkb#PathologicalOrPhysiologicalStatus> <http://example.org/factkb#MedicalStatus>)
+
+# Class: <http://example.org/factkb#PhysicalStructure> (<http://example.org/factkb#PhysicalStructure>)
+
+SubClassOf(<http://example.org/factkb#PhysicalStructure> <http://example.org/factkb#GeneralisedStructure>)
+
+# Class: <http://example.org/factkb#Plateau> (<http://example.org/factkb#Plateau>)
+
+SubClassOf(<http://example.org/factkb#Plateau> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+
+# Class: <http://example.org/factkb#Position> (<http://example.org/factkb#Position>)
+
+SubClassOf(<http://example.org/factkb#Position> <http://example.org/factkb#StructuralFeature>)
+
+# Class: <http://example.org/factkb#PositionState> (<http://example.org/factkb#PositionState>)
+
+SubClassOf(<http://example.org/factkb#PositionState> <http://example.org/factkb#StructuralState>)
+
+# Class: <http://example.org/factkb#Process> (<http://example.org/factkb#Process>)
+
+SubClassOf(<http://example.org/factkb#Process> <http://example.org/factkb#DomainCategory>)
+
+# Class: <http://example.org/factkb#ProcessFeature> (<http://example.org/factkb#ProcessFeature>)
+
+SubClassOf(<http://example.org/factkb#ProcessFeature> <http://example.org/factkb#Feature>)
+
+# Class: <http://example.org/factkb#ProximalTibialArticularSurface> (<http://example.org/factkb#ProximalTibialArticularSurface>)
+
+EquivalentClasses(<http://example.org/factkb#ProximalTibialArticularSurface> ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#TibialPlateau>)))
+SubClassOf(<http://example.org/factkb#ProximalTibialArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+
+# Class: <http://example.org/factkb#Psoas> (<http://example.org/factkb#Psoas>)
+
+SubClassOf(<http://example.org/factkb#Psoas> <http://example.org/factkb#NAMEDMuscle>)
+
+# Class: <http://example.org/factkb#Recess> (<http://example.org/factkb#Recess>)
+
+EquivalentClasses(<http://example.org/factkb#Recess> ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isBlindPouchDivisionOf> <http://example.org/factkb#ActualCavity>)))
+
+# Class: <http://example.org/factkb#Scope> (<http://example.org/factkb#Scope>)
+
+SubClassOf(<http://example.org/factkb#Scope> <http://example.org/factkb#ProcessFeature>)
+
+# Class: <http://example.org/factkb#SecretedSubstance> (<http://example.org/factkb#SecretedSubstance>)
+
+EquivalentClasses(<http://example.org/factkb#SecretedSubstance> ObjectIntersectionOf(<http://example.org/factkb#Substance> ObjectSomeValuesFrom(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#Secretion>)))
+
+# Class: <http://example.org/factkb#Secretion> (<http://example.org/factkb#Secretion>)
+
+SubClassOf(<http://example.org/factkb#Secretion> <http://example.org/factkb#GenericBodyProcess>)
+
+# Class: <http://example.org/factkb#SessamoidBone> (<http://example.org/factkb#SessamoidBone>)
+
+SubClassOf(<http://example.org/factkb#SessamoidBone> <http://example.org/factkb#Bone>)
+
+# Class: <http://example.org/factkb#Shaft> (<http://example.org/factkb#Shaft>)
+
+SubClassOf(<http://example.org/factkb#Shaft> <http://example.org/factkb#NAMEDSolidBoneDivisions>)
+SubClassOf(<http://example.org/factkb#Shaft> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>))))
+
+# Class: <http://example.org/factkb#Shape> (<http://example.org/factkb#Shape>)
+
+SubClassOf(<http://example.org/factkb#Shape> <http://example.org/factkb#Morphology>)
+
+# Class: <http://example.org/factkb#ShapeState> (<http://example.org/factkb#ShapeState>)
+
+SubClassOf(<http://example.org/factkb#ShapeState> <http://example.org/factkb#MorphologyState>)
+
+# Class: <http://example.org/factkb#SkeletalStructure> (<http://example.org/factkb#SkeletalStructure>)
+
+SubClassOf(<http://example.org/factkb#SkeletalStructure> <http://example.org/factkb#NAMEDInternalBodyPart>)
+
+# Class: <http://example.org/factkb#SlidingArticulationProcess> (<http://example.org/factkb#SlidingArticulationProcess>)
+
+SubClassOf(<http://example.org/factkb#SlidingArticulationProcess> <http://example.org/factkb#JointArticulationProcess>)
+
+# Class: <http://example.org/factkb#SlidingJoint> (<http://example.org/factkb#SlidingJoint>)
+
+EquivalentClasses(<http://example.org/factkb#SlidingJoint> ObjectIntersectionOf(<http://example.org/factkb#Joint> ObjectSomeValuesFrom(<http://example.org/factkb#isActedOnBy> <http://example.org/factkb#SlidingArticulationProcess>)))
+
+# Class: <http://example.org/factkb#SolidBodyStructure> (<http://example.org/factkb#SolidBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#SolidBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>)))))
+
+# Class: <http://example.org/factkb#SolidStructure> (<http://example.org/factkb#SolidStructure>)
+
+SubClassOf(<http://example.org/factkb#SolidStructure> <http://example.org/factkb#PhysicalStructure>)
+
+# Class: <http://example.org/factkb#Space> (<http://example.org/factkb#Space>)
+
+SubClassOf(<http://example.org/factkb#Space> <http://example.org/factkb#SolidStructure>)
+SubClassOf(<http://example.org/factkb#Space> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#hollow>))))
+
+# Class: <http://example.org/factkb#State> (<http://example.org/factkb#State>)
+
+SubClassOf(<http://example.org/factkb#State> <http://example.org/factkb#Aspect>)
+
+# Class: <http://example.org/factkb#Status> (<http://example.org/factkb#Status>)
+
+SubClassOf(<http://example.org/factkb#Status> <http://example.org/factkb#Aspect>)
+
+# Class: <http://example.org/factkb#StructuralFeature> (<http://example.org/factkb#StructuralFeature>)
+
+SubClassOf(<http://example.org/factkb#StructuralFeature> <http://example.org/factkb#Feature>)
+
+# Class: <http://example.org/factkb#StructuralState> (<http://example.org/factkb#StructuralState>)
+
+SubClassOf(<http://example.org/factkb#StructuralState> <http://example.org/factkb#State>)
+
+# Class: <http://example.org/factkb#StructuralStatus> (<http://example.org/factkb#StructuralStatus>)
+
+SubClassOf(<http://example.org/factkb#StructuralStatus> <http://example.org/factkb#Status>)
+
+# Class: <http://example.org/factkb#Substance> (<http://example.org/factkb#Substance>)
+
+SubClassOf(<http://example.org/factkb#Substance> <http://example.org/factkb#GeneralisedSubstance>)
+SubClassOf(<http://example.org/factkb#Substance> ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#infinitelyDivisible>))
+
+# Class: <http://example.org/factkb#SuperiorInferiorChangeInPositionState> (<http://example.org/factkb#SuperiorInferiorChangeInPositionState>)
+
+SubClassOf(<http://example.org/factkb#SuperiorInferiorChangeInPositionState> <http://example.org/factkb#ChangeInPositionState>)
+
+# Class: <http://example.org/factkb#SuperiorInferiorPosition> (<http://example.org/factkb#SuperiorInferiorPosition>)
+
+SubClassOf(<http://example.org/factkb#SuperiorInferiorPosition> <http://example.org/factkb#Position>)
+
+# Class: <http://example.org/factkb#SupraPatellarPouch> (<http://example.org/factkb#SupraPatellarPouch>)
+
+EquivalentClasses(<http://example.org/factkb#SupraPatellarPouch> ObjectIntersectionOf(<http://example.org/factkb#KneeJointRecessus> ObjectSomeValuesFrom(<http://example.org/factkb#hasSuperiorInferiorPosition> ObjectIntersectionOf(<http://example.org/factkb#SuperiorInferiorPosition> ObjectSomeValuesFrom(<http://example.org/factkb#hasChangeInState> <http://example.org/factkb#superiorly>) ObjectSomeValuesFrom(<http://example.org/factkb#hasFrameOfReference> <http://example.org/factkb#Patella>)))))
+
+# Class: <http://example.org/factkb#SurfaceBodyStructure> (<http://example.org/factkb#SurfaceBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#SurfaceBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasSurfaceVisibility> <http://example.org/factkb#surfaceVisible>)))
+SubClassOf(<http://example.org/factkb#SurfaceBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#laminar>))))
+
+# Class: <http://example.org/factkb#SurfaceVisibilityStatus> (<http://example.org/factkb#SurfaceVisibilityStatus>)
+
+SubClassOf(<http://example.org/factkb#SurfaceVisibilityStatus> <http://example.org/factkb#VisibilityStatus>)
+
+# Class: <http://example.org/factkb#SynovialFluid> (<http://example.org/factkb#SynovialFluid>)
+
+SubClassOf(<http://example.org/factkb#SynovialFluid> <http://example.org/factkb#NAMEDBodySubstance>)
+
+# Class: <http://example.org/factkb#SynovialJoint> (<http://example.org/factkb#SynovialJoint>)
+
+EquivalentClasses(<http://example.org/factkb#SynovialJoint> ObjectIntersectionOf(<http://example.org/factkb#Joint> ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#SynovialMembrane>)))
+SubClassOf(<http://example.org/factkb#SynovialJoint> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>))))
+
+# Class: <http://example.org/factkb#SynovialJointCapsule> (<http://example.org/factkb#SynovialJointCapsule>)
+
+EquivalentClasses(<http://example.org/factkb#SynovialJointCapsule> ObjectIntersectionOf(<http://example.org/factkb#FibrousMembrane> ObjectSomeValuesFrom(<http://example.org/factkb#boundsSpace> <http://example.org/factkb#JointCavity>) ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#SynovialJoint>)))
+
+# Class: <http://example.org/factkb#SynovialMembrane> (<http://example.org/factkb#SynovialMembrane>)
+
+EquivalentClasses(<http://example.org/factkb#SynovialMembrane> ObjectIntersectionOf(<http://example.org/factkb#Membrane> ObjectSomeValuesFrom(<http://example.org/factkb#hasFunction> ObjectIntersectionOf(<http://example.org/factkb#Secretion> ObjectSomeValuesFrom(<http://example.org/factkb#actsSpecificallyOn> <http://example.org/factkb#SynovialFluid>)))))
+
+# Class: <http://example.org/factkb#Thigh> (<http://example.org/factkb#Thigh>)
+
+SubClassOf(<http://example.org/factkb#Thigh> <http://example.org/factkb#ExtremityLongPart>)
+SubClassOf(<http://example.org/factkb#Thigh> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#LowerExtremity>))
+
+# Class: <http://example.org/factkb#Tibia> (<http://example.org/factkb#Tibia>)
+
+SubClassOf(<http://example.org/factkb#Tibia> <http://example.org/factkb#LongBone>)
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#LateralTibialCondyle>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#LateralTibialEpicondyle>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#MedialMalleolus>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#MedialTibialCondyle>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#MedialTibialEpicondyle>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#TibialInterCondylarEminence>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#TibialPlateau>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#TibialTuberosity>))
+SubClassOf(<http://example.org/factkb#Tibia> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> <http://example.org/factkb#Leg>))
+
+# Class: <http://example.org/factkb#TibialInterCondylarEminence> (<http://example.org/factkb#TibialInterCondylarEminence>)
+
+EquivalentClasses(<http://example.org/factkb#TibialInterCondylarEminence> ObjectIntersectionOf(<http://example.org/factkb#Eminence> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#TibialPlateau>)))
+
+# Class: <http://example.org/factkb#TibialPlateau> (<http://example.org/factkb#TibialPlateau>)
+
+EquivalentClasses(<http://example.org/factkb#TibialPlateau> ObjectIntersectionOf(<http://example.org/factkb#Plateau> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>)))
+SubClassOf(<http://example.org/factkb#TibialPlateau> ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificSolidDivision> <http://example.org/factkb#ProximalTibialArticularSurface>))
+
+# Class: <http://example.org/factkb#TibialTuberosity> (<http://example.org/factkb#TibialTuberosity>)
+
+EquivalentClasses(<http://example.org/factkb#TibialTuberosity> ObjectIntersectionOf(<http://example.org/factkb#Eminence> ObjectSomeValuesFrom(<http://example.org/factkb#isAtOtherEndOf> <http://example.org/factkb#LigamentumPatellae>) ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#Tibia>)))
+
+# Class: <http://example.org/factkb#Tissue> (<http://example.org/factkb#Tissue>)
+
+SubClassOf(<http://example.org/factkb#Tissue> <http://example.org/factkb#BodySubstance>)
+
+# Class: <http://example.org/factkb#Topology> (<http://example.org/factkb#Topology>)
+
+SubClassOf(<http://example.org/factkb#Topology> <http://example.org/factkb#Appearance>)
+
+# Class: <http://example.org/factkb#TopologyState> (<http://example.org/factkb#TopologyState>)
+
+SubClassOf(<http://example.org/factkb#TopologyState> <http://example.org/factkb#AppearanceState>)
+
+# Class: <http://example.org/factkb#TrueCavity> (<http://example.org/factkb#TrueCavity>)
+
+EquivalentClasses(<http://example.org/factkb#TrueCavity> ObjectIntersectionOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#trulyHollow>)))))))
+
+# Class: <http://example.org/factkb#TruelyHollowBodyStructure> (<http://example.org/factkb#TruelyHollowBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#TruelyHollowBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#trulyHollow>)))))
+
+# Class: <http://example.org/factkb#TruelyHollowStructure> (<http://example.org/factkb#TruelyHollowStructure>)
+
+EquivalentClasses(<http://example.org/factkb#TruelyHollowStructure> ObjectIntersectionOf(<http://example.org/factkb#SolidStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#trulyHollow>)))))
+
+# Class: <http://example.org/factkb#TubularBodyStructure> (<http://example.org/factkb#TubularBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#TubularBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>)))))
+
+# Class: <http://example.org/factkb#TubularSolidStructure> (<http://example.org/factkb#TubularSolidStructure>)
+
+EquivalentClasses(<http://example.org/factkb#TubularSolidStructure> ObjectIntersectionOf(<http://example.org/factkb#SolidStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#tubular>)))))
+
+# Class: <http://example.org/factkb#TwoAndAHalfDimensionalBodyStructure> (<http://example.org/factkb#TwoAndAHalfDimensionalBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#TwoAndAHalfDimensionalBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#laminar>)))))
+
+# Class: <http://example.org/factkb#TwoAndAHalfDimensionalStructure> (<http://example.org/factkb#TwoAndAHalfDimensionalStructure>)
+
+EquivalentClasses(<http://example.org/factkb#TwoAndAHalfDimensionalStructure> ObjectIntersectionOf(<http://example.org/factkb#SolidStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#laminar>)))))
+
+# Class: <http://example.org/factkb#UnpairedBodyStructure> (<http://example.org/factkb#UnpairedBodyStructure>)
+
+EquivalentClasses(<http://example.org/factkb#UnpairedBodyStructure> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#unpaired>)))
+
+# Class: <http://example.org/factkb#UpperLowerPositionState> (<http://example.org/factkb#UpperLowerPositionState>)
+
+SubClassOf(<http://example.org/factkb#UpperLowerPositionState> <http://example.org/factkb#AbsolutePositionState>)
+
+# Class: <http://example.org/factkb#Vein> (<http://example.org/factkb#Vein>)
+
+SubClassOf(<http://example.org/factkb#Vein> <http://example.org/factkb#GenericInternalStructure>)
+SubClassOf(<http://example.org/factkb#Vein> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#tubular>))))
+
+# Class: <http://example.org/factkb#VisibilityStatus> (<http://example.org/factkb#VisibilityStatus>)
+
+SubClassOf(<http://example.org/factkb#VisibilityStatus> <http://example.org/factkb#StructuralStatus>)
+
+# Class: <http://example.org/factkb#actuallyHollow> (<http://example.org/factkb#actuallyHollow>)
+
+SubClassOf(<http://example.org/factkb#actuallyHollow> <http://example.org/factkb#trulyHollow>)
+
+# Class: <http://example.org/factkb#actuallyHollowTopology> (<http://example.org/factkb#actuallyHollowTopology>)
+
+EquivalentClasses(<http://example.org/factkb#actuallyHollowTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>)))
+
+# Class: <http://example.org/factkb#atLeastPaired> (<http://example.org/factkb#atLeastPaired>)
+
+SubClassOf(<http://example.org/factkb#atLeastPaired> <http://example.org/factkb#PairedOrUnpairedStatus>)
+
+# Class: <http://example.org/factkb#atLeastPartiallySpecified> (<http://example.org/factkb#atLeastPartiallySpecified>)
+
+SubClassOf(<http://example.org/factkb#atLeastPartiallySpecified> <http://example.org/factkb#LevelOfSpecification>)
+
+# Class: <http://example.org/factkb#atLeastWellSpecified> (<http://example.org/factkb#atLeastWellSpecified>)
+
+SubClassOf(<http://example.org/factkb#atLeastWellSpecified> <http://example.org/factkb#atLeastPartiallySpecified>)
+
+# Class: <http://example.org/factkb#discrete> (<http://example.org/factkb#discrete>)
+
+SubClassOf(<http://example.org/factkb#discrete> <http://example.org/factkb#CountabilityStatus>)
+
+# Class: <http://example.org/factkb#elongatedSolid> (<http://example.org/factkb#elongatedSolid>)
+
+EquivalentClasses(<http://example.org/factkb#elongatedSolid> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>)))
+
+# Class: <http://example.org/factkb#exactlyPaired> (<http://example.org/factkb#exactlyPaired>)
+
+SubClassOf(<http://example.org/factkb#exactlyPaired> <http://example.org/factkb#atLeastPaired>)
+
+# Class: <http://example.org/factkb#hollow> (<http://example.org/factkb#hollow>)
+
+SubClassOf(<http://example.org/factkb#hollow> <http://example.org/factkb#TopologyState>)
+
+# Class: <http://example.org/factkb#hollowTopology> (<http://example.org/factkb#hollowTopology>)
+
+EquivalentClasses(<http://example.org/factkb#hollowTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#hollow>)))
+
+# Class: <http://example.org/factkb#infinitelyDivisible> (<http://example.org/factkb#infinitelyDivisible>)
+
+SubClassOf(<http://example.org/factkb#infinitelyDivisible> <http://example.org/factkb#mass>)
+
+# Class: <http://example.org/factkb#internal> (<http://example.org/factkb#internal>)
+
+SubClassOf(<http://example.org/factkb#internal> <http://example.org/factkb#SurfaceVisibilityStatus>)
+
+# Class: <http://example.org/factkb#laminar> (<http://example.org/factkb#laminar>)
+
+SubClassOf(<http://example.org/factkb#laminar> <http://example.org/factkb#AbsoluteShapeState>)
+
+# Class: <http://example.org/factkb#lateral> (<http://example.org/factkb#lateral>)
+
+SubClassOf(<http://example.org/factkb#lateral> <http://example.org/factkb#MedialLateralPositionState>)
+
+# Class: <http://example.org/factkb#leftRightPaired> (<http://example.org/factkb#leftRightPaired>)
+
+SubClassOf(<http://example.org/factkb#leftRightPaired> <http://example.org/factkb#exactlyPaired>)
+
+# Class: <http://example.org/factkb#linear> (<http://example.org/factkb#linear>)
+
+SubClassOf(<http://example.org/factkb#linear> <http://example.org/factkb#AbsoluteShapeState>)
+
+# Class: <http://example.org/factkb#lowerPosition> (<http://example.org/factkb#lowerPosition>)
+
+SubClassOf(<http://example.org/factkb#lowerPosition> <http://example.org/factkb#UpperLowerPositionState>)
+
+# Class: <http://example.org/factkb#mass> (<http://example.org/factkb#mass>)
+
+SubClassOf(<http://example.org/factkb#mass> <http://example.org/factkb#CountabilityStatus>)
+
+# Class: <http://example.org/factkb#medial> (<http://example.org/factkb#medial>)
+
+SubClassOf(<http://example.org/factkb#medial> <http://example.org/factkb#MedialLateralPositionState>)
+
+# Class: <http://example.org/factkb#mirrorImaged> (<http://example.org/factkb#mirrorImaged>)
+
+SubClassOf(<http://example.org/factkb#mirrorImaged> <http://example.org/factkb#leftRightPaired>)
+
+# Class: <http://example.org/factkb#normal> (<http://example.org/factkb#normal>)
+
+SubClassOf(<http://example.org/factkb#normal> <http://example.org/factkb#NormalOrNonNormalStatus>)
+
+# Class: <http://example.org/factkb#physiological> (<http://example.org/factkb#physiological>)
+
+SubClassOf(<http://example.org/factkb#physiological> <http://example.org/factkb#PathologicalOrPhysiologicalStatus>)
+
+# Class: <http://example.org/factkb#solidTopology> (<http://example.org/factkb#solidTopology>)
+
+EquivalentClasses(<http://example.org/factkb#solidTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#topologicallySolid>)))
+
+# Class: <http://example.org/factkb#superiorly> (<http://example.org/factkb#superiorly>)
+
+SubClassOf(<http://example.org/factkb#superiorly> <http://example.org/factkb#SuperiorInferiorChangeInPositionState>)
+
+# Class: <http://example.org/factkb#surfaceVisible> (<http://example.org/factkb#surfaceVisible>)
+
+SubClassOf(<http://example.org/factkb#surfaceVisible> <http://example.org/factkb#SurfaceVisibilityStatus>)
+
+# Class: <http://example.org/factkb#topologicallySolid> (<http://example.org/factkb#topologicallySolid>)
+
+SubClassOf(<http://example.org/factkb#topologicallySolid> <http://example.org/factkb#TopologyState>)
+
+# Class: <http://example.org/factkb#trulyHollow> (<http://example.org/factkb#trulyHollow>)
+
+SubClassOf(<http://example.org/factkb#trulyHollow> <http://example.org/factkb#hollow>)
+
+# Class: <http://example.org/factkb#trulyHollowTopology> (<http://example.org/factkb#trulyHollowTopology>)
+
+EquivalentClasses(<http://example.org/factkb#trulyHollowTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#trulyHollow>)))
+
+# Class: <http://example.org/factkb#tubular> (<http://example.org/factkb#tubular>)
+
+SubClassOf(<http://example.org/factkb#tubular> <http://example.org/factkb#actuallyHollow>)
+
+# Class: <http://example.org/factkb#tubularTopology> (<http://example.org/factkb#tubularTopology>)
+
+EquivalentClasses(<http://example.org/factkb#tubularTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#tubular>)))
+
+# Class: <http://example.org/factkb#uniquelySpecified> (<http://example.org/factkb#uniquelySpecified>)
+
+SubClassOf(<http://example.org/factkb#uniquelySpecified> <http://example.org/factkb#atLeastWellSpecified>)
+
+# Class: <http://example.org/factkb#unpaired> (<http://example.org/factkb#unpaired>)
+
+SubClassOf(<http://example.org/factkb#unpaired> <http://example.org/factkb#PairedOrUnpairedStatus>)
+
+
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#FemoralSurfaceOfPatelloFemoralJoint>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#LateralFemoralJointSurface>) ObjectSomeValuesFrom(<http://example.org/factkb#hasStructuralComponent> <http://example.org/factkb#MedialFemoralJointSurface>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#InterCondylarFemoralNotch>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#LateralFemoralCondyle>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#ArticularSurface> ObjectSomeValuesFrom(<http://example.org/factkb#isSpecificSolidDivisionOf> <http://example.org/factkb#MedialFemoralCondyle>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyCavity> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> <http://example.org/factkb#SynovialJoint>)) ObjectSomeValuesFrom(<http://example.org/factkb#contains> <http://example.org/factkb#SynovialFluid>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>)))) ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>)))) ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodySpace> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>)))) ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodySpace> ObjectSomeValuesFrom(<http://example.org/factkb#isSpaceDefinedBy> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>) ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#exactlyPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#exactlyPaired>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>) ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#tubular>)))) ObjectSomeValuesFrom(<http://example.org/factkb#hasShapeAnalagousTo> ObjectIntersectionOf(<http://example.org/factkb#AnatomicalShape> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#linear>))))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#BodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)) ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificationLevel> <http://example.org/factkb#atLeastWellSpecified>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#Condyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#MedialLateralPositionState>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#Epicondyle> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#MedialLateralPositionState>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#Extremity> ObjectSomeValuesFrom(<http://example.org/factkb#hasUpperLowerSelector> <http://example.org/factkb#UpperLowerPositionState>)) ObjectSomeValuesFrom(<http://example.org/factkb#hasSpecificationLevel> <http://example.org/factkb#atLeastWellSpecified>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>)))) ObjectSomeValuesFrom(<http://example.org/factkb#hasIntrinsicAbnormalityStatus> <http://example.org/factkb#normal>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#BodyPart> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isStructuralComponentOf> ObjectIntersectionOf(<http://example.org/factkb#GenericBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#InternalBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> ObjectIntersectionOf(<http://example.org/factkb#InternalBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#exactlyPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#exactlyPaired>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isBlindPouchDivisionOf> <http://example.org/factkb#KneeJointCavity>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#ActualCavity>)) ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#actuallyHollow>))))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#KneeJointRecessus>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#InternalRegion> ObjectSomeValuesFrom(<http://example.org/factkb#isSolidDivisionOf> <http://example.org/factkb#TrueCavity>)) ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#trulyHollow>))))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#Malleolus> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#MedialLateralPositionState>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#Meniscus> ObjectSomeValuesFrom(<http://example.org/factkb#hasMedialLateralSelector> <http://example.org/factkb#MedialLateralPositionState>)) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#mirrorImaged>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#SolidStructure> ObjectSomeValuesFrom(<http://example.org/factkb#hasTopology> ObjectIntersectionOf(<http://example.org/factkb#Topology> ObjectSomeValuesFrom(<http://example.org/factkb#hasState> <http://example.org/factkb#hollow>)))) ObjectSomeValuesFrom(<http://example.org/factkb#hasCountability> <http://example.org/factkb#discrete>))
+SubClassOf(ObjectIntersectionOf(<http://example.org/factkb#SurfaceBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isSurfaceDivisionOf> ObjectIntersectionOf(<http://example.org/factkb#SurfaceBodyStructure> ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>)))) ObjectSomeValuesFrom(<http://example.org/factkb#isPairedOrUnpaired> <http://example.org/factkb#atLeastPaired>))
+)

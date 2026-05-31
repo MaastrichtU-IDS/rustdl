@@ -132,6 +132,8 @@ In rough value/effort order:
    Horrocks 2009 §3.4). Months of careful work; corpus is already 100 %
    so there's no measurable corpus payoff — the win is *generalization*,
    i.e. making `RUSTDL_HYPERTABLEAU_TRUST_SAT` safe to default-on.
+   For the formal statement of what "safe to default-on" rests on
+   today, see [`fragment-completeness.md`](fragment-completeness.md).
 2. **`≤n`-merge backjumping** — currently conservative (`DepSet::ALL`);
    precise tracking would help pathological cardinality ontologies.
    Corpus-inert.

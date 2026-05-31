@@ -66,7 +66,7 @@ subsequent change is measured against.
   SROIQ-with-current-rules is "verified by composition," not proven). Since
   `trust_sat` is sound **iff** the engine is complete on the workload, this
   statement *is* the proof that earns default-on, and is shared groundwork for a
-  future auto-gate (Phase 4).
+  future auto-gate (Phase 4). Landed as [`docs/fragment-completeness.md`](../../fragment-completeness.md).
 - **Measurable:** N new ontologies diffed at 0 FP (or a new bug found — also a
   win); a written fragment statement checked into `docs/`.
 

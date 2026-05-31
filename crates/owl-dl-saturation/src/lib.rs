@@ -2662,10 +2662,12 @@ Ontology(<http://rustdl.test/p2a/funcrole>
     /// the bug to `introduce_existential_marker`'s one-way semantics
     /// being inadequate when the marker is reused inside a Tseitin
     /// synthetic that needs full equivalence. This canary ASSERTS THE
-    /// GAP — the closure does NOT contain X ⊑ T pre-fix. Task 5 of
-    /// Phase 2b inverts the assertion after the fix.
+    /// FIX (Phase 2b rule active). Task 4 of Phase 2b introduced
+    /// `introduce_equivalent_existential_marker` which emits both the
+    /// trigger and the fact, enabling CR5/CR9 propagation through
+    /// the marker.
     #[test]
-    fn compound_existential_body_canary_documents_the_gap() {
+    fn compound_existential_body_canary_recovers_entailment() {
         use horned_owl::io::ParserConfiguration;
         use horned_owl::io::ofn::reader::read;
         use horned_owl::model::RcStr;
@@ -2700,12 +2702,108 @@ Ontology(<http://rustdl.test/p2b/test>
         let x = internal.vocabulary.class_id("http://rustdl.test/p2b/X").expect("X declared");
         let t = internal.vocabulary.class_id("http://rustdl.test/p2b/T").expect("T declared");
 
-        // ASSERT THE GAP — Task 5 inverts after the fix.
         assert!(
-            !subsumers.contains(x, t),
-            "Phase 2b canary unexpectedly passed: compound existential-body \
-             lowering appears to be fixed (or the canary is wrong). If the \
-             fix landed, invert this assertion."
+            subsumers.contains(x, t),
+            "Phase 2b regression: the compound existential-body fix \
+             failed to derive X ⊑ T. introduce_equivalent_existential_marker \
+             likely regressed."
+        );
+    }
+
+    /// Phase 2b — cluster A shape canary: paired-anatomy pattern.
+    /// `Paired ≡ Body ⊓ ∃isPaired.Paired_self` style (the actual GALEN
+    /// shape) — verifies the fix carries through more complex nested
+    /// shapes than the simple pair_08 single-hop case.
+    #[test]
+    fn compound_existential_body_cluster_a_paired_anatomy_canary() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2bA/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2bA/test>
+    Declaration(Class(:Paired))
+    Declaration(Class(:Body))
+    Declaration(Class(:Limb))
+    Declaration(Class(:Femur))
+    Declaration(ObjectProperty(:isPaired))
+    Declaration(ObjectProperty(:isLimbDivision))
+    Declaration(ObjectProperty(:isBodyDivision))
+    SubObjectPropertyOf(:isLimbDivision :isBodyDivision)
+    SubClassOf(:Limb :Body)
+    EquivalentClasses(:Paired ObjectIntersectionOf(:Body ObjectSomeValuesFrom(:isBodyDivision :Body)))
+    SubClassOf(:Femur ObjectIntersectionOf(:Body ObjectSomeValuesFrom(:isLimbDivision :Limb)))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let femur =
+            internal.vocabulary.class_id("http://rustdl.test/p2bA/Femur").expect("Femur declared");
+        let paired =
+            internal
+                .vocabulary
+                .class_id("http://rustdl.test/p2bA/Paired")
+                .expect("Paired declared");
+
+        assert!(
+            subsumers.contains(femur, paired),
+            "Phase 2b cluster-A canary: Femur ⊑ Paired should derive via \
+             (Femur ⊑ ∃isLimbDivision.Limb) + (isLimbDivision ⊑ isBodyDivision) + (Limb ⊑ Body)."
+        );
+    }
+
+    /// Phase 2b — deeper nesting: A ⊓ ∃R.(B ⊓ ∃S.(C ⊓ ∃U.D)). Two
+    /// levels of nesting, verifying the equivalent-marker fix is
+    /// transitive through chains.
+    #[test]
+    fn compound_existential_body_deeper_nesting_canary() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2bD/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2bD/test>
+    Declaration(Class(:T))
+    Declaration(Class(:X))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:D_sub))
+    Declaration(ObjectProperty(:R))
+    Declaration(ObjectProperty(:S))
+    Declaration(ObjectProperty(:U))
+    Declaration(ObjectProperty(:U_sub))
+    SubObjectPropertyOf(:U_sub :U)
+    SubClassOf(:D_sub :D)
+    EquivalentClasses(:T ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S ObjectIntersectionOf(:C ObjectSomeValuesFrom(:U :D)))))))
+    EquivalentClasses(:X ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S ObjectIntersectionOf(:C ObjectSomeValuesFrom(:U_sub :D_sub)))))))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let x = internal.vocabulary.class_id("http://rustdl.test/p2bD/X").expect("X declared");
+        let t = internal.vocabulary.class_id("http://rustdl.test/p2bD/T").expect("T declared");
+
+        assert!(
+            subsumers.contains(x, t),
+            "Phase 2b deeper nesting canary: 2-level nested existential lowering should work."
         );
     }
 }

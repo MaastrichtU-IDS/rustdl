@@ -1358,10 +1358,54 @@ fn lower_sub_class_of(
             if !salvageable {
                 return;
             }
+            // The existing atomic-operand loop: any atomic class on
+            // the right (or atomic operand of an `And` on the right)
+            // becomes a head of the conjunctive trigger.
             for head in atomic_operands_on_right(sup, pool) {
                 rules.conjunctive_triggers.push(ConjunctiveTrigger {
                     bodies: bodies.clone(),
                     head,
+                });
+            }
+            // Phase 2b.5: a non-atomic `∃R.B` on the right (or as an
+            // operand of an `And` on the right) also produces a trigger.
+            // Allocate a one-way marker via `introduce_existential_marker`
+            // and push a conjunctive trigger `{bodies} ⊑ marker`. Without
+            // this, axioms of shape `And(...) ⊑ ∃R.B` are silently dropped
+            // because `atomic_operands_on_right` returns [] for `Some`.
+            // See docs/phase2b-trace2.md for the diagnostic.
+            let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
+                ConceptExpr::Some(role, body) if !role.is_inverse() => {
+                    atomic_or_tseitin_body(*body, pool, rules, tseitin)
+                        .map(|body_id| vec![(role.role_id(), body_id)])
+                        .unwrap_or_default()
+                }
+                ConceptExpr::And(operands) => operands
+                    .iter()
+                    .filter_map(|&op| match pool.get(op) {
+                        ConceptExpr::Some(role, body) if !role.is_inverse() => {
+                            atomic_or_tseitin_body(*body, pool, rules, tseitin)
+                                .map(|body_id| (role.role_id(), body_id))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for (role, body_id) in sup_existentials {
+                // Use the two-way (equivalent) marker: M ≡ ∃R.B, so
+                // both `∃R.B ⊑ M` and the existential fact `(M, R, B)`
+                // are emitted. The conjunctive trigger gives the
+                // conjunction M as a subsumer; the existential fact on M
+                // then propagates the R-witness to any class that gains M,
+                // completing the chain `{bodies} ⊑ M ⊑ ∃R.B ⊑ T`. A
+                // one-way marker would not complete: Y gains M but never
+                // gets the R-witness needed for downstream triggers.
+                let marker =
+                    tseitin.introduce_equivalent_existential_marker(role, body_id, rules);
+                rules.conjunctive_triggers.push(ConjunctiveTrigger {
+                    bodies: bodies.clone(),
+                    head: marker,
                 });
             }
         }
@@ -2757,6 +2801,59 @@ Ontology(<http://rustdl.test/p2bA/test>
             subsumers.contains(femur, paired),
             "Phase 2b cluster-A canary: Femur ⊑ Paired should derive via \
              (Femur ⊑ ∃isLimbDivision.Limb) + (isLimbDivision ⊑ isBodyDivision) + (Limb ⊑ Body)."
+        );
+    }
+
+    /// Phase 2b.5 canary: `SubClassOf(And(A, B), ∃R.C)` where the RHS
+    /// is a non-atomic existential. This shape was the actual cause
+    /// of pair_01's miss (FemoralHead ⊑ ExactlyPairedBodyStructure
+    /// per docs/phase2b-trace2.md). The LHS-And arm of
+    /// lower_sub_class_of currently drops this trigger because
+    /// atomic_operands_on_right returns [] for a non-atomic RHS.
+    ///
+    /// Expected entailment: Y ⊑ T via:
+    ///   1. Y ⊑ A, Y ⊑ B (told subsumption)
+    ///   2. A ⊓ B ⊑ ∃R.C (the failing axiom)
+    ///   3. ∃R.C ⊑ T (existential trigger that consumes the witness)
+    ///
+    /// ASSERTS THE GAP — Task 6.5 inverts after the fix.
+    #[test]
+    fn lhs_and_with_existential_rhs_canary_recovers_entailment() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2b5/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2b5/test>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:T))
+    Declaration(Class(:Y))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(:Y :A)
+    SubClassOf(:Y :B)
+    SubClassOf(ObjectIntersectionOf(:A :B) ObjectSomeValuesFrom(:R :C))
+    SubClassOf(ObjectSomeValuesFrom(:R :C) :T)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let y = internal.vocabulary.class_id("http://rustdl.test/p2b5/Y").expect("Y declared");
+        let t = internal.vocabulary.class_id("http://rustdl.test/p2b5/T").expect("T declared");
+        // Asserts the FIX (Phase 2b.5 active). When the fix lands, this passes.
+        assert!(
+            subsumers.contains(y, t),
+            "Phase 2b.5 regression: A ⊓ B ⊑ ∃R.C didn't lower to a conjunctive trigger; \
+             the LHS-And arm of lower_sub_class_of dropped the axiom because RHS is non-atomic Some."
         );
     }
 

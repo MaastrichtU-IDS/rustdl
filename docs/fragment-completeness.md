@@ -62,7 +62,7 @@ but not backed by a formal calculus proof.
 Disjunctive branching (H2, `crates/owl-dl-tableau/src/hyper.rs:8-11`)
 extends Horn to multi-head clauses via backtracking search with
 dependency-directed backjumping (per-label and per-node `birth_deps`
-dep-sets, `crates/owl-dl-reasoner/tests/konclude_closure_diff.rs`).
+dep-sets, `crates/owl-dl-tableau/src/hyper.rs:164-167`).
 Qualified cardinality restrictions involve three sub-features: HF3a
 (`≥n` generation) was built and directly tested; HF3b (the `≠`-witness
 clash for `≤n` conflicts) and HF3c were **verified by composition** —
@@ -110,10 +110,9 @@ oracle, both returning FP=0 **and** MISSED=0
 - ore-10908-sroiq (SROIQ, 693 classes) — 0 FP, 0 MISSED (100 % complete).
 - ore-15672-shoin (SHOIN, 83 classes) — 0 FP, 0 MISSED (100 % complete).
 
-The broadened envelope now covers two expressivity profiles — SROIQ (inverse
-roles, complex role hierarchies, qualified cardinality restrictions) and SHOIN
-(inverse roles, role hierarchy, unqualified cardinality restrictions) — where
-the engine is both sound and fully complete against an independent oracle.
+Phase 0 (Task 5) added two further ontologies, each from a distinct expressivity
+profile (SROIQ and SHOIN), where the engine was both sound and fully complete
+against the HermiT oracle.
 
 Outside this validated set, `trust_sat`-default-on is an empirical bet, not
 a proof. The design contract codified in `docs/hypertableau-dead-ends.md`

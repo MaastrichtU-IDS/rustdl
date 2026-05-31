@@ -21,7 +21,7 @@ candidates, the relaxation is noted below.
 | Slug | ORE source | DL expressivity | Approx. classes | Approx. size | Why this stresses the interaction |
 |---|---|---|---|---|---|
 | ore-mf | `ore_ont_10908.owl` | SROIQ | 693 | 180 KB | Full SROIQ with complex roles (R), qualified cardinality (Q), inverses, and nominals — the same fragment as SIO, which was the sole source of all 38 recorded FPs under `trust_sat`; widest coverage of the exact interaction |
-| ore-shoiq-small | `ore_ont_15516.owl` | ALCHOIQ(D) | 85 | 201 KB | Qualified cardinality (Q) + inverses (I) + role hierarchy (H) + nominals (O) in a tiny ontology; drops complex-role chains vs SROIQ so any FP here isolates cardinality+inverse+hierarchy independent of R |
+| ore-shoiq-small | `ore_ont_15516.owl` | ALCHOIQ(D) | 85 | 201 KB | Qualified cardinality (Q) + inverses (I) + role hierarchy (H) + nominals (O) in a tiny ontology; drops complex-role chains vs SROIQ so any FP here isolates cardinality+inverse+hierarchy independent of R. **Status: HermiT-inconsistent; not wired into the soundness net (plan permits losing 1 of 3).** |
 | ore-shoin-design | `ore_ont_15672.owl` | SHOIN | 83 | 70 KB | Unqualified cardinality (N) + inverses (I) + role hierarchy (H) + nominals (O); covers the N-flavour clash semantics not exercised by the Q-carrying picks above, at the smallest file size in the strict match set |
 
 ## Relaxation, if any

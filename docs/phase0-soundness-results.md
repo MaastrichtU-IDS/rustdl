@@ -16,12 +16,11 @@ Oracle: ROBOT v1.9.6 + HermiT (sound + complete) via
 ## Soundness envelope
 
 Both new ORE fixtures passed with FP=0 and MISSED=0 against the HermiT oracle.
-The broadened corpus envelope now holds across the two new expressivity fragments
-(SROIQ with inverse roles, complex role hierarchies, and qualified cardinality
-restrictions; SHOIN with inverse roles, role hierarchy, and unqualified
-cardinality restrictions), in addition to the pre-existing pizza / RO / SULO /
-SIO / GALEN / notGALEN / alehif set documented in
-`docs/hypertableau-summary.md` §2. No soundness bugs were surfaced by this run.
+The broadened corpus envelope now covers two additional ontologies (one SROIQ,
+one SHOIN) where the engine was both sound and fully complete, in addition to
+the pre-existing pizza / RO / SULO / SIO / GALEN / notGALEN / alehif set
+documented in `docs/hypertableau-summary.md` §2. No soundness bugs were
+surfaced by this run.
 
 ## Filed FPs (none if FP=0)
 

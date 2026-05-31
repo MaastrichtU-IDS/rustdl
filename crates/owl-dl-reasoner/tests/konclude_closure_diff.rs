@@ -318,6 +318,38 @@ fn notgalen_closure_matches_konclude() {
     assert_eq!(fp, 0, "notgalen has FPs — soundness regression");
 }
 
+// HermiT-oracle Phase 0 fixtures (truth produced by docker/robot/classify-oracle.sh,
+// which runs ROBOT's embedded HermiT). The `_hermit` suffix distinguishes these
+// from the `_konclude` truth set above. The diff metric is identical: FP=0 is the
+// soundness gate; MISSED is informational. See docs/phase0-corpus-candidates.md
+// for selection rationale (inverse + cardinality + role-hierarchy interaction).
+
+#[test]
+#[ignore = "needs ontologies/external/ore-10908-sroiq.ofn + ore-10908-sroiq-classified.owx; ORE SROIQ (693 classes, inverse + complex roles + qualified cardinality) — Phase 0 soundness fixture"]
+fn ore_10908_sroiq_closure_matches_hermit() {
+    let input = Path::new("../../ontologies/external/ore-10908-sroiq.ofn");
+    let truth = Path::new("../../ontologies/external/ore-10908-sroiq-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing ore-10908-sroiq fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("ore-10908-sroiq", input, truth, 200);
+    assert_eq!(fp, 0, "ore-10908-sroiq has FPs — soundness regression");
+}
+
+#[test]
+#[ignore = "needs ontologies/external/ore-15672-shoin.ofn + ore-15672-shoin-classified.owx; ORE SHOIN (83 classes, inverse + role hierarchy + unqualified cardinality) — Phase 0 soundness fixture"]
+fn ore_15672_shoin_closure_matches_hermit() {
+    let input = Path::new("../../ontologies/external/ore-15672-shoin.ofn");
+    let truth = Path::new("../../ontologies/external/ore-15672-shoin-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing ore-15672-shoin fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("ore-15672-shoin", input, truth, 200);
+    assert_eq!(fp, 0, "ore-15672-shoin has FPs — soundness regression");
+}
+
 #[test]
 #[ignore = "long-timeout corpus run (5 s per-pair) — measures the engine's actual completeness ceiling, independent of the standard 200 ms harness budget"]
 fn corpus_closure_long_timeout() {

@@ -2285,12 +2285,10 @@ Ontology(<http://rustdl.test/test>\n\
     /// class `Target` is the conjunctive consumer through `r_func`.
     ///
     /// The expected entailment `Subject ⊑ Target` requires the EL++
-    /// functional-role witness-merge rule. This test ASSERTS THE GAP
-    /// (the entailment is missed) until Phase 2a lands the rule, at
-    /// which point Task 5 flips the assertion. Do not delete; this
-    /// canary is the regression test for the rule.
+    /// functional-role witness-merge rule. ASSERTS THE FIX (Phase 2a rule active).
+    /// Do not delete; this canary is the regression test for the rule.
     #[test]
-    fn functional_role_merge_canary_documents_the_gap() {
+    fn functional_role_merge_canary_recovers_entailment() {
         use horned_owl::io::ParserConfiguration;
         use horned_owl::io::ofn::reader::read;
         use horned_owl::model::RcStr;
@@ -2333,11 +2331,147 @@ Ontology(<http://rustdl.test/p2a/test>
             .expect("Target declared");
 
         assert!(
-            !subsumers.contains(subject, target),
-            "Phase 2a canary unexpectedly passed: the functional-role merge \
-             rule appears to be implemented (or the synthetic is wrong). \
-             If the rule is in place, invert this assertion. If not, the \
-             synthetic doesn't exercise the intended pattern — investigate."
+            subsumers.contains(subject, target),
+            "Phase 2a regression: the functional-role witness-merge rule failed to derive \
+             Subject ⊑ Target. The rule, the role-hierarchy index, or the runtime Tseitin \
+             allocator likely regressed."
+        );
+    }
+
+    /// Phase 2a — 3-sub-property fan-in: r_i, r_j, r_k all ⊑ functional
+    /// r_func; Subject has ∃r_i.A, ∃r_j.B, ∃r_k.C; Target ≡ via
+    /// ∃r_func.(A ⊓ B ⊓ C). The witness-merge rule would need to accumulate
+    /// the growing conjunction across three fact arrivals.
+    ///
+    /// IGNORED (known limitation): The rule non-terminates on 3+ sub-property
+    /// fan-in due to a self-loop in the Phase 2a rule. Pattern A looping
+    /// confirmed by trace: when (sub, r_func, synthetic_N) is emitted and
+    /// later processed, `r_func` is its own functional super (reflexive), so
+    /// the rule fires again on the synthetic fact. The updated `merged_witness`
+    /// can't protect against earlier synthetic facts already in the worklist
+    /// queue; each new synthetic creates yet another, diverging unboundedly.
+    /// The 2-sub-property case (the GALEN-documented target) works because
+    /// after the first synthetic is emitted, the rule sees `prev == fact.target`
+    /// (the synthetic is the current witness) and terminates.
+    ///
+    /// GALEN has functional roles with up to 12 sub-properties (e.g.,
+    /// ProcessModifierAttribute with 12), so T6 corpus measurement must run
+    /// with the Phase 2a rule guarded or disabled on ontologies exercising
+    /// this pattern. Fix deferred to T4.5 (flattening: pre-accumulate all
+    /// sub-property targets at saturation build time rather than incrementally).
+    #[test]
+    #[ignore = "Phase 2a known limitation: 3+ sub-property fan-in non-terminates \
+                (Pattern A self-loop — each emitted synthetic re-enters the rule \
+                reflexively via r_func ⊑ r_func, growing the witness chain without \
+                bound). The 2-sub-property merge (the GALEN target) works. \
+                Deferred to a potential T4.5 flattening fix. \
+                GALEN has roles with up to 12 sub-properties so T6 must guard this path."]
+    fn functional_role_merge_3_sub_property_fan_in() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a3/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2a3/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_k))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubObjectPropertyOf(:r_k :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_k :C))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B :C)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a3/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a3/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a 3-sub-property fan-in: the witness-merge rule failed \
+             to accumulate {{A, B, C}} across three sub-property facts."
+        );
+    }
+
+    /// Phase 2a — chained functional super-roles: r_i, r_j ⊑ r_func ⊑
+    /// r_super, both r_func and r_super functional. The witness-merge
+    /// fires at BOTH levels: r_func gets the merged witness, then the
+    /// derived (sub, r_func, F) fact cascades to r_super (which is also
+    /// functional). Tests the precomputed `functional_supers_of(r_func)`
+    /// correctly includes r_super.
+    #[test]
+    fn functional_role_merge_chained_functional_supers() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2ac/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2ac/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_super))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    FunctionalObjectProperty(:r_super)
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_func :r_super)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(ObjectSomeValuesFrom(:r_super ObjectIntersectionOf(:A :B)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2ac/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2ac/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a chained functional supers: the witness-merge rule \
+             failed to cascade from r_func to r_super; check that \
+             functional_supers_of(r_func) includes r_super."
         );
     }
 

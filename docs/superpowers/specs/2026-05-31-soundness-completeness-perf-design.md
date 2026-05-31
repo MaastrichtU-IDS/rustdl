@@ -101,14 +101,27 @@ each.
   MISSED. The handoff's PathologicalCondition trace did not describe
   what's actually missing in GALEN. Phase 2b's first deliverable now
   shifts to re-diagnosing GALEN MISSED before any rule design.
-- **2b — ≥n + disjointness.** `X ⊑ ∃R.B₁ ⊓ … ⊓ ∃R.Bₙ` with pairwise-disjoint
-  `Bᵢ` ⇒ `X ⊑ ≥n R.⊤`. Targets the PairedBodyStructure cluster (~20–30).
+- **2b (revised after 2b.0 diagnosis) — fix compound existential-body lowering.**
+  The saturator's compound-body lowering misses the nested `∃R.(B ⊓ ∃S.C)`
+  shape. Calculus already documented; this is an implementation gap. Target:
+  ~60 of 109 GALEN MISSED. The original ≥n + disjointness target is
+  empirically inapplicable on GALEN (zero cardinality / zero disjointness
+  axioms in the sampled minimal modules); preserved here as historical record:
+  `~~≥n + disjointness for PairedBodyStructure cluster (~20–30)~~`.
   - **2b.0 — Re-diagnose GALEN MISSED.** Before any rule design,
     extract the concrete (sub, super) pairs from the corpus-diff
     harness output and walk the GALEN axioms to identify the actual
     missing derivation step. Phase 2a's empirical falsification of
     the handoff's trace makes this gating work — without it, 2b risks
     the same outcome.
+    Landed: `docs/phase2b-galen-diagnosis.md`. Headline: 6 of 8 sampled
+    pairs (~60 of 109) need a fix to compound LHS/RHS existential-body
+    lowering (calculus already documented; implementation gap, not new
+    calculus); 2 of 8 (~24) need functional-role + disjointness propagation
+    (extension of Phase 2a). The spec's named ≥n + disjointness lever is
+    EMPIRICALLY INAPPLICABLE (zero cardinality + zero disjointness axioms
+    in any sampled minimal module). Phase 2b proper plan is reordered:
+    main = bug fix; extension = functional-role refinement.
 - **Honesty:** SIO 2 and some deep GALEN pairs may still not converge — recorded
   as residual gaps, not a deliverable.
 - **Measurable:** per-lever MISSED reduction via the corpus diff.

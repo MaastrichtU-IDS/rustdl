@@ -84,6 +84,16 @@ pub struct ClassificationStats {
     /// enabled — `Sat`-trust is sound only on workloads where the
     /// engine is complete (corpus-validated; off-corpus risky).
     pub hyper_refuted_pairs: usize,
+    /// Wedge returned `NotSubsumed` in < `hyper_trust_sat_min_ms()` and
+    /// the verdict was therefore distrusted: the tableau was asked
+    /// instead. Counts each fall-through, regardless of the tableau's
+    /// answer. Zero when [`hyper_trust_sat_min_ms`] returns 0.
+    pub hyper_refuted_fast_pairs: u64,
+    /// Subset of `hyper_refuted_fast_pairs` where the tableau actually
+    /// returned `Subsumed` — the entailment the wedge would have dropped
+    /// as MISSED but the slow path recovered. Directly tracks Phase 1's
+    /// completeness lever.
+    pub hyper_refuted_fast_flipped_pairs: u64,
 }
 
 impl Classification {
@@ -796,6 +806,8 @@ pub(crate) fn classify_top_down_internal(
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats.hyper_proven_pairs += sd.hyper_proven_pairs;
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
+            stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
+            stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
             for &p in &parents {
                 direct_children[p].push(c);
             }
@@ -921,6 +933,8 @@ pub(crate) fn classify_top_down_internal(
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats.hyper_proven_pairs += sd.hyper_proven_pairs;
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
+            stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
+            stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
             if subsumed && !direct_supers[cand].contains(&sup) {
                 direct_supers[cand].push(sup);
                 direct_children[sup].push(cand);
@@ -1297,6 +1311,13 @@ Ontology(<http://rustdl.test/test>\n\
             stats.tableau_subsumption_calls + stats.tableau_unsat_calls > 0,
             "expected the tableau to be invoked for the non-EL fragment"
         );
+    }
+
+    #[test]
+    fn stats_carry_selective_verify_counters_by_default() {
+        let s = ClassificationStats::default();
+        assert_eq!(s.hyper_refuted_fast_pairs, 0);
+        assert_eq!(s.hyper_refuted_fast_flipped_pairs, 0);
     }
 
     /// Helper for the top-down ↔ naive cross-check: compare the

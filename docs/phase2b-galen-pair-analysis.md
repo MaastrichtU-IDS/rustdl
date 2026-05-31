@@ -26,8 +26,8 @@ axiom counts are **zero** (grep verified — see cross-cutting summary). The
 whatever rule HermiT uses must live in the EL+ / functional-role-merge / sub-
 property / transitive / GCI fragment. The actual missing pattern across all 8 pairs is
 **EL+ with compound LHS GCIs whose existential fillers are themselves
-intersections containing existentials** — i.e., compound-LHS existential-body
-lowering and/or its empirical interaction with CR9 + Tseitin. This is calculus
+intersections containing existentials** — i.e., compound existential-body
+lowering (LHS conjunction with nested existential operand) and/or its empirical interaction with CR9 + Tseitin. This is calculus
 shape that the rustdl saturator **already documents** support for
 (`crates/owl-dl-saturation/src/lib.rs:1263-1331` and `1502+`), so the most
 likely root cause is an **implementation gap** in the existing lowering path,
@@ -119,7 +119,7 @@ bodies with nested existentials are lowered, **not** a missing calculus rule.
 
 ### Candidate Phase 2b rule shape
 
-Either fix the existing compound-LHS-existential-body lowering (most likely the
+Either fix the existing compound existential-body lowering (LHS conjunction with nested existential operand) (most likely the
 right move, given the calculus is supposedly already in scope), or — if the
 existing lowering is correct — add a specifically-targeted CR-rule for the
 `A ⊓ ∃R.(B ⊓ ∃S.C) ⊑ D` shape that GALEN's "if a body part's solid-division-of
@@ -215,7 +215,7 @@ SubClassOf(
 
 ### Missing derivation step
 
-Same compound-LHS-existential-body pattern as pairs 01–02, just with a different
+Same compound existential-body lowering (LHS conjunction with nested existential operand) pattern as pairs 01–02, just with a different
 role (`isStructuralComponentOf` instead of `isSolidDivisionOf`) and slightly
 different conjunction shape (one nested existential in the filler, not two).
 HermiT derives: `MeniscusOfKneeJoint ⊑ Meniscus ⊑ ... ⊑ BodyPart`, lifts
@@ -287,8 +287,8 @@ applied to `hasTopology` instead of `isPairedOrUnpaired`.
 
 ### Candidate Phase 2b rule shape
 
-Same as pair 01 — the implementation fix on the compound-existential-body
-lowering should subsume this case.
+Same as pair 01 — the implementation fix on the compound existential-body
+lowering (LHS conjunction with nested existential operand) should subsume this case.
 
 ---
 
@@ -487,8 +487,8 @@ UlcerationProcess witness again requires the negation-driven step.
 
 ### Candidate Phase 2b rule shape
 
-Same as pair 06 — functional-role witness-merge + disjointness, plus reliance
-on the compound LHS-existential-body lowering for the wrapping shape.
+Same as pair 06 — functional-role witness-merge + covering / sibling-collapse, plus reliance
+on the compound existential-body lowering (LHS conjunction with nested existential operand) for the wrapping shape.
 
 ---
 
@@ -548,7 +548,7 @@ implementation gap.
 
 ### Candidate Phase 2b rule shape
 
-Same as pair 01 — implementation fix on compound-existential-body lowering and
+Same as pair 01 — implementation fix on compound existential-body lowering (LHS conjunction with nested existential operand) and
 its CR5/CR9/Tseitin interaction. Pair 08 is the cleanest, smallest test case
 for that fix (only one hop, no `mirrorImaged`/`normal` clutter, no `isStructuralComponentOf`
 recursion).
@@ -597,12 +597,12 @@ Across all eight modules HermiT had **no** `≥n`, `≤n`, `=n` cardinality
 restrictions and **no** `DisjointClasses` / `DisjointUnion` axioms available.
 Whatever derivation HermiT used must therefore live entirely in the EL+ /
 functional-role-merge / sub-property / transitive / domain/range / GCI fragment.
-The compound LHS-existential-body GCIs identified per-pair are the only
+The compound existential-body lowering (LHS conjunction with nested existential operand) GCIs identified per-pair are the only
 candidate mechanism that fits the available axioms.
 
 The spec hypothesis (and the handoff §3 lever ranking "≥n cardinality with
 disjointness") **cannot** be the GALEN mechanism for this sample, regardless
-of how the saturator's compound-body lowering is fixed. The "pizza
+of how the saturator's compound existential-body lowering is fixed. The "pizza
 InterestingPizza" pattern (`Pizza ⊓ ≥3 hasTopping`) cited in the handoff is
 genuinely a `≥n + disjointness` case, but the GALEN PairedBodyStructure
 derivations are not analogous — GALEN doesn't build paired-ness from

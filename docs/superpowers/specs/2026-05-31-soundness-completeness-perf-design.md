@@ -107,7 +107,7 @@ each.
   ~60 of 109 GALEN MISSED. The original ≥n + disjointness target is
   empirically inapplicable on GALEN (zero cardinality / zero disjointness
   axioms in the sampled minimal modules); preserved here as historical record:
-  `~~≥n + disjointness for PairedBodyStructure cluster (~20–30)~~`.
+  ~~≥n + disjointness for PairedBodyStructure cluster (~20–30)~~.
   - **2b.0 — Re-diagnose GALEN MISSED.** Before any rule design,
     extract the concrete (sub, super) pairs from the corpus-diff
     harness output and walk the GALEN axioms to identify the actual

@@ -16,11 +16,11 @@ empirical analysis based on:
 **The MISSED are dominated by an implementation gap in an existing
 rule, not by a missing calculus extension.** 6 of 8 sampled pairs —
 extrapolated to ~60 of 109 (~55%) via T2's cluster shares — need the
-saturator's compound LHS/RHS existential-body lowering to handle
+saturator's compound existential-body lowering (LHS conjunction with nested existential operand) to handle
 nested existentials: calculus already documented; lowering doesn't
 fire. This is a BUG, not a new-rule design problem. The remaining 2
 sampled pairs (~24 of 109, ~22%) need functional-role witness-merge
-with disjointness propagation — adjacent to Phase 2a's implementation
+with covering / sibling-collapse — adjacent to Phase 2a's implementation
 but with a subtly different shape.
 
 **The spec's named Phase 2b target (≥n + disjointness for
@@ -33,16 +33,22 @@ anatomy MISSED, it isn't via ≥n + disjointness on those modules.
 
 | Cluster | T4 pairs | Rule pattern | Estimated share of 109 |
 |---|---|---|---|
-| A (paired/mirror anatomy) | 01, 02, 03 | Compound LHS/RHS existential-body bug | ~40 (~37%) |
-| B (hollow/recess) | 04, 05 | Compound LHS/RHS existential-body bug | ~15 (~14%) |
-| E (joint stability) | 08 | Compound LHS/RHS existential-body bug | ~5 (~5%) |
-| C (pathological process) | 06 | Functional-role + disjointness | ~12 (~11%) |
-| D (digestive pathology) | 07 | Functional-role + disjointness | ~12 (~11%) |
+| A (paired/mirror anatomy) | 01, 02, 03 | Compound existential-body lowering bug (LHS conjunction with nested existential operand) | ~40 (~37%) |
+| B (hollow/recess) | 04, 05 | Compound existential-body lowering bug (LHS conjunction with nested existential operand) | ~15 (~14%) |
+| E (joint stability) | 08 | Compound existential-body lowering bug (LHS conjunction with nested existential operand) | ~5 (~5%) |
+| C (pathological process) | 06 | Functional-role + covering / sibling-collapse | ~12 (~11%) |
+| D (digestive pathology) | 07 | Functional-role + covering / sibling-collapse | ~12 (~11%) |
 | F (misc tail, UNSAMPLED) | — | Unknown | ~25 (~23%) |
 
 (Cluster letters carried over from `phase2b-galen-sample.md`. Estimated
 shares from T2's IRI histograms; cluster-to-rule mapping from T4's
 per-pair derivations.)
+
+**Terminology note:** "covering / sibling-collapse" means a covering axiom
+that mutually excludes sibling sub-properties or sub-classes (e.g.,
+`pathological ⊑ PathologicalOrPhysiologicalStatus` with the covering axiom
+forcing a single witness to fall into one branch). It is NOT OWL
+`DisjointClasses` — the modules have ZERO `DisjointClasses` axioms.
 
 ## Recommended Phase 2b rule order
 
@@ -71,7 +77,7 @@ existing function, not new infrastructure). High confidence in the
 ~60-pair recovery if the lowering fix is correct — 6 of 6 sampled
 pairs in clusters A/B/E point to the same shape.
 
-### Phase 2b — extension: functional-role witness-merge with disjointness propagation
+### Phase 2b — extension: functional-role witness-merge with covering / sibling-collapse
 
 **Target:** ~24 of 109 MISSED (~22%) across clusters C and D.
 
@@ -86,7 +92,7 @@ the `physiological` alternative is excluded by covering.
 Phase 2b extension adds the disjointness-aware case: functional-role
 witness-merge for sibling sub-properties of a functional super-property
 (`R_i, R_j ⊑ R_f`, `R_f` functional ⇒ shared witness), combined with
-disjointness propagation through the merged witness.
+covering / sibling-collapse through the merged witness.
 
 Implementation surface estimate: moderate (extends Phase 2a's
 mechanism with a new soundness check; reuse the existing atomic-
@@ -115,7 +121,7 @@ can re-cluster the still-MISSED set and decide.
 
 Phase 2b.0's diagnosis is grounded in 8 sampled pairs out of 109,
 covering 5 of 6 visible clusters (the 6th, F, is intentionally
-untouched). The compound-existential-body bug hypothesis is
+untouched). The compound existential-body lowering (LHS conjunction with nested existential operand) bug hypothesis is
 HIGH CONFIDENCE for clusters A/B/E (6 of 6 sampled pairs in those
 clusters point to the same shape) and EMPIRICAL — confirmed via
 HermiT cross-check on minimal modules. The functional-role +
@@ -132,10 +138,15 @@ counterexample — neither was attempted in T4. Phase 2b proper should
 start from a focused trace on pair 08 (the smallest reproduction).
 
 The same caveat that applied to Phase 2a applies here recursively:
-if Phase 2b's compound-existential-body fix recovers far fewer than
+if Phase 2b's compound existential-body lowering fix recovers far fewer than
 the estimated 60 pairs, the diagnosis was wrong about cluster sizes
 or the rule has its own implementation gaps — re-run the harness,
 extract the new MISSED list, re-cluster, iterate.
+
+The 60-pair estimate assumes each cluster-A pair shares the shape of
+pairs 01/02/03 (and similarly for clusters B/E vs pairs 04/05/08). This
+is unverified for the 37 unsampled cluster-A pairs — if intra-cluster
+shape varies meaningfully, the recovery will land below estimate.
 
 ## Cross-references
 

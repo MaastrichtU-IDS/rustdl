@@ -118,6 +118,13 @@ Outside this validated set, `trust_sat`-default-on is an empirical bet, not
 a proof. The design contract codified in `docs/hypertableau-dead-ends.md`
 §11 is explicit: "Validated on the corpus ≠ validated generally."
 
+Phase 1 (selective trust-sat verification) shipped the mechanism but
+left it disabled by default — the empirical sweep (`phase1-results.md`)
+showed wall-time is not a usable discrimination signal at the
+sub-millisecond resolution where wedge NotSubsumed verdicts actually
+complete. The validated envelope is unchanged; Phase 1 did not narrow
+or widen what counts as sound.
+
 ## Soundness implication
 
 > trust_sat is sound iff the engine is complete on the workload.

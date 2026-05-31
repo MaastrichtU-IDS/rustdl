@@ -319,12 +319,54 @@ layer.
 
 ---
 
+---
+
+## 13. Wall-time-as-filter for selective trust-sat verification
+
+**What was tried.** Phase 1 (`docs/superpowers/plans/2026-05-31-phase1-selective-trust-sat.md`)
+introduced a per-call wall-time threshold on the hyper wedge: if a
+`NotSubsumed` verdict took less than `RUSTDL_HYPER_TRUST_SAT_MIN_MS` ms,
+distrust it and ask the tableau. The hypothesis (from the handoff): a
+fast NotSubsumed is "wedge gave up without trying," and so is worth
+verifying; a slow NotSubsumed is the wedge engaging seriously. The spec
+estimated 50 ms as a starting default.
+
+**What killed it.** Single-thread sweep on alehif (smallest baseline,
+1.76 s, 247 classes, FP=0 / MISSED=0 historically) at thresholds 1, 5,
+10, 20, 30 ms returned wall times flat at ~405–410 s — **≈230× the
+baseline at every threshold**. This means virtually every wedge
+`NotSubsumed` verdict completes in **under 1 ms**: trivially-not-subsumed
+and didn't-try-hard-enough verdicts are indistinguishable by stopwatch
+at the relevant resolution. Soundness was preserved (FP=0) across the
+broadened Phase 0 net at the 50 ms default, but the wall blowup made
+GALEN and notgalen unmeasurable, so the "MISSED 109 → ≤ 40" lever
+target could not be achieved.
+
+**The lesson.** Wall-time discriminates wedge-engagement vs wedge-
+give-up only if the two have different runtime distributions. The data
+says they don't — both finish in sub-ms time. A working selective-verify
+lever would need a different signal (per-pair wedge-rule-fire count,
+saturation-snapshot delta, or a per-class structural "interestingness"
+score), not a stopwatch. The mechanism shipped (sound, opt-in via env
+var) for users who can profile their specific workload; the default is
+off, per the dead-end #11 discipline ("don't default-on what isn't
+proven").
+
+**Recovery path.** Phase 2 of the design spec (`docs/superpowers/specs/
+2026-05-31-soundness-completeness-perf-design.md` §"Phase 2 — Deep
+completeness calculus") takes over the GALEN/notgalen MISSED-reduction
+goal via functional-role inference and ≥n-with-disjointness rules —
+the genuine calculus gaps that the handoff originally identified as
+the root cause.
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and
 was killed by **either**:
 - a counter / wall measurement that contradicted the prediction
-  (#1, #3, #5, #7, #10),
+  (#1, #3, #5, #7, #10, #13),
 - a corpus diff that caught what the canary didn't (#4, #6, #7),
 - a traced argument on the actual canary / repro (#2, #8, #9),
 - or a measurement on a workload outside the original validation set

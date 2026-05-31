@@ -653,22 +653,21 @@ pub fn hyper_trust_sat_enabled() -> bool {
 
 /// Minimum wedge wall-time threshold (in milliseconds) below which a
 /// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
-/// verify. A wedge `NotSubsumed` returned in < threshold ms is more
-/// likely "didn't try hard enough" than a genuine satisfying model.
+/// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured
+/// to be "didn't try hard enough" rather than a genuine satisfying model;
+/// in that case the tableau is consulted before trusting.
 ///
-/// **Default: 50 ms.** Setting to `0` disables selective verification
-/// (restores pre-Phase-1 behaviour: trust every `NotSubsumed` verdict
-/// when [`hyper_trust_sat_enabled`] is on). Empty / garbage values
-/// also fall back to the default.
+/// **Default: 0 (disabled).** The Phase 1 alehif threshold sweep
+/// (1/5/10/20/30 ms) found wall times flat at ~230× baseline across
+/// every threshold in that range, meaning virtually every wedge
+/// NotSubsumed verdict completes in under 1 ms — so wall-time is not
+/// a useful filter at this resolution. See `docs/phase1-results.md`
+/// and `docs/hypertableau-dead-ends.md` §13 for the empirical analysis.
 ///
-/// Rationale: GALEN's 109 MISSED and notgalen's 27 (see
-/// `docs/handoff-2026-05-30.md`) are mostly cases where the wedge
-/// returned `NotSubsumed` in single-digit milliseconds and the tableau,
-/// asked directly via `rustdl explain`, finds the entailment in under a
-/// second. The dead-end #3 unfiltered "always tableau-verify" sweep
-/// (`docs/hypertableau-dead-ends.md` §3) was killed at 8000 CPU-min;
-/// the threshold is the filter that makes the verification tractable
-/// (fast-`NotSubsumed` pairs are a small fraction of all pairs).
+/// The mechanism is preserved (sound on the corpus) for users who have
+/// profiled a specific workload and identified a threshold that works
+/// for them. Setting the var to any positive integer enables the
+/// behaviour. Empty / garbage values fall back to the default (0).
 ///
 /// **Caching:** in non-test builds the env var is read once per process
 /// (first call) and cached in a `OnceLock` thereafter. Subsequent
@@ -694,7 +693,7 @@ fn read_hyper_trust_sat_min_ms_env() -> u64 {
         .ok()
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(50)
+        .unwrap_or(0)
 }
 
 /// Three-valued verdict from the H4/HF5 hyper wedge.
@@ -3129,9 +3128,9 @@ mod hyper_trust_sat_min_ms_tests {
     }
 
     #[test]
-    fn default_is_50ms() {
+    fn default_is_disabled() {
         with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", None, || {
-            assert_eq!(hyper_trust_sat_min_ms(), 50);
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
         });
     }
 
@@ -3152,14 +3151,14 @@ mod hyper_trust_sat_min_ms_tests {
     #[test]
     fn empty_string_uses_default() {
         with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some(""), || {
-            assert_eq!(hyper_trust_sat_min_ms(), 50);
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
         });
     }
 
     #[test]
     fn garbage_uses_default() {
         with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("not-a-number"), || {
-            assert_eq!(hyper_trust_sat_min_ms(), 50);
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
         });
     }
 }

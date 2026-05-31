@@ -724,9 +724,18 @@ impl WorklistEngine {
                     prev_set.extend(&new_atoms);
                 }
                 if was_first || !grew {
-                    // First arrival is mute (the existing role-hierarchy
-                    // path covers single-role facts via existential
-                    // triggers). Non-growing is a no-op.
+                    // First-arrival is mute, non-growing is no-op.
+                    //
+                    // Soundness rationale for was_first: a SINGLE
+                    // sub-role fact `(sub, R_i, A)` with R_i ⊑ R_f
+                    // doesn't yet exercise functionality — it just
+                    // asserts an R_f-witness exists in A. CR9 role-
+                    // hierarchy propagation already emits the derived
+                    // `(sub, R_f, A)` fact, so no merge synthetic is
+                    // needed to recover the entailment. The witness-
+                    // merge rule's payoff only starts when a SECOND
+                    // sub-role fact arrives, forcing the two witnesses
+                    // to coincide by functionality.
                     continue;
                 }
                 // Snapshot the now-grown set as a sorted Vec to pass
@@ -2487,11 +2496,14 @@ Ontology(<http://rustdl.test/p2a4/test>
     }
 
     /// Phase 2a — chained functional super-roles: r_i, r_j ⊑ r_func ⊑
-    /// r_super, both r_func and r_super functional. The witness-merge
-    /// fires at BOTH levels: r_func gets the merged witness, then the
-    /// derived (sub, r_func, F) fact cascades to r_super (which is also
-    /// functional). Tests the precomputed `functional_supers_of(r_func)`
-    /// correctly includes r_super.
+    /// r_super, both r_func and r_super functional. When (sub, r_j, B)
+    /// arrives, funcs = functional_supers_of(r_j) enumerates BOTH r_func
+    /// AND r_super in a single rule pass; merged_atom_sets is updated
+    /// for both keys (sub, r_func) and (sub, r_super), and synthetics are
+    /// emitted at both levels. The runtime-emitted derived facts then
+    /// short-circuit on re-entry because their atom sets already match
+    /// merged_atom_sets. Tests that the precomputed functional_supers_of
+    /// correctly includes BOTH ancestors.
     #[test]
     fn functional_role_merge_chained_functional_supers() {
         use horned_owl::io::ParserConfiguration;
@@ -2575,12 +2587,7 @@ Ontology(<http://rustdl.test/p2a/funcrole>
         let role_super = crate::build_role_super(&internal);
         let (rules, _tseitin, _num_total) = crate::collect_el_rules(&internal, &role_super);
 
-        let id = |iri: &str| {
-            internal
-                .vocabulary
-                .role_id(iri)
-                .expect("role declared")
-        };
+        let id = |iri: &str| internal.vocabulary.role_id(iri).expect("role declared");
         let rf = id("http://rustdl.test/p2a/r_func");
         let ri = id("http://rustdl.test/p2a/r_i");
         let rj = id("http://rustdl.test/p2a/r_j");
@@ -2592,7 +2599,11 @@ Ontology(<http://rustdl.test/p2a/funcrole>
         assert!(!rules.is_functional(ru));
 
         let supers = |r| rules.functional_supers_of(r).to_vec();
-        assert_eq!(supers(ri), vec![rf], "r_i ⊑ r_func and r_func is functional");
+        assert_eq!(
+            supers(ri),
+            vec![rf],
+            "r_i ⊑ r_func and r_func is functional"
+        );
         assert_eq!(supers(rj), vec![rf], "r_j ⊑ r_func");
         assert_eq!(supers(rf), vec![rf], "r_func is its own super (reflexive)");
         assert!(supers(ru).is_empty(), "r_unrelated has no functional super");

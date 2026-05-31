@@ -5,7 +5,7 @@ EL++ functional-role witness-merge rule added to the saturator
 (see `crates/owl-dl-saturation/src/lib.rs` and the T4 + T4.5 commits).
 T4.5 redesigned the rule to atom-set accumulation after T4's
 synthetic-id design proved non-terminating on 3+ sub-property
-fan-in (see `docs/hypertableau-dead-ends.md` §14 when written).
+fan-in (see `docs/hypertableau-dead-ends.md` §14).
 
 ## Headline finding
 

@@ -1101,16 +1101,32 @@ fn subsumes_via_tableau(
     // its `NotSubsumed` would silently drop real entailments (109
     // MISSED on GALEN, 27 on notgalen all traced to this).
     let hyper_deadline = per_pair_timeout.map(|t| Instant::now() + t);
-    match prepared.hyper_decide(sub, sup, hyper_deadline) {
+    let wedge_start = Instant::now();
+    let verdict = prepared.hyper_decide(sub, sup, hyper_deadline);
+    let wedge_elapsed_ms = u64::try_from(wedge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let mut was_fast_refuted = false;
+    match verdict {
         crate::HyperVerdict::Subsumed => {
             stats.hyper_proven_pairs += 1;
             return Ok(Some(true));
         }
-        crate::HyperVerdict::NotSubsumed
-            if trust_sat && crate::hyper_trust_sat_enabled() =>
-        {
-            stats.hyper_refuted_pairs += 1;
-            return Ok(Some(false));
+        crate::HyperVerdict::NotSubsumed if trust_sat && crate::hyper_trust_sat_enabled() => {
+            // Phase 1 selective verification: a wedge `NotSubsumed`
+            // returned in < `RUSTDL_HYPER_TRUST_SAT_MIN_MS` is more
+            // likely "didn't try hard enough" than a genuine satisfying
+            // model. Fall through to the tableau in that case; trust
+            // the verdict only when the wedge took at least the
+            // threshold. Setting the env var to 0 restores pre-Phase-1
+            // behaviour (trust every NotSubsumed verdict).
+            let threshold = crate::hyper_trust_sat_min_ms();
+            if threshold == 0 || wedge_elapsed_ms >= threshold {
+                stats.hyper_refuted_pairs += 1;
+                return Ok(Some(false));
+            }
+            stats.hyper_refuted_fast_pairs += 1;
+            was_fast_refuted = true;
+            // fall through to the tableau probe below; if the tableau
+            // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
         }
         _ => {}
     }
@@ -1124,7 +1140,11 @@ fn subsumes_via_tableau(
         None => {
             let sat = prepared.decide(build)?;
             stats.tableau_subsumption_calls += 1;
-            Ok(Some(!sat))
+            let subsumed = !sat;
+            if was_fast_refuted && subsumed {
+                stats.hyper_refuted_fast_flipped_pairs += 1;
+            }
+            Ok(Some(subsumed))
         }
         Some(timeout) => {
             let deadline = Instant::now() + timeout;
@@ -1137,7 +1157,11 @@ fn subsumes_via_tableau(
             match prepared.decide_with_deadline(deadline, build) {
                 Ok(Some(sat)) => {
                     stats.tableau_subsumption_calls += 1;
-                    Ok(Some(!sat))
+                    let subsumed = !sat;
+                    if was_fast_refuted && subsumed {
+                        stats.hyper_refuted_fast_flipped_pairs += 1;
+                    }
+                    Ok(Some(subsumed))
                 }
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
@@ -1529,6 +1553,106 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(sat.stats().pure_el_mode);
         assert_eq!(sat.stats().tableau_subsumption_calls, 0);
         assert_eq!(sat.stats().tableau_unsat_calls, 0);
+    }
+
+    /// With `RUSTDL_HYPER_TRUST_SAT_MIN_MS=100000` (~100 s, far above any
+    /// realistic wedge call), every wedge `NotSubsumed` should be
+    /// distrusted and the tableau should be asked. Verified via stats:
+    /// `hyper_refuted_fast_pairs > 0` proves the new code path was taken.
+    ///
+    /// The ontology includes an isolated class D (no SubClassOf axioms
+    /// linking it to A/B/C). The top-down walk places B and C first,
+    /// then when it processes D it cannot find D⊑B or D⊑C in the
+    /// saturation closure, so it calls `subsumes_via_tableau` for those
+    /// pairs — both produce a wedge `NotSubsumed`. With the threshold
+    /// set to 100 000 ms every such verdict is fast-refuted, exercising
+    /// the new code path.
+    ///
+    /// SAFETY: env-var mutation; tests in this module that mutate
+    /// RUSTDL_HYPER_TRUST_SAT_MIN_MS must run with --test-threads=1.
+    #[test]
+    #[allow(unsafe_code)]
+    fn selective_verify_triggers_when_threshold_high() {
+        let key = "RUSTDL_HYPER_TRUST_SAT_MIN_MS";
+        let prev = std::env::var_os(key);
+        unsafe { std::env::set_var(key, "100000") };
+
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        let h = classify(&onto).expect("classify");
+        let stats = h.stats();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+
+        assert!(
+            stats.hyper_refuted_fast_pairs > 0,
+            "selective verify path never fired; stats = {stats:?}"
+        );
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        assert!(h.is_subclass(&iri("A"), &iri("B")));
+        assert!(h.is_subclass(&iri("A"), &iri("C")));
+        assert!(h.is_subclass(&iri("B"), &iri("C")));
+        assert!(!h.is_subclass(&iri("C"), &iri("A")));
+        assert!(!h.is_subclass(&iri("D"), &iri("A")));
+    }
+
+    /// With `RUSTDL_HYPER_TRUST_SAT_MIN_MS=0`, selective verification is
+    /// disabled — `hyper_refuted_fast_pairs` stays at zero.
+    ///
+    /// Uses the same 4-class ontology as the threshold-high test so that
+    /// the wedge is exercised (D⊑C? and D⊑B? are probed), but the
+    /// `NotSubsumed` verdicts are trusted immediately (threshold=0 means
+    /// "always trust"), so the fast-refuted counter stays at zero.
+    ///
+    /// SAFETY: same env-var mutation as above; --test-threads=1.
+    #[test]
+    #[allow(unsafe_code)]
+    fn selective_verify_disabled_when_threshold_zero() {
+        let key = "RUSTDL_HYPER_TRUST_SAT_MIN_MS";
+        let prev = std::env::var_os(key);
+        unsafe { std::env::set_var(key, "0") };
+
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    DisjointObjectProperties(:r :s)\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        let h = classify(&onto).expect("classify");
+        let stats = h.stats();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+
+        assert_eq!(
+            stats.hyper_refuted_fast_pairs, 0,
+            "selective verify fired despite threshold=0; stats = {stats:?}"
+        );
     }
 
     /// Saturation-only on a hybrid input: every reported

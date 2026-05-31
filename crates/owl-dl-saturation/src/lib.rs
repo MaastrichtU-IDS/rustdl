@@ -70,8 +70,8 @@ use owl_dl_core::{
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let n = internal.vocabulary.num_classes();
     let role_super = build_role_super(internal);
-    let (rules, num_total_classes) = collect_el_rules(internal, &role_super);
-    let mut engine = WorklistEngine::new(n, num_total_classes, rules, role_super);
+    let (rules, tseitin, num_total_classes) = collect_el_rules(internal, &role_super);
+    let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
     engine.seed();
     engine.run();
     engine.subsumers
@@ -132,6 +132,28 @@ struct WorklistEngine {
     /// Total class-id universe size (user + Tseitin). Used to size
     /// the bitsets.
     num_total_classes: usize,
+    /// Runtime Tseitin allocator for synthetic class IDs introduced
+    /// by the Phase 2a functional-role witness-merge rule. Seeded
+    /// from (and sharing the `by_body` dedup map of) the
+    /// collection-time allocator returned by `collect_el_rules`, so
+    /// runtime and static synthetics produced for the same body
+    /// `{A, B}` map to the same class id. Pairs `{target_i, target_j}`
+    /// are deduplicated by sorted body, just like the static path.
+    tseitin_runtime: TseitinAllocator,
+    /// Per-(subject, functional-super-role) accumulated witness class.
+    ///
+    /// `merged_witness[(sub, r_f)] = W` records that the current
+    /// best witness for `sub`'s `r_f`-successor is class `W`:
+    /// - initially set to the first target seen for that `(sub, r_f)` pair;
+    /// - updated to a runtime Tseitin synthetic `W' ≡ W ⊓ new_target`
+    ///   whenever a new existential fact `(sub, role_j, new_target)`
+    ///   arrives with `r_f` a functional super of `role_j` and
+    ///   `new_target ≠ W`.
+    ///
+    /// This state drives the Phase 2a witness-merge rule. The
+    /// accumulated form prevents the pairwise-product explosion that
+    /// would result from naïvely combining every pair of sub-role facts.
+    merged_witness: HashMap<(ClassId, RoleId), ClassId>,
 }
 
 impl WorklistEngine {
@@ -139,6 +161,7 @@ impl WorklistEngine {
         num_user_classes: usize,
         num_total_classes: usize,
         rules: ElRules,
+        tseitin: TseitinAllocator,
         role_super: HashMap<RoleId, HashSet<RoleId>>,
     ) -> Self {
         let mut conjunctive_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
@@ -177,6 +200,8 @@ impl WorklistEngine {
             disjoints_by_class,
             num_user_classes,
             num_total_classes,
+            tseitin_runtime: tseitin,
+            merged_witness: HashMap::new(),
         }
     }
 
@@ -208,6 +233,86 @@ impl WorklistEngine {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Introduce a runtime Tseitin synthetic for the conjunction of the
+    /// body's atomic classes. Returns the synthetic class id
+    /// (deduplicated — passing the same sorted body twice returns the
+    /// same id without allocating a new one).
+    ///
+    /// Beyond `TseitinAllocator::introduce` (which only mutates
+    /// `self.rules`), this method ALSO:
+    /// - Grows `self.subsumers`/`self.subsumed_by` bitsets and the
+    ///   per-class index Vecs to fit the new id.
+    /// - Indexes the new conjunctive trigger into `conjunctive_by_body`.
+    /// - Enqueues `synthetic ⊑ body[i]` subsumptions so the standard
+    ///   rules pick them up.
+    ///
+    /// Because `tseitin_runtime` is seeded from the same `by_body` map
+    /// as the collection-time allocator, a body `{A, B}` that was
+    /// already Tseitin-introduced statically (e.g. for `∃r.(A⊓B) ⊑ T`)
+    /// will return the SAME synthetic id here, so the runtime fact
+    /// `(sub, r_func, F)` chains correctly into the existing existential
+    /// trigger.
+    fn introduce_runtime_synthetic(&mut self, body: Vec<ClassId>) -> ClassId {
+        let before_atomic = self.rules.atomic_subsumptions.len();
+        let before_conjunctive = self.rules.conjunctive_triggers.len();
+        let synthetic = self.tseitin_runtime.introduce(body, &mut self.rules);
+        let s_idx = synthetic.index() as usize;
+        let added_atomic = self.rules.atomic_subsumptions.len() - before_atomic;
+        let added_conjunctive = self.rules.conjunctive_triggers.len() - before_conjunctive;
+        if added_atomic == 0 && added_conjunctive == 0 {
+            // Dedup hit — synthetic already exists; nothing to wire up.
+            return synthetic;
+        }
+        // Grow per-class state if the synthetic id exceeds current capacity.
+        let needed = s_idx + 1;
+        if needed > self.num_total_classes {
+            for bs in &mut self.subsumers.subsumers {
+                bs.grow(needed);
+            }
+            self.subsumers.unsatisfiable.grow(needed);
+            for bs in &mut self.subsumed_by {
+                bs.grow(needed);
+            }
+            while self.subsumers.subsumers.len() < needed {
+                self.subsumers
+                    .subsumers
+                    .push(FixedBitSet::with_capacity(needed));
+            }
+            while self.subsumed_by.len() < needed {
+                self.subsumed_by.push(FixedBitSet::with_capacity(needed));
+            }
+            while self.facts_by_sub.len() < needed {
+                self.facts_by_sub.push(Vec::new());
+            }
+            while self.facts_by_target.len() < needed {
+                self.facts_by_target.push(Vec::new());
+            }
+            while self.conjunctive_by_body.len() < needed {
+                self.conjunctive_by_body.push(Vec::new());
+            }
+            while self.existential_triggers_by_body.len() < needed {
+                self.existential_triggers_by_body.push(Vec::new());
+            }
+            while self.disjoints_by_class.len() < needed {
+                self.disjoints_by_class.push(Vec::new());
+            }
+            self.num_total_classes = needed;
+        }
+        // Index any new conjunctive triggers into conjunctive_by_body.
+        for added_idx in before_conjunctive..self.rules.conjunctive_triggers.len() {
+            let bodies = self.rules.conjunctive_triggers[added_idx].bodies.clone();
+            for b in bodies {
+                self.conjunctive_by_body[b.index() as usize].push(added_idx);
+            }
+        }
+        // Enqueue the F ⊑ Bi atomic subsumptions so existing rules fire on them.
+        for added_idx in before_atomic..self.rules.atomic_subsumptions.len() {
+            let sub_ax = self.rules.atomic_subsumptions[added_idx];
+            self.todo_subsumer.push_back((sub_ax.sub, sub_ax.sup));
+        }
+        synthetic
     }
 
     /// Seed the worklist from told axioms + reflexivity.
@@ -446,6 +551,7 @@ impl WorklistEngine {
     }
 
     /// Fire all rules triggered by a freshly-added existential fact.
+    #[allow(clippy::too_many_lines)]
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
         let role_supers = supers_of(&self.role_super, fact.role);
@@ -554,6 +660,64 @@ impl WorklistEngine {
                                 target: fact.target,
                             });
                         }
+                    }
+                }
+            }
+        }
+        // Phase 2a EL++ functional-role witness-merge rule.
+        //
+        // For each functional super-role `r_f` of `fact.role`, maintain
+        // an accumulated witness class `W` per `(sub, r_f)` pair.
+        //
+        // When the first fact `(sub, role_i, target)` with `role_i ⊑ r_f`
+        // arrives, record `merged_witness[(sub, r_f)] = target` — the
+        // role hierarchy already propagates `(sub, role_i, target)` to
+        // every super-role in the existential-trigger lookups, so no
+        // separate `(sub, r_f, target)` fact is needed yet.
+        //
+        // When a LATER fact `(sub, role_j, new_target)` arrives with the
+        // same `(sub, r_f)` pair and `new_target ≠ W`, derive
+        // `(sub, r_f, W')` where `W' ≡ W ⊓ new_target`. Soundness:
+        // `r_f` functional ⟹ every model's `r_f`-witness for `sub` must
+        // satisfy every constraint accumulated in `W'`.  EL++ rule CR_func
+        // (Baader/Brandt/Lutz 2005).
+        //
+        // Termination: the synthetic `W'` is a fresh class id; when the
+        // derived `(sub, r_f, W')` fact is processed later, its own
+        // `functional_supers_of` check finds `merged_witness[(sub, r_f)]
+        //  = W'` and `new_target = W'`, so the `prev == new_target`
+        // guard fires and no further fact is produced.
+        let funcs = self.rules.functional_supers_of(fact.role).to_vec();
+        for rf in funcs {
+            let key = (fact.sub, rf);
+            match self.merged_witness.get(&key).copied() {
+                None => {
+                    // First witness for (sub, rf) — record; no new fact
+                    // needed (the existential-trigger path already handles
+                    // (sub, role, target) via role hierarchy).
+                    self.merged_witness.insert(key, fact.target);
+                }
+                Some(prev) if prev == fact.target => {
+                    // Same target already recorded; nothing to do.
+                }
+                Some(prev) => {
+                    // A different witness seen before — merge to W' ≡ prev ⊓ target.
+                    let new_witness = self.introduce_runtime_synthetic(vec![prev, fact.target]);
+                    // Update accumulated witness to the refined conjunction.
+                    self.merged_witness.insert(key, new_witness);
+                    // Emit (sub, r_f, W') so CR5 / existential triggers fire.
+                    let new_fact = ExistentialFact {
+                        sub: fact.sub,
+                        role: rf,
+                        target: new_witness,
+                    };
+                    let fact_key = (new_fact.sub, new_fact.role, new_fact.target);
+                    if self.seen_facts.insert(fact_key) {
+                        let new_idx = self.facts.len();
+                        self.facts.push(new_fact);
+                        self.facts_by_sub[new_fact.sub.index() as usize].push(new_idx);
+                        self.facts_by_target[new_fact.target.index() as usize].push(new_idx);
+                        self.todo_fact.push_back(new_idx);
                     }
                 }
             }
@@ -725,9 +889,6 @@ struct ElRules {
     functional_supers_of: Vec<Vec<RoleId>>,
 }
 
-// Phase 2a: accessors are populated but not yet consulted by any rule;
-// Task 4 wires the witness-merge rule. Suppress dead-code lint until then.
-#[allow(dead_code)]
 impl ElRules {
     /// True if `r` is declared `FunctionalObjectProperty`.
     fn is_functional(&self, r: RoleId) -> bool {
@@ -863,7 +1024,7 @@ impl TseitinAllocator {
 fn collect_el_rules(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
-) -> (ElRules, usize) {
+) -> (ElRules, TseitinAllocator, usize) {
     let mut rules = ElRules::default();
     let mut tseitin = TseitinAllocator::new(internal.vocabulary.num_classes());
     // Pass 1: metadata that the SubClassOf lowering needs to see — in
@@ -1012,7 +1173,7 @@ fn collect_el_rules(
         rules.functional_supers_of[r_idx] = supers;
     }
 
-    (rules, total_classes)
+    (rules, tseitin, total_classes)
 }
 
 /// Lower a single `SubClassOf(sub, sup)` axiom into atomic facts
@@ -2209,7 +2370,7 @@ Ontology(<http://rustdl.test/p2a/funcrole>
             read(&mut reader, ParserConfiguration::default()).expect("parses");
         let internal = convert_ontology(&set_onto).expect("lowers");
         let role_super = crate::build_role_super(&internal);
-        let (rules, _num_total) = crate::collect_el_rules(&internal, &role_super);
+        let (rules, _tseitin, _num_total) = crate::collect_el_rules(&internal, &role_super);
 
         let id = |iri: &str| {
             internal

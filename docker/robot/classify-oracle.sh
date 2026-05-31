@@ -26,6 +26,10 @@ if [[ ! -f "$INPUT" ]]; then
     exit 2
 fi
 
+# Remove any stale output from a prior run so callers can use file existence
+# as a reliable success proxy (Phase 0 batch loops, Tasks 3 and 5).
+rm -f "$OUTPUT"
+
 ROBOT_IMAGE="${ROBOT_IMAGE:-obolibrary/robot:v1.9.6}"
 
 TMPDIR="$(mktemp -d)"

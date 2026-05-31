@@ -672,8 +672,11 @@ pub fn hyper_trust_sat_enabled() -> bool {
 /// **Caching:** in non-test builds the env var is read once per process
 /// (first call) and cached in a `OnceLock` thereafter. Subsequent
 /// mutations of the env var have no effect until the process restarts.
-/// In test builds (`cfg(test)`) the cache is bypassed so unit tests
-/// can mutate the env var per-test.
+/// In unit tests *within this crate* (`cfg(test)`) the cache is
+/// bypassed so per-test env mutation works. Integration tests
+/// (`crates/owl-dl-reasoner/tests/*`) and any downstream consumer see
+/// the cached path — set the env var BEFORE the first call from those
+/// contexts, or accept the cached value.
 #[must_use]
 pub fn hyper_trust_sat_min_ms() -> u64 {
     #[cfg(not(test))]

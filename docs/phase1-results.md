@@ -81,12 +81,41 @@ threshold value has been proven. Future Phase 1.5 work could re-open
 this with a different signal (e.g., per-pair wedge-rule-fire count
 instead of wall time), but that's not Phase 1's deliverable.
 
+## Mechanism activity (flipped-pair counter)
+
+`hyper_refuted_fast_flipped_pairs` is the Phase 1 completeness lever: it
+counts how many pairs the fall-through path flipped from NotSubsumed →
+Subsumed via the full tableau, which the wedge alone would have dropped as
+MISSED.
+
+Measured on ore-15672-shoin at `RUSTDL_HYPER_TRUST_SAT_MIN_MS=50` (the
+spec's original default), with a 200 ms per-pair timeout:
+
+```
+hyper_refuted_fast_pairs          = 2666   # wedge verdict arrived in <50ms → fell through
+hyper_refuted_fast_flipped_pairs  = 0      # of those 2666, none flipped to Subsumed
+timed_out_pairs                   = 2775   # per-pair 200ms budget exhausted
+```
+
+The mechanism fired (non-zero `refuted_fast_pairs`) but did not recover any
+MISSED subsumptions on this fixture. The `timed_out_pairs` count (2775 at
+200ms) directly explains the ~1.6× wall-time blowup in the soundness-gate
+table above: every fast wedge verdict triggered an expensive full-tableau
+probe, most of which then timed out.
+
+Larger fixtures (pizza, alehif, the ORE SROIQ) timed out before completing;
+the pizza MISSED 4 → 5 regression and the alehif flat sweep both imply
+`hyper_refuted_fast_flipped_pairs = 0` there too (MISSED increased or held,
+never decreased, as the threshold was varied). The mechanism is wired and
+functional, but on the wall-time-as-filter signal it does not recover
+meaningful flips on any tested workload.
+
 ## Cross-cutting confirmation
 
 - 0 FP held across the Phase 0 net at the 50 ms threshold ✓
 - Mechanism produces non-zero `hyper_refuted_fast_pairs` when enabled
-  (verified by the `selective_verify_triggers_when_threshold_high`
-  unit test at env=100000) ✓
+  (verified on ore-15672-shoin at threshold=50: 2666 fast pairs) ✓
+- `hyper_refuted_fast_flipped_pairs = 0` on ore-15672-shoin at threshold=50 ✓
 - Default of 0 returns to pre-Phase-1 behaviour ✓
 - Soundness gate trivially passes at default=0 (= pre-Phase-1 path) ✓
 

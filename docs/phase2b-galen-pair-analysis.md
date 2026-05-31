@@ -20,8 +20,11 @@ final-pair subsumption.
 The Phase 2b design spec, the Phase 2b.0 plan, and the 2026-05-30 handoff all name
 **`≥n + disjointness`** as the candidate rule for Cluster A
 (`*PairedBodyStructure / MirrorImagedBodyStructure`). The axioms here tell a
-**different story**: no qualified-cardinality (`≥n`/`≤n`), no `DisjointClasses`
-participates in the derivation. The actual missing pattern across all 8 pairs is
+**different story**: across all 8 modules, the cardinality and disjointness
+axiom counts are **zero** (grep verified — see cross-cutting summary). The
+`≥n + disjointness` derivation is mechanically impossible on these inputs;
+whatever rule HermiT uses must live in the EL+ / functional-role-merge / sub-
+property / transitive / GCI fragment. The actual missing pattern across all 8 pairs is
 **EL+ with compound LHS GCIs whose existential fillers are themselves
 intersections containing existentials** — i.e., compound-LHS existential-body
 lowering and/or its empirical interaction with CR9 + Tseitin. This is calculus
@@ -572,21 +575,43 @@ recursion).
 
 ### Did Cluster A consistently look like ≥n + disjointness (the spec's named target)?
 
-**No.** None of the cluster-A pairs (01, 02, 03) need `≥n` or `DisjointClasses`
-for HermiT's derivation. The derivation is entirely EL+ with compound LHS GCIs
-keyed on `isSolidDivisionOf` / `isStructuralComponentOf` and a Tseitin-shape
-inner body. The spec hypothesis (and the handoff §3 lever ranking "≥n
-cardinality with disjointness") **does not match the actual axioms HermiT
-uses** on these modules. The "pizza InterestingPizza" pattern (`Pizza ⊓ ≥3
-hasTopping`) cited in the handoff is genuinely a `≥n + disjointness` case, but
-the GALEN PairedBodyStructure derivations are not analogous — GALEN doesn't
-build paired-ness from cardinality, it builds it from the compound LHS GCI
-above.
+**No, and the verification is stronger than just "we found a different derivation".**
+The `≥n + disjointness` derivation HermiT would need is **mechanically impossible
+on these modules** — the axioms simply aren't present. Direct grep across all
+8 modules:
+
+```
+pair_01: cardinality=0 disjointness=0
+pair_02: cardinality=0 disjointness=0
+pair_03: cardinality=0 disjointness=0   (cluster A)
+pair_04: cardinality=0 disjointness=0
+pair_05: cardinality=0 disjointness=0   (cluster B)
+pair_06: cardinality=0 disjointness=0   (cluster C)
+pair_07: cardinality=0 disjointness=0   (cluster D)
+pair_08: cardinality=0 disjointness=0   (cluster E)
+```
+(Patterns searched: `ObjectMinCardinality|ObjectMaxCardinality|ObjectExactCardinality|
+MinCardinality|MaxCardinality|ExactCardinality` and `DisjointClasses|DisjointUnion`.)
+
+Across all eight modules HermiT had **no** `≥n`, `≤n`, `=n` cardinality
+restrictions and **no** `DisjointClasses` / `DisjointUnion` axioms available.
+Whatever derivation HermiT used must therefore live entirely in the EL+ /
+functional-role-merge / sub-property / transitive / domain/range / GCI fragment.
+The compound LHS-existential-body GCIs identified per-pair are the only
+candidate mechanism that fits the available axioms.
+
+The spec hypothesis (and the handoff §3 lever ranking "≥n cardinality with
+disjointness") **cannot** be the GALEN mechanism for this sample, regardless
+of how the saturator's compound-body lowering is fixed. The "pizza
+InterestingPizza" pattern (`Pizza ⊓ ≥3 hasTopping`) cited in the handoff is
+genuinely a `≥n + disjointness` case, but the GALEN PairedBodyStructure
+derivations are not analogous — GALEN doesn't build paired-ness from
+cardinality, it builds it from the compound LHS GCI above.
 
 This is the most important finding of Task 4 and the highest-confidence
-contradiction with the prior planning documents. It deserves a saturator-level
-re-verification before Phase 2b proper invests in `≥n + disjointness` work for
-GALEN.
+contradiction with the prior planning documents. Phase 2b proper should
+**not** invest in `≥n + disjointness` work expecting GALEN coverage —
+the GALEN MISSED sample's axioms cannot be closed by that rule.
 
 ### Verification caveats (honesty above completeness)
 
@@ -605,9 +630,12 @@ GALEN.
   ActuallyHollowStructure ⊑ ... ⊑ HollowStructure`) were assumed pure EL given
   the equivalent-class shapes and the `actuallyHollow ⊑ trulyHollow ⊑ hollow`
   state-class subsumptions, but were not traced step-by-step.
-- For pair 06 the "non-Horn / requires negation" attribution relies on the
-  module not containing a direct EL chain from `∃hasEffectiveness.ineffective`
-  to `∃hasIntrinsicPathologicalStatus.pathological`; the grep at axiom-walking
-  time found no such chain, but the module is 1250 lines and a definitive
-  no-such-chain claim would require a more exhaustive search. The
-  functional-role attribution is consistent with the handoff §2 trace, however.
+- For pair 06 the "non-Horn / requires negation" attribution was double-checked
+  by grepping for any axiom containing both `hasEffectiveness` and
+  `hasIntrinsicPathologicalStatus`. The grep returned exactly one axiom — the
+  same GCI cited above, where `∃hasIntrinsicPathologicalStatus.physiological`
+  appears in the LHS (the assumed branch) and `∃hasPathologicalStatus.pathological`
+  (the wrong role) in the RHS. No direct EL chain from `∃hasEffectiveness.ineffective`
+  to `∃hasIntrinsicPathologicalStatus.pathological` exists in the module. The
+  functional-role attribution is consistent with the handoff §2 trace and with
+  this no-such-chain grep.

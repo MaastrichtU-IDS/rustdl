@@ -69,6 +69,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   CR5 existential propagation, CR9 role hierarchy, length-2 role chains +
   transitivity, domain/range, Tseitin introduction for compound `∃` bodies,
   Bot detection. **Sound but only complete for the supported EL fragment.**
+  EL++ functional-role witness-merge (Phase 2a) for sibling sub-properties
+  of a functional role — atom-set accumulation design (T4.5) terminates
+  by construction. Sound; tested via synthetic canaries; corpus-impact
+  on GALEN currently 0 (see `docs/phase2a-results.md` for the falsification).
 
 - **`crates/owl-dl-tableau`** — SROIQ tableau. `CompletionGraph` (`graph.rs`)
   of label-carrying nodes; `TableauTrail` (`trail.rs`) gives log-and-undo

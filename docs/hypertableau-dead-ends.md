@@ -361,6 +361,44 @@ the root cause.
 
 ---
 
+---
+
+## 14. Synthetic-id-tracked witness for functional-role merge
+
+**What was tried.** Phase 2a Task 4 implemented the EL++ functional-
+role witness-merge rule with `merged_witness: HashMap<(ClassId,
+RoleId), ClassId>` tracking a single synthetic id per (sub, R_f)
+pair. The intent: when a new fact (sub, R_i, A) arrives and R_i ⊑
+R_f functional, merge {prev_witness, A} into a new Tseitin synthetic;
+update prev_witness; emit (sub, R_f, new_synthetic). Loop prevention
+was supposed to come from the dedup short-circuit (`prev == fact.target`).
+
+**What killed it.** The 3-sub-property fan-in canary (T5) hung
+indefinitely. Trace showed unbounded growth: each emission produces
+a fresh synthetic that itself re-triggers the rule on existing facts
+(via reflexive R_f ∈ functional_supers_of(R_f)), producing yet
+another synthetic. The synthetic IDs grow `49 → 50 → 51 → ...` with
+each new fact in the (sub, R_f) chain. The GALEN scan showed
+`ProcessModifierAttribute` has 12 sub-properties; corpus-diff on
+GALEN would have hung deterministically.
+
+**The lesson.** Tracking a per-pair WITNESS by synthetic id makes
+the rule's termination depend on synthetic-id stability across
+re-firings — which doesn't hold when each merge produces a fresh id
+that re-triggers. The fix (T4.5): track the ATOM SET per pair
+(`merged_atom_sets: HashMap<(ClassId, RoleId), BTreeSet<ClassId>>`)
+of original-vocabulary atomic class IDs. Termination is by
+construction: the set is monotonically bounded by the atomic
+vocabulary, so per (sub, R_f) the rule fires at most
+|atomic_vocabulary| times. The atom-set redesign passes both the
+3-property and 4-property canaries in milliseconds.
+
+**Recovery path.** T4.5 redesign atomic-content tracking is the
+shipped form. See `crates/owl-dl-saturation/src/lib.rs` (T4 commit
+124d0ca → T4.5 commit f2e2d7c) and `docs/phase2a-results.md`.
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

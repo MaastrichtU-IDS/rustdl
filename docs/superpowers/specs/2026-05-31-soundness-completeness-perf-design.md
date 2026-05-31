@@ -96,8 +96,19 @@ each.
   `∃R_j.B` for distinct `R_i, R_j ⊑ R`, the witnesses coincide, so
   `X ⊑ ∃R.(A ⊓ B)`. Targets GALEN's `<Region>Pathology` /
   `PathologicalCondition` cluster (~50–80 of 109).
+  Landed: `docs/phase2a-results.md`. **Outcome contrary to estimate:**
+  the rule is sound and terminating, but recovers 0 of GALEN's 109
+  MISSED. The handoff's PathologicalCondition trace did not describe
+  what's actually missing in GALEN. Phase 2b's first deliverable now
+  shifts to re-diagnosing GALEN MISSED before any rule design.
 - **2b — ≥n + disjointness.** `X ⊑ ∃R.B₁ ⊓ … ⊓ ∃R.Bₙ` with pairwise-disjoint
   `Bᵢ` ⇒ `X ⊑ ≥n R.⊤`. Targets the PairedBodyStructure cluster (~20–30).
+  - **2b.0 — Re-diagnose GALEN MISSED.** Before any rule design,
+    extract the concrete (sub, super) pairs from the corpus-diff
+    harness output and walk the GALEN axioms to identify the actual
+    missing derivation step. Phase 2a's empirical falsification of
+    the handoff's trace makes this gating work — without it, 2b risks
+    the same outcome.
 - **Honesty:** SIO 2 and some deep GALEN pairs may still not converge — recorded
   as residual gaps, not a deliverable.
 - **Measurable:** per-lever MISSED reduction via the corpus diff.

@@ -53,6 +53,14 @@ for pure EL inputs — `trust_sat` is sound by construction, not by
 measurement: a `Sat` verdict from these engines is a genuine model,
 and there is nothing the full SROIQ tableau could add.
 
+- **EL++ functional-role witness-merge** (Phase 2a): if `R_i, R_j ⊑ R_f`
+  and `R_f` is functional, `X ⊑ ∃R_i.A ⊓ ∃R_j.B` implies
+  `X ⊑ ∃R_f.(A ⊓ B)`. Standard EL++ extension (Baader/Brandt/Lutz 2005).
+  Atom-set accumulation (per-(sub, R_f) flat set of atomic class IDs)
+  ensures termination on dense functional-role hierarchies. See
+  `phase2a-results.md` for the corpus-impact measurement (empirically
+  doesn't fire on GALEN's MISSED — the handoff's trace was incomplete).
+
 ## Verified by composition, NOT proven
 
 Beyond the provably complete fragment, the hyper engine handles a

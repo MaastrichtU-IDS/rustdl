@@ -1055,6 +1055,42 @@ impl TseitinAllocator {
         self.by_existential.insert((role, body), marker);
         marker
     }
+
+    /// Like `introduce_existential_marker`, but ALSO emits the
+    /// existential fact `(marker, role, body)` so the marker
+    /// behaves equivalent to `∃R.B` in the closure — not just
+    /// one-way.
+    ///
+    /// Used by `atomic_classes_with_existential_markers` where the
+    /// marker is consumed as a body operand inside a Tseitin
+    /// synthetic that requires full equivalence semantics: the
+    /// outer synthetic's closure needs to drive CR5/CR9 propagation
+    /// through the inner existential (e.g., sub-property + sub-class
+    /// chains through the inner existential), which requires the marker
+    /// to have an existential fact about itself.
+    ///
+    /// LHS-trigger call sites (where the marker semantics ARE
+    /// correctly asymmetric — "X has an R-edge to a B" without
+    /// also asserting "F has an R-witness in B") continue to use
+    /// `introduce_existential_marker`.
+    ///
+    /// Soundness: the marker is defined by the surrounding Tseitin
+    /// synthetic to be ≡ `∃R.B`, so the new fact `(F, R, B)` is just
+    /// the definition restated. See `docs/phase2b-trace.md`.
+    fn introduce_equivalent_existential_marker(
+        &mut self,
+        role: RoleId,
+        body: ClassId,
+        rules: &mut ElRules,
+    ) -> ClassId {
+        let marker = self.introduce_existential_marker(role, body, rules);
+        rules.existential_facts.push(ExistentialFact {
+            sub: marker,
+            role,
+            target: body,
+        });
+        marker
+    }
 }
 
 fn collect_el_rules(
@@ -1511,7 +1547,7 @@ fn atomic_classes_with_existential_markers(
             ConceptExpr::Atomic(id) => out.push(*id),
             ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-                let marker = tseitin.introduce_existential_marker(
+                let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
                     inner_id,
                     rules,
@@ -1520,7 +1556,7 @@ fn atomic_classes_with_existential_markers(
             }
             ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-                let marker = tseitin.introduce_existential_marker(
+                let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
                     inner_id,
                     rules,

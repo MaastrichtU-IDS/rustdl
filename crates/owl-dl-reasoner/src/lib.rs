@@ -651,6 +651,33 @@ pub fn hyper_trust_sat_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
+/// Minimum wedge wall-time threshold (in milliseconds) below which a
+/// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
+/// verify. A wedge `NotSubsumed` returned in < threshold ms is more
+/// likely "didn't try hard enough" than a genuine satisfying model.
+///
+/// **Default: 50 ms.** Setting to `0` disables selective verification
+/// (restores pre-Phase-1 behaviour: trust every `NotSubsumed` verdict
+/// when [`hyper_trust_sat_enabled`] is on). Empty / garbage values
+/// also fall back to the default.
+///
+/// Rationale: GALEN's 109 MISSED and notgalen's 27 (see
+/// `docs/handoff-2026-05-30.md`) are mostly cases where the wedge
+/// returned `NotSubsumed` in single-digit milliseconds and the tableau,
+/// asked directly via `rustdl explain`, finds the entailment in under a
+/// second. The dead-end #3 unfiltered "always tableau-verify" sweep
+/// (`docs/hypertableau-dead-ends.md` §3) was killed at 8000 CPU-min;
+/// the threshold is the filter that makes the verification tractable
+/// (fast-`NotSubsumed` pairs are a small fraction of all pairs).
+#[must_use]
+pub fn hyper_trust_sat_min_ms() -> u64 {
+    std::env::var("RUSTDL_HYPER_TRUST_SAT_MIN_MS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(50)
+}
+
 /// Three-valued verdict from the H4/HF5 hyper wedge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HyperVerdict {
@@ -3055,5 +3082,58 @@ Ontology(<http://rustdl.test/test>\n\
         let err = is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/Nope")
             .expect_err("unknown sup should error");
         assert!(matches!(err, ReasonError::UnknownClass(_)));
+    }
+}
+
+#[cfg(test)]
+mod hyper_trust_sat_min_ms_tests {
+    use super::hyper_trust_sat_min_ms;
+
+    fn with_env<F: FnOnce()>(key: &str, val: Option<&str>, f: F) {
+        let prev = std::env::var_os(key);
+        match val {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn default_is_50ms() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", None, || {
+            assert_eq!(hyper_trust_sat_min_ms(), 50);
+        });
+    }
+
+    #[test]
+    fn env_overrides_value() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("200"), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 200);
+        });
+    }
+
+    #[test]
+    fn zero_disables_selective_verification() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("0"), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
+        });
+    }
+
+    #[test]
+    fn empty_string_uses_default() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some(""), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 50);
+        });
+    }
+
+    #[test]
+    fn garbage_uses_default() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("not-a-number"), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 50);
+        });
     }
 }

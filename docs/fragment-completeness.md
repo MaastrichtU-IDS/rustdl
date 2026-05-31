@@ -61,6 +61,14 @@ and there is nothing the full SROIQ tableau could add.
   `phase2a-results.md` for the corpus-impact measurement (empirically
   doesn't fire on GALEN's MISSED — the handoff's trace was incomplete).
 
+- **Compound existential-body lowering (Phase 2b + Phase 2b.5,
+  equivalent markers + LHS-And RHS-existential triggers):** the
+  nested-existential markers inside Tseitin synthetic bodies emit
+  both trigger AND fact (so CR5/CR9 propagation flows through them);
+  and the `SubClassOf(And(...), ∃R.B)` axiom shape now correctly
+  emits a conjunctive trigger to a two-way marker. Recovers 92 of
+  GALEN's 109 MISSED (`phase2b-results.md`).
+
 ## Verified by composition, NOT proven
 
 Beyond the provably complete fragment, the hyper engine handles a

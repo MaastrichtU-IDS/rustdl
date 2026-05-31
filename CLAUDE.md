@@ -73,6 +73,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   of a functional role — atom-set accumulation design (T4.5) terminates
   by construction. Sound; tested via synthetic canaries; corpus-impact
   on GALEN currently 0 (see `docs/phase2a-results.md` for the falsification).
+  Phase 2b + 2b.5 (commits 022ca50 + b64d331) fixed two compound
+  existential-body lowering gaps: nested-existential markers in Tseitin
+  bodies now emit equivalent (two-way) semantics; the LHS-And arm now
+  correctly handles non-atomic existential RHS. Recovered 92 of GALEN's
+  109 MISSED (~84%); FP=0 held. See `docs/phase2b-results.md`.
 
 - **`crates/owl-dl-tableau`** — SROIQ tableau. `CompletionGraph` (`graph.rs`)
   of label-carrying nodes; `TableauTrail` (`trail.rs`) gives log-and-undo

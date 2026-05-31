@@ -122,6 +122,14 @@ each.
     EMPIRICALLY INAPPLICABLE (zero cardinality + zero disjointness axioms
     in any sampled minimal module). Phase 2b proper plan is reordered:
     main = bug fix; extension = functional-role refinement.
+  Landed: `docs/phase2b-results.md`. GALEN MISSED 109 → 17 (92 recovered,
+  84%, FP=0). Combined fix landed in two commits: P2b body-side
+  (022ca50) + P2b.5 LHS-And-RHS-existential (b64d331); the P2b.5 was
+  needed after the original P2b alone recovered only 5/60, with a
+  re-trace identifying the actual bail-out one level upstream from
+  the P2b.0 diagnosis's pointer. notgalen unchanged (27→27) — those
+  are cluster C/D, needing the functional-role + covering extension
+  plan.
 - **Honesty:** SIO 2 and some deep GALEN pairs may still not converge — recorded
   as residual gaps, not a deliverable.
 - **Measurable:** per-lever MISSED reduction via the corpus diff.

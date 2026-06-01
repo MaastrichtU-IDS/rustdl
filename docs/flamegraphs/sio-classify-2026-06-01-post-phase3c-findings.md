@@ -34,7 +34,7 @@ Sampling: pprof-rs @ 199Hz, 60s window on `ontologies/real/sio-stripped.ofn`.
 The `apply_role_axioms / bot_id / find_map<ConceptExpr>` cluster that constituted
 **24.66%** of SIO post-Phase-3b classify cost has been eliminated by the cache.
 The O(n) `iter_with_ids().find_map(...)` scan is now replaced by a single
-`Cell::get()` on every call after the first.
+`OnceLock::get()` on every call after the first.
 
 ## Corpus measurement
 
@@ -59,8 +59,8 @@ attributable to the bot_id cache eliminating the 24.66% ConceptExpr scan cluster
 The Phase 3c bot_id cache delivered exactly the predicted outcome. The
 `apply_role_axioms / bot_id / find_map<ConceptExpr>` cluster dropped from
 **24.66% to 0.45%** (-24.21pp), with the `find_map` scan and all ConceptExpr
-iterator closures completely absent from the flame. The cache (`Cell<Option<ConceptId>>`,
-populated on first `Some` return) incurs only a single atomic read on every
+iterator closures completely absent from the flame. The cache (`OnceLock<ConceptId>`,
+populated on first `Some` return) incurs only a single `OnceLock::get()` read on every
 subsequent call — negligible at any realistic call frequency.
 
 The new dominant non-search frame is `apply_deferred_concept_or_rules` at 18.16%,

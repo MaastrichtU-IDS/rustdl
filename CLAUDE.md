@@ -102,6 +102,14 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   (7.5× reduction on inverse-lookup path). FP=0 + verdicts unchanged.
   See `docs/phase3b-results.md`.
 
+- **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
+  `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;
+  `ConceptPool` is Sync across rayon workers). Eliminates the 24.66%
+  `apply_role_axioms` / `bot_id` / `find_map` cluster on GALEN+SIO
+  flamegraphs. **GALEN classify wall: 24.8 min → 12.2 min (~50%
+  reduction)** — this reclaims Phase 2b's full wall regression.
+  FP=0 + verdicts unchanged. See `docs/phase3c-results.md`.
+
 - **`crates/owl-dl-reasoner`** — public API + orchestrator (`lib.rs`,
   `classify.rs`, `realize.rs`). Every entry point that issues a tableau query
   first runs saturation and short-circuits on a hit; if the whole ontology is in

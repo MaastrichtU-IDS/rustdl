@@ -167,6 +167,16 @@ held. Wall improvements uncalibrated (shared-CPU contention this
 session); flamegraph is the durable comparison. Phase 3c queued
 for the new top non-search frame: `apply_role_axioms` / `bot_id` linear
 scan at 24.66%.
+Phase 3c landed: `docs/phase3c-results.md`. `ConceptPool::bot_id`
+cached via `OnceLock` (concurrency-safe; `ConceptPool` is Sync across
+rayon workers); `apply_role_axioms` / `bot_id` / `find_map` cluster
+24.66% → 0.45% (eliminated). **GALEN wall 24.8 min → 12.2 min —
+Phase 3 (a + b + c) has now reclaimed Phase 2b's entire wall regression
+while keeping the 92-pair MISSED recovery. GALEN is back to the pre-2b
+baseline of 12.5 min.** FP=0 + MISSED=17 unchanged. Phase 3d/3e queued
+for `apply_deferred_concept_or_rules` (18.16% remaining) and
+`apply_role_rules` (16.36% new top-5); these are lower priority now
+that GALEN wall is recovered.
 
 ### Phase 4 — Generalization capstone
 

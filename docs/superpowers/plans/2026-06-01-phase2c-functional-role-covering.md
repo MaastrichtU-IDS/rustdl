@@ -49,33 +49,128 @@ This plan follows that outline exactly.
 
 ---
 
-## Task 1: Synthetic canary documenting the gap
+## Task 1: pair_06 canary documenting the gap (REVISED 2026-06-01)
 
 **Files:**
-- Modify: `crates/owl-dl-saturation/src/lib.rs` (add a `#[test]` in `mod tests`).
+- Modify or create a test in `crates/owl-dl-reasoner/tests/` that loads
+  `crates/owl-dl-reasoner/tests/fixtures/phase2b/pair_06.ofn` and asserts the
+  saturator-only verdict misses the canonical Phase 2c subsumption.
 
-The synthetic ontology mirrors pair_06's structure abstractly:
-- A functional super-role `R_f` with two sibling sub-properties `R_i` and `R_j`.
-- A class `X` defined to imply `∃R_i.A` (via a conjunction or sub-class chain).
-- A class `T` defined as `... ⊓ ∃R_j.B`.
-- A covering: `A ⊓ B ⊑ ⊥` (or `Z ⊑ A ⊔ B` plus disjointness).
-- A conditional GCI: `LHS_body ⊓ ∃R_i.A ⊑ ∃R_j.B`.
+**Why pair_06 and not a synthetic:** First-pass T1 attempted an inline synthetic — every shape that exhibited the triangle ALSO Horn-closed via the saturator's existing rules because the synthetic over-specifies. The HermiT case-split in pair_06 fires precisely because `IneffectiveCardiacFunction` does NOT have `∃hasIntrinsicPathologicalStatus.physiological` told — HermiT invents a witness and case-splits on its class. A synthetic that faithfully exhibits the gap requires the soundness preconditions T3 hasn't designed yet — doing T3's analytical work inside T1 is the trap. Pair_06 is the canonical HermiT-verified cluster-C representative (Phase 2b.0); reuse it.
 
-Expected entailment: `X ⊑ T` (currently missed because the saturator can't do the case-split).
+Target subsumption (currently MISSED by the saturator, FOUND by HermiT per `pair_06.hermit.owx`):
+- `<http://example.org/factkb#CongestiveCardiacFailure>` ⊑ `<http://example.org/factkb#IntrinsicallyPathologicalBodyProcess>`
 
-- [ ] **Step 1: Locate `mod tests`**
+- [ ] **Step 0: Revert the first-pass synthetic if still present**
 
 ```bash
-grep -nE "^#\\[cfg\\(test\\)\\]|^mod tests" crates/owl-dl-saturation/src/lib.rs | head -5
+git status -s crates/owl-dl-saturation/src/lib.rs
+git diff crates/owl-dl-saturation/src/lib.rs | head -40
+# If the diff shows the abandoned synthetic canary, restore the file:
+git checkout -- crates/owl-dl-saturation/src/lib.rs
 ```
-The existing Phase 2a + 2b canaries live in `mod tests` near the bottom of the file. Add the new canary adjacent.
+
+If nothing to revert (clean tree), skip. The point is to ensure no Phase 2c artifacts in `owl-dl-saturation` from the first-pass attempt.
+
+- [ ] **Step 1: Identify the right place for the canary in `owl-dl-reasoner`**
+
+The canary loads `crates/owl-dl-reasoner/tests/fixtures/phase2b/pair_06.ofn`, runs the saturator on it, and asserts the target subsumption is MISSED. It must NOT run the full classifier (that path uses the wedge/tableau and would close the entailment); the canary's discriminator is specifically that the **saturator-only** verdict misses it.
+
+```bash
+ls crates/owl-dl-reasoner/tests/
+grep -lE "saturate\(|saturation::" crates/owl-dl-reasoner/tests/*.rs 2>/dev/null | head -3
+grep -lE "pair_06" crates/owl-dl-reasoner/tests/*.rs 2>/dev/null | head -3
+```
+
+Pick the file by precedent: if a saturator-only test file already exists (e.g. one of the `phase2*` test files), append to it. Otherwise create `crates/owl-dl-reasoner/tests/phase2c_pair_06_canary.rs`. Match the imports and parse path of nearest existing saturator-only test.
 
 - [ ] **Step 2: Write the canary test**
 
-Place after the Phase 2a/2b canaries:
+The canary's structure:
 
 ```rust
-/// Phase 2c canary: synthetic mirroring GALEN pair_06's
+// Crate-level integration test in crates/owl-dl-reasoner/tests/
+// — match existing test file's imports + parse helper (probably
+// horned_owl + owl_dl_core::convert + owl_dl_saturation::saturate).
+
+#[test]
+fn phase2c_pair_06_saturator_misses_target_subsumption() {
+    // Load pair_06.ofn from tests/fixtures/phase2b/pair_06.ofn.
+    let onto_path = "tests/fixtures/phase2b/pair_06.ofn";
+    let src = std::fs::read_to_string(onto_path).expect("pair_06.ofn readable");
+    let mut reader = std::io::Cursor::new(src);
+    let (set_onto, _): (horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>, _) =
+        horned_owl::io::ofn::reader::read(&mut reader, horned_owl::io::ParserConfiguration::default())
+            .expect("pair_06 parses");
+    let internal = owl_dl_core::convert::convert_ontology(&set_onto)
+        .expect("pair_06 lowers to IR");
+
+    let subsumers = owl_dl_saturation::saturate(&internal);
+
+    let ccf = internal.vocabulary
+        .class_id("http://example.org/factkb#CongestiveCardiacFailure")
+        .expect("CongestiveCardiacFailure declared");
+    let ipbp = internal.vocabulary
+        .class_id("http://example.org/factkb#IntrinsicallyPathologicalBodyProcess")
+        .expect("IntrinsicallyPathologicalBodyProcess declared");
+
+    // GAP-ASSERTING: passes while the saturator misses; Phase 2c T4 inverts it.
+    assert!(
+        !subsumers.contains(ccf, ipbp),
+        "Phase 2c canary unexpectedly closed CongestiveCardiacFailure ⊑ \
+         IntrinsicallyPathologicalBodyProcess via the saturator alone. The rule \
+         appears to be implemented — invert this assertion (drop the leading `!`)."
+    );
+}
+```
+
+Adapt imports and signatures to match the chosen test file's existing patterns — `class_id` may have a slightly different name (e.g. `class_iri_id`, `lookup_class`), and `convert_ontology` may have a slightly different signature. The pattern is correct in shape; precise names come from the existing tests.
+
+- [ ] **Step 3: Run, expect canary PASSES (gap holds)**
+
+```bash
+cargo test -p owl-dl-reasoner --test phase2c_pair_06_canary -- --test-threads=1 2>&1 | tail -15
+# (if appended to an existing test file, use that file's name instead)
+```
+
+Expected: PASSES (saturator misses the target subsumption).
+
+If FAILS (i.e. `subsumers.contains(ccf, ipbp)` unexpectedly true), Phase 2a/2b inadvertently already covers pair_06. That would be GREAT news (closes part of cluster C for free) but disrupts the Phase 2c thesis. STOP and report — add `eprintln!("ccf subsumers: {:?}", subsumers.subsumers_of(ccf))` to show what closed it.
+
+- [ ] **Step 4: Run reasoner-lib + saturation regression sweep**
+
+```bash
+cargo test -p owl-dl-reasoner --lib -- --test-threads=1 2>&1 | tail -5
+cargo test -p owl-dl-saturation -- --test-threads=1 2>&1 | tail -5
+RUSTFLAGS="-D warnings" cargo test -p owl-dl-reasoner --no-run 2>&1 | tail -3
+```
+Expected: clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/owl-dl-reasoner/tests/
+git commit -m "test(reasoner): Phase 2c pair_06 canary documenting saturator-only gap"
+```
+
+---
+
+## Deviation log (kept inline so future readers see it)
+
+First-pass T1 dispatched 2026-06-01 attempted an inline synthetic in
+`owl-dl-saturation/src/lib.rs::mod tests`. Subagent reported gap-canary failed
+because the saturator already Horn-closes `X ⊑ T` when both `:LHS_body` AND
+`∃R_i.A` are told on X. The HermiT case-split in pair_06 fires precisely
+because `∃hasIntrinsicPathologicalStatus.physiological` is NOT told — HermiT
+invents a witness and case-splits on its class. Designing a synthetic that
+faithfully exhibits the gap requires the soundness preconditions T3 produces.
+Pivot: use pair_06.ofn directly. See REVISED Task 1 above.
+
+<details><summary>Original synthetic (kept for record — DO NOT execute)</summary>
+
+```rust
+/// First-pass synthetic that DID NOT EXHIBIT THE GAP — kept as a
+/// counterexample documenting what NOT to do.
 /// `CongestiveCardiacFailure ⊑ IntrinsicallyPathologicalBodyProcess`
 /// pattern (functional-role + covering / sibling-collapse).
 ///
@@ -151,84 +246,35 @@ Ontology(<http://rustdl.test/p2c/test>
 }
 ```
 
-NOTE: The canary asserts the GAP. This synthetic is SIMPLIFIED from pair_06 — the conditional GCI directly contains `∃R_i.A` rather than a deeper chain through `∃hasEffectiveness.(Effectiveness ⊓ ...)`. The simplification keeps the canary tractable for the executor's manual reasoning while preserving the triangle's essential structure.
+Empirical finding when run: the canary `assert!(!subsumers.contains(x, t), ...)` FAILED — the saturator closed X⊑T via plain Horn CR5/and-right because the LHS operands `:LHS_body` and `∃R_i.A` are BOTH told on X, making the GCI `LHS_body ⊓ ∃R_i.A ⊑ ∃R_j.B` fire as a textbook conjunctive trigger. No case-split needed.
 
-CAVEAT: this synthetic may not be HermiT-derivable as easily as pair_06 — HermiT's derivation on pair_06 depends on specific GALEN axioms that aren't all present in this synthetic. Task 2 verifies via HermiT cross-check.
-
-- [ ] **Step 3: Run, expect canary PASSES (gap holds)**
-
-```bash
-cargo test -p owl-dl-saturation functional_role_covering_canary -- --test-threads=1 2>&1 | tail -10
-```
-
-Expected: PASSES (the saturator misses X ⊑ T per current capability).
-
-If FAILS (i.e. `subsumers.contains(x, t)` is unexpectedly true), the saturator IS deriving this already — either Phase 2a/2b inadvertently covered it, or the synthetic is wrong. Investigate via `eprintln!` on the closure's content.
-
-- [ ] **Step 4: Run all saturation tests + CI strictness**
-
-```bash
-cargo test -p owl-dl-saturation -- --test-threads=1 2>&1 | tail -5
-RUSTFLAGS="-D warnings" cargo test -p owl-dl-saturation --no-run 2>&1 | tail -3
-```
-Expected: clean.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add crates/owl-dl-saturation/src/lib.rs
-git commit -m "test(saturation): Phase 2c canary documenting functional-role + covering gap"
-```
+</details>
 
 ---
 
-## Task 2: HermiT cross-check on the canary synthetic
+## Task 2: HermiT sanity check on pair_06 (REVISED 2026-06-01)
 
-**Files:**
-- Create: `crates/owl-dl-saturation/tests/fixtures/phase2c_functional_role_covering_canary.ofn`
+The HermiT cross-check is already done — `crates/owl-dl-reasoner/tests/fixtures/phase2b/pair_06.hermit.owx` (committed at Phase 2b.0) is the verify-before-build artifact. T2 is now a 30-second sanity check that the file still contains the target entailment, not a fresh HermiT run.
 
-Verify HermiT derives `X ⊑ T` on the simplified synthetic BEFORE implementing the rule. If HermiT can't derive it on the synthetic, the synthetic is too simplified — Task 3's design step then needs to use the FULL pair_06 fixture rather than the synthetic.
-
-- [ ] **Step 1: Write the fixture (byte-identical to T1's inline string)**
-
-Create `crates/owl-dl-saturation/tests/fixtures/phase2c_functional_role_covering_canary.ofn` with the exact same content as the `let src = "..."` literal in T1's test. Verify byte-identicality:
-
-```bash
-diff <(awk '/let src = "/,/";/' crates/owl-dl-saturation/src/lib.rs | sed -n 's/^\\\\$//;s/^"\(.*\)";$/\1/p;s/^"\(.*\)\\\\$/\1/p') crates/owl-dl-saturation/tests/fixtures/phase2c_functional_role_covering_canary.ofn 2>&1
-```
-
-(Or just visually compare the two; the ontology is 14 axiom lines + declarations.)
-
-Confirm not gitignored: `git check-ignore -v crates/owl-dl-saturation/tests/fixtures/phase2c_functional_role_covering_canary.ofn` — empty output.
-
-- [ ] **Step 2: Run HermiT via Phase 0 oracle**
-
-```bash
-docker/robot/classify-oracle.sh \
-    crates/owl-dl-saturation/tests/fixtures/phase2c_functional_role_covering_canary.ofn \
-    /tmp/p2c-canary-hermit.owx
-```
-
-- [ ] **Step 3: Verify HermiT derives X ⊑ T (transitively)**
+- [ ] **Step 1: Confirm pair_06.hermit.owx contains the target entailment**
 
 ```bash
 python3 <<'EOF'
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 NS = '{http://www.w3.org/2002/07/owl#}'
-tree = ET.parse('/tmp/p2c-canary-hermit.owx')
-x = 'http://rustdl.test/p2c/X'
-t = 'http://rustdl.test/p2c/T'
+tree = ET.parse('crates/owl-dl-reasoner/tests/fixtures/phase2b/pair_06.hermit.owx')
+sub = 'http://example.org/factkb#CongestiveCardiacFailure'
+sup = 'http://example.org/factkb#IntrinsicallyPathologicalBodyProcess'
 edges = defaultdict(set)
 for sc in tree.iter(NS + 'SubClassOf'):
     classes = [c.get('IRI') for c in sc.findall(NS + 'Class')]
     if len(classes) == 2:
         edges[classes[0]].add(classes[1])
-# BFS for transitive reachability
-seen, queue = {x}, [x]
+seen, queue = {sub}, [sub]
 while queue:
     cur = queue.pop(0)
-    if cur == t:
+    if cur == sup:
         print("FOUND"); break
     for nxt in edges.get(cur, ()):
         if nxt not in seen:
@@ -238,25 +284,17 @@ else:
 EOF
 ```
 
-Expected: `FOUND`. If `NOT FOUND`, the synthetic isn't a HermiT-derivable instance of the pattern. Two fallbacks:
-- (a) Adjust the synthetic to add the missing GALEN-style axiom (e.g. covering on a third class `Status_super ≡ A ⊔ B`, or a chain through `R_f` that forces a witness). Update T1's inline string AND this fixture in lockstep.
-- (b) Use pair_06 directly as the canary fixture for Phase 2c, and adjust T1 to load it rather than embedding a synthetic. The trade-off: pair_06 is 89 KB of GALEN axioms (less tractable for manual reasoning) but is guaranteed HermiT-verifiable.
-
-If after one adjustment HermiT still misses, document the gap in Task 3's design doc and use pair_06.ofn as the canary instead.
-
-- [ ] **Step 4: Commit (only if HermiT derived)**
-
+Expected: `FOUND`. If `NOT FOUND`, pair_06.hermit.owx is corrupt or has been overwritten — re-run the Phase 0 oracle:
 ```bash
-git add crates/owl-dl-saturation/tests/fixtures/phase2c_functional_role_covering_canary.ofn
-git commit -m "fixture(saturation): Phase 2c canary OFN for HermiT cross-check
-
-HermiT confirms X ⊑ T on the synthetic via classify-oracle.sh: <paste
-evidence>. This is the verify-before-build gate."
+docker/robot/classify-oracle.sh \
+    crates/owl-dl-reasoner/tests/fixtures/phase2b/pair_06.ofn \
+    crates/owl-dl-reasoner/tests/fixtures/phase2b/pair_06.hermit.owx
 ```
+and re-verify. Commit the refreshed file with `chore: re-pin pair_06 HermiT classification`.
 
-If HermiT didn't derive even with the adjustment, commit the (working) updated canary fixture with a comment that HermiT IS deriving it.
+- [ ] **Step 2: No commit needed (sanity check only)**
 
-If HermiT never derives (even with adjustments), don't commit the fixture and report DONE_WITH_CONCERNS — the Phase 2c canary needs to revert to pair_06.ofn as the test artifact.
+No file changes; T2 is verification-only.
 
 ---
 
@@ -371,11 +409,12 @@ git commit -m "perf(phase2c): chosen fix target + soundness conditions"
 
 ---
 
-## Task 4: Implement the rule + structural canary
+## Task 4: Implement the rule + flip canary
 
 **Files:**
 - Modify: `crates/owl-dl-saturation/src/lib.rs` (the `collect_el_rules` function + a new method or block).
-- Modify: `crates/owl-dl-saturation/src/lib.rs` (the existing Phase 2c canary from T1 — flip the assertion + add a structural counter test).
+- Modify: `crates/owl-dl-reasoner/tests/...` (the existing Phase 2c pair_06 canary from REVISED T1 — flip the assertion).
+- (Optional) Add a structural counter test in the saturator's `mod tests` using a small synthetic that exercises ONLY the new rule's preconditions (T3 designs it).
 
 The exact code depends on T3's design. The plan provides the FRAMEWORK:
 
@@ -427,41 +466,31 @@ The `matches_triangle_shape` helper inspects the absorbed-TBox shape per T3's de
 
 (This is a SKETCH. T3's actual design doc gives the precise algorithm; T4 implements it.)
 
-- [ ] **Step 3: Flip the canary's assertion + rename**
+- [ ] **Step 3: Flip the pair_06 canary's assertion + rename**
 
-In `crates/owl-dl-saturation/src/lib.rs`, find `functional_role_covering_canary_documents_the_gap` (added in T1). Change:
-- Rename: `_documents_the_gap` → `_recovers_entailment`.
-- Invert: `!subsumers.contains(x, t)` → `subsumers.contains(x, t)`.
+In `crates/owl-dl-reasoner/tests/...` (the file from REVISED T1), find `phase2c_pair_06_saturator_misses_target_subsumption`. Change:
+- Rename: `_misses_target_subsumption` → `_recovers_target_subsumption`.
+- Invert: `!subsumers.contains(ccf, ipbp)` → `subsumers.contains(ccf, ipbp)`.
 - Update doc comment + message accordingly.
 
-- [ ] **Step 4: Add the structural canary**
+- [ ] **Step 4: (Optional) Add a structural counter canary**
 
-```rust
-#[test]
-fn functional_role_covering_canary_materialization_counter_bumped() {
-    // Same synthetic as the verdict canary.
-    let src = "..."; // re-use the inline string
-    // ... parse + saturate ...
-    // Assert the materialization counter > 0 (the rule fired).
-    // Path depends on T1's design — if it's on rules, check rules.functional_role_covering_materializations.
-}
-```
+If T3's design produces a clear "rule fired" counter, add a small synthetic test in the saturator's `mod tests` that asserts the counter bumps on a known-positive minimal input. The synthetic for THIS test can be the kind of over-specified shape the first-pass T1 used — Phase 2c needs proof the new rule's detector matches it, not that it case-splits non-trivially. If the structural assertion is awkward (counter not easily accessible from test, OR no clean minimal positive synthetic), skip and rely on the pair_06 canary + corpus-diff result as the structural signal.
 
-If the structural assertion is awkward (the counter isn't easily accessible from the test), gate the structural canary with `#[cfg(feature = "counters")]` and rely on the corpus-diff result as the structural signal instead.
-
-- [ ] **Step 5: Run, expect both canaries pass**
+- [ ] **Step 5: Run, expect canary passes**
 
 ```bash
-cargo test -p owl-dl-saturation functional_role_covering -- --test-threads=1 2>&1 | tail -10
+cargo test -p owl-dl-reasoner phase2c_pair_06 -- --test-threads=1 2>&1 | tail -10
 ```
 
-Expected: both canaries pass.
+Expected: passes.
 
 - [ ] **Step 6: Full saturation + reasoner-lib regression sweep**
 
 ```bash
 cargo test -p owl-dl-saturation -- --test-threads=1 2>&1 | tail -10
 cargo test -p owl-dl-reasoner --lib -- --test-threads=1 2>&1 | tail -10
+cargo test -p owl-dl-reasoner --tests -- --test-threads=1 2>&1 | tail -10
 RUSTFLAGS="-D warnings" cargo test -p owl-dl-saturation --no-run 2>&1 | tail -3
 cargo clippy -p owl-dl-saturation --all-targets -- -D warnings 2>&1 | grep -E "warning|error" | grep -v "(too_many_lines|map_unwrap_or|doc-markdown)" | head -5
 ```

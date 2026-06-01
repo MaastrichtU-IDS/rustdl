@@ -58,6 +58,14 @@ pub(crate) struct RuleCounters {
     /// structural canary to confirm the new lookup path is actually
     /// wired in. See `docs/phase3b-fix-target.md`.
     pub(crate) inverse_pair_fast_hits: Cell<u64>,
+
+    /// Phase 3d: each time `apply_deferred_concept_or_rules`'s indexed
+    /// branch encounters a trigger with no entry in
+    /// `concept_rules_by_trigger` and skips with `continue` (instead of
+    /// the legacy per-trigger linear scan over `&tbox.concept_rules`).
+    /// Each bump represents an O(R) scan saved on a finalized `TBox`.
+    /// See `docs/phase3d-fix-target.md`.
+    pub(crate) apply_deferred_concept_or_skip_missing_trigger: Cell<u64>,
 }
 
 /// Increment by 1. Internal helper; macro callers go through the
@@ -126,6 +134,10 @@ impl RuleCounters {
             (
                 "inverse_pair_fast_hits",
                 self.inverse_pair_fast_hits.get(),
+            ),
+            (
+                "apply_deferred_concept_or_skip_missing_trigger",
+                self.apply_deferred_concept_or_skip_missing_trigger.get(),
             ),
         ];
         let total: u64 = entries.iter().map(|(_, v)| *v).sum();

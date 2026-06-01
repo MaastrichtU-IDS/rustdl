@@ -572,11 +572,18 @@ pub fn apply_deferred_concept_or_rules(
         if triggers.is_empty() {
             return RuleOutcome::NoChange;
         }
+        // Phase 3d: gate the legacy linear-scan fallback ONCE on the
+        // "TBox not finalized" predicate, instead of per-trigger inside
+        // the loop. On finalized TBoxes (the common case), an indexed
+        // lookup miss means "no concept_rules for this trigger" — skip
+        // with `continue` rather than launching an O(R) scan over the
+        // entire concept_rules vector. See `docs/phase3d-fix-target.md`.
         let mut out: Vec<(ConceptId, DepSet)> = Vec::new();
-        for (trigger, deps) in &triggers {
-            let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) else {
-                // Hand-built TBox without finalize(): fall back to a
-                // linear scan over concept_rules for this trigger.
+        if tbox.concept_rules_by_trigger.is_empty() {
+            // Pre-finalize fallback (hand-built TBox without finalize()):
+            // retained for compatibility with unit tests that bypass
+            // `owl_dl_core::absorb::absorb`.
+            for (trigger, deps) in &triggers {
                 for rule in &tbox.concept_rules {
                     if rule.trigger == *trigger {
                         let (needs, bloom_hit) =
@@ -589,15 +596,21 @@ pub fn apply_deferred_concept_or_rules(
                         }
                     }
                 }
-                continue;
-            };
-            for &c in conclusions {
-                let (needs, bloom_hit) = needs_deferred_or(pool, c, labels, label_sig);
-                if bloom_hit {
-                    crate::bump_counter!(ctx, needs_deferred_or_bloom_rejects);
-                }
-                if needs {
-                    out.push((c, deps.clone()));
+            }
+        } else {
+            for (trigger, deps) in &triggers {
+                let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) else {
+                    crate::bump_counter!(ctx, apply_deferred_concept_or_skip_missing_trigger);
+                    continue;
+                };
+                for &c in conclusions {
+                    let (needs, bloom_hit) = needs_deferred_or(pool, c, labels, label_sig);
+                    if bloom_hit {
+                        crate::bump_counter!(ctx, needs_deferred_or_bloom_rejects);
+                    }
+                    if needs {
+                        out.push((c, deps.clone()));
+                    }
                 }
             }
         }
@@ -1620,6 +1633,56 @@ mod phase3_canaries {
             rejected > 0,
             "bloom prefilter never rejected; needs_deferred_or isn't consulting \
              label_sig.  rejected = {rejected}"
+        );
+    }
+
+    // ── Phase 3d canary: indexed branch skips missing triggers ──────────
+    //
+    // Verifies the Phase 3d restructuring of
+    // `apply_deferred_concept_or_rules` — namely, that on a FINALIZED
+    // TBox (the common case), when a node carries an atomic label whose
+    // class has no entry in `concept_rules_by_trigger`, the indexed
+    // branch now `continue`s instead of falling through to a per-trigger
+    // linear scan over `&tbox.concept_rules`.
+    //
+    // The OrHeavySynth fixture has concept_rules only for triggers A, D,
+    // F, G. Classes B, C, E are NOT triggers. Satisfying `B` (or `E`)
+    // puts an atomic label whose class has no entry in
+    // `concept_rules_by_trigger`, exercising the missing-trigger skip in
+    // the indexed branch and bumping the counter.
+    //
+    // Without `--features counters` this block is never compiled.
+    #[cfg(feature = "counters")]
+    #[test]
+    fn phase3d_indexed_branch_skips_missing_triggers() {
+        let OrHeavySynth { pool, tbox, b, e, .. } = build_or_heavy_synth();
+
+        // Sanity: finalize() must have populated the index, otherwise
+        // the canary would exercise the linear-scan fallback, not the
+        // indexed branch.
+        assert!(
+            !tbox.concept_rules_by_trigger.is_empty(),
+            "fixture invariant: tbox.finalize() should have populated \
+             concept_rules_by_trigger; got empty index"
+        );
+
+        // Run satisfiability queries on classes that are NOT triggers
+        // (B and E are leaves; no concept_rule has them as `trigger`).
+        // Each node carries `Atomic(B)` (resp. E), which produces a
+        // trigger lookup that misses the index — and bumps the counter
+        // via the `continue` path.
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let _ = ctx.is_satisfiable(b);
+        let _ = ctx.is_satisfiable(e);
+
+        let skips = ctx
+            .counters
+            .apply_deferred_concept_or_skip_missing_trigger
+            .get();
+        assert!(
+            skips > 0,
+            "indexed branch never skipped a missing trigger; Phase 3d \
+             restructuring is not wired in. skips = {skips}"
         );
     }
 }

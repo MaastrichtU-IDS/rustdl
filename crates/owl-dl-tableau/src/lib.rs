@@ -122,6 +122,9 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// in every constructor that initialises `inverse_pairs`. Used by the hot
     /// path in `apply_max` (SIO flamegraph attributed 25.76% to the previous
     /// `Vec::iter().any()` linear scan). See `docs/phase3b-fix-target.md`.
+    /// (Mirror invariant: `declare_inverse_pair` is the only writer of
+    /// `inverse_pairs`; mirror writes here keep the two structures in
+    /// sync. Add the mirror writes if a new writer ever lands.)
     inverse_pairs_set: HashSet<(RoleId, RoleId)>,
     /// NNF complement table: `body → nnf(¬body)`. Populated by the
     /// reasoner facade for every `body` appearing in a

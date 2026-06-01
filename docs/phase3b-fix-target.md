@@ -76,6 +76,10 @@ SIO wall baseline ~68s; post-fix target ~50–55s (~20–26% reduction). The
 reduction derives from the 25.76% of CPU time shifted from O(168) linear scans
 to O(1) hashset lookups.
 
+> **Actual outcome:** 3.44% (the residual is hashbrown's own foldhash +
+> contains cost). Above the predicted 0-2% but well within the goal of
+> eliminating the linear scan. See `phase3b-results.md`.
+
 GALEN wall: GALEN has 0 inverse pairs so `are_declared_inverses` returns
 immediately on the `is_empty()` fast-path — no change expected for GALEN.
 

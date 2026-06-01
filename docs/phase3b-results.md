@@ -32,6 +32,10 @@ FP=0 / MISSED-unchanged held; wall variations are measurement
 artifacts from concurrent test execution (rayon pool contention),
 not real per-fixture regressions.
 
+(Test count: 87 tableau baseline + 1 unconditional canary = 88 under
+default features; +1 more under `--features counters` = 89 total. The
+structural canary is `#[cfg(feature = "counters")]`-gated.)
+
 ## Flamegraph diff (SIO)
 
 | Frame | Pre-P3b | Post-P3b | Δ |

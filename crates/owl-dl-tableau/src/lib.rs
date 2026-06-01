@@ -86,6 +86,7 @@ pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use std::collections::HashMap;
 
+use hashbrown::HashSet;
 use owl_dl_core::{
     AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleHierarchy, RoleId,
     is_nnf,
@@ -109,15 +110,19 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     tbox: Option<&'tbox AbsorbedTBox>,
     hierarchy: Option<&'hier RoleHierarchy>,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
-    /// axiom in the source ontology. Stored symmetrically (both
-    /// `(r, s)` and `(s, r)` are pushed) so `are_declared_inverses`
-    /// is a single linear scan. `Vec` rather than `HashMap` because real
-    /// ontologies declare ≤ a handful of inverses (pizza: 3 pairs →
-    /// 6 entries) where linear scan on `u32` equality beats hashing
-    /// by an order of magnitude — `are_declared_inverses` was the
-    /// second-hottest frame in pizza flamegraphs (14 %, dominated
-    /// by `make_hash<RoleId>` / `find_inner`).
+    /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
+    /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
+    /// for declaration-order iteration; lookups go through `inverse_pairs_set`
+    /// (Phase 3b — the pizza-era "0-3 pairs" linear-scan assumption was
+    /// empirically wrong on SIO which has 84 inverse-pair declarations →
+    /// ~168 Vec entries; see `docs/phase3b-fix-target.md`).
     inverse_pairs: Vec<(RoleId, RoleId)>,
+    /// Phase 3b O(1) lookup mirror for `are_declared_inverses`. Parallel to
+    /// `inverse_pairs`; populated by `declare_inverse_pair` (mirror write) and
+    /// in every constructor that initialises `inverse_pairs`. Used by the hot
+    /// path in `apply_max` (SIO flamegraph attributed 25.76% to the previous
+    /// `Vec::iter().any()` linear scan). See `docs/phase3b-fix-target.md`.
+    inverse_pairs_set: HashSet<(RoleId, RoleId)>,
     /// NNF complement table: `body → nnf(¬body)`. Populated by the
     /// reasoner facade for every `body` appearing in a
     /// `Max(_, _, body)` expression, so `apply_choose` can branch
@@ -209,6 +214,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             tbox: None,
             hierarchy: None,
             inverse_pairs: Vec::new(),
+            inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -237,6 +243,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             tbox: Some(tbox),
             hierarchy: None,
             inverse_pairs: Vec::new(),
+            inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -270,6 +277,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
             inverse_pairs: Vec::new(),
+            inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -467,14 +475,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// between `Role::Named(r)` and `Role::Inverse(s)` (or vice
     /// versa). The map is populated symmetrically.
     pub fn declare_inverse_pair(&mut self, r: RoleId, s: RoleId) -> &mut Self {
-        // Dedup so a caller that double-declares doesn't bloat the
-        // linear scan. Each direction is stored once.
+        // Dedup so a caller that double-declares doesn't bloat the Vec.
+        // Each direction is stored once. Phase 3b: mirror both directions into
+        // `inverse_pairs_set` unconditionally (HashSet self-dedups).
         if !self.inverse_pairs.contains(&(r, s)) {
             self.inverse_pairs.push((r, s));
         }
         if !self.inverse_pairs.contains(&(s, r)) {
             self.inverse_pairs.push((s, r));
         }
+        self.inverse_pairs_set.insert((r, s));
+        self.inverse_pairs_set.insert((s, r));
         self
     }
 
@@ -482,14 +493,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `InverseObjectProperties` axiom.
     #[must_use]
     pub fn are_declared_inverses(&self, r: RoleId, s: RoleId) -> bool {
-        // Fast path: most ontologies declare 0–3 inverse pairs.
-        // Linear scan on `u32` equality beats `HashMap::get` at this
-        // size and avoids the make_hash/find_inner chain that
-        // dominated apply_max in pizza flamegraphs.
-        if self.inverse_pairs.is_empty() {
+        // Phase 3b: O(1) hashbrown::HashSet lookup replaces the linear
+        // `Vec::iter().any()` scan. The pizza-era "0-3 pairs" assumption
+        // that justified the linear scan was empirically wrong on SIO
+        // (84 inverse-pair declarations → ~168 Vec entries); SIO
+        // flamegraph attributed 25.76% of apply_max to the scan.
+        // See `docs/phase3b-fix-target.md`.
+        if self.inverse_pairs_set.is_empty() {
             return false;
         }
-        self.inverse_pairs.iter().any(|&(a, b)| a == r && b == s)
+        crate::bump_counter!(self, inverse_pair_fast_hits);
+        self.inverse_pairs_set.contains(&(r, s))
     }
 
     /// Register the NNF complement of `body`. Must be called before

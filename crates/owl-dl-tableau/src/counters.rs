@@ -50,6 +50,14 @@ pub(crate) struct RuleCounters {
     /// binary_search + per-disjunct iteration. See
     /// `docs/phase3-fix-target.md`.
     pub(crate) needs_deferred_or_bloom_rejects: Cell<u64>,
+
+    /// Phase 3b: each call to `are_declared_inverses` that consulted
+    /// the O(1) `hashbrown::HashSet` (i.e. `inverse_pairs_set` was
+    /// non-empty). Bumped regardless of whether the pair was found, so
+    /// it counts "fast-path consultations." Used by the Phase 3b
+    /// structural canary to confirm the new lookup path is actually
+    /// wired in. See `docs/phase3b-fix-target.md`.
+    pub(crate) inverse_pair_fast_hits: Cell<u64>,
 }
 
 /// Increment by 1. Internal helper; macro callers go through the
@@ -114,6 +122,10 @@ impl RuleCounters {
             (
                 "needs_deferred_or_bloom_rejects",
                 self.needs_deferred_or_bloom_rejects.get(),
+            ),
+            (
+                "inverse_pair_fast_hits",
+                self.inverse_pair_fast_hits.get(),
             ),
         ];
         let total: u64 = entries.iter().map(|(_, v)| *v).sum();

@@ -1512,15 +1512,15 @@ mod phase3_canaries {
 
         // Disjunctive conclusions — these are the Or labels the
         // deferred-OR rule must decide whether to materialise.
-        let or_bc = pool.or([b, c]);
-        let or_be = pool.or([b, e]);
+        let or_b_or_c = pool.or([b, c]);
+        let or_b_or_e = pool.or([b, e]);
 
         let mut tbox = AbsorbedTBox {
             concept_rules: vec![
                 // A ⊑ Or(B, C)
-                ConceptRule { trigger: a_cls, conclusion: or_bc },
+                ConceptRule { trigger: a_cls, conclusion: or_b_or_c },
                 // D ⊑ Or(B, E)
-                ConceptRule { trigger: d_cls, conclusion: or_be },
+                ConceptRule { trigger: d_cls, conclusion: or_b_or_e },
                 // F ⊑ B
                 ConceptRule { trigger: f_cls, conclusion: b },
                 // G ⊑ E

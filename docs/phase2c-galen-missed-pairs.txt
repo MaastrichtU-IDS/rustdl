@@ -1,0 +1,17 @@
+http://example.org/factkb#CardiacInsufficiencyDueToProsthesis ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#CardiacInsufficiencyFollowingCardiacSurgery ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#Cheyne-StokesRepiration ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#CongestiveCardiacFailure ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#Diverticulum ⊑ http://example.org/factkb#AbnormalBodyStructure
+http://example.org/factkb#Dyspnoea ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#IneffectiveCardiacFunction ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#IntrinsicallyAbnormalBodyStructure ⊑ http://example.org/factkb#AbnormalBodyStructure
+http://example.org/factkb#IntrinsicallyUnusualBodyStructure ⊑ http://example.org/factkb#UnusualBodyStructure
+http://example.org/factkb#IntrinsicallyVariantBodyStructure ⊑ http://example.org/factkb#VariantBodyStructure
+http://example.org/factkb#Kussmaul-KienRespiration ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#LeftIneffectiveCardiacFunction ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#Polyp ⊑ http://example.org/factkb#AbnormalBodyStructure
+http://example.org/factkb#PostcardiotomySyndrome ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#PostvalvulotomySyndrome ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#RightIneffectiveCardiacFunction ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess
+http://example.org/factkb#RightIneffectiveCardiacFunctionSecondaryToLeftIneffectiveCardiacFunction ⊑ http://example.org/factkb#IntrinsicallyPathologicalBodyProcess

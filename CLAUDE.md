@@ -103,6 +103,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `are_declared_inverses` 25.76% → 3.44%; `apply_max` 27.93% → 6.51%
   (7.5× reduction on inverse-lookup path). FP=0 + verdicts unchanged.
   See `docs/phase3b-results.md`.
+  Phase 3d (commit 32aeda6) hoisted the linear-scan fallback in
+  `apply_deferred_concept_or_rules` out of the per-trigger loop behind
+  a single top-of-function `concept_rules_by_trigger.is_empty()` gate.
+  SIO `apply_deferred_concept_or_rules` top-frame attribution 18.16% →
+  3.23% (−14.93pp); GALEN classify wall 12.43 min → 11.87 min (−4.5%).
+  FP=0 + MISSED=17 unchanged. See `docs/phase3d-results.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;

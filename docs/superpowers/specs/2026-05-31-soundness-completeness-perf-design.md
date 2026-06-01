@@ -195,6 +195,13 @@ for `apply_deferred_concept_or_rules` (18.16% remaining) and
 `apply_role_rules` (16.36% new top-5); these are lower priority now
 that GALEN wall is recovered.
 
+Phase 3d landed: `docs/phase3d-results.md`. The
+`apply_deferred_concept_or_rules` per-trigger linear-scan fallback was
+hoisted out of the trigger loop behind a single top-of-function
+`concept_rules_by_trigger.is_empty()` gate. SIO top-frame attribution
+18.16% → 3.23% (−14.93pp); GALEN wall 12.43 min → 11.87 min (−4.5%);
+FP=0 + MISSED=17 unchanged.
+
 ### Phase 4 — Generalization capstone
 
 With the broad corpus (P0), the verification net (P1), and the fragment

@@ -29,6 +29,9 @@ upstream rather than vendored.
 | `pizza` | `http://protege.stanford.edu/ontologies/pizza/pizza.owl` | RDF/XML | Canonical SROIQ tutorial ontology (disjointness, covering axioms, value restrictions). Small enough to classify quickly; verdicts are well-known from HermiT/ELK, so divergences are immediately suspicious. |
 | `ro` | `http://purl.obolibrary.org/obo/ro.owl` | RDF/XML | The OBO Relations Ontology — pure object-property axiomatization. Exercises role hierarchy, property characteristics, and the `SubObjectPropertyOf` chain rules with no class-level complexity. |
 | `go-basic` | `http://purl.obolibrary.org/obo/go/go-basic.obo` | OBO | Gene Ontology, "basic" cut. ~50k classes of canonical EL — `partOf` / `isA` heavy. Stress test for the saturation engine's scaling. |
+| `ore-10908-sroiq` | ORE 2015 sample (`ore_ont_10908.owl` from `ontologies/external/ore2015_sample.zip`) | RDF/XML | Phase 0 soundness-net broadening: full SROIQ with complex role chains (R), qualified cardinality (Q), inverses, and nominals — the same fragment as SIO that produced all 38 recorded `trust_sat` false positives; 693 classes, HermiT-classified reference produced (1 738 axioms). |
+| `ore-15516-alchoiq` | ORE 2015 sample (`ore_ont_15516.owl` from `ontologies/external/ore2015_sample.zip`) | RDF/XML | Phase 0 soundness-net broadening: ALCHOIQ(D) with qualified cardinality, inverses, role hierarchy, and nominals in 85 classes; **HermiT reports inconsistent** — .ofn fixture left on disk for future use (no current test references it). |
+| `ore-15672-shoin` | ORE 2015 sample (`ore_ont_15672.owl` from `ontologies/external/ore2015_sample.zip`) | RDF/XML | Phase 0 soundness-net broadening: SHOIN with unqualified cardinality (N), inverses, role hierarchy, and nominals in 83 classes — covers the N-flavour number restriction clash semantics not present in the Q-carrying picks; HermiT-classified reference produced (324 axioms). |
 
 ## Refresh
 

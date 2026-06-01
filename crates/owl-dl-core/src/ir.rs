@@ -183,10 +183,38 @@ pub enum ConceptExpr {
 /// [`ConceptId`]s. And/Or operand lists are sorted and deduped on intern so
 /// that logically equivalent conjunctions and disjunctions hash to the same
 /// `ConceptId` regardless of operand order or repetition.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct ConceptPool {
     by_id: Vec<ConceptExpr>,
     by_expr: HashMap<ConceptExpr, ConceptId>,
+    /// Phase 3c: cached `ConceptId` of `ConceptExpr::Bot`. Populated at most
+    /// once (on the first `bot_id()` call that finds Bot in the pool). Bot is
+    /// a unit variant interned at most once, so the id is stable forever once
+    /// set. Uses `OnceLock` (not `Cell`) because `ConceptPool` is shared
+    /// across rayon threads inside `PreparedOntology`. Eliminates the O(n)
+    /// `iter_with_ids().find_map(...)` scan that the `apply_role_axioms`
+    /// cluster attributed at 24.66% of post-Phase-3b classify cost. See
+    /// `docs/superpowers/plans/2026-06-01-phase3c-bot-id-cache.md`.
+    bot_id_cache: std::sync::OnceLock<ConceptId>,
+    /// Phase 3c: per-call counter for `bot_id` cache hits. Bumped each
+    /// time `bot_id()` returns the cached value without scanning. Used
+    /// by the structural canary to confirm the cache is consulted.
+    /// `AtomicU64` (not `Cell`) for `Sync` across rayon threads.
+    bot_id_cache_hits: std::sync::atomic::AtomicU64,
+}
+
+impl Clone for ConceptPool {
+    fn clone(&self) -> Self {
+        Self {
+            by_id: self.by_id.clone(),
+            by_expr: self.by_expr.clone(),
+            bot_id_cache: self.bot_id_cache.clone(),
+            bot_id_cache_hits: std::sync::atomic::AtomicU64::new(
+                self.bot_id_cache_hits
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 impl ConceptPool {
@@ -228,13 +256,40 @@ impl ConceptPool {
     /// expression references `Bot`.
     #[must_use]
     pub fn bot_id(&self) -> Option<ConceptId> {
-        self.iter_with_ids().find_map(|(id, e)| {
+        // Phase 3c: cache-or-scan. Bot is a unit variant interned at
+        // most once; once set in the OnceLock, the id is stable forever
+        // (the pool doesn't re-intern or remove). If the cache is not
+        // yet populated, we scan; if the scan finds Bot, we set the
+        // OnceLock (subsequent calls hit). If the scan returns None
+        // (Bot not yet interned), the lock stays empty — a later call
+        // after interning Bot will scan again, find it, and populate then.
+        // OnceLock (not Cell) because ConceptPool is shared across rayon
+        // threads inside PreparedOntology.
+        if let Some(&cached) = self.bot_id_cache.get() {
+            self.bot_id_cache_hits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(cached);
+        }
+        let found = self.iter_with_ids().find_map(|(id, e)| {
             if matches!(e, ConceptExpr::Bot) {
                 Some(id)
             } else {
                 None
             }
-        })
+        });
+        if let Some(id) = found {
+            // Ignore the error: a concurrent thread may have set it
+            // first (same id, idempotent).
+            let _ = self.bot_id_cache.set(id);
+        }
+        found
+    }
+
+    /// Phase 3c: read the `bot_id` cache-hit counter (test-facing).
+    #[must_use]
+    pub fn bot_id_cache_hits(&self) -> u64 {
+        self.bot_id_cache_hits
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     ///
@@ -521,5 +576,56 @@ mod tests {
         let empty: Vec<ConceptId> = Vec::new();
         let result = p.or(empty);
         assert_eq!(result, p.bot());
+    }
+
+    // ── Phase 3c canaries ─────────────────────────────────────────────────
+    // Asserts semantic equivalence of bot_id() before and after cache
+    // population. Pre-fix: every call does a linear scan. Post-fix: first
+    // call scans + caches; subsequent calls hit the cache. The returned
+    // ConceptId (or None) must be identical either way.
+    #[test]
+    fn phase3c_bot_id_returns_same_before_and_after_cache_population() {
+        let mut pool = ConceptPool::new();
+
+        // Before Bot is interned, bot_id() must return None — stably.
+        let first = pool.bot_id();
+        // Intern some non-Bot concepts so the pool has multiple entries
+        // and the linear scan must walk past them.
+        let c0 = pool.atomic(ClassId::new(0));
+        let c1 = pool.atomic(ClassId::new(1));
+        let _and = pool.and([c0, c1]);
+        let second = pool.bot_id();
+        assert_eq!(
+            first, second,
+            "bot_id() before Bot interning must be stable across pool growth"
+        );
+        assert!(first.is_none(), "bot_id() returns None before Bot is interned");
+
+        // Intern Bot. Both subsequent calls must return the same Some(id).
+        let _bot_id = pool.bot();
+        let third = pool.bot_id();
+        let fourth = pool.bot_id();
+        assert!(third.is_some(), "after pool.bot(), bot_id() must be Some");
+        assert_eq!(
+            third, fourth,
+            "subsequent bot_id() calls must return the same id"
+        );
+    }
+
+    #[test]
+    fn phase3c_bot_id_cache_hits_counter_bumps_on_repeat_calls() {
+        let mut pool = ConceptPool::new();
+        let _ = pool.bot(); // intern Bot so the cache will populate
+        let _ = pool.bot_id(); // first call: scans + populates
+        let before = pool.bot_id_cache_hits();
+        let _ = pool.bot_id();
+        let _ = pool.bot_id();
+        let _ = pool.bot_id();
+        let after = pool.bot_id_cache_hits();
+        assert!(
+            after >= before + 3,
+            "bot_id_cache_hits should increment on cached calls; \
+             before={before} after={after}"
+        );
     }
 }

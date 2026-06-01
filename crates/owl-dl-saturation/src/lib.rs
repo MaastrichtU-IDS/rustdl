@@ -70,8 +70,8 @@ use owl_dl_core::{
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let n = internal.vocabulary.num_classes();
     let role_super = build_role_super(internal);
-    let (rules, num_total_classes) = collect_el_rules(internal, &role_super);
-    let mut engine = WorklistEngine::new(n, num_total_classes, rules, role_super);
+    let (rules, tseitin, num_total_classes) = collect_el_rules(internal, &role_super);
+    let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
     engine.seed();
     engine.run();
     engine.subsumers
@@ -132,6 +132,41 @@ struct WorklistEngine {
     /// Total class-id universe size (user + Tseitin). Used to size
     /// the bitsets.
     num_total_classes: usize,
+    /// Runtime Tseitin allocator for synthetic class IDs introduced
+    /// by the Phase 2a functional-role witness-merge rule. Seeded
+    /// from (and sharing the `by_body` dedup map of) the
+    /// collection-time allocator returned by `collect_el_rules`, so
+    /// runtime and static synthetics produced for the same body
+    /// `{A, B}` map to the same class id. Pairs `{target_i, target_j}`
+    /// are deduplicated by sorted body, just like the static path.
+    tseitin_runtime: TseitinAllocator,
+    /// Phase 2a EL++ witness-merge — per-`(sub, R_f)` FLAT SET of
+    /// atomic class IDs that have been accumulated into a single
+    /// `R_f`-witness. Monotonically grows; bounded by the atomic
+    /// vocabulary, so the merge rule terminates regardless of how
+    /// many sub-property facts feed in. Replaces T4's synthetic-id
+    /// tracking which non-terminated on 3+ sub-property fan-in (see
+    /// T4.5 commit message + docs/phase2a-results.md when written).
+    merged_atom_sets: HashMap<(ClassId, RoleId), std::collections::BTreeSet<ClassId>>,
+    /// Atomic-content map for every allocated synthetic (static AND
+    /// runtime). For a synthetic `F` with body `{a, b, ...}` where each
+    /// operand may itself be a synthetic, `atomic_content_of[F]` is the
+    /// transitive flattening into the original atomic vocabulary.
+    /// For non-synthetic class IDs, callers default to `{id}`.
+    atomic_content_of: HashMap<ClassId, std::collections::BTreeSet<ClassId>>,
+    /// Phase 2d: count of facts materialized via subsumer inheritance.
+    /// Bumped each time `push_fact` (or its inherit-from-subsumer call
+    /// in `process_subsumer`) creates a fact whose `(sub, role, target)`
+    /// triple wasn't in `seen_facts` AND whose `sub` differs from the
+    /// originating fact's `sub`. Diagnostic only; not gated by a feature.
+    /// See `docs/phase2d-design.md`.
+    phase2d_facts_inherited: u64,
+    /// Phase 2c-redux: number of sub-role propagations emitted by the
+    /// Phase 2c inner loop in `process_fact` (one bump per successful
+    /// `push_fact` of a `(X, R_k, synthetic)` emission where `R_k ⊑ R_f`
+    /// and X already had a fact on `R_k`). Used by structural canaries /
+    /// diagnostics; not consumed by the reasoner output.
+    phase2c_sub_role_propagations: u64,
 }
 
 impl WorklistEngine {
@@ -139,6 +174,7 @@ impl WorklistEngine {
         num_user_classes: usize,
         num_total_classes: usize,
         rules: ElRules,
+        tseitin: TseitinAllocator,
         role_super: HashMap<RoleId, HashSet<RoleId>>,
     ) -> Self {
         let mut conjunctive_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
@@ -160,6 +196,17 @@ impl WorklistEngine {
         for _ in 0..num_total_classes {
             subsumed_by.push(FixedBitSet::with_capacity(num_total_classes));
         }
+        // Populate atomic_content_of for all static Tseitin synthetics.
+        // The bodies in tseitin.by_body are sorted Vec<ClassId>; we treat
+        // each body operand as atomic (the bodies contain only user-class IDs
+        // and existential-marker IDs from introduce_existential_marker, which
+        // are themselves above the user vocabulary but bounded).
+        let mut atomic_content_of: HashMap<ClassId, std::collections::BTreeSet<ClassId>> =
+            HashMap::new();
+        for (body, &synthetic) in &tseitin.by_body {
+            let atoms: std::collections::BTreeSet<ClassId> = body.iter().copied().collect();
+            atomic_content_of.insert(synthetic, atoms);
+        }
         Self {
             subsumers: Subsumers::with_capacity(num_total_classes),
             subsumed_by,
@@ -177,6 +224,11 @@ impl WorklistEngine {
             disjoints_by_class,
             num_user_classes,
             num_total_classes,
+            tseitin_runtime: tseitin,
+            merged_atom_sets: HashMap::new(),
+            atomic_content_of,
+            phase2d_facts_inherited: 0,
+            phase2c_sub_role_propagations: 0,
         }
     }
 
@@ -208,6 +260,114 @@ impl WorklistEngine {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Return the transitive atomic content of class `c`. For synthetics
+    /// tracked in `atomic_content_of`, returns the stored set. For any
+    /// class not in the map (i.e., a user-vocabulary atomic or an
+    /// existential marker that wasn't given an explicit entry), returns
+    /// the singleton `{c}`.
+    fn atomic_content_of_or_self(&self, c: ClassId) -> std::collections::BTreeSet<ClassId> {
+        if let Some(set) = self.atomic_content_of.get(&c) {
+            set.clone()
+        } else {
+            let mut s = std::collections::BTreeSet::new();
+            s.insert(c);
+            s
+        }
+    }
+
+    /// Introduce a runtime Tseitin synthetic for the conjunction of the
+    /// body's atomic classes. Returns the synthetic class id
+    /// (deduplicated — passing the same sorted body twice returns the
+    /// same id without allocating a new one).
+    ///
+    /// Beyond `TseitinAllocator::introduce` (which only mutates
+    /// `self.rules`), this method ALSO:
+    /// - Grows `self.subsumers`/`self.subsumed_by` bitsets and the
+    ///   per-class index Vecs to fit the new id.
+    /// - Indexes the new conjunctive trigger into `conjunctive_by_body`.
+    /// - Enqueues `synthetic ⊑ body[i]` subsumptions so the standard
+    ///   rules pick them up.
+    ///
+    /// Because `tseitin_runtime` is seeded from the same `by_body` map
+    /// as the collection-time allocator, a body `{A, B}` that was
+    /// already Tseitin-introduced statically (e.g. for `∃r.(A⊓B) ⊑ T`)
+    /// will return the SAME synthetic id here, so the runtime fact
+    /// `(sub, r_func, F)` chains correctly into the existing existential
+    /// trigger.
+    fn introduce_runtime_synthetic(&mut self, body: Vec<ClassId>) -> ClassId {
+        let before_atomic = self.rules.atomic_subsumptions.len();
+        let before_conjunctive = self.rules.conjunctive_triggers.len();
+        // Capture a clone of the body before `introduce` consumes it (sorts
+        // and stores it) so we can compute atomic_content_of for the new
+        // synthetic. On the dedup path we skip this.
+        let body_clone = body.clone();
+        let synthetic = self.tseitin_runtime.introduce(body, &mut self.rules);
+        let s_idx = synthetic.index() as usize;
+        let added_atomic = self.rules.atomic_subsumptions.len() - before_atomic;
+        let added_conjunctive = self.rules.conjunctive_triggers.len() - before_conjunctive;
+        if added_atomic == 0 && added_conjunctive == 0 {
+            // Dedup hit — synthetic already exists; atomic_content_of already
+            // has an entry for it (populated when first allocated).
+            return synthetic;
+        }
+        // Track atomic content: flatten each body operand transitively into
+        // the original-vocabulary atomic class IDs. The result is a flat
+        // BTreeSet so the merge rule can use set operations directly.
+        let mut atoms = std::collections::BTreeSet::new();
+        for b in &body_clone {
+            atoms.extend(self.atomic_content_of_or_self(*b));
+        }
+        self.atomic_content_of.insert(synthetic, atoms);
+        // Grow per-class state if the synthetic id exceeds current capacity.
+        let needed = s_idx + 1;
+        if needed > self.num_total_classes {
+            for bs in &mut self.subsumers.subsumers {
+                bs.grow(needed);
+            }
+            self.subsumers.unsatisfiable.grow(needed);
+            for bs in &mut self.subsumed_by {
+                bs.grow(needed);
+            }
+            while self.subsumers.subsumers.len() < needed {
+                self.subsumers
+                    .subsumers
+                    .push(FixedBitSet::with_capacity(needed));
+            }
+            while self.subsumed_by.len() < needed {
+                self.subsumed_by.push(FixedBitSet::with_capacity(needed));
+            }
+            while self.facts_by_sub.len() < needed {
+                self.facts_by_sub.push(Vec::new());
+            }
+            while self.facts_by_target.len() < needed {
+                self.facts_by_target.push(Vec::new());
+            }
+            while self.conjunctive_by_body.len() < needed {
+                self.conjunctive_by_body.push(Vec::new());
+            }
+            while self.existential_triggers_by_body.len() < needed {
+                self.existential_triggers_by_body.push(Vec::new());
+            }
+            while self.disjoints_by_class.len() < needed {
+                self.disjoints_by_class.push(Vec::new());
+            }
+            self.num_total_classes = needed;
+        }
+        // Index any new conjunctive triggers into conjunctive_by_body.
+        for added_idx in before_conjunctive..self.rules.conjunctive_triggers.len() {
+            let bodies = self.rules.conjunctive_triggers[added_idx].bodies.clone();
+            for b in bodies {
+                self.conjunctive_by_body[b.index() as usize].push(added_idx);
+            }
+        }
+        // Enqueue the F ⊑ Bi atomic subsumptions so existing rules fire on them.
+        for added_idx in before_atomic..self.rules.atomic_subsumptions.len() {
+            let sub_ax = self.rules.atomic_subsumptions[added_idx];
+            self.todo_subsumer.push_back((sub_ax.sub, sub_ax.sup));
+        }
+        synthetic
     }
 
     /// Seed the worklist from told axioms + reflexivity.
@@ -289,6 +449,23 @@ impl WorklistEngine {
     /// Insert a new existential fact and enqueue it for processing.
     /// Returns the index assigned to the fact, or `None` if it was
     /// already known.
+    ///
+    /// Phase 2d: after the new fact is inserted, propagate it to every
+    /// subclass of `fact.sub` by recursively calling `push_fact` for
+    /// `(subclass, fact.role, fact.target)`. Sound by the standard
+    /// subsumer-driven existential propagation argument: if
+    /// `subclass ⊑ fact.sub` and `(fact.sub, role, target)` is a sound
+    /// existential commitment, then every `subclass`-instance is a
+    /// `fact.sub`-instance with the same role witness, so
+    /// `(subclass, role, target)` holds.
+    ///
+    /// Termination: bounded by `seen_facts` dedup over the finite
+    /// `(sub, role, target)` triple space. The recursion at each
+    /// subclass either short-circuits (triple already seen) or inserts
+    /// a fresh triple; total fresh insertions ≤ number of distinct
+    /// triples in the closure.
+    ///
+    /// See `docs/phase2d-design.md`.
     fn push_fact(&mut self, fact: ExistentialFact) -> Option<usize> {
         if !self.seen_facts.insert((fact.sub, fact.role, fact.target)) {
             return None;
@@ -298,6 +475,23 @@ impl WorklistEngine {
         self.facts_by_sub[fact.sub.index() as usize].push(idx);
         self.facts_by_target[fact.target.index() as usize].push(idx);
         self.todo_fact.push_back(idx);
+        // Phase 2d: propagate to every subclass of fact.sub.
+        // subs_of_class returns an owned Vec, so no borrow conflict
+        // with the recursive push_fact mutable borrow.
+        let subs = self.subs_of_class(fact.sub);
+        for c in subs {
+            if c == fact.sub {
+                continue;
+            }
+            let inherited = ExistentialFact {
+                sub: c,
+                role: fact.role,
+                target: fact.target,
+            };
+            if self.push_fact(inherited).is_some() {
+                self.phase2d_facts_inherited += 1;
+            }
+        }
         Some(idx)
     }
 
@@ -410,6 +604,30 @@ impl WorklistEngine {
                 }
             }
         }
+        // Phase 2d: materialize D's existential facts on C in
+        // facts_by_sub[c]. When C newly has D as subsumer, every
+        // existential fact on D represents a witness that C-instances
+        // also have (model-theoretically: C ⊑ D ⇒ every C-instance is a
+        // D-instance with the same role witness). Sound by the standard
+        // ELK existential-propagation argument; the existing sub-side
+        // trigger-firing above (lines 525-557) already exploits this
+        // semantically — Phase 2d materializes the fact explicitly so
+        // fact-time rules (Phase 2a witness-merge, future Phase 2c-redux,
+        // chain rule) can see it on `facts_by_sub[c]`.
+        //
+        // See docs/phase2d-design.md for soundness + termination.
+        let inherit_fact_idxs = self.facts_by_sub[d.index() as usize].clone();
+        for fidx in inherit_fact_idxs {
+            let fact = self.facts[fidx];
+            let inherited = ExistentialFact {
+                sub: c,
+                role: fact.role,
+                target: fact.target,
+            };
+            if self.push_fact(inherited).is_some() {
+                self.phase2d_facts_inherited += 1;
+            }
+        }
         // Chain rule — `c` is fact1.target side: when a new subsumer
         // `d` lands on `c`, for every fact1 = (A, r1', c) with the
         // chain's r1 in r1's super-roles, and every fact2 = (d, r2',
@@ -446,6 +664,7 @@ impl WorklistEngine {
     }
 
     /// Fire all rules triggered by a freshly-added existential fact.
+    #[allow(clippy::too_many_lines)]
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
         let role_supers = supers_of(&self.role_super, fact.role);
@@ -554,6 +773,106 @@ impl WorklistEngine {
                                 target: fact.target,
                             });
                         }
+                    }
+                }
+            }
+        }
+        // Phase 2a EL++ functional-role witness-merge rule (T4.5
+        // atom-set redesign). For each functional super-role R_f of
+        // `fact.role`, accumulate `fact.target`'s atomic content into
+        // the (sub, R_f) atom set; if it grew (and it isn't the first
+        // arrival), allocate a synthetic for the FLAT set and emit a
+        // new fact (sub, R_f, synthetic). Termination: the atom set
+        // is monotonically bounded by the atomic vocabulary, so per
+        // (sub, R_f) the rule fires at most |atomic_vocabulary| times.
+        let funcs = self.rules.functional_supers_of(fact.role).to_vec();
+        if !funcs.is_empty() {
+            let new_atoms = self.atomic_content_of_or_self(fact.target);
+            for rf in funcs {
+                let key = (fact.sub, rf);
+                let prev_set = self.merged_atom_sets.entry(key).or_default();
+                let was_first = prev_set.is_empty();
+                let grew = !new_atoms.is_subset(prev_set);
+                if grew {
+                    prev_set.extend(&new_atoms);
+                }
+                if was_first || !grew {
+                    // First-arrival is mute, non-growing is no-op.
+                    //
+                    // Soundness rationale for was_first: a SINGLE
+                    // sub-role fact `(sub, R_i, A)` with R_i ⊑ R_f
+                    // doesn't yet exercise functionality — it just
+                    // asserts an R_f-witness exists in A. CR9 role-
+                    // hierarchy propagation already emits the derived
+                    // `(sub, R_f, A)` fact, so no merge synthetic is
+                    // needed to recover the entailment. The witness-
+                    // merge rule's payoff only starts when a SECOND
+                    // sub-role fact arrives, forcing the two witnesses
+                    // to coincide by functionality.
+                    continue;
+                }
+                // Snapshot the now-grown set as a sorted Vec to pass
+                // to the allocator (which sorts+dedups internally, but
+                // we already have it sorted via BTreeSet).
+                let body: Vec<ClassId> = prev_set.iter().copied().collect();
+                let synthetic = self.introduce_runtime_synthetic(body);
+                let new_fact = ExistentialFact {
+                    sub: fact.sub,
+                    role: rf,
+                    target: synthetic,
+                };
+                let dedup_key = (new_fact.sub, new_fact.role, new_fact.target);
+                if self.seen_facts.insert(dedup_key) {
+                    let new_idx = self.facts.len();
+                    self.facts.push(new_fact);
+                    self.facts_by_sub[new_fact.sub.index() as usize].push(new_idx);
+                    self.facts_by_target[new_fact.target.index() as usize].push(new_idx);
+                    self.todo_fact.push_back(new_idx);
+                }
+                // Phase 2c-redux (restored on top of Phase 2d): propagate
+                // the merged synthetic back to sub-roles X has facts on.
+                // With Phase 2d, `facts_by_sub[X]` now includes inherited
+                // facts from X's super-classes, so this loop has the
+                // preconditions to fire even when X doesn't directly
+                // assert the existential.
+                //
+                // Soundness (witness-coincidence): any existing
+                // `(X, R_k, _)` fact has its R_k-witness coinciding with
+                // the R_f-witness by functionality of R_f, so X already
+                // has the merged atom-set content via R_k. Inherited
+                // facts preserve the model-theoretic witness existence
+                // (C ⊑ D ⇒ every C-instance is a D-instance with the
+                // same witness — see docs/phase2d-design.md §Soundness;
+                // docs/phase2c-fix-target.md §"Rule design" for the
+                // original argument).
+                //
+                // We skip `other.role == fact.role` to avoid the
+                // trivially redundant emission on R_arr (Phase 2a's CR9
+                // hierarchy propagation already covers it). We snapshot
+                // `facts_by_sub[fact.sub]` before iterating because
+                // `push_fact` writes into it.
+                //
+                // Re-using `push_fact` here (vs the manual insertion
+                // pattern Phase 2c originally used) means each emitted
+                // `(X, R_k, synthetic)` also recursively inherits to X's
+                // subclasses via Phase 2d — sound by the same witness-
+                // inheritance argument.
+                let facts_snapshot = self.facts_by_sub[fact.sub.index() as usize].clone();
+                for other_idx in facts_snapshot {
+                    let other = self.facts[other_idx];
+                    if other.role == fact.role {
+                        continue;
+                    }
+                    if !self.rules.functional_supers_of(other.role).contains(&rf) {
+                        continue;
+                    }
+                    let prop_fact = ExistentialFact {
+                        sub: fact.sub,
+                        role: other.role,
+                        target: synthetic,
+                    };
+                    if self.push_fact(prop_fact).is_some() {
+                        self.phase2c_sub_role_propagations += 1;
                     }
                 }
             }
@@ -713,6 +1032,35 @@ struct ElRules {
     /// and inverse-role chains are dropped — those stay in the
     /// tableau's lane.
     chain_axioms: Vec<(RoleId, RoleId, RoleId)>,
+    /// Roles declared `FunctionalObjectProperty(...)`. Indexed by role
+    /// id (dense bitset for O(1) lookup). Phase 2a EL++ rule input.
+    functional_roles: FixedBitSet,
+    /// Per-role precomputed list of FUNCTIONAL super-roles in the
+    /// transitive closure: `functional_supers_of[r]` lists every
+    /// functional role `R_f` such that `r ⊑ R_f` (reflexive: r itself
+    /// if functional). Precomputed once at collection time so the
+    /// runtime worklist rule doesn't re-walk `role_super` on every new
+    /// existential fact. Empty for roles with no functional ancestor.
+    functional_supers_of: Vec<Vec<RoleId>>,
+}
+
+impl ElRules {
+    /// True if `r` is declared `FunctionalObjectProperty`.
+    fn is_functional(&self, r: RoleId) -> bool {
+        let i = r.index() as usize;
+        i < self.functional_roles.len() && self.functional_roles.contains(i)
+    }
+
+    /// Precomputed: every functional role `R_f` with `r ⊑ R_f`.
+    /// Empty slice if `r` has no functional ancestor.
+    fn functional_supers_of(&self, r: RoleId) -> &[RoleId] {
+        let i = r.index() as usize;
+        if let Some(v) = self.functional_supers_of.get(i) {
+            v.as_slice()
+        } else {
+            &[]
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -826,12 +1174,48 @@ impl TseitinAllocator {
         self.by_existential.insert((role, body), marker);
         marker
     }
+
+    /// Like `introduce_existential_marker`, but ALSO emits the
+    /// existential fact `(marker, role, body)` so the marker
+    /// behaves equivalent to `∃R.B` in the closure — not just
+    /// one-way.
+    ///
+    /// Used by `atomic_classes_with_existential_markers` where the
+    /// marker is consumed as a body operand inside a Tseitin
+    /// synthetic that requires full equivalence semantics: the
+    /// outer synthetic's closure needs to drive CR5/CR9 propagation
+    /// through the inner existential (e.g., sub-property + sub-class
+    /// chains through the inner existential), which requires the marker
+    /// to have an existential fact about itself.
+    ///
+    /// LHS-trigger call sites (where the marker semantics ARE
+    /// correctly asymmetric — "X has an R-edge to a B" without
+    /// also asserting "F has an R-witness in B") continue to use
+    /// `introduce_existential_marker`.
+    ///
+    /// Soundness: the marker is defined by the surrounding Tseitin
+    /// synthetic to be ≡ `∃R.B`, so the new fact `(F, R, B)` is just
+    /// the definition restated. See `docs/phase2b-trace.md`.
+    fn introduce_equivalent_existential_marker(
+        &mut self,
+        role: RoleId,
+        body: ClassId,
+        rules: &mut ElRules,
+    ) -> ClassId {
+        let marker = self.introduce_existential_marker(role, body, rules);
+        rules.existential_facts.push(ExistentialFact {
+            sub: marker,
+            role,
+            target: body,
+        });
+        marker
+    }
 }
 
 fn collect_el_rules(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
-) -> (ElRules, usize) {
+) -> (ElRules, TseitinAllocator, usize) {
     let mut rules = ElRules::default();
     let mut tseitin = TseitinAllocator::new(internal.vocabulary.num_classes());
     // Pass 1: metadata that the SubClassOf lowering needs to see — in
@@ -951,7 +1335,36 @@ fn collect_el_rules(
         }
     }
     let total_classes = tseitin.next_id as usize;
-    (rules, total_classes)
+
+    // Phase 2a: collect functional-role declarations and precompute
+    // the per-role list of functional super-roles (the index the
+    // runtime witness-merge rule consults on every new existential
+    // fact arrival).
+    let num_roles = internal.vocabulary.num_roles();
+    rules.functional_roles = FixedBitSet::with_capacity(num_roles);
+    for ax in &internal.axioms {
+        if let Axiom::FunctionalRole(role) = ax
+            && !role.is_inverse()
+        {
+            let idx = role.role_id().index() as usize;
+            if idx < num_roles {
+                rules.functional_roles.insert(idx);
+            }
+        }
+    }
+    rules.functional_supers_of = vec![Vec::new(); num_roles];
+    for r_idx in 0..num_roles {
+        let r = RoleId::new(u32::try_from(r_idx).expect("role id fits in u32"));
+        let mut supers: Vec<RoleId> = role_super
+            .get(&r)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        supers.retain(|s| rules.is_functional(*s));
+        supers.sort_unstable_by_key(|r| r.index());
+        rules.functional_supers_of[r_idx] = supers;
+    }
+
+    (rules, tseitin, total_classes)
 }
 
 /// Lower a single `SubClassOf(sub, sup)` axiom into atomic facts
@@ -1064,10 +1477,57 @@ fn lower_sub_class_of(
             if !salvageable {
                 return;
             }
+            // The existing atomic-operand loop: any atomic class on
+            // the right (or atomic operand of an `And` on the right)
+            // becomes a head of the conjunctive trigger.
             for head in atomic_operands_on_right(sup, pool) {
                 rules.conjunctive_triggers.push(ConjunctiveTrigger {
                     bodies: bodies.clone(),
                     head,
+                });
+            }
+            // Phase 2b.5: a non-atomic `∃R.B` on the right (or as an
+            // operand of an `And` on the right) also produces a trigger.
+            // Allocate a two-way marker via `introduce_equivalent_existential_marker`
+            // and push a conjunctive trigger `{bodies} ⊑ marker`. Without
+            // this, axioms of shape `And(...) ⊑ ∃R.B` are silently dropped
+            // because `atomic_operands_on_right` returns [] for `Some`.
+            // One-way would consume an R-witness rather than create one, so
+            // the chain `Y ⊑ {bodies} → Y ⊑ marker → ... → Y has R-witness`
+            // requires the marker to emit the fact (M, R, body).
+            // See docs/phase2b-trace2.md for the diagnostic.
+            let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
+                ConceptExpr::Some(role, body) if !role.is_inverse() => {
+                    atomic_or_tseitin_body(*body, pool, rules, tseitin)
+                        .map(|body_id| vec![(role.role_id(), body_id)])
+                        .unwrap_or_default()
+                }
+                ConceptExpr::And(operands) => operands
+                    .iter()
+                    .filter_map(|&op| match pool.get(op) {
+                        ConceptExpr::Some(role, body) if !role.is_inverse() => {
+                            atomic_or_tseitin_body(*body, pool, rules, tseitin)
+                                .map(|body_id| (role.role_id(), body_id))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for (role, body_id) in sup_existentials {
+                // Use the two-way (equivalent) marker: M ≡ ∃R.B, so
+                // both `∃R.B ⊑ M` and the existential fact `(M, R, B)`
+                // are emitted. The conjunctive trigger gives the
+                // conjunction M as a subsumer; the existential fact on M
+                // then propagates the R-witness to any class that gains M,
+                // completing the chain `{bodies} ⊑ M ⊑ ∃R.B ⊑ T`. A
+                // one-way marker would not complete: Y gains M but never
+                // gets the R-witness needed for downstream triggers.
+                let marker =
+                    tseitin.introduce_equivalent_existential_marker(role, body_id, rules);
+                rules.conjunctive_triggers.push(ConjunctiveTrigger {
+                    bodies: bodies.clone(),
+                    head: marker,
                 });
             }
         }
@@ -1253,7 +1713,7 @@ fn atomic_classes_with_existential_markers(
             ConceptExpr::Atomic(id) => out.push(*id),
             ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-                let marker = tseitin.introduce_existential_marker(
+                let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
                     inner_id,
                     rules,
@@ -1262,7 +1722,7 @@ fn atomic_classes_with_existential_markers(
             }
             ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
                 let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-                let marker = tseitin.introduce_existential_marker(
+                let marker = tseitin.introduce_equivalent_existential_marker(
                     role.role_id(),
                     inner_id,
                     rules,
@@ -2054,5 +2514,666 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "A"), class(&internal, "A")));
+    }
+
+    /// Phase 2a canary: synthetic mimicking GALEN's
+    /// <Region>Pathology / PathologicalCondition pattern. A functional
+    /// super-role `r_func` has two sibling sub-properties `r_i` and `r_j`.
+    /// Class `Subject` has existential edges via both sub-properties;
+    /// class `Target` is the conjunctive consumer through `r_func`.
+    ///
+    /// The expected entailment `Subject ⊑ Target` requires the EL++
+    /// functional-role witness-merge rule. ASSERTS THE FIX (Phase 2a rule active).
+    /// Do not delete; this canary is the regression test for the rule.
+    #[test]
+    fn functional_role_merge_canary_recovers_entailment() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2a/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _prefixes): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("canary ontology parses");
+        let internal = convert_ontology(&set_onto).expect("canary lowers to IR");
+        let subsumers = crate::saturate(&internal);
+
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a/Target")
+            .expect("Target declared");
+
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a regression: the functional-role witness-merge rule failed to derive \
+             Subject ⊑ Target. The rule, the role-hierarchy index, or the runtime Tseitin \
+             allocator likely regressed."
+        );
+    }
+
+    /// Phase 2a — 3-sub-property fan-in: r_i, r_j, r_k all ⊑ functional
+    /// r_func; Subject has ∃r_i.A, ∃r_j.B, ∃r_k.C; Target ≡ via
+    /// ∃r_func.(A ⊓ B ⊓ C). The witness-merge rule must accumulate
+    /// the growing conjunction across three fact arrivals.
+    ///
+    /// Previously ignored as a known limitation of T4's single-synthetic
+    /// tracking. Fixed in T4.5 by the atom-set redesign: `merged_atom_sets`
+    /// accumulates the flat set {A, B, C} incrementally; each arrival
+    /// checks whether the set grew; termination is bounded by the atomic
+    /// vocabulary size.
+    #[test]
+    fn functional_role_merge_3_sub_property_fan_in() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a3/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2a3/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_k))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubObjectPropertyOf(:r_k :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_k :C))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B :C)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a3/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a3/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a 3-sub-property fan-in: the witness-merge rule failed \
+             to accumulate {{A, B, C}} across three sub-property facts."
+        );
+    }
+
+    /// Phase 2a — 4-sub-property fan-in. Approximates GALEN's denser
+    /// functional roles (StatusAttribute has 5 sub-properties;
+    /// ProcessModifierAttribute has 12). Confirms atom-set redesign
+    /// scales beyond the 3-property case T4.5 was designed for.
+    #[test]
+    fn functional_role_merge_4_sub_property_fan_in() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a4/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2a4/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_k))
+    Declaration(ObjectProperty(:r_l))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubObjectPropertyOf(:r_k :r_func)
+    SubObjectPropertyOf(:r_l :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_k :C))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_l :D))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B :C :D)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a4/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2a4/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a 4-sub-property fan-in: atom-set design should scale to 4 sub-properties."
+        );
+    }
+
+    /// Phase 2a — chained functional super-roles: r_i, r_j ⊑ r_func ⊑
+    /// r_super, both r_func and r_super functional. When (sub, r_j, B)
+    /// arrives, funcs = functional_supers_of(r_j) enumerates BOTH r_func
+    /// AND r_super in a single rule pass; merged_atom_sets is updated
+    /// for both keys (sub, r_func) and (sub, r_super), and synthetics are
+    /// emitted at both levels. The runtime-emitted derived facts then
+    /// short-circuit on re-entry because their atom sets already match
+    /// merged_atom_sets. Tests that the precomputed functional_supers_of
+    /// correctly includes BOTH ancestors.
+    #[test]
+    fn functional_role_merge_chained_functional_supers() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2ac/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2ac/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_super))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    FunctionalObjectProperty(:r_super)
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_func :r_super)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(ObjectSomeValuesFrom(:r_super ObjectIntersectionOf(:A :B)) :Target)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2ac/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2ac/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2a chained functional supers: the witness-merge rule \
+             failed to cascade from r_func to r_super; check that \
+             functional_supers_of(r_func) includes r_super."
+        );
+    }
+
+    /// Phase 2d canary: fact-on-subclass inheritance materializes
+    /// `(A, R, T)` on `facts_by_sub[A]` when `A ⊑ B` and B has a
+    /// `(B, R, T)` existential fact. Asserts both the materialized
+    /// fact and the `phase2d_facts_inherited` counter.
+    ///
+    /// Mirrors the design's Step 4 structural assertion in
+    /// `docs/phase2d-design.md` §"Code-change surface" §"Structural
+    /// canary" — the minimal A⊑B + (B,R,T) → (A,R,T) inheritance.
+    #[test]
+    fn phase2d_fact_inherits_to_subclass() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2d/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2d/test>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:T))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(:A :B)
+    SubClassOf(:B ObjectSomeValuesFrom(:R :T))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("canary parses");
+        let internal = convert_ontology(&set_onto).expect("canary lowers");
+
+        // Mirror saturate() inline so we retain ownership of the engine
+        // and can inspect its internal facts_by_sub + counter.
+        let n = internal.vocabulary.num_classes();
+        let role_super = build_role_super(&internal);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
+        let mut engine =
+            WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
+        engine.seed();
+        engine.run();
+
+        let a = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2d/A")
+            .expect("A declared");
+        let b = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2d/B")
+            .expect("B declared");
+
+        let a_facts: Vec<ExistentialFact> = engine.facts_by_sub[a.index() as usize]
+            .iter()
+            .map(|&idx| engine.facts[idx])
+            .collect();
+        let b_facts: Vec<ExistentialFact> = engine.facts_by_sub[b.index() as usize]
+            .iter()
+            .map(|&idx| engine.facts[idx])
+            .collect();
+
+        assert!(
+            !b_facts.is_empty(),
+            "Phase 2d canary precondition: B should have at least one \
+             existential fact from `B ⊑ ∃R.T`; got: {b_facts:?}"
+        );
+        let b_fact = b_facts[0];
+        assert!(
+            a_facts
+                .iter()
+                .any(|f| f.role == b_fact.role && f.target == b_fact.target),
+            "Phase 2d should have inherited B's existential fact onto A's \
+             facts_by_sub. a_facts={a_facts:?} b_facts={b_facts:?}"
+        );
+        assert!(
+            engine.phase2d_facts_inherited > 0,
+            "Phase 2d counter `phase2d_facts_inherited` should bump on \
+             inheritance; got 0."
+        );
+    }
+
+    /// Phase 2c-redux — structural sanity: the sub-role witness-
+    /// propagation rule bumps its counter on the 4-sub-property fan-in
+    /// canary. Restored from b83fcd6 (reverted at cc2019e) on top of
+    /// Phase 2d.
+    ///
+    /// Setup: Subject has 4 existential facts on sub-roles `r_i`, `r_j`,
+    /// `r_k`, `r_l` all sharing functional super `r_func`. The Phase 2c
+    /// inner loop fires after Phase 2a's emission on the 2nd, 3rd, 4th
+    /// fact arrivals (each grows the `merged_atom_set`, emits the
+    /// merged synthetic on `r_func`, then iterates `facts_by_sub[Subject]`
+    /// to propagate the synthetic onto sibling sub-roles).
+    ///
+    /// We assert `phase2c_sub_role_propagations > 0` after `engine.run()`.
+    /// The exact count is implementation-defined (depends on dedup +
+    /// iteration order); the load-bearing property is "the rule fired
+    /// at least once on this clean positive shape". Note: under Phase
+    /// 2d, the synthetic facts ALSO inherit to subclasses; the counter
+    /// still tracks only the direct sub-role propagations.
+    #[test]
+    fn phase2c_sub_role_propagation_counter_bumps_on_4_fan_in() {
+        let src = "\
+Prefix(:=<http://rustdl.test/p2c_counter/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2c_counter/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_k))
+    Declaration(ObjectProperty(:r_l))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubObjectPropertyOf(:r_k :r_func)
+    SubObjectPropertyOf(:r_l :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_k :C))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_l :D))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B :C :D)) :Target)
+)
+";
+        let internal = parse_internal(src);
+
+        // Mirror `saturate()` inline so we retain ownership of the
+        // engine and can inspect its private counter.
+        let n = internal.vocabulary.num_classes();
+        let role_super = build_role_super(&internal);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
+        let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
+        engine.seed();
+        engine.run();
+
+        assert!(
+            engine.phase2c_sub_role_propagations > 0,
+            "Phase 2c-redux rule did not fire on the 4-sub-property \
+             fan-in canary. Expected at least one (X, R_k, synthetic) \
+             propagation; got 0. Either the rule was disabled, the inner \
+             loop's preconditions changed, or Phase 2a's emission \
+             condition (!was_first && grew) no longer triggers on this \
+             shape."
+        );
+    }
+
+    /// Phase 2a Task 3: verify that `collect_el_rules` builds the
+    /// `functional_roles` bitset and `functional_supers_of` index correctly
+    /// on a simple 4-role / 1-declared-functional / 2-sub-properties ontology.
+    #[test]
+    fn collect_el_rules_records_functional_roles_and_their_supers() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2a/>)
+Ontology(<http://rustdl.test/p2a/funcrole>
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_unrelated))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let role_super = crate::build_role_super(&internal);
+        let (rules, _tseitin, _num_total) = crate::collect_el_rules(&internal, &role_super);
+
+        let id = |iri: &str| internal.vocabulary.role_id(iri).expect("role declared");
+        let rf = id("http://rustdl.test/p2a/r_func");
+        let ri = id("http://rustdl.test/p2a/r_i");
+        let rj = id("http://rustdl.test/p2a/r_j");
+        let ru = id("http://rustdl.test/p2a/r_unrelated");
+
+        assert!(rules.is_functional(rf), "r_func is declared functional");
+        assert!(!rules.is_functional(ri));
+        assert!(!rules.is_functional(rj));
+        assert!(!rules.is_functional(ru));
+
+        let supers = |r| rules.functional_supers_of(r).to_vec();
+        assert_eq!(
+            supers(ri),
+            vec![rf],
+            "r_i ⊑ r_func and r_func is functional"
+        );
+        assert_eq!(supers(rj), vec![rf], "r_j ⊑ r_func");
+        assert_eq!(supers(rf), vec![rf], "r_func is its own super (reflexive)");
+        assert!(supers(ru).is_empty(), "r_unrelated has no functional super");
+    }
+
+    /// Phase 2b canary: minimal repro of GALEN's
+    /// `KneeJointStability ⊑ JointStability` pattern (pair_08 in the
+    /// Phase 2b.0 fixture set). The axiom shape:
+    ///
+    ///   T ≡ A ⊓ ∃R.(B ⊓ ∃S.C)
+    ///   X ≡ A ⊓ ∃R.(B ⊓ ∃S'.C')   where S' ⊑ S, C' ⊑ C
+    ///
+    /// Expected entailment: X ⊑ T. Derivation: X's R-witness is in
+    /// (B ⊓ ∃S'.C'); via sub-property S' ⊑ S, the witness is also in
+    /// ∃S.C' (CR9); via sub-class C' ⊑ C, the witness has subsumer
+    /// `∃S.C` (CR5); so the witness is in B ⊓ ∃S.C = T's R-body;
+    /// closing the conjunctive trigger that defines T.
+    ///
+    /// Phase 2b.0's analysis (docs/phase2b-galen-diagnosis.md) traced
+    /// the bug to `introduce_existential_marker`'s one-way semantics
+    /// being inadequate when the marker is reused inside a Tseitin
+    /// synthetic that needs full equivalence. This canary ASSERTS THE
+    /// FIX (Phase 2b rule active). Task 4 of Phase 2b introduced
+    /// `introduce_equivalent_existential_marker` which emits both the
+    /// trigger and the fact, enabling CR5/CR9 propagation through
+    /// the marker.
+    #[test]
+    fn compound_existential_body_canary_recovers_entailment() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2b/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2b/test>
+    Declaration(Class(:T))
+    Declaration(Class(:X))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:C_sub))
+    Declaration(ObjectProperty(:R))
+    Declaration(ObjectProperty(:S))
+    Declaration(ObjectProperty(:S_sub))
+    SubObjectPropertyOf(:S_sub :S)
+    SubClassOf(:C_sub :C)
+    EquivalentClasses(:T ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S :C)))))
+    EquivalentClasses(:X ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S_sub :C_sub)))))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("canary parses");
+        let internal = convert_ontology(&set_onto).expect("canary lowers");
+        let subsumers = crate::saturate(&internal);
+        let x = internal.vocabulary.class_id("http://rustdl.test/p2b/X").expect("X declared");
+        let t = internal.vocabulary.class_id("http://rustdl.test/p2b/T").expect("T declared");
+
+        assert!(
+            subsumers.contains(x, t),
+            "Phase 2b regression: the compound existential-body fix \
+             failed to derive X ⊑ T. introduce_equivalent_existential_marker \
+             likely regressed."
+        );
+    }
+
+    /// Phase 2b — cluster A shape canary: paired-anatomy pattern.
+    /// `Paired ≡ Body ⊓ ∃isPaired.Paired_self` style (the actual GALEN
+    /// shape) — verifies the fix carries through more complex nested
+    /// shapes than the simple pair_08 single-hop case.
+    #[test]
+    fn compound_existential_body_cluster_a_paired_anatomy_canary() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2bA/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2bA/test>
+    Declaration(Class(:Paired))
+    Declaration(Class(:Body))
+    Declaration(Class(:Limb))
+    Declaration(Class(:Femur))
+    Declaration(ObjectProperty(:isPaired))
+    Declaration(ObjectProperty(:isLimbDivision))
+    Declaration(ObjectProperty(:isBodyDivision))
+    SubObjectPropertyOf(:isLimbDivision :isBodyDivision)
+    SubClassOf(:Limb :Body)
+    EquivalentClasses(:Paired ObjectIntersectionOf(:Body ObjectSomeValuesFrom(:isBodyDivision :Body)))
+    SubClassOf(:Femur ObjectIntersectionOf(:Body ObjectSomeValuesFrom(:isLimbDivision :Limb)))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let femur =
+            internal.vocabulary.class_id("http://rustdl.test/p2bA/Femur").expect("Femur declared");
+        let paired =
+            internal
+                .vocabulary
+                .class_id("http://rustdl.test/p2bA/Paired")
+                .expect("Paired declared");
+
+        assert!(
+            subsumers.contains(femur, paired),
+            "Phase 2b cluster-A canary: Femur ⊑ Paired should derive via \
+             (Femur ⊑ ∃isLimbDivision.Limb) + (isLimbDivision ⊑ isBodyDivision) + (Limb ⊑ Body)."
+        );
+    }
+
+    /// Phase 2b.5 canary: `SubClassOf(And(A, B), ∃R.C)` where the RHS
+    /// is a non-atomic existential. This shape was the actual cause
+    /// of pair_01's miss (FemoralHead ⊑ ExactlyPairedBodyStructure
+    /// per docs/phase2b-trace2.md). The LHS-And arm of
+    /// lower_sub_class_of currently drops this trigger because
+    /// atomic_operands_on_right returns [] for a non-atomic RHS.
+    ///
+    /// Expected entailment: Y ⊑ T via:
+    ///   1. Y ⊑ A, Y ⊑ B (told subsumption)
+    ///   2. A ⊓ B ⊑ ∃R.C (the failing axiom)
+    ///   3. ∃R.C ⊑ T (existential trigger that consumes the witness)
+    ///
+    /// ASSERTS THE FIX (Phase 2b.5 active).
+    #[test]
+    fn lhs_and_with_existential_rhs_canary_recovers_entailment() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2b5/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2b5/test>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:T))
+    Declaration(Class(:Y))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(:Y :A)
+    SubClassOf(:Y :B)
+    SubClassOf(ObjectIntersectionOf(:A :B) ObjectSomeValuesFrom(:R :C))
+    SubClassOf(ObjectSomeValuesFrom(:R :C) :T)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let y = internal.vocabulary.class_id("http://rustdl.test/p2b5/Y").expect("Y declared");
+        let t = internal.vocabulary.class_id("http://rustdl.test/p2b5/T").expect("T declared");
+        // Asserts the FIX (Phase 2b.5 active). When the fix lands, this passes.
+        assert!(
+            subsumers.contains(y, t),
+            "Phase 2b.5 regression: A ⊓ B ⊑ ∃R.C didn't lower to a conjunctive trigger; \
+             the LHS-And arm of lower_sub_class_of dropped the axiom because RHS is non-atomic Some."
+        );
+    }
+
+    /// Phase 2b — deeper nesting: A ⊓ ∃R.(B ⊓ ∃S.(C ⊓ ∃U.D)). Two
+    /// levels of nesting, verifying the equivalent-marker fix is
+    /// transitive through chains.
+    #[test]
+    fn compound_existential_body_deeper_nesting_canary() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2bD/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2bD/test>
+    Declaration(Class(:T))
+    Declaration(Class(:X))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:D_sub))
+    Declaration(ObjectProperty(:R))
+    Declaration(ObjectProperty(:S))
+    Declaration(ObjectProperty(:U))
+    Declaration(ObjectProperty(:U_sub))
+    SubObjectPropertyOf(:U_sub :U)
+    SubClassOf(:D_sub :D)
+    EquivalentClasses(:T ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S ObjectIntersectionOf(:C ObjectSomeValuesFrom(:U :D)))))))
+    EquivalentClasses(:X ObjectIntersectionOf(:A ObjectSomeValuesFrom(:R ObjectIntersectionOf(:B ObjectSomeValuesFrom(:S ObjectIntersectionOf(:C ObjectSomeValuesFrom(:U_sub :D_sub)))))))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let x = internal.vocabulary.class_id("http://rustdl.test/p2bD/X").expect("X declared");
+        let t = internal.vocabulary.class_id("http://rustdl.test/p2bD/T").expect("T declared");
+
+        assert!(
+            subsumers.contains(x, t),
+            "Phase 2b deeper nesting canary: 2-level nested existential lowering should work."
+        );
     }
 }

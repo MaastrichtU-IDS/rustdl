@@ -556,6 +556,7 @@ pub fn apply_deferred_concept_or_rules(
     // Snapshot triggers (atomic labels + deps) and the current
     // label set, releasing the graph borrow before mutation.
     let pending: Vec<(ConceptId, DepSet)> = {
+        let label_sig = ctx.graph().blocking(node).label_sig;
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
         let labels = n.labels();
@@ -571,22 +572,45 @@ pub fn apply_deferred_concept_or_rules(
         if triggers.is_empty() {
             return RuleOutcome::NoChange;
         }
+        // Phase 3d: gate the legacy linear-scan fallback ONCE on the
+        // "TBox not finalized" predicate, instead of per-trigger inside
+        // the loop. On finalized TBoxes (the common case), an indexed
+        // lookup miss means "no concept_rules for this trigger" — skip
+        // with `continue` rather than launching an O(R) scan over the
+        // entire concept_rules vector. See `docs/phase3d-fix-target.md`.
         let mut out: Vec<(ConceptId, DepSet)> = Vec::new();
-        for (trigger, deps) in &triggers {
-            let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) else {
-                // Hand-built TBox without finalize(): fall back to a
-                // linear scan over concept_rules for this trigger.
+        if tbox.concept_rules_by_trigger.is_empty() {
+            // Pre-finalize fallback (hand-built TBox without finalize()):
+            // retained for compatibility with unit tests that bypass
+            // `owl_dl_core::absorb::absorb`.
+            for (trigger, deps) in &triggers {
                 for rule in &tbox.concept_rules {
-                    if rule.trigger == *trigger && needs_deferred_or(pool, rule.conclusion, labels)
-                    {
-                        out.push((rule.conclusion, deps.clone()));
+                    if rule.trigger == *trigger {
+                        let (needs, bloom_hit) =
+                            needs_deferred_or(pool, rule.conclusion, labels, label_sig);
+                        if bloom_hit {
+                            crate::bump_counter!(ctx, needs_deferred_or_bloom_rejects);
+                        }
+                        if needs {
+                            out.push((rule.conclusion, deps.clone()));
+                        }
                     }
                 }
-                continue;
-            };
-            for &c in conclusions {
-                if needs_deferred_or(pool, c, labels) {
-                    out.push((c, deps.clone()));
+            }
+        } else {
+            for (trigger, deps) in &triggers {
+                let Some(conclusions) = tbox.concept_rules_by_trigger.get(trigger) else {
+                    crate::bump_counter!(ctx, apply_deferred_concept_or_skip_missing_trigger);
+                    continue;
+                };
+                for &c in conclusions {
+                    let (needs, bloom_hit) = needs_deferred_or(pool, c, labels, label_sig);
+                    if bloom_hit {
+                        crate::bump_counter!(ctx, needs_deferred_or_bloom_rejects);
+                    }
+                    if needs {
+                        out.push((c, deps.clone()));
+                    }
                 }
             }
         }
@@ -609,13 +633,66 @@ pub fn apply_deferred_concept_or_rules(
 /// the Or is not already a label, and none of its disjuncts is.
 /// Non-Or concepts return `false` (they were added eagerly by
 /// `apply_concept_rules`).
-fn needs_deferred_or(pool: &owl_dl_core::ConceptPool, c: ConceptId, labels: &[ConceptId]) -> bool {
+///
+/// Returns `(needs, bloom_rejected)`. `bloom_rejected` is `true`
+/// when the Phase 3 bloom prefilter short-circuited the call (the
+/// `args_mask & label_sig == 0` fast path) — the caller bumps the
+/// corresponding counter so counters don't require threading `ctx`
+/// through here. See `docs/phase3-fix-target.md`.
+fn needs_deferred_or(
+    pool: &owl_dl_core::ConceptPool,
+    c: ConceptId,
+    labels: &[ConceptId],
+    label_sig: u64,
+) -> (bool, bool) {
     match pool.get(c) {
         ConceptExpr::Or(args) => {
-            labels.binary_search(&c).is_err()
-                && !args.iter().any(|d| labels.binary_search(d).is_ok())
+            // Phase 3 bloom prefilter — three passes.
+            //
+            // Invariant: label ∈ labels ⟹ label_sig_bit(label) & label_sig ≠ 0.
+            // Contrapositive: bit clear ⟹ concept definitely absent.
+            //
+            // Pass 1: c itself.
+            // If bit(c) is clear in label_sig, c is provably absent —
+            // skip the binary_search(&c). If plausibly present, we
+            // still need the binary_search to confirm (bloom has FPs).
+            let c_bit = crate::graph::label_sig_bit(c);
+            let c_maybe_present = (label_sig & c_bit) != 0;
+            if c_maybe_present && labels.binary_search(&c).is_ok() {
+                // c IS in labels — no need to materialise the Or.
+                return (false, false);
+            }
+            // At this point we know: either c_maybe_present is false
+            // (c is definitely absent, condition 1 satisfied) or c is
+            // absent despite the plausible bit (binary_search confirmed).
+            // Either way, condition 1 is satisfied. Check condition 2.
+
+            // Pass 2: disjuncts — combined mask fast path.
+            // OR the bloom bits of every disjunct. If none are set,
+            // no disjunct can be present — return true immediately.
+            // This is the "big win" for GALEN (skips all per-disjunct
+            // binary_searches).
+            let mut args_mask: u64 = 0;
+            for &d in args {
+                args_mask |= crate::graph::label_sig_bit(d);
+            }
+            if (label_sig & args_mask) == 0 {
+                // Bloom reject: no disjunct can be in labels.
+                // needs_deferred_or → true, and we short-circuited.
+                return (true, true);
+            }
+
+            // Pass 3 (mixed case): at least one disjunct's bit is
+            // set; we need binary_search to disambiguate.
+            // Skip disjuncts whose bit is provably absent (bloom FP
+            // guard: only search where the bit suggests presence).
+            let any_disjunct_present = args.iter().any(|d| {
+                (label_sig & crate::graph::label_sig_bit(*d)) != 0
+                    && labels.binary_search(d).is_ok()
+            });
+            (!any_disjunct_present, false)
         }
-        _ => false,
+        _ => (false, false),
     }
 }
 
@@ -1381,4 +1458,231 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
         }
     }
     RuleOutcome::NoChange
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 3 canaries
+// ──────────────────────────────────────────────────────────────────────────
+//
+// Canary 1 (`phase3_or_heavy_synthetic_verdicts`) must PASS pre-fix:
+// the current code is verdict-correct; the bloom prefilter (T4) changes
+// speed, not outcomes.
+//
+// Canary 2 (`phase3_bloom_prefilter_rejects_on_or_heavy_synthetic`) is
+// gated behind `#[cfg(feature = "counters")]`.  It references a counter
+// field (`needs_deferred_or_bloom_rejects`) that does not yet exist on
+// `RuleCounters`.  It therefore FAILS TO COMPILE under
+// `--features counters` until T4 adds the field — that is the intended
+// gap.  Without the feature flag, `cargo test -p owl-dl-tableau` never
+// sees the canary and the build stays clean.
+
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod phase3_canaries {
+    use crate::TableauContext;
+    use owl_dl_core::{AbsorbedTBox, ClassId, ConceptRule, ConceptPool};
+
+    // ── Synthetic Or-heavy ontology fixture ─────────────────────────────
+    //
+    // TBox rules (post-absorption):
+    //   A ⊑ Or(B, C)     — class A → conclusion Or(B, C)
+    //   D ⊑ Or(B, E)     — class D → conclusion Or(B, E)
+    //   F ⊑ B             — class F → conclusion B  (F is concretely B)
+    //   G ⊑ E             — class G → conclusion E  (G is concretely E)
+    //
+    // ClassId assignments:
+    //   0 = A  1 = B  2 = C  3 = D  4 = E  5 = F  6 = G
+    struct OrHeavySynth {
+        pool: ConceptPool,
+        tbox: AbsorbedTBox,
+        // Concept ids for the "witness" satisfiability queries.
+        a: owl_dl_core::ConceptId,
+        d: owl_dl_core::ConceptId,
+        f: owl_dl_core::ConceptId,
+        g: owl_dl_core::ConceptId,
+        b: owl_dl_core::ConceptId,
+        e: owl_dl_core::ConceptId,
+    }
+
+    fn build_or_heavy_synth() -> OrHeavySynth {
+        let mut pool = ConceptPool::new();
+
+        let a_cls = ClassId::new(0);
+        let b_cls = ClassId::new(1);
+        let c_cls = ClassId::new(2);
+        let d_cls = ClassId::new(3);
+        let e_cls = ClassId::new(4);
+        let f_cls = ClassId::new(5);
+        let g_cls = ClassId::new(6);
+
+        let a = pool.atomic(a_cls);
+        let b = pool.atomic(b_cls);
+        let c = pool.atomic(c_cls);
+        let d = pool.atomic(d_cls);
+        let e = pool.atomic(e_cls);
+        let f = pool.atomic(f_cls);
+        let g = pool.atomic(g_cls);
+
+        // Disjunctive conclusions — these are the Or labels the
+        // deferred-OR rule must decide whether to materialise.
+        let or_b_or_c = pool.or([b, c]);
+        let or_b_or_e = pool.or([b, e]);
+
+        let mut tbox = AbsorbedTBox {
+            concept_rules: vec![
+                // A ⊑ Or(B, C)
+                ConceptRule { trigger: a_cls, conclusion: or_b_or_c },
+                // D ⊑ Or(B, E)
+                ConceptRule { trigger: d_cls, conclusion: or_b_or_e },
+                // F ⊑ B
+                ConceptRule { trigger: f_cls, conclusion: b },
+                // G ⊑ E
+                ConceptRule { trigger: g_cls, conclusion: e },
+            ],
+            ..AbsorbedTBox::default()
+        };
+        // Populate concept_rules_by_trigger so apply_deferred_concept_or_rules
+        // takes the fast indexed path, not the linear fallback.
+        tbox.finalize();
+
+        OrHeavySynth { pool, tbox, a, d, f, g, b, e }
+    }
+
+    // ── Canary 1: verdict preservation ──────────────────────────────────
+    //
+    // Every class in the Or-heavy synthetic is satisfiable (no
+    // disjunct contradicts; no disjoint axioms; no ¬ anywhere).
+    // This must PASS with the current code and must CONTINUE to pass
+    // after T4 adds the bloom prefilter — the fix is speed-only.
+    #[test]
+    fn phase3_or_heavy_synthetic_verdicts() {
+        let OrHeavySynth { pool, tbox, a, d, f, g, b, e, .. } = build_or_heavy_synth();
+
+        // A is satisfiable: A triggers Or(B,C); the search picks B (or C).
+        let sat_a = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(a);
+        assert_eq!(sat_a, Some(true), "A should be satisfiable");
+
+        // D is satisfiable: D triggers Or(B,E); the search picks B (or E).
+        let sat_d = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(d);
+        assert_eq!(sat_d, Some(true), "D should be satisfiable");
+
+        // F is satisfiable: F ⊑ B, no contradiction.
+        let sat_f = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(f);
+        assert_eq!(sat_f, Some(true), "F should be satisfiable");
+
+        // G is satisfiable: G ⊑ E, no contradiction.
+        let sat_g = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(g);
+        assert_eq!(sat_g, Some(true), "G should be satisfiable");
+
+        // B and E are individually satisfiable (atomic, no rules fire on them).
+        let sat_b = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(b);
+        assert_eq!(sat_b, Some(true), "B should be satisfiable");
+
+        let sat_e = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(e);
+        assert_eq!(sat_e, Some(true), "E should be satisfiable");
+    }
+
+    // ── Canary 2: bloom prefilter is consulted (structural) ─────────────
+    //
+    // This canary references `ctx.counters.needs_deferred_or_bloom_rejects`
+    // — a field that does NOT yet exist on `RuleCounters`.
+    //
+    // Pre-T4: fails to compile under `--features counters` with
+    //   "no field `needs_deferred_or_bloom_rejects` on type `RuleCounters`"
+    // That compile failure IS the gap this canary tracks.
+    //
+    // Post-T4 (once the field + bloom-reject logic are wired in): the
+    // test compiles, runs, and asserts that at least one
+    // `needs_deferred_or` call was short-circuited by the bloom during
+    // the four satisfiability queries above.
+    //
+    // Without `--features counters` this block is never compiled, so
+    // `cargo test -p owl-dl-tableau` (default) stays clean.
+    #[cfg(feature = "counters")]
+    #[test]
+    fn phase3_bloom_prefilter_rejects_on_or_heavy_synthetic() {
+        let OrHeavySynth { mut pool, tbox, a, d, f, g, .. } = build_or_heavy_synth();
+
+        // Pre-compute the compound concept before lending pool to any
+        // context — pool.and() requires &mut, which conflicts with
+        // the immutable borrow held by TableauContext.
+        let a_and_d = pool.and([a, d]);
+
+        // Run all four satisfiability queries so the deferred-OR rule
+        // fires repeatedly — enough opportunities for the bloom to
+        // reject at least once.
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(a);
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(d);
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(f);
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(g);
+
+        // Each TableauContext is independent, so we need to count
+        // rejects inside a single context.  Re-run with a context we
+        // hold on to.
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        // Compound query: A ⊓ D fires both Or rules on the same node.
+        let _ = ctx.is_satisfiable(a_and_d);
+
+        // ── The structural assertion ─────────────────────────────────
+        // After T4 wires in the bloom, at least one call to
+        // `needs_deferred_or` on the above node should have been
+        // short-circuited.  If the counter stays 0 the prefilter is
+        // silently dead code.
+        let rejected = ctx.counters.needs_deferred_or_bloom_rejects.get();
+        assert!(
+            rejected > 0,
+            "bloom prefilter never rejected; needs_deferred_or isn't consulting \
+             label_sig.  rejected = {rejected}"
+        );
+    }
+
+    // ── Phase 3d canary: indexed branch skips missing triggers ──────────
+    //
+    // Verifies the Phase 3d restructuring of
+    // `apply_deferred_concept_or_rules` — namely, that on a FINALIZED
+    // TBox (the common case), when a node carries an atomic label whose
+    // class has no entry in `concept_rules_by_trigger`, the indexed
+    // branch now `continue`s instead of falling through to a per-trigger
+    // linear scan over `&tbox.concept_rules`.
+    //
+    // The OrHeavySynth fixture has concept_rules only for triggers A, D,
+    // F, G. Classes B, C, E are NOT triggers. Satisfying `B` (or `E`)
+    // puts an atomic label whose class has no entry in
+    // `concept_rules_by_trigger`, exercising the missing-trigger skip in
+    // the indexed branch and bumping the counter.
+    //
+    // Without `--features counters` this block is never compiled.
+    #[cfg(feature = "counters")]
+    #[test]
+    fn phase3d_indexed_branch_skips_missing_triggers() {
+        let OrHeavySynth { pool, tbox, b, e, .. } = build_or_heavy_synth();
+
+        // Sanity: finalize() must have populated the index, otherwise
+        // the canary would exercise the linear-scan fallback, not the
+        // indexed branch.
+        assert!(
+            !tbox.concept_rules_by_trigger.is_empty(),
+            "fixture invariant: tbox.finalize() should have populated \
+             concept_rules_by_trigger; got empty index"
+        );
+
+        // Run satisfiability queries on classes that are NOT triggers
+        // (B and E are leaves; no concept_rule has them as `trigger`).
+        // Each node carries `Atomic(B)` (resp. E), which produces a
+        // trigger lookup that misses the index — and bumps the counter
+        // via the `continue` path.
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        let _ = ctx.is_satisfiable(b);
+        let _ = ctx.is_satisfiable(e);
+
+        let skips = ctx
+            .counters
+            .apply_deferred_concept_or_skip_missing_trigger
+            .get();
+        assert!(
+            skips > 0,
+            "indexed branch never skipped a missing trigger; Phase 3d \
+             restructuring is not wired in. skips = {skips}"
+        );
+    }
 }

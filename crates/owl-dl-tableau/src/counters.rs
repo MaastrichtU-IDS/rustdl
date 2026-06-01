@@ -43,6 +43,29 @@ pub(crate) struct RuleCounters {
     pub(crate) is_blocked_true: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
+
+    /// Phase 3: needs_deferred_or's bloom prefilter rejected the call
+    /// (the deferred OR's concept or any of its disjuncts couldn't be
+    /// in the label set per the bloom). Each reject skips the
+    /// binary_search + per-disjunct iteration. See
+    /// `docs/phase3-fix-target.md`.
+    pub(crate) needs_deferred_or_bloom_rejects: Cell<u64>,
+
+    /// Phase 3b: each call to `are_declared_inverses` that consulted
+    /// the O(1) `hashbrown::HashSet` (i.e. `inverse_pairs_set` was
+    /// non-empty). Bumped regardless of whether the pair was found, so
+    /// it counts "fast-path consultations." Used by the Phase 3b
+    /// structural canary to confirm the new lookup path is actually
+    /// wired in. See `docs/phase3b-fix-target.md`.
+    pub(crate) inverse_pair_fast_hits: Cell<u64>,
+
+    /// Phase 3d: each time `apply_deferred_concept_or_rules`'s indexed
+    /// branch encounters a trigger with no entry in
+    /// `concept_rules_by_trigger` and skips with `continue` (instead of
+    /// the legacy per-trigger linear scan over `&tbox.concept_rules`).
+    /// Each bump represents an O(R) scan saved on a finalized `TBox`.
+    /// See `docs/phase3d-fix-target.md`.
+    pub(crate) apply_deferred_concept_or_skip_missing_trigger: Cell<u64>,
 }
 
 /// Increment by 1. Internal helper; macro callers go through the
@@ -103,6 +126,18 @@ impl RuleCounters {
             (
                 "is_blocked_subset_scans",
                 self.is_blocked_subset_scans.get(),
+            ),
+            (
+                "needs_deferred_or_bloom_rejects",
+                self.needs_deferred_or_bloom_rejects.get(),
+            ),
+            (
+                "inverse_pair_fast_hits",
+                self.inverse_pair_fast_hits.get(),
+            ),
+            (
+                "apply_deferred_concept_or_skip_missing_trigger",
+                self.apply_deferred_concept_or_skip_missing_trigger.get(),
             ),
         ];
         let total: u64 = entries.iter().map(|(_, v)| *v).sum();

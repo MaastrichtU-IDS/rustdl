@@ -651,6 +651,54 @@ pub fn hyper_trust_sat_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
+/// Minimum wedge wall-time threshold (in milliseconds) below which a
+/// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
+/// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured
+/// to be "didn't try hard enough" rather than a genuine satisfying model;
+/// in that case the tableau is consulted before trusting.
+///
+/// **Default: 0 (disabled).** The Phase 1 alehif threshold sweep
+/// (1/5/10/20/30 ms) found wall times flat at ~230× baseline across
+/// every threshold in that range, meaning virtually every wedge
+/// NotSubsumed verdict completes in under 1 ms — so wall-time is not
+/// a useful filter at this resolution. See `docs/phase1-results.md`
+/// and `docs/hypertableau-dead-ends.md` §13 for the empirical analysis.
+///
+/// The mechanism is preserved (sound on the corpus) for users who have
+/// profiled a specific workload and identified a threshold that works
+/// for them. Setting the var to any positive integer enables the
+/// behaviour. Empty / garbage values fall back to the default (0).
+///
+/// **Caching:** in non-test builds the env var is read once per process
+/// (first call) and cached in a `OnceLock` thereafter. Subsequent
+/// mutations of the env var have no effect until the process restarts.
+/// In unit tests *within this crate* (`cfg(test)`) the cache is
+/// bypassed so per-test env mutation works. Integration tests
+/// (`crates/owl-dl-reasoner/tests/*`) and any downstream consumer see
+/// the cached path — set the env var BEFORE the first call from those
+/// contexts, or accept the cached value.
+#[must_use]
+pub fn hyper_trust_sat_min_ms() -> u64 {
+    #[cfg(not(test))]
+    {
+        use std::sync::OnceLock;
+        static CACHED: OnceLock<u64> = OnceLock::new();
+        *CACHED.get_or_init(read_hyper_trust_sat_min_ms_env)
+    }
+    #[cfg(test)]
+    {
+        read_hyper_trust_sat_min_ms_env()
+    }
+}
+
+fn read_hyper_trust_sat_min_ms_env() -> u64 {
+    std::env::var("RUSTDL_HYPER_TRUST_SAT_MIN_MS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 /// Three-valued verdict from the H4/HF5 hyper wedge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HyperVerdict {
@@ -3055,5 +3103,65 @@ Ontology(<http://rustdl.test/test>\n\
         let err = is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/Nope")
             .expect_err("unknown sup should error");
         assert!(matches!(err, ReasonError::UnknownClass(_)));
+    }
+}
+
+#[cfg(test)]
+mod hyper_trust_sat_min_ms_tests {
+    use super::hyper_trust_sat_min_ms;
+
+    // SAFETY: tests in this module mutate the process-wide
+    // RUSTDL_HYPER_TRUST_SAT_MIN_MS env var. They must be run with
+    // --test-threads=1 (single-thread sequential). The helper saves
+    // and restores the previous value. No other test in the workspace
+    // reads this env var, so the mutation cannot race with unrelated
+    // tests under default `cargo test --workspace` invocations either.
+    #[allow(unsafe_code)]
+    fn with_env<F: FnOnce()>(key: &str, val: Option<&str>, f: F) {
+        let prev = std::env::var_os(key);
+        match val {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var(key, v) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn default_is_disabled() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", None, || {
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
+        });
+    }
+
+    #[test]
+    fn env_overrides_value() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("200"), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 200);
+        });
+    }
+
+    #[test]
+    fn zero_disables_selective_verification() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("0"), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
+        });
+    }
+
+    #[test]
+    fn empty_string_uses_default() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some(""), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
+        });
+    }
+
+    #[test]
+    fn garbage_uses_default() {
+        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("not-a-number"), || {
+            assert_eq!(hyper_trust_sat_min_ms(), 0);
+        });
     }
 }

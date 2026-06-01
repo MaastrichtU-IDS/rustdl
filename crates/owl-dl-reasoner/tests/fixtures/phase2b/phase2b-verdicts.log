@@ -1,0 +1,8 @@
+Pair 01 | FemoralHead ⊑ ExactlyPairedBodyStructure | Cluster A | Module: 2668 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 02 | HeadOfHumerus ⊑ MirrorImagedBodyStructure | Cluster A | Module: 2172 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 03 | MeniscusOfKneeJoint ⊑ ExactlyPairedBodyStructure | Cluster A | Module: 4432 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 04 | KneeJointRecessus ⊑ HollowStructure | Cluster B | Module: 4432 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 05 | SupraPatellarPouch ⊑ ActuallyHollowBodyStructure | Cluster B | Module: 4432 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 06 | CongestiveCardiacFailure ⊑ IntrinsicallyPathologicalBodyProcess | Cluster C | Module: 2713 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 07 | AcuteGastricUlcer ⊑ DigestiveSystemPathology | Cluster D | Module: 2411 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS
+Pair 08 | KneeJointStability ⊑ JointStability | Cluster E | Module: 4519 lines (BOT) | HermiT: FOUND | sat-only: MISS | default: MISS

@@ -319,12 +319,207 @@ layer.
 
 ---
 
+---
+
+## 13. Wall-time-as-filter for selective trust-sat verification
+
+**What was tried.** Phase 1 (`docs/superpowers/plans/2026-05-31-phase1-selective-trust-sat.md`)
+introduced a per-call wall-time threshold on the hyper wedge: if a
+`NotSubsumed` verdict took less than `RUSTDL_HYPER_TRUST_SAT_MIN_MS` ms,
+distrust it and ask the tableau. The hypothesis (from the handoff): a
+fast NotSubsumed is "wedge gave up without trying," and so is worth
+verifying; a slow NotSubsumed is the wedge engaging seriously. The spec
+estimated 50 ms as a starting default.
+
+**What killed it.** Single-thread sweep on alehif (smallest baseline,
+1.76 s, 247 classes, FP=0 / MISSED=0 historically) at thresholds 1, 5,
+10, 20, 30 ms returned wall times flat at ~405–410 s — **≈230× the
+baseline at every threshold**. This means virtually every wedge
+`NotSubsumed` verdict completes in **under 1 ms**: trivially-not-subsumed
+and didn't-try-hard-enough verdicts are indistinguishable by stopwatch
+at the relevant resolution. Soundness was preserved (FP=0) across the
+broadened Phase 0 net at the 50 ms default, but the wall blowup made
+GALEN and notgalen unmeasurable, so the "MISSED 109 → ≤ 40" lever
+target could not be achieved.
+
+**The lesson.** Wall-time discriminates wedge-engagement vs wedge-
+give-up only if the two have different runtime distributions. The data
+says they don't — both finish in sub-ms time. A working selective-verify
+lever would need a different signal (per-pair wedge-rule-fire count,
+saturation-snapshot delta, or a per-class structural "interestingness"
+score), not a stopwatch. The mechanism shipped (sound, opt-in via env
+var) for users who can profile their specific workload; the default is
+off, per the dead-end #11 discipline ("don't default-on what isn't
+proven").
+
+**Recovery path.** Phase 2 of the design spec (`docs/superpowers/specs/
+2026-05-31-soundness-completeness-perf-design.md` §"Phase 2 — Deep
+completeness calculus") takes over the GALEN/notgalen MISSED-reduction
+goal via functional-role inference and ≥n-with-disjointness rules —
+the genuine calculus gaps that the handoff originally identified as
+the root cause.
+
+---
+
+---
+
+## 14. Synthetic-id-tracked witness for functional-role merge
+
+**What was tried.** Phase 2a Task 4 implemented the EL++ functional-
+role witness-merge rule with `merged_witness: HashMap<(ClassId,
+RoleId), ClassId>` tracking a single synthetic id per (sub, R_f)
+pair. The intent: when a new fact (sub, R_i, A) arrives and R_i ⊑
+R_f functional, merge {prev_witness, A} into a new Tseitin synthetic;
+update prev_witness; emit (sub, R_f, new_synthetic). Loop prevention
+was supposed to come from the dedup short-circuit (`prev == fact.target`).
+
+**What killed it.** The 3-sub-property fan-in canary (T5) hung
+indefinitely. Trace showed unbounded growth: each emission produces
+a fresh synthetic that itself re-triggers the rule on existing facts
+(via reflexive R_f ∈ functional_supers_of(R_f)), producing yet
+another synthetic. The synthetic IDs grow `49 → 50 → 51 → ...` with
+each new fact in the (sub, R_f) chain. The GALEN scan showed
+`ProcessModifierAttribute` has 12 sub-properties; corpus-diff on
+GALEN would have hung deterministically.
+
+**The lesson.** Tracking a per-pair WITNESS by synthetic id makes
+the rule's termination depend on synthetic-id stability across
+re-firings — which doesn't hold when each merge produces a fresh id
+that re-triggers. The fix (T4.5): track the ATOM SET per pair
+(`merged_atom_sets: HashMap<(ClassId, RoleId), BTreeSet<ClassId>>`)
+of original-vocabulary atomic class IDs. Termination is by
+construction: the set is monotonically bounded by the atomic
+vocabulary, so per (sub, R_f) the rule fires at most
+|atomic_vocabulary| times. The atom-set redesign passes both the
+3-property and 4-property canaries in milliseconds.
+
+**Recovery path.** T4.5 redesign atomic-content tracking is the
+shipped form. See `crates/owl-dl-saturation/src/lib.rs` (T4 commit
+124d0ca → T4.5 commit f2e2d7c) and `docs/phase2a-results.md`.
+
+---
+
+## 15. Sub-role witness propagation (Phase 2c)
+
+**Hypothesis.** Phase 2a's functional-role witness-merge emits on the
+functional super-role R_f but not back down to sub-roles R_k ⊑ R_f
+where downstream existential triggers live (e.g. IPBP's defining
+trigger on `hasIntrinsicPathologicalStatus`). Propagating the merged
+synthetic back to every R_k on which X already has a fact would close
+the IPBP-derivation MISSED cluster (Phase 2c.0 predicted 24-44 pairs).
+
+**Status.** Sound and terminating, 0 / 44 predicted corpus recovery.
+
+**Why it failed.** The saturator propagates subsumers (not facts) to
+subclasses. The IPBP-cluster's "second feed-in fact" lives on a parent
+class (e.g. `PathologicalBodyProcess`) and the subclass inherits the
+subsumer at `process_subsumer` time without materializing the fact on
+`facts_by_sub[subclass]`. Phase 2c's rule is fact-time; it iterates
+`facts_by_sub[X]`; sees only one fact; doesn't fire. The rule does
+fire on classes with two directly-materialized facts (3× on pair_06),
+but those emissions don't reach any downstream trigger because the
+downstream existential heads don't sit on the propagated sub-roles.
+
+**Cost when shipped.** +7% wall on GALEN (12.2 → 13.1 min) and notgalen
+(~30 → 32.1 min), paid every classify run for zero benefit. Reverted in
+commit cc2019e.
+
+**Don't try this again without first solving** fact-on-subclass
+propagation at `process_subsumer` time. A re-attempt at sub-role
+witness propagation without that prerequisite will hit the same
+empirical 0 / N result.
+
+**Cross-references.** `docs/phase2c-fix-target.md` (design analysis;
+the "Predicted walkthrough on pair_06 (and what actually happened)"
+section is the empirical reckoning); `docs/phase2c-galen-diagnosis.md`
+(Phase 2c.0 cluster shift); `docs/phase2c-results.md` (measurement
+headline); `crates/owl-dl-reasoner/tests/phase2c_pair_06_canary.rs`
+(gap-asserting canary, kept).
+
+### RESOLVED 2026-06-01
+
+Phase 2d (fact-on-subclass propagation at `process_subsumer` and
+`push_fact`, commit b78c5fd) provides the architectural prerequisite
+this entry called out. Phase 2c-redux re-applies the original Phase 2c
+rule unchanged on top of Phase 2d (commit 34a2b62) — now fires
+because `facts_by_sub[X]` contains inherited facts.
+
+**Combined result on GALEN**: MISSED 17 → 0 (full parity with Konclude,
+`rustdl_closure = 27997 = konclude_closure`); wall +6.5% (12.55 →
+13.36 min). On notgalen: MISSED 27 → 18 (9 recovered, IPBP-cluster);
+wall +2.7%. FP=0 throughout. See `docs/phase2d-2c-redux-results.md`.
+
+The §15 "don't try this again without first solving" framing was
+correct: Phase 2c alone couldn't fire because facts weren't materialized
+on subclasses. Phase 2d's fact-inheritance unblocks it cleanly without
+needing case-split / covering / hypertableau extension — the original
+Phase 2c witness-coincidence argument extends because inherited facts
+preserve the same model-theoretic witness as the parent's fact.
+
+---
+
+## 16. Edge-keyed role-rule indexing (Phase 3e)
+
+**Hypothesis.** Replace `apply_role_rules`'s per-rule × per-edge
+`edge_satisfies` cost (7.26% of SIO post-3d) with O(1) HashMap lookup
+per edge against role-keyed rule indices populated in `finalize()`.
+
+**Status.** Sound and terminating; SIO `apply_role_rules` top frame
+16.36% → 8.87% (−7.49pp); GALEN wall +2.34% across two samples.
+
+**Why it failed (workload-dependent break-even).** Per-edge HashMap
+lookup cost vs saved `edge_satisfies` traversal cost depends on rule
+density per role. SIO has many rules per role → the indexing wins
+because edge_satisfies traversal would have fired many times per edge.
+GALEN has few rules per role and many edges per node → the indexing
+HashMap probe cost exceeds the saved traversal. Net wall regression
+on GALEN despite the SIO flame win.
+
+**Cost when shipped.** +2.34% GALEN wall, four new
+`HashMap<RoleId, Vec<_>>` on `AbsorbedTBox` + a
+`finalize_role_edge_indices` method invoked from
+`PreparedOntology::from_internal`. Reverted in commit a2a4d7f.
+
+**Don't reattempt without first solving** workload-dependent dispatch
+(profile rule density at finalize time and gate the indexed path on a
+threshold); OR use a simpler single-direction index to reduce per-edge
+lookup cost; OR cache `matching_edges` results per role with
+reset-on-edge-change semantics. A naive reattempt with the same
+four-HashMap design will hit the same GALEN regression.
+
+**Cross-references.** `docs/phase3e-fix-target.md` (design analysis is
+reusable for workload-adaptive variant); `docs/phase3e-results.md`
+(measurement headline + GALEN regression evidence).
+
+---
+
+## 17. apply_max post-3d residual exhausted (Phase 3f)
+
+**Hypothesis:** Phase 3f targeted `apply_max` (post-3c flame: 14.34%) for the same recon-first 6-task pattern as Phases 3d/3e.
+
+**Status:** killed at recon (T1). No shippable target found; Phase 3f deferred without implementation.
+
+**What the recon found** (`docs/phase3f-recon.md`, commit d9cc1ca):
+- apply_max is actually **11.42% post-3d** (not 14.34% — Phase 3d's hoist also shaved ~3pp from apply_max as a denominator-redistribution side effect; plan baseline was stale post-3c).
+- Dominant inner cost: `edge_satisfies` at 64.4% of apply_max (7.35% of total SIO), split 51% `are_declared_inverses` HashSet probe / 45% `is_sub_role` binary_search. Both already O(1); the cost is irreducible probe overhead, not algorithmic.
+- The workload-neutral candidates (D: O(c²) pair loop, E: `compute_max_merge_deps`, F: `c_neighbours.contains` dedup) are **completely absent from the flame** — empirically zero on SIO.
+- The only workload-neutral candidate present is C: `maxes` Vec allocation (21.2% of apply_max = 2.42% of total). Best-case surgical removal predicts ~0.7% GALEN wall reduction (Phase 3d's 18→3pp flame translated to 4.5% wall, a ~30% conversion ratio; Stage 1's 2.42pp at the same ratio is ~0.7%). Below the tightened ≥2% ship threshold and inside the noise floor disambiguated in Phase 3e.
+- The §16-shape Stage 2 (`edge_satisfies` caching) is the actual cost lever but repeats Phase 3e's workload-dependent break-even pattern. Even a counter-gated workload-adaptive variant pays the HashMap construction cost on every classify.
+
+**Cost when shipped:** none (recon-only; no code committed).
+
+**Don't reattempt without first:** capturing a fresh post-3d (or later) baseline flame — the post-3c numbers used as Phase 3f's planning baseline were stale by ~3pp on apply_max alone. Phase 3 returns are exhausted on this function until a hashbrown alternative or a structurally different approach (e.g. merging multiple Max constraints over the same role) presents itself.
+
+**Cross-references:** `docs/phase3f-recon.md` (full drill-down with sample counts); §16 (the workload-dependence pattern that made Stage 2 a non-starter); `docs/superpowers/plans/2026-06-01-phase3f-apply-max.md` (deferred plan).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and
 was killed by **either**:
 - a counter / wall measurement that contradicted the prediction
-  (#1, #3, #5, #7, #10),
+  (#1, #3, #5, #7, #10, #13),
 - a corpus diff that caught what the canary didn't (#4, #6, #7),
 - a traced argument on the actual canary / repro (#2, #8, #9),
 - or a measurement on a workload outside the original validation set

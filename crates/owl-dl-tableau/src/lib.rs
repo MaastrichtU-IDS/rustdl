@@ -86,6 +86,7 @@ pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use std::collections::HashMap;
 
+use hashbrown::HashSet;
 use owl_dl_core::{
     AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleHierarchy, RoleId,
     is_nnf,
@@ -109,15 +110,22 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     tbox: Option<&'tbox AbsorbedTBox>,
     hierarchy: Option<&'hier RoleHierarchy>,
     /// Declared inverse pairs: `(r, s)` means an `InverseObjectProperties(r, s)`
-    /// axiom in the source ontology. Stored symmetrically (both
-    /// `(r, s)` and `(s, r)` are pushed) so `are_declared_inverses`
-    /// is a single linear scan. `Vec` rather than `HashMap` because real
-    /// ontologies declare ≤ a handful of inverses (pizza: 3 pairs →
-    /// 6 entries) where linear scan on `u32` equality beats hashing
-    /// by an order of magnitude — `are_declared_inverses` was the
-    /// second-hottest frame in pizza flamegraphs (14 %, dominated
-    /// by `make_hash<RoleId>` / `find_inner`).
+    /// axiom in the source ontology. Stored symmetrically (both `(r, s)` and
+    /// `(s, r)` are pushed) to match `inverse_pairs_set`'s contents. Retained
+    /// for declaration-order iteration; lookups go through `inverse_pairs_set`
+    /// (Phase 3b — the pizza-era "0-3 pairs" linear-scan assumption was
+    /// empirically wrong on SIO which has 84 inverse-pair declarations →
+    /// ~168 Vec entries; see `docs/phase3b-fix-target.md`).
     inverse_pairs: Vec<(RoleId, RoleId)>,
+    /// Phase 3b O(1) lookup mirror for `are_declared_inverses`. Parallel to
+    /// `inverse_pairs`; populated by `declare_inverse_pair` (mirror write) and
+    /// in every constructor that initialises `inverse_pairs`. Used by the hot
+    /// path in `apply_max` (SIO flamegraph attributed 25.76% to the previous
+    /// `Vec::iter().any()` linear scan). See `docs/phase3b-fix-target.md`.
+    /// (Mirror invariant: `declare_inverse_pair` is the only writer of
+    /// `inverse_pairs`; mirror writes here keep the two structures in
+    /// sync. Add the mirror writes if a new writer ever lands.)
+    inverse_pairs_set: HashSet<(RoleId, RoleId)>,
     /// NNF complement table: `body → nnf(¬body)`. Populated by the
     /// reasoner facade for every `body` appearing in a
     /// `Max(_, _, body)` expression, so `apply_choose` can branch
@@ -209,6 +217,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             tbox: None,
             hierarchy: None,
             inverse_pairs: Vec::new(),
+            inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -237,6 +246,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             tbox: Some(tbox),
             hierarchy: None,
             inverse_pairs: Vec::new(),
+            inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -270,6 +280,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             tbox: Some(tbox),
             hierarchy: Some(hierarchy),
             inverse_pairs: Vec::new(),
+            inverse_pairs_set: HashSet::new(),
             complements: HashMap::new(),
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
@@ -467,14 +478,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// between `Role::Named(r)` and `Role::Inverse(s)` (or vice
     /// versa). The map is populated symmetrically.
     pub fn declare_inverse_pair(&mut self, r: RoleId, s: RoleId) -> &mut Self {
-        // Dedup so a caller that double-declares doesn't bloat the
-        // linear scan. Each direction is stored once.
+        // Dedup so a caller that double-declares doesn't bloat the Vec.
+        // Each direction is stored once. Phase 3b: mirror both directions into
+        // `inverse_pairs_set` unconditionally (HashSet self-dedups).
         if !self.inverse_pairs.contains(&(r, s)) {
             self.inverse_pairs.push((r, s));
         }
         if !self.inverse_pairs.contains(&(s, r)) {
             self.inverse_pairs.push((s, r));
         }
+        self.inverse_pairs_set.insert((r, s));
+        self.inverse_pairs_set.insert((s, r));
         self
     }
 
@@ -482,14 +496,17 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// `InverseObjectProperties` axiom.
     #[must_use]
     pub fn are_declared_inverses(&self, r: RoleId, s: RoleId) -> bool {
-        // Fast path: most ontologies declare 0–3 inverse pairs.
-        // Linear scan on `u32` equality beats `HashMap::get` at this
-        // size and avoids the make_hash/find_inner chain that
-        // dominated apply_max in pizza flamegraphs.
-        if self.inverse_pairs.is_empty() {
+        // Phase 3b: O(1) hashbrown::HashSet lookup replaces the linear
+        // `Vec::iter().any()` scan. The pizza-era "0-3 pairs" assumption
+        // that justified the linear scan was empirically wrong on SIO
+        // (84 inverse-pair declarations → ~168 Vec entries); SIO
+        // flamegraph attributed 25.76% of apply_max to the scan.
+        // See `docs/phase3b-fix-target.md`.
+        if self.inverse_pairs_set.is_empty() {
             return false;
         }
-        self.inverse_pairs.iter().any(|&(a, b)| a == r && b == s)
+        crate::bump_counter!(self, inverse_pair_fast_hits);
+        self.inverse_pairs_set.contains(&(r, s))
     }
 
     /// Register the NNF complement of `body`. Must be called before
@@ -2232,5 +2249,157 @@ mod tests {
         assert_eq!(result, SaturationResult::Stable);
         assert!(ctx.graph().node(x).has_label(b));
         assert!(ctx.graph().node(y).has_label(b));
+    }
+}
+
+// ── Phase 3b canaries ────────────────────────────────────────────────────────
+//
+// Canary 1 (`phase3b_inverse_heavy_classification_completes`) asserts that a
+// synthetic with 5 declared inverse pairs remains satisfiable. Passes pre-fix
+// (the linear scan and the future hashset both return the correct boolean).
+//
+// Canary 2 (`phase3b_inverse_pair_fast_path_consulted`) is gated behind
+// `#[cfg(feature = "counters")]`. It references a counter field
+// (`inverse_pair_fast_hits`) that does NOT yet exist on `RuleCounters`.
+//
+// Pre-T3: fails to compile under `--features counters` with
+//   "no field `inverse_pair_fast_hits` on type `RuleCounters`"
+// That compile failure IS the gap T3 closes. Without `--features counters`
+// this block is never compiled, so `cargo test -p owl-dl-tableau` (default)
+// stays clean.
+
+#[cfg(test)]
+mod phase3b_canaries {
+    use super::*;
+    use owl_dl_core::{ClassId, ConceptPool, Role, RoleId};
+
+    // ── Synthetic inverse-heavy fixture ─────────────────────────────────────
+    //
+    // Shape:
+    //   - class A, B, C (ClassId 0, 1, 2)
+    //   - roles r1..r5  (RoleId 0..4),  inverses s1..s5 (RoleId 5..9)
+    //   - 5 InverseObjectProperties declarations: (r1,s1)..(r5,s5)
+    //   - A ≡ Max(1, Inverse(s1), ⊤) ⊓ Some(Named(r1), B)
+    //
+    // When `apply_max` fires on A's root node it iterates its neighbours.
+    // The `Some(Named(r1), B)` label forces one `Named(r1)` edge; `apply_max`
+    // then calls `edge_satisfies(Named(r1), Inverse(s1))` which is
+    // cross-polarity — the only branch that calls `are_declared_inverses`.
+    // With exactly one such neighbour and Max(1, ...) the count never
+    // exceeds 1, so no merge/clash fires and A is satisfiable.
+    //
+    // SIO has 84 inverse-pair declarations (Vec ~168 entries); this synthetic
+    // pushes past the pizza-era "0-3 pairs" assumption with 5 pairs so the
+    // new data-structure path is exercised. Verdict unchanged: A is consistent.
+    struct InverseHeavySynth {
+        pool: ConceptPool,
+        a_expr: ConceptId,
+        r1: RoleId,
+        s1: RoleId,
+        // r2..r5, s2..s5 are declared to reach 5 pairs but not used in axioms.
+        r2: RoleId,
+        s2: RoleId,
+        r3: RoleId,
+        s3: RoleId,
+        r4: RoleId,
+        s4: RoleId,
+        r5: RoleId,
+        s5: RoleId,
+    }
+
+    fn build_inverse_heavy_synth() -> InverseHeavySynth {
+        let mut pool = ConceptPool::new();
+
+        let _a_cls = ClassId::new(0);
+        let b_cls = ClassId::new(1);
+        let _c_cls = ClassId::new(2);
+
+        let r1 = RoleId::new(0);
+        let r2 = RoleId::new(1);
+        let r3 = RoleId::new(2);
+        let r4 = RoleId::new(3);
+        let r5 = RoleId::new(4);
+        let s1 = RoleId::new(5);
+        let s2 = RoleId::new(6);
+        let s3 = RoleId::new(7);
+        let s4 = RoleId::new(8);
+        let s5 = RoleId::new(9);
+
+        let top = pool.top();
+        let b = pool.atomic(b_cls);
+
+        // A ≡ Max(1, Inverse(s1), ⊤) ⊓ Some(Named(r1), B)
+        let max_inv_s1 = pool.max(1, Role::inverse(s1), top);
+        let some_r1_b = pool.some(Role::named(r1), b);
+        let a_expr = pool.and([max_inv_s1, some_r1_b]);
+
+        InverseHeavySynth { pool, a_expr, r1, s1, r2, s2, r3, s3, r4, s4, r5, s5 }
+    }
+
+    // ── Canary 1: verdict preservation ──────────────────────────────────────
+    //
+    // A must be satisfiable: exactly one Named(r1) neighbour carries ⊤, and
+    // Max(1, Inverse(s1), ⊤) counts it as 1 (≤ 1 = n) — no merge, no clash.
+    // PASSES pre-fix and must CONTINUE to pass after T3 swaps in the hashset.
+    #[test]
+    fn phase3b_inverse_heavy_classification_completes() {
+        let InverseHeavySynth { pool, a_expr, r1, s1, r2, s2, r3, s3, r4, s4, r5, s5 } =
+            build_inverse_heavy_synth();
+
+        let mut ctx = TableauContext::new(&pool);
+        ctx.declare_inverse_pair(r1, s1)
+            .declare_inverse_pair(r2, s2)
+            .declare_inverse_pair(r3, s3)
+            .declare_inverse_pair(r4, s4)
+            .declare_inverse_pair(r5, s5);
+
+        let result = ctx.is_satisfiable(a_expr);
+        assert_eq!(
+            result,
+            Some(true),
+            "A should be satisfiable under the inverse-heavy synthetic \
+             (5 declared inverse pairs, Max(1,Inv(s1),⊤) + Some(Named(r1),B))"
+        );
+    }
+
+    // ── Canary 2: inverse-pair fast-path is consulted (structural) ───────────
+    //
+    // This canary references `ctx.counters.inverse_pair_fast_hits` — a field
+    // that does NOT yet exist on `RuleCounters`.
+    //
+    // Pre-T3: fails to compile under `--features counters` with
+    //   "no field `inverse_pair_fast_hits` on type `RuleCounters`"
+    // Post-T3 (once the field + hashset-contains logic are wired in): the
+    // test compiles, runs, and asserts that at least one call to
+    // `are_declared_inverses` consulted the new hashset.
+    //
+    // Without `--features counters` this block is never compiled, so
+    // `cargo test -p owl-dl-tableau` (default) stays clean.
+    #[cfg(feature = "counters")]
+    #[test]
+    fn phase3b_inverse_pair_fast_path_consulted() {
+        let InverseHeavySynth { pool, a_expr, r1, s1, r2, s2, r3, s3, r4, s4, r5, s5 } =
+            build_inverse_heavy_synth();
+
+        let mut ctx = TableauContext::new(&pool);
+        ctx.declare_inverse_pair(r1, s1)
+            .declare_inverse_pair(r2, s2)
+            .declare_inverse_pair(r3, s3)
+            .declare_inverse_pair(r4, s4)
+            .declare_inverse_pair(r5, s5);
+
+        let _ = ctx.is_satisfiable(a_expr);
+
+        // After classification, `apply_max` must have called
+        // `edge_satisfies(Named(r1), Inverse(s1))` (cross-polarity), which
+        // calls `are_declared_inverses(r1, s1)`. T3 bumps
+        // `inverse_pair_fast_hits` on every `contains` call in the hashset
+        // path. If the counter stays 0 the fast-path is silently dead code.
+        let hits = ctx.counters.inverse_pair_fast_hits.get();
+        assert!(
+            hits > 0,
+            "inverse-pair fast-path counter never bumped; \
+             are_declared_inverses isn't consulting the new hashset. hits = {hits}"
+        );
     }
 }

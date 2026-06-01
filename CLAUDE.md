@@ -109,6 +109,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   SIO `apply_deferred_concept_or_rules` top-frame attribution 18.16% →
   3.23% (−14.93pp); GALEN classify wall 12.43 min → 11.87 min (−4.5%).
   FP=0 + MISSED=17 unchanged. See `docs/phase3d-results.md`.
+  Phase 3e attempted edge-keyed role-rule indexing on `apply_role_rules`;
+  reverted (commit a2a4d7f) at +2.34% GALEN wall regression despite a
+  SIO flame win (16.36% → 8.87%, −7.49pp) — workload-dependent
+  break-even where HashMap-lookup overhead exceeds saved
+  `edge_satisfies` cost on edge-heavy / rule-thin patterns. See
+  `docs/phase3e-results.md` and dead-end ledger §16.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;

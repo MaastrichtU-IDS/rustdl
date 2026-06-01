@@ -438,6 +438,41 @@ headline); `crates/owl-dl-reasoner/tests/phase2c_pair_06_canary.rs`
 
 ---
 
+## 16. Edge-keyed role-rule indexing (Phase 3e)
+
+**Hypothesis.** Replace `apply_role_rules`'s per-rule × per-edge
+`edge_satisfies` cost (7.26% of SIO post-3d) with O(1) HashMap lookup
+per edge against role-keyed rule indices populated in `finalize()`.
+
+**Status.** Sound and terminating; SIO `apply_role_rules` top frame
+16.36% → 8.87% (−7.49pp); GALEN wall +2.34% across two samples.
+
+**Why it failed (workload-dependent break-even).** Per-edge HashMap
+lookup cost vs saved `edge_satisfies` traversal cost depends on rule
+density per role. SIO has many rules per role → the indexing wins
+because edge_satisfies traversal would have fired many times per edge.
+GALEN has few rules per role and many edges per node → the indexing
+HashMap probe cost exceeds the saved traversal. Net wall regression
+on GALEN despite the SIO flame win.
+
+**Cost when shipped.** +2.34% GALEN wall, four new
+`HashMap<RoleId, Vec<_>>` on `AbsorbedTBox` + a
+`finalize_role_edge_indices` method invoked from
+`PreparedOntology::from_internal`. Reverted in commit a2a4d7f.
+
+**Don't reattempt without first solving** workload-dependent dispatch
+(profile rule density at finalize time and gate the indexed path on a
+threshold); OR use a simpler single-direction index to reduce per-edge
+lookup cost; OR cache `matching_edges` results per role with
+reset-on-edge-change semantics. A naive reattempt with the same
+four-HashMap design will hit the same GALEN regression.
+
+**Cross-references.** `docs/phase3e-fix-target.md` (design analysis is
+reusable for workload-adaptive variant); `docs/phase3e-results.md`
+(measurement headline + GALEN regression evidence).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

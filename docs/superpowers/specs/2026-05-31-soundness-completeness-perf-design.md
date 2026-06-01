@@ -202,6 +202,13 @@ hoisted out of the trigger loop behind a single top-of-function
 18.16% → 3.23% (−14.93pp); GALEN wall 12.43 min → 11.87 min (−4.5%);
 FP=0 + MISSED=17 unchanged.
 
+Phase 3e shipped, measured, and reverted: see `docs/phase3e-results.md`.
+SIO apply_role_rules top-frame 16.36% → 8.87% (algorithmic win) but
+GALEN wall +2.34% across two consecutive samples (workload-dependent
+break-even: HashMap-lookup overhead exceeds saved edge_satisfies cost
+on edge-heavy / rule-thin patterns like GALEN). Dead-end ledger §16
+documents the workload-adaptive prerequisite for any reattempt.
+
 ### Phase 4 — Generalization capstone
 
 With the broad corpus (P0), the verification net (P1), and the fragment

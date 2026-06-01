@@ -66,15 +66,6 @@ pub(crate) struct RuleCounters {
     /// Each bump represents an O(R) scan saved on a finalized `TBox`.
     /// See `docs/phase3d-fix-target.md`.
     pub(crate) apply_deferred_concept_or_skip_missing_trigger: Cell<u64>,
-
-    /// Phase 3e: each emission produced by the new edges-outer
-    /// dispatch in `apply_role_rules` against the role-keyed
-    /// `unguarded_role_rules_by_{named,inverse}_edge` and
-    /// `guarded_role_rules_by_{named,inverse}_edge` indices. Each
-    /// bump represents one (rule × edge) match that would previously
-    /// have cost an `edge_satisfies` call on the rules-outer arm.
-    /// See `docs/phase3e-fix-target.md`.
-    pub(crate) apply_role_rules_edge_indexed_hits: Cell<u64>,
 }
 
 /// Increment by 1. Internal helper; macro callers go through the
@@ -147,10 +138,6 @@ impl RuleCounters {
             (
                 "apply_deferred_concept_or_skip_missing_trigger",
                 self.apply_deferred_concept_or_skip_missing_trigger.get(),
-            ),
-            (
-                "apply_role_rules_edge_indexed_hits",
-                self.apply_role_rules_edge_indexed_hits.get(),
             ),
         ];
         let total: u64 = entries.iter().map(|(_, v)| *v).sum();

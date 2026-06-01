@@ -310,7 +310,6 @@ pub fn apply_nominal_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -
 /// `node —role→ y`, add `target_label` to `L(y)` if either
 /// `guard` is `None` or [`ConceptExpr::Atomic(guard)`] is in
 /// `L(node)`.
-#[allow(clippy::too_many_lines)]
 pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_role_rules);
     let Some(tbox) = ctx.tbox() else {
@@ -319,16 +318,11 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
     if tbox.role_rules.is_empty() {
         return RuleOutcome::NoChange;
     }
-    // Three-arm dispatch:
-    //   1. Phase 3e edge-keyed indices ready ⇒ edges-outer × O(1) lookup
-    //      (eliminates per-(rule, edge) `edge_satisfies` calls).
-    //   2. Legacy partition-by-guard indices populated ⇒ rule-outer with
-    //      partitioned scan (kept for hand-built TBoxes that call
-    //      `finalize()` but not `finalize_role_edge_indices`).
-    //   3. Neither index populated ⇒ linear scan over `role_rules`
-    //      (hand-built TBoxes that bypass `finalize` entirely).
-    let use_edge_index = tbox.role_edge_indices_ready;
-    let use_partition_index =
+    // Fall back to the linear scan when the partitioned indices have
+    // not been finalized — guarded by both partitions being empty
+    // *and* `role_rules` being non-empty (i.e. a hand-built TBox that
+    // skipped `finalize`).
+    let use_index =
         !(tbox.unguarded_role_rules.is_empty() && tbox.guarded_role_rules_by_guard.is_empty());
     // `(target_node, conclusion_label, deps)`. Unguarded rules
     // inherit only the matching edge's deps. Guarded rules also
@@ -347,101 +341,53 @@ pub fn apply_role_rules(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> R
             })
             .collect();
         let mut out = Vec::new();
-        if use_edge_index {
-            // Phase 3e edges-outer dispatch. Each edge does up to two
-            // HashMap.get's (unguarded + guarded on the matching
-            // polarity) plus a linear walk over the small matched
-            // slice. `edge_satisfies` per (rule, edge) is gone.
+        // Helper closure: yield matching (edge_role, neighbour, edge_deps)
+        // triples for a wanted role.
+        let matching_edges = |rule_role: Role| {
+            let mut triples: Vec<(Role, NodeId, DepSet)> = Vec::new();
             for (pos, &(role, neighbour)) in n.edges.iter().enumerate() {
-                let edge_deps = &n.edge_deps[pos];
-                if let Some(rule_idxs) = tbox.unguarded_role_rules_by_named_edge.get(&role) {
-                    crate::add_counter!(ctx, apply_role_rules_edge_indexed_hits, rule_idxs.len() as u64);
-                    for &idx in rule_idxs {
-                        let rule = &tbox.unguarded_role_rules[idx as usize];
-                        out.push((neighbour, rule.target_label, edge_deps.clone()));
-                    }
-                }
-                if let Some(entries) = tbox.guarded_role_rules_by_named_edge.get(&role) {
-                    for entry in entries {
-                        let Some(guard_deps) = guards_present.get(&entry.guard) else {
-                            continue;
-                        };
-                        crate::bump_counter!(ctx, apply_role_rules_edge_indexed_hits);
-                        let combined = union(guard_deps, edge_deps);
-                        out.push((neighbour, entry.target_label, combined));
-                    }
+                if ctx.edge_satisfies(Role::Named(role), rule_role) {
+                    triples.push((Role::Named(role), neighbour, n.edge_deps[pos].clone()));
                 }
             }
             for (pos, &(role, neighbour)) in n.in_edges.iter().enumerate() {
-                let edge_deps = &n.in_edge_deps[pos];
-                if let Some(rule_idxs) = tbox.unguarded_role_rules_by_inverse_edge.get(&role) {
-                    crate::add_counter!(ctx, apply_role_rules_edge_indexed_hits, rule_idxs.len() as u64);
-                    for &idx in rule_idxs {
-                        let rule = &tbox.unguarded_role_rules[idx as usize];
-                        out.push((neighbour, rule.target_label, edge_deps.clone()));
-                    }
+                if ctx.edge_satisfies(Role::Inverse(role), rule_role) {
+                    triples.push((Role::Inverse(role), neighbour, n.in_edge_deps[pos].clone()));
                 }
-                if let Some(entries) = tbox.guarded_role_rules_by_inverse_edge.get(&role) {
-                    for entry in entries {
-                        let Some(guard_deps) = guards_present.get(&entry.guard) else {
-                            continue;
-                        };
-                        crate::bump_counter!(ctx, apply_role_rules_edge_indexed_hits);
-                        let combined = union(guard_deps, edge_deps);
-                        out.push((neighbour, entry.target_label, combined));
+            }
+            triples
+        };
+        if use_index {
+            for rule in &tbox.unguarded_role_rules {
+                for (_, neighbour, edge_deps) in matching_edges(rule.role) {
+                    out.push((neighbour, rule.target_label, edge_deps));
+                }
+            }
+            for (g, guard_deps) in &guards_present {
+                if let Some(rules) = tbox.guarded_role_rules_by_guard.get(g) {
+                    for rule in rules {
+                        for (_, neighbour, edge_deps) in matching_edges(rule.role) {
+                            let combined = union(guard_deps, &edge_deps);
+                            out.push((neighbour, rule.target_label, combined));
+                        }
                     }
                 }
             }
         } else {
-            // Legacy / fallback paths: keep the `matching_edges`
-            // closure for both the partition-indexed and linear
-            // arms. Identical to the pre-Phase-3e behaviour.
-            let matching_edges = |rule_role: Role| {
-                let mut triples: Vec<(Role, NodeId, DepSet)> = Vec::new();
-                for (pos, &(role, neighbour)) in n.edges.iter().enumerate() {
-                    if ctx.edge_satisfies(Role::Named(role), rule_role) {
-                        triples.push((Role::Named(role), neighbour, n.edge_deps[pos].clone()));
-                    }
+            for rule in &tbox.role_rules {
+                let guard_deps_opt: Option<&DepSet> = match rule.guard {
+                    None => None,
+                    Some(g) => guards_present.get(&g),
+                };
+                if rule.guard.is_some() && guard_deps_opt.is_none() {
+                    continue;
                 }
-                for (pos, &(role, neighbour)) in n.in_edges.iter().enumerate() {
-                    if ctx.edge_satisfies(Role::Inverse(role), rule_role) {
-                        triples.push((Role::Inverse(role), neighbour, n.in_edge_deps[pos].clone()));
-                    }
-                }
-                triples
-            };
-            if use_partition_index {
-                for rule in &tbox.unguarded_role_rules {
-                    for (_, neighbour, edge_deps) in matching_edges(rule.role) {
-                        out.push((neighbour, rule.target_label, edge_deps));
-                    }
-                }
-                for (g, guard_deps) in &guards_present {
-                    if let Some(rules) = tbox.guarded_role_rules_by_guard.get(g) {
-                        for rule in rules {
-                            for (_, neighbour, edge_deps) in matching_edges(rule.role) {
-                                let combined = union(guard_deps, &edge_deps);
-                                out.push((neighbour, rule.target_label, combined));
-                            }
-                        }
-                    }
-                }
-            } else {
-                for rule in &tbox.role_rules {
-                    let guard_deps_opt: Option<&DepSet> = match rule.guard {
-                        None => None,
-                        Some(g) => guards_present.get(&g),
+                for (_, neighbour, edge_deps) in matching_edges(rule.role) {
+                    let combined = match guard_deps_opt {
+                        None => edge_deps,
+                        Some(gd) => union(gd, &edge_deps),
                     };
-                    if rule.guard.is_some() && guard_deps_opt.is_none() {
-                        continue;
-                    }
-                    for (_, neighbour, edge_deps) in matching_edges(rule.role) {
-                        let combined = match guard_deps_opt {
-                            None => edge_deps,
-                            Some(gd) => union(gd, &edge_deps),
-                        };
-                        out.push((neighbour, rule.target_label, combined));
-                    }
+                    out.push((neighbour, rule.target_label, combined));
                 }
             }
         }
@@ -1738,227 +1684,5 @@ mod phase3_canaries {
             "indexed branch never skipped a missing trigger; Phase 3d \
              restructuring is not wired in. skips = {skips}"
         );
-    }
-}
-
-// ── Phase 3e canaries ───────────────────────────────────────────────
-//
-// Structural canaries for the edges-outer × O(1)-lookup restructuring
-// of `apply_role_rules` against the new role-keyed indices on
-// `AbsorbedTBox`. The fixture exercises a node with mixed-polarity
-// outgoing + incoming edges and a TBox that combines unguarded,
-// guarded, same-polarity, cross-polarity (via declared inverse pairs)
-// and sub-role rules so all four indices fire.
-
-#[cfg(test)]
-#[allow(clippy::many_single_char_names)]
-mod phase3e_canaries {
-    use crate::TableauContext;
-    use crate::apply_role_rules;
-    use owl_dl_core::{
-        AbsorbedTBox, ClassId, ConceptPool, Role, RoleHierarchyBuilder, RoleId, RoleRule,
-    };
-
-    // Fixture:
-    //   classes A (0), G (1), T (2) — A is a guard class, T is the
-    //     conclusion label for several rules, G is a guard the test
-    //     can flip on/off the node.
-    //   roles r (0), r_sub (1) with r_sub ⊑ r, s (2)
-    //   inverse pair (r, s)
-    //   rules:
-    //     1. unguarded ∀r.T (named, fires on any outgoing r-edge AND
-    //        any outgoing r_sub-edge via sub-role expansion)
-    //     2. guarded A ⊑ ∀r.T (named, only when label A present)
-    //     3. unguarded ∀Inverse(s).T (inverse, fires on incoming s-edge
-    //        same-polarity AND on outgoing r-edge cross-polarity via
-    //        the (r, s) inverse pair)
-    //
-    // Edges from root:
-    //   - outgoing r → n1
-    //   - outgoing r_sub → n2
-    //   - incoming s ← n3   (i.e. n3 -s-> root, recorded in root.in_edges)
-    //
-    // Expected hits with the new indices (root label = {A}):
-    //   - outgoing r → n1: matches rule 1 (named unguarded), rule 2
-    //     (named guarded; guard A present), rule 3 (cross-polarity
-    //     via (r, s)). → 3 hits.
-    //   - outgoing r_sub → n2: matches rule 1 (same-polarity sub-role
-    //     of r), rule 2 (sub-role of r with guard A). → 2 hits.
-    //   - incoming s ← n3: matches rule 3 (same-polarity Inverse(s)).
-    //     → 1 hit.
-    //   Total: 6 emissions. add_label adds T to n1, n2, n3.
-
-    fn r(n: u32) -> RoleId {
-        RoleId::new(n)
-    }
-
-    #[cfg(feature = "counters")]
-    #[test]
-    fn phase3e_edge_indexed_dispatch_bumps_counter() {
-        let mut pool = ConceptPool::new();
-        let a_cls = ClassId::new(0);
-        let _g_cls = ClassId::new(1);
-        let t_cls = ClassId::new(2);
-
-        let a_lbl = pool.atomic(a_cls);
-        let t_lbl = pool.atomic(t_cls);
-
-        // Roles: r (0), r_sub (1) with r_sub ⊑ r; s (2) declared as
-        // inverse of r.
-        let r_role = r(0);
-        let r_sub = r(1);
-        let s_role = r(2);
-
-        let mut hb = RoleHierarchyBuilder::with_roles(3);
-        hb.add_sub_role(r_sub, r_role);
-        let hierarchy = hb.build();
-
-        let inverse_pairs = vec![(r_role, s_role), (s_role, r_role)];
-
-        // RoleRules: target_label is always T.
-        let mut tbox = AbsorbedTBox {
-            role_rules: vec![
-                // Rule 1: unguarded ∀r.T
-                RoleRule {
-                    role: Role::named(r_role),
-                    guard: None,
-                    target_label: t_lbl,
-                },
-                // Rule 2: guarded A ⊑ ∀r.T
-                RoleRule {
-                    role: Role::named(r_role),
-                    guard: Some(a_cls),
-                    target_label: t_lbl,
-                },
-                // Rule 3: unguarded ∀Inverse(s).T
-                RoleRule {
-                    role: Role::inverse(s_role),
-                    guard: None,
-                    target_label: t_lbl,
-                },
-            ],
-            ..AbsorbedTBox::default()
-        };
-        tbox.finalize();
-        tbox.finalize_role_edge_indices(&hierarchy, &inverse_pairs);
-        assert!(
-            tbox.role_edge_indices_ready,
-            "finalize_role_edge_indices should mark the flag ready"
-        );
-
-        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
-        for &(a, b) in &inverse_pairs {
-            ctx.declare_inverse_pair(a, b);
-        }
-
-        let root = ctx.new_node();
-        let n1 = ctx.new_node();
-        let n2 = ctx.new_node();
-        let n3 = ctx.new_node();
-
-        // Label root with A so the guarded rule fires.
-        ctx.add_label(root, a_lbl);
-
-        // Outgoing r-edge to n1; outgoing r_sub-edge to n2;
-        // incoming s-edge from n3 (n3 -s-> root).
-        ctx.add_edge(root, r_role, n1);
-        ctx.add_edge(root, r_sub, n2);
-        ctx.add_edge(n3, s_role, root);
-
-        let outcome = apply_role_rules(&mut ctx, root);
-        assert_eq!(
-            outcome,
-            crate::RuleOutcome::Applied,
-            "apply_role_rules should add T-labels to neighbours"
-        );
-
-        // Verify all three neighbours received T (order-insensitive).
-        let labels_set: std::collections::HashSet<_> = [n1, n2, n3]
-            .iter()
-            .map(|nid| ctx.graph().node(*nid).labels().contains(&t_lbl))
-            .collect();
-        assert!(
-            labels_set.contains(&true) && !labels_set.contains(&false),
-            "all of n1, n2, n3 must have T in their labels after apply_role_rules"
-        );
-
-        // Counter must bump for every emission produced by the new
-        // edges-outer dispatch. Expected: 3 (outgoing r) + 2 (outgoing
-        // r_sub) + 1 (incoming s) = 6, but we assert > 0 so the test
-        // is robust to future emission-bookkeeping refactors.
-        let hits = ctx.counters.apply_role_rules_edge_indexed_hits.get();
-        assert!(
-            hits >= 6,
-            "edge-indexed dispatch never fired or fired fewer than the \
-             6 expected emissions. hits = {hits}"
-        );
-    }
-
-    // Without the counters feature, still verify the verdict path:
-    // every neighbour gets T after the indexed dispatch runs.
-    #[test]
-    fn phase3e_edge_indexed_dispatch_emits_all_expected_labels() {
-        let mut pool = ConceptPool::new();
-        let a_cls = ClassId::new(0);
-        let t_cls = ClassId::new(2);
-
-        let a_lbl = pool.atomic(a_cls);
-        let t_lbl = pool.atomic(t_cls);
-
-        let r_role = r(0);
-        let r_sub = r(1);
-        let s_role = r(2);
-
-        let mut hb = RoleHierarchyBuilder::with_roles(3);
-        hb.add_sub_role(r_sub, r_role);
-        let hierarchy = hb.build();
-
-        let inverse_pairs = vec![(r_role, s_role), (s_role, r_role)];
-
-        let mut tbox = AbsorbedTBox {
-            role_rules: vec![
-                RoleRule {
-                    role: Role::named(r_role),
-                    guard: None,
-                    target_label: t_lbl,
-                },
-                RoleRule {
-                    role: Role::named(r_role),
-                    guard: Some(a_cls),
-                    target_label: t_lbl,
-                },
-                RoleRule {
-                    role: Role::inverse(s_role),
-                    guard: None,
-                    target_label: t_lbl,
-                },
-            ],
-            ..AbsorbedTBox::default()
-        };
-        tbox.finalize();
-        tbox.finalize_role_edge_indices(&hierarchy, &inverse_pairs);
-
-        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
-        for &(a, b) in &inverse_pairs {
-            ctx.declare_inverse_pair(a, b);
-        }
-
-        let root = ctx.new_node();
-        let n1 = ctx.new_node();
-        let n2 = ctx.new_node();
-        let n3 = ctx.new_node();
-
-        ctx.add_label(root, a_lbl);
-        ctx.add_edge(root, r_role, n1);
-        ctx.add_edge(root, r_sub, n2);
-        ctx.add_edge(n3, s_role, root);
-
-        let outcome = apply_role_rules(&mut ctx, root);
-        assert_eq!(outcome, crate::RuleOutcome::Applied);
-
-        // n1, n2, n3 must each have T in their labels.
-        assert!(ctx.graph().node(n1).labels().contains(&t_lbl));
-        assert!(ctx.graph().node(n2).labels().contains(&t_lbl));
-        assert!(ctx.graph().node(n3).labels().contains(&t_lbl));
     }
 }

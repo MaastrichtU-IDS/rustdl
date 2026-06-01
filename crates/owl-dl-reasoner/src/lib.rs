@@ -1360,13 +1360,7 @@ impl PreparedOntology {
         let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
         let chain_axioms = collect_chain_axioms(&internal)?;
         let normalized = nnf_axioms(&mut internal);
-        let mut tbox = absorb(&normalized, &mut internal.concepts);
-        // Phase 3e: populate the role-edge indices now that the
-        // hierarchy and inverse_pairs are constructed. Replaces the
-        // per-(rule, edge) `edge_satisfies` cost in
-        // `apply_role_rules` with an edges-outer × O(1)-lookup
-        // dispatch. See `docs/phase3e-fix-target.md`.
-        tbox.finalize_role_edge_indices(&hierarchy, &inverse_pairs);
+        let tbox = absorb(&normalized, &mut internal.concepts);
         // Ensure `⊥` is interned — `apply_max` flags inequality
         // clashes by adding `Bot` to the offending node's label set,
         // and looks up the canonical id via `pool.bot_id()`. Cheap

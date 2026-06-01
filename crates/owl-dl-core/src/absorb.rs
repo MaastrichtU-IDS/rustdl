@@ -47,10 +47,9 @@
 use std::collections::HashMap;
 
 use crate::ConceptPool;
-use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role, RoleId};
+use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role};
 use crate::normalize::to_nnf;
 use crate::ontology::Axiom;
-use crate::role_hierarchy::RoleHierarchy;
 
 /// The output of absorption. Always a derived view of an `InternalOntology`'s
 /// axiom list — never a replacement.
@@ -102,37 +101,6 @@ pub struct AbsorbedTBox {
     /// Guarded `RoleRule`s indexed by guard class. Partition of
     /// `role_rules` produced by [`Self::finalize`].
     pub guarded_role_rules_by_guard: HashMap<ClassId, Vec<RoleRule>>,
-
-    // Phase 3e: role-edge indices, populated by
-    // [`Self::finalize_role_edge_indices`] (called from
-    // `PreparedOntology::from_internal` after the role hierarchy and
-    // inverse-pairs are built). They map an edge's underlying `RoleId`
-    // (the property id, with polarity encoded by *which* index is
-    // consulted) to the rules that fire for an edge of that
-    // (polarity × RoleId). See `docs/phase3e-fix-target.md` for the
-    // soundness argument and the design rationale.
-    //
-    // The four indices are populated together; readiness is detected
-    // by [`Self::role_edge_indices_ready`] (true iff
-    // `finalize_role_edge_indices` was called *and* the `role_rules`
-    // list at that point was non-empty AND it produced at least one
-    // entry, OR explicitly: the boolean flag). Hand-built TBoxes that
-    // never call the new method continue to use the existing
-    // partition-by-guard arm via [`Self::finalize`].
-    pub unguarded_role_rules_by_named_edge: HashMap<RoleId, Vec<u32>>,
-    pub unguarded_role_rules_by_inverse_edge: HashMap<RoleId, Vec<u32>>,
-    pub guarded_role_rules_by_named_edge: HashMap<RoleId, Vec<GuardedRuleEntry>>,
-    pub guarded_role_rules_by_inverse_edge: HashMap<RoleId, Vec<GuardedRuleEntry>>,
-    /// Sentinel: `true` iff [`Self::finalize_role_edge_indices`] has
-    /// run since the last mutation that would invalidate the indices
-    /// (`finalize()` resets to `false` so callers that only call the
-    /// legacy partition path keep working). The indices themselves
-    /// can legitimately be all-empty (e.g. an ontology with no role
-    /// rules), so a non-emptiness check would be wrong — hence the
-    /// explicit flag. Carried through `PartialEq`/`Eq` so the
-    /// `finalize_is_idempotent` test still holds when only
-    /// `finalize()` is called.
-    pub role_edge_indices_ready: bool,
 }
 
 impl AbsorbedTBox {
@@ -170,168 +138,7 @@ impl AbsorbedTBox {
                     .push(*rule),
             }
         }
-        // Phase 3e: invalidate the edge-keyed indices — they depend on
-        // `unguarded_role_rules` / `guarded_role_rules_by_guard` and a
-        // role hierarchy + inverse pairs (which `finalize()` doesn't
-        // know about). `finalize_role_edge_indices` rebuilds them.
-        self.unguarded_role_rules_by_named_edge.clear();
-        self.unguarded_role_rules_by_inverse_edge.clear();
-        self.guarded_role_rules_by_named_edge.clear();
-        self.guarded_role_rules_by_inverse_edge.clear();
-        self.role_edge_indices_ready = false;
     }
-
-    /// Phase 3e: build the role-keyed edge indices that let
-    /// [`crate::AbsorbedTBox`]-driven `apply_role_rules` dispatch in
-    /// edges-outer × O(1)-per-edge shape, replacing the
-    /// rules-outer × per-edge-`edge_satisfies` cost. Idempotent —
-    /// safe to call after any (re-)`finalize()`. Linear in
-    /// `|role_rules| × (|sub_roles(rule.role)| + |inverse_pairs|)`.
-    ///
-    /// **Inputs:**
-    /// - `hierarchy`: the closed role hierarchy. `sub_roles(r')` is
-    ///   used to enumerate every named-role id `r` such that an
-    ///   edge with `RoleId` `r` satisfies a rule with `Role::Named(r')`
-    ///   (equivalently: `r ⊑ r'`). Required for same-polarity
-    ///   correctness.
-    /// - `inverse_pairs`: the declared inverse-role pairs (the same
-    ///   slice consumed by `TableauContext::declare_inverse_pair`).
-    ///   Per `crates/owl-dl-tableau/src/lib.rs:484-491`, the underlying
-    ///   `inverse_pairs_set` is **symmetrically** populated at
-    ///   declare time (both `(r,s)` and `(s,r)` go in), so this method
-    ///   accepts the same symmetric mirror without double-iterating:
-    ///   one pass over the pairs reaches both directions naturally.
-    ///   Callers passing only one direction must supply both; the
-    ///   `PreparedOntology` wiring does this via the same source the
-    ///   tableau context consumes.
-    ///
-    /// Soundness invariant: for any edge (polarity, `RoleId` r) and any
-    /// rule R, the index emits R iff `edge_satisfies` would have
-    /// matched on the rule-outer × edge-inner shape. Same-polarity
-    /// expansion uses `sub_roles`; cross-polarity expansion uses
-    /// `inverse_pairs` membership only (no hierarchy walk on either
-    /// side — matches `edge_satisfies` semantics at
-    /// `owl-dl-tableau/src/lib.rs:598-609`).
-    pub fn finalize_role_edge_indices(
-        &mut self,
-        hierarchy: &RoleHierarchy,
-        inverse_pairs: &[(RoleId, RoleId)],
-    ) {
-        self.unguarded_role_rules_by_named_edge.clear();
-        self.unguarded_role_rules_by_inverse_edge.clear();
-        self.guarded_role_rules_by_named_edge.clear();
-        self.guarded_role_rules_by_inverse_edge.clear();
-
-        for (idx, rule) in self.unguarded_role_rules.iter().enumerate() {
-            let idx_u32 = u32::try_from(idx).expect("rule index fits in u32");
-            let rule_role_id = rule.role.role_id();
-            let rule_is_inverse = rule.role.is_inverse();
-            // Same-polarity expansion: every edge with RoleId in
-            // sub_roles(rule_role_id) satisfies this rule on the same
-            // polarity arm. `sub_roles` is reflexive — always contains
-            // `rule_role_id` itself.
-            let sub_ids = if (rule_role_id.index() as usize) < hierarchy.num_roles() {
-                hierarchy.sub_roles(rule_role_id)
-            } else {
-                // Role not present in hierarchy (e.g. constructed but
-                // never declared). Fall back to identity.
-                &[]
-            };
-            let same_polarity_index = if rule_is_inverse {
-                &mut self.unguarded_role_rules_by_inverse_edge
-            } else {
-                &mut self.unguarded_role_rules_by_named_edge
-            };
-            if sub_ids.is_empty() {
-                same_polarity_index
-                    .entry(rule_role_id)
-                    .or_default()
-                    .push(idx_u32);
-            } else {
-                for &sub_id in sub_ids {
-                    same_polarity_index
-                        .entry(sub_id)
-                        .or_default()
-                        .push(idx_u32);
-                }
-            }
-            // Cross-polarity expansion: an edge of opposite polarity
-            // with RoleId `a` satisfies this rule iff `(a, rule_role_id)`
-            // is a declared inverse pair. No hierarchy walk —
-            // `edge_satisfies` does no sub_role traversal in its
-            // cross-polarity arm.
-            let cross_polarity_index = if rule_is_inverse {
-                &mut self.unguarded_role_rules_by_named_edge
-            } else {
-                &mut self.unguarded_role_rules_by_inverse_edge
-            };
-            for &(a, b) in inverse_pairs {
-                if b == rule_role_id {
-                    cross_polarity_index.entry(a).or_default().push(idx_u32);
-                }
-            }
-        }
-
-        // Guarded rules: flatten across guards into the four indices,
-        // carrying the guard ClassId + target ConceptId so the
-        // edges-outer hot loop can do the `guards_present` lookup
-        // per entry.
-        for rules in self.guarded_role_rules_by_guard.values() {
-            for rule in rules {
-                let entry = GuardedRuleEntry {
-                    guard: rule.guard.expect("guarded rule has Some(guard)"),
-                    target_label: rule.target_label,
-                };
-                let rule_role_id = rule.role.role_id();
-                let rule_is_inverse = rule.role.is_inverse();
-                let sub_ids = if (rule_role_id.index() as usize) < hierarchy.num_roles() {
-                    hierarchy.sub_roles(rule_role_id)
-                } else {
-                    &[]
-                };
-                let same_polarity_index = if rule_is_inverse {
-                    &mut self.guarded_role_rules_by_inverse_edge
-                } else {
-                    &mut self.guarded_role_rules_by_named_edge
-                };
-                if sub_ids.is_empty() {
-                    same_polarity_index
-                        .entry(rule_role_id)
-                        .or_default()
-                        .push(entry);
-                } else {
-                    for &sub_id in sub_ids {
-                        same_polarity_index.entry(sub_id).or_default().push(entry);
-                    }
-                }
-                let cross_polarity_index = if rule_is_inverse {
-                    &mut self.guarded_role_rules_by_named_edge
-                } else {
-                    &mut self.guarded_role_rules_by_inverse_edge
-                };
-                for &(a, b) in inverse_pairs {
-                    if b == rule_role_id {
-                        cross_polarity_index.entry(a).or_default().push(entry);
-                    }
-                }
-            }
-        }
-
-        self.role_edge_indices_ready = true;
-    }
-}
-
-/// Phase 3e: a single guarded role-rule entry stored in the edge
-/// indices. Flattened from `guarded_role_rules_by_guard` so the
-/// edges-outer hot loop only does one HashMap-get per edge polarity
-/// to discover all firing guarded rules. The `guard` is looked up in
-/// the per-node `guards_present` map at classify time; missing
-/// guards skip the entry (same behaviour as the legacy
-/// rules-outer arm).
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct GuardedRuleEntry {
-    pub guard: ClassId,
-    pub target_label: ConceptId,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]

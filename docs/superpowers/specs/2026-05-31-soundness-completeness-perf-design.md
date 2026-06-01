@@ -151,6 +151,16 @@ per approval.
 - Fix the known 4× Or-body trigger regression (`fddf2ee`).
 - **Measurable:** SIO + notgalen wall reductions; verdicts unchanged.
 
+Landed (first fix): `docs/phase3-results.md`. Empirical Phase 3
+target was the TABLEAU, not the EL saturator — both GALEN and SIO
+flamegraphs showed the saturator at <1%; the bottleneck is in
+`apply_deferred_concept_or_rules` (GALEN) and `apply_max` (SIO).
+First Phase 3 fix targeted GALEN's `needs_deferred_or` via bloom
+prefilter; result: 24.7 min → 21.1 min (−14.6%), FP=0 + MISSED=17
+held. Phase 3b queued for `apply_max` (helps both GALEN and SIO),
+followed by clash detection (Phase 3c) and heap allocations
+(Phase 3d).
+
 ### Phase 4 — Generalization capstone
 
 With the broad corpus (P0), the verification net (P1), and the fragment

@@ -92,6 +92,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   "wedge"** since 2026-05-29 — the in-tree `hyper.rs` docstring calling it
   standalone/not-wired is stale; trust the `*_enabled()` defaults in
   `reasoner/src/lib.rs`.
+  Phase 3 (commit 64bee92) added a bloom prefilter to `needs_deferred_or`
+  extending the existing 64-bit `label_sig` (was used only for ancestor
+  pair-blocking). GALEN classify wall: 24.7 min → 21.1 min (−14.6%);
+  verdicts unchanged. See `docs/phase3-results.md`.
 
 - **`crates/owl-dl-reasoner`** — public API + orchestrator (`lib.rs`,
   `classify.rs`, `realize.rs`). Every entry point that issues a tableau query

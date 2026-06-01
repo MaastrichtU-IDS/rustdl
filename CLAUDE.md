@@ -96,6 +96,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   extending the existing 64-bit `label_sig` (was used only for ancestor
   pair-blocking). GALEN classify wall: 24.7 min → 21.1 min (−14.6%);
   verdicts unchanged. See `docs/phase3-results.md`.
+  Phase 3b (commit cf05e22) replaced `are_declared_inverses`'s O(N) linear
+  scan with an O(1) hashbrown::HashSet lookup. SIO flamegraph deltas:
+  `are_declared_inverses` 25.76% → 3.44%; `apply_max` 27.93% → 6.51%
+  (7.5× reduction on inverse-lookup path). FP=0 + verdicts unchanged.
+  See `docs/phase3b-results.md`.
 
 - **`crates/owl-dl-reasoner`** — public API + orchestrator (`lib.rs`,
   `classify.rs`, `realize.rs`). Every entry point that issues a tableau query

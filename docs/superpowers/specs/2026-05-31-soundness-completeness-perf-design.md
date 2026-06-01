@@ -160,6 +160,13 @@ prefilter; result: 24.7 min → 21.1 min (−14.6%), FP=0 + MISSED=17
 held. Phase 3b queued for `apply_max` (helps both GALEN and SIO),
 followed by clash detection (Phase 3c) and heap allocations
 (Phase 3d).
+Phase 3b landed: `docs/phase3b-results.md`. Flamegraph evidence —
+`are_declared_inverses` linear scan 25.76% → 3.44% via hashbrown::HashSet
+swap; `apply_max` 27.93% → 6.51% as a result. FP=0 + MISSED-unchanged
+held. Wall improvements uncalibrated (shared-CPU contention this
+session); flamegraph is the durable comparison. Phase 3c queued
+for the new top non-search frame: `apply_role_axioms` / `bot_id` linear
+scan at 24.66%.
 
 ### Phase 4 — Generalization capstone
 

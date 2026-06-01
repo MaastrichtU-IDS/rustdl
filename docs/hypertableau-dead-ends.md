@@ -473,6 +473,27 @@ reusable for workload-adaptive variant); `docs/phase3e-results.md`
 
 ---
 
+## 17. apply_max post-3d residual exhausted (Phase 3f)
+
+**Hypothesis:** Phase 3f targeted `apply_max` (post-3c flame: 14.34%) for the same recon-first 6-task pattern as Phases 3d/3e.
+
+**Status:** killed at recon (T1). No shippable target found; Phase 3f deferred without implementation.
+
+**What the recon found** (`docs/phase3f-recon.md`, commit d9cc1ca):
+- apply_max is actually **11.42% post-3d** (not 14.34% — Phase 3d's hoist also shaved ~3pp from apply_max as a denominator-redistribution side effect; plan baseline was stale post-3c).
+- Dominant inner cost: `edge_satisfies` at 64.4% of apply_max (7.35% of total SIO), split 51% `are_declared_inverses` HashSet probe / 45% `is_sub_role` binary_search. Both already O(1); the cost is irreducible probe overhead, not algorithmic.
+- The workload-neutral candidates (D: O(c²) pair loop, E: `compute_max_merge_deps`, F: `c_neighbours.contains` dedup) are **completely absent from the flame** — empirically zero on SIO.
+- The only workload-neutral candidate present is C: `maxes` Vec allocation (21.2% of apply_max = 2.42% of total). Best-case surgical removal predicts ~0.7% GALEN wall reduction (Phase 3d's 18→3pp flame translated to 4.5% wall, a ~30% conversion ratio; Stage 1's 2.42pp at the same ratio is ~0.7%). Below the tightened ≥2% ship threshold and inside the noise floor disambiguated in Phase 3e.
+- The §16-shape Stage 2 (`edge_satisfies` caching) is the actual cost lever but repeats Phase 3e's workload-dependent break-even pattern. Even a counter-gated workload-adaptive variant pays the HashMap construction cost on every classify.
+
+**Cost when shipped:** none (recon-only; no code committed).
+
+**Don't reattempt without first:** capturing a fresh post-3d (or later) baseline flame — the post-3c numbers used as Phase 3f's planning baseline were stale by ~3pp on apply_max alone. Phase 3 returns are exhausted on this function until a hashbrown alternative or a structurally different approach (e.g. merging multiple Max constraints over the same role) presents itself.
+
+**Cross-references:** `docs/phase3f-recon.md` (full drill-down with sample counts); §16 (the workload-dependence pattern that made Stage 2 a non-starter); `docs/superpowers/plans/2026-06-01-phase3f-apply-max.md` (deferred plan).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

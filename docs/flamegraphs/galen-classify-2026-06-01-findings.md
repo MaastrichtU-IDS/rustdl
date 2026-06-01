@@ -11,9 +11,10 @@ MISSED recovery).
 
 ## Top-level split
 
-The "saturate" frame at 72.32% is **the hypertableau's `saturate()` in
-`hyper.rs`**, called recursively from `branch`/`search` — it is **not** the
-EL saturation engine (`owl-dl-saturation` crate). The call chain is:
+The "saturate" frame at 72.32% is **the tableau's own `saturate()` in
+`owl-dl-tableau/src/saturate.rs`**, called from `search.rs` on each
+backtracking step — it is **not** the EL saturation engine
+(`owl-dl-saturation` crate, `lib.rs:70`). The call chain is:
 
 ```
 branch (y=4261, 73.01%) -> search (y=4245, 73.01%)
@@ -34,7 +35,7 @@ saturation.
 |-------:|--------:|---------|-------|
 | 73.01% | 18185 | `branch` | tableau backtracking driver (search.rs) |
 | 73.01% | 18185 | `search` | called inside branch |
-| 72.32% | 18013 | `saturate` | **hyper.rs** saturation loop (not EL engine) |
+| 72.32% | 18013 | `saturate` | **tableau/saturate.rs** saturation loop (not EL engine) |
 | 31.40% | 7820 | `apply_deferred_concept_or_rules` | deferred OR rule — Phase 2b cost |
 | 18.13% | 4516 | `eq` | `PartialEq::eq` for `ConceptId` — **leaf frame** |
 | 17.08% | 4255 | `apply_max` | max-cardinality rule |
@@ -61,12 +62,13 @@ saturation.
 
 ## Quick interpretation
 
-**The hypertableau is the bottleneck, not the EL saturator.** GALEN stresses
-the SROIQ fragment with deep role hierarchies and max-cardinality restrictions;
-the vast majority of class pairs require the full tableau, so the
+**The tableau is the bottleneck, not the EL saturator.** GALEN stresses the
+SROIQ fragment with deep role hierarchies and max-cardinality restrictions; the
+vast majority of class pairs require the full tableau, so the
 `owl-dl-saturation` crate contributes negligible wall time.
 
-Within the hypertableau's `saturate()`, the two dominant costs are:
+Within the tableau's `saturate()` (called from `search.rs` on each
+backtracking step, defined in `saturate.rs`), the two dominant costs are:
 
 1. **`apply_deferred_concept_or_rules` (31.4%)** — this is Phase 2b's
    deferred OR trigger paying its runtime cost. The hot leaf inside it is
@@ -98,7 +100,8 @@ Per `docs/superpowers/specs/2026-05-31-soundness-completeness-perf-design.md`
 
 - **Saturator hot path on SIO 68s / notgalen 10min.** The GALEN flamegraph
   shows the EL saturator (`owl-dl-saturation`) is negligible here (0.04%). The
-  `saturate` frame at 72% is the hypertableau's own saturation sub-loop. For
+  `saturate` frame at 72% is the tableau's own saturation sub-loop
+  (`saturate.rs`). For
   SIO and notgalen — which are more EL-heavy — the EL saturator may be the
   bottleneck as the spec expects. **The GALEN flamegraph does not validate or
   refute the EL-saturator target; a SIO/notgalen profile is needed for that.**

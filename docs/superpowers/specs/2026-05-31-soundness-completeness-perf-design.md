@@ -149,6 +149,11 @@ each.
   (`R_i ⊑ R_f` functional + `∃R_i.X` + covering on the R_f-target range)
   in absorbed-TBox shape, lower to materialised existential.
   Hypertableau-extension Options 1 and 2 deferred.
+  Phase 2c shipped, measured, and reverted: see `docs/phase2c-results.md`.
+  0 / 44 predicted corpus pairs recovered; rule sound but cannot reach the
+  IPBP-derivation cluster because the saturator propagates subsumers not
+  facts to subclasses. Architectural prerequisite (fact-on-subclass
+  propagation) deferred to a potential Phase 2d.
 - **Honesty:** SIO 2 and some deep GALEN pairs may still not converge — recorded
   as residual gaps, not a deliverable.
 - **Measurable:** per-lever MISSED reduction via the corpus diff.

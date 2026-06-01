@@ -399,6 +399,45 @@ shipped form. See `crates/owl-dl-saturation/src/lib.rs` (T4 commit
 
 ---
 
+## 15. Sub-role witness propagation (Phase 2c)
+
+**Hypothesis.** Phase 2a's functional-role witness-merge emits on the
+functional super-role R_f but not back down to sub-roles R_k ⊑ R_f
+where downstream existential triggers live (e.g. IPBP's defining
+trigger on `hasIntrinsicPathologicalStatus`). Propagating the merged
+synthetic back to every R_k on which X already has a fact would close
+the IPBP-derivation MISSED cluster (Phase 2c.0 predicted 24-44 pairs).
+
+**Status.** Sound and terminating, 0 / 44 predicted corpus recovery.
+
+**Why it failed.** The saturator propagates subsumers (not facts) to
+subclasses. The IPBP-cluster's "second feed-in fact" lives on a parent
+class (e.g. `PathologicalBodyProcess`) and the subclass inherits the
+subsumer at `process_subsumer` time without materializing the fact on
+`facts_by_sub[subclass]`. Phase 2c's rule is fact-time; it iterates
+`facts_by_sub[X]`; sees only one fact; doesn't fire. The rule does
+fire on classes with two directly-materialized facts (3× on pair_06),
+but those emissions don't reach any downstream trigger because the
+downstream existential heads don't sit on the propagated sub-roles.
+
+**Cost when shipped.** +7% wall on GALEN (12.2 → 13.1 min) and notgalen
+(~30 → 32.1 min), paid every classify run for zero benefit. Reverted in
+commit cc2019e.
+
+**Don't try this again without first solving** fact-on-subclass
+propagation at `process_subsumer` time. A re-attempt at sub-role
+witness propagation without that prerequisite will hit the same
+empirical 0 / N result.
+
+**Cross-references.** `docs/phase2c-fix-target.md` (design analysis;
+the "Predicted walkthrough on pair_06 (and what actually happened)"
+section is the empirical reckoning); `docs/phase2c-galen-diagnosis.md`
+(Phase 2c.0 cluster shift); `docs/phase2c-results.md` (measurement
+headline); `crates/owl-dl-reasoner/tests/phase2c_pair_06_canary.rs`
+(gap-asserting canary, kept).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

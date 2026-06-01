@@ -43,6 +43,13 @@ pub(crate) struct RuleCounters {
     pub(crate) is_blocked_true: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
+
+    /// Phase 3: needs_deferred_or's bloom prefilter rejected the call
+    /// (the deferred OR's concept or any of its disjuncts couldn't be
+    /// in the label set per the bloom). Each reject skips the
+    /// binary_search + per-disjunct iteration. See
+    /// `docs/phase3-fix-target.md`.
+    pub(crate) needs_deferred_or_bloom_rejects: Cell<u64>,
 }
 
 /// Increment by 1. Internal helper; macro callers go through the
@@ -103,6 +110,10 @@ impl RuleCounters {
             (
                 "is_blocked_subset_scans",
                 self.is_blocked_subset_scans.get(),
+            ),
+            (
+                "needs_deferred_or_bloom_rejects",
+                self.needs_deferred_or_bloom_rejects.get(),
             ),
         ];
         let total: u64 = entries.iter().map(|(_, v)| *v).sum();

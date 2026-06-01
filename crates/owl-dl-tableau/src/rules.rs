@@ -556,6 +556,7 @@ pub fn apply_deferred_concept_or_rules(
     // Snapshot triggers (atomic labels + deps) and the current
     // label set, releasing the graph borrow before mutation.
     let pending: Vec<(ConceptId, DepSet)> = {
+        let label_sig = ctx.graph().blocking(node).label_sig;
         let n = ctx.graph().node(node);
         let pool = ctx.pool();
         let labels = n.labels();
@@ -577,15 +578,25 @@ pub fn apply_deferred_concept_or_rules(
                 // Hand-built TBox without finalize(): fall back to a
                 // linear scan over concept_rules for this trigger.
                 for rule in &tbox.concept_rules {
-                    if rule.trigger == *trigger && needs_deferred_or(pool, rule.conclusion, labels)
-                    {
-                        out.push((rule.conclusion, deps.clone()));
+                    if rule.trigger == *trigger {
+                        let (needs, bloom_hit) =
+                            needs_deferred_or(pool, rule.conclusion, labels, label_sig);
+                        if bloom_hit {
+                            crate::bump_counter!(ctx, needs_deferred_or_bloom_rejects);
+                        }
+                        if needs {
+                            out.push((rule.conclusion, deps.clone()));
+                        }
                     }
                 }
                 continue;
             };
             for &c in conclusions {
-                if needs_deferred_or(pool, c, labels) {
+                let (needs, bloom_hit) = needs_deferred_or(pool, c, labels, label_sig);
+                if bloom_hit {
+                    crate::bump_counter!(ctx, needs_deferred_or_bloom_rejects);
+                }
+                if needs {
                     out.push((c, deps.clone()));
                 }
             }
@@ -609,13 +620,66 @@ pub fn apply_deferred_concept_or_rules(
 /// the Or is not already a label, and none of its disjuncts is.
 /// Non-Or concepts return `false` (they were added eagerly by
 /// `apply_concept_rules`).
-fn needs_deferred_or(pool: &owl_dl_core::ConceptPool, c: ConceptId, labels: &[ConceptId]) -> bool {
+///
+/// Returns `(needs, bloom_rejected)`. `bloom_rejected` is `true`
+/// when the Phase 3 bloom prefilter short-circuited the call (the
+/// `args_mask & label_sig == 0` fast path) — the caller bumps the
+/// corresponding counter so counters don't require threading `ctx`
+/// through here. See `docs/phase3-fix-target.md`.
+fn needs_deferred_or(
+    pool: &owl_dl_core::ConceptPool,
+    c: ConceptId,
+    labels: &[ConceptId],
+    label_sig: u64,
+) -> (bool, bool) {
     match pool.get(c) {
         ConceptExpr::Or(args) => {
-            labels.binary_search(&c).is_err()
-                && !args.iter().any(|d| labels.binary_search(d).is_ok())
+            // Phase 3 bloom prefilter — three passes.
+            //
+            // Invariant: label ∈ labels ⟹ label_sig_bit(label) & label_sig ≠ 0.
+            // Contrapositive: bit clear ⟹ concept definitely absent.
+            //
+            // Pass 1: c itself.
+            // If bit(c) is clear in label_sig, c is provably absent —
+            // skip the binary_search(&c). If plausibly present, we
+            // still need the binary_search to confirm (bloom has FPs).
+            let c_bit = crate::graph::label_sig_bit(c);
+            let c_maybe_present = (label_sig & c_bit) != 0;
+            if c_maybe_present && labels.binary_search(&c).is_ok() {
+                // c IS in labels — no need to materialise the Or.
+                return (false, false);
+            }
+            // At this point we know: either c_maybe_present is false
+            // (c is definitely absent, condition 1 satisfied) or c is
+            // absent despite the plausible bit (binary_search confirmed).
+            // Either way, condition 1 is satisfied. Check condition 2.
+
+            // Pass 2: disjuncts — combined mask fast path.
+            // OR the bloom bits of every disjunct. If none are set,
+            // no disjunct can be present — return true immediately.
+            // This is the "big win" for GALEN (skips all per-disjunct
+            // binary_searches).
+            let mut args_mask: u64 = 0;
+            for &d in args {
+                args_mask |= crate::graph::label_sig_bit(d);
+            }
+            if (label_sig & args_mask) == 0 {
+                // Bloom reject: no disjunct can be in labels.
+                // needs_deferred_or → true, and we short-circuited.
+                return (true, true);
+            }
+
+            // Pass 3 (mixed case): at least one disjunct's bit is
+            // set; we need binary_search to disambiguate.
+            // Skip disjuncts whose bit is provably absent (bloom FP
+            // guard: only search where the bit suggests presence).
+            let any_disjunct_present = args.iter().any(|d| {
+                (label_sig & crate::graph::label_sig_bit(*d)) != 0
+                    && labels.binary_search(d).is_ok()
+            });
+            (!any_disjunct_present, false)
         }
-        _ => false,
+        _ => (false, false),
     }
 }
 
@@ -1524,7 +1588,12 @@ mod phase3_canaries {
     #[cfg(feature = "counters")]
     #[test]
     fn phase3_bloom_prefilter_rejects_on_or_heavy_synthetic() {
-        let OrHeavySynth { pool, tbox, a, d, f, g, .. } = build_or_heavy_synth();
+        let OrHeavySynth { mut pool, tbox, a, d, f, g, .. } = build_or_heavy_synth();
+
+        // Pre-compute the compound concept before lending pool to any
+        // context — pool.and() requires &mut, which conflicts with
+        // the immutable borrow held by TableauContext.
+        let a_and_d = pool.and([a, d]);
 
         // Run all four satisfiability queries so the deferred-OR rule
         // fires repeatedly — enough opportunities for the bloom to
@@ -1539,7 +1608,6 @@ mod phase3_canaries {
         // hold on to.
         let mut ctx = TableauContext::with_tbox(&pool, &tbox);
         // Compound query: A ⊓ D fires both Or rules on the same node.
-        let a_and_d = pool.and([a, d]);
         let _ = ctx.is_satisfiable(a_and_d);
 
         // ── The structural assertion ─────────────────────────────────

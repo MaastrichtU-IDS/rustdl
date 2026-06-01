@@ -87,7 +87,7 @@ mapping below.
 | Residual cluster | Pairs (GALEN + notgalen) | Phase 2b.0 origin | Phase 2c rule shape |
 |---|---|---|---|
 | C — IntrinsicallyPathologicalBodyProcess (named) | 12 + 12 = 24 | original C | functional-role + covering / sibling-collapse (EL+ Option 3) |
-| notgalen Anonymous-324 / Anonymous-351 (likely C) | 0 + 15 = 15 | not characterized (notgalen) | **new shape — needs per-pair analysis** (strong prior: cluster-C variant given sub-class overlap) |
+| notgalen Anonymous-324 / Anonymous-351 (likely C) | 0 + 15 = 15 | not characterized (notgalen) | **uncharacterized — strongly co-occurs with cluster C (12/12 with `IntrinsicallyPathologicalBodyProcess`); per-pair canary deferred to Phase 2c** |
 | F-tail body-structure (AbnormalBodyStructure + UnusualBodyStructure + VariantBodyStructure) | 5 + 0 = 5 | F tail of original 109 | **uncharacterized — likely cluster-C-like; per-pair canary deferred to Phase 2c** (may share cluster-C/D axiom pattern or differ) |
 
 Summary:

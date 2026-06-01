@@ -522,4 +522,38 @@ mod tests {
         let result = p.or(empty);
         assert_eq!(result, p.bot());
     }
+
+    // ── Phase 3c verdict canary ───────────────────────────────────────────
+    // Asserts semantic equivalence of bot_id() before and after cache
+    // population. Pre-fix: every call does a linear scan. Post-fix: first
+    // call scans + caches; subsequent calls hit the cache. The returned
+    // ConceptId (or None) must be identical either way.
+    #[test]
+    fn phase3c_bot_id_returns_same_before_and_after_cache_population() {
+        let mut pool = ConceptPool::new();
+
+        // Before Bot is interned, bot_id() must return None — stably.
+        let first = pool.bot_id();
+        // Intern some non-Bot concepts so the pool has multiple entries
+        // and the linear scan must walk past them.
+        let c0 = pool.atomic(ClassId::new(0));
+        let c1 = pool.atomic(ClassId::new(1));
+        let _and = pool.and([c0, c1]);
+        let second = pool.bot_id();
+        assert_eq!(
+            first, second,
+            "bot_id() before Bot interning must be stable across pool growth"
+        );
+        assert!(first.is_none(), "bot_id() returns None before Bot is interned");
+
+        // Intern Bot. Both subsequent calls must return the same Some(id).
+        let _bot_id = pool.bot();
+        let third = pool.bot_id();
+        let fourth = pool.bot_id();
+        assert!(third.is_some(), "after pool.bot(), bot_id() must be Some");
+        assert_eq!(
+            third, fourth,
+            "subsequent bot_id() calls must return the same id"
+        );
+    }
 }

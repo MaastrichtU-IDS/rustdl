@@ -154,6 +154,13 @@ struct WorklistEngine {
     /// transitive flattening into the original atomic vocabulary.
     /// For non-synthetic class IDs, callers default to `{id}`.
     atomic_content_of: HashMap<ClassId, std::collections::BTreeSet<ClassId>>,
+    /// Phase 2d: count of facts materialized via subsumer inheritance.
+    /// Bumped each time `push_fact` (or its inherit-from-subsumer call
+    /// in `process_subsumer`) creates a fact whose `(sub, role, target)`
+    /// triple wasn't in `seen_facts` AND whose `sub` differs from the
+    /// originating fact's `sub`. Diagnostic only; not gated by a feature.
+    /// See `docs/phase2d-design.md`.
+    phase2d_facts_inherited: u64,
 }
 
 impl WorklistEngine {
@@ -214,6 +221,7 @@ impl WorklistEngine {
             tseitin_runtime: tseitin,
             merged_atom_sets: HashMap::new(),
             atomic_content_of,
+            phase2d_facts_inherited: 0,
         }
     }
 
@@ -434,6 +442,23 @@ impl WorklistEngine {
     /// Insert a new existential fact and enqueue it for processing.
     /// Returns the index assigned to the fact, or `None` if it was
     /// already known.
+    ///
+    /// Phase 2d: after the new fact is inserted, propagate it to every
+    /// subclass of `fact.sub` by recursively calling `push_fact` for
+    /// `(subclass, fact.role, fact.target)`. Sound by the standard
+    /// subsumer-driven existential propagation argument: if
+    /// `subclass ⊑ fact.sub` and `(fact.sub, role, target)` is a sound
+    /// existential commitment, then every `subclass`-instance is a
+    /// `fact.sub`-instance with the same role witness, so
+    /// `(subclass, role, target)` holds.
+    ///
+    /// Termination: bounded by `seen_facts` dedup over the finite
+    /// `(sub, role, target)` triple space. The recursion at each
+    /// subclass either short-circuits (triple already seen) or inserts
+    /// a fresh triple; total fresh insertions ≤ number of distinct
+    /// triples in the closure.
+    ///
+    /// See `docs/phase2d-design.md`.
     fn push_fact(&mut self, fact: ExistentialFact) -> Option<usize> {
         if !self.seen_facts.insert((fact.sub, fact.role, fact.target)) {
             return None;
@@ -443,6 +468,23 @@ impl WorklistEngine {
         self.facts_by_sub[fact.sub.index() as usize].push(idx);
         self.facts_by_target[fact.target.index() as usize].push(idx);
         self.todo_fact.push_back(idx);
+        // Phase 2d: propagate to every subclass of fact.sub.
+        // subs_of_class returns an owned Vec, so no borrow conflict
+        // with the recursive push_fact mutable borrow.
+        let subs = self.subs_of_class(fact.sub);
+        for c in subs {
+            if c == fact.sub {
+                continue;
+            }
+            let inherited = ExistentialFact {
+                sub: c,
+                role: fact.role,
+                target: fact.target,
+            };
+            if self.push_fact(inherited).is_some() {
+                self.phase2d_facts_inherited += 1;
+            }
+        }
         Some(idx)
     }
 
@@ -553,6 +595,30 @@ impl WorklistEngine {
                         self.enqueue_subsumer(c, dom);
                     }
                 }
+            }
+        }
+        // Phase 2d: materialize D's existential facts on C in
+        // facts_by_sub[c]. When C newly has D as subsumer, every
+        // existential fact on D represents a witness that C-instances
+        // also have (model-theoretically: C ⊑ D ⇒ every C-instance is a
+        // D-instance with the same role witness). Sound by the standard
+        // ELK existential-propagation argument; the existing sub-side
+        // trigger-firing above (lines 525-557) already exploits this
+        // semantically — Phase 2d materializes the fact explicitly so
+        // fact-time rules (Phase 2a witness-merge, future Phase 2c-redux,
+        // chain rule) can see it on `facts_by_sub[c]`.
+        //
+        // See docs/phase2d-design.md for soundness + termination.
+        let inherit_fact_idxs = self.facts_by_sub[d.index() as usize].clone();
+        for fidx in inherit_fact_idxs {
+            let fact = self.facts[fidx];
+            let inherited = ExistentialFact {
+                sub: c,
+                role: fact.role,
+                target: fact.target,
+            };
+            if self.push_fact(inherited).is_some() {
+                self.phase2d_facts_inherited += 1;
             }
         }
         // Chain rule — `c` is fact1.target side: when a new subsumer
@@ -2636,6 +2702,88 @@ Ontology(<http://rustdl.test/p2ac/test>
             "Phase 2a chained functional supers: the witness-merge rule \
              failed to cascade from r_func to r_super; check that \
              functional_supers_of(r_func) includes r_super."
+        );
+    }
+
+    /// Phase 2d canary: fact-on-subclass inheritance materializes
+    /// `(A, R, T)` on `facts_by_sub[A]` when `A ⊑ B` and B has a
+    /// `(B, R, T)` existential fact. Asserts both the materialized
+    /// fact and the `phase2d_facts_inherited` counter.
+    ///
+    /// Mirrors the design's Step 4 structural assertion in
+    /// `docs/phase2d-design.md` §"Code-change surface" §"Structural
+    /// canary" — the minimal A⊑B + (B,R,T) → (A,R,T) inheritance.
+    #[test]
+    fn phase2d_fact_inherits_to_subclass() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2d/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2d/test>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:T))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(:A :B)
+    SubClassOf(:B ObjectSomeValuesFrom(:R :T))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("canary parses");
+        let internal = convert_ontology(&set_onto).expect("canary lowers");
+
+        // Mirror saturate() inline so we retain ownership of the engine
+        // and can inspect its internal facts_by_sub + counter.
+        let n = internal.vocabulary.num_classes();
+        let role_super = build_role_super(&internal);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
+        let mut engine =
+            WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
+        engine.seed();
+        engine.run();
+
+        let a = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2d/A")
+            .expect("A declared");
+        let b = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2d/B")
+            .expect("B declared");
+
+        let a_facts: Vec<ExistentialFact> = engine.facts_by_sub[a.index() as usize]
+            .iter()
+            .map(|&idx| engine.facts[idx])
+            .collect();
+        let b_facts: Vec<ExistentialFact> = engine.facts_by_sub[b.index() as usize]
+            .iter()
+            .map(|&idx| engine.facts[idx])
+            .collect();
+
+        assert!(
+            !b_facts.is_empty(),
+            "Phase 2d canary precondition: B should have at least one \
+             existential fact from `B ⊑ ∃R.T`; got: {b_facts:?}"
+        );
+        let b_fact = b_facts[0];
+        assert!(
+            a_facts
+                .iter()
+                .any(|f| f.role == b_fact.role && f.target == b_fact.target),
+            "Phase 2d should have inherited B's existential fact onto A's \
+             facts_by_sub. a_facts={a_facts:?} b_facts={b_facts:?}"
+        );
+        assert!(
+            engine.phase2d_facts_inherited > 0,
+            "Phase 2d counter `phase2d_facts_inherited` should bump on \
+             inheritance; got 0."
         );
     }
 

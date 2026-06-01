@@ -57,14 +57,14 @@ The hashbrown HashSet lookup (`contains` via foldhash) now costs only 3.44% vs t
 
 After the scan is gone, `apply_role_axioms` / `bot_id` / `find_map` cluster at
 **24.66%** — a linear scan over `ConceptExpr` slices looking for Bot. This was ranked
-11th in the baseline (9.27%) and is now the dominant non-search frame. Similarly,
+11th in the baseline (9.58%) and is now the dominant non-search frame. Similarly,
 `apply_self_restriction` grew from 9.01% to 19.08% (again, redistribution effect).
 
 ## Corpus measurement
 
 | Fixture | Pre-P3b wall | Post-P3b wall | Δ | FP | MISSED |
 |---|---|---|---|---|---|
-| sio-stripped (CLI) | ~68 s (reference machine) | 192 s (shared-CPU, `--pair-timeout-ms 200`) | machine-speed difference | n/a | n/a |
+| sio-stripped (CLI) | ~68 s (reference machine) | 192 s (shared-CPU, `--pair-timeout-ms 200`) | uncalibrated — no same-machine pre-3b baseline | n/a | n/a |
 | alehif | 2.72 s | 6.84 s | +shared-CPU artifact | 0 | 0 |
 | ore-10908-sroiq | 29.27 s | 27.19 s | -7% | 0 | 0 |
 | ore-15672-shoin | 31.51 s | 37.69 s | +20% (rayon contention?) | 0 | 0 |

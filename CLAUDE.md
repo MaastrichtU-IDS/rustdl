@@ -80,6 +80,15 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   109 MISSED (~84%); FP=0 held. See `docs/phase2b-results.md`.
   Phase 2c attempted sub-role witness propagation; reverted at 0/44
   recovery, see `docs/phase2c-results.md`.
+  Phase 2d + 2c-redux (commits b78c5fd + 34a2b62) layered two changes:
+  (2d) materialize inherited existential facts on subclasses at
+  `process_subsumer` and `push_fact` time, and (2c-redux) re-apply the
+  sub-role witness-propagation rule reverted at cc2019e — now fires
+  because Phase 2d populates `facts_by_sub[X]`. **GALEN MISSED 17 → 0
+  (full parity with Konclude); notgalen MISSED 27 → 18 (9 IPBP-cluster
+  pairs recovered).** Wall cost: GALEN +6.5%, notgalen +2.7%. FP=0
+  held throughout. Resolves dead-end §15. See
+  `docs/phase2d-2c-redux-results.md`.
 
 - **`crates/owl-dl-tableau`** — SROIQ tableau. `CompletionGraph` (`graph.rs`)
   of label-carrying nodes; `TableauTrail` (`trail.rs`) gives log-and-undo

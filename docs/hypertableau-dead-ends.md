@@ -436,6 +436,26 @@ section is the empirical reckoning); `docs/phase2c-galen-diagnosis.md`
 headline); `crates/owl-dl-reasoner/tests/phase2c_pair_06_canary.rs`
 (gap-asserting canary, kept).
 
+### RESOLVED 2026-06-01
+
+Phase 2d (fact-on-subclass propagation at `process_subsumer` and
+`push_fact`, commit b78c5fd) provides the architectural prerequisite
+this entry called out. Phase 2c-redux re-applies the original Phase 2c
+rule unchanged on top of Phase 2d (commit 34a2b62) — now fires
+because `facts_by_sub[X]` contains inherited facts.
+
+**Combined result on GALEN**: MISSED 17 → 0 (full parity with Konclude,
+`rustdl_closure = 27997 = konclude_closure`); wall +6.5% (12.55 →
+13.36 min). On notgalen: MISSED 27 → 18 (9 recovered, IPBP-cluster);
+wall +2.7%. FP=0 throughout. See `docs/phase2d-2c-redux-results.md`.
+
+The §15 "don't try this again without first solving" framing was
+correct: Phase 2c alone couldn't fire because facts weren't materialized
+on subclasses. Phase 2d's fact-inheritance unblocks it cleanly without
+needing case-split / covering / hypertableau extension — the original
+Phase 2c witness-coincidence argument extends because inherited facts
+preserve the same model-theoretic witness as the parent's fact.
+
 ---
 
 ## 16. Edge-keyed role-rule indexing (Phase 3e)

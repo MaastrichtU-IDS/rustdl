@@ -209,6 +209,14 @@ break-even: HashMap-lookup overhead exceeds saved edge_satisfies cost
 on edge-heavy / rule-thin patterns like GALEN). Dead-end ledger §16
 documents the workload-adaptive prerequisite for any reattempt.
 
+Phase 2d + 2c-redux landed: `docs/phase2d-2c-redux-results.md`.
+**Full GALEN parity with Konclude (MISSED 17 → 0) + 9 notgalen
+recovered (27 → 18).** The two-layer architectural play — Phase 2d
+fact-on-subclass propagation as the prerequisite, Phase 2c-redux
+re-applying the previously-reverted (cc2019e) sub-role witness
+propagation rule on top — resolves dead-end §15. Wall cost: +6.5%
+GALEN, +2.7% notgalen, well under the 15% combined-cap criterion.
+
 ### Phase 4 — Generalization capstone
 
 With the broad corpus (P0), the verification net (P1), and the fragment

@@ -137,6 +137,18 @@ each.
   EL+ approximation option for cluster C/D, so this is "tractable but
   lower-priority than Phase 3 perf," not "outside scope." Phase 2c
   (cluster C/D) queued for after Phase 3. See `docs/phase2-closeout.md`.
+  **Phase 2c.0 landed (2026-06-01):** `docs/phase2c-galen-diagnosis.md`
+  + `docs/phase2c-cluster-shift.md`. Confirmed the 17 GALEN + 27 notgalen
+  residual MISSED predominantly map to Phase 2b.0's cluster C
+  (functional-role + covering / sibling-collapse): 24-pair confident
+  floor (12 GALEN + 12 notgalen sharing `IntrinsicallyPathologicalBodyProcess`),
+  15 anonymous-notgalen middle, 5 GALEN F-tail body-structure (top end =
+  44/44). No genuinely new shapes vs Phase 2b.0 — F-tail body-structure
+  pairs were always in the original 109 but unsampled. Phase 2c proper
+  targets Option 3 EL+ approximation: pattern-match the triangle
+  (`R_i ⊑ R_f` functional + `∃R_i.X` + covering on the R_f-target range)
+  in absorbed-TBox shape, lower to materialised existential.
+  Hypertableau-extension Options 1 and 2 deferred.
 - **Honesty:** SIO 2 and some deep GALEN pairs may still not converge — recorded
   as residual gaps, not a deliverable.
 - **Measurable:** per-lever MISSED reduction via the corpus diff.

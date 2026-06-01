@@ -3,6 +3,17 @@
 Run 2026-06-01 at HEAD 4151edd (post Phase 2d + 2c-redux merge to main).
 Notgalen state: FP=0, MISSED=18, rustdl_closure=32721, konclude_closure=32739.
 
+**UPDATE 2026-06-01 (post HEAD e55d7b2):** §Cluster C (the Anonymous-349
+sub-cluster, 2 of 18 raw rows) was investigated as a single-canary deep
+trace and the **gap was real and tractable**. Fix shipped as
+`docs/phase2e-anon349-fix.md` — the Phase 2c-redux back-propagation
+loop was skipping the triggering fact's own role, and removing that skip
+closes Anonymous-349 ⊑ Anonymous-324 (and ⊑ IPBP) on the minimal local
+axiom set. Hypothesis 2 from §Cluster C was the actual root cause. The
+remaining 16 notgalen MISSED rows (the ICF cluster) are still blocked
+on the missing anonymous-LHS bridge GCI — see §"Recommended approach
+for any future Phase 2e" below; orthogonal to this fix.
+
 Diagnosis-only (T101): no code changes. Per-pair reasoning is by axiom
 inspection on `ontologies/external/notgalen.ofn`; the full `explain`
 runner was not used (notgalen pair_06-style probes can run minutes-plus
@@ -358,3 +369,46 @@ pre-materialised.
 - Source notgalen ontology:
   `ontologies/external/notgalen.ofn` (key axioms: 4160, 4161, 4214, 4215,
   5895, 5896, 6031, 6032, 6763, 6764, 6766, 6771, 6772).
+
+## Addendum 2026-06-02: Anonymous-349 is a closure-realization anomaly, not a saturator gap
+
+The original framing above called Anonymous-349 "the cleanest single-pair
+canary for a real implementation gap." **That claim is retracted by direct
+evidence.** A follow-up investigation at HEAD `4151edd` extracted the
+minimal Anonymous-349 axiom set into `/tmp/anon349.ofn` (~30 axioms,
+HermiT-verified to derive both Anon-349 ⊑ Anon-324 and Anon-349 ⊑ IPBP),
+then ran:
+
+- `rustdl explain ontologies/external/notgalen.ofn Anon-349 Anon-324`
+  → **yes — answered by saturation** (closure produced a positive witness).
+- `rustdl classify --pair-timeout-ms 200 ontologies/external/notgalen.ofn`
+  (same per-pair budget as the corpus test, same `classify_top_down_internal`
+  code path) → prints `direct Anon-349 → Anon-324` **AND**
+  `direct Anon-349 → IPBP` as separate edges.
+
+The saturator + classifier closes the pair correctly on full notgalen.
+The corpus closure-diff test reporting it as MISSED is inconsistent with
+those two direct measurements on the same code path.
+
+**The triple-direct anomaly** worth noting: Anon-324 and IPBP have
+identical `EquivalentClasses` RHS (so they are semantically equivalent),
+yet `direct_subsumers` on full notgalen emits Anon-349 → Anon-324 and
+Anon-349 → IPBP as **parallel direct edges** instead of merging them
+into one direct + one equivalence partner. This is evidence of *partial
+closure realization* in the large-TBox context — the saturation closure
+sees Anon-349 ⊑ both targets but doesn't realize the Anon-324 ≡ IPBP
+equivalence cleanly enough for the closure-diff's `is_subclass` matrix
+to include the same entailment the CLI prints as `direct`.
+
+**Diagnosed but not fixed.** Scope: 1 of 18 residual notgalen MISSED.
+The other 17 (the 8 dl-approximation cluster + the duplicate Anon-324/IPBP
+target rows) are out of scope per the original diagnosis. The fix, if
+pursued, would investigate why two equivalence-partner classes don't get
+merged in full-notgalen closure realization despite the saturator closing
+both subsumption directions individually. Not a saturator-rule gap; not
+a dead-end ledger entry. Just a partial-realization anomaly worth one
+paragraph here.
+
+**Net session-end status** (2026-06-02, post HEAD `4151edd` merge to main):
+GALEN MISSED = 0 (full Konclude parity); notgalen MISSED = 18 with the
+above accounting; FP=0 across the corpus.

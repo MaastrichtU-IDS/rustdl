@@ -30,7 +30,7 @@ B, D, and E are fully recovered by Phase 2b / 2b.5.
 The notgalen 27 pairs span 3 distinct super-classes, two of which are anonymous
 (blank-node-style) IRIs from the `http://galen.org/galen.owl#` namespace.
 Notably, every notgalen sub-class that hits `Anonymous-324` also hits
-`IntrinsicallyPathologicalBodyProcess`, and most hit `Anonymous-351` as well.
+`IntrinsicallyPathologicalBodyProcess`; 3 of 12 additionally hit `Anonymous-351`.
 Sub-class local names: `Anonymous-241`, `Anonymous-331`, `Anonymous-349`,
 `Anonymous-93`, `CardiacInsufficiencyDueToProsthesis`,
 `CardiacInsufficiencyFollowingCardiacSurgery`, `CongestiveCardiacFailure`,
@@ -88,7 +88,7 @@ mapping below.
 |---|---|---|---|
 | C — IntrinsicallyPathologicalBodyProcess (named) | 12 + 12 = 24 | original C | functional-role + covering / sibling-collapse (EL+ Option 3) |
 | notgalen Anonymous-324 / Anonymous-351 (likely C) | 0 + 15 = 15 | not characterized (notgalen) | **new shape — needs per-pair analysis** (strong prior: cluster-C variant given sub-class overlap) |
-| F-tail body-structure (AbnormalBodyStructure + UnusualBodyStructure + VariantBodyStructure) | 5 + 0 = 5 | F tail of original 109 | **new shape — needs per-pair analysis** (may share cluster-C/D axiom pattern or differ) |
+| F-tail body-structure (AbnormalBodyStructure + UnusualBodyStructure + VariantBodyStructure) | 5 + 0 = 5 | F tail of original 109 | **uncharacterized — likely cluster-C-like; per-pair canary deferred to Phase 2c** (may share cluster-C/D axiom pattern or differ) |
 
 Summary:
 - **24 pairs** are confident cluster C (named `IntrinsicallyPathologicalBodyProcess`,

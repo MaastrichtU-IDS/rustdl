@@ -319,11 +319,21 @@ No new data structures. Reuses Phase 2a's `merged_atom_sets`,
 `introduce_runtime_synthetic`, and the existing
 `functional_supers_of` infrastructure.
 
-## Soundness argument for pair_06 (concrete walkthrough)
+## Predicted walkthrough on pair_06 (and what actually happened)
+
+This section is the empirical reckoning for T4. The predicted derivation
+below was the T3 design's working theory for how Phase 2c's rule would
+close pair_06's canonical `CCF ⊑ IPBP` entailment. T4's implementation
+shipped the rule (sound, terminating, 36 saturation tests green), but
+the rule does **not** recover this specific pair. The walkthrough is
+preserved here as historical record, with each empirically-falsified
+step marked **[FALSE — see "What actually happened" below]**.
+
+### Predicted derivation (T3 design — partially falsified at T4)
 
 Pair_06's saturator-only derivation, post-Phase-2c rule:
 
-1. The saturator's seed + closure derives (already happens, pre-Phase-2c):
+1. **[FALSE]** The saturator's seed + closure derives (already happens, pre-Phase-2c):
    - `(ICF, hasIntrinsicPathologicalStatus, physiological)`. Reached
      via ICF ⊑ CardiacFunction ⊑ NAMEDCirculatoryProcess ⊑
      NAMEDPhysiologicalProcess, then the named-class atomic-existential
@@ -341,7 +351,7 @@ Pair_06's saturator-only derivation, post-Phase-2c rule:
    - `merged_atom_sets[(ICF, hasIntrinsicPathologicalStatus)] := {physiological-content}`.
    - `merged_atom_sets[(ICF, StatusAttribute)] := {physiological-content}`.
    - Both `was_first=true` → no emission.
-3. Phase 2a triggers on fact-2's arrival:
+3. **[FALSE]** Phase 2a triggers on fact-2's arrival:
    - `functional_supers_of(hasPathologicalStatus) ⊇
      {hasPathologicalStatus, StatusAttribute}` (both functional).
    - `merged_atom_sets[(ICF, hasPathologicalStatus)] := {pathological-content}`.
@@ -350,7 +360,7 @@ Pair_06's saturator-only derivation, post-Phase-2c rule:
      to {physiological-content ∪ pathological-content}`. `grew=true`,
      `was_first=false`. Emits `(ICF, StatusAttribute, F)` where
      `F ≡ ⊓(physiological-content ∪ pathological-content)`.
-4. **Phase 2c addition (new):** at the same emission point, the inner
+4. **[FALSE] Phase 2c addition (new):** at the same emission point, the inner
    loop iterates `facts_by_sub[ICF]`:
    - Finds `(ICF, hasIntrinsicPathologicalStatus, physiological)`.
      Sibling: `functional_supers_of(hasIntrinsicPathologicalStatus)`
@@ -376,11 +386,68 @@ Pair_06's saturator-only derivation, post-Phase-2c rule:
 7. `ICF ⊑ IntrinsicallyPathologicalBodyProcess` lands. `CCF ⊑ ICF` was
    already there; ⊑-transitivity gives `CCF ⊑ IPBP`. ✓
 
-No false-positive surface introduced: every emission is a sound
-consequence of functional-property witness coincidence, and the
-synthetic `F` already lives in the saturator's class universe with
-sound atomic-subsumption clauses (`F ⊑ atomic` for each atomic in
-`F`'s body, contributed by `TseitinAllocator::introduce`).
+The general soundness argument behind this walkthrough — every
+emission is a sound consequence of functional-property witness
+coincidence, and the synthetic `F` lives in the saturator's class
+universe with sound atomic-subsumption clauses (`F ⊑ atomic` for
+each atomic in `F`'s body, contributed by `TseitinAllocator::introduce`)
+— **remains valid in general** and is the basis for the FP=0 net
+in §"Soundness on the FP=0 net". What T4 measured empirically false
+is the *premise* on pair_06 specifically: that ICF has two existential
+facts on sub-roles sharing a functional super.
+
+### What actually happened (T4 empirical observations)
+
+T4's `cargo test -p owl-dl-reasoner --test phase2c_pair_06_canary` run
+showed the gap-asserting canary still passes — the saturator does
+NOT recover `CCF ⊑ IPBP`. Instrumentation of `process_fact` during
+pair_06 saturation revealed:
+
+- **ICF (`IntrinsicallyCardiacFunction`) has only ONE existential
+  fact directly materialised on it**, on a single `RoleId` (40 in
+  pair_06's vocabulary numbering). Steps 1 and 3 of the predicted
+  walkthrough — which assume ICF has BOTH
+  `(ICF, hasIntrinsicPathologicalStatus, physiological)` AND
+  `(ICF, hasPathologicalStatus, pathological)` directly on it —
+  are false.
+- The saturator propagates **subsumers**, not **facts**, to
+  subclasses (CR5 / atomic-subsumption / told-subsumer rules all
+  operate on the subsumer closure, not on `facts_by_sub`). So even
+  though the saturator correctly derives
+  `ICF ⊑ PathologicalBodyProcess` (PBP), and PBP transitively
+  inherits `∃hasPathologicalStatus.pathological` via its
+  equivalence, the underlying `(PBP, hasPathologicalStatus,
+  pathological)` fact does **not** get re-emitted as
+  `(ICF, hasPathologicalStatus, pathological)` on ICF's row of
+  `facts_by_sub`. The fact-propagation gap is what Phase 2c.0's
+  cluster-C diagnosis was indirectly observing.
+- Because Phase 2c's rule is a **fact-time rule** keyed on
+  `facts_by_sub[X]` (per §"Rule design" — the precondition "X has
+  at least one `(X, R_k, _)` fact" is checked by iterating
+  `facts_by_sub`), the rule **cannot fire on ICF** for the chain
+  that would reach IPBP. The sibling sub-role's fact simply isn't
+  there to iterate over.
+- The rule **does** fire 3 times during pair_06 saturation, on
+  other classes (ClassId 77, 79, 114 — observed via the
+  `phase2c_sub_role_propagations` counter). Those emissions are
+  sound but do not feed into the `CCF ⊑ IPBP` derivation chain.
+
+Net consequence: **the canonical pair_06 entailment is NOT
+recovered by Phase 2c's rule.** Recovery would require either:
+
+- (a) a separate, prior step that lifts facts from ancestor classes
+  onto their subsumed descendants (a "fact-propagation-along-subsumer"
+  rule, not implemented), or
+- (b) a structurally different rule that reasons about the *subsumer
+  closure* rather than the *fact closure* (e.g. detecting that ICF
+  has subsumers PBP and NAMEDPhysiologicalProcess, each of which
+  contributes an `∃R_k.atom` to a common functional super, without
+  requiring the fact to be re-materialised on ICF).
+
+T5 measures whether ANY cluster-C pair benefits from the rule as
+shipped. The pair_06 canary (`phase2c_pair_06_saturator_still_misses_target_subsumption_known_limitation`)
+is kept as a permanent gap-asserter so any future fix that *does*
+close this pair trips the assertion mechanically.
 
 ## Expected impact
 
@@ -444,16 +511,27 @@ confirm FP=0. T4 is gated on the synthetic canary passing.
 
 ## What this design does NOT close
 
-- **Pairs where the saturator never derives the second sub-role fact.**
-  The rule fires only when `(X, R_i, A)` AND `(X, R_j, B)` both exist
-  in the saturator's closure under a common functional super. If
-  saturation can't reach the second fact (e.g. it required the
-  line-1235-style Or-headed GCI that the saturator drops), the rule
-  doesn't fire. Pair 07 (per
-  `docs/phase2b-galen-pair-analysis.md` §"Pair 07") may fall into
-  this bucket — its R-witness for `Ulcer ⊑ ∃hasIntrinsicPathologicalStatus.pathological`
+- **Pairs where the saturator never directly materialises BOTH
+  sub-role facts on the same class X.** The rule fires only when
+  `facts_by_sub[X]` contains both `(X, R_i, A)` and `(X, R_j, B)`
+  under a common functional super. **Empirically confirmed by T4 on
+  pair_06 itself:** `IntrinsicallyCardiacFunction` (the bridge class
+  between `CongestiveCardiacFailure` and `IntrinsicallyPathologicalBodyProcess`)
+  has only ONE existential fact directly on it (on a single `RoleId`),
+  even though it transitively subsumes classes that each contribute
+  one of the two needed facts. The saturator propagates *subsumers*
+  (not facts) to subclasses, so the sibling sub-role's fact never
+  lands on ICF's `facts_by_sub` row and the rule's precondition is
+  not met. See §"Predicted walkthrough on pair_06 (and what actually
+  happened)" for the full empirical reckoning. Pair 07 (per
+  `docs/phase2b-galen-pair-analysis.md` §"Pair 07") likely falls
+  into the same bucket via a different missing-fact mechanism — its
+  R-witness for `Ulcer ⊑ ∃hasIntrinsicPathologicalStatus.pathological`
   depends on a GCI chain whose intermediate facts the saturator may
-  not establish.
+  not establish. **A separate "fact-propagation-along-subsumer" rule
+  (or a redesigned rule that reasons about the subsumer closure
+  rather than the fact closure) would be needed to close this
+  bucket; Phase 2c does not.**
 - **Pairs without a functional super-role.** The rule's premise is
   R_f functional. Pairs whose MISSED step is via non-functional
   role hierarchies need a different rule.

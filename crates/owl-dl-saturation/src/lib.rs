@@ -154,6 +154,13 @@ struct WorklistEngine {
     /// transitive flattening into the original atomic vocabulary.
     /// For non-synthetic class IDs, callers default to `{id}`.
     atomic_content_of: HashMap<ClassId, std::collections::BTreeSet<ClassId>>,
+    /// Phase 2c: number of sub-role propagations emitted by the
+    /// Phase 2c inner loop in `process_fact` (one bump per
+    /// successful `seen_facts.insert(...)` of a `(X, R_k, synthetic)`
+    /// emission where `R_k ⊑ R_f` and X already had a fact on `R_k`).
+    /// Used by structural canaries / diagnostics; not consumed by the
+    /// reasoner output.
+    phase2c_sub_role_propagations: u64,
 }
 
 impl WorklistEngine {
@@ -214,6 +221,7 @@ impl WorklistEngine {
             tseitin_runtime: tseitin,
             merged_atom_sets: HashMap::new(),
             atomic_content_of,
+            phase2c_sub_role_propagations: 0,
         }
     }
 
@@ -755,6 +763,53 @@ impl WorklistEngine {
                     self.facts_by_sub[new_fact.sub.index() as usize].push(new_idx);
                     self.facts_by_target[new_fact.target.index() as usize].push(new_idx);
                     self.todo_fact.push_back(new_idx);
+                }
+                // Phase 2c: propagate the merged synthetic back to the
+                // sub-roles X already has facts on. The witness-
+                // coincidence argument: any existing (X, R_k, _) fact
+                // has its R_k-witness coinciding with the R_f-witness
+                // (functionality of R_f), so X already has the merged
+                // atom-set content via R_k.
+                //
+                // Soundness precondition: X must already have a fact
+                // (X, R_k, _) — guaranteed by iterating
+                // `facts_by_sub[X]`. Without an existing fact on R_k,
+                // we couldn't claim X has an R_k-witness (R_f being
+                // functional only forces coincidence of witnesses that
+                // exist).
+                //
+                // We skip `other.role == fact.role` to avoid the
+                // trivially redundant emission on R_arr (Phase 2a's
+                // CR9 hierarchy propagation already covers it); we
+                // DO NOT skip `other.role == rf` — that's deduped
+                // implicitly via `seen_facts` since Phase 2a emitted
+                // it just above.
+                //
+                // See docs/phase2c-fix-target.md §"Rule design" for
+                // the full soundness argument.
+                let snapshot = self.facts_by_sub[fact.sub.index() as usize].clone();
+                for other_idx in snapshot {
+                    let other = self.facts[other_idx];
+                    if other.role == fact.role {
+                        continue;
+                    }
+                    if !self.rules.functional_supers_of(other.role).contains(&rf) {
+                        continue;
+                    }
+                    let prop_fact = ExistentialFact {
+                        sub: fact.sub,
+                        role: other.role,
+                        target: synthetic,
+                    };
+                    let prop_key = (prop_fact.sub, prop_fact.role, prop_fact.target);
+                    if self.seen_facts.insert(prop_key) {
+                        let new_idx = self.facts.len();
+                        self.facts.push(prop_fact);
+                        self.facts_by_sub[prop_fact.sub.index() as usize].push(new_idx);
+                        self.facts_by_target[prop_fact.target.index() as usize].push(new_idx);
+                        self.todo_fact.push_back(new_idx);
+                        self.phase2c_sub_role_propagations += 1;
+                    }
                 }
             }
         }
@@ -2575,6 +2630,81 @@ Ontology(<http://rustdl.test/p2a4/test>
         assert!(
             subsumers.contains(subject, target),
             "Phase 2a 4-sub-property fan-in: atom-set design should scale to 4 sub-properties."
+        );
+    }
+
+    /// Phase 2c — structural sanity: the sub-role witness-propagation
+    /// rule bumps its counter on the 4-sub-property fan-in canary.
+    ///
+    /// This is the only durable signal that the Phase 2c rule is
+    /// active: the `pair_06` canary asserts a known-limitation GAP
+    /// (the rule shipped but doesn't reach `ICF`; see
+    /// `crates/owl-dl-reasoner/tests/phase2c_pair_06_canary.rs` and
+    /// `docs/phase2c-fix-target.md`), so if a future change silently
+    /// disabled the rule, the `pair_06` canary wouldn't catch it.
+    /// This test would.
+    ///
+    /// Setup: same as `functional_role_merge_4_sub_property_fan_in` —
+    /// Subject has 4 existential facts on sub-roles `r_i`, `r_j`,
+    /// `r_k`, `r_l` all sharing functional super `r_func`. The Phase 2c
+    /// inner loop fires after Phase 2a's emission on the 2nd, 3rd, 4th
+    /// fact arrivals (each grows the `merged_atom_set`, emits the
+    /// merged synthetic on `r_func`, then iterates `facts_by_sub[Subject]`
+    /// to propagate the synthetic onto sibling sub-roles).
+    ///
+    /// We assert `phase2c_sub_role_propagations > 0` after `engine.run()`.
+    /// The exact count is implementation-defined (depends on dedup +
+    /// iteration order); the load-bearing property is "the rule fired
+    /// at least once on this clean positive shape".
+    #[test]
+    fn phase2c_sub_role_propagation_counter_bumps_on_4_fan_in() {
+        let src = "\
+Prefix(:=<http://rustdl.test/p2c_counter/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2c_counter/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:Target))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    Declaration(ObjectProperty(:r_k))
+    Declaration(ObjectProperty(:r_l))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    SubObjectPropertyOf(:r_k :r_func)
+    SubObjectPropertyOf(:r_l :r_func)
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_i :A))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_k :C))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_l :D))
+    SubClassOf(ObjectSomeValuesFrom(:r_func ObjectIntersectionOf(:A :B :C :D)) :Target)
+)
+";
+        let internal = parse_internal(src);
+
+        // Mirror `saturate()` to get access to the engine's counter
+        // after run() (the counter is a private field on
+        // `WorklistEngine`; `saturate()` only returns the subsumer
+        // closure).
+        let n = internal.vocabulary.num_classes();
+        let role_super = build_role_super(&internal);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
+        let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
+        engine.seed();
+        engine.run();
+
+        assert!(
+            engine.phase2c_sub_role_propagations > 0,
+            "Phase 2c rule did not fire on the 4-sub-property fan-in canary. \
+             Expected at least one (X, R_k, synthetic) propagation; got 0. \
+             Either the rule was disabled, the inner loop's preconditions \
+             changed, or Phase 2a's emission condition (!was_first && grew) \
+             no longer triggers on this shape."
         );
     }
 

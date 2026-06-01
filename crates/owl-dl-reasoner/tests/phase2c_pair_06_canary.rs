@@ -8,14 +8,37 @@
 //!   <http://example.org/factkb#CongestiveCardiacFailure> ⊑
 //!     <http://example.org/factkb#IntrinsicallyPathologicalBodyProcess>
 //!
-//! This is the gap the Phase 2c functional-role + covering EL+
-//! approximation will close. Phase 2c T4 flips the assertion + renames
-//! the test from `_misses_target_subsumption` to
-//! `_recovers_target_subsumption`. See
-//! `docs/superpowers/plans/2026-06-01-phase2c-functional-role-covering.md`
-//! for the full plan and
-//! `docs/phase2b-galen-pair-analysis.md` §"Pair 06" for the
-//! per-pair HermiT trace that motivates the rule.
+//! ## Status after Phase 2c T4 (rule shipped, pair_06 NOT recovered)
+//!
+//! Phase 2c shipped a sub-role witness-propagation rule (see
+//! `crates/owl-dl-saturation/src/lib.rs`, Phase 2c block inside
+//! `process_fact`). The rule is sound, terminates, and fires 3 times
+//! during pair_06 saturation on other classes (ClassId 77, 79, 114) —
+//! but it does NOT recover the target `CCF ⊑ IPBP` entailment.
+//!
+//! Why: IntrinsicallyCardiacFunction (ICF, the bridge class between
+//! CCF and IPBP via the equivalence chain) has only ONE directly-
+//! materialised existential fact in its `facts_by_sub` row at
+//! saturation time (on a single `RoleId`, not on the two sub-roles
+//! `hasIntrinsicPathologicalStatus` and `hasPathologicalStatus` that
+//! T3's design walkthrough predicted). Phase 2c's rule is a
+//! fact-time rule keyed on `facts_by_sub[X]`: the saturator
+//! propagates *subsumers* (not facts) to subclasses, so even though
+//! `ICF ⊑ PathologicalBodyProcess` is derived, the underlying
+//! `(PBP, hasPathologicalStatus, pathological)` fact never lands on
+//! ICF itself. The rule's precondition (X has two facts on sub-roles
+//! sharing a functional super) is not met for ICF.
+//!
+//! See `docs/phase2c-fix-target.md`:
+//! - §"Predicted walkthrough on pair_06 (and what actually happened)"
+//!   for the empirical reckoning.
+//! - §"What this design does NOT close" (first bullet, strengthened
+//!   in T4) for the general statement of this limitation.
+//!
+//! This test is kept as a permanent gap-asserter so a future
+//! regression (or a future fix that *does* reach ICF) is caught
+//! mechanically. T5 measures whether ANY cluster-C pair benefits
+//! from the rule.
 //!
 //! The canary loads the fixture, parses it via `horned-owl`, lowers it
 //! to the internal IR via `owl_dl_core::convert::convert_ontology`,
@@ -37,7 +60,7 @@ const CCF_IRI: &str = "http://example.org/factkb#CongestiveCardiacFailure";
 const IPBP_IRI: &str = "http://example.org/factkb#IntrinsicallyPathologicalBodyProcess";
 
 #[test]
-fn phase2c_pair_06_saturator_misses_target_subsumption() {
+fn phase2c_pair_06_saturator_still_misses_target_subsumption_known_limitation() {
     let onto_path = "tests/fixtures/phase2b/pair_06.ofn";
     let src = std::fs::read_to_string(onto_path).expect("pair_06.ofn readable");
     let mut reader = Cursor::new(src);
@@ -56,17 +79,30 @@ fn phase2c_pair_06_saturator_misses_target_subsumption() {
         .class_id(IPBP_IRI)
         .expect("IntrinsicallyPathologicalBodyProcess declared in pair_06");
 
-    // GAP-ASSERTING: passes while the saturator misses the entailment.
-    // Phase 2c T4 inverts this assertion once the functional-role +
-    // covering rule lands.
+    // GAP-ASSERTING (known limitation after Phase 2c T4): the
+    // saturator still misses this pair. The Phase 2c sub-role
+    // propagation rule shipped (and fires 3 times elsewhere in
+    // pair_06's saturation), but ICF — the bridge class between CCF
+    // and IPBP — has only one existential fact directly materialised
+    // on it, so the rule's precondition is not met for the chain that
+    // would reach IPBP. See this file's module doc and
+    // `docs/phase2c-fix-target.md` §"Predicted walkthrough on pair_06
+    // (and what actually happened)".
+    //
+    // If this assertion ever starts failing (the saturator DOES
+    // recover the pair), it means a later phase closed the gap —
+    // celebrate, then invert this assertion and rename to
+    // `phase2c_pair_06_saturator_recovers_target_subsumption`.
     assert!(
         !subsumers.contains(ccf, ipbp),
         "Phase 2c canary unexpectedly closed CongestiveCardiacFailure ⊑ \
-         IntrinsicallyPathologicalBodyProcess via the saturator alone. Phase \
-         2a/2b may have inadvertently covered pair_06 — invert this assertion \
-         (drop the leading `!`) and rename to \
-         `phase2c_pair_06_saturator_recovers_target_subsumption`. CCF subsumers: \
-         {:?}",
+         IntrinsicallyPathologicalBodyProcess via the saturator alone. \
+         A later phase has apparently propagated the missing existential \
+         fact onto IntrinsicallyCardiacFunction (or otherwise covered \
+         this entailment). Invert this assertion (drop the leading `!`) \
+         and rename to \
+         `phase2c_pair_06_saturator_recovers_target_subsumption`. \
+         CCF subsumers: {:?}",
         subsumers.subsumers_of(ccf)
     );
 }

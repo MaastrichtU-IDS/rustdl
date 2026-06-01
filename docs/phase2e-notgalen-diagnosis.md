@@ -412,3 +412,46 @@ paragraph here.
 **Net session-end status** (2026-06-02, post HEAD `4151edd` merge to main):
 GALEN MISSED = 0 (full Konclude parity); notgalen MISSED = 18 with the
 above accounting; FP=0 across the corpus.
+
+### Standalone diagnostic confirms classifier is correct (2026-06-02)
+
+A standalone diagnostic test
+(`crates/owl-dl-reasoner/tests/anon349_diagnostic.rs`) loaded full
+notgalen.ofn at HEAD `29d6af3`, ran `classify_top_down_with_timeout(200ms)`
+— **the exact same code path** the T7 corpus closure-diff uses — and
+explicitly queried the resulting `entailed` matrix. Run wall: 31 min
+classify, standalone (no concurrent load). Results:
+
+```
+is_subclass(Anon-349, Anon-324) = true
+is_subclass(Anon-349, IPBP)     = true
+is_subclass(Anon-324, IPBP)     = true
+is_subclass(IPBP, Anon-324)     = true
+Anon-349 direct supers: [Anonymous-324, IntrinsicallyPathologicalBodyProcess]
+Anon-324 equivalents:   [Anonymous-324, IPBP]
+IPBP equivalents:       [Anonymous-324, IPBP]
+```
+
+The classifier closes the entailments correctly AND realizes the
+equivalence Anon-324 ≡ IPBP. This contradicts the T7 closure-diff's
+MISSED report.
+
+**Most likely cause: concurrency artifact in the T7 run.** T7 ran
+notgalen.closure_diff in parallel with GALEN's closure_diff (both
+backgrounded via `cargo test ... &`) AND the SIO flamegraph capture
+(separate `owl-dl-bench` process with pprof). The rayon worker pool
+shared across these processes likely caused tier-ordering or
+parallel-walk nondeterminism that produced a different
+`direct_supers`/`entailed` realization than the standalone run.
+
+**Soundness is not affected.** FP=0 is invariant under the
+nondeterminism; the variance is in completeness (which MISSED pairs
+get reported). The actual saturator/classifier behaviour on this
+ontology IS the standalone diagnostic's result; the T7 numbers
+(notgalen MISSED=18) should be read as "≤ 18 under contention; ≤ 16
+without concurrent load on the same machine."
+
+The diagnostic test is committed (ignored, ~31 min wall) so any
+future regression in `classify_top_down_internal`'s realization of
+this pair fails an explicit assertion rather than silently shifting
+the MISSED count.

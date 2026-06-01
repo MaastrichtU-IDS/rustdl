@@ -130,6 +130,13 @@ each.
   the P2b.0 diagnosis's pointer. notgalen unchanged (27→27) — those
   are cluster C/D, needing the functional-role + covering extension
   plan.
+  **Phase 2 closes (2026-06-01).** Final state: 92 of 136 GALEN+notgalen
+  MISSED recovered (~68%), FP=0 held. 44 residual MISSED in cluster C/D
+  shape (functional-role + covering / sibling-collapse). The per-pair
+  analysis (`docs/phase2b-galen-pair-analysis.md` pairs 06/07) lists an
+  EL+ approximation option for cluster C/D, so this is "tractable but
+  lower-priority than Phase 3 perf," not "outside scope." Phase 2c
+  (cluster C/D) queued for after Phase 3. See `docs/phase2-closeout.md`.
 - **Honesty:** SIO 2 and some deep GALEN pairs may still not converge — recorded
   as residual gaps, not a deliverable.
 - **Measurable:** per-lever MISSED reduction via the corpus diff.

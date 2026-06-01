@@ -1382,3 +1382,176 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
     }
     RuleOutcome::NoChange
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 3 canaries
+// ──────────────────────────────────────────────────────────────────────────
+//
+// Canary 1 (`phase3_or_heavy_synthetic_verdicts`) must PASS pre-fix:
+// the current code is verdict-correct; the bloom prefilter (T4) changes
+// speed, not outcomes.
+//
+// Canary 2 (`phase3_bloom_prefilter_rejects_on_or_heavy_synthetic`) is
+// gated behind `#[cfg(feature = "counters")]`.  It references a counter
+// field (`needs_deferred_or_bloom_rejects`) that does not yet exist on
+// `RuleCounters`.  It therefore FAILS TO COMPILE under
+// `--features counters` until T4 adds the field — that is the intended
+// gap.  Without the feature flag, `cargo test -p owl-dl-tableau` never
+// sees the canary and the build stays clean.
+
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod phase3_canaries {
+    use crate::TableauContext;
+    use owl_dl_core::{AbsorbedTBox, ClassId, ConceptRule, ConceptPool};
+
+    // ── Synthetic Or-heavy ontology fixture ─────────────────────────────
+    //
+    // TBox rules (post-absorption):
+    //   A ⊑ Or(B, C)     — class A → conclusion Or(B, C)
+    //   D ⊑ Or(B, E)     — class D → conclusion Or(B, E)
+    //   F ⊑ B             — class F → conclusion B  (F is concretely B)
+    //   G ⊑ E             — class G → conclusion E  (G is concretely E)
+    //
+    // ClassId assignments:
+    //   0 = A  1 = B  2 = C  3 = D  4 = E  5 = F  6 = G
+    struct OrHeavySynth {
+        pool: ConceptPool,
+        tbox: AbsorbedTBox,
+        // Concept ids for the "witness" satisfiability queries.
+        a: owl_dl_core::ConceptId,
+        d: owl_dl_core::ConceptId,
+        f: owl_dl_core::ConceptId,
+        g: owl_dl_core::ConceptId,
+        b: owl_dl_core::ConceptId,
+        e: owl_dl_core::ConceptId,
+    }
+
+    fn build_or_heavy_synth() -> OrHeavySynth {
+        let mut pool = ConceptPool::new();
+
+        let a_cls = ClassId::new(0);
+        let b_cls = ClassId::new(1);
+        let c_cls = ClassId::new(2);
+        let d_cls = ClassId::new(3);
+        let e_cls = ClassId::new(4);
+        let f_cls = ClassId::new(5);
+        let g_cls = ClassId::new(6);
+
+        let a = pool.atomic(a_cls);
+        let b = pool.atomic(b_cls);
+        let c = pool.atomic(c_cls);
+        let d = pool.atomic(d_cls);
+        let e = pool.atomic(e_cls);
+        let f = pool.atomic(f_cls);
+        let g = pool.atomic(g_cls);
+
+        // Disjunctive conclusions — these are the Or labels the
+        // deferred-OR rule must decide whether to materialise.
+        let or_bc = pool.or([b, c]);
+        let or_be = pool.or([b, e]);
+
+        let mut tbox = AbsorbedTBox {
+            concept_rules: vec![
+                // A ⊑ Or(B, C)
+                ConceptRule { trigger: a_cls, conclusion: or_bc },
+                // D ⊑ Or(B, E)
+                ConceptRule { trigger: d_cls, conclusion: or_be },
+                // F ⊑ B
+                ConceptRule { trigger: f_cls, conclusion: b },
+                // G ⊑ E
+                ConceptRule { trigger: g_cls, conclusion: e },
+            ],
+            ..AbsorbedTBox::default()
+        };
+        // Populate concept_rules_by_trigger so apply_deferred_concept_or_rules
+        // takes the fast indexed path, not the linear fallback.
+        tbox.finalize();
+
+        OrHeavySynth { pool, tbox, a, d, f, g, b, e }
+    }
+
+    // ── Canary 1: verdict preservation ──────────────────────────────────
+    //
+    // Every class in the Or-heavy synthetic is satisfiable (no
+    // disjunct contradicts; no disjoint axioms; no ¬ anywhere).
+    // This must PASS with the current code and must CONTINUE to pass
+    // after T4 adds the bloom prefilter — the fix is speed-only.
+    #[test]
+    fn phase3_or_heavy_synthetic_verdicts() {
+        let OrHeavySynth { pool, tbox, a, d, f, g, b, e, .. } = build_or_heavy_synth();
+
+        // A is satisfiable: A triggers Or(B,C); the search picks B (or C).
+        let sat_a = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(a);
+        assert_eq!(sat_a, Some(true), "A should be satisfiable");
+
+        // D is satisfiable: D triggers Or(B,E); the search picks B (or E).
+        let sat_d = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(d);
+        assert_eq!(sat_d, Some(true), "D should be satisfiable");
+
+        // F is satisfiable: F ⊑ B, no contradiction.
+        let sat_f = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(f);
+        assert_eq!(sat_f, Some(true), "F should be satisfiable");
+
+        // G is satisfiable: G ⊑ E, no contradiction.
+        let sat_g = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(g);
+        assert_eq!(sat_g, Some(true), "G should be satisfiable");
+
+        // B and E are individually satisfiable (atomic, no rules fire on them).
+        let sat_b = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(b);
+        assert_eq!(sat_b, Some(true), "B should be satisfiable");
+
+        let sat_e = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(e);
+        assert_eq!(sat_e, Some(true), "E should be satisfiable");
+    }
+
+    // ── Canary 2: bloom prefilter is consulted (structural) ─────────────
+    //
+    // This canary references `ctx.counters.needs_deferred_or_bloom_rejects`
+    // — a field that does NOT yet exist on `RuleCounters`.
+    //
+    // Pre-T4: fails to compile under `--features counters` with
+    //   "no field `needs_deferred_or_bloom_rejects` on type `RuleCounters`"
+    // That compile failure IS the gap this canary tracks.
+    //
+    // Post-T4 (once the field + bloom-reject logic are wired in): the
+    // test compiles, runs, and asserts that at least one
+    // `needs_deferred_or` call was short-circuited by the bloom during
+    // the four satisfiability queries above.
+    //
+    // Without `--features counters` this block is never compiled, so
+    // `cargo test -p owl-dl-tableau` (default) stays clean.
+    #[cfg(feature = "counters")]
+    #[test]
+    fn phase3_bloom_prefilter_rejects_on_or_heavy_synthetic() {
+        let OrHeavySynth { pool, tbox, a, d, f, g, .. } = build_or_heavy_synth();
+
+        // Run all four satisfiability queries so the deferred-OR rule
+        // fires repeatedly — enough opportunities for the bloom to
+        // reject at least once.
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(a);
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(d);
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(f);
+        let _ = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(g);
+
+        // Each TableauContext is independent, so we need to count
+        // rejects inside a single context.  Re-run with a context we
+        // hold on to.
+        let mut ctx = TableauContext::with_tbox(&pool, &tbox);
+        // Compound query: A ⊓ D fires both Or rules on the same node.
+        let a_and_d = pool.and([a, d]);
+        let _ = ctx.is_satisfiable(a_and_d);
+
+        // ── The structural assertion ─────────────────────────────────
+        // After T4 wires in the bloom, at least one call to
+        // `needs_deferred_or` on the above node should have been
+        // short-circuited.  If the counter stays 0 the prefilter is
+        // silently dead code.
+        let rejected = ctx.counters.needs_deferred_or_bloom_rejects.get();
+        assert!(
+            rejected > 0,
+            "bloom prefilter never rejected; needs_deferred_or isn't consulting \
+             label_sig.  rejected = {rejected}"
+        );
+    }
+}

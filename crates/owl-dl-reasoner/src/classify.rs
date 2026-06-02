@@ -158,6 +158,17 @@ pub struct ClassificationStats {
     /// as MISSED but the slow path recovered. Directly tracks Phase 1's
     /// completeness lever.
     pub hyper_refuted_fast_flipped_pairs: u64,
+    /// Per-class label heuristic (Phase 7): pairs where the orchestrator
+    /// skipped `subsumes_via_tableau` because D was absent from C's
+    /// label cache (sound non-subsumption via counterexample-model).
+    pub label_cache_pruned: usize,
+    /// Per-class label heuristic: pairs where D was present in C's
+    /// label cache and the orchestrator fell through to the existing
+    /// per-pair verification (might be coincidence of model).
+    pub label_cache_pass_through: usize,
+    /// Per-class label heuristic: pairs where the cache was missing
+    /// (NoVerdict or hyper disabled) and the orchestrator fell through.
+    pub label_cache_misses: usize,
     /// The expressivity fragment of the input ontology. Diagnostic only:
     /// surfaces whether `trust_sat` is sound by construction (`PureEl`)
     /// or sound by composition (`OutOfFragment`). See

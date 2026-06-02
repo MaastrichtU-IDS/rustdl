@@ -274,6 +274,13 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         "# satisfiability probes: saturation={} tableau={}",
         stats.saturation_unsat_hits, stats.tableau_unsat_calls
     )?;
+    writeln!(
+        out,
+        "# label heuristic: pruned={} pass_through={} misses={}",
+        stats.label_cache_pruned,
+        stats.label_cache_pass_through,
+        stats.label_cache_misses,
+    )?;
     if stats.timed_out_pairs > 0 {
         writeln!(
             out,

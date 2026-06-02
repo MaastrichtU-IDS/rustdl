@@ -150,6 +150,14 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   the saturator carries `PureEl`, the hyper Horn fixpoint carries `Horn`.
   Diagnostic-only — no default-behaviour change. See
   `docs/fragment-completeness.md`.
+  Phase 6 added a `visited: Vec<bool>` bitset to the top-down
+  `find_direct_parents_top_down` walk so the dense GALEN subsumer
+  lattice doesn't re-visit candidates reached via multiple parents.
+  GALEN classify wall (under contention): 753.96 s → 684.00 s
+  (−9.3 %). Net of the Phase 2d +6.5 % regression, the wall is now
+  below the pre-Phase-2d baseline while preserving all completeness
+  gains (closure = 27 997 = Konclude, FP=0 / MISSED=0). See
+  `docs/phase6-results.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded, **not
   yet wired into reasoning.**

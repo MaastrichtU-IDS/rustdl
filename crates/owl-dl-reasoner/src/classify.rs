@@ -1099,12 +1099,23 @@ fn find_direct_parents_top_down(
     stats: &mut ClassificationStats,
 ) -> Result<Vec<usize>, ReasonError> {
     let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+    let n = direct_supers.len();
     let mut frontier: Vec<usize> = top_level.to_vec();
+    // Phase 6: dedupe the walk. Dense subsumer lattices (e.g. GALEN's
+    // 2748-class hierarchy) reach the same candidate via many parent
+    // paths; without `visited`, each duplicate redoes closure.contains
+    // + pushes its children + appends to accepted. The de-dup at the
+    // bottom (`accepted.collect::<HashSet>()`) covered correctness but
+    // not the redundant walk-time work, which the Phase 5 T3b probe
+    // localized as 97% of GALEN classify wall
+    // (`docs/phase5-downstream-probe.md`).
+    let mut visited: Vec<bool> = vec![false; n];
     let mut accepted: Vec<usize> = Vec::new();
     while let Some(d) = frontier.pop() {
-        if d == c {
+        if d == c || visited[d] {
             continue;
         }
+        visited[d] = true;
         let d_id = owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
         let subsumed = if closure.contains(c_id, d_id) {
             stats.saturation_subsumption_hits += 1;
@@ -1117,15 +1128,20 @@ fn find_direct_parents_top_down(
             continue;
         }
         for &k in &direct_children[d] {
-            frontier.push(k);
+            if !visited[k] {
+                frontier.push(k);
+            }
         }
         accepted.push(d);
     }
     // Prune `accepted` to the most-specific entries: drop any
     // candidate that has a strict descendant also in `accepted`.
+    // `visited` guarantees `accepted` has no duplicates, so we skip
+    // the final HashSet-dedup ceremony that the pre-Phase-6 path used.
     let direct_parents: Vec<usize> = accepted
         .iter()
-        .filter(|&&d| {
+        .copied()
+        .filter(|&d| {
             !accepted.iter().any(|&e| {
                 e != d
                     && (closure.contains(
@@ -1138,9 +1154,6 @@ fn find_direct_parents_top_down(
                     ) || direct_supers[e].contains(&d))
             })
         })
-        .copied()
-        .collect::<HashSet<_>>()
-        .into_iter()
         .collect();
     Ok(direct_parents)
 }

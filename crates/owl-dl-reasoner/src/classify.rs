@@ -773,6 +773,25 @@ pub(crate) fn classify_top_down_internal(
         fragment: analyze_fragment(internal),
         ..ClassificationStats::default()
     };
+
+    // Phase 7: per-class label heuristic. Run wedge satisfiability per
+    // named class ONCE; cache the root-node labels as a sound
+    // non-subsumption pruner. Parallel via rayon — independent calls,
+    // ~0.5-2 ms each (Horn case) + occasional slower disjunctive
+    // cases. The cache is consulted by find_direct_parents_top_down
+    // in Task 6; this task only builds it. See
+    // docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md.
+    let _label_cache: Vec<crate::LabelOracle> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let class_id = owl_dl_core::ClassId::new(
+                u32::try_from(i).expect("class index fits in u32"),
+            );
+            let deadline = per_pair_timeout.map(|t| Instant::now() + t);
+            prepared.classify_labels(class_id, deadline)
+        })
+        .collect();
+
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {

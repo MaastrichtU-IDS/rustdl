@@ -158,6 +158,21 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   below the pre-Phase-2d baseline while preserving all completeness
   gains (closure = 27 997 = Konclude, FP=0 / MISSED=0). See
   `docs/phase6-results.md`.
+  Phase 7 shipped a HermiT-style per-class label heuristic: a
+  `Vec<LabelOracle>` cache is built once at classify-time from
+  per-class wedge satisfiability, and the orchestrator skips
+  `subsumes_via_tableau` when `D ∉ labels(C)` (sound counterexample-
+  model). `RUSTDL_LABEL_HEURISTIC` env gate (default ON) provides
+  opt-out for tests exercising the wedge directly. **GALEN classify
+  wall 684 s → 455.73 s (−33 %) under contention**, far beyond the
+  ±10 % non-regression tolerance the plan set — the heuristic
+  short-circuits wedge `NotSubsumed` calls that Phase 5 T3b had
+  attributed under `hyper_refuted_pairs` (not `tableau_subsumption_calls`).
+  ORE-10908 27.37 s → 19.32 s (−29 %); ORE-15672 flat; small workloads
+  −7 % to −25 %. Prune rates 96–100 % across all measured ontologies.
+  FP=0 / MISSED=0 preserved across Phase 0 net + GALEN. Konclude-class
+  ≤5× ratio not reached on SROIQ (ORE-10908 closed 17× → 12×). See
+  `docs/phase7-results.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded, **not
   yet wired into reasoning.**

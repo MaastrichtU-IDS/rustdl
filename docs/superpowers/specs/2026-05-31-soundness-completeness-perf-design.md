@@ -217,6 +217,18 @@ re-applying the previously-reverted (cc2019e) sub-role witness
 propagation rule on top — resolves dead-end §15. Wall cost: +6.5%
 GALEN, +2.7% notgalen, well under the 15% combined-cap criterion.
 
+Phase 7 landed: `docs/phase7-results.md`. Per-class label heuristic
+(HermiT-style) shipped. **GALEN classify wall 684 s → 455.73 s (−33%)
+under contention**, beyond the ±10% non-regression tolerance the plan
+set — the heuristic short-circuits wedge `NotSubsumed` calls that
+Phase 5 T3b had attributed under `hyper_refuted_pairs`. ORE-10908
+27.4 s → 19.3 s (−29%); ORE-15672 unchanged. Konclude-class ≤5× ratio
+not reached on SROIQ (ORE-10908 closed 17× → 12×); GALEN-class
+soundness + completeness preserved (FP=0 / MISSED=0). Prune rates
+96-100% across all measured workloads — mechanism is sound and
+aggressive. Universal speedup or flat (sulo +4 ms = noise) on every
+measured ontology.
+
 ### Phase 4 — Generalization capstone
 
 With the broad corpus (P0), the verification net (P1), and the fragment

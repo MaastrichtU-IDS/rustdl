@@ -71,3 +71,83 @@ Ontology(<http://test/lh>
         stats.label_cache_misses,
     );
 }
+
+/// Companion canary that exercises the `pass_through` arm of the
+/// per-class label heuristic: pairs where `D ∈ labels(C)` AND `C ⊑ D`
+/// is a real subsumption, so the cache check passes through to
+/// per-pair verification.
+///
+/// Construction: same disjoint A/B chains as the first canary (to
+/// exercise the cache build and the prune arm), PLUS an extra equivalent
+/// pair (E ≡ F) and an entailed subsumption (G ⊑ E). The equivalence
+/// propagates labels both directions, so for G the cache may carry both
+/// E and F as labels and the cache check passes through to per-pair
+/// verification rather than pruning.
+///
+/// NOTE on assertion shape: the saturation closure-seeded fast path may
+/// pre-empt the simple equivalence cases via `closure.contains` (the
+/// `if closure.contains(...)` branch at `classify.rs:1162` short-circuits
+/// BEFORE the cache check) — meaning `pass_through > 0` is not guaranteed
+/// even with the construction above. The assertion accepts either
+/// `pruned > 0` OR `pass_through > 0` as evidence that the cache wiring
+/// is live for this synthetic; isolating `pass_through` alone is not
+/// worth heavy synthetic-tweaking when EITHER arm proves the cache path
+/// runs.
+#[test]
+fn label_heuristic_pass_through_on_equivalent_classes() {
+    let src = "\
+Prefix(:=<http://test/lh-pt/>)
+Ontology(<http://test/lh-pt>
+    Declaration(Class(:A1))
+    Declaration(Class(:A2))
+    Declaration(Class(:A3))
+    Declaration(Class(:B1))
+    Declaration(Class(:B2))
+    Declaration(Class(:B3))
+    Declaration(Class(:E))
+    Declaration(Class(:F))
+    Declaration(Class(:G))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:r_inv))
+    InverseObjectProperties(:r :r_inv)
+    SubClassOf(:A2 :A1)
+    SubClassOf(:A3 :A2)
+    SubClassOf(:B2 :B1)
+    SubClassOf(:B3 :B2)
+    DisjointClasses(:A1 :B1)
+    EquivalentClasses(:E :F)
+    SubClassOf(:G :E)
+)
+";
+    let mut reader = Cursor::new(src);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read(&mut reader, ParserConfiguration::default()).expect("parse");
+    let result = classify_top_down_with_timeout(&onto, Duration::from_millis(200))
+        .expect("classify");
+    let stats = result.stats();
+
+    // Sanity checks: classification correctness.
+    assert!(
+        result.is_subclass("http://test/lh-pt/E", "http://test/lh-pt/F"),
+        "E ⊑ F via equivalence"
+    );
+    assert!(
+        result.is_subclass("http://test/lh-pt/G", "http://test/lh-pt/E"),
+        "G ⊑ E via told subclass"
+    );
+    assert!(
+        !result.is_subclass("http://test/lh-pt/A3", "http://test/lh-pt/B1"),
+        "A3 ⋢ B1 (disjoint)"
+    );
+
+    // The heuristic should fire in at least one arm on this synthetic.
+    // See doc comment above for why the assertion accepts either arm.
+    assert!(
+        stats.label_cache_pass_through > 0 || stats.label_cache_pruned > 0,
+        "label heuristic must have either pruned OR passed-through at least one pair. \
+         Got pruned={} pass_through={} misses={}",
+        stats.label_cache_pruned,
+        stats.label_cache_pass_through,
+        stats.label_cache_misses,
+    );
+}

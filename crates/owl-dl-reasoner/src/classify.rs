@@ -167,7 +167,7 @@ pub struct ClassificationStats {
     /// per-pair verification (might be coincidence of model).
     pub label_cache_pass_through: usize,
     /// Per-class label heuristic: pairs where the cache was missing
-    /// (NoVerdict or hyper disabled) and the orchestrator fell through.
+    /// (`NoVerdict` or hyper disabled) and the orchestrator fell through.
     pub label_cache_misses: usize,
     /// The expressivity fragment of the input ontology. Diagnostic only:
     /// surfaces whether `trust_sat` is sound by construction (`PureEl`)

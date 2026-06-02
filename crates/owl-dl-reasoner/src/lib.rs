@@ -855,10 +855,10 @@ impl HyperCache {
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,
-            HyperResult::Sat => engine
-                .satisfiability_labels(self.fresh_q)
-                .map(|v| LabelOracle::Sat(v.into_iter().collect()))
-                .unwrap_or(LabelOracle::NoVerdict),
+            HyperResult::Sat => engine.satisfiability_labels(self.fresh_q).map_or(
+                LabelOracle::NoVerdict,
+                |v| LabelOracle::Sat(v.into_iter().collect()),
+            ),
             HyperResult::Stalled => LabelOracle::NoVerdict,
         }
     }

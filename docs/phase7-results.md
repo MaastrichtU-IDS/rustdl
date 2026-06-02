@@ -109,6 +109,16 @@ which is why Phase 7 saves wall the T3b counter set couldn't see.
 - Add a `hyper_refuted_pairs_by_source` counter so future regression
   drill-downs can localize wedge wall without re-deriving the
   mechanism above.
+- **Fuse the label-cache build with the unsat probe loop.** The
+  design doc (`docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`,
+  "Implementation surface" section) recommended fusing the new
+  per-class wedge call with the existing per-class unsat probe to
+  eliminate a duplicated parallel pass. The shipped implementation
+  runs them as two separate `(0..n).into_par_iter()` passes (cache
+  build at `classify.rs:787`, unsat probe at `classify.rs:802`).
+  The −33% GALEN wall result lands without the fusion, so it's not
+  on the critical path — but the duplicated wedge invocations are
+  pure latency tax that a future commit could reclaim.
 
 ## Cross-references
 

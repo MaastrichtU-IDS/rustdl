@@ -163,26 +163,49 @@ ontology.
 
 `rustdl classify` prints a `# fragment:` line in its banner output
 (after `# mode:`) that reports which side of the boundary the input
-sits on:
+sits on. Phase 4c extended this to a three-state diagnostic:
 
 ```
-# fragment: pure-EL (trust_sat sound by construction)
+# fragment: pure-EL (trust_sat sound by construction; saturator alone is complete)
+# fragment: Horn (trust_sat sound by construction; hyper Horn fixpoint is complete)
 # fragment: out-of-EL (trust_sat empirically sound; see fragment-completeness.md)
 ```
 
-`pure-EL` means the ontology fits inside the Provably Complete
-fragment described above and `trust_sat` is sound by construction.
-`out-of-EL` means the input uses one or more constructs outside that
-fragment (disjunctive heads, cardinality, nominals, inverse roles,
-ABox assertions, …); `trust_sat` then rides on the Validated Corpus
-Envelope rather than a proof. The banner is diagnostic-only; it does
-not change `trust_sat`'s default-on behaviour. Programmatic callers
-can read the same verdict via `ClassificationStats::fragment` /
-`analyze_fragment` in `owl_dl_reasoner`.
+`pure-EL` means the ontology fits inside the EL+ fragment the
+consequence-based saturator is complete for; `trust_sat` is sound by
+construction on the saturator side.
 
-The Horn DL-clause fragment is **not** detected by this banner today
-— recognising it requires the hyper engine's clausification step at
-ontology load. That extension is tracked as Phase 4c.
+`Horn` means the ontology is **not** pure-EL but clausifies to all-Horn
+form: every clause has ≤ 1 head atom, and the clausifier handles every
+input axiom (`stats.disjunctive == 0 && stats.deferred == 0`). The
+hyper engine's Horn fixpoint runs deterministically to completion on
+such input, so `trust_sat` is sound by construction on the hyper side.
+Horn is a strict superset of pure-EL by classification, but the
+diagnostic tags them separately so users see which engine carries the
+guarantee.
+
+`out-of-EL` means the input uses one or more constructs outside both
+fragments — disjunctive heads (`stats.disjunctive > 0`), or axiom
+shapes the clausifier defers (`stats.deferred > 0`), including
+cardinality / nominals / role characteristics that the H0 clausifier
+hasn't yet learned to clausify. `trust_sat` then rides on the
+Validated Corpus Envelope rather than a proof.
+
+Detection runs the clausifier (`clausify_with_stats`) once at the
+start of classify and inspects the clause-shape histogram —
+startup-time, not in the hot loop. The banner is diagnostic-only; it
+does not change `trust_sat`'s default-on behaviour. Programmatic
+callers can read the same verdict via
+`ClassificationStats::fragment` / `analyze_fragment` in
+`owl_dl_reasoner`.
+
+Empirical anchors (Phase 4c corpus check):
+- `ontologies/external/alehif-test.ofn` — `Horn` (clausifies to 100%
+  Horn, no deferred axioms).
+- `ontologies/real/ro-stripped.ofn` — `out-of-EL` (28 disjunctive
+  clauses out of 416 total; the documented ~96% Horn corpus is still
+  not 100% Horn, so the diagnostic correctly tags it out-of-fragment).
+- `ontologies/real/sio-fp2-module.ofn` — `out-of-EL`.
 
 ## What would earn default-on generally
 

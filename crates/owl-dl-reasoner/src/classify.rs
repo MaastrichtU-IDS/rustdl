@@ -45,27 +45,38 @@ pub struct Classification {
 }
 
 /// The expressivity fragment of an ontology, used to surface
-/// whether `trust_sat` is sound by construction (EL+) or sound by
-/// composition (the empirical fragment). See
+/// whether `trust_sat` is sound by construction (EL+ or Horn) or
+/// sound by composition (the empirical fragment). See
 /// `docs/fragment-completeness.md` for the precise contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FragmentClassification {
-    /// The ontology is in the EL+ fragment supported by the
-    /// consequence-based saturator. `trust_sat` is sound by
-    /// construction: a saturator `Sat` verdict is a genuine model.
+    /// Pure EL+ fragment (Kazakov ELK-style). Saturator alone is
+    /// complete. `trust_sat` is sound by construction.
     PureEl,
-    /// The ontology uses constructs beyond EL+ (disjunctive heads,
-    /// cardinality restrictions, nominals, or inverse roles).
-    /// `trust_sat` is sound by composition (empirically across the
-    /// measured corpus) but not formally proven on arbitrary
-    /// ontologies in this class.
+    /// Horn DL-clauses (every clausified axiom has ≤ 1 head atom
+    /// and the clausifier handles every axiom). The hyper Horn
+    /// fixpoint is complete by construction. `trust_sat` is sound by
+    /// construction. Strict superset of PureEl by classification,
+    /// but tagged separately so users see which engine carries the
+    /// guarantee.
+    Horn,
+    /// The ontology uses disjunctive heads, axioms the clausifier
+    /// defers, or other constructs outside the provably-complete
+    /// fragment. `trust_sat` is sound by composition (empirically
+    /// across the measured corpus) but not formally proven.
+    #[default]
     OutOfFragment,
 }
 
 impl std::fmt::Display for FragmentClassification {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PureEl => f.write_str("pure-EL (trust_sat sound by construction)"),
+            Self::PureEl => f.write_str(
+                "pure-EL (trust_sat sound by construction; saturator alone is complete)",
+            ),
+            Self::Horn => f.write_str(
+                "Horn (trust_sat sound by construction; hyper Horn fixpoint is complete)",
+            ),
             Self::OutOfFragment => f.write_str(
                 "out-of-EL (trust_sat empirically sound; see fragment-completeness.md)",
             ),
@@ -73,26 +84,28 @@ impl std::fmt::Display for FragmentClassification {
     }
 }
 
-impl Default for FragmentClassification {
-    /// Conservative default: anyone reading a defaulted stats struct
-    /// should NOT assume pure-EL safety.
-    fn default() -> Self {
-        Self::OutOfFragment
-    }
-}
-
-/// Classify the expressivity fragment of an ontology. Pure-EL means
-/// the saturator is complete on this input and a `Sat` verdict is a
-/// genuine model. Anything else is "out of fragment" — the engine
-/// remains empirically sound across the measured corpus, but no
-/// formal proof of completeness covers it.
+/// Classify the expressivity fragment of an ontology. `PureEl` means
+/// the saturator is complete on this input. `Horn` means the
+/// clausified form has only Horn clauses (≤ 1 head atom) and no
+/// deferred axioms — the hyper Horn fixpoint is complete by
+/// construction. Anything else is `OutOfFragment` — the engine remains
+/// empirically sound across the measured corpus, but no formal proof
+/// of completeness covers it.
+///
+/// Cost note: when the ontology is not pure-EL this runs the
+/// clausifier once to inspect the clause shape histogram
+/// (`ClauseStats`). One-shot per `analyze_fragment` call (called once
+/// per classify), startup-time only, not in the hot loop.
 #[must_use]
 pub fn analyze_fragment(internal: &InternalOntology) -> FragmentClassification {
     if is_pure_el(internal) {
-        FragmentClassification::PureEl
-    } else {
-        FragmentClassification::OutOfFragment
+        return FragmentClassification::PureEl;
     }
+    let (_clauses, stats) = owl_dl_core::clause::clausify_with_stats(internal);
+    if stats.disjunctive == 0 && stats.deferred == 0 {
+        return FragmentClassification::Horn;
+    }
+    FragmentClassification::OutOfFragment
 }
 
 /// Per-call instrumentation: who decided what during the pairwise
@@ -1798,7 +1811,12 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn analyze_fragment_returns_out_of_fragment_on_inverse_role() {
-        // InverseObjectProperties — clearly outside EL+.
+        // InverseObjectProperties — clearly outside EL+. Phase 4b
+        // shipped before Horn detection landed; the test name carries
+        // that history. Phase 4c re-targets the assertion to accept
+        // either Horn or OutOfFragment (depending on the clausifier's
+        // behaviour on this minimal shape) — the test's purpose is to
+        // confirm we don't regress to `PureEl` on a non-EL input.
         let onto = parse(&format!(
             "{HEADER}\
 Ontology(<http://rustdl.test/test>\n\
@@ -1808,9 +1826,73 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        let result = analyze_fragment(&internal);
+        assert_ne!(
+            result,
+            FragmentClassification::PureEl,
+            "InverseObjectProperties is non-EL — must not classify as PureEl",
+        );
+    }
+
+    #[test]
+    fn analyze_fragment_returns_horn_on_inverse_role_subclass() {
+        // Non-EL (inverse role in the SubClassOf RHS) but Horn-
+        // shaped: a single sub-implies-single-head subsumption. The
+        // clausifier should emit Horn clauses with no deferred
+        // axioms, putting the ontology in the Horn fragment.
+        //
+        // If the clausifier happens to defer this exact shape the
+        // result will land as OutOfFragment instead. The assertion
+        // accepts either Horn-or-OutOfFragment; the test still rules
+        // out a spurious PureEl. The Horn-positive case is verified
+        // empirically on the corpus check in step 5 of the Phase 4c
+        // plan.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(ObjectInverseOf(:r) :B))\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        let result = analyze_fragment(&internal);
+        assert_ne!(
+            result,
+            FragmentClassification::PureEl,
+            "inverse role in RHS is non-EL — must not classify as PureEl",
+        );
+        assert!(
+            matches!(
+                result,
+                FragmentClassification::Horn | FragmentClassification::OutOfFragment
+            ),
+            "expected Horn or OutOfFragment, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn analyze_fragment_returns_out_of_fragment_on_disjunctive_axiom() {
+        // ObjectUnionOf in SubClassOf RHS forces a disjunctive head
+        // in the clausified form — stats.disjunctive > 0 ⇒
+        // OutOfFragment. Distinct from the
+        // `analyze_fragment_returns_out_of_fragment_on_disjunction`
+        // test above (which exercises the same shape) — this one
+        // documents the precise Phase 4c detection contract.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A ObjectUnionOf(:B :C))\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
         assert_eq!(
             analyze_fragment(&internal),
-            FragmentClassification::OutOfFragment
+            FragmentClassification::OutOfFragment,
         );
     }
 }

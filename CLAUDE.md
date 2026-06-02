@@ -141,10 +141,14 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   **once** so the O(n²) pairwise classify loop reuses it across pairs; the loop
   runs in parallel via rayon. `is_subclass_of` reduces to satisfiability of
   `sub ⊓ ¬sup`. Phase 4b (commit e31439c) added a `FragmentClassification`
-  (`PureEl` / `OutOfFragment`) diagnostic surfaced as `# fragment: …` in the
-  CLI banner and `ClassificationStats::fragment` programmatically; it tells
-  users whether `trust_sat` is sound by construction (EL+) or by composition
-  (corpus-validated). Diagnostic-only — no default-behaviour change. See
+  diagnostic surfaced as `# fragment: …` in the CLI banner and
+  `ClassificationStats::fragment` programmatically; it tells users whether
+  `trust_sat` is sound by construction or by composition (corpus-validated).
+  Phase 4c extended this to three states: `PureEl` / `Horn` / `OutOfFragment`,
+  with `Horn` detected via `clausify_with_stats` (`stats.disjunctive == 0 &&
+  stats.deferred == 0`). Both `PureEl` and `Horn` are sound-by-construction —
+  the saturator carries `PureEl`, the hyper Horn fixpoint carries `Horn`.
+  Diagnostic-only — no default-behaviour change. See
   `docs/fragment-completeness.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded, **not

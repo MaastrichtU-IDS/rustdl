@@ -1458,6 +1458,24 @@ impl PreparedOntology {
             .map_or(HyperVerdict::Unknown, |hc| hc.decide(sub, sup, deadline))
     }
 
+    /// Per-class label heuristic: run wedge satisfiability of `c` and
+    /// return a [`LabelOracle`]. Returns [`LabelOracle::NoVerdict`] when
+    /// the hyper wedge is disabled. See
+    /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
+    ///
+    /// `dead_code` allowance: introduced in Task 3; removed in Task 6
+    /// when the orchestrator wires it in.
+    #[allow(dead_code)]
+    pub(crate) fn classify_labels(
+        &self,
+        c: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> LabelOracle {
+        self.hyper
+            .as_ref()
+            .map_or(LabelOracle::NoVerdict, |hc| hc.classify_labels(c, deadline))
+    }
+
     /// Decide whether the test concept built by `build_test_concept`
     /// is satisfiable in this prepared ontology. The closure is
     /// invoked on a freshly-cloned pool so the prepared pool stays

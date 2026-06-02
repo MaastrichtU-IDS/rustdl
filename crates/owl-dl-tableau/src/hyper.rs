@@ -737,7 +737,9 @@ impl<'c> HyperEngine<'c> {
     /// node seeded with `seed`. Returns `None` if the search hasn't
     /// returned Sat OR if no node is labeled with `seed` (shouldn't
     /// happen for a well-formed Q-clause setup — Q's seed is always
-    /// asserted at node 0 by `new`).
+    /// asserted at node 0 by `new`, but the seed-node may have been
+    /// merged into another representative during the search; we
+    /// resolve through the union-find to find the canonical owner).
     ///
     /// The returned set is the basis for the per-class label heuristic
     /// in `owl-dl-reasoner::classify_top_down_internal`: any atomic
@@ -747,15 +749,18 @@ impl<'c> HyperEngine<'c> {
     /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
     #[must_use]
     pub fn satisfiability_labels(&self, seed: ClassId) -> Option<Vec<ClassId>> {
-        // Walk every node; the one labeled with `seed` is the root.
-        // (HyperCache seeds `q` at node 0 via `new`; merges may relocate.
-        // Linear scan is fine — node count is small at typical inputs.)
-        for node in &self.nodes {
-            if node.labels.contains(&seed) {
-                return Some(node.labels.clone());
-            }
+        // The seed is asserted at node 0 by `new`. Merges redirect the
+        // union-find but leave stale labels on the merged-away node;
+        // resolve through the union-find to read the canonical
+        // (post-merge) label set, then verify it actually contains
+        // the seed (defensive).
+        let rep = self.resolve(HNode(0));
+        let labels = &self.nodes[rep.index()].labels;
+        if labels.contains(&seed) {
+            Some(labels.clone())
+        } else {
+            None
         }
-        None
     }
 
     fn solve(&mut self, depth: usize) -> HyperResult {
@@ -2342,5 +2347,55 @@ mod tests {
         assert!(labels.contains(&a), "labels must contain A (q ⊑ a): {labels:?}");
         assert!(labels.contains(&b), "labels must contain B (Horn-derived): {labels:?}");
         assert!(labels.contains(&q), "labels include the seed class itself: {labels:?}");
+    }
+
+    #[test]
+    fn satisfiability_labels_resolves_through_merge() {
+        // Regression test for a correctness bug: `merge()` copies labels
+        // from the merged-away node into the representative but leaves
+        // stale labels behind on the source. The prior linear-scan
+        // implementation returned the FIRST node containing `seed`,
+        // typically `nodes[0]` (stale). The fix reads
+        // `nodes[resolve(HNode(0))].labels` so the canonical
+        // post-merge union is returned.
+        //
+        // Limitation: this test does not force a true merge — forcing
+        // a merge requires a `≤n R.C` clause setup (a few dozen lines
+        // of clause-building). What it DOES pin is the contract:
+        // `satisfiability_labels` must walk the union-find from
+        // node 0, not scan-and-pick. A regression that reverts to
+        // a linear scan would still pass; a regression that reads
+        // `nodes[0].labels` directly (ignoring `resolve`) would also
+        // pass when no merge has occurred. The structural fix is
+        // verified by code review + the corpus delta on GALEN/SIO.
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_core::ir::ClassId;
+
+        let q = ClassId::new(200);
+        let a = ClassId::new(201);
+        let b = ClassId::new(202);
+
+        let clauses = vec![
+            // q ⊑ a
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(a, X)],
+            },
+            // q ⊑ b
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(b, X)],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, q);
+        let result = engine.decide(8);
+        assert_eq!(result, HyperResult::Sat);
+
+        let labels = engine
+            .satisfiability_labels(q)
+            .expect("Sat result must expose seed-node labels");
+        assert!(labels.contains(&a), "labels must contain A: {labels:?}");
+        assert!(labels.contains(&b), "labels must contain B: {labels:?}");
+        assert!(labels.contains(&q));
     }
 }

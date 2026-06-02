@@ -778,19 +778,26 @@ pub(crate) fn classify_top_down_internal(
     // named class ONCE; cache the root-node labels as a sound
     // non-subsumption pruner. Parallel via rayon — independent calls,
     // ~0.5-2 ms each (Horn case) + occasional slower disjunctive
-    // cases. The cache is consulted by find_direct_parents_top_down
-    // in Task 6; this task only builds it. See
+    // cases. Consulted by find_direct_parents_top_down. See
     // docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md.
-    let _label_cache: Vec<crate::LabelOracle> = (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let class_id = owl_dl_core::ClassId::new(
-                u32::try_from(i).expect("class index fits in u32"),
-            );
-            let deadline = per_pair_timeout.map(|t| Instant::now() + t);
-            prepared.classify_labels(class_id, deadline)
-        })
-        .collect();
+    //
+    // Disabled via `RUSTDL_LABEL_HEURISTIC=0`: every slot becomes
+    // `NoVerdict`, so the walk falls through to the wedge/tableau
+    // path uniformly (used by tests that exercise the wedge directly).
+    let label_cache: Vec<crate::LabelOracle> = if crate::label_heuristic_enabled() {
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let class_id = owl_dl_core::ClassId::new(
+                    u32::try_from(i).expect("class index fits in u32"),
+                );
+                let deadline = per_pair_timeout.map(|t| Instant::now() + t);
+                prepared.classify_labels(class_id, deadline)
+            })
+            .collect()
+    } else {
+        vec![crate::LabelOracle::NoVerdict; n]
+    };
 
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
@@ -899,6 +906,7 @@ pub(crate) fn classify_top_down_internal(
                     &direct_children,
                     &top_level,
                     per_pair_timeout,
+                    &label_cache,
                     &mut local_stats,
                 )?;
                 Ok((c, parents, local_stats))
@@ -914,6 +922,9 @@ pub(crate) fn classify_top_down_internal(
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
             stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
+            stats.label_cache_pruned += sd.label_cache_pruned;
+            stats.label_cache_pass_through += sd.label_cache_pass_through;
+            stats.label_cache_misses += sd.label_cache_misses;
             for &p in &parents {
                 direct_children[p].push(c);
             }
@@ -1126,6 +1137,7 @@ fn find_direct_parents_top_down(
     direct_children: &[Vec<usize>],
     top_level: &[usize],
     per_pair_timeout: Option<std::time::Duration>,
+    label_cache: &[crate::LabelOracle],
     stats: &mut ClassificationStats,
 ) -> Result<Vec<usize>, ReasonError> {
     let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
@@ -1151,8 +1163,38 @@ fn find_direct_parents_top_down(
             stats.saturation_subsumption_hits += 1;
             true
         } else {
-            subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, true, stats)?
-                .unwrap_or_default()
+            // Phase 7: per-class label heuristic — check the cache
+            // before paying for `subsumes_via_tableau`.
+            match label_cache.get(c) {
+                Some(crate::LabelOracle::Sat(labels)) => {
+                    if labels.contains(&d_id) {
+                        // D ∈ C's labels: might be coincidence-of-model;
+                        // verify via the existing per-pair path.
+                        stats.label_cache_pass_through += 1;
+                        subsumes_via_tableau(
+                            prepared, c_id, d_id, per_pair_timeout, true, stats,
+                        )?
+                        .unwrap_or_default()
+                    } else {
+                        // D ∉ C's labels: this completion graph is a
+                        // counterexample model. Sound non-subsumption.
+                        stats.label_cache_pruned += 1;
+                        false
+                    }
+                }
+                Some(crate::LabelOracle::Unsat) => {
+                    // C is unsatisfiable: vacuously subsumes every D.
+                    true
+                }
+                Some(crate::LabelOracle::NoVerdict) | None => {
+                    // Cache missing — fall through to per-pair.
+                    stats.label_cache_misses += 1;
+                    subsumes_via_tableau(
+                        prepared, c_id, d_id, per_pair_timeout, true, stats,
+                    )?
+                    .unwrap_or_default()
+                }
+            }
         };
         if !subsumed {
             continue;
@@ -1689,12 +1731,19 @@ Ontology(<http://rustdl.test/test>\n\
     ///
     /// SAFETY: env-var mutation; tests in this module that mutate
     /// RUSTDL_HYPER_TRUST_SAT_MIN_MS must run with --test-threads=1.
+    /// Also disables `RUSTDL_LABEL_HEURISTIC` so the per-class label
+    /// cache (Phase 7) doesn't prune the D⊑B/D⊑C non-subsumptions
+    /// before they reach the wedge — the cache would soundly catch
+    /// them, but that bypasses the selective-verify path under test.
     #[test]
     #[allow(unsafe_code)]
     fn selective_verify_triggers_when_threshold_high() {
         let key = "RUSTDL_HYPER_TRUST_SAT_MIN_MS";
         let prev = std::env::var_os(key);
         unsafe { std::env::set_var(key, "100000") };
+        let label_key = "RUSTDL_LABEL_HEURISTIC";
+        let prev_label = std::env::var_os(label_key);
+        unsafe { std::env::set_var(label_key, "0") };
 
         let onto = parse(&format!(
             "{HEADER}\
@@ -1716,6 +1765,10 @@ Ontology(<http://rustdl.test/test>\n\
         match prev {
             Some(v) => unsafe { std::env::set_var(key, v) },
             None => unsafe { std::env::remove_var(key) },
+        }
+        match prev_label {
+            Some(v) => unsafe { std::env::set_var(label_key, v) },
+            None => unsafe { std::env::remove_var(label_key) },
         }
 
         assert!(
@@ -1739,12 +1792,18 @@ Ontology(<http://rustdl.test/test>\n\
     /// "always trust"), so the fast-refuted counter stays at zero.
     ///
     /// SAFETY: same env-var mutation as above; --test-threads=1.
+    /// Also disables `RUSTDL_LABEL_HEURISTIC` for the same reason as
+    /// the threshold-high test: the cache would prune D⊑B/D⊑C before
+    /// they reach the wedge, bypassing the path under test.
     #[test]
     #[allow(unsafe_code)]
     fn selective_verify_disabled_when_threshold_zero() {
         let key = "RUSTDL_HYPER_TRUST_SAT_MIN_MS";
         let prev = std::env::var_os(key);
         unsafe { std::env::set_var(key, "0") };
+        let label_key = "RUSTDL_LABEL_HEURISTIC";
+        let prev_label = std::env::var_os(label_key);
+        unsafe { std::env::set_var(label_key, "0") };
 
         let onto = parse(&format!(
             "{HEADER}\
@@ -1766,6 +1825,10 @@ Ontology(<http://rustdl.test/test>\n\
         match prev {
             Some(v) => unsafe { std::env::set_var(key, v) },
             None => unsafe { std::env::remove_var(key) },
+        }
+        match prev_label {
+            Some(v) => unsafe { std::env::set_var(label_key, v) },
+            None => unsafe { std::env::remove_var(label_key) },
         }
 
         assert_eq!(

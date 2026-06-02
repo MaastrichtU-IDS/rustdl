@@ -651,6 +651,18 @@ pub fn hyper_trust_sat_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
+/// Per-class label heuristic (Phase 7) — when enabled, the classifier
+/// runs wedge satisfiability once per named class to build a label
+/// cache, then prunes non-subsumption pairs whose candidate super is
+/// absent from the subject's root-node labels. Sound; on by default.
+/// Disable with `RUSTDL_LABEL_HEURISTIC=0` (e.g. for tests that need
+/// to exercise the downstream wedge/tableau paths the cache would
+/// otherwise pre-empt).
+#[must_use]
+pub fn label_heuristic_enabled() -> bool {
+    std::env::var_os("RUSTDL_LABEL_HEURISTIC").map_or(true, |v| v != "0" && !v.is_empty())
+}
+
 /// Minimum wedge wall-time threshold (in milliseconds) below which a
 /// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
 /// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured
@@ -716,11 +728,6 @@ pub(crate) enum HyperVerdict {
 /// once per named class at classify-time; consulted by the orchestrator
 /// to prune `subsumes_via_tableau` calls. See
 /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
-///
-/// `dead_code` allowance: introduced in Task 2 of the per-class-label
-/// series; first consumer lands in the orchestrator-wiring follow-up
-/// (Task 3+). Exercised by `hypercache_classify_labels_*` tests today.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum LabelOracle {
     /// C is satisfiable; root-node labels are the candidate subsumer
@@ -829,11 +836,6 @@ impl HyperCache {
     /// a [`LabelOracle`] capturing the seed-node's labels. Sound basis
     /// for the per-class label heuristic — see
     /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
-    ///
-    /// `dead_code` allowance: introduced in Task 2; first consumer lands
-    /// in the orchestrator-wiring follow-up (Task 3+). Exercised by
-    /// `hypercache_classify_labels_*` tests today.
-    #[allow(dead_code)]
     pub(crate) fn classify_labels(
         &self,
         c: owl_dl_core::ir::ClassId,
@@ -1462,10 +1464,6 @@ impl PreparedOntology {
     /// return a [`LabelOracle`]. Returns [`LabelOracle::NoVerdict`] when
     /// the hyper wedge is disabled. See
     /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
-    ///
-    /// `dead_code` allowance: introduced in Task 3; removed in Task 6
-    /// when the orchestrator wires it in.
-    #[allow(dead_code)]
     pub(crate) fn classify_labels(
         &self,
         c: owl_dl_core::ir::ClassId,

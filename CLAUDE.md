@@ -140,7 +140,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `PreparedOntology::from_internal` snapshots the post-NNF/absorb/ABox-seed state
   **once** so the O(n²) pairwise classify loop reuses it across pairs; the loop
   runs in parallel via rayon. `is_subclass_of` reduces to satisfiability of
-  `sub ⊓ ¬sup`. Phase 4b (commit TBD) added a `FragmentClassification`
+  `sub ⊓ ¬sup`. Phase 4b (commit e31439c) added a `FragmentClassification`
   (`PureEl` / `OutOfFragment`) diagnostic surfaced as `# fragment: …` in the
   CLI banner and `ClassificationStats::fragment` programmatically; it tells
   users whether `trust_sat` is sound by construction (EL+) or by composition

@@ -733,6 +733,31 @@ impl<'c> HyperEngine<'c> {
         self.solve(max_depth)
     }
 
+    /// On a successful satisfiability search, return the labels of the
+    /// node seeded with `seed`. Returns `None` if the search hasn't
+    /// returned Sat OR if no node is labeled with `seed` (shouldn't
+    /// happen for a well-formed Q-clause setup — Q's seed is always
+    /// asserted at node 0 by `new`).
+    ///
+    /// The returned set is the basis for the per-class label heuristic
+    /// in `owl-dl-reasoner::classify_top_down_internal`: any atomic
+    /// class D ∈ this set is a candidate subsumer of `seed`; any
+    /// D ∉ this set is a sound non-subsumer (this completion graph IS
+    /// a counterexample model). See
+    /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
+    #[must_use]
+    pub fn satisfiability_labels(&self, seed: ClassId) -> Option<Vec<ClassId>> {
+        // Walk every node; the one labeled with `seed` is the root.
+        // (HyperCache seeds `q` at node 0 via `new`; merges may relocate.
+        // Linear scan is fine — node count is small at typical inputs.)
+        for node in &self.nodes {
+            if node.labels.contains(&seed) {
+                return Some(node.labels.clone());
+            }
+        }
+        None
+    }
+
     fn solve(&mut self, depth: usize) -> HyperResult {
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
@@ -2284,5 +2309,38 @@ mod tests {
             branches <= 4 * u64::from(N),
             "backjumping should close R in O(N) branches, got {branches} (2^(N-2) = blowup)"
         );
+    }
+
+    #[test]
+    fn satisfiability_labels_returns_horn_consequences_at_seed_node() {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_core::ir::ClassId;
+
+        let q = ClassId::new(100);
+        let a = ClassId::new(101);
+        let b = ClassId::new(102);
+
+        let clauses = vec![
+            // q ⊑ a (q's seed label triggers a)
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(a, X)],
+            },
+            // a ⊑ b (then b)
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(b, X)],
+            },
+        ];
+        let mut engine = HyperEngine::new(&clauses, q);
+        let result = engine.decide(8);
+        assert_eq!(result, HyperResult::Sat, "Horn fixpoint should be Sat");
+
+        let labels = engine
+            .satisfiability_labels(q)
+            .expect("Sat result must expose seed-node labels");
+        assert!(labels.contains(&a), "labels must contain A (q ⊑ a): {labels:?}");
+        assert!(labels.contains(&b), "labels must contain B (Horn-derived): {labels:?}");
+        assert!(labels.contains(&q), "labels include the seed class itself: {labels:?}");
     }
 }

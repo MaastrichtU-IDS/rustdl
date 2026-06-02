@@ -159,6 +159,31 @@ verdict from the wedge as `Unknown` and falls through to the full tableau —
 slower (no classification wall reduction), but unconditionally sound on any
 ontology.
 
+## Diagnostic banner at classify time
+
+`rustdl classify` prints a `# fragment:` line in its banner output
+(after `# mode:`) that reports which side of the boundary the input
+sits on:
+
+```
+# fragment: pure-EL (trust_sat sound by construction)
+# fragment: out-of-EL (trust_sat empirically sound; see fragment-completeness.md)
+```
+
+`pure-EL` means the ontology fits inside the Provably Complete
+fragment described above and `trust_sat` is sound by construction.
+`out-of-EL` means the input uses one or more constructs outside that
+fragment (disjunctive heads, cardinality, nominals, inverse roles,
+ABox assertions, …); `trust_sat` then rides on the Validated Corpus
+Envelope rather than a proof. The banner is diagnostic-only; it does
+not change `trust_sat`'s default-on behaviour. Programmatic callers
+can read the same verdict via `ClassificationStats::fragment` /
+`analyze_fragment` in `owl_dl_reasoner`.
+
+The Horn DL-clause fragment is **not** detected by this banner today
+— recognising it requires the hyper engine's clausification step at
+ontology load. That extension is tracked as Phase 4c.
+
 ## What would earn default-on generally
 
 A sound static check that decides, for a given ontology, whether its

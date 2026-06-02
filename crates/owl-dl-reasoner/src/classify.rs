@@ -44,6 +44,57 @@ pub struct Classification {
     stats: ClassificationStats,
 }
 
+/// The expressivity fragment of an ontology, used to surface
+/// whether `trust_sat` is sound by construction (EL+) or sound by
+/// composition (the empirical fragment). See
+/// `docs/fragment-completeness.md` for the precise contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FragmentClassification {
+    /// The ontology is in the EL+ fragment supported by the
+    /// consequence-based saturator. `trust_sat` is sound by
+    /// construction: a saturator `Sat` verdict is a genuine model.
+    PureEl,
+    /// The ontology uses constructs beyond EL+ (disjunctive heads,
+    /// cardinality restrictions, nominals, or inverse roles).
+    /// `trust_sat` is sound by composition (empirically across the
+    /// measured corpus) but not formally proven on arbitrary
+    /// ontologies in this class.
+    OutOfFragment,
+}
+
+impl std::fmt::Display for FragmentClassification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PureEl => f.write_str("pure-EL (trust_sat sound by construction)"),
+            Self::OutOfFragment => f.write_str(
+                "out-of-EL (trust_sat empirically sound; see fragment-completeness.md)",
+            ),
+        }
+    }
+}
+
+impl Default for FragmentClassification {
+    /// Conservative default: anyone reading a defaulted stats struct
+    /// should NOT assume pure-EL safety.
+    fn default() -> Self {
+        Self::OutOfFragment
+    }
+}
+
+/// Classify the expressivity fragment of an ontology. Pure-EL means
+/// the saturator is complete on this input and a `Sat` verdict is a
+/// genuine model. Anything else is "out of fragment" — the engine
+/// remains empirically sound across the measured corpus, but no
+/// formal proof of completeness covers it.
+#[must_use]
+pub fn analyze_fragment(internal: &InternalOntology) -> FragmentClassification {
+    if is_pure_el(internal) {
+        FragmentClassification::PureEl
+    } else {
+        FragmentClassification::OutOfFragment
+    }
+}
+
 /// Per-call instrumentation: who decided what during the pairwise
 /// classification loop. Useful for understanding when the EL
 /// saturation oracle is pulling its weight versus when the tableau
@@ -94,6 +145,11 @@ pub struct ClassificationStats {
     /// as MISSED but the slow path recovered. Directly tracks Phase 1's
     /// completeness lever.
     pub hyper_refuted_fast_flipped_pairs: u64,
+    /// The expressivity fragment of the input ontology. Diagnostic only:
+    /// surfaces whether `trust_sat` is sound by construction (`PureEl`)
+    /// or sound by composition (`OutOfFragment`). See
+    /// `docs/fragment-completeness.md`.
+    pub fragment: FragmentClassification,
 }
 
 impl Classification {
@@ -361,7 +417,10 @@ pub(crate) fn classify_internal_with_timeout(
     // these without ever invoking the tableau; the rest fall back to
     // a per-class satisfiability probe. Probes are independent so
     // they run in parallel via rayon.
-    let mut stats = ClassificationStats::default();
+    let mut stats = ClassificationStats {
+        fragment: analyze_fragment(internal),
+        ..ClassificationStats::default()
+    };
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -497,6 +556,7 @@ fn classify_pure_el(
     let n = classes.len();
     let mut stats = ClassificationStats {
         pure_el_mode: true,
+        fragment: analyze_fragment(internal),
         ..ClassificationStats::default()
     };
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
@@ -685,7 +745,10 @@ pub(crate) fn classify_top_down_internal(
 
     // Per-class unsat probes — identical to the naive path. Reuse
     // the same parallel pattern.
-    let mut stats = ClassificationStats::default();
+    let mut stats = ClassificationStats {
+        fragment: analyze_fragment(internal),
+        ..ClassificationStats::default()
+    };
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -1699,5 +1762,55 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(sat.stats().pure_el_mode);
         assert_eq!(sat.stats().tableau_subsumption_calls, 0);
         assert_eq!(sat.stats().tableau_unsat_calls, 0);
+    }
+
+    #[test]
+    fn analyze_fragment_returns_pure_el_on_minimal_el_ontology() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        assert_eq!(analyze_fragment(&internal), FragmentClassification::PureEl);
+    }
+
+    #[test]
+    fn analyze_fragment_returns_out_of_fragment_on_disjunction() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A ObjectUnionOf(:B :C))\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        assert_eq!(
+            analyze_fragment(&internal),
+            FragmentClassification::OutOfFragment
+        );
+    }
+
+    #[test]
+    fn analyze_fragment_returns_out_of_fragment_on_inverse_role() {
+        // InverseObjectProperties — clearly outside EL+.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:r_inv))\n\
+    InverseObjectProperties(:r :r_inv)\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        assert_eq!(
+            analyze_fragment(&internal),
+            FragmentClassification::OutOfFragment
+        );
     }
 }

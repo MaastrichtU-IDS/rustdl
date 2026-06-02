@@ -263,6 +263,7 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             "hybrid (saturation + tableau)"
         }
     )?;
+    writeln!(out, "# fragment: {}", stats.fragment)?;
     writeln!(
         out,
         "# subsumption: saturation={} tableau={}",

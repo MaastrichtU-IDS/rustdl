@@ -127,3 +127,33 @@ inherited fact set.
 - Phase 2d implementation: commit b78c5fd
 - Phase 2c-redux implementation: commit 34a2b62
 - T7 logs (transient): `/tmp/p2d-{final-net,final-galen,final-notgalen}.log`
+
+## Addendum 2026-06-02: GALEN +6.5 % wall regression characterized
+
+Phase 5 (`docs/phase5-{recon,walltime-probe,variance-check,downstream-probe}.md`)
+investigated the +6.5 % regression with four sub-probes:
+
+- **CPU flame** (T1) couldn't see it — saturation is single-threaded,
+  contributes < 1 % of multi-core samples.
+- **Saturator-side walltime probe** (T2) showed saturate = 0.99 s of
+  GALEN's ~802 s wall (0.12 %); Phase 2d propagation = 47 ms combined.
+  Saturator innocent.
+- **Variance check** (T3a) aborted under machine contention.
+- **Downstream classify breakdown** (T3b) localized: tier_walk +
+  defined-sup sweep = 732.98 s of 753.96 s = **97.22 % of GALEN
+  classify wall**.
+
+**The +6.5 % is the inherent cost of completeness, not a bug.** Phase 2d
+adds 17 atomic closure pairs (27,980 → 27,997 — the IPBP-cluster
+recovery). Each new pair shifts tier ordering and adds candidates to
+`find_direct_parents_top_down`. Per-call cost increases ~1.3 ms across
+37 k calls ≈ +49 s wall — matches the measured regression exactly.
+
+Recovery would require optimizing the orthogonal top-down classifier
+path, not the Phase 2d propagation. See `docs/phase5-downstream-probe.md`
+for the breakdown table + recommended next-perf-target.
+
+Bonus finding: GALEN classifies as `# fragment: Horn` (Phase 4c) +
+`# subsumption: saturation=37181 tableau=0` — the IPBP-cluster recovery
+is now provably-complete-by-construction, and the SROIQ tableau is
+never called on GALEN.

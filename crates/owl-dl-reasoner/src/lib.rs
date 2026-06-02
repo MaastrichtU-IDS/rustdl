@@ -712,6 +712,29 @@ pub(crate) enum HyperVerdict {
     Unknown,
 }
 
+/// Per-class label heuristic oracle. Built by `HyperCache::classify_labels`
+/// once per named class at classify-time; consulted by the orchestrator
+/// to prune `subsumes_via_tableau` calls. See
+/// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
+///
+/// `dead_code` allowance: introduced in Task 2 of the per-class-label
+/// series; first consumer lands in the orchestrator-wiring follow-up
+/// (Task 3+). Exercised by `hypercache_classify_labels_*` tests today.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) enum LabelOracle {
+    /// C is satisfiable; root-node labels are the candidate subsumer
+    /// set. `D ∈ labels` → verify via per-pair test; `D ∉ labels` →
+    /// sound non-subsumption (this completion graph is a counterexample).
+    Sat(std::collections::HashSet<owl_dl_core::ir::ClassId>),
+    /// C is unsatisfiable (every model omits C). Orchestrator returns
+    /// `true` for every (C, D) — unsat classes vacuously subsume all.
+    Unsat,
+    /// Deadline elapsed; no labels recorded. Orchestrator falls through
+    /// to the existing per-pair path (sound by existing contract).
+    NoVerdict,
+}
+
 /// Cached clausified state for the H4 sound accelerator: built once
 /// per ontology (the expensive clausify + `¬sup` pre-pass), then
 /// reused across every subsumption pair. [`proves`](Self::proves)
@@ -799,6 +822,42 @@ impl HyperCache {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
             HyperResult::Stalled => HyperVerdict::Unknown,
+        }
+    }
+
+    /// Run wedge satisfiability of `c` alone (no negated sup) and return
+    /// a [`LabelOracle`] capturing the seed-node's labels. Sound basis
+    /// for the per-class label heuristic — see
+    /// `docs/superpowers/specs/2026-06-02-per-class-label-heuristic-design.md`.
+    ///
+    /// `dead_code` allowance: introduced in Task 2; first consumer lands
+    /// in the orchestrator-wiring follow-up (Task 3+). Exercised by
+    /// `hypercache_classify_labels_*` tests today.
+    #[allow(dead_code)]
+    pub(crate) fn classify_labels(
+        &self,
+        c: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> LabelOracle {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        let mut clauses = self.clauses.clone();
+        // Single Q-clause: q ⊑ c. No negated sup (unlike `decide`).
+        clauses.push(DlClause {
+            body: vec![Atom::Class(self.fresh_q, X)],
+            head: vec![Atom::Class(c, X)],
+        });
+        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        if hyper_double_block_enabled() {
+            engine = engine.with_double_blocking();
+        }
+        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+            HyperResult::Unsat => LabelOracle::Unsat,
+            HyperResult::Sat => engine
+                .satisfiability_labels(self.fresh_q)
+                .map(|v| LabelOracle::Sat(v.into_iter().collect()))
+                .unwrap_or(LabelOracle::NoVerdict),
+            HyperResult::Stalled => LabelOracle::NoVerdict,
         }
     }
 }
@@ -2226,6 +2285,43 @@ ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
             !(cache.decide(topping, vegetarian, None) == HyperVerdict::Subsumed),
             "Topping ⊑ Vegetarian must NOT be proven (not entailed)"
         );
+    }
+
+    /// Per-class label heuristic basis (Task 2): on a Horn chain
+    /// `A ⊑ B ⊑ C`, `HyperCache::classify_labels(A)` must return
+    /// `LabelOracle::Sat` whose label set contains both `B` and `C`
+    /// (every model of `A` is also a model of `B` and `C`). Wires
+    /// `HyperEngine::satisfiability_labels` (Task 1) into the
+    /// oracle returned to the orchestrator.
+    #[test]
+    fn hypercache_classify_labels_returns_atomic_supers_on_horn_chain() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:C))\n\
+SubClassOf(:A :B)\nSubClassOf(:B :C)\n)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let a = internal
+            .vocabulary
+            .class_id("http://rustdl.test/A")
+            .expect("A declared");
+        let b = internal
+            .vocabulary
+            .class_id("http://rustdl.test/B")
+            .expect("B declared");
+        let c = internal
+            .vocabulary
+            .class_id("http://rustdl.test/C")
+            .expect("C declared");
+        let cache = HyperCache::build(&internal);
+        let oracle = cache.classify_labels(a, None);
+        match oracle {
+            LabelOracle::Sat(labels) => {
+                assert!(labels.contains(&b), "A's labels must contain B: {labels:?}");
+                assert!(labels.contains(&c), "A's labels must contain C: {labels:?}");
+            }
+            other => panic!("expected Sat, got {other:?}"),
+        }
     }
 
     /// Nominals (`hasValue`): `A ≡ P ⊓ ∃r.{o}`, `B ⊑ P`, `B ⊑ ∃r.{o}`

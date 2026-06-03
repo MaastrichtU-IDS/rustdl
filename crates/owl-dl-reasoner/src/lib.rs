@@ -663,6 +663,20 @@ pub fn label_heuristic_enabled() -> bool {
     std::env::var_os("RUSTDL_LABEL_HEURISTIC").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
+/// Project flag for the Konclude snapshot cache (Phase 1a — capture
+/// path landed but no consumer wires it yet). Default OFF; Phase 1c
+/// flips the default. Set `RUSTDL_SNAPSHOT_CAPTURE=1` to enable
+/// snapshot capture in `subsumes_via_tableau` (Phase 1b onward).
+///
+/// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
+#[must_use]
+pub fn snapshot_capture_enabled() -> bool {
+    std::env::var("RUSTDL_SNAPSHOT_CAPTURE")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .is_some_and(|v| v != 0)
+}
+
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
 /// build during classification. **Distinct from `--pair-timeout-ms`**:
 /// the cache build is one-shot per class at classify-start, and a

@@ -377,6 +377,32 @@ fn sio_closure_matches_konclude() {
 }
 
 #[test]
+#[ignore = "needs ontologies/real/ro.ofn + konclude-input/ro-classified.owx; Phase D1 fixture (was UnsupportedAxiom-erroring pre-D1; HermiT oracle generated 2026-06-03)"]
+fn ro_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/real/ro.ofn");
+    let truth = Path::new("../../ontologies/real/konclude-input/ro-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing ro fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("ro", input, truth, 200);
+    assert_eq!(fp, 0, "ro has FPs — D1 sound-under-approximation broken");
+}
+
+#[test]
+#[ignore = "needs ontologies/real/sulo.ofn + konclude-input/sulo-classified.owx; Phase D1 fixture (Konclude oracle generated 2026-06-03 — ROBOT/HermiT OWX had empty <IRI/> tags that horned-owl rejects)"]
+fn sulo_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/real/sulo.ofn");
+    let truth = Path::new("../../ontologies/real/konclude-input/sulo-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing sulo fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("sulo", input, truth, 200);
+    assert_eq!(fp, 0, "sulo has FPs — D1 sound-under-approximation broken");
+}
+
+#[test]
 #[ignore = "long-timeout corpus run (5 s per-pair) — measures the engine's actual completeness ceiling, independent of the standard 200 ms harness budget"]
 fn corpus_closure_long_timeout() {
     let base = Path::new("../../ontologies/real");

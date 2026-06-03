@@ -622,6 +622,89 @@ structurally-different alternative).
 
 ---
 
+## 20. Per-class `BackPropRisk` *implementation* (Phase 3b)
+
+**What was tried (built inline, reverted before commit).** Phase 3a
+recon (§19) said NO-GO under the "close spec §6 target" framing, but
+the user's "exhaust performance gains" directive made the projected
+~10% ore-15672 wall savings worth shipping. Phase 3b implementation:
+
+1. Added `per_class_risk: Vec<BackPropRisk>` to `SnapshotCache`,
+   populated at `build` time via `BackPropRisk::classify_class`.
+2. Changed `try_replay`'s gate from `is_safe()` (ontology-wide) to
+   `per_class_risk[sub] == Safe`.
+
+**What killed it. Two failure modes.**
+
+**Failure 1 — soundness (caught by ore-10908 closure-diff)**: gating
+on `sub` only is unsound. ore-10908 produced **1 FP**:
+`MF_0000003 ⊑ BFO_0000145`. Root cause: `MF_0000003`'s own axioms
+are cardinality-free (per-class Safe), but `BFO_0000145`'s
+`EquivalentClasses` definition embeds `ObjectMinCardinality(2 …)`.
+The snapshot for `MF_0000003` was built without cardinality-state
+tracking; adding `¬BFO_0000145` at replay required cardinality
+reasoning the snapshot wasn't built to handle, producing a spurious
+Subsumed verdict.
+
+**Fix attempt**: gate on **both** `sub` and `sup` being per-class Safe.
+
+**Failure 2 — performance (caught by ore-15672 closure-diff)**: with
+sub+sup gating, ore-15672 didn't complete in 120 seconds (vs 30s
+flag-OFF baseline). Snapshot dispatch on per-class-Safe SROIQ classes
+hits a pathological case — most likely the snapshot build / replay
+cost on SROIQ classes is dramatically higher than on Horn classes
+(per-class structural complexity not captured by the cheap classifier).
+Net: SROIQ workloads regress instead of improve. ore-10908 was flat
+(11.75s, same as Phase 1c), so the regression is specifically on
+ore-15672's structure.
+
+**The lesson.** Phase 3a recon predicted +10% wall on ore-15672 from
+per-class refinement, based on the architectural argument that
+67/82 Safe classes COULD use snapshot. The recon didn't measure
+**per-class snapshot dispatch cost on SROIQ**. The actual cost is
+the snapshot build + replay overhead on SROIQ classes is much higher
+than on Horn classes (where Phase 1b-1c established the cost
+profile). Per-class refinement is the right architectural lever for
+"unlock snapshot on SROIQ", but the snapshot infrastructure itself
+isn't optimized for SROIQ workload characteristics.
+
+Pairs with §19's "search-budget-bound, not rule-bound" finding:
+ore-15672's residual cost has multiple structural sources;
+addressing the per-class-Safe subset just exposes additional
+pathological costs in the snapshot path.
+
+**Cost when shipped:** none. Implementation lived only on the dirty
+working tree; never committed. The Phase 3a `BackPropRisk::classify_class`
+infrastructure (commit `a6983ed`) remains as diagnostic telemetry
+for any future revisit.
+
+**Don't reattempt without first:** measuring per-class snapshot
+dispatch cost on representative SROIQ classes BEFORE wiring
+classify_class into try_replay. The Phase 1b.5 lazy expansion's
+~7% wall savings on GALEN was a clue that snapshot overhead is
+non-trivial; on SROIQ the overhead apparently dominates. Quote
+from this experience: "Phase 1b-1c established snapshot cost on
+HORN; do not assume the cost profile transfers to SROIQ without
+measurement."
+
+If a future workload makes SROIQ wall a customer-visible priority,
+the right path is likely:
+1. Profile snapshot cost (build + replay) on SROIQ classes in
+   isolation, vs Horn.
+2. If snapshot overhead is structurally high on SROIQ, fix that
+   FIRST (possibly via Konclude-style sub-tableau caching per §2,
+   which has a different cost profile).
+3. Then revisit per-class refinement to dispatch.
+
+**Cross-references:** §19 (Phase 3a recon NO-GO — was actually
+prescient about Phase 3 cost-benefit); §2 (Konclude-style
+sub-tableau caching — likely the structurally-different lever
+needed for SROIQ); §4 (label-only dep-sets — another case where
+"sound architecturally" turned out to be unsound in practice on
+GALEN-shaped workloads).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

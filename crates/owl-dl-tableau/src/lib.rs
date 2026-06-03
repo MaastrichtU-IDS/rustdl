@@ -76,7 +76,7 @@ macro_rules! add_counter {
 }
 
 pub use graph::{CompletionGraph, DepSet, Node, NodeId};
-pub use replay::{ReplayVerdict, replay_with_neg_sup};
+pub use replay::{ReplayVerdict, replay_with_neg_sup, replay_with_neg_sup_full_rerun};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_deferred_concept_or_rules,
     apply_deferred_or_residuals, apply_exists, apply_forall, apply_max, apply_min,

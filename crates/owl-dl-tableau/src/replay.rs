@@ -1,24 +1,23 @@
 //! Snapshot-replay driver for the Konclude snapshot cache project
-//! (Phase 1b).
+//! (Phase 1b + 1b.5).
 //!
 //! See `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
 //! §4.1 (replay path) and §4.2 (soundness contract).
 //!
-//! Phase 1b first-cut: **full-re-run**. The replay reconstructs a
-//! `HyperEngine` from a snapshot, adds the caller's negated-sup
-//! clauses, then runs `decide` from scratch over the seeded state.
-//! Correctness equivalent to running the wedge with `q ⊑ sub ⊓ ¬sup`,
-//! but the seeded state preserves the snapshot's labels so the
-//! `BackPropAborted` sentinel (Task 3) can detect runtime back-prop.
-//!
-//! Lazy expansion (fingerprint-gated rule firing skip) is Phase 1b.5.
-//! With full-re-run, replay wall ≈ wedge wall + seed overhead, so
-//! no perf win until lazy expansion lands. Phase 1b's acceptance is
-//! correctness + telemetry, not perf.
+//! Two replay paths:
+//! - [`replay_with_neg_sup`] (Phase 1b.5 default): lazy expansion.
+//!   Reconstructs a `HyperEngine` via [`HyperEngine::from_snapshot_lazy`]
+//!   so `horn_fixpoint` re-seed skips pre-captured labels at
+//!   snapshot-origin nodes not in the new clauses' trigger atoms.
+//!   Correctness equivalent to full-re-run; substantially less work.
+//! - [`replay_with_neg_sup_full_rerun`] (Phase 1b first-cut, kept
+//!   for A/B): reconstructs via [`HyperEngine::from_snapshot`] and
+//!   runs `decide` from scratch over the seeded state. Engaged
+//!   when the orchestrator's `RUSTDL_SNAPSHOT_LAZY=0` toggle is set.
 
 use crate::hyper::{HyperEngine, HyperResult};
 use crate::snapshot::{BackPropRisk, GraphSnapshot};
-use owl_dl_core::clause::DlClause;
+use owl_dl_core::clause::{Atom, DlClause};
 
 /// Recursion depth cap for the replay `decide` call. Mirrors the wedge
 /// default (`hyper::HyperEngine::decide` takes the cap as an arg; 256 is
@@ -27,7 +26,7 @@ use owl_dl_core::clause::DlClause;
 /// agrees on a single named constant.
 const REPLAY_DEPTH: usize = 256;
 
-/// Verdict from `replay_with_neg_sup`. The orchestrator (Task 4) maps
+/// Verdict from the replay paths. The orchestrator maps
 /// `Subsumed`/`NotSubsumed` to the classify decision and falls through
 /// on `BackPropAborted`/`Stalled`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,22 +49,65 @@ pub enum ReplayVerdict {
     Stalled,
 }
 
-/// Run snapshot-replay: reconstruct an engine from `snapshot`, add
-/// the caller's `neg_sup_clauses`, run `decide`, return a verdict.
+/// Phase 1b.5 default: lazy-expansion replay. Reconstructs an engine
+/// via [`HyperEngine::from_snapshot_lazy`] with trigger atoms
+/// extracted from `neg_sup_clauses`' body class atoms, runs `decide`.
+/// `horn_fixpoint`'s re-seed loop skips `Event::Label` events for
+/// pre-captured labels at snapshot-origin nodes not in the trigger
+/// set — sound by spec §4.1 soundness contract + the Phase 1b.5 plan.
 ///
 /// Soundness preconditions:
-/// - The snapshot must have been built from a `Sat` verdict (caller's
-///   responsibility — capture site verifies this).
-/// - The snapshot's `BackPropRisk` should be `Safe` for the
+/// - The snapshot must have been built from a `Sat` verdict.
+/// - The snapshot's `BackPropRisk` must be `Safe` for the
 ///   `NotSubsumed` verdict to be sound. This function checks
 ///   `snapshot.risk()` and returns `BackPropAborted` immediately
-///   if Unsafe, but the orchestrator (Task 4) gates by risk anyway.
+///   if Unsafe.
 ///
 /// `neg_sup_clauses` are appended to a clone of `clauses` before the
-/// engine reads them. Typically these are 1-2 small clauses representing
-/// `¬sup` (e.g., `Atom::Class(sup, X) → ⊥` for atomic sup).
+/// engine reads them. Typically one Horn clause `q ⊓ sup → ⊥`.
 #[must_use]
 pub fn replay_with_neg_sup(
+    clauses: &[DlClause],
+    snapshot: &GraphSnapshot,
+    neg_sup_clauses: Vec<DlClause>,
+) -> ReplayVerdict {
+    if !matches!(snapshot.risk(), BackPropRisk::Safe) {
+        return ReplayVerdict::BackPropAborted;
+    }
+    // Trigger atoms — collected BEFORE the move that consumes
+    // `neg_sup_clauses` into the extended clause set.
+    let new_trigger_atoms: std::collections::HashSet<u32> = neg_sup_clauses
+        .iter()
+        .flat_map(|c| c.body.iter())
+        .filter_map(|atom| match atom {
+            Atom::Class(cid, _) => Some(cid.index()),
+            _ => None,
+        })
+        .collect();
+    let mut full_clauses = clauses.to_vec();
+    full_clauses.extend(neg_sup_clauses);
+    let mut engine =
+        HyperEngine::from_snapshot_lazy(&full_clauses, snapshot, new_trigger_atoms);
+    let result = engine.decide(REPLAY_DEPTH);
+    if engine.snapshot_backprop_aborted() {
+        return ReplayVerdict::BackPropAborted;
+    }
+    match result {
+        HyperResult::Sat => ReplayVerdict::NotSubsumed,
+        HyperResult::Unsat => ReplayVerdict::Subsumed,
+        HyperResult::Stalled => ReplayVerdict::Stalled,
+    }
+}
+
+/// Phase 1b first-cut: full-re-run replay. Reconstructs an engine
+/// via [`HyperEngine::from_snapshot`] (no lazy state) and re-runs
+/// `decide` from scratch. Correctness equivalent to
+/// [`replay_with_neg_sup`] but pays the cost of re-firing every
+/// snapshot-node label event. Kept as the A/B reference for the
+/// `RUSTDL_SNAPSHOT_LAZY=0` toggle in the reasoner's
+/// `SnapshotCache::try_replay`.
+#[must_use]
+pub fn replay_with_neg_sup_full_rerun(
     clauses: &[DlClause],
     snapshot: &GraphSnapshot,
     neg_sup_clauses: Vec<DlClause>,
@@ -77,11 +119,6 @@ pub fn replay_with_neg_sup(
     full_clauses.extend(neg_sup_clauses);
     let mut engine = HyperEngine::from_snapshot(&full_clauses, snapshot);
     let result = engine.decide(REPLAY_DEPTH);
-    // Sentinel check: if any back-propagation event during decide
-    // targeted a snapshot-origin node, the verdict's soundness is
-    // suspect — fall through to the wedge/tableau path. Phase 1b
-    // on Safe seeds: this never fires (BackPropRisk excludes the
-    // hazards). Phase 3: load-bearing once the classifier loosens.
     if engine.snapshot_backprop_aborted() {
         return ReplayVerdict::BackPropAborted;
     }

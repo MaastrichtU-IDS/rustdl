@@ -244,10 +244,6 @@ struct Snapshot {
 ///
 /// `None` means full-re-run mode (Phase 1b first-cut behavior; the
 /// existing `from_snapshot` constructor leaves this `None`).
-//
-// Fields are read in Phase 1b.5 T3 (horn_fixpoint re-seed guard);
-// allow dead_code for the T2-only intermediate state.
-#[allow(dead_code)]
 struct LazyReplayState {
     /// Per-node immutable labels at snapshot capture. Parallel to
     /// `HyperEngine.nodes` (indexed by `HNode.index()`). Snapshot-
@@ -736,6 +732,24 @@ impl<'c> HyperEngine<'c> {
                 self.worklist.push(Event::NodeNew(n));
             }
             for c in self.nodes[idx].labels.clone() {
+                // Phase 1b.5 lazy expansion guard: skip Event::Label
+                // seeding for snapshot-origin nodes whose label `c`
+                // was pre-captured AND not a new-clause trigger. The
+                // label's effects under the capture-time clause set
+                // are already realized in the snapshot; skipping the
+                // event saves the redundant rule firings (~89% CPU
+                // reduction projected on GALEN per
+                // docs/phase1b5-recon.md).
+                if let Some(ref lazy) = self.lazy_replay_state {
+                    let was_pre_captured = lazy
+                        .pre_capture_labels
+                        .get(idx)
+                        .is_some_and(|pre| pre.binary_search(&c).is_ok());
+                    let is_new_trigger = lazy.new_trigger_atoms.contains(&c.index());
+                    if was_pre_captured && !is_new_trigger {
+                        continue;
+                    }
+                }
                 self.worklist.push(Event::Label(n, c));
             }
             for (r, m) in self.nodes[idx].edges.clone() {

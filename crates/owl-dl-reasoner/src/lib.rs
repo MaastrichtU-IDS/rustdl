@@ -676,6 +676,18 @@ pub fn snapshot_capture_enabled() -> bool {
     std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
+/// Phase 1b.5 lazy expansion toggle. Default ON when capture is also
+/// ON — flag-OFF reverts replay to Phase 1b's full-re-run behavior
+/// (correctness equivalent; useful for A/B comparison + debugging).
+/// Sibling-style env helper: accepts `=1`/`=true`/`=yes`/`=on`;
+/// rejects `=0`/empty/unset.
+///
+/// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §4.1
+#[must_use]
+pub fn snapshot_lazy_enabled() -> bool {
+    std::env::var_os("RUSTDL_SNAPSHOT_LAZY").map_or(true, |v| v != "0" && !v.is_empty())
+}
+
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
 /// build during classification. **Distinct from `--pair-timeout-ms`**:
 /// the cache build is one-shot per class at classify-start, and a
@@ -1024,11 +1036,19 @@ impl SnapshotCache {
         // Replay needs the full clause set (base + q-injection +
         // ¬sup) so the reconstructed engine's indexes pick up all
         // three. Pass the per-sub clauses as the base.
-        Some(owl_dl_tableau::replay_with_neg_sup(
-            &self.clauses_for_sub(sub),
-            &snap,
-            neg_sup_clauses,
-        ))
+        //
+        // Phase 1b.5 toggle: snapshot_lazy_enabled() picks between
+        // lazy-expansion replay (default ON) and full-re-run replay
+        // (Phase 1b first-cut behavior). The A/B toggle exists so a
+        // future regression can be isolated by setting
+        // RUSTDL_SNAPSHOT_LAZY=0.
+        let base_clauses = self.clauses_for_sub(sub);
+        let verdict = if snapshot_lazy_enabled() {
+            owl_dl_tableau::replay_with_neg_sup(&base_clauses, &snap, neg_sup_clauses)
+        } else {
+            owl_dl_tableau::replay_with_neg_sup_full_rerun(&base_clauses, &snap, neg_sup_clauses)
+        };
+        Some(verdict)
     }
 
     /// Cache-build path: returns the cached snapshot or builds + stores

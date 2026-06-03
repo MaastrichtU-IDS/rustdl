@@ -476,7 +476,18 @@ pub(crate) fn classify_internal_with_timeout(
     // — saturation's `no` answer is itself the verdict, and we
     // never need the tableau. This is the common case for partonomy
     // ontologies like Galen-EL or the SNOMED core fragment.
-    if is_pure_el(internal) {
+    //
+    // Phase 2b: also dispatch Horn-fragment ontologies (GALEN,
+    // notgalen, alehif) to the same saturation fast path. The hyper
+    // Horn fixpoint is complete by construction on Horn fragments,
+    // so the saturation closure IS the full classification — the
+    // per-pair verification loop below was redundant work on Horn
+    // inputs (1.86M wasted pair calls on GALEN per Phase 2a recon).
+    // Gated by RUSTDL_HORN_SHORTCIRCUIT (default ON) for A/B isolation.
+    if is_pure_el(internal)
+        || (crate::horn_shortcircuit_enabled()
+            && matches!(analyze_fragment(internal), FragmentClassification::Horn))
+    {
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
     }
 
@@ -814,7 +825,14 @@ pub(crate) fn classify_top_down_internal(
     // Pure-EL path: the closure is complete; reuse the naive
     // classifier's fast path. Top-down only earns its complexity on
     // hybrid inputs where the tableau actually runs.
-    if is_pure_el(internal) {
+    //
+    // Phase 2b: also dispatch Horn-fragment ontologies (GALEN,
+    // notgalen, alehif) to the same saturation fast path. See spec §5
+    // + docs/phase2a-recon.md. Gated by RUSTDL_HORN_SHORTCIRCUIT.
+    if is_pure_el(internal)
+        || (crate::horn_shortcircuit_enabled()
+            && matches!(analyze_fragment(internal), FragmentClassification::Horn))
+    {
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
     }
 

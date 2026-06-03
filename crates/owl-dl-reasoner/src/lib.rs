@@ -691,6 +691,25 @@ pub fn snapshot_lazy_enabled() -> bool {
     std::env::var_os("RUSTDL_SNAPSHOT_LAZY").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
+/// Phase 2b: for ontologies classified as `Horn` fragment (hyper
+/// Horn fixpoint is sound + complete by construction), dispatch
+/// classify to the saturation-only fast path instead of the
+/// per-pair verification loop. **Default ON** as of Phase 2b
+/// (project-headline landing); set `RUSTDL_HORN_SHORTCIRCUIT=0`
+/// (or empty) to revert to the pre-Phase-2b per-pair loop for
+/// Horn ontologies (A/B isolation).
+///
+/// Sibling-style env helper: any non-empty, non-`"0"` value
+/// (`=1`/`=true`/`=yes`/`=on`) keeps it ON; only `=0` or empty
+/// disables.
+///
+/// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §5
+/// Recon: `docs/phase2a-recon.md`
+#[must_use]
+pub fn horn_shortcircuit_enabled() -> bool {
+    std::env::var_os("RUSTDL_HORN_SHORTCIRCUIT").map_or(true, |v| v != "0" && !v.is_empty())
+}
+
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
 /// build during classification. **Distinct from `--pair-timeout-ms`**:
 /// the cache build is one-shot per class at classify-start, and a

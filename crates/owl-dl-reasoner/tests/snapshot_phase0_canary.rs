@@ -86,6 +86,11 @@ fn replay_returns_subsumed_on_horn_chain_with_flag_on() {
     // snapshot-replay shortcut we want to exercise. Disable it for
     // this test so the replay path is reached.
     let _label_guard = SetEnvGuard::set("RUSTDL_LABEL_HEURISTIC", "0");
+    // Phase 2b also short-circuits Horn-fragment classify to the
+    // saturation path BEFORE the per-pair loop runs — bypassing
+    // the snapshot path. Disable for this test so the snapshot
+    // wiring is exercised (its own contract; unrelated to Phase 2b).
+    let _horn_guard = SetEnvGuard::set("RUSTDL_HORN_SHORTCIRCUIT", "0");
     assert!(
         snapshot_capture_enabled(),
         "flag-ON: snapshot_capture_enabled() must report true"
@@ -144,6 +149,11 @@ fn replay_no_op_on_unsafe_ontology_with_flag_on() {
     // Same rationale as the Safe test: keep the label cache from
     // pruning probes before they hit `subsumes_via_tableau`.
     let _label_guard = SetEnvGuard::set("RUSTDL_LABEL_HEURISTIC", "0");
+    // Phase 2b Horn shortcircuit bypasses the snapshot path on
+    // Horn-fragment ontologies. The inverse-role ontology below may
+    // still classify as Horn at the clausifier level; disable to
+    // ensure the snapshot path runs and the Unsafe gate fires.
+    let _horn_guard = SetEnvGuard::set("RUSTDL_HORN_SHORTCIRCUIT", "0");
     assert!(
         snapshot_capture_enabled(),
         "flag-ON: snapshot_capture_enabled() must report true"

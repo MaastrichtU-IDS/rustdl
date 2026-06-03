@@ -763,6 +763,92 @@ impl<'c> HyperEngine<'c> {
         }
     }
 
+    /// Capture a [`crate::snapshot::GraphSnapshot`] of the current
+    /// completion graph. Soundly callable only after [`Self::decide`]
+    /// (or [`Self::decide_with_deadline`]) has returned
+    /// [`HyperResult::Sat`] — otherwise the graph state may carry an
+    /// incomplete or post-clash structure that violates the snapshot's
+    /// "witness model" contract.
+    ///
+    /// Returns `None` if the seed isn't present at the resolved root
+    /// (defensive: matches the [`Self::satisfiability_labels`] guard).
+    ///
+    /// Phase 1a: `fired` fingerprint slots are placeholder `0`; the
+    /// real fingerprint computation lands in Phase 1b alongside the
+    /// lazy replay driver. `risk` is stamped `Safe` here — the Phase
+    /// 1b orchestrator runs `BackPropRisk::classify_ontology` once
+    /// and overrides this per snapshot.
+    #[must_use]
+    pub fn satisfiability_snapshot(&self, seed: ClassId) -> Option<crate::snapshot::GraphSnapshot> {
+        use crate::snapshot::{GraphSnapshot, SnapshotEdge, SnapshotNode};
+
+        let root_rep = self.resolve(HNode(0));
+        if !self.nodes[root_rep.index()].labels.contains(&seed) {
+            return None;
+        }
+
+        // Walk every node, resolving through the union-find. Skip
+        // merged-away nodes (those whose resolve != self).
+        let n_nodes = self.nodes.len();
+        let mut canonical: Vec<HNode> = Vec::with_capacity(n_nodes);
+        let mut hnode_to_snap: Vec<Option<u32>> = vec![None; n_nodes];
+        for (i, slot) in hnode_to_snap.iter_mut().enumerate().take(n_nodes) {
+            let h = HNode(u32::try_from(i).expect("node count fits u32"));
+            if self.resolve(h) == h {
+                let snap_id = u32::try_from(canonical.len()).expect("snap node count fits u32");
+                *slot = Some(snap_id);
+                canonical.push(h);
+            }
+        }
+        // Aliased nodes inherit their representative's snap id.
+        // Two-pass borrow split: collect the rep mapping for slots that
+        // need filling, then write them back. Keeps the `&self.resolve`
+        // and `&mut hnode_to_snap` borrows disjoint without spuriously
+        // indexing in a loop body.
+        let fills: Vec<(usize, Option<u32>)> = (0..n_nodes)
+            .filter(|&i| hnode_to_snap[i].is_none())
+            .map(|i| {
+                let rep = self.resolve(HNode(u32::try_from(i).expect("fits u32")));
+                (i, hnode_to_snap[rep.index()])
+            })
+            .collect();
+        for (i, mapped) in fills {
+            hnode_to_snap[i] = mapped;
+        }
+
+        let root_snap_idx = hnode_to_snap[root_rep.index()].expect("root mapped") as usize;
+        let mut nodes = Vec::with_capacity(canonical.len());
+        let mut edges: Vec<Vec<SnapshotEdge>> = Vec::with_capacity(canonical.len());
+        let mut fired = Vec::with_capacity(canonical.len());
+        for (snap_id, h) in canonical.iter().enumerate() {
+            let hn = &self.nodes[h.index()];
+            nodes.push(SnapshotNode {
+                labels: hn.labels.clone(),
+                is_root: snap_id == root_snap_idx,
+            });
+            let mut snap_edges = Vec::with_capacity(hn.edges.len());
+            for (role, tgt) in &hn.edges {
+                let tgt_rep = self.resolve(*tgt);
+                if let Some(snap_tgt) = hnode_to_snap[tgt_rep.index()] {
+                    snap_edges.push(SnapshotEdge {
+                        role: *role,
+                        target: snap_tgt,
+                    });
+                }
+            }
+            edges.push(snap_edges);
+            fired.push(0); // Phase 1a placeholder; Phase 1b computes real fingerprint.
+        }
+
+        Some(GraphSnapshot::from_parts(
+            nodes,
+            edges,
+            fired,
+            seed,
+            crate::snapshot::BackPropRisk::Safe,
+        ))
+    }
+
     fn solve(&mut self, depth: usize) -> HyperResult {
         if let Some(dl) = self.deadline
             && Instant::now() >= dl

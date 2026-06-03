@@ -33,20 +33,24 @@ pub type RuleFingerprint = u64;
 /// immutable + cheap-to-clone (`Arc`-shareable across the rayon
 /// pair loop).
 // Phase 1a lands the field shapes; the capture path (T2) + replay
-// driver (Phase 1b) are the first readers. `#[allow(dead_code)]`
-// keeps the workspace's `-D warnings` CI gate happy in the interim.
+// driver (Phase 1b) are the first readers. The per-field
+// `#[allow(dead_code)]` on the inner element types is still needed
+// for the replay-only fields; the outer struct's fields are now
+// exercised by the `impl GraphSnapshot` accessors below.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GraphSnapshot {
     /// Snapshot nodes, in post-merge canonical ordering. Index =
     /// `SnapshotNodeId`. `nodes[0]` is the root by construction.
     pub(crate) nodes: Vec<SnapshotNode>,
     /// Outgoing edges per node. `edges[i]` = role-successors of
     /// node `i`. Targets reference post-merge canonical ids.
+    // Read by the Phase 1b replay driver; capture path stores it now.
+    #[allow(dead_code)]
     pub(crate) edges: Vec<Vec<SnapshotEdge>>,
     /// Per-node fired-rule fingerprint (Phase 1b lazy expansion
     /// guard). Phase 1a writes a placeholder `0`; Phase 1b
     /// computes the real bloom hash.
+    #[allow(dead_code)]
     pub(crate) fired: Vec<RuleFingerprint>,
     /// The seed concept this snapshot witnesses satisfiability of.
     pub(crate) seed: ClassId,
@@ -160,6 +164,61 @@ impl BackPropRisk {
         } else {
             Self::Safe
         }
+    }
+}
+
+impl GraphSnapshot {
+    /// Construct from raw parts. Called by
+    /// `HyperEngine::satisfiability_snapshot` (capture path, Phase 1a)
+    /// and by future replay tests; not intended for direct consumer
+    /// use. Crate-private so the `pub(crate)` `SnapshotNode` /
+    /// `SnapshotEdge` types don't leak out.
+    #[must_use]
+    pub(crate) fn from_parts(
+        nodes: Vec<SnapshotNode>,
+        edges: Vec<Vec<SnapshotEdge>>,
+        fired: Vec<RuleFingerprint>,
+        seed: ClassId,
+        risk: BackPropRisk,
+    ) -> Self {
+        debug_assert_eq!(nodes.len(), edges.len());
+        debug_assert_eq!(nodes.len(), fired.len());
+        Self {
+            nodes,
+            edges,
+            fired,
+            seed,
+            risk,
+        }
+    }
+
+    #[must_use]
+    pub fn seed(&self) -> ClassId {
+        self.seed
+    }
+
+    #[must_use]
+    pub fn is_safe(&self) -> bool {
+        matches!(self.risk, BackPropRisk::Safe)
+    }
+
+    #[must_use]
+    pub fn risk(&self) -> BackPropRisk {
+        self.risk
+    }
+
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Labels at the seed-graph root (the node carrying the seed).
+    /// Mirrors the data returned by
+    /// `HyperEngine::satisfiability_labels`.
+    #[must_use]
+    pub fn root_labels(&self) -> &[ClassId] {
+        let root_idx = self.nodes.iter().position(|n| n.is_root).unwrap_or(0);
+        &self.nodes[root_idx].labels
     }
 }
 

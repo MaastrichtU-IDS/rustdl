@@ -83,7 +83,9 @@ pub enum BackPropRisk {
     Safe,
     /// Replay may force back-propagation into snapshot nodes.
     /// Phase 1b orchestrator falls through to the per-pair path
-    /// for any seed (or whole ontology) flagged Unsafe.
+    /// for any seed (or whole ontology) flagged Unsafe. See
+    /// `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
+    /// §4.2 (Inv-1) for the soundness contract.
     Unsafe { reason: UnsafeReason },
 }
 
@@ -115,46 +117,49 @@ impl BackPropRisk {
     /// driven by the spec's soundness-trap pedigree — inverse
     /// roles are the §2 dead-end's smoking gun and so are reported
     /// first.
+    ///
+    /// Shape: a single axiom pass that, for each axiom, checks the
+    /// explicit `InverseObjectProperties` shape and walks every
+    /// top-level concept operand via [`scan_concept`]. All three
+    /// structural bits (`hit_inverse`, `hit_nominal`,
+    /// `hit_cardinality`) accumulate across the whole scan, then
+    /// resolve at the end in the documented priority order. The
+    /// uniform "scan all, resolve at end" shape keeps the
+    /// inverse > nominal > cardinality priority obvious from the
+    /// code (no asymmetric early returns). Cost in the common Safe
+    /// case is unchanged — every axiom must be scanned anyway to
+    /// prove no risk.
     #[must_use]
     pub fn classify_ontology(internal: &InternalOntology) -> Self {
-        // First pass: explicit role-level axioms.
-        for ax in &internal.axioms {
-            if matches!(ax, Axiom::InverseObjectProperties(_, _)) {
-                return Self::Unsafe {
-                    reason: UnsafeReason::InverseRoleReachable,
-                };
-            }
-        }
-        // Single concept-walk pass: for each concept reachable from
-        // any axiom, ask all three structural questions at once and
-        // emit the highest-priority hit found across the ontology.
         let mut hit_inverse = false;
         let mut hit_nominal = false;
         let mut hit_cardinality = false;
         for ax in &internal.axioms {
+            if matches!(ax, Axiom::InverseObjectProperties(_, _)) {
+                hit_inverse = true;
+            }
             for cid in axiom_concept_ids(ax) {
                 let (inv, nom, card) = scan_concept(cid, internal);
                 hit_inverse |= inv;
                 hit_nominal |= nom;
                 hit_cardinality |= card;
-                if hit_inverse {
-                    return Self::Unsafe {
-                        reason: UnsafeReason::InverseRoleReachable,
-                    };
-                }
             }
         }
-        if hit_nominal {
-            return Self::Unsafe {
+        if hit_inverse {
+            Self::Unsafe {
+                reason: UnsafeReason::InverseRoleReachable,
+            }
+        } else if hit_nominal {
+            Self::Unsafe {
                 reason: UnsafeReason::NominalReachable,
-            };
-        }
-        if hit_cardinality {
-            return Self::Unsafe {
+            }
+        } else if hit_cardinality {
+            Self::Unsafe {
                 reason: UnsafeReason::CardinalityReachable,
-            };
+            }
+        } else {
+            Self::Safe
         }
-        Self::Safe
     }
 }
 

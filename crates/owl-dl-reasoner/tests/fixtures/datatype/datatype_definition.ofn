@@ -1,0 +1,11 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/datatype_definition>
+    Declaration(Class(:Adult))
+    Declaration(Class(:Person))
+    Declaration(Datatype(:AgeAdult))
+    Declaration(DataProperty(:age))
+    DatatypeDefinition(:AgeAdult DatatypeRestriction(xsd:integer xsd:minInclusive "18"^^xsd:integer))
+    SubClassOf(:Adult :Person)
+    EquivalentClasses(:Adult ObjectIntersectionOf(:Person DataSomeValuesFrom(:age :AgeAdult)))
+)

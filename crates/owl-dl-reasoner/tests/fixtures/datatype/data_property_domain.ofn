@@ -1,0 +1,9 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/data_property_domain>
+    Declaration(Class(:Person))
+    Declaration(Class(:Anything))
+    Declaration(DataProperty(:age))
+    DataPropertyDomain(:age :Person)
+    SubClassOf(:Anything DataSomeValuesFrom(:age xsd:integer))
+)

@@ -1,0 +1,11 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/data_cardinality_disjoint>
+    Declaration(Class(:Big))
+    Declaration(Class(:Small))
+    Declaration(Class(:Both))
+    Declaration(DataProperty(:hasItem))
+    SubClassOf(:Big DataMinCardinality(3 :hasItem))
+    SubClassOf(:Small DataMaxCardinality(2 :hasItem))
+    EquivalentClasses(:Both ObjectIntersectionOf(:Big :Small))
+)

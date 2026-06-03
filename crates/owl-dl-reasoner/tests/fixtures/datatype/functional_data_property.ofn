@@ -1,0 +1,10 @@
+Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/functional_data_property>
+    Declaration(Class(:A))
+    Declaration(Class(:HasTwoAges))
+    Declaration(DataProperty(:age))
+    FunctionalDataProperty(:age)
+    SubClassOf(:HasTwoAges DataMinCardinality(2 :age))
+    SubClassOf(:A :HasTwoAges)
+)

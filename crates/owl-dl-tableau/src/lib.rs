@@ -49,6 +49,7 @@ pub mod hyper;
 mod rules;
 mod saturate;
 mod search;
+pub mod snapshot;
 mod trail;
 
 /// Bump `ctx.counters.$field` by 1 under the `counters` feature.
@@ -82,6 +83,7 @@ pub use rules::{
 };
 pub use saturate::{SaturationResult, saturate, verify_node_local_clash};
 pub use search::{SearchVerdict, search};
+pub use snapshot::{BackPropRisk, GraphSnapshot, SnapshotNodeId, UnsafeReason};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
 
 use std::collections::HashMap;

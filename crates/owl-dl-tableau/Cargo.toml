@@ -23,6 +23,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+horned-owl.workspace = true
 
 [features]
 default = []

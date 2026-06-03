@@ -1109,6 +1109,7 @@ dependencies = [
  "bitvec",
  "bumpalo",
  "hashbrown 0.15.5",
+ "horned-owl",
  "owl-dl-core",
  "owl-dl-datatypes",
  "proptest",

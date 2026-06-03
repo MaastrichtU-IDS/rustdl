@@ -21,8 +21,9 @@ structural infrastructure is what unlocks that follow-up phase.
 
 - **FP=0 + MISSED=0** on Phase 0 net + GALEN with flag ON (Inv-2 holds).
 - GALEN classify wall (flag ON): **161.31 s** vs flag-OFF baseline 148.95 s
-  on the same host (~8% overhead, well inside the spec §6 Phase 1b
-  30% revert threshold).
+  on the same host (~8% overhead, within the spec §7 project-level
+  ≤10% regression bound and well under the §6 Phase 1b revert
+  criterion `aborts > 50% of attempts`).
 - 101 tableau crate tests pass + 4 reasoner-side canary tests pass.
 - Snapshot path consulted on every Safe-ontology pair that reaches
   `subsumes_via_tableau` (verified in T5 canary via
@@ -84,7 +85,9 @@ The Phase 1a doc records GALEN at 452 s under heavier contention.
 Re-measuring on this less-contended host gives flag-OFF baseline
 of 148.95 s; flag-ON 161.31 s. Phase 1b overhead is the +8.3%
 (seeding + replay vs cold-wedge cost; no lazy expansion yet).
-Spec §6 Phase 1b revert threshold is 30%; we're well inside.
+Spec §6 Phase 1b's revert criterion is `aborts > 50% of attempts`
+(soundness-focused, not wall-focused); the §7 project-level
+non-regression bound is `≤10%`. +8.3% sits within both.
 
 ## Cost-bound analysis (vs. spec §6 Phase 1b acceptance)
 
@@ -144,10 +147,11 @@ Phase 1c measurement would show no perf headline. Plan order:
 - **Phase 1c (after 1b.5 lands):** flip the default; run full
   corpus + soundness gate + write project-headline results doc.
 
-The §A revert criterion (`GALEN > 300 s after recon-driven tuning`)
-does NOT fire from Phase 1b alone — wall stays within ~10% of
-flag-OFF baseline. The decision-point happens at Phase 1c after
-lazy expansion is in.
+The §A revert criterion is a **Phase 1c** outcome-band gate
+(`GALEN > 300 s after recon-driven tuning`); it does NOT fire from
+Phase 1b alone — wall stays within ~10% of flag-OFF baseline on
+this host. The decision-point happens at Phase 1c after lazy
+expansion is in.
 
 ## Carry-overs (Phase 1a → Phase 1b → Phase 1b.5)
 

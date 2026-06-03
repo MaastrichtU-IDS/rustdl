@@ -351,6 +351,32 @@ fn ore_15672_shoin_closure_matches_hermit() {
 }
 
 #[test]
+#[ignore = "needs ontologies/external/shoiq-knowledge.ofn + shoiq-knowledge-classified.owx; Phase D1 fixture (was UnsupportedAxiom-erroring pre-D1; now parses via silent-drop of data axioms)"]
+fn shoiq_knowledge_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/external/shoiq-knowledge.ofn");
+    let truth = Path::new("../../ontologies/external/shoiq-knowledge-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing shoiq-knowledge fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("shoiq-knowledge", input, truth, 200);
+    assert_eq!(fp, 0, "shoiq-knowledge has FPs — D1 sound-under-approximation broken");
+}
+
+#[test]
+#[ignore = "needs ontologies/real/sio.ofn + konclude-input/sio-classified.owx; Phase D1 fixture (was UnsupportedAxiom-erroring pre-D1)"]
+fn sio_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/real/sio.ofn");
+    let truth = Path::new("../../ontologies/real/konclude-input/sio-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing sio fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("sio", input, truth, 200);
+    assert_eq!(fp, 0, "sio has FPs — D1 sound-under-approximation broken");
+}
+
+#[test]
 #[ignore = "long-timeout corpus run (5 s per-pair) — measures the engine's actual completeness ceiling, independent of the standard 200 ms harness budget"]
 fn corpus_closure_long_timeout() {
     let base = Path::new("../../ontologies/real");

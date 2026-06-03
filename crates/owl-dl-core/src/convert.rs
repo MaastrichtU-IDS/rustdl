@@ -251,13 +251,31 @@ fn convert_roles<A: ForIRI>(
     Ok(out)
 }
 
+/// Axiom-site helper: convert a `ClassExpression`, but if the
+/// expression contains a data-range constructor
+/// ([`ConversionError::UnsupportedDataRange`]), return `Ok(None)` for
+/// the enclosing axiom (drops it silently — sound under-approximation,
+/// see Phase D1 notes in the data-property arms). Other errors
+/// propagate via `?`.
+macro_rules! ce_or_skip {
+    ($expr:expr) => {
+        match $expr {
+            Ok(c) => c,
+            Err(ConversionError::UnsupportedDataRange) => return Ok(None),
+            Err(e) => return Err(e),
+        }
+    };
+}
+
 /// Convert a single horned-owl [`Component`] to one of our axioms.
 ///
 /// Returns:
 /// - `Ok(Some(axiom))` when the component maps to an axiom in our IR.
 /// - `Ok(None)` when the component is metadata or annotation-related and
 ///   has no representation in our IR (silently dropped — see the module
-///   docs for the rationale).
+///   docs for the rationale). Also returned for axioms dropped under
+///   Phase D1 data-axiom sound-under-approximation (see the data property
+///   arms below + the `ce_or_skip!` macro above).
 /// - `Err(_)` when the component is semantically meaningful but
 ///   unsupported in this phase (data ranges, datatypes, SWRL rules,
 ///   inverse-property expressions, anonymous individuals, etc.).
@@ -293,31 +311,37 @@ pub fn convert_component<A: ForIRI>(
                 vocab.intern_individual(iri),
             )))
         }
-        // Data properties + datatypes wait for Phase 3 / Phase 7.
-        C::DeclareDataProperty(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DeclareDataProperty",
-        }),
-        C::DeclareDatatype(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DeclareDatatype",
-        }),
+        // ── Data properties + datatypes: sound under-approximation ──────
+        // Phase D1 (2026-06-03): silently drop data-related declarations
+        // and axioms. Class subsumption inferences that DEPEND on data
+        // axioms (e.g., disjointness derivable from
+        // DataMaxCardinality(1, dp) + DataMinCardinality(2, dp)) are
+        // missed; no false positives are introduced. Class expressions
+        // containing data-range constructors cause the enclosing axiom
+        // to be dropped via the `ce_or_skip!` macro at axiom sites
+        // (see `convert_class_expression`'s UnsupportedDataRange returns).
+        // Phase D2 measurement decides whether real data-cardinality
+        // reasoning (Tier B) is needed; Phase D3+ would add datatype
+        // ranges (Tier C).
+        C::DeclareDataProperty(_) | C::DeclareDatatype(_) => Ok(None),
 
         // ── TBox ────────────────────────────────────────────────────────
         C::SubClassOf(ax) => {
-            let sub = convert_class_expression(&ax.sub, vocab, pool)?;
-            let sup = convert_class_expression(&ax.sup, vocab, pool)?;
+            let sub = ce_or_skip!(convert_class_expression(&ax.sub, vocab, pool));
+            let sup = ce_or_skip!(convert_class_expression(&ax.sup, vocab, pool));
             Ok(Some(Axiom::SubClassOf { sub, sup }))
         }
         C::EquivalentClasses(ax) => {
             let mut ids = Vec::with_capacity(ax.0.len());
             for ce in &ax.0 {
-                ids.push(convert_class_expression(ce, vocab, pool)?);
+                ids.push(ce_or_skip!(convert_class_expression(ce, vocab, pool)));
             }
             Ok(Some(Axiom::EquivalentClasses(ids)))
         }
         C::DisjointClasses(ax) => {
             let mut ids = Vec::with_capacity(ax.0.len());
             for ce in &ax.0 {
-                ids.push(convert_class_expression(ce, vocab, pool)?);
+                ids.push(ce_or_skip!(convert_class_expression(ce, vocab, pool)));
             }
             Ok(Some(Axiom::DisjointClasses(ids)))
         }
@@ -325,7 +349,7 @@ pub fn convert_component<A: ForIRI>(
             let class = intern_class_decl(&ax.0, vocab);
             let mut members = Vec::with_capacity(ax.1.len());
             for ce in &ax.1 {
-                members.push(convert_class_expression(ce, vocab, pool)?);
+                members.push(ce_or_skip!(convert_class_expression(ce, vocab, pool)));
             }
             Ok(Some(Axiom::DisjointUnion { class, members }))
         }
@@ -351,12 +375,12 @@ pub fn convert_component<A: ForIRI>(
         }
         C::ObjectPropertyDomain(ax) => {
             let role = convert_object_property(&ax.ope, vocab)?;
-            let domain = convert_class_expression(&ax.ce, vocab, pool)?;
+            let domain = ce_or_skip!(convert_class_expression(&ax.ce, vocab, pool));
             Ok(Some(Axiom::ObjectPropertyDomain { role, domain }))
         }
         C::ObjectPropertyRange(ax) => {
             let role = convert_object_property(&ax.ope, vocab)?;
-            let range = convert_class_expression(&ax.ce, vocab, pool)?;
+            let range = ce_or_skip!(convert_class_expression(&ax.ce, vocab, pool));
             Ok(Some(Axiom::ObjectPropertyRange { role, range }))
         }
         C::FunctionalObjectProperty(ax) => Ok(Some(Axiom::FunctionalRole(
@@ -383,7 +407,7 @@ pub fn convert_component<A: ForIRI>(
 
         // ── ABox ────────────────────────────────────────────────────────
         C::ClassAssertion(ax) => {
-            let class = convert_class_expression(&ax.ce, vocab, pool)?;
+            let class = ce_or_skip!(convert_class_expression(&ax.ce, vocab, pool));
             let individual = convert_individual(&ax.i, vocab)?;
             Ok(Some(Axiom::ClassAssertion { class, individual }))
         }
@@ -414,34 +438,19 @@ pub fn convert_component<A: ForIRI>(
             &ax.0, vocab,
         )?))),
 
-        // ── Data property / datatype: Phase 3+ ──────────────────────────
-        C::SubDataPropertyOf(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "SubDataPropertyOf",
-        }),
-        C::EquivalentDataProperties(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "EquivalentDataProperties",
-        }),
-        C::DisjointDataProperties(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DisjointDataProperties",
-        }),
-        C::DataPropertyDomain(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DataPropertyDomain",
-        }),
-        C::DataPropertyRange(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DataPropertyRange",
-        }),
-        C::FunctionalDataProperty(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "FunctionalDataProperty",
-        }),
-        C::DatatypeDefinition(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DatatypeDefinition",
-        }),
-        C::DataPropertyAssertion(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "DataPropertyAssertion",
-        }),
-        C::NegativeDataPropertyAssertion(_) => Err(ConversionError::UnsupportedAxiom {
-            kind: "NegativeDataPropertyAssertion",
-        }),
+        // ── Data property / datatype: silently dropped per Phase D1 ─────
+        // See the DeclareDataProperty / DeclareDatatype block above for
+        // the sound-under-approximation rationale.
+        #[allow(clippy::match_same_arms)]
+        C::SubDataPropertyOf(_)
+        | C::EquivalentDataProperties(_)
+        | C::DisjointDataProperties(_)
+        | C::DataPropertyDomain(_)
+        | C::DataPropertyRange(_)
+        | C::FunctionalDataProperty(_)
+        | C::DatatypeDefinition(_)
+        | C::DataPropertyAssertion(_)
+        | C::NegativeDataPropertyAssertion(_) => Ok(None),
 
         // ── HasKey: advanced feature, deferred ──────────────────────────
         C::HasKey(_) => Err(ConversionError::UnsupportedAxiom { kind: "HasKey" }),
@@ -1014,18 +1023,48 @@ mod tests {
         assert!(convert_one(&ap).1.is_none());
     }
 
+    /// Phase D1 (2026-06-03): data-axiom declarations no longer hard-
+    /// error — they're silently dropped as sound under-approximation
+    /// so the 4 erroring fixtures (family, ro, sio, shoiq-knowledge)
+    /// parse + classify. Phase D2 measures FP/MISSED vs Konclude to
+    /// decide if real cardinality reasoning (Tier B) is needed.
     #[test]
-    fn unsupported_data_axioms_hard_error() {
+    fn data_axiom_declarations_silently_dropped() {
         let c = Component::<RcStr>::DeclareDataProperty(ho::DeclareDataProperty(
             b().data_property("dp"),
         ));
         let mut o = InternalOntology::new();
-        let err = convert_component(&c, &mut o.vocabulary, &mut o.concepts).unwrap_err();
-        assert_eq!(
-            err,
-            ConversionError::UnsupportedAxiom {
-                kind: "DeclareDataProperty",
-            }
+        let result = convert_component(&c, &mut o.vocabulary, &mut o.concepts).unwrap();
+        assert!(
+            result.is_none(),
+            "Phase D1: data-property declarations drop silently (Ok(None))"
+        );
+    }
+
+    /// Phase D1: a SubClassOf where the SUP contains a data-range
+    /// constructor (e.g., `DataMaxCardinality`) is silently dropped —
+    /// the `ce_or_skip!` macro maps `UnsupportedDataRange` to `Ok(None)`
+    /// for the enclosing axiom. Sound under-approximation: we lose the
+    /// constraint, never invent a wrong one.
+    #[test]
+    fn subclass_with_data_range_silently_dropped() {
+        use horned_owl::model::DataProperty;
+        let dp = DataProperty::<RcStr>(b().iri("http://t/dp"));
+        let c = Component::<RcStr>::SubClassOf(ho::SubClassOf {
+            sub: ce_class("A"),
+            sup: ClassExpression::DataMaxCardinality {
+                n: 1,
+                dp,
+                dr: horned_owl::model::DataRange::Datatype(horned_owl::model::Datatype(
+                    b().iri("http://www.w3.org/2001/XMLSchema#integer"),
+                )),
+            },
+        });
+        let mut o = InternalOntology::new();
+        let result = convert_component(&c, &mut o.vocabulary, &mut o.concepts).unwrap();
+        assert!(
+            result.is_none(),
+            "Phase D1: SubClassOf containing a data-range SUP drops silently"
         );
     }
 

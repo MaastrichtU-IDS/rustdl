@@ -77,9 +77,9 @@ impl std::fmt::Display for FragmentClassification {
             Self::Horn => f.write_str(
                 "Horn (trust_sat sound by construction; hyper Horn fixpoint is complete)",
             ),
-            Self::OutOfFragment => f.write_str(
-                "out-of-EL (trust_sat empirically sound; see fragment-completeness.md)",
-            ),
+            Self::OutOfFragment => {
+                f.write_str("out-of-EL (trust_sat empirically sound; see fragment-completeness.md)")
+            }
         }
     }
 }
@@ -204,6 +204,26 @@ pub struct ClassificationStats {
     /// or sound by composition (`OutOfFragment`). See
     /// `docs/fragment-completeness.md`.
     pub fragment: FragmentClassification,
+    /// Phase 2a recon: cumulative wall time spent in the Phase 7
+    /// label cache build (per-class wedge calls). Measured at the
+    /// `(0..n).into_par_iter().map(...).collect()` block in
+    /// `classify_top_down_internal`. Diagnostic only.
+    pub label_cache_build_wall_ms: u64,
+    /// Phase 2a recon: cumulative wall time spent building snapshots
+    /// in `SnapshotCache::get_or_build_snapshot`. Sum over all subs that
+    /// hit the snapshot-build path (cache misses; cache hits cost
+    /// near-zero). Diagnostic only.
+    pub snapshot_cache_build_wall_ms: u64,
+    /// Phase 2a recon: cumulative wall time spent inside
+    /// `replay_with_neg_sup` / `replay_with_neg_sup_full_rerun` calls.
+    /// Sum over all pairs reaching `subsumes_via_tableau` with the
+    /// snapshot path active. Diagnostic only.
+    pub snapshot_replay_wall_ms: u64,
+    /// Phase 2a recon: top-level classify wall minus the three
+    /// component fields above. Captures residual orchestrator
+    /// overhead (tier walk, label-cache lookups, wedge calls that
+    /// DON'T hit the snapshot path, etc.). Diagnostic only.
+    pub tier_walk_wall_ms: u64,
 }
 
 impl Classification {
@@ -769,6 +789,9 @@ pub(crate) fn classify_top_down_internal(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
+    // Phase 2a recon: top-level classify wall, used to derive
+    // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
+    let classify_start = std::time::Instant::now();
     let classes: Vec<String> = (0..internal.vocabulary.num_classes())
         .map(|i| {
             internal
@@ -814,6 +837,7 @@ pub(crate) fn classify_top_down_internal(
     // Disabled via `RUSTDL_LABEL_HEURISTIC=0`: every slot becomes
     // `NoVerdict`, so the walk falls through to the wedge/tableau
     // path uniformly (used by tests that exercise the wedge directly).
+    let label_cache_start = Instant::now();
     let label_cache: Vec<crate::LabelOracle> = if crate::label_heuristic_enabled() {
         // Phase 8: cache-build deadline is independent of per_pair_timeout.
         // The per-pair budget (typically 200 ms) is too tight for the ~5%
@@ -825,9 +849,8 @@ pub(crate) fn classify_top_down_internal(
         (0..n)
             .into_par_iter()
             .map(|i| {
-                let class_id = owl_dl_core::ClassId::new(
-                    u32::try_from(i).expect("class index fits in u32"),
-                );
+                let class_id =
+                    owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
                 let deadline = if cache_ms == 0 {
                     None
                 } else {
@@ -839,6 +862,8 @@ pub(crate) fn classify_top_down_internal(
     } else {
         vec![crate::LabelOracle::NoVerdict; n]
     };
+    stats.label_cache_build_wall_ms =
+        u64::try_from(label_cache_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
@@ -1172,6 +1197,17 @@ pub(crate) fn classify_top_down_internal(
     }
 
     let _ = top_level; // currently informational only
+
+    // Phase 2a recon: pull AtomicU64 snapshot timers and derive
+    // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
+    stats.snapshot_cache_build_wall_ms = prepared.snapshot_cache_build_wall_ms();
+    stats.snapshot_replay_wall_ms = prepared.snapshot_cache_replay_wall_ms();
+    let total_wall = u64::try_from(classify_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    stats.tier_walk_wall_ms = total_wall
+        .saturating_sub(stats.label_cache_build_wall_ms)
+        .saturating_sub(stats.snapshot_cache_build_wall_ms)
+        .saturating_sub(stats.snapshot_replay_wall_ms);
+
     Ok(Classification {
         classes,
         index,
@@ -1234,10 +1270,8 @@ fn find_direct_parents_top_down(
                         // D ∈ C's labels: might be coincidence-of-model;
                         // verify via the existing per-pair path.
                         stats.label_cache_pass_through += 1;
-                        subsumes_via_tableau(
-                            prepared, c_id, d_id, per_pair_timeout, true, stats,
-                        )?
-                        .unwrap_or_default()
+                        subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, true, stats)?
+                            .unwrap_or_default()
                     } else {
                         // D ∉ C's labels: this completion graph is a
                         // counterexample model. Sound non-subsumption.
@@ -1252,10 +1286,8 @@ fn find_direct_parents_top_down(
                 Some(crate::LabelOracle::NoVerdict) | None => {
                     // Cache missing — fall through to per-pair.
                     stats.label_cache_misses += 1;
-                    subsumes_via_tableau(
-                        prepared, c_id, d_id, per_pair_timeout, true, stats,
-                    )?
-                    .unwrap_or_default()
+                    subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, true, stats)?
+                        .unwrap_or_default()
                 }
             }
         };

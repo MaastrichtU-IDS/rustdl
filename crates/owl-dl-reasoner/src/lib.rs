@@ -911,10 +911,11 @@ impl HyperCache {
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,
-            HyperResult::Sat => engine.satisfiability_labels(self.fresh_q).map_or(
-                LabelOracle::NoVerdict,
-                |v| LabelOracle::Sat(v.into_iter().collect()),
-            ),
+            HyperResult::Sat => engine
+                .satisfiability_labels(self.fresh_q)
+                .map_or(LabelOracle::NoVerdict, |v| {
+                    LabelOracle::Sat(v.into_iter().collect())
+                }),
             HyperResult::Stalled => LabelOracle::NoVerdict,
         }
     }
@@ -957,10 +958,7 @@ pub(crate) struct SnapshotCache {
     /// across the rayon pair-loop workers. Snapshot for `sub` has
     /// `fresh_q` as the seed (snapshot.seed() == fresh_q for every entry).
     snapshots: std::sync::Arc<
-        dashmap::DashMap<
-            owl_dl_core::ir::ClassId,
-            std::sync::Arc<owl_dl_tableau::GraphSnapshot>,
-        >,
+        dashmap::DashMap<owl_dl_core::ir::ClassId, std::sync::Arc<owl_dl_tableau::GraphSnapshot>>,
     >,
     /// Ontology-wide `BackPropRisk` classification, computed once at
     /// build. Drives the orchestrator's "is this safe to consult" check
@@ -977,6 +975,14 @@ pub(crate) struct SnapshotCache {
             std::sync::Arc<Vec<owl_dl_core::clause::DlClause>>,
         >,
     >,
+    /// Phase 2a recon: cumulative wall time spent in
+    /// `get_or_build_snapshot` for cache misses (actual snapshot
+    /// builds). AtomicU64 for lock-free updates across the rayon
+    /// pair loop. Microseconds for sub-ms resolution.
+    build_wall_micros: std::sync::atomic::AtomicU64,
+    /// Phase 2a recon: cumulative wall time spent in `try_replay`'s
+    /// `replay_with_neg_sup*` call. Microseconds for sub-ms resolution.
+    replay_wall_micros: std::sync::atomic::AtomicU64,
 }
 
 impl SnapshotCache {
@@ -995,7 +1001,27 @@ impl SnapshotCache {
             snapshots: std::sync::Arc::new(dashmap::DashMap::new()),
             risk,
             per_sup_neg_clauses: std::sync::Arc::new(dashmap::DashMap::new()),
+            build_wall_micros: std::sync::atomic::AtomicU64::new(0),
+            replay_wall_micros: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Phase 2a recon: cumulative `get_or_build_snapshot` wall (cache
+    /// miss path only), in milliseconds.
+    #[must_use]
+    pub(crate) fn build_wall_ms(&self) -> u64 {
+        self.build_wall_micros
+            .load(std::sync::atomic::Ordering::Relaxed)
+            / 1000
+    }
+
+    /// Phase 2a recon: cumulative `try_replay` wall (the
+    /// `replay_with_neg_sup*` call), in milliseconds.
+    #[must_use]
+    pub(crate) fn replay_wall_ms(&self) -> u64 {
+        self.replay_wall_micros
+            .load(std::sync::atomic::Ordering::Relaxed)
+            / 1000
     }
 
     /// Is the ontology back-prop-safe? Orchestrator's contract gate —
@@ -1059,11 +1085,15 @@ impl SnapshotCache {
         // future regression can be isolated by setting
         // RUSTDL_SNAPSHOT_LAZY=0.
         let base_clauses = self.clauses_for_sub(sub);
+        let replay_start = std::time::Instant::now();
         let verdict = if snapshot_lazy_enabled() {
             owl_dl_tableau::replay_with_neg_sup(&base_clauses, &snap, neg_sup_clauses)
         } else {
             owl_dl_tableau::replay_with_neg_sup_full_rerun(&base_clauses, &snap, neg_sup_clauses)
         };
+        let replay_us = u64::try_from(replay_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.replay_wall_micros
+            .fetch_add(replay_us, std::sync::atomic::Ordering::Relaxed);
         Some(verdict)
     }
 
@@ -1098,16 +1128,21 @@ impl SnapshotCache {
             return Some(existing.clone());
         }
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        let build_start = std::time::Instant::now();
         let clauses = self.clauses_for_sub(sub);
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
-        match engine.decide(HYPER_WEDGE_DEPTH) {
+        let result = match engine.decide(HYPER_WEDGE_DEPTH) {
             HyperResult::Sat => {
                 let snap = std::sync::Arc::new(engine.satisfiability_snapshot(self.fresh_q)?);
                 self.snapshots.insert(sub, snap.clone());
                 Some(snap)
             }
             HyperResult::Unsat | HyperResult::Stalled => None,
-        }
+        };
+        let elapsed_us = u64::try_from(build_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.build_wall_micros
+            .fetch_add(elapsed_us, std::sync::atomic::Ordering::Relaxed);
+        result
     }
 }
 
@@ -1723,6 +1758,22 @@ impl PreparedOntology {
         self.snapshot_cache
             .as_ref()
             .and_then(|c| c.try_replay(sub, sup))
+    }
+
+    /// Phase 2a recon: cumulative snapshot-build wall (ms) across the
+    /// classify pair loop. 0 when the snapshot cache is disabled.
+    pub(crate) fn snapshot_cache_build_wall_ms(&self) -> u64 {
+        self.snapshot_cache
+            .as_ref()
+            .map_or(0, SnapshotCache::build_wall_ms)
+    }
+
+    /// Phase 2a recon: cumulative snapshot-replay wall (ms) across the
+    /// classify pair loop. 0 when the snapshot cache is disabled.
+    pub(crate) fn snapshot_cache_replay_wall_ms(&self) -> u64 {
+        self.snapshot_cache
+            .as_ref()
+            .map_or(0, SnapshotCache::replay_wall_ms)
     }
 
     // snapshot_cache_is_safe accessor reserved for Phase 3 when the
@@ -3559,8 +3610,12 @@ mod hyper_trust_sat_min_ms_tests {
 
     #[test]
     fn garbage_uses_default() {
-        with_env("RUSTDL_HYPER_TRUST_SAT_MIN_MS", Some("not-a-number"), || {
-            assert_eq!(hyper_trust_sat_min_ms(), 0);
-        });
+        with_env(
+            "RUSTDL_HYPER_TRUST_SAT_MIN_MS",
+            Some("not-a-number"),
+            || {
+                assert_eq!(hyper_trust_sat_min_ms(), 0);
+            },
+        );
     }
 }

@@ -277,9 +277,15 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     writeln!(
         out,
         "# label heuristic: pruned={} pass_through={} misses={}",
-        stats.label_cache_pruned,
-        stats.label_cache_pass_through,
-        stats.label_cache_misses,
+        stats.label_cache_pruned, stats.label_cache_pass_through, stats.label_cache_misses,
+    )?;
+    writeln!(
+        out,
+        "# wall breakdown ms: label_cache_build={} snapshot_cache_build={} snapshot_replay={} tier_walk={}",
+        stats.label_cache_build_wall_ms,
+        stats.snapshot_cache_build_wall_ms,
+        stats.snapshot_replay_wall_ms,
+        stats.tier_walk_wall_ms,
     )?;
     let p = &stats.pairs_per_sub;
     if !p.is_empty() {

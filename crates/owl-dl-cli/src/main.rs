@@ -281,6 +281,31 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         stats.label_cache_pass_through,
         stats.label_cache_misses,
     )?;
+    let p = &stats.pairs_per_sub;
+    if !p.is_empty() {
+        let mut counts: Vec<u32> = p.values().copied().collect();
+        counts.sort_unstable();
+        let n = counts.len();
+        let total: u64 = counts.iter().map(|&c| u64::from(c)).sum();
+        let median = counts[n / 2];
+        let p90 = counts[(n * 90) / 100];
+        let p99 = counts[((n * 99) / 100).min(n - 1)];
+        let max = counts[n - 1];
+        writeln!(
+            out,
+            "# pairs-per-sub: n_subs={n} total={total} median={median} p90={p90} p99={p99} max={max}"
+        )?;
+        let h = &stats.wedge_cost_histogram_ms;
+        writeln!(
+            out,
+            "# wedge-cost-histogram ms (0|1|2-4|5-9|10-19|20-49|50-99|100-999|≥1000):"
+        )?;
+        writeln!(
+            out,
+            "#   {} | {} | {} | {} | {} | {} | {} | {} | {}",
+            h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]
+        )?;
+    }
     if stats.timed_out_pairs > 0 {
         writeln!(
             out,

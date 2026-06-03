@@ -112,7 +112,7 @@ pub fn analyze_fragment(internal: &InternalOntology) -> FragmentClassification {
 /// classification loop. Useful for understanding when the EL
 /// saturation oracle is pulling its weight versus when the tableau
 /// is doing the work.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ClassificationStats {
     /// Pairwise subsumption queries answered `yes` by saturation's
     /// EL closure (no tableau call issued).
@@ -187,6 +187,18 @@ pub struct ClassificationStats {
     /// or returned no verdict — flag OFF, ontology Unsafe, snapshot
     /// build failed (Unsat/Stalled on `sub`). Orchestrator fell through.
     pub snapshot_cache_falls_through: usize,
+    /// Phase 1b.5 recon: per-sub count of pairs reaching
+    /// `subsumes_via_tableau`. Keyed by sub ClassId index. Used to
+    /// derive the pairs-per-sub distribution that determines whether
+    /// snapshot caching can amortize on a workload.
+    ///
+    /// Temporary instrumentation — will be removed or formalized
+    /// depending on the recon outcome.
+    pub pairs_per_sub: std::collections::HashMap<u32, u32>,
+    /// Phase 1b.5 recon: cold-wedge per-call cost histogram, in
+    /// milliseconds. Bucket boundaries: 0, 1, 2-4, 5-9, 10-19,
+    /// 20-49, 50-99, 100-999, ≥1000. Reset per classify run.
+    pub wedge_cost_histogram_ms: [u64; 9],
     /// The expressivity fragment of the input ontology. Diagnostic only:
     /// surfaces whether `trust_sat` is sound by construction (`PureEl`)
     /// or sound by composition (`OutOfFragment`). See
@@ -258,7 +270,7 @@ impl Classification {
     /// unsatisfiable classes each engine flagged.
     #[must_use]
     pub fn stats(&self) -> ClassificationStats {
-        self.stats
+        self.stats.clone()
     }
 
     /// All declared classes that are equivalent to `⊥` — i.e. classes
@@ -959,6 +971,12 @@ pub(crate) fn classify_top_down_internal(
             stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
             stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
             stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
+            for (k, v) in sd.pairs_per_sub {
+                *stats.pairs_per_sub.entry(k).or_insert(0) += v;
+            }
+            for (i, cnt) in sd.wedge_cost_histogram_ms.iter().enumerate() {
+                stats.wedge_cost_histogram_ms[i] += cnt;
+            }
             for &p in &parents {
                 direct_children[p].push(c);
             }
@@ -1091,6 +1109,12 @@ pub(crate) fn classify_top_down_internal(
             stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
             stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
             stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
+            for (k, v) in sd.pairs_per_sub {
+                *stats.pairs_per_sub.entry(k).or_insert(0) += v;
+            }
+            for (i, cnt) in sd.wedge_cost_histogram_ms.iter().enumerate() {
+                stats.wedge_cost_histogram_ms[i] += cnt;
+            }
             if subsumed && !direct_supers[cand].contains(&sup) {
                 direct_supers[cand].push(sup);
                 direct_children[sup].push(cand);
@@ -1352,6 +1376,19 @@ fn subsumes_via_tableau(
     let wedge_start = Instant::now();
     let verdict = prepared.hyper_decide(sub, sup, hyper_deadline);
     let wedge_elapsed_ms = u64::try_from(wedge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    *stats.pairs_per_sub.entry(sub.index()).or_insert(0) += 1;
+    let bucket = match wedge_elapsed_ms {
+        0 => 0,
+        1 => 1,
+        2..=4 => 2,
+        5..=9 => 3,
+        10..=19 => 4,
+        20..=49 => 5,
+        50..=99 => 6,
+        100..=999 => 7,
+        _ => 8,
+    };
+    stats.wedge_cost_histogram_ms[bucket] += 1;
     let mut was_fast_refuted = false;
     match verdict {
         crate::HyperVerdict::Subsumed => {

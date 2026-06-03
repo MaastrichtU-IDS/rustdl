@@ -568,6 +568,60 @@ that ruled out each extension candidate); `docs/phase8-results.md`
 
 ---
 
+## 19. Per-class `BackPropRisk` refinement alone (Phase 3a)
+
+**What was tried (recon-only).** Phase 1a shipped an ontology-wide
+`BackPropRisk` classifier: any axiom touching inverse / nominal /
+cardinality flags the whole ontology Unsafe. SROIQ workloads
+(ore-15672, ore-10908, pizza) are uniformly Unsafe, so the snapshot
+cache never engages on them. Phase 3 hypothesis: refine to per-class
+classification + lean on the runtime sentinel (Phase 1b T3) as the
+safety net. Spec §6 Phase 3 target: `ore-15672 ≤ 10× Konclude` (~17.5s
+vs current 29s, ~40% wall reduction).
+
+**What killed it.** The per-class refinement is *structurally* viable —
+recon measured 82-99% of SROIQ classes would be Safe under per-class
+classification (ore-15672: 67/82, ore-10908: 683/692, ore-15516:
+82/84). But the projected wall savings are bounded:
+- On ore-15672, **96% of wall is `tier_walk`** (28s of 29s) — per the
+  Phase 2a recon instrumentation. Snapshot cache replaces wedge calls,
+  not the per-pair tableau calls that dominate tier_walk.
+- Per dead-end §18, ore-15672's residual cost is **search-budget
+  exhaustion on 3 hard classes** — intrinsic tableau search,
+  unreachable by snapshot reuse on Safe classes.
+- Projected per-class snapshot savings on ore-15672: ~1-2s wall
+  (~10% reduction). Projected post-Phase-3 wall: ~27s. Spec §6 target
+  ≤ 17.5s still unreachable.
+
+**The lesson.** A structural lever that's architecturally sound can
+still be the wrong lever if the *dominant cost* it doesn't address is
+the load-bearing one. Per-class refinement IS the right tool for
+"unlock snapshot on SROIQ", but the project's ore-15672 wall is
+dominated by an orthogonal cost (the §18 hard-class cluster) — so
+Phase 3 doesn't deliver the spec target alone. Pairs with §18's
+"accept the gap" recommendation: closing ore-15672 needs Konclude-style
+sub-tableau / multi-class-search (out of scope for the snapshot cache
+project).
+
+**Cost when shipped:** none beyond the recon instrumentation
+(`BackPropRisk::classify_class` + the per-class counter +
+`# per-class BackPropRisk:` banner line; commit `a6983ed`). All
+diagnostic; the runtime ontology-wide classifier is unchanged.
+
+**Don't reattempt without first:** addressing dead-end §18's hard-class
+cluster (would require structurally-different sub-tableau-caching work,
+not snapshot refinement). Or: measuring on a SROIQ workload where
+tier_walk is NOT dominated by a small hard-class cluster (different
+distribution shape would change the cost-benefit calculus).
+
+**Cross-references:** `docs/phase3a-recon.md` (full measurement + analysis);
+`docs/phase2a-recon.md` (the wall_breakdown instrumentation that
+identified tier_walk as load-bearing on SROIQ); §18 (ore-15672
+hard-class cluster); §2 (Konclude-style sub-tableau caching — the
+structurally-different alternative).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

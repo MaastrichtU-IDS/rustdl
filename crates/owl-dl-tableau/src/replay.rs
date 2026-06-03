@@ -38,9 +38,13 @@ pub enum ReplayVerdict {
     /// refuted in this model. Sound only when the snapshot's
     /// `BackPropRisk` is `Safe` AND no runtime sentinel fired.
     NotSubsumed,
-    /// Runtime back-propagation sentinel fired (Phase 1b T3) OR the
-    /// snapshot was Unsafe to begin with. Caller falls through to
-    /// the existing wedge/tableau path.
+    /// Either (a) the snapshot was `BackPropRisk::Unsafe` and replay
+    /// was skipped entirely, or (b) the runtime sentinel fired during
+    /// `decide` (back-prop into a snapshot-origin node). Both paths
+    /// are conflated into one variant by design — orchestrator
+    /// behaviour is identical (fall through to wedge/tableau), and
+    /// telemetry can distinguish the two via the structural risk
+    /// recorded on the snapshot itself. See spec §4.3.
     BackPropAborted,
     /// Engine stalled (deadline / iteration cap). Caller falls through.
     Stalled,
@@ -72,7 +76,16 @@ pub fn replay_with_neg_sup(
     let mut full_clauses = clauses.to_vec();
     full_clauses.extend(neg_sup_clauses);
     let mut engine = HyperEngine::from_snapshot(&full_clauses, snapshot);
-    match engine.decide(REPLAY_DEPTH) {
+    let result = engine.decide(REPLAY_DEPTH);
+    // Sentinel check: if any back-propagation event during decide
+    // targeted a snapshot-origin node, the verdict's soundness is
+    // suspect — fall through to the wedge/tableau path. Phase 1b
+    // on Safe seeds: this never fires (BackPropRisk excludes the
+    // hazards). Phase 3: load-bearing once the classifier loosens.
+    if engine.snapshot_backprop_aborted() {
+        return ReplayVerdict::BackPropAborted;
+    }
+    match result {
         HyperResult::Sat => ReplayVerdict::NotSubsumed,
         HyperResult::Unsat => ReplayVerdict::Subsumed,
         HyperResult::Stalled => ReplayVerdict::Stalled,

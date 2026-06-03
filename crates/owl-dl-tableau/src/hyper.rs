@@ -216,6 +216,13 @@ struct Snapshot {
     representative: Vec<HNode>,
     neq: Vec<(HNode, HNode)>,
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
+    /// Per-node sentinel-origin bits, saved alongside `nodes` so they
+    /// stay in sync after restore. The `snapshot_backprop_aborted`
+    /// flag on the engine is intentionally NOT saved — once back-prop
+    /// into a snapshot node was observed in any branch, the verdict
+    /// for the whole query should be `BackPropAborted` regardless of
+    /// whether the branch that observed it succeeded.
+    origin: Vec<bool>,
 }
 
 /// Outcome of a Horn hyperresolution run.
@@ -321,6 +328,26 @@ pub struct HyperEngine<'c> {
     /// it `EMPTY`, so a subsumption proved without branching propagates
     /// "depends on no decision".
     clash_deps: DepSet,
+    /// Phase 1b snapshot-origin tracking: `snapshot_origin[i]` is `true`
+    /// iff node `i` was reconstructed from a [`crate::snapshot::GraphSnapshot`]
+    /// via [`Self::from_snapshot`], not created during the current decide
+    /// run. Engines built via [`Self::new`] have `vec![false]` (the one
+    /// root node is not snapshot-origin).
+    ///
+    /// Read by the `BackPropAborted` runtime sentinel — see spec §4.3.
+    snapshot_origin: Vec<bool>,
+    /// Phase 1b `BackPropAborted` runtime sentinel: set to `true` if any
+    /// call to [`Self::add_label_via_backprop`] targets a node flagged
+    /// `snapshot_origin`. Read by [`crate::replay::replay_with_neg_sup`]
+    /// after `decide` returns; on a fired sentinel, replay returns
+    /// `ReplayVerdict::BackPropAborted` instead of the raw verdict so
+    /// the orchestrator falls through to the wedge/tableau path.
+    ///
+    /// Phase 1b: this flag rarely fires on Safe-classified seeds
+    /// (`BackPropRisk` excludes inverse/nominal/cardinality hazards).
+    /// The sentinel becomes load-bearing in Phase 3 when the
+    /// per-class classifier loosens the Unsafe gate.
+    snapshot_backprop_aborted: bool,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -415,6 +442,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             block_index: None,
+            snapshot_origin: vec![false],
+            snapshot_backprop_aborted: false,
         }
     }
 
@@ -478,6 +507,47 @@ impl<'c> HyperEngine<'c> {
         }
     }
 
+    /// Phase 1b `BackPropAborted` runtime sentinel hook. Adds a label
+    /// identically to [`Self::add_label`], but additionally sets the
+    /// `snapshot_backprop_aborted` flag whenever `n` is a snapshot-
+    /// origin node (i.e., reconstructed via [`Self::from_snapshot`]).
+    ///
+    /// Phase 1b ships the infrastructure (this method, the flag, the
+    /// accessor) but no production code path invokes it yet —
+    /// `BackPropRisk::Safe` already excludes the hazards that would
+    /// trigger genuine back-propagation. Phase 3 will hook this at
+    /// the inverse-role / nominal / cardinality back-prop sites
+    /// (`fire_clause`'s `succ_trigger` path and `merge`'s label
+    /// propagation) when the per-class classifier loosens the gate.
+    ///
+    /// Replay reads the flag after `decide` and returns
+    /// `ReplayVerdict::BackPropAborted` if it fired — see
+    /// [`crate::replay::replay_with_neg_sup`]. See spec §4.3.
+    #[allow(
+        dead_code,
+        reason = "Phase 1b infrastructure for Phase 3 back-prop site hooks"
+    )]
+    pub(crate) fn add_label_via_backprop(&mut self, n: HNode, c: ClassId, deps: DepSet) -> bool {
+        if self
+            .snapshot_origin
+            .get(n.index())
+            .copied()
+            .unwrap_or(false)
+        {
+            self.snapshot_backprop_aborted = true;
+        }
+        self.add_label(n, c, deps)
+    }
+
+    /// Phase 1b `BackPropAborted` runtime sentinel accessor. Read after
+    /// `decide` to detect whether any back-propagation event during
+    /// the run targeted a snapshot-origin node. See
+    /// [`Self::add_label_via_backprop`] and spec §4.3.
+    #[must_use]
+    pub(crate) fn snapshot_backprop_aborted(&self) -> bool {
+        self.snapshot_backprop_aborted
+    }
+
     /// Search instrumentation from the last [`decide`] call.
     #[must_use]
     pub fn stats(&self) -> SearchStats {
@@ -499,6 +569,10 @@ impl<'c> HyperEngine<'c> {
         });
         let n = HNode(id);
         self.representative.push(n);
+        // Nodes created during decide are NOT snapshot-origin; the
+        // sentinel only fires on labels propagated INTO the original
+        // snapshot's reconstructed nodes.
+        self.snapshot_origin.push(false);
         // Fire empty-body (`⊤ → …`) clauses at the new node.
         if !self.indexes.empty_body.is_empty() {
             self.worklist.push(Event::NodeNew(n));
@@ -889,6 +963,8 @@ impl<'c> HyperEngine<'c> {
         engine.neq.clear();
         engine.worklist.clear();
         engine.clash_deps = DepSet::EMPTY;
+        engine.snapshot_origin.clear();
+        engine.snapshot_backprop_aborted = false;
         if let Some(ix) = engine.block_index.as_mut() {
             ix.clear();
         }
@@ -915,6 +991,10 @@ impl<'c> HyperEngine<'c> {
                 .representative
                 .push(HNode(u32::try_from(i).expect("node count fits u32")));
         }
+        // Sentinel infrastructure: every reconstructed node is
+        // snapshot-origin. Any add_label_via_backprop call targeting
+        // one of them sets snapshot_backprop_aborted (read by replay).
+        engine.snapshot_origin = vec![true; n_nodes];
         for (i, edges) in snapshot.edges_per_node().iter().enumerate() {
             for edge in edges {
                 let src = HNode(u32::try_from(i).expect("fits u32"));
@@ -1054,6 +1134,7 @@ impl<'c> HyperEngine<'c> {
             representative: self.representative.clone(),
             neq: self.neq.clone(),
             block_index: self.block_index.clone(),
+            origin: self.snapshot_origin.clone(),
         }
     }
 
@@ -1062,6 +1143,7 @@ impl<'c> HyperEngine<'c> {
         self.representative = saved.representative;
         self.neq = saved.neq;
         self.block_index = saved.block_index;
+        self.snapshot_origin = saved.origin;
         self.stats.restores += 1;
     }
 
@@ -2565,5 +2647,48 @@ mod tests {
         assert!(labels.contains(&a), "labels must contain A: {labels:?}");
         assert!(labels.contains(&b), "labels must contain B: {labels:?}");
         assert!(labels.contains(&q));
+    }
+
+    /// Phase 1b T3 sentinel test: `add_label_via_backprop` on a
+    /// snapshot-origin node sets `snapshot_backprop_aborted`; the
+    /// same call on a non-snapshot node does not. Verifies the
+    /// infrastructure that Phase 3 will hook at the real
+    /// inverse-role / merge back-prop sites.
+    #[test]
+    fn sentinel_fires_on_simulated_backprop_into_snapshot_node() {
+        // Build a snapshot of a single-class Horn ontology.
+        let clauses: Vec<DlClause> = vec![DlClause {
+            body: vec![Atom::Class(cls(0), X)],
+            head: vec![Atom::Class(cls(1), X)],
+        }];
+        let mut eng = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(eng.decide(64), HyperResult::Sat);
+        let snap = eng.satisfiability_snapshot(cls(0)).expect("snapshot built");
+
+        // Reconstructed engine: root (HNode(0)) is snapshot-origin.
+        let mut eng2 = HyperEngine::from_snapshot(&clauses, &snap);
+        assert!(
+            !eng2.snapshot_backprop_aborted(),
+            "fresh from_snapshot must not have the sentinel set"
+        );
+
+        // Simulate back-prop into the snapshot root: must fire.
+        eng2.add_label_via_backprop(HNode(0), cls(2), DepSet::EMPTY);
+        assert!(
+            eng2.snapshot_backprop_aborted(),
+            "back-prop into snapshot-origin node must fire the sentinel"
+        );
+    }
+
+    #[test]
+    fn sentinel_does_not_fire_on_non_snapshot_node() {
+        // Engine built via `new`, not `from_snapshot` — no snapshot-origin.
+        let clauses: Vec<DlClause> = vec![];
+        let mut eng = HyperEngine::new(&clauses, cls(0));
+        eng.add_label_via_backprop(HNode(0), cls(1), DepSet::EMPTY);
+        assert!(
+            !eng.snapshot_backprop_aborted(),
+            "back-prop into a non-snapshot node must NOT fire the sentinel"
+        );
     }
 }

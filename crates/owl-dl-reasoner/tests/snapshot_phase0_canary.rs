@@ -1,13 +1,14 @@
-//! Phase 0 canary for the Konclude snapshot cache project.
+//! Phase 0 / 1c canary for the Konclude snapshot cache project.
 //!
-//! Invariant: the snapshot-capture machinery exists in the
-//! tableau crate AND is gated behind `RUSTDL_SNAPSHOT_CAPTURE`
-//! (default OFF) on the reasoner side, so default classify
-//! has zero behavior change while the project is in flight.
+//! Phase 0 invariant (original): the snapshot-capture machinery
+//! exists in the tableau crate AND is gated behind
+//! `RUSTDL_SNAPSHOT_CAPTURE`, so default classify behavior is
+//! controlled by the env helper.
 //!
-//! This test extends through every phase — Phase 1b will add
-//! flag-ON assertions; Phase 1c flips the default and asserts
-//! the new path matches verdicts of the old path.
+//! Phase 1c flipped the default OFF → ON. The canary now asserts
+//! `snapshot_capture_enabled()` returns true with no env override.
+//! Phase 1b's flag-ON tests below are unchanged (still set the env
+//! explicitly for isolation against a hypothetical future flip).
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read;
@@ -18,28 +19,30 @@ use std::io::Cursor;
 use std::time::Duration;
 
 #[test]
-fn snapshot_capture_flag_defaults_off() {
-    // Phase 0 invariant: env flag defaults OFF.
-    // Test guard: SAFE_TO_UNSET — assumes RUSTDL_SNAPSHOT_CAPTURE
-    // is not set in the test process env. If a developer manually
-    // exports it for debugging, this test correctly fails to remind
-    // them.
+fn snapshot_capture_flag_defaults_on() {
+    // Phase 1c invariant (post-headline flip): env flag defaults ON.
+    // Test guard: SAFE_TO_UNSET — assumes RUSTDL_SNAPSHOT_CAPTURE is
+    // not set in the test process env. A developer who exports it
+    // for debugging will fail this test (which is the right warning).
     //
-    // ENV_MUTEX serialization: this test reads process env, so it
-    // must not race with the Phase 1b flag-ON tests below that
-    // briefly set/restore RUSTDL_SNAPSHOT_CAPTURE.
+    // ENV_MUTEX serialization: reads process env, must not race with
+    // the Phase 1b flag-ON tests below that briefly set/restore
+    // RUSTDL_SNAPSHOT_CAPTURE.
     let _serial = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert!(
         std::env::var("RUSTDL_SNAPSHOT_CAPTURE").is_err(),
-        "Phase 0 canary: RUSTDL_SNAPSHOT_CAPTURE must not be set in the test env"
+        "Phase 1c canary: RUSTDL_SNAPSHOT_CAPTURE must not be set in the test env"
     );
-    assert!(!snapshot_capture_enabled(), "default must be OFF (Phase 0)");
+    assert!(
+        snapshot_capture_enabled(),
+        "Phase 1c default must be ON (unset → ON)"
+    );
 }
 
 #[test]
-fn classify_unchanged_with_flag_off() {
+fn classify_unchanged_at_default() {
     // Sanity: a tiny ontology classifies to the same result as
-    // it did pre-project, regardless of the Phase 1a code merging.
+    // it did pre-project, with the Phase 1c default-on path in play.
     let _serial = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let src = "\
 Prefix(:=<http://t/>)

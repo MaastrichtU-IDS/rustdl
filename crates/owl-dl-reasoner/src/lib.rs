@@ -663,17 +663,20 @@ pub fn label_heuristic_enabled() -> bool {
     std::env::var_os("RUSTDL_LABEL_HEURISTIC").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
-/// Project flag for the Konclude snapshot cache. Phase 1b: when ON,
-/// `subsumes_via_tableau` consults a per-class snapshot-replay cache
-/// ahead of the wedge. Default OFF; Phase 1c flips the default.
+/// Project flag for the Konclude snapshot cache. When ON,
+/// `subsumes_via_tableau` consults a per-class snapshot-replay
+/// cache ahead of the wedge.
 ///
-/// Normalized to the sibling-helper style as of Phase 1b T4: accepts
-/// any non-empty, non-`"0"` value (`=1`, `=true`, `=yes`, `=on`).
+/// **Default ON as of Phase 1c (project-headline landing).** Set
+/// `RUSTDL_SNAPSHOT_CAPTURE=0` (or empty) to revert to pre-project
+/// pure-wedge behavior. Sibling-style env helper: any non-empty,
+/// non-`"0"` value (`=1`/`=true`/`=yes`/`=on`) keeps it ON; only
+/// `=0` or empty disables.
 ///
 /// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
 #[must_use]
 pub fn snapshot_capture_enabled() -> bool {
-    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
 /// Phase 1b.5 lazy expansion toggle. Default ON (unset → ON);

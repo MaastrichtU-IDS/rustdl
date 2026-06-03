@@ -206,6 +206,14 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   integer to opt in.
 - `--saturation-only` and `--pair-timeout-ms` are also sound under-approximations
   (every reported subsumption holds; positives may be missed).
+- **New as of Phase 1c (project-headline)**: `RUSTDL_SNAPSHOT_CAPTURE`
+  defaults ON. The classify path consults a per-class snapshot cache
+  ahead of the wedge for `BackPropRisk::Safe` ontologies (Horn-only
+  in the first-cut classifier). Set `RUSTDL_SNAPSHOT_CAPTURE=0` to
+  revert to pre-project pure-wedge behavior. `RUSTDL_SNAPSHOT_LAZY`
+  also defaults ON (Phase 1b.5 lazy expansion); set to `0` to revert
+  to Phase 1b full-re-run for A/B isolation. See
+  `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`.
 
 When changing the saturation/wedge engines or caches, the failure mode that
 matters most is an unsound *positive*. See `docs/handoff-2026-05-30.md` for

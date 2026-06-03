@@ -399,6 +399,15 @@ impl WorklistEngine {
         for fact in told {
             self.push_fact(fact);
         }
+        // Phase D4: classes told directly to be unsatisfiable via
+        // `SubClassOf(Atomic, Bot)` (data-axiom preprocessing clash
+        // emission). enqueue_unsat queues them; process_unsat
+        // propagates to subclasses + fact targets via the standard
+        // rules.
+        let directly_unsat: Vec<ClassId> = self.rules.directly_unsat.clone();
+        for c in directly_unsat {
+            self.enqueue_unsat(c);
+        }
     }
 
     /// Drain queues until all three are empty.
@@ -1014,6 +1023,14 @@ struct ElRules {
     /// Pairwise disjoint atomic-class pairs, decomposed from n-ary
     /// `DisjointClasses` axioms. Read as `A ⊓ B ⊑ ⊥`.
     disjoint_pairs: Vec<(ClassId, ClassId)>,
+    /// Atomic classes told directly to be unsatisfiable via
+    /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
+    /// at `seed` time so the standard `process_unsat` propagation
+    /// rules fire (subclass + fact-target-of-c → also unsat).
+    /// Phase D4 (2026-06-03): added to support the data-axiom
+    /// preprocessing pass's emitted `C ⊑ Bot` axioms (Functional + ≥n
+    /// clash; DataMin > DataMax clash).
+    directly_unsat: Vec<ClassId>,
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
     /// from `ObjectPropertyDomain(r, C)` with named `r` and atomic
@@ -1381,6 +1398,17 @@ fn lower_sub_class_of(
 ) {
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
+            // Phase D4 (2026-06-03): `Atomic(C) ⊑ Bot` directly marks
+            // C unsatisfiable. Without this branch the saturator's
+            // `atomic_operands_on_right(Bot, _)` returns empty and the
+            // axiom is silently lost — the data-axiom preprocessing
+            // pass's emitted clash axioms (Functional + ≥n, DataMin >
+            // DataMax) wouldn't be picked up. See
+            // `crates/owl-dl-core/src/data_axioms.rs`.
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                rules.directly_unsat.push(*sub_id);
+                return;
+            }
             for atomic_sup in atomic_operands_on_right(sup, pool) {
                 rules.atomic_subsumptions.push(AtomicSubsumption {
                     sub: *sub_id,

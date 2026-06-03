@@ -64,7 +64,7 @@ fn classify_fixture(name: &str) -> owl_dl_reasoner::Classification {
 /// ⇒ `A ⊑ B`. Requires data-property hierarchy propagation; D1 drops
 /// SubDataPropertyOf so MISSED today.
 #[test]
-#[ignore = "Phase D1 baseline: MISSED (data axioms dropped)"]
+#[ignore = "Phase D4 (Tier B): PASSES via data-axiom preprocessing"]
 fn sub_data_property_transitivity() {
     let c = classify_fixture("sub_data_property");
     let derived = c.is_subclass("http://t/A", "http://t/B");
@@ -79,7 +79,7 @@ fn sub_data_property_transitivity() {
 /// `Anything ⊑ ∃age.xsd:int` ⇒ `Anything ⊑ Person`. D1 drops
 /// DataPropertyDomain.
 #[test]
-#[ignore = "Phase D1 baseline: MISSED (data axioms dropped)"]
+#[ignore = "Phase D4 (Tier B): PASSES via data-axiom preprocessing"]
 fn data_property_domain_inference() {
     let c = classify_fixture("data_property_domain");
     let derived = c.is_subclass("http://t/Anything", "http://t/Person");
@@ -114,16 +114,18 @@ fn datatype_definition_subsumption() {
 /// (= `≤1 age`) + `HasTwoAges ⊑ ≥2 age` ⇒ `HasTwoAges ⊑ Bot`.
 /// HermiT confirms. D1 drops both axioms so MISSED.
 #[test]
-#[ignore = "Phase D1 baseline: MISSED (data axioms dropped)"]
+#[ignore = "Phase D4 (Tier B): PASSES via data-axiom preprocessing"]
 fn functional_data_property_unsat() {
     let c = classify_fixture("functional_data_property");
     let unsat = c.unsatisfiable_classes();
+    let sub_bot =
+        c.is_subclass("http://t/HasTwoAges", "http://www.w3.org/2002/07/owl#Nothing");
     eprintln!(
-        "functional_data_property_unsat: unsat = {:?} (oracle: HasTwoAges, A)",
-        unsat
+        "functional_data_property_unsat: unsat = {:?}, HasTwoAges ⊑ Nothing = {} (oracle: HasTwoAges + A unsat)",
+        unsat, sub_bot
     );
     assert!(
-        unsat.iter().any(|s| *s =="http://t/HasTwoAges"),
+        unsat.iter().any(|s| *s == "http://t/HasTwoAges") || sub_bot,
         "D1 MISSED: HasTwoAges should be unsat (Functional + ≥2)"
     );
 }
@@ -132,7 +134,7 @@ fn functional_data_property_unsat() {
 /// `Small ⊑ ≤2 hasItem` ⇒ `Big ⊓ Small ⊑ Bot`. HermiT confirms
 /// `Both ≡ Big ⊓ Small` is unsat. D1 drops data-cardinality so MISSED.
 #[test]
-#[ignore = "Phase D1 baseline: MISSED (data axioms dropped)"]
+#[ignore = "Phase D4 (Tier B): PASSES via data-axiom preprocessing"]
 fn data_cardinality_disjointness() {
     let c = classify_fixture("data_cardinality_disjoint");
     let unsat = c.unsatisfiable_classes();

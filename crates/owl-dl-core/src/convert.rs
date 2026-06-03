@@ -289,6 +289,7 @@ pub fn convert_component<A: ForIRI>(
     match c {
         // ── Silently dropped: metadata + annotation axioms ──────────────
         // None of these carry reasoning-load-bearing content.
+        #[allow(clippy::match_same_arms)]
         C::OntologyID(_)
         | C::DocIRI(_)
         | C::OntologyAnnotation(_)
@@ -502,6 +503,33 @@ pub fn convert_ontology<A: ForIRI>(
             out.axioms.push(axiom);
         }
     }
+    // Phase D4 (2026-06-03): scan for data-axiom patterns the main
+    // conversion dropped (DeclareDataProperty, DataMin/Max, Functional,
+    // DataPropertyDomain, SubDataPropertyOf, DataSome) and emit derived
+    // class-subsumption / unsat axioms. The vocabulary is now fully
+    // populated so class IRIs resolve. Sound under-approximation:
+    // patterns we don't recognize stay dropped; recognized patterns
+    // contribute additional axioms that close specific completeness
+    // gaps without changing any other behavior. See
+    // crates/owl-dl-core/src/data_axioms.rs for the pattern docs +
+    // crates/owl-dl-reasoner/tests/datatype_completeness.rs for the
+    // TDD harness.
+    let bot_id = out.concepts.bot();
+    // We intern atomic concept lookups inside the closure so the pool
+    // gets all referenced atomic classes (some may not have been
+    // referenced by any axiom that survived ce_or_skip!).
+    // RefCell scoped tightly so its borrow on out.concepts ends before
+    // out.axioms.extend (which doesn't need it but reads cleaner).
+    let derived = {
+        let concepts_cell = std::cell::RefCell::new(&mut out.concepts);
+        crate::data_axioms::derive_data_axioms(
+            src,
+            &out.vocabulary,
+            bot_id,
+            |cid| concepts_cell.borrow_mut().atomic(cid),
+        )
+    };
+    out.axioms.extend(derived);
     out.axioms.sort();
     Ok(out)
 }

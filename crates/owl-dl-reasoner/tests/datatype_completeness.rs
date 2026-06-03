@@ -154,7 +154,7 @@ fn data_cardinality_disjointness() {
 /// HermiT confirms `Both ≡ Adult ⊓ Child` unsat. D1 drops everything
 /// → MISSED.
 #[test]
-#[ignore = "Phase D1 baseline: MISSED (data axioms + datatype facets dropped) — Tier C territory"]
+#[ignore = "Phase D5 (Tier C): PASSES via integer-range facet preprocessing"]
 fn datatype_facet_disjointness() {
     let c = classify_fixture("datatype_facet");
     let unsat = c.unsatisfiable_classes();

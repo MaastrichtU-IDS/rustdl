@@ -49,9 +49,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use horned_owl::model::{
-    ClassExpression, Component, DataProperty, DataRange, ForIRI,
+    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI,
 };
 use horned_owl::ontology::set::SetOntology;
+use horned_owl::vocab::Facet;
 
 use crate::Vocabulary;
 use crate::ir::{ClassId, ConceptId};
@@ -90,6 +91,7 @@ pub fn derive_data_axioms<A: ForIRI>(
 /// (or its decomposition into mutual SubClassOf), if any atomic Mi
 /// has cardinality bounds on a data property dp, propagate those
 /// bounds to C. Iterates to fixpoint to handle transitive defs.
+#[allow(clippy::too_many_lines, reason = "single fixpoint with 4 facts to propagate; splitting hurts readability")]
 fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Facts) {
     // Collect: class_iri → vec of atomic-member iris from Intersection
     // equivalences. Includes EquivalentClasses(C, Intersection(...)) and
@@ -186,8 +188,63 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
                         changed = true;
                     }
                 }
+                // Phase D5 (Tier C): integer ranges inherit too.
+                let parent_ranges: Vec<((String, String), Vec<IntegerRange>)> = facts
+                    .class_int_ranges
+                    .iter()
+                    .filter(|((c, _), _)| c == parent)
+                    .map(|((_, dp), rs)| ((owner.clone(), dp.clone()), rs.clone()))
+                    .collect();
+                for (key, ranges) in parent_ranges {
+                    let entry = facts.class_int_ranges.entry(key).or_default();
+                    // Dedup-ish: only append ranges whose representation
+                    // isn't already present (covers the common case where
+                    // a chain of equivalences would otherwise grow Vec
+                    // unboundedly on fixpoint iterations).
+                    for r in ranges {
+                        if !entry.iter().any(|e| e.min == r.min && e.max == r.max) {
+                            entry.push(r);
+                            changed = true;
+                        }
+                    }
+                }
             }
         }
+    }
+}
+
+/// Phase D5 (Tier C): integer range with explicit inclusive bounds.
+/// Used for `xsd:integer` `DatatypeRestriction` facets
+/// (`minInclusive`, `minExclusive`, `maxInclusive`, `maxExclusive`).
+/// `min`/`max = None` represents ±∞ open ends.
+///
+/// Closed-form intersection + emptiness check. Sound for OWL 2's
+/// integer-typed value space; other numeric types (`xsd:decimal`,
+/// `xsd:double`, `xsd:dateTime`) would extend with their own range
+/// types but share the same algebra.
+#[derive(Clone, Copy, Debug)]
+struct IntegerRange {
+    min: Option<i64>,
+    max: Option<i64>,
+}
+
+impl IntegerRange {
+    const fn unbounded() -> Self {
+        Self { min: None, max: None }
+    }
+    fn intersect(self, other: Self) -> Self {
+        let min = match (self.min, other.min) {
+            (None, x) | (x, None) => x,
+            (Some(a), Some(b)) => Some(if a > b { a } else { b }),
+        };
+        let max = match (self.max, other.max) {
+            (None, x) | (x, None) => x,
+            (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+        };
+        Self { min, max }
+    }
+    fn is_empty(self) -> bool {
+        matches!((self.min, self.max), (Some(a), Some(b)) if a > b)
     }
 }
 
@@ -222,6 +279,12 @@ struct Facts {
     /// `SubClassOf(DataSome(dp, _), D)` — class D is a superset of
     /// "anything with data property dp". Range opaque.
     some_super: BTreeMap<String, BTreeSet<String>>,
+    /// Phase D5 (Tier C): per-(class, dp) integer-range constraints
+    /// derived from `SubClassOf(C, DataSome(dp, DatatypeRestriction(xsd:integer, ...)))`
+    /// or equivalent in Min/Exact-cardinality forms. Multiple ranges
+    /// accumulate; emit-time intersects them. Empty intersection on
+    /// a Functional dp ⇒ C unsat.
+    class_int_ranges: BTreeMap<(String, String), Vec<IntegerRange>>,
 }
 
 fn extract_facts<A: ForIRI>(src: &SetOntology<A>) -> Facts {
@@ -339,15 +402,25 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
 
 /// Recognize `DataSomeValuesFrom(dp, _)` (range opaque) and record
 /// `(class_iri, dp_iri)` in `f.class_some`. Recurses into
-/// `ObjectIntersectionOf`.
+/// `ObjectIntersectionOf`. Phase D5 (Tier C): also records integer
+/// ranges from `DataSomeValuesFrom(dp, DatatypeRestriction(xsd:integer, ...))`
+/// into `f.class_int_ranges`.
 fn scan_class_for_existentials<A: ForIRI>(
     class_iri: &str,
     ce: &ClassExpression<A>,
     f: &mut Facts,
 ) {
     match ce {
-        ClassExpression::DataSomeValuesFrom { dp, .. }
-        | ClassExpression::DataHasValue { dp, .. } => {
+        ClassExpression::DataSomeValuesFrom { dp, dr } => {
+            f.class_some.insert((class_iri.to_string(), dpe_iri(dp)));
+            if let Some(range) = parse_integer_range(dr) {
+                f.class_int_ranges
+                    .entry((class_iri.to_string(), dpe_iri(dp)))
+                    .or_default()
+                    .push(range);
+            }
+        }
+        ClassExpression::DataHasValue { dp, .. } => {
             f.class_some.insert((class_iri.to_string(), dpe_iri(dp)));
         }
         ClassExpression::DataMinCardinality { dp, n, .. } if *n >= 1 => {
@@ -363,6 +436,50 @@ fn scan_class_for_existentials<A: ForIRI>(
         }
         _ => {}
     }
+}
+
+/// Phase D5 (Tier C): parse an `xsd:integer` `DatatypeRestriction`
+/// into an `IntegerRange`. Returns `None` for non-integer base
+/// datatypes, unrecognized facets, unparseable literals, or
+/// overflowing exclusive-bound adjustments — sound under-approximation:
+/// unrecognized ranges contribute no constraint (vs. wrong constraints).
+fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<IntegerRange> {
+    let DataRange::DatatypeRestriction(dt, facets) = dr else {
+        return None;
+    };
+    // Only xsd:integer for Tier C; other numeric datatypes
+    // (xsd:decimal, xsd:double, xsd:dateTime) extend with their own
+    // range types but share this preprocessing's algebra.
+    if dt.0.to_string() != "http://www.w3.org/2001/XMLSchema#integer" {
+        return None;
+    }
+    parse_integer_facets(facets)
+}
+
+fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<IntegerRange> {
+    let mut range = IntegerRange::unbounded();
+    for fr in facets {
+        let val: i64 = fr.l.literal().parse().ok()?;
+        match fr.f {
+            Facet::MinInclusive => {
+                range.min = Some(range.min.map_or(val, |existing| existing.max(val)));
+            }
+            Facet::MinExclusive => {
+                // xsd:integer-semantics: exclusive ≥ val + 1
+                let inclusive = val.checked_add(1)?;
+                range.min = Some(range.min.map_or(inclusive, |existing| existing.max(inclusive)));
+            }
+            Facet::MaxInclusive => {
+                range.max = Some(range.max.map_or(val, |existing| existing.min(val)));
+            }
+            Facet::MaxExclusive => {
+                let inclusive = val.checked_sub(1)?;
+                range.max = Some(range.max.map_or(inclusive, |existing| existing.min(inclusive)));
+            }
+            _ => return None,
+        }
+    }
+    Some(range)
 }
 
 /// Compute the transitive closure of `sub_data_property` edges:
@@ -418,6 +535,28 @@ fn emit_clashes(
     for ((class_iri, dp_iri), min) in &f.class_min {
         if let Some(max) = f.class_max.get(&(class_iri.clone(), dp_iri.clone()))
             && min > max
+            && let Some(cid) = vocab.class_id(class_iri)
+        {
+            out.push(Axiom::SubClassOf {
+                sub: atomic_id(cid),
+                sup: bot_id,
+            });
+        }
+    }
+    // Phase D5 (Tier C) Pattern: Functional(dp) + 2+ integer-range
+    // constraints on (C, dp) with empty intersection → C ⊑ Bot.
+    // Functional is required: without it, an instance could satisfy
+    // multiple ranges via separate values; with it, the single value
+    // must satisfy all ranges intersected.
+    for ((class_iri, dp_iri), ranges) in &f.class_int_ranges {
+        if ranges.len() < 2 || !f.functional_dps.contains(dp_iri) {
+            continue;
+        }
+        let intersection = ranges
+            .iter()
+            .copied()
+            .fold(IntegerRange::unbounded(), IntegerRange::intersect);
+        if intersection.is_empty()
             && let Some(cid) = vocab.class_id(class_iri)
         {
             out.push(Axiom::SubClassOf {

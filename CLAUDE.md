@@ -214,6 +214,20 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   also defaults ON (Phase 1b.5 lazy expansion); set to `0` to revert
   to Phase 1b full-re-run for A/B isolation. See
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`.
+- **New as of Phase 2b**: `RUSTDL_HORN_SHORTCIRCUIT` defaults ON.
+  For ontologies classified as `Horn` fragment (`analyze_fragment`
+  returns `Horn` — i.e., clausifier produces only Horn clauses with
+  no deferred axioms), classify dispatches to the saturation-only
+  fast path instead of the per-pair verification loop. Sound by
+  composition: the hyper Horn fixpoint is complete on Horn, so the
+  saturation closure IS the full classification. Set
+  `RUSTDL_HORN_SHORTCIRCUIT=0` to revert to the Phase 1c per-pair
+  loop for Horn fragments. Massive wall savings on Horn workloads:
+  GALEN 161.95 s → 0.40 s (~405×), notgalen 366.25 s → 0.69 s
+  (~531×), alehif 1.63 s → 0.09 s (~18×); out-of-EL fixtures
+  unchanged. See
+  `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §5
+  + `docs/phase2a-recon.md` + `docs/phase2b-snapshot-results.md`.
 
 When changing the saturation/wedge engines or caches, the failure mode that
 matters most is an unsound *positive*. See `docs/handoff-2026-05-30.md` for

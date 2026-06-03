@@ -963,6 +963,17 @@ pub(crate) struct SnapshotCache {
     /// build. Drives the orchestrator's "is this safe to consult" check
     /// (spec §4.2).
     risk: owl_dl_tableau::BackPropRisk,
+    /// Phase 1b.5: per-sup `fresh_q ⊓ sup → ⊥` clauses, lazily
+    /// populated on first `try_replay` call for that sup. Avoids
+    /// re-allocating the 1-element Vec on every call (~1.86M times on
+    /// GALEN). Lock-free reads via DashMap; bucket-locked writes are
+    /// rare (one per unique sup column observed).
+    per_sup_neg_clauses: std::sync::Arc<
+        dashmap::DashMap<
+            owl_dl_core::ir::ClassId,
+            std::sync::Arc<Vec<owl_dl_core::clause::DlClause>>,
+        >,
+    >,
 }
 
 impl SnapshotCache {
@@ -980,6 +991,7 @@ impl SnapshotCache {
             fresh_q,
             snapshots: std::sync::Arc::new(dashmap::DashMap::new()),
             risk,
+            per_sup_neg_clauses: std::sync::Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -1019,7 +1031,6 @@ impl SnapshotCache {
         sub: owl_dl_core::ir::ClassId,
         sup: owl_dl_core::ir::ClassId,
     ) -> Option<owl_dl_tableau::ReplayVerdict> {
-        use owl_dl_core::clause::{Atom, DlClause, X};
         if !self.is_safe() {
             return None;
         }
@@ -1029,10 +1040,12 @@ impl SnapshotCache {
         // in Horn), so this clause fires only when sup is at the root.
         // This is the soundness fix for the 25,333-FP regression seen
         // with the global `sup(x) → ⊥` encoding (T6 recon).
-        let neg_sup_clauses = vec![DlClause {
-            body: vec![Atom::Class(self.fresh_q, X), Atom::Class(sup, X)],
-            head: vec![],
-        }];
+        //
+        // Phase 1b.5 T4: cached per-sup. replay_with_neg_sup wants
+        // Vec<DlClause> (owned); clone the Arc'd vec (shallow: Arc
+        // ref-bump + Vec clone of 1 element).
+        let neg_sup_clauses_arc = self.get_or_build_neg_sup_clauses(sup);
+        let neg_sup_clauses = (*neg_sup_clauses_arc).clone();
         // Replay needs the full clause set (base + q-injection +
         // ¬sup) so the reconstructed engine's indexes pick up all
         // three. Pass the per-sub clauses as the base.
@@ -1049,6 +1062,24 @@ impl SnapshotCache {
             owl_dl_tableau::replay_with_neg_sup_full_rerun(&base_clauses, &snap, neg_sup_clauses)
         };
         Some(verdict)
+    }
+
+    /// Get the cached `fresh_q ⊓ sup → ⊥` clause for this sup, or
+    /// build + insert. Returns `Arc<Vec<...>>` for cheap clone-on-read.
+    fn get_or_build_neg_sup_clauses(
+        &self,
+        sup: owl_dl_core::ir::ClassId,
+    ) -> std::sync::Arc<Vec<owl_dl_core::clause::DlClause>> {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        if let Some(existing) = self.per_sup_neg_clauses.get(&sup) {
+            return existing.clone();
+        }
+        let clauses = std::sync::Arc::new(vec![DlClause {
+            body: vec![Atom::Class(self.fresh_q, X), Atom::Class(sup, X)],
+            head: vec![],
+        }]);
+        self.per_sup_neg_clauses.insert(sup, clauses.clone());
+        clauses
     }
 
     /// Cache-build path: returns the cached snapshot or builds + stores

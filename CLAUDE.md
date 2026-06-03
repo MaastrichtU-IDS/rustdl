@@ -175,14 +175,37 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `docs/phase7-results.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded,
-  **not yet wired into reasoning.** Data axioms / data ranges are
+  **not yet wired into reasoning.** Data axioms / data ranges that
+  are NOT recognized by the D4 preprocessing pass (see below) are
   silently dropped at conversion time (Phase D1, commit `e34aeb6`):
-  sound under-approximation. Corpus-validated near-Konclude parity on
-  the data-axiom-bearing fixtures (shoiq-knowledge: 0 MISSED of 449;
-  sio: 2 MISSED of 8904, both from existing disjunction-reasoning
-  gaps unrelated to data). Tier B (data-cardinality propagation) and
-  Tier C (concrete-domain ranges) deferred until a future workload
-  exposes a real data-axiom completeness gap.
+  sound under-approximation. Corpus-validated near-Konclude parity
+  on the data-axiom-bearing fixtures (shoiq-knowledge: 0 MISSED of
+  449; sio: 2 MISSED of 8904, both from existing disjunction-
+  reasoning gaps unrelated to data). Tier C (concrete-domain
+  ranges, datatype facets like xsd:integer min/max value) deferred
+  until a future workload exposes a real completeness gap.
+
+  **Phase D4 (commit `eb15c74`)** added a preprocessing pass at
+  `crates/owl-dl-core/src/data_axioms.rs` that scans horned-owl
+  Components for specific patterns and emits derived class axioms.
+  Currently recognized:
+  - `Functional(dp) + SubClassOf(C, ≥n dp)` with `n≥2` → `C ⊑ Bot`
+  - `SubClassOf(C, ≥n dp) + SubClassOf(C, ≤m dp)` with `n>m` → `C ⊑ Bot`
+  - `DataPropertyDomain(dp, D) + C ⊑ DataSome(dp, _)` → `C ⊑ D`
+  - SubDataPropertyOf transitivity (`C ⊑ DataSome(specific) +
+    DataSome(general) ⊑ D` → `C ⊑ D`, hierarchy closure)
+  - Intersection-equivalence propagation: `C ≡ M1 ⊓ M2 ⊓ ...`
+    inherits each Mi's data-cardinality bounds (fixpoint).
+
+  Companion saturator change: `ElRules::directly_unsat` field +
+  seed-time `enqueue_unsat` so the saturator picks up
+  `Atomic ⊑ Bot` axioms (which `atomic_operands_on_right(Bot, _)`
+  silently lost pre-D4).
+
+  Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
+  (6 fixtures under `tests/fixtures/datatype/`; 5 of 6 pass post-D4;
+  the failing one is the Tier C facet test). Tests are `#[ignore]`d;
+  invoke with `cargo test ... -- --ignored`.
 
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
   (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).

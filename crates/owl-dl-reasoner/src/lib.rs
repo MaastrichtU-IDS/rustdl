@@ -676,11 +676,11 @@ pub fn snapshot_capture_enabled() -> bool {
     std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
-/// Phase 1b.5 lazy expansion toggle. Default ON when capture is also
-/// ON — flag-OFF reverts replay to Phase 1b's full-re-run behavior
-/// (correctness equivalent; useful for A/B comparison + debugging).
-/// Sibling-style env helper: accepts `=1`/`=true`/`=yes`/`=on`;
-/// rejects `=0`/empty/unset.
+/// Phase 1b.5 lazy expansion toggle. Default ON (unset → ON);
+/// explicit `RUSTDL_SNAPSHOT_LAZY=0` (or empty) reverts replay to
+/// Phase 1b's full-re-run behavior (correctness equivalent; useful
+/// for A/B comparison + debugging). Sibling-style env helper:
+/// accepts any non-empty, non-`"0"` value (`=1`/`=true`/`=yes`/`=on`).
 ///
 /// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §4.1
 #[must_use]

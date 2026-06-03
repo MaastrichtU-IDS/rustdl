@@ -46,6 +46,7 @@ mod counters;
 mod deps;
 mod graph;
 pub mod hyper;
+pub mod replay;
 mod rules;
 mod saturate;
 mod search;
@@ -75,6 +76,7 @@ macro_rules! add_counter {
 }
 
 pub use graph::{CompletionGraph, DepSet, Node, NodeId};
+pub use replay::{ReplayVerdict, replay_with_neg_sup};
 pub use rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_deferred_concept_or_rules,
     apply_deferred_or_residuals, apply_exists, apply_forall, apply_max, apply_min,

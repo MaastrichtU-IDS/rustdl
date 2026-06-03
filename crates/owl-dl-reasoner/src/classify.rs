@@ -954,6 +954,11 @@ pub(crate) fn classify_top_down_internal(
             stats.label_cache_pruned += sd.label_cache_pruned;
             stats.label_cache_pass_through += sd.label_cache_pass_through;
             stats.label_cache_misses += sd.label_cache_misses;
+            stats.snapshot_replay_used += sd.snapshot_replay_used;
+            stats.snapshot_replay_subsumed += sd.snapshot_replay_subsumed;
+            stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
+            stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
+            stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
             for &p in &parents {
                 direct_children[p].push(c);
             }
@@ -1081,6 +1086,11 @@ pub(crate) fn classify_top_down_internal(
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
             stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
+            stats.snapshot_replay_used += sd.snapshot_replay_used;
+            stats.snapshot_replay_subsumed += sd.snapshot_replay_subsumed;
+            stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
+            stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
+            stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
             if subsumed && !direct_supers[cand].contains(&sup) {
                 direct_supers[cand].push(sup);
                 direct_children[sup].push(cand);

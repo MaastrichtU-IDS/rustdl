@@ -211,6 +211,10 @@ impl HyperNode {
 
 /// Branch save/restore snapshot — captures every mutable engine state
 /// that branching can alter, so a failed branch fully reverts.
+///
+/// Note: `lazy_replay_state` is intentionally NOT saved — it's a
+/// read-only contract from [`HyperEngine::from_snapshot_lazy`],
+/// untouched by branching.
 struct Snapshot {
     nodes: Vec<HyperNode>,
     representative: Vec<HNode>,
@@ -223,6 +227,42 @@ struct Snapshot {
     /// for the whole query should be `BackPropAborted` regardless of
     /// whether the branch that observed it succeeded.
     origin: Vec<bool>,
+}
+
+/// Phase 1b.5 lazy expansion state for snapshot replay. When set
+/// (via [`HyperEngine::from_snapshot_lazy`]), `horn_fixpoint`'s
+/// re-seed loop consults this state to skip pushing
+/// `Event::Label(n, c)` for snapshot-origin nodes whose `c` is in
+/// `pre_capture_labels[n]` and `c` is not in `new_trigger_atoms`.
+///
+/// Soundness: pre-captured labels' effects are already realized
+/// in the snapshot's saturated state (snapshot was captured at
+/// `HyperResult::Sat`); new clauses appended at replay only trigger
+/// on body atoms in `new_trigger_atoms`. Skipping re-seed for the
+/// intersection is sound by construction. See spec §4.1 + Phase 1b.5
+/// plan's soundness contract.
+///
+/// `None` means full-re-run mode (Phase 1b first-cut behavior; the
+/// existing `from_snapshot` constructor leaves this `None`).
+//
+// Fields are read in Phase 1b.5 T3 (horn_fixpoint re-seed guard);
+// allow dead_code for the T2-only intermediate state.
+#[allow(dead_code)]
+struct LazyReplayState {
+    /// Per-node immutable labels at snapshot capture. Parallel to
+    /// `HyperEngine.nodes` (indexed by `HNode.index()`). Snapshot-
+    /// origin nodes have populated entries cloned from the snapshot;
+    /// non-snapshot nodes (created during decide via `new_node`)
+    /// have entries beyond this `Vec`'s length, which the guard's
+    /// `pre_capture_labels.get(idx)` branch naturally handles
+    /// (returns `None` → "not pre-captured" → seed normally).
+    pre_capture_labels: Vec<Vec<ClassId>>,
+    /// Body-atom class ids of every clause appended at replay (the
+    /// caller's `neg_sup_clauses`). `std::collections::HashSet` for
+    /// constant-time lookup in the re-seed loop. Constructed by
+    /// `replay_with_neg_sup` (Task 3) from the new clauses' body
+    /// `Atom::Class` entries.
+    new_trigger_atoms: std::collections::HashSet<u32>,
 }
 
 /// Outcome of a Horn hyperresolution run.
@@ -348,6 +388,11 @@ pub struct HyperEngine<'c> {
     /// The sentinel becomes load-bearing in Phase 3 when the
     /// per-class classifier loosens the Unsafe gate.
     snapshot_backprop_aborted: bool,
+    /// Phase 1b.5: optional lazy-replay state. `None` for fresh
+    /// engines (via [`Self::new`]) or full-re-run replays (via
+    /// [`Self::from_snapshot`]). `Some` only via
+    /// [`Self::from_snapshot_lazy`].
+    lazy_replay_state: Option<LazyReplayState>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -444,6 +489,7 @@ impl<'c> HyperEngine<'c> {
             block_index: None,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
+            lazy_replay_state: None,
         }
     }
 
@@ -996,6 +1042,10 @@ impl<'c> HyperEngine<'c> {
         // snapshot-origin. Any add_label_via_backprop call targeting
         // one of them sets snapshot_backprop_aborted (read by replay).
         engine.snapshot_origin = vec![true; n_nodes];
+        // from_snapshot is the full-re-run path: lazy_replay_state
+        // stays None. from_snapshot_lazy populates it after delegating
+        // here.
+        engine.lazy_replay_state = None;
         for (i, edges) in snapshot.edges_per_node().iter().enumerate() {
             for edge in edges {
                 let src = HNode(u32::try_from(i).expect("fits u32"));
@@ -1009,6 +1059,42 @@ impl<'c> HyperEngine<'c> {
                     .push((edge.role, src));
             }
         }
+        engine
+    }
+
+    /// Phase 1b.5: lazy-expansion constructor for snapshot replay.
+    /// Same shape as [`Self::from_snapshot`] but additionally populates
+    /// `lazy_replay_state` with the snapshot's `pre_capture_labels`
+    /// plus the caller's `new_trigger_atoms`. `horn_fixpoint` re-seed
+    /// (Task 3) will skip `Event::Label` events for pre-captured labels
+    /// at snapshot-origin nodes when those labels are not in
+    /// `new_trigger_atoms`.
+    ///
+    /// Sound iff the snapshot was built from a `Sat` verdict and the
+    /// caller's `new_trigger_atoms` is a complete enumeration of body
+    /// class-atom ids in clauses appended since capture. See spec §4.1
+    /// + the Phase 1b.5 plan's soundness contract.
+    ///
+    /// `new_trigger_atoms` is a `std::collections::HashSet<u32>` of
+    /// `ClassId` indices for constant-time lookup. Caller (typically
+    /// [`crate::replay::replay_with_neg_sup`]) derives it from the new
+    /// clauses' body `Atom::Class` entries.
+    #[must_use]
+    pub fn from_snapshot_lazy(
+        clauses: &'c [DlClause],
+        snapshot: &crate::snapshot::GraphSnapshot,
+        new_trigger_atoms: std::collections::HashSet<u32>,
+    ) -> Self {
+        let mut engine = Self::from_snapshot(clauses, snapshot);
+        let pre_capture_labels: Vec<Vec<ClassId>> = snapshot
+            .nodes()
+            .iter()
+            .map(|n| n.pre_capture_labels.clone())
+            .collect();
+        engine.lazy_replay_state = Some(LazyReplayState {
+            pre_capture_labels,
+            new_trigger_atoms,
+        });
         engine
     }
 

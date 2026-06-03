@@ -202,10 +202,18 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `Atomic ⊑ Bot` axioms (which `atomic_operands_on_right(Bot, _)`
   silently lost pre-D4).
 
+  **Phase D5 (commit `2804cfa`)** added Tier C: integer-range facet
+  preprocessing. New `IntegerRange` type with closed-form intersection;
+  parses `xsd:integer` `DatatypeRestriction` facets (`minInclusive`,
+  `minExclusive`, `maxInclusive`, `maxExclusive`). New pattern:
+  `Functional(dp) + ≥2 integer ranges on (C, dp) with empty
+  intersection` → `C ⊑ Bot`. Other numeric datatypes (xsd:decimal,
+  xsd:double, xsd:dateTime) extend with their own range types but
+  share this preprocessing's algebra.
+
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
-  (6 fixtures under `tests/fixtures/datatype/`; 5 of 6 pass post-D4;
-  the failing one is the Tier C facet test). Tests are `#[ignore]`d;
-  invoke with `cargo test ... -- --ignored`.
+  (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).
+  Tests are `#[ignore]`d; invoke with `cargo test ... -- --ignored`.
 
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
   (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).

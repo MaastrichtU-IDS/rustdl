@@ -663,6 +663,34 @@ pub fn label_heuristic_enabled() -> bool {
     std::env::var_os("RUSTDL_LABEL_HEURISTIC").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
+/// Per-class deadline (in milliseconds) for the Phase 7 label-cache
+/// build during classification. **Distinct from `--pair-timeout-ms`**:
+/// the cache build is one-shot per class at classify-start, and a
+/// class that exceeds this budget becomes `LabelOracle::NoVerdict` —
+/// forcing every `(C, *)` pair to fall through to per-pair
+/// `subsumes_via_tableau`. The Phase 8 recon
+/// (`docs/phase8-recon.md`) showed that ~5% of ORE-10908 classes
+/// stalled at the per-pair 200 ms budget (median 341 ms, max 631 ms
+/// when given more time) and each NoVerdict class contributed
+/// ~28 ms × ~38 cache-miss pairs to the tier walk — a disproportionate
+/// tail. A generous default (5000 ms = 5 s) lets these classes
+/// complete to `Sat` and collapse their cache-miss pairs to ~µs prunes.
+///
+/// Override with `RUSTDL_LABEL_CACHE_TIMEOUT_MS=<integer>`. Default
+/// 1000 ms — generous enough to catch ORE-10908's stallers
+/// (median 341 ms, max 631 ms per the recon) but tight enough to
+/// bail quickly on genuinely intractable classes (ORE-15672's
+/// ~56% NoVerdict rate suggests those classes don't finish in
+/// any reasonable budget). Set to `0` for unbounded cache build.
+#[must_use]
+pub fn label_cache_timeout_ms() -> u64 {
+    const DEFAULT_MS: u64 = 1000;
+    std::env::var("RUSTDL_LABEL_CACHE_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MS)
+}
+
 /// Minimum wedge wall-time threshold (in milliseconds) below which a
 /// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
 /// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured

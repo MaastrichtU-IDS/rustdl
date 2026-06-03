@@ -785,13 +785,24 @@ pub(crate) fn classify_top_down_internal(
     // `NoVerdict`, so the walk falls through to the wedge/tableau
     // path uniformly (used by tests that exercise the wedge directly).
     let label_cache: Vec<crate::LabelOracle> = if crate::label_heuristic_enabled() {
+        // Phase 8: cache-build deadline is independent of per_pair_timeout.
+        // The per-pair budget (typically 200 ms) is too tight for the ~5%
+        // SROIQ classes that need a few hundred ms of wedge satisfiability;
+        // cutting them off at NoVerdict bloats the tier walk's cache-miss
+        // bucket. See `docs/phase8-recon.md`. Default 5000 ms; set
+        // `RUSTDL_LABEL_CACHE_TIMEOUT_MS=0` for unbounded.
+        let cache_ms = crate::label_cache_timeout_ms();
         (0..n)
             .into_par_iter()
             .map(|i| {
                 let class_id = owl_dl_core::ClassId::new(
                     u32::try_from(i).expect("class index fits in u32"),
                 );
-                let deadline = per_pair_timeout.map(|t| Instant::now() + t);
+                let deadline = if cache_ms == 0 {
+                    None
+                } else {
+                    Some(Instant::now() + std::time::Duration::from_millis(cache_ms))
+                };
                 prepared.classify_labels(class_id, deadline)
             })
             .collect()

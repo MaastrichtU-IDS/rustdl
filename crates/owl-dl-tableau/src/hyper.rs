@@ -900,6 +900,7 @@ impl<'c> HyperEngine<'c> {
                 labels: hn.labels.clone(),
                 is_root: snap_id == root_snap_idx,
                 birth_deps: hn.birth_deps,
+                pre_capture_labels: hn.labels.clone(),
             });
             let mut snap_edges = Vec::with_capacity(hn.edges.len());
             for (role, tgt) in &hn.edges {

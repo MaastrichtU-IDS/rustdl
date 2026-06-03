@@ -40,6 +40,15 @@ Ontology(<http://t>
     let mut eng = HyperEngine::new(&clauses, a_id);
     assert_eq!(eng.decide(64), HyperResult::Sat);
     let snap = eng.satisfiability_snapshot(a_id).expect("snapshot built");
+    // Phase 1b.5 invariant: at capture time, pre_capture_labels == labels
+    // for every node. They diverge only during replay.
+    for i in 0..snap.node_count() {
+        assert_eq!(
+            snap.labels_at(i),
+            snap.pre_capture_labels_at(i),
+            "Phase 1b.5: pre_capture_labels must equal labels at capture (node {i})"
+        );
+    }
     let original_node_count = snap.node_count();
     let original_root_labels: Vec<_> = snap.root_labels().to_vec();
 

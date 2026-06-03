@@ -70,6 +70,17 @@ pub(crate) struct SnapshotNode {
     /// field byte-for-byte; Phase 1b.5 will interpret it for
     /// fingerprint-gated lazy expansion + axiom-justification work.
     pub birth_deps: crate::hyper::DepSet,
+    /// Phase 1b.5: IMMUTABLE snapshot of `labels` at the time
+    /// `satisfiability_snapshot` was called. Distinct from `labels`
+    /// (which mutates during replay as the cascade adds new labels) —
+    /// this field is the lazy expansion guard's reference: a
+    /// snapshot-origin node's `pre_capture_labels[n]` tells the
+    /// engine which labels were already-saturated at capture time.
+    ///
+    /// Sorted by `ClassId` (matches the existing `labels` invariant) so
+    /// the lazy guard can `binary_search`. Empty `Vec` is valid (a
+    /// node with no labels at capture; uncommon).
+    pub pre_capture_labels: Vec<ClassId>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +232,19 @@ impl GraphSnapshot {
     pub fn root_labels(&self) -> &[ClassId] {
         let root_idx = self.nodes.iter().position(|n| n.is_root).unwrap_or(0);
         &self.nodes[root_idx].labels
+    }
+
+    /// Phase 1b.5: per-node immutable labels at capture time. Used
+    /// by the lazy-expansion guard.
+    #[must_use]
+    pub fn pre_capture_labels_at(&self, i: usize) -> &[ClassId] {
+        &self.nodes[i].pre_capture_labels
+    }
+
+    /// Per-node current labels (mutating during replay).
+    #[must_use]
+    pub fn labels_at(&self, i: usize) -> &[ClassId] {
+        &self.nodes[i].labels
     }
 
     #[must_use]

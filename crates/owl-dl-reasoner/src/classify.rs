@@ -169,6 +169,24 @@ pub struct ClassificationStats {
     /// Per-class label heuristic: pairs where the cache was missing
     /// (`NoVerdict` or hyper disabled) and the orchestrator fell through.
     pub label_cache_misses: usize,
+    /// Phase 1b snapshot cache: pairs where the snapshot-replay path
+    /// was consulted (some verdict returned by `try_replay`, not `None`).
+    /// Sum of `*_subsumed + *_not_subsumed + *_aborts + (replay stalls)`.
+    pub snapshot_replay_used: usize,
+    /// Phase 1b snapshot cache: replay returned `Subsumed` (¬sup
+    /// clashed with snapshot — answer used directly).
+    pub snapshot_replay_subsumed: usize,
+    /// Phase 1b snapshot cache: replay returned `NotSubsumed` and
+    /// the orchestrator trusted it (gated by `trust_sat`).
+    pub snapshot_replay_not_subsumed: usize,
+    /// Phase 1b snapshot cache: replay returned `BackPropAborted`
+    /// (either structural Unsafe risk or runtime sentinel fired —
+    /// orchestrator fell through to wedge/tableau).
+    pub snapshot_replay_aborts: usize,
+    /// Phase 1b snapshot cache: pairs where the cache wasn't consulted
+    /// or returned no verdict — flag OFF, ontology Unsafe, snapshot
+    /// build failed (Unsat/Stalled on `sub`). Orchestrator fell through.
+    pub snapshot_cache_falls_through: usize,
     /// The expressivity fragment of the input ontology. Diagnostic only:
     /// surfaces whether `trust_sat` is sound by construction (`PureEl`)
     /// or sound by composition (`OutOfFragment`). See
@@ -1254,6 +1272,59 @@ fn subsumes_via_tableau(
     trust_sat: bool,
     stats: &mut ClassificationStats,
 ) -> Result<Option<bool>, ReasonError> {
+    // Phase 1b snapshot-replay shortcut. When RUSTDL_SNAPSHOT_CAPTURE
+    // is ON AND the ontology is BackPropRisk::Safe, consult the per-class
+    // snapshot cache before the wedge. A snapshot for `sub` is built on
+    // first query and reused across all subsequent (sub, *) probes; the
+    // replay re-runs `decide` on the seeded engine state with `¬sup`
+    // injected, returning Subsumed/NotSubsumed/BackPropAborted/Stalled.
+    //
+    // Phase 1b ships full-re-run (no rule-firing skip) — correctness
+    // equivalent to the wedge; perf wins wait for Phase 1b.5 lazy
+    // expansion. Sound by spec §4.2 Inv-1 + the runtime sentinel at
+    // §4.3. Flag-OFF or Unsafe-ontology: try_replay returns None and
+    // execution falls through to the wedge unchanged.
+    if crate::snapshot_capture_enabled() {
+        // Atomic ¬sup encoding: `sup(x) → ⊥` is a single Horn clause
+        // that clashes any node carrying sup. This is the same shape
+        // HyperCache::decide uses for atomic sup (lib.rs:855-864).
+        // Defined-sup support is Phase 1b.5 / Phase 1c work.
+        let neg_sup_clauses = vec![owl_dl_core::clause::DlClause {
+            body: vec![owl_dl_core::clause::Atom::Class(
+                sup,
+                owl_dl_core::clause::X,
+            )],
+            head: vec![],
+        }];
+        if let Some(verdict) = prepared.snapshot_replay(sub, neg_sup_clauses) {
+            stats.snapshot_replay_used += 1;
+            match verdict {
+                owl_dl_tableau::ReplayVerdict::Subsumed => {
+                    stats.snapshot_replay_subsumed += 1;
+                    return Ok(Some(true));
+                }
+                owl_dl_tableau::ReplayVerdict::NotSubsumed
+                    if trust_sat && crate::hyper_trust_sat_enabled() =>
+                {
+                    stats.snapshot_replay_not_subsumed += 1;
+                    return Ok(Some(false));
+                }
+                owl_dl_tableau::ReplayVerdict::BackPropAborted => {
+                    stats.snapshot_replay_aborts += 1;
+                    // fall through to wedge
+                }
+                _ => {
+                    // NotSubsumed without trust_sat, or Stalled — fall through.
+                    stats.snapshot_cache_falls_through += 1;
+                }
+            }
+        } else {
+            // Flag ON but cache returned None: Unsafe ontology OR snapshot
+            // build failed for `sub` (Unsat/Stalled on `sub` alone).
+            stats.snapshot_cache_falls_through += 1;
+        }
+    }
+
     // H4 sound-accelerator wedge: try the hyper engine first. An
     // `Unsat` (subsumption-holds) verdict is sound for any ontology
     // (see docs/hypertableau-h4-scoping.md §0), so trust it and skip

@@ -663,18 +663,17 @@ pub fn label_heuristic_enabled() -> bool {
     std::env::var_os("RUSTDL_LABEL_HEURISTIC").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
-/// Project flag for the Konclude snapshot cache (Phase 1a — capture
-/// path landed but no consumer wires it yet). Default OFF; Phase 1c
-/// flips the default. Set `RUSTDL_SNAPSHOT_CAPTURE=1` to enable
-/// snapshot capture in `subsumes_via_tableau` (Phase 1b onward).
+/// Project flag for the Konclude snapshot cache. Phase 1b: when ON,
+/// `subsumes_via_tableau` consults a per-class snapshot-replay cache
+/// ahead of the wedge. Default OFF; Phase 1c flips the default.
+///
+/// Normalized to the sibling-helper style as of Phase 1b T4: accepts
+/// any non-empty, non-`"0"` value (`=1`, `=true`, `=yes`, `=on`).
 ///
 /// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
 #[must_use]
 pub fn snapshot_capture_enabled() -> bool {
-    std::env::var("RUSTDL_SNAPSHOT_CAPTURE")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .is_some_and(|v| v != 0)
+    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
@@ -902,6 +901,113 @@ impl HyperCache {
                 |v| LabelOracle::Sat(v.into_iter().collect()),
             ),
             HyperResult::Stalled => LabelOracle::NoVerdict,
+        }
+    }
+}
+
+/// Per-class snapshot cache for the Konclude snapshot cache project
+/// (Phase 1b). Populated lazily: on first `try_replay(sub, ...)` call
+/// for a given `sub`, build a wedge satisfiability snapshot of `sub`
+/// and stash it. Subsequent calls for the same `sub` reuse the cached
+/// snapshot.
+///
+/// Cache is per-[`PreparedOntology`] instance. TBox is frozen for the
+/// instance's lifetime, so cached snapshots stay valid across the
+/// pair loop.
+///
+/// Sound only for ontologies whose `BackPropRisk` is `Safe` — Phase 1b
+/// uses the ontology-wide first-cut classifier. Unsafe ontologies skip
+/// cache build entirely (`build` returns `None` shape via the orchestrator
+/// `Option<SnapshotCache>` field) so every `try_replay` is a no-op.
+pub(crate) struct SnapshotCache {
+    /// Clausified TBox, shared with the wedge build pattern. Cloned
+    /// once at build time and then extended per replay (replay path
+    /// appends `¬sup` clauses to a clone before constructing the engine).
+    clauses: Vec<owl_dl_core::clause::DlClause>,
+    /// Per-class snapshot, lazily populated. `Arc` for cheap clone-on-read.
+    /// Outer `Arc` wraps the DashMap so the cache itself is cheap to share
+    /// across the rayon pair-loop workers.
+    snapshots: std::sync::Arc<
+        dashmap::DashMap<
+            owl_dl_core::ir::ClassId,
+            std::sync::Arc<owl_dl_tableau::GraphSnapshot>,
+        >,
+    >,
+    /// Ontology-wide `BackPropRisk` classification, computed once at
+    /// build. Drives the orchestrator's "is this safe to consult" check
+    /// (spec §4.2 + the T1-reviewer's recommendation to make the
+    /// contract code-enforced, not just prose).
+    risk: owl_dl_tableau::BackPropRisk,
+}
+
+impl SnapshotCache {
+    /// Build the cache from `internal`. Clones the ontology once for
+    /// clausification (mirrors `HyperCache::build`).
+    pub(crate) fn build(internal: &InternalOntology) -> Self {
+        let internal = internal.clone();
+        let (clauses, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let risk = owl_dl_tableau::BackPropRisk::classify_ontology(&internal);
+        Self {
+            clauses,
+            snapshots: std::sync::Arc::new(dashmap::DashMap::new()),
+            risk,
+        }
+    }
+
+    /// Is the ontology back-prop-safe? Orchestrator's contract gate —
+    /// short-circuits the replay path on Unsafe ontologies (every SROIQ
+    /// workload in Phase 1b, until the per-class classifier lands in
+    /// Phase 3). Mirrors `GraphSnapshot::is_safe()`.
+    #[must_use]
+    pub(crate) fn is_safe(&self) -> bool {
+        matches!(self.risk, owl_dl_tableau::BackPropRisk::Safe)
+    }
+
+    /// Try a snapshot-replay for `sub ⊑ sup` (sup encoded as `¬sup`
+    /// clauses). Returns:
+    /// - `Some(verdict)` when the cache built or reused a snapshot
+    ///   AND replay produced a verdict (any of the 4 variants;
+    ///   `BackPropAborted`/`Stalled` mean caller must fall through).
+    /// - `None` when the ontology is Unsafe (every call is a no-op)
+    ///   or when building the snapshot for `sub` failed (the wedge
+    ///   returned Unsat or Stalled for `sub` alone, which means `sub`
+    ///   is unsatisfiable — caller should treat as Subsumed-by-Bot
+    ///   via the existing path, not the snapshot path).
+    pub(crate) fn try_replay(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        neg_sup_clauses: Vec<owl_dl_core::clause::DlClause>,
+    ) -> Option<owl_dl_tableau::ReplayVerdict> {
+        if !self.is_safe() {
+            return None;
+        }
+        let snap = self.get_or_build_snapshot(sub)?;
+        Some(owl_dl_tableau::replay_with_neg_sup(
+            &self.clauses,
+            &snap,
+            neg_sup_clauses,
+        ))
+    }
+
+    /// Cache-build path: returns the cached snapshot or builds + stores
+    /// one. `None` if the snapshot can't be built (sub is Unsat or wedge
+    /// stalled).
+    fn get_or_build_snapshot(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+    ) -> Option<std::sync::Arc<owl_dl_tableau::GraphSnapshot>> {
+        if let Some(existing) = self.snapshots.get(&sub) {
+            return Some(existing.clone());
+        }
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        let mut engine = HyperEngine::new(&self.clauses, sub);
+        match engine.decide(HYPER_WEDGE_DEPTH) {
+            HyperResult::Sat => {
+                let snap = std::sync::Arc::new(engine.satisfiability_snapshot(sub)?);
+                self.snapshots.insert(sub, snap.clone());
+                Some(snap)
+            }
+            HyperResult::Unsat | HyperResult::Stalled => None,
         }
     }
 }
@@ -1446,6 +1552,11 @@ pub(crate) struct PreparedOntology {
     /// expansions), `Some` iff [`hyper_wedge_enabled`]. The classify
     /// pair loop consults it before the tableau (`subsumes_via_tableau`).
     hyper: Option<HyperCache>,
+    /// Phase 1b snapshot cache: per-class completion graph snapshots
+    /// reused across the classify pair loop. `Some` iff
+    /// [`snapshot_capture_enabled`]; populated lazily by
+    /// [`Self::snapshot_replay`]. Spec §3 + §4.
+    snapshot_cache: Option<SnapshotCache>,
 }
 
 impl PreparedOntology {
@@ -1456,6 +1567,11 @@ impl PreparedOntology {
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
+        // Phase 1b: build the snapshot cache from the same un-mutated
+        // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's
+        // `clausify_with_stats` + `BackPropRisk::classify_ontology`
+        // run on a separate clone (mirrors HyperCache::build).
+        let snapshot_cache = snapshot_capture_enabled().then(|| SnapshotCache::build(&internal));
         expand_role_characteristics(&mut internal);
         let hierarchy = build_role_hierarchy(&internal);
         let inverse_pairs = collect_inverse_pairs(&internal);
@@ -1483,8 +1599,33 @@ impl PreparedOntology {
             abox,
             model_cache: model_cache::ModelCache::new(),
             hyper,
+            snapshot_cache,
         })
     }
+
+    /// Phase 1b snapshot-replay shortcut. Returns:
+    /// - `Some(ReplayVerdict)` when the snapshot cache produced a verdict
+    ///   (orchestrator maps `Subsumed`/`NotSubsumed` to the classify
+    ///   decision; falls through on `BackPropAborted`/`Stalled`).
+    /// - `None` when snapshot capture is disabled (flag OFF), the
+    ///   ontology is Unsafe (cache built but `is_safe()` is false), or
+    ///   the wedge couldn't build a snapshot for `sub` (Unsat/Stalled
+    ///   on `sub` alone — caller should treat as a separate path).
+    pub(crate) fn snapshot_replay(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        neg_sup_clauses: Vec<owl_dl_core::clause::DlClause>,
+    ) -> Option<owl_dl_tableau::ReplayVerdict> {
+        self.snapshot_cache
+            .as_ref()
+            .and_then(|c| c.try_replay(sub, neg_sup_clauses))
+    }
+
+    // snapshot_cache_is_safe accessor reserved for Phase 3 when the
+    // per-class classifier lands and orchestrator callers need to
+    // gate per call. Phase 1b's single caller (snapshot_replay) folds
+    // the safety check into try_replay; an explicit accessor would
+    // be dead code.
 
     /// H4/HF5 sound accelerator: the hyper engine's three-valued
     /// verdict for `sub ⊑ sup`, or [`HyperVerdict::Unknown`] when the

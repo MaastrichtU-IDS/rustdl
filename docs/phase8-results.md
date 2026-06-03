@@ -89,10 +89,14 @@ Under variable host load:
 
 **ORE-10908 hits the ≤5× target** the user named at the start of
 this work — closed from 17× pre-Phase-7 to 4.87× post-Phase-8.
-ORE-15672 stays at 17× because its 46-class NoVerdict cluster is a
-real intractability, not a budget overshoot — Phase 8's deadline
-extension correctly bails quickly on them without further hurting
-wall.
+ORE-15672 stays at 17× because of a small genuine-intractability
+cluster (3 classes consulted ~15 times each in the tier walk; the
+`misses=46` counter is tier-walk consultation events, not unique
+NoVerdict classes). Phase 9 recon (`docs/phase9-recon.md`)
+characterizes the cluster: it's joint-expansion budget exhaustion
+on `∃proper-part.X` hops over a transitive+inverse role, NOT a
+missing saturator rule. Phase 8's deadline extension correctly bails
+quickly on them without further hurting wall.
 
 ## Soundness gate (Phase 0 net)
 

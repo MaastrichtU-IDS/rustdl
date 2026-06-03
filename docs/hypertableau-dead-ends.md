@@ -514,6 +514,60 @@ reusable for workload-adaptive variant); `docs/phase3e-results.md`
 
 ---
 
+## 18. ORE-15672 NoVerdict cluster — search-budget-bound, not rule-bound (Phase 9)
+
+**Hypothesis:** ORE-15672's residual 17× Konclude wall (post-Phase-8)
+is driven by a specific SROIQ construct that the wedge can't handle
+in budget; identifying it would point to a saturator extension
+(nominals, qualified cardinality, inverse-role propagation) that
+would close the gap.
+
+**Status:** killed at recon (`docs/phase9-recon.md`, commit `ded4368`).
+No surgical lever; ORE-15672 is accepted as out-of-scope for the
+incremental approach.
+
+**What the recon found:**
+- The "46-class NoVerdict cluster" framing from Phase 8 was a
+  miscount. Only **3 classes** are NoVerdict: `e-collaboration-situation`,
+  `e-interaction-situation`, `epistemic-workflow-enactment`. The
+  `misses=46` counter records tier-walk consultation events (each
+  staller consulted ~15 times).
+- Increasing the cache-build budget to 30,000 ms doesn't convert
+  any of the 3 to Sat — they're truly intractable in any practical
+  budget at the current architecture's search shape.
+- **No dominant construct.** A near-identical sibling class
+  (`e-usage-situation`) with the same `EquivalentClasses` shape
+  resolves to Sat in <1 s. The wedge demonstrably handles the
+  construct shape. What discriminates pass/fail is the joint-expansion
+  cost of 3 `∃proper-part.X` hops where `proper-part` is transitive
+  + inverse, layered on an inherited 5-conjunct body containing
+  `ObjectHasValue` + ancestor `ObjectMinCardinality(5 setting-for)`.
+- Each candidate saturator extension was structurally ruled out:
+  - **Nominal-singleton handling**: ruled out because
+    `epistemic-influence-situation` (same cardinality-rich body sans
+    `ObjectHasValue`) resolves.
+  - **Qualified cardinality**: ruled out because no ≤n/=n in the
+    ontology.
+  - **Inverse-role propagation**: ruled out because `e-usage-situation`
+    (uses the same inverse role) resolves.
+
+**Cost when shipped:** none (recon-only; no code committed).
+
+**Don't reattempt without first:** measuring whether the workload
+profile shifts (the only structurally-different angle that could
+help is Konclude-style shared-model caching, which is dead-end §2
+territory with uncertain benefit on small workloads). For
+single-ontology gaps without a transferable mechanism, accepting
+the gap is the honest answer.
+
+**Cross-references:** `docs/phase9-recon.md` (full breakdown with
+per-class construct profile and the sibling-class disambiguation
+that ruled out each extension candidate); `docs/phase8-results.md`
+(Phase 8's note now corrected to reflect the 3-not-46 count); §2
+(the Konclude-style alternative).
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

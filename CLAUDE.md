@@ -174,8 +174,15 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   ≤5× ratio not reached on SROIQ (ORE-10908 closed 17× → 12×). See
   `docs/phase7-results.md`.
 
-- **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded, **not
-  yet wired into reasoning.**
+- **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded,
+  **not yet wired into reasoning.** Data axioms / data ranges are
+  silently dropped at conversion time (Phase D1, commit `e34aeb6`):
+  sound under-approximation. Corpus-validated near-Konclude parity on
+  the data-axiom-bearing fixtures (shoiq-knowledge: 0 MISSED of 449;
+  sio: 2 MISSED of 8904, both from existing disjunction-reasoning
+  gaps unrelated to data). Tier B (data-cardinality propagation) and
+  Tier C (concrete-domain ranges) deferred until a future workload
+  exposes a real data-axiom completeness gap.
 
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
   (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).

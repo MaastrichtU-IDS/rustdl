@@ -1710,6 +1710,14 @@ pub(crate) struct PreparedOntology {
     /// [`snapshot_capture_enabled`]; populated lazily by
     /// [`Self::snapshot_replay`]. Spec §3 + §4.
     snapshot_cache: Option<SnapshotCache>,
+    /// Phase 3a recon: count of classes that the per-class
+    /// [`owl_dl_tableau::BackPropRisk::classify_class`] variant marks
+    /// `Safe`. Diagnostic only; the ontology-wide classifier still
+    /// gates `SnapshotCache::try_replay`.
+    pub(crate) per_class_safe_count: usize,
+    /// Phase 3a recon: count of classes that the per-class classifier
+    /// marks `Unsafe`. Diagnostic only.
+    pub(crate) per_class_unsafe_count: usize,
 }
 
 impl PreparedOntology {
@@ -1725,6 +1733,30 @@ impl PreparedOntology {
         // `clausify_with_stats` + `BackPropRisk::classify_ontology`
         // run on a separate clone (mirrors HyperCache::build).
         let snapshot_cache = snapshot_capture_enabled().then(|| SnapshotCache::build(&internal));
+        // Phase 3a recon: per-class BackPropRisk classifier counts.
+        // Pure diagnostic — does not change the snapshot cache gate
+        // (the ontology-wide classifier still drives `try_replay`).
+        // Runs on the un-mutated `internal` (before absorb/NNF) so
+        // axiom shapes match what `classify_ontology` saw.
+        let (per_class_safe_count, per_class_unsafe_count) = {
+            let n = internal.vocabulary.num_classes();
+            let mut safe = 0usize;
+            let mut not_safe = 0usize;
+            for i in 0..n {
+                let cid = owl_dl_core::ir::ClassId::new(
+                    u32::try_from(i).expect("class count fits in u32"),
+                );
+                if matches!(
+                    owl_dl_tableau::BackPropRisk::classify_class(cid, &internal),
+                    owl_dl_tableau::BackPropRisk::Safe
+                ) {
+                    safe += 1;
+                } else {
+                    not_safe += 1;
+                }
+            }
+            (safe, not_safe)
+        };
         expand_role_characteristics(&mut internal);
         let hierarchy = build_role_hierarchy(&internal);
         let inverse_pairs = collect_inverse_pairs(&internal);
@@ -1753,6 +1785,8 @@ impl PreparedOntology {
             model_cache: model_cache::ModelCache::new(),
             hyper,
             snapshot_cache,
+            per_class_safe_count,
+            per_class_unsafe_count,
         })
     }
 
@@ -1793,6 +1827,19 @@ impl PreparedOntology {
         self.snapshot_cache
             .as_ref()
             .map_or(0, SnapshotCache::replay_wall_ms)
+    }
+
+    /// Phase 3a recon: count of classes the per-class
+    /// [`owl_dl_tableau::BackPropRisk::classify_class`] variant marks
+    /// `Safe`. Diagnostic only.
+    pub(crate) fn per_class_safe_count(&self) -> usize {
+        self.per_class_safe_count
+    }
+
+    /// Phase 3a recon: count of classes the per-class classifier
+    /// marks `Unsafe`. Diagnostic only.
+    pub(crate) fn per_class_unsafe_count(&self) -> usize {
+        self.per_class_unsafe_count
     }
 
     // snapshot_cache_is_safe accessor reserved for Phase 3 when the

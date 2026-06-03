@@ -224,6 +224,14 @@ pub struct ClassificationStats {
     /// overhead (tier walk, label-cache lookups, wedge calls that
     /// DON'T hit the snapshot path, etc.). Diagnostic only.
     pub tier_walk_wall_ms: u64,
+    /// Phase 3a recon: count of classes that the per-class
+    /// `BackPropRisk::classify_class` variant would mark Safe.
+    /// Diagnostic only; the ontology-wide classifier still gates
+    /// the snapshot cache.
+    pub per_class_safe_count: usize,
+    /// Phase 3a recon: count of classes that the per-class classifier
+    /// would mark Unsafe. Diagnostic only.
+    pub per_class_unsafe_count: usize,
 }
 
 impl Classification {
@@ -504,6 +512,8 @@ pub(crate) fn classify_internal_with_timeout(
     // they run in parallel via rayon.
     let mut stats = ClassificationStats {
         fragment: analyze_fragment(internal),
+        per_class_safe_count: prepared.per_class_safe_count(),
+        per_class_unsafe_count: prepared.per_class_unsafe_count(),
         ..ClassificationStats::default()
     };
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
@@ -1220,6 +1230,10 @@ pub(crate) fn classify_top_down_internal(
     // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
     stats.snapshot_cache_build_wall_ms = prepared.snapshot_cache_build_wall_ms();
     stats.snapshot_replay_wall_ms = prepared.snapshot_cache_replay_wall_ms();
+    // Phase 3a recon: per-class BackPropRisk diagnostic counts. Pure
+    // instrumentation; does not affect the snapshot cache gate.
+    stats.per_class_safe_count = prepared.per_class_safe_count();
+    stats.per_class_unsafe_count = prepared.per_class_unsafe_count();
     let total_wall = u64::try_from(classify_start.elapsed().as_millis()).unwrap_or(u64::MAX);
     stats.tier_walk_wall_ms = total_wall
         .saturating_sub(stats.label_cache_build_wall_ms)

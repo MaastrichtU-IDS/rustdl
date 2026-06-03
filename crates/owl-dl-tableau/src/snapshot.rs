@@ -178,6 +178,100 @@ impl BackPropRisk {
             Self::Safe
         }
     }
+
+    /// Phase 3a recon: per-class variant of [`Self::classify_ontology`].
+    /// Returns `Unsafe` iff any axiom directly mentioning `class_id`
+    /// (as an operand whose concept expression tree reaches the atomic
+    /// concept for `class_id`) touches an inverse role / nominal /
+    /// cardinality construct. Returns `Safe` otherwise.
+    ///
+    /// **First-cut reachability**: trivial direct-axiom mentions only.
+    /// A class is Safe iff none of its directly-asserted axioms reach
+    /// a risk construct. Conservative (over-flags Unsafe in cases where
+    /// the construct is reached transitively via inherited axioms), but
+    /// cheap and gives a usable baseline for Phase 3a recon.
+    ///
+    /// Phase 3b (if green-lit) would refine reachability (e.g., follow
+    /// told-subsumer chains to include inherited axioms).
+    ///
+    /// Diagnostic only — the ontology-wide [`Self::classify_ontology`]
+    /// still gates `SnapshotCache::try_replay`.
+    #[must_use]
+    pub fn classify_class(class_id: ClassId, internal: &InternalOntology) -> Self {
+        let mut hit_inverse = false;
+        let mut hit_nominal = false;
+        let mut hit_cardinality = false;
+        for ax in &internal.axioms {
+            // InverseObjectProperties takes two `RoleId`s and never
+            // mentions a class operand, so it cannot be a per-class
+            // risk source. Skip it cleanly (the ontology-wide
+            // classifier scans every axiom of every shape, but a
+            // class is only "mentioned" by axioms whose operands are
+            // concept expressions; see `axiom_concept_ids`).
+            let cids = axiom_concept_ids(ax);
+            if !cids
+                .iter()
+                .any(|&cid| concept_mentions_class(cid, class_id, &internal.concepts))
+            {
+                continue;
+            }
+            for cid in cids {
+                let (inv, nom, card) = scan_concept(cid, internal);
+                hit_inverse |= inv;
+                hit_nominal |= nom;
+                hit_cardinality |= card;
+            }
+        }
+        if hit_inverse {
+            Self::Unsafe {
+                reason: UnsafeReason::InverseRoleReachable,
+            }
+        } else if hit_nominal {
+            Self::Unsafe {
+                reason: UnsafeReason::NominalReachable,
+            }
+        } else if hit_cardinality {
+            Self::Unsafe {
+                reason: UnsafeReason::CardinalityReachable,
+            }
+        } else {
+            Self::Safe
+        }
+    }
+}
+
+/// True iff the sub-expression tree rooted at `cid` reaches the
+/// atomic concept for `target` (i.e., the named class appears as a
+/// `ConceptExpr::Atomic(target)` somewhere in the tree). Walks the
+/// pool with a `seen` guard so each `ConceptId` is visited at most
+/// once. Mirrors the recursion shape of [`scan_concept`].
+fn concept_mentions_class(
+    cid: ConceptId,
+    target: ClassId,
+    pool: &owl_dl_core::ir::ConceptPool,
+) -> bool {
+    let mut stack: Vec<ConceptId> = vec![cid];
+    let mut seen: hashbrown::HashSet<ConceptId> = hashbrown::HashSet::new();
+    while let Some(c) = stack.pop() {
+        if !seen.insert(c) {
+            continue;
+        }
+        match pool.get(c) {
+            ConceptExpr::Atomic(class) if *class == target => return true,
+            ConceptExpr::Atomic(_)
+            | ConceptExpr::Top
+            | ConceptExpr::Bot
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_) => {}
+            ConceptExpr::Not(body)
+            | ConceptExpr::Some(_, body)
+            | ConceptExpr::All(_, body)
+            | ConceptExpr::Min(_, _, body)
+            | ConceptExpr::Max(_, _, body) => stack.push(*body),
+            ConceptExpr::And(xs) | ConceptExpr::Or(xs) => stack.extend(xs.iter().copied()),
+        }
+    }
+    false
 }
 
 impl GraphSnapshot {

@@ -287,6 +287,11 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         stats.snapshot_replay_wall_ms,
         stats.tier_walk_wall_ms,
     )?;
+    writeln!(
+        out,
+        "# per-class BackPropRisk: safe={} unsafe={} (Phase 3a recon)",
+        stats.per_class_safe_count, stats.per_class_unsafe_count,
+    )?;
     let p = &stats.pairs_per_sub;
     if !p.is_empty() {
         let mut counts: Vec<u32> = p.values().copied().collect();

@@ -59,15 +59,17 @@ pub struct GraphSnapshot {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct SnapshotNode {
     /// Sorted-deduped concept labels at this node.
     pub labels: Vec<ClassId>,
     /// `true` iff this node is the seed-graph root.
     pub is_root: bool,
-    // birth_deps is added in Phase 1b alongside the replay driver
-    // that consumes it. Phase 1a doesn't expose hyper::DepSet
-    // through this module to avoid premature API surface.
+    /// Backjumping dep-set this node was created under (the `∃`/`≥n`
+    /// that generated it). Round-tripped opaquely in Phase 1b so the
+    /// replay driver can restore the engine's [`crate::hyper::HyperNode::birth_deps`]
+    /// field byte-for-byte; Phase 1b.5 will interpret it for
+    /// fingerprint-gated lazy expansion + axiom-justification work.
+    pub birth_deps: crate::hyper::DepSet,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +221,16 @@ impl GraphSnapshot {
     pub fn root_labels(&self) -> &[ClassId] {
         let root_idx = self.nodes.iter().position(|n| n.is_root).unwrap_or(0);
         &self.nodes[root_idx].labels
+    }
+
+    #[must_use]
+    pub(crate) fn nodes(&self) -> &[SnapshotNode] {
+        &self.nodes
+    }
+
+    #[must_use]
+    pub(crate) fn edges_per_node(&self) -> &[Vec<SnapshotEdge>] {
+        &self.edges
     }
 }
 

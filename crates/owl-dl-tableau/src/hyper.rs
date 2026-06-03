@@ -66,9 +66,9 @@ impl HNode {
 /// an unsound backjump. Empty (`EMPTY`) is the common case: every label
 /// derived before any branching depends on no decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct DepSet {
-    bits: u128,
-    overflow: bool,
+pub(crate) struct DepSet {
+    pub(crate) bits: u128,
+    pub(crate) overflow: bool,
 }
 
 impl DepSet {
@@ -825,6 +825,7 @@ impl<'c> HyperEngine<'c> {
             nodes.push(SnapshotNode {
                 labels: hn.labels.clone(),
                 is_root: snap_id == root_snap_idx,
+                birth_deps: hn.birth_deps,
             });
             let mut snap_edges = Vec::with_capacity(hn.edges.len());
             for (role, tgt) in &hn.edges {
@@ -847,6 +848,87 @@ impl<'c> HyperEngine<'c> {
             seed,
             crate::snapshot::BackPropRisk::Safe,
         ))
+    }
+
+    /// Reconstruct a `HyperEngine` from a captured `GraphSnapshot`,
+    /// suitable as the seed state for a snapshot-replay query.
+    ///
+    /// The returned engine has the snapshot's `node` / `edge` / `label` /
+    /// `birth_deps` state populated, and the clause set ready to receive
+    /// additional query clauses (e.g., a `¬sup` injection) before `decide`
+    /// is called.
+    ///
+    /// Note: this is the first half of the snapshot-replay path. Replay
+    /// proper lives in `crate::replay::replay_with_neg_sup` (Task 2).
+    /// Phase 1b first-cut uses full-re-run (no lazy expansion skip);
+    /// Phase 1b.5 will add fingerprint-gated lazy firing.
+    ///
+    /// Fields NOT round-tripped (deferred to a future phase):
+    /// `parent`/`parent_role` (HF2 double-blocking will conservatively
+    /// skip blocking on these nodes — sound, possibly slower);
+    /// `at_most`/`at_least_done`/`neq` (cardinality state — snapshots
+    /// of cardinality-bearing seeds aren't replayed today because the
+    /// `BackPropRisk` gate flags them `Unsafe`, so this gap is moot
+    /// at the orchestrator layer); `block_index` (rebuilt lazily by the
+    /// engine when double-blocking is enabled).
+    #[must_use]
+    pub fn from_snapshot(
+        clauses: &'c [DlClause],
+        snapshot: &crate::snapshot::GraphSnapshot,
+    ) -> Self {
+        // Start with a fresh engine, then overwrite the graph state with
+        // the snapshot's nodes/edges/labels/deps. The clause set, indexes,
+        // and other run-state default to the same shape as a brand-new
+        // engine.
+        let mut engine = Self::new(clauses, snapshot.seed());
+
+        // Reset graph state (Self::new initialized one node carrying the
+        // seed; we replace with the snapshot's full graph).
+        engine.nodes.clear();
+        engine.representative.clear();
+        engine.neq.clear();
+        engine.worklist.clear();
+        engine.clash_deps = DepSet::EMPTY;
+        if let Some(ix) = engine.block_index.as_mut() {
+            ix.clear();
+        }
+
+        let n_nodes = snapshot.nodes().len();
+        for (i, snap_node) in snapshot.nodes().iter().enumerate() {
+            let order = u32::try_from(i).expect("node count fits u32");
+            let mut hn = HyperNode {
+                order,
+                birth_deps: snap_node.birth_deps,
+                ..HyperNode::default()
+            };
+            hn.labels.clone_from(&snap_node.labels);
+            hn.label_deps = vec![snap_node.birth_deps; snap_node.labels.len()];
+            // parent / parent_role: unknown from snapshot (Phase 1b.5
+            // will capture them); leave None. Double-blocking is a
+            // soundness-completeness lever, not a soundness requirement,
+            // so the engine will conservatively skip blocking decisions
+            // that lack parent info — sound, possibly slower.
+            engine.nodes.push(hn);
+        }
+        for i in 0..n_nodes {
+            engine
+                .representative
+                .push(HNode(u32::try_from(i).expect("node count fits u32")));
+        }
+        for (i, edges) in snapshot.edges_per_node().iter().enumerate() {
+            for edge in edges {
+                let src = HNode(u32::try_from(i).expect("fits u32"));
+                let tgt = HNode(edge.target);
+                engine.nodes[i].edges.push((edge.role, tgt));
+                // Mirror as a pred on the target for back-propagation
+                // bookkeeping (matches the inline comment on
+                // HyperNode.preds).
+                engine.nodes[edge.target as usize]
+                    .preds
+                    .push((edge.role, src));
+            }
+        }
+        engine
     }
 
     fn solve(&mut self, depth: usize) -> HyperResult {

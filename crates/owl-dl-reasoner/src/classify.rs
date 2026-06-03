@@ -1295,18 +1295,13 @@ fn subsumes_via_tableau(
     // §4.3. Flag-OFF or Unsafe-ontology: try_replay returns None and
     // execution falls through to the wedge unchanged.
     if crate::snapshot_capture_enabled() {
-        // Atomic ¬sup encoding: `sup(x) → ⊥` is a single Horn clause
-        // that clashes any node carrying sup. This is the same shape
-        // HyperCache::decide uses for atomic sup (lib.rs:855-864).
-        // Defined-sup support is Phase 1b.5 / Phase 1c work.
-        let neg_sup_clauses = vec![owl_dl_core::clause::DlClause {
-            body: vec![owl_dl_core::clause::Atom::Class(
-                sup,
-                owl_dl_core::clause::X,
-            )],
-            head: vec![],
-        }];
-        if let Some(verdict) = prepared.snapshot_replay(sub, neg_sup_clauses) {
+        // Snapshot replay uses the wedge's fresh_q injection pattern
+        // (root-scoped ¬sup: `fresh_q ⊓ sup → ⊥`). Caller passes just
+        // (sub, sup); the SnapshotCache internals build the q-gated
+        // clause. T6 recon: the global `sup(x) → ⊥` encoding triggered
+        // 25,333 FPs on GALEN because successor labels matched arbitrary
+        // sups. Defined-sup support is Phase 1b.5 / Phase 1c work.
+        if let Some(verdict) = prepared.snapshot_replay(sub, sup) {
             stats.snapshot_replay_used += 1;
             match verdict {
                 owl_dl_tableau::ReplayVerdict::Subsumed => {

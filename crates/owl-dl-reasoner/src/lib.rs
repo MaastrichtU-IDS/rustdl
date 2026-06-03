@@ -920,13 +920,27 @@ impl HyperCache {
 /// cache build entirely (`build` returns `None` shape via the orchestrator
 /// `Option<SnapshotCache>` field) so every `try_replay` is a no-op.
 pub(crate) struct SnapshotCache {
-    /// Clausified TBox, shared with the wedge build pattern. Cloned
-    /// once at build time and then extended per replay (replay path
-    /// appends `¬sup` clauses to a clone before constructing the engine).
-    clauses: Vec<owl_dl_core::clause::DlClause>,
+    /// Clausified TBox (base only — q-injection clauses are added
+    /// per-`sub` in `clauses_for_sub`). Shared with the wedge build
+    /// pattern; cloned per snapshot build / replay so we never mutate
+    /// the cached state.
+    base_clauses: Vec<owl_dl_core::clause::DlClause>,
+    /// Fresh query class id, allocated once per cache. Mirrors the
+    /// wedge's `HyperCache::fresh_q`: snapshots are seeded with
+    /// `fresh_q` (carrying it at the root) and a Horn clause
+    /// `fresh_q → sub` derives `sub` from `fresh_q`. Replay's
+    /// `¬sup` is then encoded as `fresh_q ⊓ sup → ⊥` which is
+    /// **root-scoped** (only the root carries `fresh_q`), so
+    /// successor labels matching arbitrary sup classes never
+    /// spuriously clash. Without this gate, GALEN-style fixtures
+    /// produce massive FPs (a sub's successor nodes carry labels
+    /// matching unrelated sups). See Phase 1b T6 recon for the
+    /// 25,333-FP regression that motivated this design.
+    fresh_q: owl_dl_core::ir::ClassId,
     /// Per-class snapshot, lazily populated. `Arc` for cheap clone-on-read.
     /// Outer `Arc` wraps the DashMap so the cache itself is cheap to share
-    /// across the rayon pair-loop workers.
+    /// across the rayon pair-loop workers. Snapshot for `sub` has
+    /// `fresh_q` as the seed (snapshot.seed() == fresh_q for every entry).
     snapshots: std::sync::Arc<
         dashmap::DashMap<
             owl_dl_core::ir::ClassId,
@@ -935,8 +949,7 @@ pub(crate) struct SnapshotCache {
     >,
     /// Ontology-wide `BackPropRisk` classification, computed once at
     /// build. Drives the orchestrator's "is this safe to consult" check
-    /// (spec §4.2 + the T1-reviewer's recommendation to make the
-    /// contract code-enforced, not just prose).
+    /// (spec §4.2).
     risk: owl_dl_tableau::BackPropRisk,
 }
 
@@ -945,10 +958,14 @@ impl SnapshotCache {
     /// clausification (mirrors `HyperCache::build`).
     pub(crate) fn build(internal: &InternalOntology) -> Self {
         let internal = internal.clone();
-        let (clauses, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        let (base_clauses, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
         let risk = owl_dl_tableau::BackPropRisk::classify_ontology(&internal);
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+        let next_fresh = fresh_class_id(&base_clauses).index().max(num_classes);
+        let fresh_q = owl_dl_core::ir::ClassId::new(next_fresh);
         Self {
-            clauses,
+            base_clauses,
+            fresh_q,
             snapshots: std::sync::Arc::new(dashmap::DashMap::new()),
             risk,
         }
@@ -963,35 +980,62 @@ impl SnapshotCache {
         matches!(self.risk, owl_dl_tableau::BackPropRisk::Safe)
     }
 
-    /// Try a snapshot-replay for `sub ⊑ sup` (sup encoded as `¬sup`
-    /// clauses). Returns:
+    /// Build the per-`sub` clause set: base clauses + the q-injection
+    /// clause `fresh_q → sub`. Used both at snapshot-build time (so
+    /// the snapshot's root carries `sub` via Horn derivation from
+    /// `fresh_q`) and at replay time (so the reconstructed engine's
+    /// clause indexes include the same q-injection clause).
+    fn clauses_for_sub(&self, sub: owl_dl_core::ir::ClassId) -> Vec<owl_dl_core::clause::DlClause> {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        let mut clauses = self.base_clauses.clone();
+        clauses.push(DlClause {
+            body: vec![Atom::Class(self.fresh_q, X)],
+            head: vec![Atom::Class(sub, X)],
+        });
+        clauses
+    }
+
+    /// Try a snapshot-replay for `sub ⊑ sup`. Returns:
     /// - `Some(verdict)` when the cache built or reused a snapshot
     ///   AND replay produced a verdict (any of the 4 variants;
     ///   `BackPropAborted`/`Stalled` mean caller must fall through).
     /// - `None` when the ontology is Unsafe (every call is a no-op)
     ///   or when building the snapshot for `sub` failed (the wedge
-    ///   returned Unsat or Stalled for `sub` alone, which means `sub`
-    ///   is unsatisfiable — caller should treat as Subsumed-by-Bot
-    ///   via the existing path, not the snapshot path).
+    ///   returned Unsat or Stalled for `sub` alone).
     pub(crate) fn try_replay(
         &self,
         sub: owl_dl_core::ir::ClassId,
-        neg_sup_clauses: Vec<owl_dl_core::clause::DlClause>,
+        sup: owl_dl_core::ir::ClassId,
     ) -> Option<owl_dl_tableau::ReplayVerdict> {
+        use owl_dl_core::clause::{Atom, DlClause, X};
         if !self.is_safe() {
             return None;
         }
         let snap = self.get_or_build_snapshot(sub)?;
+        // Root-scoped ¬sup: `fresh_q ⊓ sup → ⊥`. Only the root carries
+        // fresh_q (it's the seed and doesn't propagate to successors
+        // in Horn), so this clause fires only when sup is at the root.
+        // This is the soundness fix for the 25,333-FP regression seen
+        // with the global `sup(x) → ⊥` encoding (T6 recon).
+        let neg_sup_clauses = vec![DlClause {
+            body: vec![Atom::Class(self.fresh_q, X), Atom::Class(sup, X)],
+            head: vec![],
+        }];
+        // Replay needs the full clause set (base + q-injection +
+        // ¬sup) so the reconstructed engine's indexes pick up all
+        // three. Pass the per-sub clauses as the base.
         Some(owl_dl_tableau::replay_with_neg_sup(
-            &self.clauses,
+            &self.clauses_for_sub(sub),
             &snap,
             neg_sup_clauses,
         ))
     }
 
     /// Cache-build path: returns the cached snapshot or builds + stores
-    /// one. `None` if the snapshot can't be built (sub is Unsat or wedge
-    /// stalled).
+    /// one. Snapshot is captured with `fresh_q` as the seed (the Horn
+    /// closure derives `sub` and its closure at the root from
+    /// `fresh_q → sub`). `None` if snapshot can't be built (sub is
+    /// Unsat or wedge stalled).
     fn get_or_build_snapshot(
         &self,
         sub: owl_dl_core::ir::ClassId,
@@ -1000,10 +1044,11 @@ impl SnapshotCache {
             return Some(existing.clone());
         }
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
-        let mut engine = HyperEngine::new(&self.clauses, sub);
+        let clauses = self.clauses_for_sub(sub);
+        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         match engine.decide(HYPER_WEDGE_DEPTH) {
             HyperResult::Sat => {
-                let snap = std::sync::Arc::new(engine.satisfiability_snapshot(sub)?);
+                let snap = std::sync::Arc::new(engine.satisfiability_snapshot(self.fresh_q)?);
                 self.snapshots.insert(sub, snap.clone());
                 Some(snap)
             }
@@ -1611,14 +1656,19 @@ impl PreparedOntology {
     ///   ontology is Unsafe (cache built but `is_safe()` is false), or
     ///   the wedge couldn't build a snapshot for `sub` (Unsat/Stalled
     ///   on `sub` alone — caller should treat as a separate path).
+    ///
+    /// Phase 1b T6 fix: the cache uses the wedge's `fresh_q` injection
+    /// pattern so `¬sup` is root-scoped (not global). Caller passes
+    /// just `(sub, sup)`; the cache internals build the q-gated
+    /// `fresh_q ⊓ sup → ⊥` clause.
     pub(crate) fn snapshot_replay(
         &self,
         sub: owl_dl_core::ir::ClassId,
-        neg_sup_clauses: Vec<owl_dl_core::clause::DlClause>,
+        sup: owl_dl_core::ir::ClassId,
     ) -> Option<owl_dl_tableau::ReplayVerdict> {
         self.snapshot_cache
             .as_ref()
-            .and_then(|c| c.try_replay(sub, neg_sup_clauses))
+            .and_then(|c| c.try_replay(sub, sup))
     }
 
     // snapshot_cache_is_safe accessor reserved for Phase 3 when the

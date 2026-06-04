@@ -1707,7 +1707,7 @@ where
 /// the (now-frozen) concept pool, so each tableau query reuses one
 /// preparation pass.
 pub(crate) struct PreparedOntology {
-    pool: ConceptPool,
+    pub(crate) pool: ConceptPool,
     tbox: AbsorbedTBox,
     hierarchy: RoleHierarchy,
     inverse_pairs: Vec<(RoleId, RoleId)>,
@@ -1715,7 +1715,13 @@ pub(crate) struct PreparedOntology {
     asymmetric_roles: Vec<RoleId>,
     disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     complements: Vec<(ConceptId, ConceptId)>,
-    abox: Abox,
+    pub(crate) abox: Abox,
+    /// EL saturator closure over the un-mutated input ontology.
+    /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
+    /// Computed once at build time; classify already computes the same
+    /// closure at its own call site, so we keep `abox_check`'s copy
+    /// self-contained rather than threading it through.
+    pub(crate) closure: owl_dl_saturation::Subsumers,
     /// Phase 1 scaffolding for the satisfying-model cache. The
     /// field is shipped now so [`crate::PreparedOntology::decide`]
     /// callers can be wired one at a time in Phase 2 without a
@@ -1752,6 +1758,12 @@ impl PreparedOntology {
     /// `decide` calls only have to allocate a fresh tableau and run
     /// the search.
     pub(crate) fn from_internal(mut internal: InternalOntology) -> Result<Self, ReasonError> {
+        // Phase A1 (ABox consistency check): EL closure over the
+        // un-mutated input. Used by abox_check for P1 (is_unsatisfiable)
+        // and P2 (subsumers_of). Cheap on small ABox-bearing ontologies;
+        // on ABox-free ontologies, abox_check exits early before
+        // querying the closure, so the cost is amortised.
+        let closure = owl_dl_saturation::saturate(&internal);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
@@ -1809,6 +1821,7 @@ impl PreparedOntology {
             disjoint_role_pairs,
             complements,
             abox,
+            closure,
             model_cache: model_cache::ModelCache::new(),
             hyper,
             snapshot_cache,

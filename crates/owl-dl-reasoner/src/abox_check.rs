@@ -55,8 +55,27 @@ pub(crate) enum ClashReason {
     IrreflexiveViolation { role: RoleId, a: IndividualId },
 }
 
-/// Entry point. Returns `Unknown` for now; patterns land in later tasks.
-pub(crate) fn check(_prepared: &crate::PreparedOntology) -> AboxVerdict {
+/// Entry point. Runs all implemented clash patterns and returns the first
+/// detected clash, or [`AboxVerdict::Unknown`] if none fire.
+pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
+    // Early return: no individuals → no ABox → no clash possible.
+    if prepared.abox.individuals.is_empty() {
+        return AboxVerdict::Unknown;
+    }
+    let closure = &prepared.closure;
+    let pool = &prepared.pool;
+    // P1: direct-⊥ assertion. For each ClassAssertion(C, a), if
+    // C = Atomic(c) and the EL saturator deems `c` unsatisfiable,
+    // the ABox is inconsistent.
+    for &(individual, class_concept) in &prepared.abox.class_assertions {
+        if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept) {
+            if closure.is_unsatisfiable(*c) {
+                return AboxVerdict::Inconsistent {
+                    reason: ClashReason::AssertedBot { individual, class: *c },
+                };
+            }
+        }
+    }
     AboxVerdict::Unknown
 }
 

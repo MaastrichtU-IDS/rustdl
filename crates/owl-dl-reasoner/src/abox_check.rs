@@ -17,6 +17,7 @@
 //!
 //! Spec: `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
 
+use crate::union_find::UnionFind;
 use owl_dl_core::ir::{ClassId, IndividualId, RoleId};
 
 /// Verdict from the ABox consistency check.
@@ -137,6 +138,31 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             if pos.contains(&(from, super_role, to)) {
                 return AboxVerdict::Inconsistent {
                     reason: ClashReason::NegOpaConflict { from, role, to },
+                };
+            }
+        }
+    }
+
+    // P4: SameAs ∩ DifferentFrom. Build union-find over individual
+    // indices via same_pairs; check each different_pair against it.
+    let n_ind = prepared.abox.individuals.len();
+    let mut uf = UnionFind::new(n_ind);
+    for &(a, b) in &prepared.abox.same_pairs {
+        if let (Some(&i), Some(&j)) = (ind_index.get(&a), ind_index.get(&b)) {
+            uf.union(
+                u32::try_from(i).expect("ind index fits in u32"),
+                u32::try_from(j).expect("ind index fits in u32"),
+            );
+        }
+    }
+    for &(a, b) in &prepared.abox.different_pairs {
+        if let (Some(&i), Some(&j)) = (ind_index.get(&a), ind_index.get(&b)) {
+            if uf.same(
+                u32::try_from(i).expect("ind index fits in u32"),
+                u32::try_from(j).expect("ind index fits in u32"),
+            ) {
+                return AboxVerdict::Inconsistent {
+                    reason: ClashReason::SameDifferent { a, b },
                 };
             }
         }

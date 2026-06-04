@@ -69,3 +69,17 @@ fn p3_neg_opa_no_clash_is_consistent() {
     assert!(check_consistency("p3_neg_opa_no_clash"),
         "P3 negative: NegOPA to a DIFFERENT target should stay consistent");
 }
+
+// ── P4: SameAs ∩ DifferentFrom (transitive) ─────────────────────────
+
+#[test]
+fn p4_same_then_different_is_inconsistent() {
+    assert!(!check_consistency("p4_same_different"),
+        "P4: SameIndividual(a,b) + SameIndividual(b,c) + DifferentIndividuals(a,c) inconsistent");
+}
+
+#[test]
+fn p4_same_without_different_is_consistent() {
+    assert!(check_consistency("p4_same_without_different"),
+        "P4 negative: SameAs(a,b) + DifferentFrom(c,d) over disjoint pairs is consistent");
+}

@@ -22,6 +22,8 @@ from rustdl._native import (
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
     UnknownClassError as UnknownClassError,
+    materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
+    materialize_inferred_class_assertions as materialize_inferred_class_assertions,
 )
 
 
@@ -62,4 +64,6 @@ __all__ = [
     "ParseError",
     "UnsupportedAxiomError",
     "UnknownClassError",
+    "materialize_inferred_subclass_axioms",
+    "materialize_inferred_class_assertions",
 ]

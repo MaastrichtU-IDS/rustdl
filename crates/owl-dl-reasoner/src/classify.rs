@@ -831,6 +831,28 @@ pub fn classify_top_down_with_timeout<A: ForIRI>(
     classify_top_down_internal(&internal, Some(per_pair_timeout))
 }
 
+/// Returns true iff the ontology contains any ABox axiom. Cheap
+/// scan over `internal.axioms` used to skip the ABox consistency
+/// pre-check entirely on TBox-only inputs (e.g. GALEN), where
+/// building `PreparedOntology` solely to consult `abox_verdict()`
+/// is wasted work — the check would early-return `Unknown` on
+/// empty `individuals` anyway. Microseconds even on the largest
+/// corpus ontologies. See
+/// `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
+/// performance contract.
+fn has_abox_axioms(internal: &owl_dl_core::ontology::InternalOntology) -> bool {
+    internal.axioms.iter().any(|ax| {
+        matches!(
+            ax,
+            owl_dl_core::ontology::Axiom::ClassAssertion { .. }
+                | owl_dl_core::ontology::Axiom::ObjectPropertyAssertion { .. }
+                | owl_dl_core::ontology::Axiom::NegativeObjectPropertyAssertion { .. }
+                | owl_dl_core::ontology::Axiom::SameIndividual(_)
+                | owl_dl_core::ontology::Axiom::DifferentIndividuals(_)
+        )
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) fn classify_top_down_internal(
     internal: &InternalOntology,
@@ -869,10 +891,13 @@ pub(crate) fn classify_top_down_internal(
         || (crate::horn_shortcircuit_enabled()
             && matches!(analyze_fragment(internal), FragmentClassification::Horn))
     {
-        // Build PreparedOntology just for the ABox check on the fast path
-        // (the saturation closure is already computed above). On Unknown,
-        // proceed with the pure-EL path; on Inconsistent, short-circuit.
-        if crate::abox_check_enabled() {
+        // Skip the ABox check entirely on ABox-free inputs — building
+        // PreparedOntology costs ~1.5 s on GALEN-sized TBoxes (NNF +
+        // absorb + role-hierarchy + closure), and abox_check itself
+        // would early-return `Unknown` on empty `individuals`. The
+        // inline scan below is an O(n) walk over the axiom list,
+        // microseconds even on GALEN.
+        if crate::abox_check_enabled() && has_abox_axioms(internal) {
             let prepared = PreparedOntology::from_internal(internal.clone())?;
             if let crate::abox_check::AboxVerdict::Inconsistent { reason } =
                 prepared.abox_verdict()

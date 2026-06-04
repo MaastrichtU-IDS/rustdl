@@ -40,6 +40,7 @@
 //! role-chain automata — length-2 chains + `TransitiveRole` only).
 //! Datatypes are scaffolded but not wired into reasoning yet.
 
+mod abox_check;
 mod classify;
 mod model_cache;
 mod realize;
@@ -709,6 +710,18 @@ pub fn snapshot_lazy_enabled() -> bool {
 #[must_use]
 pub fn horn_shortcircuit_enabled() -> bool {
     std::env::var_os("RUSTDL_HORN_SHORTCIRCUIT").map_or(true, |v| v != "0" && !v.is_empty())
+}
+
+/// ABox consistency-check pre-pass toggle. **Default ON.** Runs a
+/// sound under-approximation check before the tableau in
+/// `is_consistent` and `classify`. Set `RUSTDL_ABOX_CHECK=0` (or
+/// empty) to skip the check entirely (today's tableau-only
+/// behaviour). Sibling-style env helper.
+///
+/// Spec: `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
+#[must_use]
+pub fn abox_check_enabled() -> bool {
+    std::env::var_os("RUSTDL_ABOX_CHECK").map_or(true, |v| v != "0" && !v.is_empty())
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache

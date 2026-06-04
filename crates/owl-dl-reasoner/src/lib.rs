@@ -1506,13 +1506,22 @@ pub fn is_consistent_with_stats<A: ForIRI>(
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {
-    let consistent = run_satisfiability(internal, ConceptPool::top)?;
+    let prepared = PreparedOntology::from_internal(internal)?;
+    // Sound pre-check: a positive verdict short-circuits the tableau.
+    if let abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("abox_check: inconsistent — {reason:?}");
+        }
+        return Ok((
+            false,
+            QueryStats { answered_by_saturation: false, pure_el_mode: false },
+        ));
+    }
+    // Fall through: existing tableau-based satisfiability of Top.
+    let consistent = prepared.decide(|pool| pool.top())?;
     Ok((
         consistent,
-        QueryStats {
-            answered_by_saturation: false,
-            pure_el_mode: false,
-        },
+        QueryStats { answered_by_saturation: false, pure_el_mode: false },
     ))
 }
 

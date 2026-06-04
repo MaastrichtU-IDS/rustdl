@@ -59,6 +59,7 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
+          if-no-files-found: error
 
   build-sdist:
     runs-on: ubuntu-latest
@@ -74,7 +75,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
-          path: crates/owl-dl-py/target/wheels/*.tar.gz
+          # `maturin sdist` writes to the WORKSPACE target dir, not the
+          # per-crate one, in a Cargo workspace. Path is relative to the
+          # default working-directory (repo root), so target/wheels/ not
+          # crates/owl-dl-py/target/wheels/. `if-no-files-found: error`
+          # would have caught the silent-empty-artifact failure that
+          # blocked the v0.2.0 first publish attempt.
+          path: target/wheels/*.tar.gz
+          if-no-files-found: error
 
   publish-pypi:
     name: Publish to PyPI

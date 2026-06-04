@@ -29,3 +29,20 @@ def test_classify_unknown_extension_raises(tmp_path):
     bad.write_text("Ontology()")
     with pytest.raises(rustdl.ParseError):
         rustdl.classify(str(bad))
+
+
+def test_subclasses_of(fixtures_dir):
+    fixture = fixtures_dir / "datatype" / "datatype_definition.ofn"
+    result = rustdl.classify(str(fixture))
+    # In this fixture: Adult ⊑ Person via direct SubClassOf axiom.
+    # subclasses_of(Person) should include Adult (and Person reflexively
+    # if the classifier includes the reflexive self-edge).
+    subs = result.subclasses_of("http://t/Person")
+    assert "http://t/Adult" in subs
+
+
+def test_superclasses_of(fixtures_dir):
+    fixture = fixtures_dir / "datatype" / "datatype_definition.ofn"
+    result = rustdl.classify(str(fixture))
+    sups = result.superclasses_of("http://t/Adult")
+    assert "http://t/Person" in sups

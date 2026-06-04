@@ -1732,6 +1732,10 @@ pub(crate) struct PreparedOntology {
     /// Phase 3a recon: count of classes that the per-class classifier
     /// marks `Unsafe`. Diagnostic only.
     pub(crate) per_class_unsafe_count: usize,
+    /// Cached ABox consistency check verdict. Populated on first
+    /// call to [`Self::abox_verdict`]. `None` until then (lazy).
+    /// Honours [`crate::abox_check_enabled`]. See [`abox_check`].
+    abox_verdict: std::sync::OnceLock<abox_check::AboxVerdict>,
 }
 
 impl PreparedOntology {
@@ -1801,6 +1805,20 @@ impl PreparedOntology {
             snapshot_cache,
             per_class_safe_count,
             per_class_unsafe_count,
+            abox_verdict: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Lazy accessor for the ABox consistency check verdict.
+    /// Honours [`crate::abox_check_enabled`]: if the gate is off,
+    /// always returns `Unknown` without invoking the check.
+    pub(crate) fn abox_verdict(&self) -> &abox_check::AboxVerdict {
+        self.abox_verdict.get_or_init(|| {
+            if crate::abox_check_enabled() {
+                abox_check::check(self)
+            } else {
+                abox_check::AboxVerdict::Unknown
+            }
         })
     }
 

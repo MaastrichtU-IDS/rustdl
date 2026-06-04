@@ -19,17 +19,12 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
-          # Linux aarch64 (ubuntu-latest / aarch64) intentionally dropped
-          # for the 0.2.0 first-Python release. QEMU emulation makes
-          # this job ~50 min wall — three release attempts cycled
-          # through other CI failures (manylinux Rust install,
-          # macos-13 queue, sdist artifact path) and every retry meant
-          # another 50 min of aarch64 build. Linux ARM users install
-          # from sdist (`pip install --no-binary rustdl rustdl`) which
-          # compiles from source. Re-add for 0.2.1 once the workflow
-          # is stable on the other platforms.
-          # - os: ubuntu-latest
-          #   arch: aarch64
+          # Linux aarch64 via QEMU emulation. Re-enabled in 0.2.1 after
+          # 0.2.0 dropped it to avoid 50-min waits while iterating on
+          # other CI failures. Workflow is now stable on the other
+          # platforms; one-time 50-min cost per release is acceptable.
+          - os: ubuntu-latest
+            arch: aarch64
           # macOS Intel (macos-13 / x86_64) intentionally dropped:
           # GitHub-hosted Intel Mac runners are heavily oversubscribed
           # (queued > 30 min on the 0.2.0 release attempt). Apple is

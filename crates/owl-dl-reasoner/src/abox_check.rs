@@ -328,6 +328,78 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
 
+    // P7 stretch: domain/range propagation. For each
+    // ObjectPropertyDomain(R, D) and assertion R(a, _), add D's
+    // class (if atomic) + its EL subsumers to types[a]. Same for
+    // range applied to the object. Then re-run the P2 scan.
+    let mut domains: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ConceptId)> = Vec::new();
+    let mut ranges: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ConceptId)> = Vec::new();
+    for ax in &prepared.axioms {
+        match ax {
+            owl_dl_core::ontology::Axiom::ObjectPropertyDomain { role, domain } => {
+                domains.push((role.role_id(), *domain));
+            }
+            owl_dl_core::ontology::Axiom::ObjectPropertyRange { role, range } => {
+                ranges.push((role.role_id(), *range));
+            }
+            _ => {}
+        }
+    }
+
+    let mut augmented = false;
+    for &(from, role, to) in &prepared.abox.property_assertions {
+        for &(d_role, d_concept) in &domains {
+            if d_role != role {
+                continue;
+            }
+            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(d_concept) {
+                if let Some(&i) = ind_index.get(&from) {
+                    augmented |= types[i].insert(*c);
+                    for s in closure.subsumers_of(*c) {
+                        augmented |= types[i].insert(s);
+                    }
+                }
+            }
+        }
+        for &(r_role, r_concept) in &ranges {
+            if r_role != role {
+                continue;
+            }
+            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(r_concept) {
+                if let Some(&i) = ind_index.get(&to) {
+                    augmented |= types[i].insert(*c);
+                    for s in closure.subsumers_of(*c) {
+                        augmented |= types[i].insert(s);
+                    }
+                }
+            }
+        }
+    }
+
+    if augmented {
+        for (i, type_set) in types.iter().enumerate() {
+            let (individual, _) = prepared.abox.individuals[i];
+            let cs: Vec<_> = type_set
+                .iter()
+                .copied()
+                .filter(|c| (c.index() as usize) < told_n)
+                .collect();
+            for a in 0..cs.len() {
+                for b in (a + 1)..cs.len() {
+                    if told.are_told_disjoint(cs[a], cs[b]) {
+                        return AboxVerdict::Inconsistent {
+                            reason: ClashReason::DisjointTypes {
+                                individual,
+                                c: cs[a],
+                                d: cs[b],
+                            },
+                        };
+                    }
+                }
+            }
+        }
+    }
+
     AboxVerdict::Unknown
 }
 

@@ -123,3 +123,17 @@ fn p6_irreflexive_distinct_pair_is_consistent() {
     assert!(check_consistency("p6_irreflexive_distinct"),
         "P6 negative: Irreflexive(R) + R(a,b) with distinct a,b should stay consistent");
 }
+
+// ── P7: Domain/range disjointness propagation (stretch) ─────────────
+
+#[test]
+fn p7_range_clashes_with_assertion_is_inconsistent() {
+    assert!(!check_consistency("p7_range_disjoint"),
+        "P7: range(R)=Female + R(c,m) + ClassAssertion(Male,m) + Male/Female disjoint inconsistent");
+}
+
+#[test]
+fn p7_range_compatible_is_consistent() {
+    assert!(check_consistency("p7_range_compatible"),
+        "P7 negative: range and explicit class agree → consistent");
+}

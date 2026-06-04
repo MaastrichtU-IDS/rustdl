@@ -1019,7 +1019,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "owl-dl-bench"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-datatypes"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "owl-dl-core",
  "proptest",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-reasoner"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "dashmap",
  "horned-owl",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-saturation"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "dashmap",
  "fixedbitset",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "owl-dl-tableau"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bitvec",
  "bumpalo",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",

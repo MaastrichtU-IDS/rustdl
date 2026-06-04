@@ -83,3 +83,17 @@ fn p4_same_without_different_is_consistent() {
     assert!(check_consistency("p4_same_without_different"),
         "P4 negative: SameAs(a,b) + DifferentFrom(c,d) over disjoint pairs is consistent");
 }
+
+// ── P5: Functional role + two distinct witnesses ────────────────────
+
+#[test]
+fn p5_functional_distinct_witnesses_is_inconsistent() {
+    assert!(!check_consistency("p5_functional_diff"),
+        "P5: Functional(R) + R(a,b1) + R(a,b2) + Different(b1,b2) should be inconsistent");
+}
+
+#[test]
+fn p5_functional_no_different_is_consistent() {
+    assert!(check_consistency("p5_functional_same_target"),
+        "P5 negative: same two facts WITHOUT DifferentIndividuals stay consistent (OWA)");
+}

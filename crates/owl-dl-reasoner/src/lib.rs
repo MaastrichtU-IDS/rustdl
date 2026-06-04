@@ -1751,6 +1751,14 @@ pub(crate) struct PreparedOntology {
     /// Phase 3a recon: count of classes that the per-class classifier
     /// marks `Unsafe`. Diagnostic only.
     pub(crate) per_class_unsafe_count: usize,
+    /// Cloned axiom list from the input ontology, kept so the ABox
+    /// consistency check (P5/P6/P7) can scan for
+    /// FunctionalRole / InverseFunctionalRole / AsymmetricRole /
+    /// IrreflexiveRole / ObjectPropertyDomain / ObjectPropertyRange.
+    /// These role-side characteristics are absorbed into `hierarchy`
+    /// and other lowered representations elsewhere in the pipeline,
+    /// so this is a read-only snapshot for the pre-tableau check.
+    pub(crate) axioms: Vec<Axiom>,
     /// Cached ABox consistency check verdict. Populated on first
     /// call to [`Self::abox_verdict`]. `None` until then (lazy).
     /// Honours [`crate::abox_check_enabled`]. See [`abox_check`].
@@ -1769,6 +1777,7 @@ impl PreparedOntology {
         // querying the closure, so the cost is amortised.
         let closure = owl_dl_saturation::saturate(&internal);
         let told = owl_dl_core::told::build_told_tables(&internal);
+        let axioms = internal.axioms.clone();
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
@@ -1828,6 +1837,7 @@ impl PreparedOntology {
             abox,
             closure,
             told,
+            axioms,
             model_cache: model_cache::ModelCache::new(),
             hyper,
             snapshot_cache,

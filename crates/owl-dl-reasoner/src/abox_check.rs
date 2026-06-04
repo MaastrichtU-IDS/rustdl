@@ -168,6 +168,119 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
 
+    // P5: Functional + two-distinct-witnesses. For each functional
+    // role R, group property_assertions by `(from, role)`; for each
+    // group with ≥2 distinct `to`s, merge them in uf. After every
+    // merge, re-test all `different_pairs`. Inverse-functional is
+    // the dual: group `(role, to)`.
+    use std::collections::HashMap as Map;
+    let mut functional_roles: std::collections::HashSet<RoleId> =
+        std::collections::HashSet::new();
+    let mut inverse_functional_roles: std::collections::HashSet<RoleId> =
+        std::collections::HashSet::new();
+    for ax in &prepared.axioms {
+        match ax {
+            owl_dl_core::ontology::Axiom::FunctionalRole(r) => {
+                functional_roles.insert(r.role_id());
+            }
+            owl_dl_core::ontology::Axiom::InverseFunctionalRole(r) => {
+                inverse_functional_roles.insert(r.role_id());
+            }
+            _ => {}
+        }
+    }
+
+    // Group (from, role) → Vec<to>.
+    let mut by_from_role: Map<(IndividualId, RoleId), Vec<IndividualId>> = Map::new();
+    for &(from, role, to) in &prepared.abox.property_assertions {
+        if functional_roles.contains(&role) {
+            by_from_role.entry((from, role)).or_default().push(to);
+        }
+    }
+    for ((from, role), tos) in &by_from_role {
+        if tos.len() < 2 {
+            continue;
+        }
+        let first = tos[0];
+        let Some(&i0) = ind_index.get(&first) else {
+            continue;
+        };
+        for &b in &tos[1..] {
+            if let Some(&j) = ind_index.get(&b) {
+                if uf.union(
+                    u32::try_from(i0).expect("fits in u32"),
+                    u32::try_from(j).expect("fits in u32"),
+                ) {
+                    // New merge — re-check all different_pairs.
+                    for &(da, db) in &prepared.abox.different_pairs {
+                        if let (Some(&ip), Some(&jp)) =
+                            (ind_index.get(&da), ind_index.get(&db))
+                        {
+                            if uf.same(
+                                u32::try_from(ip).expect("fits"),
+                                u32::try_from(jp).expect("fits"),
+                            ) {
+                                return AboxVerdict::Inconsistent {
+                                    reason: ClashReason::FunctionalDiff {
+                                        role: *role,
+                                        a: *from,
+                                        b1: first,
+                                        b2: b,
+                                    },
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Inverse-functional: group (role, to) → Vec<from>, merge as above.
+    let mut by_role_to: Map<(RoleId, IndividualId), Vec<IndividualId>> = Map::new();
+    for &(from, role, to) in &prepared.abox.property_assertions {
+        if inverse_functional_roles.contains(&role) {
+            by_role_to.entry((role, to)).or_default().push(from);
+        }
+    }
+    for ((role, to), froms) in &by_role_to {
+        if froms.len() < 2 {
+            continue;
+        }
+        let first = froms[0];
+        let Some(&i0) = ind_index.get(&first) else {
+            continue;
+        };
+        for &a in &froms[1..] {
+            if let Some(&j) = ind_index.get(&a) {
+                if uf.union(
+                    u32::try_from(i0).expect("fits"),
+                    u32::try_from(j).expect("fits"),
+                ) {
+                    for &(da, db) in &prepared.abox.different_pairs {
+                        if let (Some(&ip), Some(&jp)) =
+                            (ind_index.get(&da), ind_index.get(&db))
+                        {
+                            if uf.same(
+                                u32::try_from(ip).expect("fits"),
+                                u32::try_from(jp).expect("fits"),
+                            ) {
+                                return AboxVerdict::Inconsistent {
+                                    reason: ClashReason::FunctionalDiff {
+                                        role: *role,
+                                        a: *to,
+                                        b1: first,
+                                        b2: a,
+                                    },
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     AboxVerdict::Unknown
 }
 

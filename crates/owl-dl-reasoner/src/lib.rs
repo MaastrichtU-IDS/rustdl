@@ -1722,6 +1722,10 @@ pub(crate) struct PreparedOntology {
     /// closure at its own call site, so we keep `abox_check`'s copy
     /// self-contained rather than threading it through.
     pub(crate) closure: owl_dl_saturation::Subsumers,
+    /// Told-disjoint pairs (and other told-* relations) over the
+    /// input ontology. Used by [`abox_check`] P2/P7. Built once in
+    /// `from_internal`.
+    pub(crate) told: owl_dl_core::told::ToldTables,
     /// Phase 1 scaffolding for the satisfying-model cache. The
     /// field is shipped now so [`crate::PreparedOntology::decide`]
     /// callers can be wired one at a time in Phase 2 without a
@@ -1764,6 +1768,7 @@ impl PreparedOntology {
         // on ABox-free ontologies, abox_check exits early before
         // querying the closure, so the cost is amortised.
         let closure = owl_dl_saturation::saturate(&internal);
+        let told = owl_dl_core::told::build_told_tables(&internal);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
@@ -1822,6 +1827,7 @@ impl PreparedOntology {
             complements,
             abox,
             closure,
+            told,
             model_cache: model_cache::ModelCache::new(),
             hyper,
             snapshot_cache,

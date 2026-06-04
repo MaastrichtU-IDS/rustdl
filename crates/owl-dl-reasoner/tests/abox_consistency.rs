@@ -41,3 +41,17 @@ fn p1_no_bot_assertion_is_consistent() {
     assert!(check_consistency("p1_no_bot"),
         "P1 negative: Unsat class with no asserted member should stay consistent");
 }
+
+// ── P2: Disjoint types on the same individual ───────────────────────
+
+#[test]
+fn p2_disjoint_types_is_inconsistent() {
+    assert!(!check_consistency("p2_disjoint_types"),
+        "P2: same individual asserted in two disjoint classes should be inconsistent");
+}
+
+#[test]
+fn p2_disjoint_different_individuals_is_consistent() {
+    assert!(check_consistency("p2_disjoint_different_individuals"),
+        "P2 negative: disjoint classes asserted on DIFFERENT individuals should stay consistent");
+}

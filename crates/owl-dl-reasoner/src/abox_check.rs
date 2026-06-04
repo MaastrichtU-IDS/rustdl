@@ -64,9 +64,8 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     }
     let closure = &prepared.closure;
     let pool = &prepared.pool;
-    // P1: direct-⊥ assertion. For each ClassAssertion(C, a), if
-    // C = Atomic(c) and the EL saturator deems `c` unsatisfiable,
-    // the ABox is inconsistent.
+
+    // P1: direct-⊥ assertion.
     for &(individual, class_concept) in &prepared.abox.class_assertions {
         if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept) {
             if closure.is_unsatisfiable(*c) {
@@ -76,6 +75,49 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             }
         }
     }
+
+    // Per-individual atomic-type set: index → HashSet<ClassId>.
+    // For each ClassAssertion(C, a) with C atomic, insert c and
+    // every subsumer of c from the EL closure.
+    let n = prepared.abox.individuals.len();
+    let ind_index: std::collections::HashMap<owl_dl_core::ir::IndividualId, usize> =
+        prepared.abox.individuals.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
+    let mut types: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>> =
+        vec![std::collections::HashSet::new(); n];
+    for &(individual, class_concept) in &prepared.abox.class_assertions {
+        if let Some(&i) = ind_index.get(&individual) {
+            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept) {
+                types[i].insert(*c);
+                for s in closure.subsumers_of(*c) {
+                    types[i].insert(s);
+                }
+            }
+        }
+    }
+
+    // P2: pairwise told-disjoint over types[i].
+    // Filter to class ids within ToldTables bounds: subsumers_of can
+    // return Tseitin-fresh ids beyond vocabulary.num_classes().
+    let told = &prepared.told;
+    let told_n = told.num_classes();
+    for (i, type_set) in types.iter().enumerate() {
+        let (individual, _) = prepared.abox.individuals[i];
+        let cs: Vec<_> = type_set
+            .iter()
+            .copied()
+            .filter(|c| (c.index() as usize) < told_n)
+            .collect();
+        for a in 0..cs.len() {
+            for b in (a + 1)..cs.len() {
+                if told.are_told_disjoint(cs[a], cs[b]) {
+                    return AboxVerdict::Inconsistent {
+                        reason: ClashReason::DisjointTypes { individual, c: cs[a], d: cs[b] },
+                    };
+                }
+            }
+        }
+    }
+
     AboxVerdict::Unknown
 }
 

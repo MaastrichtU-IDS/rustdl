@@ -51,7 +51,7 @@ Per individual, compute the set of asserted classes plus their EL-closure subsum
 
 ### P3 — NegativeOPA vs OPA
 
-Build a `HashSet<(IndividualId, RoleId, IndividualId)>` of positive assertions from `abox.property_assertions`. For each `NegativeObjectPropertyAssertion(R, a, b)` recovered from the in-memory `∀R.¬{b}` form in `abox.negative_property_assertions`, test set membership of `(a, R, b)`. Also propagate up the role hierarchy: a positive assertion on any super-role of `R` implies the assertion on `R`.
+Build a `HashSet<(IndividualId, RoleId, IndividualId)>` of positive assertions from `abox.property_assertions`. For each `NegativeObjectPropertyAssertion(R, a, b)`, test set membership for every **sub-role** `S` of `R` (`S ⊑ R`, reflexive-transitive — i.e., `hierarchy.sub_roles(R)`). A positive assertion `S(a, b)` with `S ⊑ R` entails `R(a, b)`, contradicting the NegOPA. **Direction matters**: a positive assertion on a *super-role* of `R` does NOT entail `R(a, b)` and must not be flagged. The reflexive case (`S = R`, direct `(a, R, b)`) is covered by `sub_roles`'s reflexivity.
 
 ### P4 — SameAs ∩ DifferentFrom direct
 

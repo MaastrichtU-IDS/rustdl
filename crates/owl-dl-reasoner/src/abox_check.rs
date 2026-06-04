@@ -127,15 +127,16 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                                         owl_dl_core::ir::IndividualId)> =
         prepared.abox.property_assertions.iter().copied().collect();
     for &(from, role, to) in &prepared.abox.negative_property_triples {
-        if pos.contains(&(from, role, to)) {
-            return AboxVerdict::Inconsistent {
-                reason: ClashReason::NegOpaConflict { from, role, to },
-            };
-        }
-        // Role-hierarchy upward propagation: a positive assertion on
-        // any super-role of `role` also implies the negated one.
-        for &super_role in prepared.hierarchy.super_roles(role) {
-            if pos.contains(&(from, super_role, to)) {
+        // Role-hierarchy downward propagation: a positive assertion on
+        // any sub-role S of `role` (S ⊑ R) implies `R(a, b)` and so
+        // clashes with NegOPA(R, a, b). A super-role assertion does
+        // NOT imply R(a, b) and must not be flagged.
+        //
+        // `sub_roles(role)` returns the reflexive-transitive closure
+        // (including `role` itself), so the direct-match case is
+        // covered.
+        for &sub_role in prepared.hierarchy.sub_roles(role) {
+            if pos.contains(&(from, sub_role, to)) {
                 return AboxVerdict::Inconsistent {
                     reason: ClashReason::NegOpaConflict { from, role, to },
                 };

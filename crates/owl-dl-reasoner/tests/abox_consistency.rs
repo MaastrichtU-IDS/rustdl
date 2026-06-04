@@ -70,6 +70,27 @@ fn p3_neg_opa_no_clash_is_consistent() {
         "P3 negative: NegOPA to a DIFFERENT target should stay consistent");
 }
 
+#[test]
+fn p3_role_hierarchy_super_neg_is_consistent() {
+    // Regression for the super_roles/sub_roles inversion: NegOPA on a
+    // sub-role + positive OPA on the super-role is consistent (super
+    // assertion does NOT entail sub-role membership). The buggy version
+    // flagged this as inconsistent.
+    assert!(check_consistency("p3_role_hierarchy_neg_consistent"),
+        "P3 regression: NegOPA(:hasFather a b) + OPA(:hasParent a b) with \
+         :hasFather ⊑ :hasParent must stay consistent");
+}
+
+#[test]
+fn p3_role_hierarchy_sub_neg_is_inconsistent() {
+    // The dual case the fix MUST still catch: NegOPA on super-role +
+    // positive OPA on sub-role IS inconsistent because the sub-role
+    // assertion entails the super-role pair, contradicting NegOPA.
+    assert!(!check_consistency("p3_role_hierarchy_neg_inconsistent"),
+        "P3: NegOPA(:hasParent a b) + OPA(:hasFather a b) with \
+         :hasFather ⊑ :hasParent must be flagged inconsistent");
+}
+
 // ── P4: SameAs ∩ DifferentFrom (transitive) ─────────────────────────
 
 #[test]

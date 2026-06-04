@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 /// or classes is a one-line `m.add_function` / `m.add_class` call here
 /// — implementations live in sibling modules.
 #[pymodule]
-fn rustdl(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

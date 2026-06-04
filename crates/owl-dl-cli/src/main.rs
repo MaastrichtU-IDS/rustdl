@@ -266,6 +266,17 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     writeln!(out, "# fragment: {}", stats.fragment)?;
     writeln!(
         out,
+        "# abox_check: {}",
+        if !owl_dl_reasoner::abox_check_enabled() {
+            "skipped"
+        } else if stats.inconsistent {
+            "inconsistent"
+        } else {
+            "unknown"
+        }
+    )?;
+    writeln!(
+        out,
         "# subsumption: saturation={} tableau={}",
         stats.saturation_subsumption_hits, stats.tableau_subsumption_calls
     )?;

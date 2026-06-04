@@ -43,6 +43,7 @@
 mod classify;
 mod model_cache;
 mod realize;
+mod union_find;
 
 pub use classify::{
     Classification, ClassificationStats, FragmentClassification, analyze_fragment, classify,

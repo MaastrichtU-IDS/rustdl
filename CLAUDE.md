@@ -173,6 +173,27 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   FP=0 / MISSED=0 preserved across Phase 0 net + GALEN. Konclude-class
   ≤5× ratio not reached on SROIQ (ORE-10908 closed 17× → 12×). See
   `docs/phase7-results.md`.
+  Phase A1 (commit `6e63c28`) added a sound ABox-driven inconsistency
+  pre-check at `crates/owl-dl-reasoner/src/abox_check.rs`. Runs before
+  the tableau in both `is_consistent` and `classify`; on a positive
+  verdict, classify mirrors Konclude's behaviour (every class marked
+  unsatisfiable). Seven clash patterns: P1 direct-Bot, P2 disjoint
+  types per individual, P3 NegOPA-vs-OPA (with role-hierarchy
+  propagation), P4 SameAs∩DifferentFrom (transitive via union-find),
+  P5 Functional + two-distinct-witnesses (+ inverse-functional), P6
+  Asymmetric/Irreflexive, P7 domain/range disjointness (stretch). All
+  16 synthetic unit tests pass; FP=0 preserved across every corpus
+  closure-diff (alehif, ore-10908, ore-15672, shoiq-knowledge, sio,
+  ro, sulo, galen, notgalen). Env gate `RUSTDL_ABOX_CHECK=0` reverts
+  to pre-A1 tableau-only behaviour. GALEN classify wall unaffected
+  (~0.58 s, within noise of `=0`) via `has_abox_axioms()` skip of
+  `PreparedOntology` build on ABox-free inputs. **Stretch goal
+  not met**: family / family-stripped (both HermiT/Konclude-
+  inconsistent in <1 s) still timeout — their clash needs functional-
+  role-merge of `∃hasSex.Female ⊓ ∃hasSex.Male`, beyond P7's range
+  augmentation. Next scoping target documented at
+  `docs/abox-consistency-check-handoff.md`. Spec:
+  `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
 
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded,
   **not yet wired into reasoning.** Data axioms / data ranges that

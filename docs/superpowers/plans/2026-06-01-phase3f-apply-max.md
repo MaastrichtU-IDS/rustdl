@@ -1,5 +1,9 @@
 # Phase 3f — `apply_max` Performance Plan
 
+> **Outcome: SHIPPED-AND-REVERTED.** See `docs/phase3f-recon.md` and dead-end §17 (commit `8c38b5b`).
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Reduce `apply_max`'s contribution to GALEN classify wall (currently 14.34% of SIO post-3c per `docs/flamegraphs/sio-classify-2026-06-01-post-phase3c-findings.md`, likely similar post-3d) while preserving FP=0 + MISSED=17 on GALEN and FP=0 / MISSED=0 on the Phase 0 net. Hold to the lesson from Phase 3e dead-end §16: avoid optimizations whose break-even is workload-dependent in ways that regress GALEN.

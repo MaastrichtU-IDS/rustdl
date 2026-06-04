@@ -1,5 +1,9 @@
 # Head-to-head: rustdl vs Konclude (2026-06-02 post-Phase-6)
 
+> ⚠ **SUPERSEDED** — See [perf-2026-06-04-konclude-vs-rustdl.md](perf-2026-06-04-konclude-vs-rustdl.md) for current state. This file is retained as a historical baseline.
+
+---
+
 Run 2026-06-02 at HEAD `8014328` (post-Phase-6 walk dedup +
 Phase 2d+2c-redux + Phase 3a-d + Phase 4b-c). Companion to
 `docs/perf-2026-05-24-new-server.md` §4 (the prior multi-reasoner

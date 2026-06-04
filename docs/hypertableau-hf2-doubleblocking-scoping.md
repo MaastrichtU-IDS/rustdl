@@ -307,6 +307,14 @@ The naive impl + block-index ships behind the env var **as a
 correctness baseline for the optimization phase** — future readers can
 verify their faster versions agree with this one on the corpus.
 
+> **Note (2026-06-04 audit):** Despite the blocking-performance uncertainty
+> described above, `RUSTDL_HYPER_DOUBLE_BLOCK` and
+> `RUSTDL_HYPERTABLEAU_TRUST_SAT` were flipped default-on at commit `5e48382`
+> (2026-05-29). The SIO 38-FP root cause was separately traced to a saturation
+> bug (`process_fact` range propagation), fixed 2026-05-28. The ro-stripped
+> performance problem under double-blocking (§9 table: 3300× wall explosion)
+> remains an open research question but is not a correctness blocker.
+
 ## §9 — Pointers
 
 - Current `is_blocked` impl: `crates/owl-dl-tableau/src/hyper.rs:462`.

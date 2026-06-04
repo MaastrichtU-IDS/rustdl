@@ -119,6 +119,14 @@ trigger does not apply.
 - T2: *(no commit — pure measurement; logs in `/tmp/p1c/`)*.
 - T3: *(this commit — results doc + CLAUDE.md defaults bullet)*.
 
+> **Note (2026-06-04 audit):** Mixed outcomes. Phase 2 (Horn short-circuit / Layer 2
+> saturation filter) shipped at commit `ba07b4e` (see
+> `docs/phase2b-snapshot-results.md`). The Phase 3 items were SUPERSEDED:
+> Phase 3a-recon returned NO-GO on the BackPropRisk refinement, closing the
+> snapshot-cache project at Phase 2b (dead-end §19). The parent/parent_role
+> snapshot fields, Event::Edge gating, and the `snapshot_replay_used` CLI
+> banner remain unimplemented. Table kept as historical record.
+
 ## Carry-overs / open items for Phase 2
 
 | Carry-over | Status / disposition |

@@ -154,6 +154,13 @@ more thoroughly measured.
 - T2: *(this commit — full corpus matrix + results doc + CLAUDE.md
   defaults bullet)*.
 
+> **Note (2026-06-04 audit):** Phase 3 was CANCELLED. Phase 3a-recon
+> (`docs/phase3a-recon.md`) returned NO-GO on the per-class
+> `BackPropRisk` refinement (dead-end §19). The snapshot-cache project
+> closed at Phase 2b. The rename TODOs below were not actioned;
+> `classify_pure_el` and `pure_el_mode` are still the live names in the
+> codebase. Block kept as historical record of what was queued.
+
 ## Carry-overs / open items for Phase 3
 
 | Carry-over | Status / disposition |

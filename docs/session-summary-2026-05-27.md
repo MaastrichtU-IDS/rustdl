@@ -111,6 +111,13 @@ precisely scoped for the next session.
 
 ## Recommended next steps (in priority order)
 
+> **Note (2026-06-04 audit):** Item 2 below ("Hypertableau — multi-month rewrite")
+> is superseded — hypertableau shipped as the default engine at commit `5e48382`
+> (2026-05-29), two days after this session summary. See `docs/hypertableau-summary.md`.
+> Item 1 (CDBL no-goods) remains unfinished — the scaffolding is in
+> `crates/owl-dl-tableau/src/search.rs` but the integration is intentionally not
+> wired. Item 3 (data property coverage) is partially addressed by D1/D4/D5.
+
 1. **CDBL node-keyed no-goods** — the one keying change to make the
    sound CDBL effective. Multi-week-ish; reuses everything built.
    Expected to help convergent workloads; pizza/SIO bounded by

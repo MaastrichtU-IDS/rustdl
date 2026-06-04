@@ -1,5 +1,9 @@
 # Head-to-head: rustdl vs Konclude (2026-06-03 post-Phase-8 + Phase 9)
 
+> ⚠ **SUPERSEDED** — See [perf-2026-06-04-konclude-vs-rustdl.md](perf-2026-06-04-konclude-vs-rustdl.md) for current state. This file is retained as a historical baseline.
+
+---
+
 Run 2026-06-03 at HEAD `f5a055e` (Phase 8 — decoupled label-cache
 deadline shipped; Phase 9 recon closed out the ORE-15672 gap as
 intractable). Companion to:

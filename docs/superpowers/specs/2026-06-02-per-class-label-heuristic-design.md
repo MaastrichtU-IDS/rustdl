@@ -7,6 +7,10 @@ Targets Konclude-class wall (≤5× ratio) on SROIQ corpus, per the
 2026-06-02 head-to-head doc (`docs/perf-2026-06-02-konclude-vs-rustdl.md`)
 where rustdl is 17× slower than Konclude on ORE-10908/15672.
 
+> **Outcome: SHIPPED (Phase 7).** ORE-10908 27.37 s → 19.32 s (−29%), ratio 17× → 12×. Phase 8 (commit `e31439c`) followed up by decoupling the label-cache deadline from per_pair_timeout, taking ORE-10908 to 7.48 s (ratio 12× → 4.32×). See `docs/phase7-results.md` and `docs/phase8-results.md`. Konclude-class ≤5× target achieved.
+
+---
+
 ## Soundness contract
 
 For each named class C, run the wedge engine ONCE in satisfiability

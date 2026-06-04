@@ -50,6 +50,8 @@ which is dramatically slower (pizza 43 s vs 3.28 s, SIO 13 m vs 17 s);
 those measurements are documented in earlier git history but no
 longer the engine baseline once the corpus is sound under env-on.
 
+> **Note:** Pre-Phase-2d baseline. Current: GALEN 27997/27997 (0 missed); notgalen 32721/32739 (18 missed). See `docs/handoff-2026-06-03-snapshot-cache-project-complete.md`.
+
 | ontology | classify wall | result vs Konclude |
 |---|---|---|
 | pizza (SHOIN) | 3.28 s / 32.80 s | 495/499 @ 200 ms / **499/499 @ 5 s**, **0 FP** (engine is 100 % complete on pizza; 4 InterestingPizza pairs need >200 ms per probe) |
@@ -137,8 +139,7 @@ In rough value/effort order:
 2. **`≤n`-merge backjumping** — currently conservative (`DepSet::ALL`);
    precise tracking would help pathological cardinality ontologies.
    Corpus-inert.
-3. **Default-on the HF5 flags** — only after (1). Today, opt-in is the
-   right call.
+3. **Default-on the HF5 flags** — **DONE.** Flipped default-on at commit `5e48382` (2026-05-29). See `hyper_*_enabled()` in `crates/owl-dl-reasoner/src/lib.rs`.
 4. **Broader generalization measurement** — go-basic (pure EL, should
    sail), GO/large-EL, more inverse-heavy ontologies, family with ABox
    once ABox is in scope.

@@ -52,34 +52,22 @@ the lab's machines points at `proxy.unimaas.nl:3128`.
 
 ## Caveat: data-property stripping
 
-`owl-dl-core` hard-rejects data-property and datatype axioms (and
-class expressions that mention them) — see
-[crates/owl-dl-core/src/convert.rs:297](../crates/owl-dl-core/src/convert.rs#L297)
-and the test `unsupported_data_axioms_hard_error` that pins the
-behavior. Phase 7 ([strategy v2](owl-dl-reasoner-rust-strategy-v2.md))
-will lift this. Until then any real ontology that declares or uses
-a data property fails conversion (SULO, family, RO, SIO all hit this
-on the unmodified inputs in this corpus).
-
-To run the bench against these inputs today, strip the data-property
-signature with ROBOT and post-filter the leftover `Declaration(Datatype(...))`
-lines:
-
-```sh
-cd ontologies/real
-for src in sulo.ttl family.rdf.owl ro.owl sio.owl; do
-    slug="${src%%.*}"
-    docker run --rm -v "$PWD:/work" -w /work obolibrary/robot:v1.9.6 \
-        robot remove --input "$src" --select data-properties --signature true --trim true \
-                     convert --format ofn --output "${slug}-stripped.ofn"
-    sed -i -E '/^[[:space:]]*Declaration\(Datatype\(/d' "${slug}-stripped.ofn"
-done
-```
-
-Bench against `*-stripped.ofn`. The stripped files are *not*
-classifying the original ontology — they're a Phase-7-shaped
-under-approximation. Once data properties are reasoning-load-bearing
-in rustdl, drop this step and use the raw `.ofn` directly.
+> **Caveat — data property handling has changed (Phase D1, 2026-06-02):**
+> Earlier versions of rustdl hard-rejected ontologies declaring
+> data properties, hence the existence of stripped variants
+> (family-stripped.ofn, ro-stripped.ofn, sio-stripped.ofn) that
+> remove every data-related axiom. Phase D1 (commit `e34aeb6`)
+> changed this to a silent drop: ontologies parse, data axioms
+> are silently dropped, and the result is a sound
+> under-approximation of the full classification. Phases D4 and
+> D5 add a preprocessing pass that derives class axioms from
+> specific data-axiom patterns (Functional+DataMin, DataMin>Max,
+> DataPropertyDomain inference, SubDataPropertyOf transitivity,
+> intersection-equivalence propagation, integer-range facet
+> intersection). The test `data_axiom_declarations_silently_dropped`
+> pins this behavior. Stripped variants remain useful for
+> benchmarking the object-property fragment in isolation; the
+> originals can now be classified.
 
 ## Using the corpus from a bench run
 

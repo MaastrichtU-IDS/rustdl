@@ -173,6 +173,13 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   FP=0 / MISSED=0 preserved across Phase 0 net + GALEN. Konclude-class
   ≤5× ratio not reached on SROIQ (ORE-10908 closed 17× → 12×). See
   `docs/phase7-results.md`.
+  Phase 8 (commit `30b641c`) decoupled the label-cache deadline
+  from per_pair_timeout — the ~5% SROIQ classes that need a few
+  hundred ms of wedge satisfiability no longer get cut off at
+  NoVerdict. ORE-10908 19.32 s → 7.48 s (−61 %), Konclude ratio
+  12× → 4.32× (then 3.1× post-Horn-shortcircuit per
+  `docs/perf-2026-06-04-konclude-vs-rustdl.md`). See
+  `docs/phase8-results.md`.
   Phase A1 (commit `6e63c28`) added a sound ABox-driven inconsistency
   pre-check at `crates/owl-dl-reasoner/src/abox_check.rs`. Runs before
   the tableau in both `is_consistent` and `classify`; on a positive
@@ -252,8 +259,8 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
 - With `trust_sat` on, the wedge concludes "not subsumed" from its own `Sat`
   verdict **without consulting the tableau**. That is sound only if the engine
   is complete on the workload — empirically true across the corpus, but it
-  **can MISS** subsumptions the full tableau would find (e.g. GALEN ~109, SIO 2;
-  see `docs/handoff-2026-05-30.md`). So the practical default classifier is a
+  **can MISS** subsumptions the full tableau would find (e.g. notgalen 18 MISSED,
+  SIO 2; see `docs/handoff-2026-06-03-snapshot-cache-project-complete.md`). So the practical default classifier is a
   sound, near-complete-but-not-guaranteed-complete approximation, **not** the
   textbook sound-and-complete reasoner. Set `RUSTDL_HYPERTABLEAU_TRUST_SAT=0`
   for the slower, more complete behaviour (`Sat` → fall through to tableau).
@@ -289,7 +296,7 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   + `docs/phase2a-recon.md` + `docs/phase2b-snapshot-results.md`.
 
 When changing the saturation/wedge engines or caches, the failure mode that
-matters most is an unsound *positive*. See `docs/handoff-2026-05-30.md` for
+matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cache-project-complete.md` and `docs/abox-consistency-check-handoff.md` for
 current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
@@ -300,7 +307,6 @@ a deliberately un-integrated Phase-1 stub.
 close the SROIQ gap to HermiT + dead-ends already measured),
 `owl-dl-reasoner-rust-strategy-v2.md` (full strategy), and the
 `hypertableau-*-scoping.md` series for the in-progress hypertableau work.
-`docs/perf-2026-05-24-new-server.md` §8 has the head-to-head vs
-HermiT/Pellet/Konclude. Performance claims in docs are backed by the corpus
+`docs/perf-2026-06-04-konclude-vs-rustdl.md` has the current head-to-head vs Konclude across the corpus. Performance claims in docs are backed by the corpus
 harness — re-measure with `scripts/bench-rustdl-modes.sh` rather than trusting
 stale numbers.

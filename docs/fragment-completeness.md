@@ -113,10 +113,8 @@ additions) on the following ontologies, all returning FP=0
 - ro-stripped (SROIFV, 158 classes) — 158/158, 0 FP, 0 MISSED.
 - sulo-stripped (SRI, 51 classes) — 51/51, 0 FP, 0 MISSED.
 - SIO (SRIQ, 1585 classes) — 8902/8904, 0 FP, 2 MISSED (99.98 %).
-- GALEN (SHIF, 2748 classes, ORE 2015) — 27888/27997, 0 FP,
-  109 MISSED (99.6 %).
-- notgalen (SHIF, 3087 classes, ORE 2015) — 32712/32739, 0 FP,
-  27 MISSED (99.9 %).
+- GALEN (SHIF, 2748 classes, ORE 2015) — 27997/27997, 0 FP, 0 MISSED (100%) — full Konclude parity since Phase 2d+2c-redux
+- notgalen (SHIF, 3087 classes, ORE 2015) — 32721/32739, 0 FP, 18 MISSED (99.94%)
 - ALEHIF+ test (168 classes, ORE 2015) — 247/247, 0 FP, 0 MISSED.
 
 Phase 0 (Task 5) added two further ORE 2015 fixtures against the HermiT

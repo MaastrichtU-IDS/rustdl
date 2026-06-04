@@ -99,7 +99,7 @@ inherits the trigger via propagation gets it too.
 | Workload | Residual_or | Expected impact |
 |---|---|---|
 | RO | 165 | very high — RO's wall is dominated by per-node residual branching |
-| SIO | 54 | high |
+| SIO | 54 | **none** (empirically flat — SIO is timeout-bound; see `docs/lazy-unfolding-plan.md` §C) |
 | family | 53 | high |
 | SULO | 11 | medium (already fast) |
 | pizza | 4 | low — residuals aren't pizza's bottleneck |
@@ -122,7 +122,7 @@ expansion" optimisation from the description-logic literature.
 | Workload | concept_rules | Expected impact |
 |---|---|---|
 | GO | 72 697 | none (pure EL, no successors of interest) |
-| SIO | 2244 | high — many concept_rules fire on every successor |
+| SIO | 2244 | **none** (empirically flat — concept-rule Or deferral also timeout-bound; see `docs/lazy-unfolding-plan.md` §D) |
 | pizza | 663 | very high — 663 × ~10 successors × ~10 saturate passes = explosion |
 | family / RO / SULO | < 200 | medium |
 
@@ -173,6 +173,8 @@ locality-class structure rather than direct mention.
 **Scope:** multi-month. Effectively rewriting the tableau
 engine. Listed here for completeness, not a near-term target.
 
+**Update (2026-05-29):** Hypertableau SHIPPED as the default engine (wedge accelerator + double-blocking + trust-sat all default-on). See `docs/hypertableau-summary.md` for the implementation history and `crates/owl-dl-reasoner/src/lib.rs` `hyper_*_enabled()` for current defaults.
+
 ## Recommended sequencing
 
 Given the data, the highest expected wins per session are:
@@ -212,6 +214,8 @@ sessions' direction. Each lever has its own plan doc on landing.
   for mostly-EL workflows.
 
 ## Status of architectural attempts so far
+
+> **Note (2026-06-04):** Table frozen at 2026-05-27. For current state see `docs/hypertableau-summary.md` and `docs/handoff-2026-06-03-snapshot-cache-project-complete.md`.
 
 | Lever | Attempt date | Status | Plan doc |
 |---|---|---|---|

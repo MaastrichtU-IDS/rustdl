@@ -89,6 +89,13 @@ net + GALEN.
 
 ## What's left
 
+> **Note (2026-06-04 audit):** This "What's left" prediction did not match what
+> actually shipped. Phase 3b targeted `are_declared_inverses` O(N)→O(1) hashset
+> (not `apply_max`). Phase 3c targeted `ConceptPool::bot_id` OnceLock cache
+> (not clash detection). Phase 3d targeted `apply_deferred_concept_or_rules`
+> indexed-lookup hoist (not heap allocations). See `docs/phase3{b,c,d}-results.md`
+> for actual outcomes. Predictions kept below as historical record.
+
 - **Phase 3b — `apply_max`** (now 19.58%, the largest remaining
   single frame). The SIO flamegraph also dominated by `apply_max`
   + `are_declared_inverses` linear scan (25-27%), so Phase 3b

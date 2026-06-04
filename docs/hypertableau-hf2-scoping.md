@@ -125,6 +125,4 @@ completeness gate.
   unchanged (ro/sulo *have* `SubObjectPropertyOf` yet still 158/51, 0
   FP) — hierarchy is wired+active but the corpus's probe subsumptions
   don't depend on it. Chains/transitivity remain HF3.
-- **Double-blocking (§3) — PENDING.** Required for SAT-soundness
-  (anywhere-blocking is unsound with inverses for *model construction*,
-  not for the `Unsat`-only probe). Needs its own cyclic canary (§4.3).
+- **Double-blocking (§3) — DONE** (shipped default-on at commit `5e48382`, 2026-05-29; see `hypertableau-hf2-doubleblocking-scoping.md` §9 for timeline). ~~PENDING. Required for SAT-soundness (anywhere-blocking is unsound with inverses for *model construction*, not for the `Unsat`-only probe). Needs its own cyclic canary (§4.3).~~

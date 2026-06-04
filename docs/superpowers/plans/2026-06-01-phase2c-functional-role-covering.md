@@ -1,5 +1,9 @@
 # Phase 2c — Functional-Role + Covering EL+ Approximation Implementation Plan
 
+> **Outcome: SHIPPED-AND-REVERTED.** 0/44 GALEN pair recovery; reverted at commit `cc2019e`. See `docs/phase2c-results.md` and dead-end §15.
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an EL+ approximation rule to the saturator that closes the cluster-C/D residual MISSED (24-44 pairs of the post-Phase-2b/2b.5 + Phase-3 baseline) via pattern-matching the functional-role + covering triangle in absorbed-TBox shape, without negation / case-splitting / hypertableau extension. Hold FP=0 + the post-Phase-3 wall baseline.

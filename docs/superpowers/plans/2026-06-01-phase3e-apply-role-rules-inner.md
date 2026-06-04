@@ -1,5 +1,9 @@
 # Phase 3e — `apply_role_rules` inner-cost Performance Plan
 
+> **Outcome: SHIPPED-AND-REVERTED.** GALEN +2.34% wall regression despite SIO flame win; reverted at commit `a2a4d7f`. See `docs/phase3e-results.md` and dead-end §16.
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Reduce `apply_role_rules`'s contribution to GALEN classify wall (currently 16.36% of SIO post-3c per `docs/flamegraphs/sio-classify-2026-06-01-post-phase3c-findings.md`, likely similar post-3d after the apply_deferred drop redistributed the denominator) while preserving FP=0 + MISSED=17 on GALEN and FP=0 / MISSED=0 on the Phase 0 net.

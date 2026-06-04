@@ -36,8 +36,16 @@ jobs:
         env:
           CIBW_BUILD: 'cp310-*'   # abi3 wheel — one build, all 3.10+ Pythons
           CIBW_ARCHS: ${{ matrix.arch }}
-          CIBW_BEFORE_BUILD: 'pip install maturin'
           CIBW_BUILD_FRONTEND: 'build'
+          # Manylinux containers ship without Rust; maturin's auto-install
+          # via puccinialin breaks on FileNotFoundError. Install rustup
+          # explicitly before each wheel build, scoped per-container.
+          # macOS / Windows runners already have Rust available; the
+          # _LINUX-suffix env vars only apply to Linux jobs.
+          CIBW_BEFORE_ALL_LINUX: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+          CIBW_ENVIRONMENT_LINUX: 'PATH=/root/.cargo/bin:$PATH'
+          CIBW_BEFORE_BUILD: 'pip install maturin'
           CIBW_TEST_REQUIRES: 'pytest'
           CIBW_TEST_COMMAND: 'pytest {project}/crates/owl-dl-py/tests/python/'
         with:

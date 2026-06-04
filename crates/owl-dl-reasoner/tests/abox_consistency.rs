@@ -97,3 +97,29 @@ fn p5_functional_no_different_is_consistent() {
     assert!(check_consistency("p5_functional_same_target"),
         "P5 negative: same two facts WITHOUT DifferentIndividuals stay consistent (OWA)");
 }
+
+// ── P6: Asymmetric / Irreflexive violations ─────────────────────────
+
+#[test]
+fn p6_asymmetric_two_way_is_inconsistent() {
+    assert!(!check_consistency("p6_asymmetric"),
+        "P6: Asymmetric(R) + R(a,b) + R(b,a) should be inconsistent");
+}
+
+#[test]
+fn p6_asymmetric_one_way_is_consistent() {
+    assert!(check_consistency("p6_asymmetric_one_way"),
+        "P6 negative: Asymmetric(R) + R(a,b) alone should stay consistent");
+}
+
+#[test]
+fn p6_irreflexive_self_loop_is_inconsistent() {
+    assert!(!check_consistency("p6_irreflexive"),
+        "P6: Irreflexive(R) + R(a,a) should be inconsistent");
+}
+
+#[test]
+fn p6_irreflexive_distinct_pair_is_consistent() {
+    assert!(check_consistency("p6_irreflexive_distinct"),
+        "P6 negative: Irreflexive(R) + R(a,b) with distinct a,b should stay consistent");
+}

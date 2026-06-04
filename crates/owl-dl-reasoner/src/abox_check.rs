@@ -281,6 +281,53 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
 
+    // P6: Asymmetric + Irreflexive.
+    let mut asymmetric_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
+        std::collections::HashSet::new();
+    let mut irreflexive_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
+        std::collections::HashSet::new();
+    for ax in &prepared.axioms {
+        match ax {
+            owl_dl_core::ontology::Axiom::AsymmetricRole(r) => {
+                asymmetric_roles.insert(r.role_id());
+            }
+            owl_dl_core::ontology::Axiom::IrreflexiveRole(r) => {
+                irreflexive_roles.insert(r.role_id());
+            }
+            _ => {}
+        }
+    }
+    // Asymmetric: scan for (a, R, b) and (b, R, a) both present.
+    for &(from, role, to) in &prepared.abox.property_assertions {
+        if asymmetric_roles.contains(&role) && pos.contains(&(to, role, from)) {
+            return AboxVerdict::Inconsistent {
+                reason: ClashReason::AsymmetricViolation { role, a: from, b: to },
+            };
+        }
+    }
+    // Irreflexive: any (a, R, a). Also fires when SameAs merges
+    // collapsed from == to: scan property_assertions and test via uf.
+    for &(from, role, to) in &prepared.abox.property_assertions {
+        if !irreflexive_roles.contains(&role) {
+            continue;
+        }
+        if from == to {
+            return AboxVerdict::Inconsistent {
+                reason: ClashReason::IrreflexiveViolation { role, a: from },
+            };
+        }
+        if let (Some(&i), Some(&j)) = (ind_index.get(&from), ind_index.get(&to)) {
+            if uf.same(
+                u32::try_from(i).expect("fits in u32"),
+                u32::try_from(j).expect("fits in u32"),
+            ) {
+                return AboxVerdict::Inconsistent {
+                    reason: ClashReason::IrreflexiveViolation { role, a: from },
+                };
+            }
+        }
+    }
+
     AboxVerdict::Unknown
 }
 

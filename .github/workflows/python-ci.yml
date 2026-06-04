@@ -1,0 +1,52 @@
+name: Python CI
+
+on:
+  # push trigger disabled 2026-05-29 until the org Actions billing is
+  # restored — every recent push has failed with "the job was not
+  # started because recent account payments have failed or your
+  # spending limit needs to be increased." PRs and manual dispatch
+  # still trigger CI normally. Mirror of .github/workflows/ci.yml.
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'crates/owl-dl-py/**'
+  #     - 'crates/owl-dl-core/**'
+  #     - 'crates/owl-dl-saturation/**'
+  #     - 'crates/owl-dl-tableau/**'
+  #     - 'crates/owl-dl-datatypes/**'
+  #     - 'crates/owl-dl-reasoner/**'
+  #     - 'Cargo.toml'
+  #     - '.github/workflows/python-ci.yml'
+  pull_request:
+    paths:
+      - 'crates/owl-dl-py/**'
+      - 'crates/owl-dl-core/**'
+      - 'crates/owl-dl-saturation/**'
+      - 'crates/owl-dl-tableau/**'
+      - 'crates/owl-dl-datatypes/**'
+      - 'crates/owl-dl-reasoner/**'
+      - 'Cargo.toml'
+      - '.github/workflows/python-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install maturin + pytest
+        run: pip install 'maturin>=1.7,<2' pytest
+      - name: Build + install rustdl
+        working-directory: crates/owl-dl-py
+        run: maturin develop --release
+      - name: Run pytest
+        run: pytest crates/owl-dl-py/tests/python/ -v

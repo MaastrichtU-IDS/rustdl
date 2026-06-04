@@ -7,6 +7,7 @@
 use pyo3::prelude::*;
 
 mod errors;
+mod load;
 
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {

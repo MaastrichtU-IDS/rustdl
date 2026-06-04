@@ -21,8 +21,12 @@ jobs:
             arch: x86_64
           - os: ubuntu-latest
             arch: aarch64
-          - os: macos-13
-            arch: x86_64
+          # macOS Intel (macos-13 / x86_64) intentionally dropped:
+          # GitHub-hosted Intel Mac runners are heavily oversubscribed
+          # (queued > 30 min on the 0.2.0 release attempt). Apple is
+          # sunsetting Intel; users on Intel Macs install from sdist
+          # (`pip install --no-binary rustdl rustdl`) which compiles
+          # from source. Re-add if a customer needs prebuilt Intel.
           - os: macos-14
             arch: arm64
           - os: windows-latest

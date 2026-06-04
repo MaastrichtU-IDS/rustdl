@@ -705,6 +705,70 @@ GALEN-shaped workloads).
 
 ---
 
+## 21. Family / family-stripped functional-witness-merge follow-on (recon-only, 2026-06-04)
+
+**What was scoped.** The ABox consistency check (Phase A1, see
+`docs/abox-consistency-check-handoff.md`) shipped seven sound clash
+patterns (P1–P7) but the family / family-stripped fixtures remained
+open — both flagged inconsistent by HermiT and Konclude in <1 s while
+rustdl's tableau times out. The follow-on hypothesis: extend P7 with
+a sound functional-role-merge step that collapses two `∃R.X` witnesses
+when `R` is functional and the merged node carries disjoint types
+(canonical pattern: someone who's both a mother-target and a
+father-target → `∃hasSex.Female ⊓ ∃hasSex.Male + Functional(hasSex)`
+→ `Female ⊓ Male` → ⊥). Recon hypothesis: ~300-500 LoC; closes family.
+
+**What killed it.** Recon bisection of `family-stripped.ofn`
+contradicted the hypothesis from two angles:
+
+1. **DifferentIndividuals is NOT necessary** for family's
+   inconsistency. The prior ABox-project recon got this wrong because
+   the bisection fixtures had a malformed Ontology(...) wrapper (the
+   `family-noabox.ofn` retained the original closing `)`, causing
+   Konclude to silently drop the appended ABox lines). A corrected
+   bisection showed: TBox + full ABox **minus** DifferentIndividuals →
+   still inconsistent.
+
+2. **Minimal clash** isolated to **15 ABox lines** containing the
+   self-loop `isBrotherOf(:john_bright_1930, :john_bright_1930)`.
+   - Self-loop alone with TBox: consistent.
+   - 15-line clash without self-loop: consistent.
+   - **No `IrreflexiveObjectProperty(:isBrotherOf)`** in the TBox, so
+     P6's irreflexive scan would not catch it.
+   - **HermiT's own `explain --mode inconsistency` times out at 60 s**
+     on this minimal fixture — the derivation is genuinely deep,
+     traversing dense SROIQ property chains
+     (`isBrotherOf ∘ isParentOf → isUncleOf`, plus inverses + symmetric
+     / transitive on the sibling chain).
+
+**Why the originally-pitched pattern doesn't fit.** Family's clash is
+NOT `∃hasSex.Female ⊓ ∃hasSex.Male` style. It's a self-loop
+interacting with property chains and role characteristics across
+many hops — exactly what the full SROIQ tableau is for. No single
+sound pre-pass extension catches it without effectively reimplementing
+the chain-aware tableau on the ABox graph.
+
+**Forward-going.** Closing family-class workloads requires
+ABox-saturation-class work — forward-chaining ABox propagation with
+property-chain expansion, inverse traversal, role-functionality
+merging, and bookkeeping for chain blocking. Order-of-magnitude
+~2000+ LoC. Treat as a separate research-engineering project, not as
+an A1 follow-on. Documented at
+`docs/abox-consistency-check-handoff.md` as "Known gaps". Pivot
+target: SROIQ perf (ORE-10908 closed 17× → 12× in Phase 7; ≤5×
+ratio still open).
+
+**Meta-lesson reinforcement.** This is the THIRD instance in this
+codebase where a "we can close this with one tractable pattern"
+hypothesis evaporated under recon — joining Phase 2a (spec §5
+misframing, see §19) and Phase 3b (per-class refinement, see §20).
+The discipline holds: recon-first before scoping a project around a
+specific user-visible failure mode, especially when the existing
+sound-and-complete reasoner (HermiT) can't itself explain the
+failure quickly.
+
+---
+
 ## Meta-lesson
 
 Every dead-end above had a *plausible first-principles motivation* and

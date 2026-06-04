@@ -10,6 +10,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+publish = false   # whelk dep is git-only (not on crates.io); bench is an internal dev tool
 
 [[bin]]
 name = "owl-dl-bench"

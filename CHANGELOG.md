@@ -4,6 +4,32 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Python bindings** (`rustdl` on PyPI). PyO3 + maturin. ABI3 wheel
+  for Python 3.10/3.11/3.12/3.13. Top-level API one-to-one with the
+  Rust public API (`classify`, `classify_bytes`, `is_consistent`,
+  `is_class_satisfiable`, `is_subclass_of`, `is_instance_of`,
+  `instances_of`, `realize`) plus inference materialization helpers
+  (`materialize_inferred_subclass_axioms`,
+  `materialize_inferred_class_assertions`). Auto-detects OFN/OWX/RDF-XML
+  format from file extension. 5-platform wheel matrix (Linux x86_64 +
+  aarch64, macOS x86_64 + arm64, Windows AMD64) + sdist. PyPI publish
+  via trusted publisher (OIDC, no token in CI).
+- New GitHub Actions workflows: `python-ci.yml` (PR/dispatch gate) and
+  `release-python.yml` (cibuildwheel + maturin publish on `v*.*.*` tag).
+
+### Deferred to roadmap
+
+- owlready2 / omny integration (separate brainstorm queued).
+- Black-box `rustdl.explain(path, sub, sup)` axiom-justifications.
+- `rustdl.Reasoner(path)` stateful class for batch queries.
+- Native pyhornedowl `Ontology` pass-through.
+- See the spec at `docs/superpowers/specs/2026-06-04-python-bindings-design.md`
+  for the full deferred-feature list.
+
 ## [0.1.0] — 2026-06-04
 
 First tagged release. The engine is sound on every measured workload

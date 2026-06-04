@@ -124,6 +124,34 @@ As the CLI binary:
 cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli
 ```
 
+From Python (PyPI):
+```sh
+pip install rustdl
+```
+
+Quick Python example:
+
+```python
+import rustdl
+
+# Classify an ontology (OFN, OWX, or RDF/XML — format auto-detected from extension)
+result = rustdl.classify("ontology.ofn")
+
+print(f"{len(result.classes)} classes; {len(result.unsatisfiable)} unsat")
+print(result.is_subclass("http://example.org/Sub", "http://example.org/Sup"))
+
+# Other queries
+ok = rustdl.is_consistent("ontology.ofn")
+instances = rustdl.instances_of("ontology.ofn", "http://example.org/Person")
+realization = rustdl.realize("ontology.ofn")  # dict[individual_iri, [most_specific_type, ...]]
+
+# Inference materialization (useful for writing inferred ontologies back to disk)
+sub_axioms = rustdl.materialize_inferred_subclass_axioms("ontology.ofn")
+type_axioms = rustdl.materialize_inferred_class_assertions("ontology.ofn")
+```
+
+Supports Python 3.10+. ABI3 wheel — one wheel per platform for all 3.10–3.13.
+
 Or build from source — see [Quick start](#quick-start).
 
 ## Quick start

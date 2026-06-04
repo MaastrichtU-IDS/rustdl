@@ -272,8 +272,8 @@ Write `crates/owl-dl-reasoner/src/abox_check.rs`:
 //! Spec: `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
 
 use owl_dl_core::ir::ClassId;
-use owl_dl_core::role_hierarchy::RoleId;
-use owl_dl_core::vocab::IndividualId;
+use owl_dl_core::ir::RoleId;
+use owl_dl_core::ir::IndividualId;
 
 /// Verdict from the ABox consistency check.
 ///
@@ -1098,7 +1098,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // For each ClassAssertion(C, a) with C atomic, insert c and
     // every subsumer of c per Subsumers::subsumers_of.
     let n = prepared.abox.individuals.len();
-    let ind_index: std::collections::HashMap<owl_dl_core::vocab::IndividualId, usize> =
+    let ind_index: std::collections::HashMap<owl_dl_core::ir::IndividualId, usize> =
         prepared.abox.individuals.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
     let mut types: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>> =
         vec![std::collections::HashSet::new(); n];
@@ -1294,9 +1294,9 @@ Then extend `check()` with P3 — insert before the final `AboxVerdict::Unknown`
     // P3: NegativeObjectPropertyAssertion vs positive
     // ObjectPropertyAssertion. Build a HashSet of positive triples
     // and test each negative against it.
-    let pos: std::collections::HashSet<(owl_dl_core::vocab::IndividualId,
-                                        owl_dl_core::role_hierarchy::RoleId,
-                                        owl_dl_core::vocab::IndividualId)> =
+    let pos: std::collections::HashSet<(owl_dl_core::ir::IndividualId,
+                                        owl_dl_core::ir::RoleId,
+                                        owl_dl_core::ir::IndividualId)> =
         prepared.abox.property_assertions.iter().copied().collect();
     for &(from, role, to) in &prepared.abox.negative_property_triples {
         if pos.contains(&(from, role, to)) {
@@ -1620,9 +1620,9 @@ After the P4 different-pair clash check, add:
     // touched pairs can fire). Same for inverse-functional via the
     // swapped role.
     use std::collections::HashMap;
-    let mut functional_roles: std::collections::HashSet<owl_dl_core::role_hierarchy::RoleId> =
+    let mut functional_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
         std::collections::HashSet::new();
-    let mut inverse_functional_roles: std::collections::HashSet<owl_dl_core::role_hierarchy::RoleId> =
+    let mut inverse_functional_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
         std::collections::HashSet::new();
     for ax in &prepared.axioms {
         match ax {
@@ -1637,9 +1637,9 @@ After the P4 different-pair clash check, add:
     }
 
     // Group (from, role) → Vec<to>.
-    let mut by_from_role: HashMap<(owl_dl_core::vocab::IndividualId,
-                                   owl_dl_core::role_hierarchy::RoleId),
-                                   Vec<owl_dl_core::vocab::IndividualId>> = HashMap::new();
+    let mut by_from_role: HashMap<(owl_dl_core::ir::IndividualId,
+                                   owl_dl_core::ir::RoleId),
+                                   Vec<owl_dl_core::ir::IndividualId>> = HashMap::new();
     for &(from, role, to) in &prepared.abox.property_assertions {
         if functional_roles.contains(&role) {
             by_from_role.entry((from, role)).or_default().push(to);
@@ -1675,9 +1675,9 @@ After the P4 different-pair clash check, add:
     }
 
     // Inverse-functional: group (role, to) → Vec<from>, merge as above.
-    let mut by_role_to: HashMap<(owl_dl_core::role_hierarchy::RoleId,
-                                 owl_dl_core::vocab::IndividualId),
-                                 Vec<owl_dl_core::vocab::IndividualId>> = HashMap::new();
+    let mut by_role_to: HashMap<(owl_dl_core::ir::RoleId,
+                                 owl_dl_core::ir::IndividualId),
+                                 Vec<owl_dl_core::ir::IndividualId>> = HashMap::new();
     for &(from, role, to) in &prepared.abox.property_assertions {
         if inverse_functional_roles.contains(&role) {
             by_role_to.entry((role, to)).or_default().push(from);
@@ -1886,9 +1886,9 @@ Insert P6 in `check()` after P5 and before the final `AboxVerdict::Unknown`:
 
 ```rust
     // P6: Asymmetric + Irreflexive.
-    let mut asymmetric_roles: std::collections::HashSet<owl_dl_core::role_hierarchy::RoleId> =
+    let mut asymmetric_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
         std::collections::HashSet::new();
-    let mut irreflexive_roles: std::collections::HashSet<owl_dl_core::role_hierarchy::RoleId> =
+    let mut irreflexive_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
         std::collections::HashSet::new();
     for ax in &prepared.axioms {
         match ax {
@@ -2063,9 +2063,9 @@ Insert P7 after P6 and before the final `AboxVerdict::Unknown`. The implementati
     // ObjectPropertyDomain(R, D) and assertion R(a, _), add D's
     // class (if atomic) + its EL subsumers to types[a]. Same for
     // range applied to the object. Then re-run the P2 scan.
-    let mut domains: Vec<(owl_dl_core::role_hierarchy::RoleId,
+    let mut domains: Vec<(owl_dl_core::ir::RoleId,
                           owl_dl_core::ir::ConceptId)> = Vec::new();
-    let mut ranges: Vec<(owl_dl_core::role_hierarchy::RoleId,
+    let mut ranges: Vec<(owl_dl_core::ir::RoleId,
                          owl_dl_core::ir::ConceptId)> = Vec::new();
     for ax in &prepared.axioms {
         match ax {

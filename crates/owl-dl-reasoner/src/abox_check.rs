@@ -118,6 +118,30 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
 
+    // P3: NegativeObjectPropertyAssertion vs positive
+    // ObjectPropertyAssertion. Build a HashSet of positive triples
+    // and test each negative against it.
+    let pos: std::collections::HashSet<(owl_dl_core::ir::IndividualId,
+                                        owl_dl_core::ir::RoleId,
+                                        owl_dl_core::ir::IndividualId)> =
+        prepared.abox.property_assertions.iter().copied().collect();
+    for &(from, role, to) in &prepared.abox.negative_property_triples {
+        if pos.contains(&(from, role, to)) {
+            return AboxVerdict::Inconsistent {
+                reason: ClashReason::NegOpaConflict { from, role, to },
+            };
+        }
+        // Role-hierarchy upward propagation: a positive assertion on
+        // any super-role of `role` also implies the negated one.
+        for &super_role in prepared.hierarchy.super_roles(role) {
+            if pos.contains(&(from, super_role, to)) {
+                return AboxVerdict::Inconsistent {
+                    reason: ClashReason::NegOpaConflict { from, role, to },
+                };
+            }
+        }
+    }
+
     AboxVerdict::Unknown
 }
 

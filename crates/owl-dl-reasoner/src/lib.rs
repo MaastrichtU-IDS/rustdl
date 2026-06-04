@@ -1709,7 +1709,7 @@ where
 pub(crate) struct PreparedOntology {
     pub(crate) pool: ConceptPool,
     tbox: AbsorbedTBox,
-    hierarchy: RoleHierarchy,
+    pub(crate) hierarchy: RoleHierarchy,
     inverse_pairs: Vec<(RoleId, RoleId)>,
     chain_axioms: Vec<(Role, Role, Role)>,
     asymmetric_roles: Vec<RoleId>,
@@ -2019,6 +2019,12 @@ struct Abox {
     /// `(a, b)` pairs from `DifferentIndividuals(a, b, ...)`.
     /// Likewise pairwise; the tableau marks them distinct.
     different_pairs: Vec<(IndividualId, IndividualId)>,
+    /// P3 input: raw `(subject, role_id, object)` triples from
+    /// `NegativeObjectPropertyAssertion` axioms. Polarity normalised
+    /// (inverse-role assertions swap subject/object). The `∀`-form
+    /// stored in `negative_property_assertions` is for the tableau;
+    /// this is for the ABox consistency check.
+    pub(crate) negative_property_triples: Vec<(IndividualId, RoleId, IndividualId)>,
 }
 
 fn collect_abox(internal: &mut InternalOntology) -> Abox {
@@ -2084,6 +2090,12 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
                 subject,
                 object,
             } => {
+                let (from, to) = if role.is_inverse() {
+                    (*object, *subject)
+                } else {
+                    (*subject, *object)
+                };
+                abox.negative_property_triples.push((from, role.role_id(), to));
                 // Encode `(subject, object) ∉ role` as
                 // `{subject} ⊑ ∀role.¬{object}`. Polarity of the
                 // role passes through unchanged.

@@ -55,3 +55,17 @@ fn p2_disjoint_different_individuals_is_consistent() {
     assert!(check_consistency("p2_disjoint_different_individuals"),
         "P2 negative: disjoint classes asserted on DIFFERENT individuals should stay consistent");
 }
+
+// ── P3: NegativeObjectPropertyAssertion vs ObjectPropertyAssertion ──
+
+#[test]
+fn p3_neg_opa_is_inconsistent() {
+    assert!(!check_consistency("p3_neg_opa"),
+        "P3: positive OPA + NegOPA on same (a, R, b) should be inconsistent");
+}
+
+#[test]
+fn p3_neg_opa_no_clash_is_consistent() {
+    assert!(check_consistency("p3_neg_opa_no_clash"),
+        "P3 negative: NegOPA to a DIFFERENT target should stay consistent");
+}

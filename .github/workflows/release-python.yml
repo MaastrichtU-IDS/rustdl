@@ -19,8 +19,17 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
-          - os: ubuntu-latest
-            arch: aarch64
+          # Linux aarch64 (ubuntu-latest / aarch64) intentionally dropped
+          # for the 0.2.0 first-Python release. QEMU emulation makes
+          # this job ~50 min wall — three release attempts cycled
+          # through other CI failures (manylinux Rust install,
+          # macos-13 queue, sdist artifact path) and every retry meant
+          # another 50 min of aarch64 build. Linux ARM users install
+          # from sdist (`pip install --no-binary rustdl rustdl`) which
+          # compiles from source. Re-add for 0.2.1 once the workflow
+          # is stable on the other platforms.
+          # - os: ubuntu-latest
+          #   arch: aarch64
           # macOS Intel (macos-13 / x86_64) intentionally dropped:
           # GitHub-hosted Intel Mac runners are heavily oversubscribed
           # (queued > 30 min on the 0.2.0 release attempt). Apple is
@@ -46,8 +55,15 @@ jobs:
           # explicitly before each wheel build, scoped per-container.
           # macOS / Windows runners already have Rust available; the
           # _LINUX-suffix env vars only apply to Linux jobs.
+          #
+          # Profile MUST be `default` (not `minimal`): maturin's internal
+          # rustup invocation tries to add rustfmt/clippy components,
+          # and a `minimal` install conflicts on the cargo-fmt binary
+          # ("rustfmt-preview ... detected conflict: 'bin/cargo-fmt'").
+          # `default` ships those components from the start, so no
+          # subsequent add-component conflict.
           CIBW_BEFORE_ALL_LINUX: |
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default
           CIBW_ENVIRONMENT_LINUX: 'PATH=/root/.cargo/bin:$PATH'
           CIBW_BEFORE_BUILD: 'pip install maturin'
           CIBW_TEST_REQUIRES: 'pytest'

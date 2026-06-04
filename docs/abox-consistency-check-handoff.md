@@ -74,6 +74,23 @@ functional-collapse step. That's the next scoping target.
   `individuals`. New `has_abox_axioms()` helper gates the build behind
   an O(n) axiom scan. Honours the spec's "zero overhead on ABox-free"
   contract.
+- **Post-review fix (commit `92bd060`)** — **P3 soundness fix**: final
+  code review caught that the role-hierarchy propagation was inverted.
+  `NegOPA(R, a, b)` is contradicted by a positive `S(a, b)` when
+  `S ⊑ R` (sub-role) — the S-fact entails R(a, b). A super-role fact
+  does NOT entail R(a, b) and must not flag inconsistency. The plan
+  and spec both said "super-role"; the implementation faithfully
+  followed the buggy spec. Latent because no fixture combined NegOPA
+  with a role hierarchy. Fix: `super_roles` → `sub_roles` in
+  `abox_check.rs` P3 block (`sub_roles` is reflexive-transitive so
+  the direct-match case is subsumed). Two new fixtures + tests pin
+  the bug both directions:
+    - `p3_role_hierarchy_super_neg_is_consistent` — the false-positive
+      path the buggy version would have flagged.
+    - `p3_role_hierarchy_sub_neg_is_inconsistent` — the genuinely
+      inconsistent dual case the fix must still detect.
+  Spec §P3 corrected. FP=0 invariant re-verified on alehif +
+  ore-10908.
 
 ## Test harness
 
@@ -90,8 +107,9 @@ Each pattern has positive + near-miss negative coverage; not `#[ignore]`d.
 | P6 Asymmetric two-way | `p6_asymmetric_two_way_is_inconsistent` | `p6_asymmetric_one_way_is_consistent` |
 | P6 Irreflexive self-loop | `p6_irreflexive_self_loop_is_inconsistent` | `p6_irreflexive_distinct_pair_is_consistent` |
 | P7 range disjoint (stretch) | `p7_range_clashes_with_assertion_is_inconsistent` | `p7_range_compatible_is_consistent` |
+| P3 role-hierarchy (regression) | `p3_role_hierarchy_sub_neg_is_inconsistent` | `p3_role_hierarchy_super_neg_is_consistent` |
 
-All 16 pass.
+All 18 pass.
 
 ### `crates/owl-dl-reasoner/tests/konclude_closure_diff.rs` — 2 corpus regressions
 Both `#[ignore]`d, both currently FAIL as stretch goals:
@@ -215,6 +233,7 @@ matches both pre- and post-shipment.
 ## Commit map
 
 ```
+92bd060 fix(abox-check): P3 — sub_roles, not super_roles (soundness fix)
 6e63c28 perf(abox-check): skip PreparedOntology build for ABox-free fast-path inputs
 83f324e test(abox-check): T14 — family / family-stripped inconsistency regression
 ba8989e feat(abox-check): T13 — P7 domain/range disjointness (stretch)

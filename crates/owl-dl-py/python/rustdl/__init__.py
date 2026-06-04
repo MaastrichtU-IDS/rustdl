@@ -9,6 +9,16 @@ https://github.com/MaastrichtU-IDS/rustdl for the full project.
 # Re-export the native extension's public surface.
 from rustdl._native import (
     __version__ as __version__,
+    RustdlError as RustdlError,
+    ParseError as ParseError,
+    UnsupportedAxiomError as UnsupportedAxiomError,
+    UnknownClassError as UnknownClassError,
 )
 
-__all__ = ["__version__"]
+__all__ = [
+    "__version__",
+    "RustdlError",
+    "ParseError",
+    "UnsupportedAxiomError",
+    "UnknownClassError",
+]

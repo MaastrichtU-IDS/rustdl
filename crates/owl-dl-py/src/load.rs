@@ -15,7 +15,6 @@ use crate::errors::ParseError;
 
 /// Parse an ontology from a file path. Format is auto-detected from
 /// the file extension (`.ofn` | `.owx` | `.rdf` | `.owl`).
-#[allow(dead_code)] // used by classify::* in T5
 pub(crate) fn load_path(path: &str) -> PyResult<SetOntology<RcStr>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| ParseError::new_err(format!("read {path}: {e}")))?;
@@ -42,7 +41,6 @@ pub(crate) fn load_path(path: &str) -> PyResult<SetOntology<RcStr>> {
 }
 
 /// Parse from bytes with an explicit format string.
-#[allow(dead_code)] // used by classify::* in T5
 pub(crate) fn load_bytes(data: &[u8], format: &str) -> PyResult<SetOntology<RcStr>> {
     let src = std::str::from_utf8(data)
         .map_err(|e| ParseError::new_err(format!("ontology bytes are not valid UTF-8: {e}")))?;

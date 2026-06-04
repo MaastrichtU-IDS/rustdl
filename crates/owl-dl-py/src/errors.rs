@@ -49,7 +49,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// Map a `ReasonError` into the appropriate Python exception.
-#[allow(dead_code)] // used in T4+ when Rust functions surface errors to Python
 pub(crate) fn reason_error_to_py(err: ReasonError) -> PyErr {
     match err {
         ReasonError::Conversion(conv) => match conv {

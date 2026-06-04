@@ -9,6 +9,9 @@ https://github.com/MaastrichtU-IDS/rustdl for the full project.
 # Re-export the native extension's public surface.
 from rustdl._native import (
     __version__ as __version__,
+    Classification as Classification,
+    classify as classify,
+    classify_bytes as classify_bytes,
     RustdlError as RustdlError,
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
@@ -17,6 +20,9 @@ from rustdl._native import (
 
 __all__ = [
     "__version__",
+    "Classification",
+    "classify",
+    "classify_bytes",
     "RustdlError",
     "ParseError",
     "UnsupportedAxiomError",

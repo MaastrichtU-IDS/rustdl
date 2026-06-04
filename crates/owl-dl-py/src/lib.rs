@@ -9,11 +9,13 @@ use pyo3::prelude::*;
 mod classify;
 mod errors;
 mod load;
+mod queries;
 
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     errors::register(m)?;
     classify::register(m)?;
+    queries::register(m)?;
     Ok(())
 }

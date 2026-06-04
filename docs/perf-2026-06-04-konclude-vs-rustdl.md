@@ -66,9 +66,19 @@ axioms that rustdl silently drops per its sound-under-approximation frontend, se
 the ratio is not meaningful. rustdl's 27.74 s reflects exploration of an out-of-EL
 58-class ontology.
 
-**rustdl errored on parsing** (unsupported `DeclareDataProperty` axiom — same as
-06-03; frontend gap, not an engine regression):
+**Default-mode classify times out at 60 s** on the four data-property-heavy
+ontologies (post-D1 silent-drop, parsing succeeds; the timeout is tableau-perf,
+not a frontend gap):
 - `family.ofn`, `ro.ofn`, `sio.ofn`, `shoiq-knowledge.ofn`
+
+Saturation-only mode (`--saturation-only`) classifies all four in seconds:
+family 342 sub-pairs, ro 158, sio 10 481, shoiq-knowledge 443. The default-
+mode timeout is the EL→tableau dispatcher reaching for the per-pair tableau
+on out-of-EL pairs that don't converge within budget — same character as
+ore-15672's intrinsic 3-class cluster (dead-end §18).
+
+**Earlier note about "rustdl errors on parsing" was stale** (carried over from
+the 06-03 doc, written before D1 shipped at commit `e34aeb6`). Corrected.
 
 ## Soundness contract
 
@@ -127,8 +137,10 @@ For workloads where Konclude still wins by 2× or more:
 - **Konclude wins** (ratio > 1.5): 4 ontologies — pizza (2.0×), ore-10908 (3.1×),
   sio-stripped (13.6×), ore-15672 (16.6×).
 - **Not comparable**: family-stripped (Konclude sees inconsistent; rustdl drops data axioms).
-- **rustdl errors** (data-property frontend gap): family.ofn, ro.ofn, sio.ofn,
-  shoiq-knowledge.ofn.
+- **Default-mode timeout** (60 s budget; saturation-only succeeds in seconds):
+  family.ofn, ro.ofn, sio.ofn, shoiq-knowledge.ofn. The cost is tableau
+  exploration on out-of-EL pairs, NOT a frontend / data-property parse gap
+  (D1 silent-drop handles those).
 
 ## Per-fixture label-cache stats (Phase 7 heuristic)
 

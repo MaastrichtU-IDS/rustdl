@@ -4,7 +4,7 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-06-04
 
 ### Added
 
@@ -99,4 +99,5 @@ FP=0 vs Konclude verified on every release. The closure-diff tests in
 are the soundness tripwire — any change that introduces a false-positive
 subsumption fails CI.
 
+[0.2.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.1.0

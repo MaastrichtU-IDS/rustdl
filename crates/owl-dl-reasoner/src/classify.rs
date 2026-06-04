@@ -232,6 +232,11 @@ pub struct ClassificationStats {
     /// Phase 3a recon: count of classes that the per-class classifier
     /// would mark Unsafe. Diagnostic only.
     pub per_class_unsafe_count: usize,
+    /// ABox consistency check fired (and the verdict was
+    /// `Inconsistent`). When true, every class is unsatisfiable; the
+    /// classify result mirrors Konclude's behaviour on inconsistent
+    /// input. See `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
+    pub inconsistent: bool,
 }
 
 impl Classification {
@@ -698,6 +703,27 @@ fn classify_pure_el(
     }
 }
 
+/// Build a `Classification` representing an inconsistent ontology:
+/// every class is unsatisfiable and therefore a subclass of every
+/// other class (the trivial entailment under inconsistency). Mirrors
+/// Konclude's behaviour. Used when the ABox consistency pre-check
+/// fires.
+fn classify_inconsistent(
+    classes: Vec<String>,
+    index: HashMap<String, usize>,
+    fragment: FragmentClassification,
+) -> Classification {
+    let n = classes.len();
+    let entailed = vec![vec![true; n]; n];
+    let unsatisfiable_idxs: HashSet<usize> = (0..n).collect();
+    let stats = ClassificationStats {
+        inconsistent: true,
+        fragment,
+        ..ClassificationStats::default()
+    };
+    Classification { classes, index, entailed, unsatisfiable_idxs, stats }
+}
+
 /// True iff every axiom in `internal` lies inside the EL fragment
 /// the saturation engine is complete for. A conservative check: any
 /// construct outside the supported shapes (disjunction, complement,
@@ -843,10 +869,33 @@ pub(crate) fn classify_top_down_internal(
         || (crate::horn_shortcircuit_enabled()
             && matches!(analyze_fragment(internal), FragmentClassification::Horn))
     {
+        // Build PreparedOntology just for the ABox check on the fast path
+        // (the saturation closure is already computed above). On Unknown,
+        // proceed with the pure-EL path; on Inconsistent, short-circuit.
+        if crate::abox_check_enabled() {
+            let prepared = PreparedOntology::from_internal(internal.clone())?;
+            if let crate::abox_check::AboxVerdict::Inconsistent { reason } =
+                prepared.abox_verdict()
+            {
+                if std::env::var_os("RUSTDL_TRACE").is_some() {
+                    eprintln!("abox_check: inconsistent — {reason:?}");
+                }
+                return Ok(classify_inconsistent(classes, index, analyze_fragment(internal)));
+            }
+        }
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
     }
 
     let prepared = PreparedOntology::from_internal(internal.clone())?;
+
+    // Sound ABox-driven inconsistency pre-check. If it fires, return
+    // an every-class-unsatisfiable Classification (mirroring Konclude).
+    if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("abox_check: inconsistent — {reason:?}");
+        }
+        return Ok(classify_inconsistent(classes, index, analyze_fragment(internal)));
+    }
 
     // Per-class unsat probes — identical to the naive path. Reuse
     // the same parallel pattern.

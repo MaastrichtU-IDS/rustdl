@@ -477,3 +477,37 @@ fn corpus_closure_matches_konclude() {
     }
     assert!(!any_fp, "corpus has FPs — soundness regression");
 }
+
+#[test]
+#[ignore = "Phase A1 corpus regression — family is HermiT/Konclude-inconsistent; checks rustdl's abox_check detects it (stretch: may not close without functional-merge work). Needs family.ofn."]
+fn family_inconsistency_detected() {
+    let path = Path::new("../../ontologies/real/family.ofn");
+    if !path.exists() {
+        eprintln!("SKIP: missing family.ofn");
+        return;
+    }
+    let src = std::fs::read_to_string(path).expect("read family.ofn");
+    let mut reader = Cursor::new(src);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse");
+    let consistent = owl_dl_reasoner::is_consistent(&onto).expect("is_consistent");
+    eprintln!("family is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)");
+    assert!(!consistent, "family should be detected as inconsistent (stretch goal)");
+}
+
+#[test]
+#[ignore = "Phase A1 corpus regression — family-stripped is HermiT/Konclude-inconsistent (no data axioms); checks rustdl's abox_check detects it (stretch). Needs family-stripped.ofn."]
+fn family_stripped_inconsistency_detected() {
+    let path = Path::new("../../ontologies/real/family-stripped.ofn");
+    if !path.exists() {
+        eprintln!("SKIP: missing family-stripped.ofn");
+        return;
+    }
+    let src = std::fs::read_to_string(path).expect("read family-stripped.ofn");
+    let mut reader = Cursor::new(src);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse");
+    let consistent = owl_dl_reasoner::is_consistent(&onto).expect("is_consistent");
+    eprintln!("family-stripped is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)");
+    assert!(!consistent, "family-stripped should be detected as inconsistent (stretch goal)");
+}

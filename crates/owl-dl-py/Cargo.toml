@@ -1,0 +1,27 @@
+[package]
+name = "owl-dl-py"
+description = "Python bindings for the rustdl OWL DL reasoner (via PyO3 + maturin)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["owl", "ontology", "reasoner", "python", "pyo3"]
+categories = ["science", "api-bindings"]
+publish = false  # published via maturin → PyPI, not via cargo → crates.io
+
+[lib]
+name = "rustdl"           # Python import name: `import rustdl`
+crate-type = ["cdylib"]   # Python C extension
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py310", "extension-module"] }
+owl-dl-reasoner.workspace = true
+owl-dl-core.workspace = true
+horned-owl.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

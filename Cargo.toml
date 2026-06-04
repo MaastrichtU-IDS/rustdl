@@ -8,6 +8,7 @@ members = [
     "crates/owl-dl-reasoner",
     "crates/owl-dl-cli",
     "crates/owl-dl-bench",
+    "crates/owl-dl-py",
     "xtask",
 ]
 default-members = [

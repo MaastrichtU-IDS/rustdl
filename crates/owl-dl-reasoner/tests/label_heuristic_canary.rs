@@ -45,8 +45,8 @@ Ontology(<http://test/lh>
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read(&mut reader, ParserConfiguration::default()).expect("parse");
-    let result = classify_top_down_with_timeout(&onto, Duration::from_millis(200))
-        .expect("classify");
+    let result =
+        classify_top_down_with_timeout(&onto, Duration::from_millis(200)).expect("classify");
     let stats = result.stats();
 
     // Sanity checks: classification correctness.
@@ -122,8 +122,8 @@ Ontology(<http://test/lh-pt>
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read(&mut reader, ParserConfiguration::default()).expect("parse");
-    let result = classify_top_down_with_timeout(&onto, Duration::from_millis(200))
-        .expect("classify");
+    let result =
+        classify_top_down_with_timeout(&onto, Duration::from_millis(200)).expect("classify");
     let stats = result.stats();
 
     // Sanity checks: classification correctness.

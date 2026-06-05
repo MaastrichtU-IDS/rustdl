@@ -1514,14 +1514,20 @@ fn is_consistent_internal_full(
         }
         return Ok((
             false,
-            QueryStats { answered_by_saturation: false, pure_el_mode: false },
+            QueryStats {
+                answered_by_saturation: false,
+                pure_el_mode: false,
+            },
         ));
     }
     // Fall through: existing tableau-based satisfiability of Top.
     let consistent = prepared.decide(|pool| pool.top())?;
     Ok((
         consistent,
-        QueryStats { answered_by_saturation: false, pure_el_mode: false },
+        QueryStats {
+            answered_by_saturation: false,
+            pure_el_mode: false,
+        },
     ))
 }
 
@@ -2105,7 +2111,8 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
                 } else {
                     (*subject, *object)
                 };
-                abox.negative_property_triples.push((from, role.role_id(), to));
+                abox.negative_property_triples
+                    .push((from, role.role_id(), to));
                 // Encode `(subject, object) ∉ role` as
                 // `{subject} ⊑ ∀role.¬{object}`. Polarity of the
                 // role passes through unchanged.

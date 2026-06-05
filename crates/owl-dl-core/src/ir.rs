@@ -599,7 +599,10 @@ mod tests {
             first, second,
             "bot_id() before Bot interning must be stable across pool growth"
         );
-        assert!(first.is_none(), "bot_id() returns None before Bot is interned");
+        assert!(
+            first.is_none(),
+            "bot_id() returns None before Bot is interned"
+        );
 
         // Intern Bot. Both subsequent calls must return the same Some(id).
         let _bot_id = pool.bot();

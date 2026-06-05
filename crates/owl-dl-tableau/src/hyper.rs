@@ -2695,9 +2695,18 @@ mod tests {
         let labels = engine
             .satisfiability_labels(q)
             .expect("Sat result must expose seed-node labels");
-        assert!(labels.contains(&a), "labels must contain A (q ⊑ a): {labels:?}");
-        assert!(labels.contains(&b), "labels must contain B (Horn-derived): {labels:?}");
-        assert!(labels.contains(&q), "labels include the seed class itself: {labels:?}");
+        assert!(
+            labels.contains(&a),
+            "labels must contain A (q ⊑ a): {labels:?}"
+        );
+        assert!(
+            labels.contains(&b),
+            "labels must contain B (Horn-derived): {labels:?}"
+        );
+        assert!(
+            labels.contains(&q),
+            "labels include the seed class itself: {labels:?}"
+        );
     }
 
     #[test]

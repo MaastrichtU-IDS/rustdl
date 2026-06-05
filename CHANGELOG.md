@@ -4,6 +4,20 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-06-05
+
+### Added
+
+- **Bundled example ontologies** for a zero-setup, offline demo:
+  `rustdl.examples.pizza()`, `.sulo()`, `.sio()` return local paths to
+  ontologies shipped *inside the wheel* (gzip-compressed, decompressed
+  into a per-user cache dir on first use — no network, works behind a
+  proxy / air-gapped). Companion `PIZZA_NS` / `SULO_NS` / `SIO_NS`
+  namespace constants. `pizza()` is the SULO-aligned ontostart pizza
+  (88 classes, classifies instantly and completely).
+
+[0.3.1]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.3.1
+
 ## [0.3.0] — 2026-06-05
 
 ### Changed

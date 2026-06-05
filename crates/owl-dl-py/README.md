@@ -26,34 +26,33 @@ import rustdl
 # A small OWL 2 DL ontology ships inside the wheel (gzip-compressed) — no
 # download needed. `examples.pizza()` returns its file path (decompressed
 # into a per-user cache dir on first use); `examples.PIZZA_NS` is its
-# namespace, so class IRIs are PIZZA_NS + local name (e.g. + "Margherita").
-from rustdl.examples import pizza, PIZZA_NS
+# namespace, so class IRIs are PIZZA_NS + local name (e.g. + "Pizza").
+from rustdl.examples import pizza, PIZZA_NS, SULO_NS
 
 # Classify. Format is auto-detected from the extension:
 # .ofn (OWL Functional), .owx (OWL/XML), .rdf / .owl (RDF/XML).
 result = rustdl.classify(pizza())
 
-print(f"{len(result.classes)} classes, {len(result.unsatisfiable)} unsatisfiable")
-# -> 99 classes, 2 unsatisfiable
+print(f"{len(result.classes)} classes, {len(result.unsatisfiable)} unsatisfiable, "
+      f"complete={result.complete}")
+# -> 88 classes, 0 unsatisfiable, complete=True
 
 # Query the computed hierarchy
-print(result.is_subclass(PIZZA_NS + "Margherita", PIZZA_NS + "Pizza"))
+print(result.is_subclass(PIZZA_NS + "BoxedPizza", PIZZA_NS + "Pizza"))
 # -> True
-print(len(result.subclasses_of(PIZZA_NS + "Pizza")))
-# -> 38
+print(len(result.subclasses_of(PIZZA_NS + "FoodMaterial")))
+# -> 25
+
+# The pizza ontology is aligned to the SULO upper ontology, so reasoning
+# spans both — e.g. a pizza-making timestamp is inferred to be a SULO StartTime:
+print(result.is_subclass(PIZZA_NS + "BakingStartTime", SULO_NS + "StartTime"))
+# -> True
 
 # Other hierarchy queries (all take full class IRIs):
-result.superclasses_of(PIZZA_NS + "Margherita")   # -> list[str]
-result.equivalent_classes(PIZZA_NS + "Pizza")     # -> list[str]
-result.direct_subsumers(PIZZA_NS + "Margherita")  # -> list[str] (Hasse-direct parents)
+result.superclasses_of(PIZZA_NS + "Cheese")        # -> list[str]
+result.equivalent_classes(PIZZA_NS + "Pizza")      # -> list[str]
+result.direct_subsumers(PIZZA_NS + "BoxedPizza")   # -> list[str] (Hasse-direct parents)
 ```
-
-> The pizza ontology has a few SROIQ-hard satisfiability pairs that exceed the
-> 1 s per-pair budget, so this run prints an `IncompleteClassificationWarning`
-> and leaves `result.complete is False`. The result is still **sound** — every
-> reported subsumption holds; only a handful of pairs are recorded as "not
-> subsumed" without a full proof. See [Classification](#classification) for the
-> `per_pair_timeout_ms` knob.
 
 ### Bundled examples
 
@@ -65,7 +64,7 @@ is the namespace, so a class IRI is the namespace plus the local name.
 
 | helper | ontology | classes | notes |
 |---|---|---|---|
-| `pizza()` / `PIZZA_NS` | Pizza | 99 | classic SROIQ teaching ontology; a few hard pairs (see note above) |
+| `pizza()` / `PIZZA_NS` | ontostart pizza | 88 | SULO-aligned pizza-making ontology; classifies instantly + complete |
 | `sulo()` / `SULO_NS` | SULO (Simple Upper-Level Ontology) | 17 | tiny; classifies in milliseconds |
 | `sio()` / `SIO_NS` | SIO (Semanticscience Integrated Ontology) | ~1600 | realistic larger workload; takes tens of seconds. Class IRIs are numeric codes, e.g. `SIO_NS + "SIO_000006"` ("process") |
 

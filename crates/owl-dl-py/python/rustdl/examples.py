@@ -3,8 +3,9 @@
 Three real OWL ontologies ship inside the wheel — gzip-compressed, ~200 KB
 total — so they classify offline:
 
-- `pizza()`  — the classic OWL 2 DL teaching ontology (small, SROIQ; a few
-  hard satisfiability pairs make a good completeness demo).
+- `pizza()`  — the ontostart pizza ontology: a small SULO-aligned domain
+  ontology of pizza making (ingredients, processes, roles). Classifies
+  instantly and completely.
 - `sulo()`   — the Simple Upper-Level Ontology (tiny, classifies instantly).
 - `sio()`    — the Semanticscience Integrated Ontology (~1600 classes;
   a realistic, larger workload — classification takes tens of seconds).
@@ -22,11 +23,8 @@ import os
 from importlib import resources
 from pathlib import Path
 
-# Class IRIs are the namespace + local name, e.g. PIZZA_NS + "Margherita".
-PIZZA_NS = (
-    "https://raw.githubusercontent.com/owlcs/pizza-ontology/"
-    "refs/heads/master/pizza.owl#"
-)
+# Class IRIs are the namespace + local name, e.g. PIZZA_NS + "Pizza".
+PIZZA_NS = "https://w3id.org/ontostart/pizza/"
 # SULO classes are SULO_NS + local name, e.g. SULO_NS + "Object".
 SULO_NS = "https://w3id.org/sulo/"
 # SIO classes are SIO_NS + numeric local name, e.g. SIO_NS + "SIO_000006"
@@ -70,12 +68,17 @@ def _materialize(name: str) -> str:
 def pizza() -> str:
     """Path to the bundled pizza ontology (decompressed on first use).
 
+    The ontostart pizza ontology — 88 classes modelling pizza making,
+    aligned to the SULO upper ontology. Classifies in milliseconds, fully
+    complete (no timeouts):
+
         >>> import rustdl
         >>> result = rustdl.classify(rustdl.examples.pizza())
-        >>> result.is_subclass(
-        ...     rustdl.examples.PIZZA_NS + "Margherita",
-        ...     rustdl.examples.PIZZA_NS + "Pizza",
-        ... )
+        >>> ns = rustdl.examples.PIZZA_NS
+        >>> result.is_subclass(ns + "BoxedPizza", ns + "Pizza")
+        True
+        >>> # cross-ontology: a pizza-making timestamp is a SULO StartTime
+        >>> result.is_subclass(ns + "BakingStartTime", rustdl.examples.SULO_NS + "StartTime")
         True
     """
     return _materialize("pizza")

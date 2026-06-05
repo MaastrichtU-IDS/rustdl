@@ -51,7 +51,7 @@ fn classify_fixture(name: &str) -> owl_dl_reasoner::Classification {
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
-    classify_top_down_with_timeout(&onto, Duration::from_millis(1_000)).expect("classify")
+    classify_top_down_with_timeout(&onto, Duration::from_secs(1)).expect("classify")
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -67,10 +67,7 @@ fn classify_fixture(name: &str) -> owl_dl_reasoner::Classification {
 fn sub_data_property_transitivity() {
     let c = classify_fixture("sub_data_property");
     let derived = c.is_subclass("http://t/A", "http://t/B");
-    eprintln!(
-        "sub_data_property_transitivity: A ⊑ B = {} (oracle: true)",
-        derived
-    );
+    eprintln!("sub_data_property_transitivity: A ⊑ B = {derived} (oracle: true)");
     assert!(derived, "D1 MISSED: SubDataPropertyOf transitivity (A ⊑ B)");
 }
 
@@ -82,10 +79,7 @@ fn sub_data_property_transitivity() {
 fn data_property_domain_inference() {
     let c = classify_fixture("data_property_domain");
     let derived = c.is_subclass("http://t/Anything", "http://t/Person");
-    eprintln!(
-        "data_property_domain_inference: Anything ⊑ Person = {} (oracle: true)",
-        derived
-    );
+    eprintln!("data_property_domain_inference: Anything ⊑ Person = {derived} (oracle: true)");
     assert!(derived, "D1 MISSED: DataPropertyDomain (Anything ⊑ Person)");
 }
 
@@ -98,10 +92,7 @@ fn data_property_domain_inference() {
 fn datatype_definition_subsumption() {
     let c = classify_fixture("datatype_definition");
     let derived = c.is_subclass("http://t/Adult", "http://t/Person");
-    eprintln!(
-        "datatype_definition_subsumption: Adult ⊑ Person = {} (oracle: true)",
-        derived
-    );
+    eprintln!("datatype_definition_subsumption: Adult ⊑ Person = {derived} (oracle: true)");
     assert!(derived, "Adult ⊑ Person should always hold (direct axiom)");
 }
 
@@ -122,11 +113,10 @@ fn functional_data_property_unsat() {
         "http://www.w3.org/2002/07/owl#Nothing",
     );
     eprintln!(
-        "functional_data_property_unsat: unsat = {:?}, HasTwoAges ⊑ Nothing = {} (oracle: HasTwoAges + A unsat)",
-        unsat, sub_bot
+        "functional_data_property_unsat: unsat = {unsat:?}, HasTwoAges ⊑ Nothing = {sub_bot} (oracle: HasTwoAges + A unsat)"
     );
     assert!(
-        unsat.iter().any(|s| *s == "http://t/HasTwoAges") || sub_bot,
+        unsat.contains(&"http://t/HasTwoAges") || sub_bot,
         "D1 MISSED: HasTwoAges should be unsat (Functional + ≥2)"
     );
 }
@@ -139,12 +129,9 @@ fn functional_data_property_unsat() {
 fn data_cardinality_disjointness() {
     let c = classify_fixture("data_cardinality_disjoint");
     let unsat = c.unsatisfiable_classes();
-    eprintln!(
-        "data_cardinality_disjointness: unsat = {:?} (oracle: Both)",
-        unsat
-    );
+    eprintln!("data_cardinality_disjointness: unsat = {unsat:?} (oracle: Both)");
     assert!(
-        unsat.iter().any(|s| *s == "http://t/Both"),
+        unsat.contains(&"http://t/Both"),
         "D1 MISSED: Both should be unsat (≥3 ⊓ ≤2 hasItem)"
     );
 }
@@ -159,12 +146,9 @@ fn data_cardinality_disjointness() {
 fn datatype_facet_disjointness() {
     let c = classify_fixture("datatype_facet");
     let unsat = c.unsatisfiable_classes();
-    eprintln!(
-        "datatype_facet_disjointness: unsat = {:?} (oracle: Both)",
-        unsat
-    );
+    eprintln!("datatype_facet_disjointness: unsat = {unsat:?} (oracle: Both)");
     assert!(
-        unsat.iter().any(|s| *s == "http://t/Both"),
+        unsat.contains(&"http://t/Both"),
         "D1 MISSED: Both should be unsat (age ≥18 ⊓ age <13, Functional)"
     );
 }

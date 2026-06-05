@@ -622,7 +622,7 @@ const HYPER_WEDGE_DEPTH: usize = 256;
 /// Disable explicitly with `RUSTDL_HYPERTABLEAU=0`.
 #[must_use]
 pub fn hyper_wedge_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPERTABLEAU").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPERTABLEAU").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF2 double-blocking (`RUSTDL_HYPER_DOUBLE_BLOCK`). Uses the Motik
@@ -634,7 +634,7 @@ pub fn hyper_wedge_enabled() -> bool {
 /// `RUSTDL_HYPER_DOUBLE_BLOCK=0`.
 #[must_use]
 pub fn hyper_double_block_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -650,7 +650,7 @@ pub fn hyper_double_block_enabled() -> bool {
 /// through to the tableau).
 #[must_use]
 pub fn hyper_trust_sat_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPERTABLEAU_TRUST_SAT").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Per-class label heuristic (Phase 7) — when enabled, the classifier
@@ -662,7 +662,7 @@ pub fn hyper_trust_sat_enabled() -> bool {
 /// otherwise pre-empt).
 #[must_use]
 pub fn label_heuristic_enabled() -> bool {
-    std::env::var_os("RUSTDL_LABEL_HEURISTIC").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_LABEL_HEURISTIC").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Project flag for the Konclude snapshot cache. When ON,
@@ -678,7 +678,7 @@ pub fn label_heuristic_enabled() -> bool {
 /// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
 #[must_use]
 pub fn snapshot_capture_enabled() -> bool {
-    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Phase 1b.5 lazy expansion toggle. Default ON (unset → ON);
@@ -690,7 +690,7 @@ pub fn snapshot_capture_enabled() -> bool {
 /// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §4.1
 #[must_use]
 pub fn snapshot_lazy_enabled() -> bool {
-    std::env::var_os("RUSTDL_SNAPSHOT_LAZY").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_SNAPSHOT_LAZY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Phase 2b: for ontologies classified as `Horn` fragment (hyper
@@ -709,10 +709,10 @@ pub fn snapshot_lazy_enabled() -> bool {
 /// Recon: `docs/phase2a-recon.md`
 #[must_use]
 pub fn horn_shortcircuit_enabled() -> bool {
-    std::env::var_os("RUSTDL_HORN_SHORTCIRCUIT").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HORN_SHORTCIRCUIT").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
-/// ABox consistency-check pre-pass toggle. **Default ON.** Runs a
+/// `ABox` consistency-check pre-pass toggle. **Default ON.** Runs a
 /// sound under-approximation check before the tableau in
 /// `is_consistent` and `classify`. Set `RUSTDL_ABOX_CHECK=0` (or
 /// empty) to skip the check entirely (today's tableau-only
@@ -721,7 +721,7 @@ pub fn horn_shortcircuit_enabled() -> bool {
 /// Spec: `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
 #[must_use]
 pub fn abox_check_enabled() -> bool {
-    std::env::var_os("RUSTDL_ABOX_CHECK").map_or(true, |v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_ABOX_CHECK").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
@@ -732,7 +732,7 @@ pub fn abox_check_enabled() -> bool {
 /// `subsumes_via_tableau`. The Phase 8 recon
 /// (`docs/phase8-recon.md`) showed that ~5% of ORE-10908 classes
 /// stalled at the per-pair 200 ms budget (median 341 ms, max 631 ms
-/// when given more time) and each NoVerdict class contributed
+/// when given more time) and each `NoVerdict` class contributed
 /// ~28 ms × ~38 cache-miss pairs to the tier walk — a disproportionate
 /// tail. A generous default (5000 ms = 5 s) lets these classes
 /// complete to `Sat` and collapse their cache-miss pairs to ~µs prunes.
@@ -741,7 +741,7 @@ pub fn abox_check_enabled() -> bool {
 /// 1000 ms — generous enough to catch ORE-10908's stallers
 /// (median 341 ms, max 631 ms per the recon) but tight enough to
 /// bail quickly on genuinely intractable classes (ORE-15672's
-/// ~56% NoVerdict rate suggests those classes don't finish in
+/// ~56% `NoVerdict` rate suggests those classes don't finish in
 /// any reasonable budget). Set to `0` for unbounded cache build.
 #[must_use]
 pub fn label_cache_timeout_ms() -> u64 {
@@ -761,7 +761,7 @@ pub fn label_cache_timeout_ms() -> u64 {
 /// **Default: 0 (disabled).** The Phase 1 alehif threshold sweep
 /// (1/5/10/20/30 ms) found wall times flat at ~230× baseline across
 /// every threshold in that range, meaning virtually every wedge
-/// NotSubsumed verdict completes in under 1 ms — so wall-time is not
+/// `NotSubsumed` verdict completes in under 1 ms — so wall-time is not
 /// a useful filter at this resolution. See `docs/phase1-results.md`
 /// and `docs/hypertableau-dead-ends.md` §13 for the empirical analysis.
 ///
@@ -960,7 +960,7 @@ impl HyperCache {
 /// and stash it. Subsequent calls for the same `sub` reuse the cached
 /// snapshot.
 ///
-/// Cache is per-[`PreparedOntology`] instance. TBox is frozen for the
+/// Cache is per-[`PreparedOntology`] instance. `TBox` is frozen for the
 /// instance's lifetime, so cached snapshots stay valid across the
 /// pair loop.
 ///
@@ -969,7 +969,7 @@ impl HyperCache {
 /// cache build entirely (`build` returns `None` shape via the orchestrator
 /// `Option<SnapshotCache>` field) so every `try_replay` is a no-op.
 pub(crate) struct SnapshotCache {
-    /// Clausified TBox (base only — q-injection clauses are added
+    /// Clausified `TBox` (base only — q-injection clauses are added
     /// per-`sub` in `clauses_for_sub`). Shared with the wedge build
     /// pattern; cloned per snapshot build / replay so we never mutate
     /// the cached state.
@@ -987,9 +987,9 @@ pub(crate) struct SnapshotCache {
     /// 25,333-FP regression that motivated this design.
     fresh_q: owl_dl_core::ir::ClassId,
     /// Per-class snapshot, lazily populated. `Arc` for cheap clone-on-read.
-    /// Outer `Arc` wraps the DashMap so the cache itself is cheap to share
+    /// Outer `Arc` wraps the `DashMap` so the cache itself is cheap to share
     /// across the rayon pair-loop workers. Snapshot for `sub` has
-    /// `fresh_q` as the seed (snapshot.seed() == fresh_q for every entry).
+    /// `fresh_q` as the seed (`snapshot.seed()` == `fresh_q` for every entry).
     snapshots: std::sync::Arc<
         dashmap::DashMap<owl_dl_core::ir::ClassId, std::sync::Arc<owl_dl_tableau::GraphSnapshot>>,
     >,
@@ -1000,7 +1000,7 @@ pub(crate) struct SnapshotCache {
     /// Phase 1b.5: per-sup `fresh_q ⊓ sup → ⊥` clauses, lazily
     /// populated on first `try_replay` call for that sup. Avoids
     /// re-allocating the 1-element Vec on every call (~1.86M times on
-    /// GALEN). Lock-free reads via DashMap; bucket-locked writes are
+    /// GALEN). Lock-free reads via `DashMap`; bucket-locked writes are
     /// rare (one per unique sup column observed).
     per_sup_neg_clauses: std::sync::Arc<
         dashmap::DashMap<
@@ -1010,7 +1010,7 @@ pub(crate) struct SnapshotCache {
     >,
     /// Phase 2a recon: cumulative wall time spent in
     /// `get_or_build_snapshot` for cache misses (actual snapshot
-    /// builds). AtomicU64 for lock-free updates across the rayon
+    /// builds). `AtomicU64` for lock-free updates across the rayon
     /// pair loop. Microseconds for sub-ms resolution.
     build_wall_micros: std::sync::atomic::AtomicU64,
     /// Phase 2a recon: cumulative wall time spent in `try_replay`'s
@@ -1521,7 +1521,7 @@ fn is_consistent_internal_full(
         ));
     }
     // Fall through: existing tableau-based satisfiability of Top.
-    let consistent = prepared.decide(|pool| pool.top())?;
+    let consistent = prepared.decide(owl_dl_core::ConceptPool::top)?;
     Ok((
         consistent,
         QueryStats {
@@ -1757,15 +1757,15 @@ pub(crate) struct PreparedOntology {
     /// Phase 3a recon: count of classes that the per-class classifier
     /// marks `Unsafe`. Diagnostic only.
     pub(crate) per_class_unsafe_count: usize,
-    /// Cloned axiom list from the input ontology, kept so the ABox
+    /// Cloned axiom list from the input ontology, kept so the `ABox`
     /// consistency check (P5/P6/P7) can scan for
-    /// FunctionalRole / InverseFunctionalRole / AsymmetricRole /
-    /// IrreflexiveRole / ObjectPropertyDomain / ObjectPropertyRange.
+    /// `FunctionalRole` / `InverseFunctionalRole` / `AsymmetricRole` /
+    /// `IrreflexiveRole` / `ObjectPropertyDomain` / `ObjectPropertyRange`.
     /// These role-side characteristics are absorbed into `hierarchy`
     /// and other lowered representations elsewhere in the pipeline,
     /// so this is a read-only snapshot for the pre-tableau check.
     pub(crate) axioms: Vec<Axiom>,
-    /// Cached ABox consistency check verdict. Populated on first
+    /// Cached `ABox` consistency check verdict. Populated on first
     /// call to [`Self::abox_verdict`]. `None` until then (lazy).
     /// Honours [`crate::abox_check_enabled`]. See [`abox_check`].
     abox_verdict: std::sync::OnceLock<abox_check::AboxVerdict>,
@@ -1853,7 +1853,7 @@ impl PreparedOntology {
         })
     }
 
-    /// Lazy accessor for the ABox consistency check verdict.
+    /// Lazy accessor for the `ABox` consistency check verdict.
     /// Honours [`crate::abox_check_enabled`]: if the gate is off,
     /// always returns `Unknown` without invoking the check.
     pub(crate) fn abox_verdict(&self) -> &abox_check::AboxVerdict {
@@ -2039,7 +2039,7 @@ struct Abox {
     /// `NegativeObjectPropertyAssertion` axioms. Polarity normalised
     /// (inverse-role assertions swap subject/object). The `∀`-form
     /// stored in `negative_property_assertions` is for the tableau;
-    /// this is for the ABox consistency check.
+    /// this is for the `ABox` consistency check.
     pub(crate) negative_property_triples: Vec<(IndividualId, RoleId, IndividualId)>,
 }
 

@@ -1066,7 +1066,7 @@ mod tests {
         );
     }
 
-    /// Phase D1: a SubClassOf where the SUP contains a data-range
+    /// Phase D1: a `SubClassOf` where the SUP contains a data-range
     /// constructor (e.g., `DataMaxCardinality`) is silently dropped —
     /// the `ce_or_skip!` macro maps `UnsupportedDataRange` to `Ok(None)`
     /// for the enclosing axiom. Sound under-approximation: we lose the

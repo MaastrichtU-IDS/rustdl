@@ -49,9 +49,14 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --all-targets
-      - run: cargo test --workspace --all-targets
-      - run: cargo test --workspace --doc
+      # owl-dl-py is a PyO3 `cdylib`; building it via plain `cargo` links it
+      # as an ordinary lib, which fails on macOS (undefined `_PyExc_*` symbols
+      # — Python symbols resolve at runtime, not at link). It is built and
+      # tested by the dedicated `pytest` (maturin) job on every platform and
+      # compile-checked by the clippy job, so exclude it from this matrix.
+      - run: cargo build --workspace --all-targets --exclude owl-dl-py
+      - run: cargo test --workspace --all-targets --exclude owl-dl-py
+      - run: cargo test --workspace --doc --exclude owl-dl-py
 
   deny:
     name: cargo-deny

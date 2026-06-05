@@ -16,8 +16,24 @@ use owl_dl_reasoner::classify_top_down_with_timeout;
 use std::io::Cursor;
 use std::time::Duration;
 
+/// Pin the orchestrator flags this canary exercises. The label-cache /
+/// top-down path is bypassed by the snapshot cache (`RUSTDL_SNAPSHOT_CAPTURE`,
+/// Phase 1c) and the Horn shortcircuit (`RUSTDL_HORN_SHORTCIRCUIT`, Phase 2b),
+/// both flipped default-ON after this canary was written. Every test in this
+/// (separate) test binary wants the same values, so setting them without
+/// restore is safe here and can't leak to other test binaries (each is its
+/// own process).
+#[allow(unsafe_code)]
+fn pin_label_cache_path() {
+    unsafe {
+        std::env::set_var("RUSTDL_SNAPSHOT_CAPTURE", "0");
+        std::env::set_var("RUSTDL_HORN_SHORTCIRCUIT", "0");
+    }
+}
+
 #[test]
 fn label_heuristic_prunes_disjoint_pairs() {
+    pin_label_cache_path();
     // 6 classes in two disjoint A/B chains, plus an inverse-role
     // declaration to push the ontology *out* of pure-EL so the
     // top-down classifier (which owns the label cache) runs
@@ -95,6 +111,7 @@ Ontology(<http://test/lh>
 /// runs.
 #[test]
 fn label_heuristic_pass_through_on_equivalent_classes() {
+    pin_label_cache_path();
     let src = "\
 Prefix(:=<http://test/lh-pt/>)
 Ontology(<http://test/lh-pt>

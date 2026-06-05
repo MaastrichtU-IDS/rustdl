@@ -7,7 +7,7 @@
 //! the existing tableau path on `Unknown`.
 //!
 //! Sound under-approximation: every positive verdict is a direct
-//! semantic clash on the ABox; no inferred subsumption is created.
+//! semantic clash on the `ABox`; no inferred subsumption is created.
 //!
 //! Seven clash patterns implemented incrementally (P1 direct-Bot
 //! assertion, P2 disjoint types per individual, P3 NegOPA-vs-OPA,
@@ -20,7 +20,7 @@
 use crate::union_find::UnionFind;
 use owl_dl_core::ir::{ClassId, IndividualId, RoleId};
 
-/// Verdict from the ABox consistency check.
+/// Verdict from the `ABox` consistency check.
 ///
 /// Sound under-approximation: `Inconsistent` is unconditional;
 /// `Unknown` means "we couldn't catch a clash with the cheap
@@ -98,15 +98,15 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
 
     // P1: direct-⊥ assertion.
     for &(individual, class_concept) in &prepared.abox.class_assertions {
-        if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept) {
-            if closure.is_unsatisfiable(*c) {
-                return AboxVerdict::Inconsistent {
-                    reason: ClashReason::AssertedBot {
-                        individual,
-                        class: *c,
-                    },
-                };
-            }
+        if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept)
+            && closure.is_unsatisfiable(*c)
+        {
+            return AboxVerdict::Inconsistent {
+                reason: ClashReason::AssertedBot {
+                    individual,
+                    class: *c,
+                },
+            };
         }
     }
 
@@ -124,12 +124,12 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     let mut types: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>> =
         vec![std::collections::HashSet::new(); n];
     for &(individual, class_concept) in &prepared.abox.class_assertions {
-        if let Some(&i) = ind_index.get(&individual) {
-            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept) {
-                types[i].insert(*c);
-                for s in closure.subsumers_of(*c) {
-                    types[i].insert(s);
-                }
+        if let Some(&i) = ind_index.get(&individual)
+            && let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept)
+        {
+            types[i].insert(*c);
+            for s in closure.subsumers_of(*c) {
+                types[i].insert(s);
             }
         }
     }
@@ -200,15 +200,15 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
     for &(a, b) in &prepared.abox.different_pairs {
-        if let (Some(&i), Some(&j)) = (ind_index.get(&a), ind_index.get(&b)) {
-            if uf.same(
+        if let (Some(&i), Some(&j)) = (ind_index.get(&a), ind_index.get(&b))
+            && uf.same(
                 u32::try_from(i).expect("ind index fits in u32"),
                 u32::try_from(j).expect("ind index fits in u32"),
-            ) {
-                return AboxVerdict::Inconsistent {
-                    reason: ClashReason::SameDifferent { a, b },
-                };
-            }
+            )
+        {
+            return AboxVerdict::Inconsistent {
+                reason: ClashReason::SameDifferent { a, b },
+            };
         }
     }
 
@@ -249,28 +249,28 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             continue;
         };
         for &b in &tos[1..] {
-            if let Some(&j) = ind_index.get(&b) {
-                if uf.union(
+            if let Some(&j) = ind_index.get(&b)
+                && uf.union(
                     u32::try_from(i0).expect("fits in u32"),
                     u32::try_from(j).expect("fits in u32"),
-                ) {
-                    // New merge — re-check all different_pairs.
-                    for &(da, db) in &prepared.abox.different_pairs {
-                        if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db)) {
-                            if uf.same(
-                                u32::try_from(ip).expect("fits"),
-                                u32::try_from(jp).expect("fits"),
-                            ) {
-                                return AboxVerdict::Inconsistent {
-                                    reason: ClashReason::FunctionalDiff {
-                                        role: *role,
-                                        a: *from,
-                                        b1: first,
-                                        b2: b,
-                                    },
-                                };
-                            }
-                        }
+                )
+            {
+                // New merge — re-check all different_pairs.
+                for &(da, db) in &prepared.abox.different_pairs {
+                    if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db))
+                        && uf.same(
+                            u32::try_from(ip).expect("fits"),
+                            u32::try_from(jp).expect("fits"),
+                        )
+                    {
+                        return AboxVerdict::Inconsistent {
+                            reason: ClashReason::FunctionalDiff {
+                                role: *role,
+                                a: *from,
+                                b1: first,
+                                b2: b,
+                            },
+                        };
                     }
                 }
             }
@@ -293,27 +293,27 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             continue;
         };
         for &a in &froms[1..] {
-            if let Some(&j) = ind_index.get(&a) {
-                if uf.union(
+            if let Some(&j) = ind_index.get(&a)
+                && uf.union(
                     u32::try_from(i0).expect("fits"),
                     u32::try_from(j).expect("fits"),
-                ) {
-                    for &(da, db) in &prepared.abox.different_pairs {
-                        if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db)) {
-                            if uf.same(
-                                u32::try_from(ip).expect("fits"),
-                                u32::try_from(jp).expect("fits"),
-                            ) {
-                                return AboxVerdict::Inconsistent {
-                                    reason: ClashReason::FunctionalDiff {
-                                        role: *role,
-                                        a: *to,
-                                        b1: first,
-                                        b2: a,
-                                    },
-                                };
-                            }
-                        }
+                )
+            {
+                for &(da, db) in &prepared.abox.different_pairs {
+                    if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db))
+                        && uf.same(
+                            u32::try_from(ip).expect("fits"),
+                            u32::try_from(jp).expect("fits"),
+                        )
+                    {
+                        return AboxVerdict::Inconsistent {
+                            reason: ClashReason::FunctionalDiff {
+                                role: *role,
+                                a: *to,
+                                b1: first,
+                                b2: a,
+                            },
+                        };
                     }
                 }
             }
@@ -359,15 +359,15 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                 reason: ClashReason::IrreflexiveViolation { role, a: from },
             };
         }
-        if let (Some(&i), Some(&j)) = (ind_index.get(&from), ind_index.get(&to)) {
-            if uf.same(
+        if let (Some(&i), Some(&j)) = (ind_index.get(&from), ind_index.get(&to))
+            && uf.same(
                 u32::try_from(i).expect("fits in u32"),
                 u32::try_from(j).expect("fits in u32"),
-            ) {
-                return AboxVerdict::Inconsistent {
-                    reason: ClashReason::IrreflexiveViolation { role, a: from },
-                };
-            }
+            )
+        {
+            return AboxVerdict::Inconsistent {
+                reason: ClashReason::IrreflexiveViolation { role, a: from },
+            };
         }
     }
 
@@ -395,12 +395,12 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             if d_role != role {
                 continue;
             }
-            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(d_concept) {
-                if let Some(&i) = ind_index.get(&from) {
-                    augmented |= types[i].insert(*c);
-                    for s in closure.subsumers_of(*c) {
-                        augmented |= types[i].insert(s);
-                    }
+            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(d_concept)
+                && let Some(&i) = ind_index.get(&from)
+            {
+                augmented |= types[i].insert(*c);
+                for s in closure.subsumers_of(*c) {
+                    augmented |= types[i].insert(s);
                 }
             }
         }
@@ -408,12 +408,12 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             if r_role != role {
                 continue;
             }
-            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(r_concept) {
-                if let Some(&i) = ind_index.get(&to) {
-                    augmented |= types[i].insert(*c);
-                    for s in closure.subsumers_of(*c) {
-                        augmented |= types[i].insert(s);
-                    }
+            if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(r_concept)
+                && let Some(&i) = ind_index.get(&to)
+            {
+                augmented |= types[i].insert(*c);
+                for s in closure.subsumers_of(*c) {
+                    augmented |= types[i].insert(s);
                 }
             }
         }

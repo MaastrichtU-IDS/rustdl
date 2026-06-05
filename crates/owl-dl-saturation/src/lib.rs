@@ -1029,7 +1029,7 @@ struct ElRules {
     /// rules fire (subclass + fact-target-of-c → also unsat).
     /// Phase D4 (2026-06-03): added to support the data-axiom
     /// preprocessing pass's emitted `C ⊑ Bot` axioms (Functional + ≥n
-    /// clash; DataMin > DataMax clash).
+    /// clash; `DataMin` > `DataMax` clash).
     directly_unsat: Vec<ClassId>,
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
@@ -1629,8 +1629,7 @@ fn atomic_existential_rhs(
     }
     let extras = effective_ranges
         .get(&role.role_id())
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
+        .map_or(&[][..], Vec::as_slice);
     let body_id = atomic_or_tseitin_body_with_extras(*body, extras, pool, rules, tseitin)?;
     Some((role.role_id(), body_id))
 }
@@ -2606,7 +2605,7 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     /// Phase 2a canary: synthetic mimicking GALEN's
-    /// <Region>Pathology / PathologicalCondition pattern. A functional
+    /// <Region>Pathology / `PathologicalCondition` pattern. A functional
     /// super-role `r_func` has two sibling sub-properties `r_i` and `r_j`.
     /// Class `Subject` has existential edges via both sub-properties;
     /// class `Target` is the conjunctive consumer through `r_func`.
@@ -2665,9 +2664,9 @@ Ontology(<http://rustdl.test/p2a/test>
         );
     }
 
-    /// Phase 2a — 3-sub-property fan-in: r_i, r_j, r_k all ⊑ functional
-    /// r_func; Subject has ∃r_i.A, ∃r_j.B, ∃r_k.C; Target ≡ via
-    /// ∃r_func.(A ⊓ B ⊓ C). The witness-merge rule must accumulate
+    /// Phase 2a — 3-sub-property fan-in: `r_i`, `r_j`, `r_k` all ⊑ functional
+    /// `r_func`; Subject has ∃`r_i.A`, ∃`r_j.B`, ∃`r_k.C`; Target ≡ via
+    /// ∃`r_func.(A` ⊓ B ⊓ C). The witness-merge rule must accumulate
     /// the growing conjunction across three fact arrivals.
     ///
     /// Previously ignored as a known limitation of T4's single-synthetic
@@ -2728,8 +2727,8 @@ Ontology(<http://rustdl.test/p2a3/test>
     }
 
     /// Phase 2a — 4-sub-property fan-in. Approximates GALEN's denser
-    /// functional roles (StatusAttribute has 5 sub-properties;
-    /// ProcessModifierAttribute has 12). Confirms atom-set redesign
+    /// functional roles (`StatusAttribute` has 5 sub-properties;
+    /// `ProcessModifierAttribute` has 12). Confirms atom-set redesign
     /// scales beyond the 3-property case T4.5 was designed for.
     #[test]
     fn functional_role_merge_4_sub_property_fan_in() {
@@ -2786,14 +2785,14 @@ Ontology(<http://rustdl.test/p2a4/test>
         );
     }
 
-    /// Phase 2a — chained functional super-roles: r_i, r_j ⊑ r_func ⊑
-    /// r_super, both r_func and r_super functional. When (sub, r_j, B)
-    /// arrives, funcs = functional_supers_of(r_j) enumerates BOTH r_func
-    /// AND r_super in a single rule pass; merged_atom_sets is updated
-    /// for both keys (sub, r_func) and (sub, r_super), and synthetics are
+    /// Phase 2a — chained functional super-roles: `r_i`, `r_j` ⊑ `r_func` ⊑
+    /// `r_super`, both `r_func` and `r_super` functional. When (sub, `r_j`, B)
+    /// arrives, funcs = `functional_supers_of(r_j)` enumerates BOTH `r_func`
+    /// AND `r_super` in a single rule pass; `merged_atom_sets` is updated
+    /// for both keys (sub, `r_func`) and (sub, `r_super`), and synthetics are
     /// emitted at both levels. The runtime-emitted derived facts then
     /// short-circuit on re-entry because their atom sets already match
-    /// merged_atom_sets. Tests that the precomputed functional_supers_of
+    /// `merged_atom_sets`. Tests that the precomputed `functional_supers_of`
     /// correctly includes BOTH ancestors.
     #[test]
     fn functional_role_merge_chained_functional_supers() {
@@ -3051,7 +3050,7 @@ Ontology(<http://rustdl.test/p2a/funcrole>
     }
 
     /// Phase 2b canary: minimal repro of GALEN's
-    /// `KneeJointStability ⊑ JointStability` pattern (pair_08 in the
+    /// `KneeJointStability ⊑ JointStability` pattern (`pair_08` in the
     /// Phase 2b.0 fixture set). The axiom shape:
     ///
     ///   T ≡ A ⊓ ∃R.(B ⊓ ∃S.C)
@@ -3124,7 +3123,7 @@ Ontology(<http://rustdl.test/p2b/test>
     /// Phase 2b — cluster A shape canary: paired-anatomy pattern.
     /// `Paired ≡ Body ⊓ ∃isPaired.Paired_self` style (the actual GALEN
     /// shape) — verifies the fix carries through more complex nested
-    /// shapes than the simple pair_08 single-hop case.
+    /// shapes than the simple `pair_08` single-hop case.
     #[test]
     fn compound_existential_body_cluster_a_paired_anatomy_canary() {
         use horned_owl::io::ParserConfiguration;
@@ -3174,10 +3173,10 @@ Ontology(<http://rustdl.test/p2bA/test>
 
     /// Phase 2b.5 canary: `SubClassOf(And(A, B), ∃R.C)` where the RHS
     /// is a non-atomic existential. This shape was the actual cause
-    /// of pair_01's miss (FemoralHead ⊑ ExactlyPairedBodyStructure
+    /// of `pair_01`'s miss (`FemoralHead` ⊑ `ExactlyPairedBodyStructure`
     /// per docs/phase2b-trace2.md). The LHS-And arm of
-    /// lower_sub_class_of currently drops this trigger because
-    /// atomic_operands_on_right returns [] for a non-atomic RHS.
+    /// `lower_sub_class_of` currently drops this trigger because
+    /// `atomic_operands_on_right` returns [] for a non-atomic RHS.
     ///
     /// Expected entailment: Y ⊑ T via:
     ///   1. Y ⊑ A, Y ⊑ B (told subsumption)

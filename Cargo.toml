@@ -79,6 +79,12 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
 unnecessary_wraps = "allow"
+# Style-only pedantic lints allowed workspace-wide: refactoring long
+# functions / hoisting nested items / renaming similar bindings is churn
+# without correctness value (and risky on the larger engine functions).
+too_many_lines = "allow"
+items_after_statements = "allow"
+similar_names = "allow"
 unwrap_used = "warn"
 dbg_macro = "warn"
 print_stdout = "allow"

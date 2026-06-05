@@ -3711,18 +3711,32 @@ Ontology(<http://rustdl.test/test>\n\
     }
 }
 
+/// Shared serialization lock for tests that mutate the process-wide
+/// `RUSTDL_*` orchestrator env vars. Several env vars are read/written by
+/// tests in more than one module (e.g. `RUSTDL_HYPER_TRUST_SAT_MIN_MS` by
+/// both this crate's `with_env` helper and `classify`'s selective-verify
+/// tests), so every such test holds this one lock for its whole body and
+/// they never run concurrently. Poison-tolerant so a panicking test
+/// doesn't cascade-fail the rest.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod hyper_trust_sat_min_ms_tests {
     use super::hyper_trust_sat_min_ms;
 
-    // SAFETY: tests in this module mutate the process-wide
-    // RUSTDL_HYPER_TRUST_SAT_MIN_MS env var. They must be run with
-    // --test-threads=1 (single-thread sequential). The helper saves
-    // and restores the previous value. No other test in the workspace
-    // reads this env var, so the mutation cannot race with unrelated
-    // tests under default `cargo test --workspace` invocations either.
+    // These tests mutate the process-wide RUSTDL_HYPER_TRUST_SAT_MIN_MS
+    // env var, which classify's selective-verify tests also touch. The
+    // helper holds `test_env_lock` for the whole closure so the mutation
+    // never races with another env-touching test, then save/restores the
+    // previous value.
     #[allow(unsafe_code)]
     fn with_env<F: FnOnce()>(key: &str, val: Option<&str>, f: F) {
+        let _lock = crate::test_env_lock();
         let prev = std::env::var_os(key);
         match val {
             Some(v) => unsafe { std::env::set_var(key, v) },

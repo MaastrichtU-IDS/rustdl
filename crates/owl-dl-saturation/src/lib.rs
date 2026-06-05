@@ -855,23 +855,34 @@ impl WorklistEngine {
                 // docs/phase2c-fix-target.md §"Rule design" for the
                 // original argument).
                 //
-                // We skip `other.role == fact.role` to avoid the
-                // trivially redundant emission on R_arr (Phase 2a's CR9
-                // hierarchy propagation already covers it). We snapshot
-                // `facts_by_sub[fact.sub]` before iterating because
-                // `push_fact` writes into it.
+                // Phase 2e: we DO emit on the merge-triggering role
+                // (`other.role == fact.role`) too. Pre-2e skipped it,
+                // reasoning CR9 hierarchy propagation already covered
+                // R_arr — but CR9 only propagates the *original* witness
+                // `target` UP to the super-role `R_f`; it does NOT push
+                // the merged *synthetic* DOWN to R_arr. When the
+                // existential body lives on R_arr itself (notgalen IPBP:
+                // `∃hasIntrinsicPathologicalStatus.pathological`), the
+                // merged filler must land on R_arr or the fold never
+                // fires — an order-dependent miss (whichever sub-role's
+                // fact was processed second triggered the merge and was
+                // then the only role NOT to receive the synthetic). See
+                // `functional_role_merge_body_on_sub_role`.
+                //
+                // Soundness: by functionality of `R_f`, EVERY sub-role
+                // witness (including R_arr's) coincides with the single
+                // `R_f`-successor that carries the full merged atom set,
+                // so `(sub, R_arr, synthetic)` holds in every model.
                 //
                 // Re-using `push_fact` here (vs the manual insertion
                 // pattern Phase 2c originally used) means each emitted
                 // `(X, R_k, synthetic)` also recursively inherits to X's
                 // subclasses via Phase 2d — sound by the same witness-
-                // inheritance argument.
+                // inheritance argument. We snapshot `facts_by_sub[fact.sub]`
+                // before iterating because `push_fact` writes into it.
                 let facts_snapshot = self.facts_by_sub[fact.sub.index() as usize].clone();
                 for other_idx in facts_snapshot {
                     let other = self.facts[other_idx];
-                    if other.role == fact.role {
-                        continue;
-                    }
                     if !self.rules.functional_supers_of(other.role).contains(&rf) {
                         continue;
                     }
@@ -2723,6 +2734,65 @@ Ontology(<http://rustdl.test/p2a3/test>
             subsumers.contains(subject, target),
             "Phase 2a 3-sub-property fan-in: the witness-merge rule failed \
              to accumulate {{A, B, C}} across three sub-property facts."
+        );
+    }
+
+    /// Phase 2e — witness-merge with the existential body on a SUB-role
+    /// (not the functional super-role). This is the notgalen IPBP shape:
+    /// `Subject` has `∃r_i.A` and `∃r_j.B` (both `r_i,r_j ⊑` functional
+    /// `r_func`); `Target ≡ ∃r_i.B`. By functionality of `r_func` the two
+    /// witnesses coincide, so `r_i`'s witness is `A ⊓ B` and `Subject ⊑
+    /// ∃r_i.B = Target`. The pre-Phase-2e back-prop skipped the
+    /// merge-triggering sub-role, so the merged synthetic never reached
+    /// `r_i` when `r_i`'s fact happened to be processed second — an
+    /// order-dependent miss. Mirrors `Anonymous-349 ⊑
+    /// IntrinsicallyPathologicalBodyProcess` (notgalen's 18 MISSED).
+    #[test]
+    fn functional_role_merge_body_on_sub_role() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/p2e/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://rustdl.test/p2e/test>
+    Declaration(Class(:Subject))
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:Target))
+    Declaration(Class(:D))
+    Declaration(ObjectProperty(:r_func))
+    Declaration(ObjectProperty(:r_i))
+    Declaration(ObjectProperty(:r_j))
+    FunctionalObjectProperty(:r_func)
+    SubObjectPropertyOf(:r_i :r_func)
+    SubObjectPropertyOf(:r_j :r_func)
+    EquivalentClasses(:Subject ObjectIntersectionOf(:D ObjectSomeValuesFrom(:r_i :A)))
+    SubClassOf(:Subject ObjectSomeValuesFrom(:r_j :B))
+    EquivalentClasses(:Target ObjectIntersectionOf(ObjectSomeValuesFrom(:r_i :B) :D))
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let subject = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2e/Subject")
+            .expect("Subject declared");
+        let target = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2e/Target")
+            .expect("Target declared");
+        assert!(
+            subsumers.contains(subject, target),
+            "Phase 2e: witness-merge failed to propagate the merged synthetic \
+             to the body's sub-role r_i (Subject ⊑ ∃r_i.B = Target)."
         );
     }
 

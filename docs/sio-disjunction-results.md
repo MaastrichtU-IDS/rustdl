@@ -65,5 +65,31 @@ FP=0 held across all 9 corpus ontologies (the pass runs on every convert).
 - `pass_no_common_subsumer_emits_nothing` — no shared subsumer ⇒ no axiom.
 
 Corpus gate above; `clippy --workspace`, `test --workspace`, doctests, fmt all
-clean. Wall impact within noise (told-table build per convert; SIO 31→40 s is
-the closure-diff harness, not classify).
+clean.
+
+## Soundness is analytic, not just empirical
+
+Adding an entailed axiom is **model-preserving**: `O` and `O ∪ {α}` have
+identical models when `O ⊨ α`. Every axiom this pass emits is entailed (told
+⊑-closure + ∃-monotonicity), so **no verdict on any task can change** —
+consistency, ABox, wedge, tableau — only previously-missed entailments become
+derivable. This licenses running it at the `convert_ontology` all-paths entry.
+It also can't flip a soundness-by-fragment gate: the pass only adds EL/Horn
+`∃R.C` axioms, which can't lower the disjunctive/deferred counts that
+`analyze_fragment` keys on, so no `Horn-shortcircuit` / `trust_sat`-by-
+construction classification changes. FP=0 on the SROIQ fixtures
+(ore-10908/15672/shoiq, which carry nominals/cardinality/inverse) confirms it
+empirically. The entailment itself is independently attested: a textbook
+derivation (∃-monotonicity + disjunction-elimination + role hierarchy) *and*
+Konclude's ground truth already contains both pairs.
+
+## Cost
+
+`build_told_tables` now runs once per `convert_ontology` (including small
+consistency/ABox queries) — a bounded new fixed cost (told tables are built
+in-pipeline anyway; GO-scale pure-EL inputs have ~0 union-existentials so the
+scan is cheap). The SIO closure-diff wall moved 31.1 s → 39.7 s between runs,
+but that is dominated by the harness's O(n²) `is_subclass` sweep and is
+unmeasured run-to-run variance, not attributed to this pass (which adds one
+told-table build plus a handful of facts). Re-measure with the bench harness if
+a wall regression is suspected.

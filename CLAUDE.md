@@ -89,6 +89,18 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   pairs recovered).** Wall cost: GALEN +6.5%, notgalen +2.7%. FP=0
   held throughout. Resolves dead-end §15. See
   `docs/phase2d-2c-redux-results.md`.
+  Phase 2e (commit 883bc2f) closed notgalen's residual 18. The
+  witness-merge back-prop skipped the merge-*triggering* sub-role
+  (`other.role == fact.role`), so the merged synthetic never reached
+  the sub-role an existential body lives on when that role's fact was
+  processed second — an order-dependent miss (GALEN hit the good
+  order; notgalen's equiv-vs-subclass structure hit the bad one).
+  Dropping the skip is sound by functionality of `R_f` (every sub-role
+  witness coincides with the single `R_f`-successor carrying the merged
+  atom set). **notgalen MISSED 18 → 0 (full Konclude parity, closure
+  32739=32739); GALEN stays 0; FP=0 across the whole corpus.** The
+  only remaining corpus MISS is SIO's 2 (out-of-EL). Canary
+  `functional_role_merge_body_on_sub_role`. See `docs/phase2e-results.md`.
 
 - **`crates/owl-dl-tableau`** — SROIQ tableau. `CompletionGraph` (`graph.rs`)
   of label-carrying nodes; `TableauTrail` (`trail.rs`) gives log-and-undo

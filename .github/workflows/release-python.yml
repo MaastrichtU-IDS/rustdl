@@ -38,7 +38,7 @@ jobs:
           - os: windows-latest
             arch: AMD64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pypa/cibuildwheel@v2.21
         env:
           CIBW_BUILD: 'cp310-*'   # abi3 wheel — one build, all 3.10+ Pythons
@@ -65,7 +65,7 @@ jobs:
         with:
           package-dir: crates/owl-dl-py
           output-dir: wheelhouse
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
@@ -74,15 +74,15 @@ jobs:
   build-sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: pip install 'maturin>=1.7,<2'
       - name: Build sdist
         working-directory: crates/owl-dl-py
         run: maturin sdist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           # `maturin sdist` writes to the WORKSPACE target dir, not the
@@ -104,12 +104,12 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: 'wheels-*'
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: sdist
           path: dist

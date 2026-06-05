@@ -307,6 +307,11 @@ pub struct SearchStats {
 /// clause set (borrowed), plus per-run search instrumentation.
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
+    /// Pairwise class disjointness `(a, b)` (`a.index() < b.index()`),
+    /// extracted once at construction from ⊥-headed two-`Class`-atom
+    /// clauses. Read-only; drives the `≤n` cardinality clash pre-check
+    /// (two successors carrying disjoint labels can never be merged).
+    disjoint_pairs: std::collections::HashSet<(u32, u32)>,
     nodes: Vec<HyperNode>,
     stats: SearchStats,
     init_depth: usize,
@@ -458,6 +463,30 @@ fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
     ix
 }
 
+/// Extract pairwise class disjointness from the clause set. A clause
+/// encodes `a ⊓ b ⊑ ⊥` (disjointness of `a`, `b`) iff it is **⊥-headed**
+/// (`head.is_empty()`) and its body is **exactly two `Class` atoms on the
+/// same variable** with distinct classes. Nothing else qualifies: a unary
+/// `{A(X)} → ⊥` means "A is unsatisfiable" (not a pair), and a role-spanning
+/// body (`{A(X), R(X,Y), B(Y)} → ⊥`) is not a pairwise disjointness. Pairs
+/// are stored normalized (`lo.index() < hi.index()`).
+fn build_disjoint_pairs(clauses: &[DlClause]) -> std::collections::HashSet<(u32, u32)> {
+    let mut set = std::collections::HashSet::new();
+    for cl in clauses {
+        if !cl.head.is_empty() || cl.body.len() != 2 {
+            continue;
+        }
+        if let (Atom::Class(a, va), Atom::Class(b, vb)) = (cl.body[0], cl.body[1])
+            && va == vb
+            && a != b
+        {
+            let (lo, hi) = (a.index().min(b.index()), a.index().max(b.index()));
+            set.insert((lo, hi));
+        }
+    }
+    set
+}
+
 impl<'c> HyperEngine<'c> {
     /// Build an engine for `clauses` seeded with a single root node
     /// labelled `root`.
@@ -470,6 +499,7 @@ impl<'c> HyperEngine<'c> {
         root_node.add(root, DepSet::EMPTY);
         Self {
             clauses,
+            disjoint_pairs: build_disjoint_pairs(clauses),
             nodes: vec![root_node],
             stats: SearchStats::default(),
             init_depth: 0,
@@ -1173,7 +1203,18 @@ impl<'c> HyperEngine<'c> {
         }
         // `≤n` merge branching (H3c): merge one pair of the violating
         // node's successors per branch, recursing.
-        if let Some((_node, succs)) = self.find_open_at_most() {
+        if let Some((_node, succs, n)) = self.find_open_at_most() {
+            // Algebraic cardinality clash pre-check: if more than `n`
+            // successors are pairwise must-distinct (`≠`-forced or
+            // disjoint-labelled, hence unmergeable), the `≤n` is violated
+            // with no possible merge — conclude Unsat directly, no
+            // branching. Sound: this only ever *adds* a clash the merge
+            // search below would also reach. See
+            // `docs/wedge-cardinality-clash-precheck.md`.
+            if self.forced_distinct_exceeds(&succs, n) {
+                self.clash_deps = DepSet::ALL;
+                return HyperResult::Unsat;
+            }
             if depth == 0 {
                 return HyperResult::Stalled;
             }
@@ -1181,9 +1222,10 @@ impl<'c> HyperEngine<'c> {
             let mut any_stalled = false;
             for i in 0..succs.len() {
                 for j in (i + 1)..succs.len() {
-                    // A `≠`-forced pair can't be merged — that branch is
-                    // unsat (the `≥n` ⋈ `≤n` clash). Skip it.
-                    if self.are_neq(succs[i], succs[j]) {
+                    // A pair that can never be merged (`≠`-forced, or
+                    // carrying disjoint labels) only yields a clashing
+                    // branch — skip it rather than merge-clash-restore.
+                    if self.must_be_distinct(succs[i], succs[j]) {
                         continue;
                     }
                     let saved = self.save();
@@ -1340,11 +1382,60 @@ impl<'c> HyperEngine<'c> {
         seen
     }
 
+    /// Whether merging `a` and `b` would necessarily clash because they
+    /// carry disjoint labels (`∃ ca ∈ L(a), cb ∈ L(b) : ca ⊓ cb ⊑ ⊥`).
+    /// Labels are resolved through the merge union-find.
+    fn labels_disjoint(&self, a: HNode, b: HNode) -> bool {
+        if self.disjoint_pairs.is_empty() {
+            return false;
+        }
+        let la = &self.nodes[self.resolve(a).index()].labels;
+        let lb = &self.nodes[self.resolve(b).index()].labels;
+        for &ca in la {
+            for &cb in lb {
+                if ca == cb {
+                    continue;
+                }
+                let (lo, hi) = (ca.index().min(cb.index()), ca.index().max(cb.index()));
+                if self.disjoint_pairs.contains(&(lo, hi)) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether `a` and `b` can never be merged: either `≠`-forced, or
+    /// carrying disjoint labels. Both make the `≤n` merge of the pair a
+    /// clash, so such a pair is a "forced-distinct" edge.
+    fn must_be_distinct(&self, a: HNode, b: HNode) -> bool {
+        self.are_neq(a, b) || self.labels_disjoint(a, b)
+    }
+
+    /// Sound lower bound on the number of pairwise-must-distinct (hence
+    /// unmergeable) successors among `succs`: `true` iff a clique of size
+    /// `> n` exists, in which case the `≤n` is violated with no possible
+    /// merge → a clash certificate. Greedy: finding *a* clique past `n`
+    /// suffices; missing the maximum one just falls through to the merge
+    /// loop (still sound).
+    fn forced_distinct_exceeds(&self, succs: &[HNode], n: u32) -> bool {
+        let mut clique: Vec<HNode> = Vec::new();
+        for &s in succs {
+            if clique.iter().all(|&c| self.must_be_distinct(c, s)) {
+                clique.push(s);
+                if clique.len() > n as usize {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Find a node with a violated `≤n` constraint: more distinct
     /// matching `role`-successors than the bound. Returns the
     /// canonical node and its (resolved, distinct) successor list to
     /// branch merges over. Only canonical (un-merged) nodes are checked.
-    fn find_open_at_most(&self) -> Option<(HNode, Vec<HNode>)> {
+    fn find_open_at_most(&self) -> Option<(HNode, Vec<HNode>, u32)> {
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             if self.resolve(node) != node {
@@ -1353,7 +1444,7 @@ impl<'c> HyperEngine<'c> {
             for &(role, qual, n) in &self.nodes[idx].at_most {
                 let succs = self.distinct_role_succ(node, role, qual);
                 if succs.len() > n as usize {
-                    return Some((node, succs));
+                    return Some((node, succs, n));
                 }
             }
         }
@@ -2545,6 +2636,81 @@ mod tests {
         ];
         let mut e = HyperEngine::new(&clauses, root);
         assert_eq!(e.decide(64), HyperResult::Unsat);
+    }
+
+    /// The cardinality clash pre-check fires on the `InterestingPizza`
+    /// shape (`≤2` with three pairwise-disjoint successors): the verdict
+    /// is `Unsat` and **no merge branching happens** — the clique
+    /// certificate short-circuits it. Guards that the new path is live
+    /// (not silently dead) and actually collapses the blow-up.
+    #[test]
+    fn at_most_clash_precheck_collapses_branching() {
+        let role = Role::Named(RoleId::new(0));
+        let (root, ca, cb, cd) = (cls(0), cls(1), cls(2), cls(3));
+        let bot2 = |lhs, rhs| DlClause {
+            body: vec![Atom::Class(lhs, X), Atom::Class(rhs, X)],
+            head: vec![],
+        };
+        let exists = |inner| DlClause {
+            body: vec![Atom::Class(root, X)],
+            head: vec![Atom::Exists(role, inner, X)],
+        };
+        let clauses = vec![
+            exists(ca),
+            exists(cb),
+            exists(cd),
+            bot2(ca, cb),
+            bot2(ca, cd),
+            bot2(cb, cd),
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 2, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Unsat);
+        assert_eq!(
+            e.stats().branches_taken,
+            0,
+            "clash pre-check should fire with zero merge branching"
+        );
+    }
+
+    /// Soundness guard (advisor's discriminating negative): `≤1 R.C`
+    /// with two `R`-successors that are mutually disjoint but where only
+    /// **one** is forced to be `C` must stay **Sat**. The candidate set
+    /// is `distinct_role_succ(.., Some(C))` (definitely-`C` only), so the
+    /// non-`C` successor is not counted and there is no false clash.
+    #[test]
+    fn at_most_precheck_does_not_overcount_unqualified_successors() {
+        let role = Role::Named(RoleId::new(0));
+        // root: ∃R.C and ∃R.D ; C ⊓ D ⊑ ⊥ ; ≤1 R.C
+        let (root, cc, cd) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cc, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cd, X)],
+            },
+            // C and D disjoint — but the ≤1 is qualified on C only.
+            DlClause {
+                body: vec![Atom::Class(cc, X), Atom::Class(cd, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, Some(cc), 1, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(
+            e.decide(64),
+            HyperResult::Sat,
+            "only one successor is forced to be C, so ≤1 R.C holds"
+        );
     }
 
     /// Instrumentation: branching tracked when it happens, zero on

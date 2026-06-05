@@ -1415,6 +1415,19 @@ fn lower_sub_class_of(
                     sup: atomic_sup,
                 });
             }
+            // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
+            // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
+            // `disjoint(X, Y)`. The saturator otherwise drops the `¬Y`
+            // (a negated atomic is not an atomic subsumer), missing the
+            // unsatisfiability it induces — e.g. `A ⊑ B ⊓ ¬B ⇒ A ⊑ ⊥`.
+            // Register the pair so the existing disjointness→unsat
+            // propagation fires (reflexive `X ⊑ X` is seeded, so the
+            // check at `process_subsumer` triggers). Sound and
+            // monotonic: `X ⊑ ¬Y ⟺ disjoint(X, Y)`, so this only ever
+            // adds a genuine clash, never a false subsumption.
+            for y in not_atomic_operands_on_right(sup, pool) {
+                rules.disjoint_pairs.push((*sub_id, y));
+            }
             // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
             // synthetic atomic if the body is a compound And, OR if
             // r has a range constraint that needs to be folded in.
@@ -1774,6 +1787,26 @@ fn atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<ClassId> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// The `Y`s such that `Not(Atomic(Y))` is `c` itself or a top-level
+/// `And` operand of `c`. Each witnesses `subject ⊑ ¬Y`, i.e.
+/// `disjoint(subject, Y)`. Only literal negated atomics are recognised
+/// (a sound under-approximation — anything else stays dropped).
+fn not_atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<ClassId> {
+    let negated_atomic = |cid: ConceptId| -> Option<ClassId> {
+        match pool.get(cid) {
+            ConceptExpr::Not(inner) => match pool.get(*inner) {
+                ConceptExpr::Atomic(y) => Some(*y),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands.iter().filter_map(|&op| negated_atomic(op)).collect(),
+        _ => negated_atomic(c).into_iter().collect(),
     }
 }
 
@@ -2469,6 +2502,44 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.is_unsatisfiable(class(&internal, "X")));
+        assert!(!subs.is_unsatisfiable(class(&internal, "A")));
+        assert!(!subs.is_unsatisfiable(class(&internal, "B")));
+    }
+
+    #[test]
+    fn subclass_of_complement_conjunct_makes_class_unsat() {
+        // `A ⊑ B ⊓ ¬B` ⇒ A ⊑ ⊥. The `¬B` conjunct is `A ⊑ ¬B`, i.e.
+        // disjoint(A, B); with the told `A ⊑ B` the disjointness→unsat
+        // rule fires. Previously the saturator dropped the `¬B` (it only
+        // derived disjoint pairs from explicit DisjointClasses), so it
+        // missed this — the Horn fast-path unsat gap.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A ObjectIntersectionOf(:B ObjectComplementOf(:B)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(subs.is_unsatisfiable(class(&internal, "A")));
+        assert!(!subs.is_unsatisfiable(class(&internal, "B")));
+    }
+
+    #[test]
+    fn subclass_of_complement_disjointness_is_directional_and_sound() {
+        // `A ⊑ ¬B` registers disjoint(A, B) but does NOT by itself make
+        // A or B unsat (A simply can't also be B). Guards against an
+        // over-eager fix that flags satisfiable classes.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A ObjectComplementOf(:B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
         assert!(!subs.is_unsatisfiable(class(&internal, "A")));
         assert!(!subs.is_unsatisfiable(class(&internal, "B")));
     }

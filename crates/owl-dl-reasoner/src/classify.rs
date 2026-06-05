@@ -1616,6 +1616,54 @@ mod tests {
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
+    /// Test-only RAII env-var guard. Sets each `(key, val)` on
+    /// construction and restores the prior values (or removes them) on
+    /// drop. Used to pin the orchestrator flags a test was written
+    /// against — notably `RUSTDL_HORN_SHORTCIRCUIT` (Phase 2b) and
+    /// `RUSTDL_SNAPSHOT_CAPTURE` (Phase 1c), both of which flipped to
+    /// default-ON after several of these tests were written and otherwise
+    /// bypass the per-pair loop / `pure_el_mode` path under test.
+    ///
+    /// The orchestrator reads these vars from the process-global
+    /// environment, so the guard also holds a module-wide mutex for its
+    /// whole lifetime: any test that pins a flag — or classifies a
+    /// Horn-but-non-EL ontology whose verdict depends on one — must build
+    /// exactly one guard and hold it for the whole test body, so such
+    /// tests never run concurrently and never observe each other's
+    /// transient values. One guard per test (not nested): each guard
+    /// takes the lock once. The mutex is poison-tolerant so a panicking
+    /// test doesn't cascade-fail the rest.
+    #[allow(unsafe_code)]
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvGuard {
+        #[allow(unsafe_code)]
+        fn set(vars: &[(&'static str, &str)]) -> Self {
+            let lock = crate::test_env_lock();
+            let mut prev = Vec::with_capacity(vars.len());
+            for &(k, v) in vars {
+                prev.push((k, std::env::var_os(k)));
+                unsafe { std::env::set_var(k, v) };
+            }
+            Self { _lock: lock, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            for (k, v) in &self.prev {
+                match v {
+                    Some(val) => unsafe { std::env::set_var(k, val) },
+                    None => unsafe { std::env::remove_var(k) },
+                }
+            }
+        }
+    }
+
     #[test]
     fn classify_picks_up_explicit_chain() {
         // A ⊑ B ⊑ C — classification should yield both direct edges.
@@ -1665,6 +1713,10 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn classify_flags_unsatisfiable() {
+        // Pin the per-pair path: the Horn-shortcircuit fast path
+        // (default ON) routes this Horn input to the EL saturation
+        // closure, which drops the ¬B clash and misses A ⊑ ⊥.
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // A ⊑ B ⊓ ¬B — A is empty, equivalent to ⊥.
         let onto = parse(&format!(
             "{HEADER}\
@@ -1736,6 +1788,9 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn classify_drops_to_tableau_when_axioms_leave_el() {
+        // This test exercises the drop-to-tableau path, which the Horn
+        // shortcircuit (default ON) bypasses for Horn-but-non-EL inputs.
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // The DisjointObjectProperties axiom is outside our EL
         // saturation fragment — classify should NOT take the
         // pure-EL fast path and should issue at least one tableau
@@ -1772,6 +1827,10 @@ Ontology(<http://rustdl.test/test>\n\
     /// don't compare `ClassificationStats` — the call-count breakdown
     /// is expected to differ by construction.
     fn assert_top_down_matches_naive(onto: &SetOntology<RcStr>) {
+        // Compares the naive vs top-down *walk* strategies, both bypassed
+        // by the Horn shortcircuit. Callers pin RUSTDL_HORN_SHORTCIRCUIT=0
+        // and hold the EnvGuard lock; this helper stays lock-free so it
+        // doesn't re-enter the (non-reentrant) mutex.
         let naive = classify_n2(onto).expect("naive classify");
         let td = classify_top_down(onto).expect("top-down classify");
         assert_eq!(
@@ -1799,6 +1858,7 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn classify_top_down_matches_naive_on_explicit_chain() {
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // A ⊑ B ⊑ C: 3-class tower used in `classify_picks_up_
         // explicit_chain` — top-down should report the same matrix.
         let onto = parse(&format!(
@@ -1816,6 +1876,7 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn classify_top_down_matches_naive_on_equivalent_classes() {
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // EquivalentClasses(A, B) — equivalence pairs are a subtle
         // case for the top-down hierarchy walk.
         let onto = parse(&format!(
@@ -1831,6 +1892,7 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn classify_top_down_matches_naive_on_unsatisfiable_class() {
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // A ⊑ B ⊓ ¬B — A is unsat. Top-down's unsat-row trivial
         // fill should match naive.
         let onto = parse(&format!(
@@ -1846,6 +1908,7 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn classify_top_down_matches_naive_on_hybrid_fragment() {
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // The DisjointObjectProperties axiom forces hybrid mode.
         // Top-down's hybrid path must agree with naive.
         let onto = parse(&format!(
@@ -1873,6 +1936,9 @@ Ontology(<http://rustdl.test/test>\n\
         // restores it. The pure-EL counterpart goes through
         // `classify_pure_el` and was never affected; we force the
         // hybrid path here with a `DisjointObjectProperties` axiom.
+        // Horn shortcircuit (default ON) would route this Horn input to
+        // the saturation fast path (`pure_el_mode`), so pin it off.
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         let onto = parse(&format!(
             "{HEADER}\
 Ontology(<http://rustdl.test/test>\n\
@@ -1925,6 +1991,9 @@ Ontology(<http://rustdl.test/test>\n\
     SubClassOf(:C :D)\n\
 )\n"
         ));
+        // Pin the walk path: the Horn shortcircuit (default ON) bypasses
+        // both classify_n2 and classify_top_down, zeroing tableau calls.
+        let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         let naive = classify_n2(&onto).expect("naive");
         let td = classify_top_down(&onto).expect("top-down");
         let naive_calls = naive.stats().tableau_subsumption_calls;
@@ -2000,6 +2069,13 @@ Ontology(<http://rustdl.test/test>\n\
     #[test]
     #[allow(unsafe_code)]
     fn selective_verify_triggers_when_threshold_high() {
+        // The wedge per-pair path must be reached: disable the snapshot
+        // cache (Phase 1c) and Horn shortcircuit (Phase 2b), both
+        // default-ON and both intercepting these pairs before the wedge.
+        let _env = EnvGuard::set(&[
+            ("RUSTDL_SNAPSHOT_CAPTURE", "0"),
+            ("RUSTDL_HORN_SHORTCIRCUIT", "0"),
+        ]);
         let key = "RUSTDL_HYPER_TRUST_SAT_MIN_MS";
         let prev = std::env::var_os(key);
         unsafe { std::env::set_var(key, "100000") };
@@ -2060,6 +2136,13 @@ Ontology(<http://rustdl.test/test>\n\
     #[test]
     #[allow(unsafe_code)]
     fn selective_verify_disabled_when_threshold_zero() {
+        // The wedge per-pair path must be reached: disable the snapshot
+        // cache (Phase 1c) and Horn shortcircuit (Phase 2b), both
+        // default-ON and both intercepting these pairs before the wedge.
+        let _env = EnvGuard::set(&[
+            ("RUSTDL_SNAPSHOT_CAPTURE", "0"),
+            ("RUSTDL_HORN_SHORTCIRCUIT", "0"),
+        ]);
         let key = "RUSTDL_HYPER_TRUST_SAT_MIN_MS";
         let prev = std::env::var_os(key);
         unsafe { std::env::set_var(key, "0") };

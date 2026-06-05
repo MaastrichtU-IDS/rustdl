@@ -63,9 +63,8 @@ struct KoncludeVerdict {
 fn read_konclude_verdict(path: &Path) -> KoncludeVerdict {
     let file = File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     let mut reader = BufReader::new(file);
-    let (onto, _): (SetOntology<RcStr>, _) =
-        read_owx(&mut reader, ParserConfiguration::default())
-            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let (onto, _): (SetOntology<RcStr>, _) = read_owx(&mut reader, ParserConfiguration::default())
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
     let mut edges = BTreeSet::new();
     let mut unsat = BTreeSet::new();
     let mut thing_equiv = BTreeSet::new();
@@ -222,8 +221,8 @@ fn diff_corpus_ontology(
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse input");
     let start = Instant::now();
-    let c =
-        classify_top_down_with_timeout(&onto, Duration::from_millis(per_pair_ms)).expect("classify");
+    let c = classify_top_down_with_timeout(&onto, Duration::from_millis(per_pair_ms))
+        .expect("classify");
     let wall = start.elapsed();
     let verdict = read_konclude_verdict(truth);
     // Build the full exclude set up-front (unsat from both sides +
@@ -360,7 +359,10 @@ fn shoiq_knowledge_closure_matches_konclude() {
         return;
     }
     let (_r, _k, fp, _m) = diff_corpus_ontology("shoiq-knowledge", input, truth, 200);
-    assert_eq!(fp, 0, "shoiq-knowledge has FPs — D1 sound-under-approximation broken");
+    assert_eq!(
+        fp, 0,
+        "shoiq-knowledge has FPs — D1 sound-under-approximation broken"
+    );
 }
 
 #[test]
@@ -437,7 +439,10 @@ fn corpus_closure_long_timeout() {
             any_fp = true;
         }
     }
-    assert!(!any_fp, "corpus has FPs under 5s timeout — soundness regression");
+    assert!(
+        !any_fp,
+        "corpus has FPs under 5s timeout — soundness regression"
+    );
 }
 
 #[test]
@@ -492,7 +497,10 @@ fn family_inconsistency_detected() {
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse");
     let consistent = owl_dl_reasoner::is_consistent(&onto).expect("is_consistent");
     eprintln!("family is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)");
-    assert!(!consistent, "family should be detected as inconsistent (stretch goal)");
+    assert!(
+        !consistent,
+        "family should be detected as inconsistent (stretch goal)"
+    );
 }
 
 #[test]
@@ -508,6 +516,11 @@ fn family_stripped_inconsistency_detected() {
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse");
     let consistent = owl_dl_reasoner::is_consistent(&onto).expect("is_consistent");
-    eprintln!("family-stripped is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)");
-    assert!(!consistent, "family-stripped should be detected as inconsistent (stretch goal)");
+    eprintln!(
+        "family-stripped is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)"
+    );
+    assert!(
+        !consistent,
+        "family-stripped should be detected as inconsistent (stretch goal)"
+    );
 }

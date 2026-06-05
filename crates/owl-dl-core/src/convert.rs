@@ -522,12 +522,9 @@ pub fn convert_ontology<A: ForIRI>(
     // out.axioms.extend (which doesn't need it but reads cleaner).
     let derived = {
         let concepts_cell = std::cell::RefCell::new(&mut out.concepts);
-        crate::data_axioms::derive_data_axioms(
-            src,
-            &out.vocabulary,
-            bot_id,
-            |cid| concepts_cell.borrow_mut().atomic(cid),
-        )
+        crate::data_axioms::derive_data_axioms(src, &out.vocabulary, bot_id, |cid| {
+            concepts_cell.borrow_mut().atomic(cid)
+        })
     };
     out.axioms.extend(derived);
     out.axioms.sort();

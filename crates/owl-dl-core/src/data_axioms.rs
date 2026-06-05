@@ -91,7 +91,10 @@ pub fn derive_data_axioms<A: ForIRI>(
 /// (or its decomposition into mutual SubClassOf), if any atomic Mi
 /// has cardinality bounds on a data property dp, propagate those
 /// bounds to C. Iterates to fixpoint to handle transitive defs.
-#[allow(clippy::too_many_lines, reason = "single fixpoint with 4 facts to propagate; splitting hurts readability")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single fixpoint with 4 facts to propagate; splitting hurts readability"
+)]
 fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Facts) {
     // Collect: class_iri → vec of atomic-member iris from Intersection
     // equivalences. Includes EquivalentClasses(C, Intersection(...)) and
@@ -110,8 +113,7 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
                     }
                 });
                 for parts in intersection_members {
-                    let part_iris: Vec<String> =
-                        parts.iter().filter_map(class_iri).collect();
+                    let part_iris: Vec<String> = parts.iter().filter_map(class_iri).collect();
                     for owner in &atomic_members {
                         for part in &part_iris {
                             if owner != part {
@@ -230,7 +232,10 @@ struct IntegerRange {
 
 impl IntegerRange {
     const fn unbounded() -> Self {
-        Self { min: None, max: None }
+        Self {
+            min: None,
+            max: None,
+        }
     }
     fn intersect(self, other: Self) -> Self {
         let min = match (self.min, other.min) {
@@ -334,11 +339,7 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
             // purposes. Bound-collection: if a is atomic class C and b
             // is an ObjectIntersectionOf with data-cardinality conjuncts,
             // those conjuncts' bounds apply to C.
-            let atomic: Vec<String> = ax
-                .0
-                .iter()
-                .filter_map(class_iri)
-                .collect();
+            let atomic: Vec<String> = ax.0.iter().filter_map(class_iri).collect();
             for c in &atomic {
                 for other in &ax.0 {
                     scan_class_for_bounds(c, other, f);
@@ -405,11 +406,7 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
 /// `ObjectIntersectionOf`. Phase D5 (Tier C): also records integer
 /// ranges from `DataSomeValuesFrom(dp, DatatypeRestriction(xsd:integer, ...))`
 /// into `f.class_int_ranges`.
-fn scan_class_for_existentials<A: ForIRI>(
-    class_iri: &str,
-    ce: &ClassExpression<A>,
-    f: &mut Facts,
-) {
+fn scan_class_for_existentials<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f: &mut Facts) {
     match ce {
         ClassExpression::DataSomeValuesFrom { dp, dr } => {
             f.class_some.insert((class_iri.to_string(), dpe_iri(dp)));
@@ -467,14 +464,22 @@ fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<Int
             Facet::MinExclusive => {
                 // xsd:integer-semantics: exclusive ≥ val + 1
                 let inclusive = val.checked_add(1)?;
-                range.min = Some(range.min.map_or(inclusive, |existing| existing.max(inclusive)));
+                range.min = Some(
+                    range
+                        .min
+                        .map_or(inclusive, |existing| existing.max(inclusive)),
+                );
             }
             Facet::MaxInclusive => {
                 range.max = Some(range.max.map_or(val, |existing| existing.min(val)));
             }
             Facet::MaxExclusive => {
                 let inclusive = val.checked_sub(1)?;
-                range.max = Some(range.max.map_or(inclusive, |existing| existing.min(inclusive)));
+                range.max = Some(
+                    range
+                        .max
+                        .map_or(inclusive, |existing| existing.min(inclusive)),
+                );
             }
             _ => return None,
         }
@@ -608,15 +613,18 @@ fn emit_subdataprop_transitivity(
     // C ⊑ DataSome(specific) + DataSome(general) ⊑ D ⇒ C ⊑ D.
     let closure = closure_sub_dp(&f.sub_data_property);
     for (class_iri, specific_dp) in &f.class_some {
-        let Some(supers) = closure.get(specific_dp) else { continue };
+        let Some(supers) = closure.get(specific_dp) else {
+            continue;
+        };
         for general_dp in supers {
-            let Some(super_classes) = f.some_super.get(general_dp) else { continue };
+            let Some(super_classes) = f.some_super.get(general_dp) else {
+                continue;
+            };
             for d_iri in super_classes {
                 if class_iri == d_iri {
                     continue;
                 }
-                if let (Some(c_id), Some(d_id)) =
-                    (vocab.class_id(class_iri), vocab.class_id(d_iri))
+                if let (Some(c_id), Some(d_id)) = (vocab.class_id(class_iri), vocab.class_id(d_iri))
                 {
                     out.push(Axiom::SubClassOf {
                         sub: atomic_id(c_id),
@@ -698,8 +706,8 @@ fn _unused_datarange<A: ForIRI>(_: &DataRange<A>) {}
 mod tests {
     use super::*;
     use crate::convert::convert_ontology;
-    use horned_owl::io::ofn::reader::read as read_ofn;
     use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
     use horned_owl::model::RcStr;
     use horned_owl::ontology::set::SetOntology;
     use std::io::Cursor;
@@ -724,7 +732,10 @@ Ontology(<http://t/x>
         let facts = extract_facts(&onto);
         assert!(facts.functional_dps.contains("http://t/age"));
         assert_eq!(
-            facts.class_min.get(&("http://t/HasTwoAges".to_string(), "http://t/age".to_string())),
+            facts.class_min.get(&(
+                "http://t/HasTwoAges".to_string(),
+                "http://t/age".to_string()
+            )),
             Some(&2)
         );
     }
@@ -742,12 +753,19 @@ Ontology(<http://t/x>
 "#;
         let onto = parse_str(src);
         let mut internal = convert_ontology(&onto).unwrap();
-        let has_two_ages = internal.vocabulary.class_id("http://t/HasTwoAges")
+        let has_two_ages = internal
+            .vocabulary
+            .class_id("http://t/HasTwoAges")
             .expect("HasTwoAges interned");
         let bot = internal.concepts.bot();
         let sub_concept = internal.concepts.atomic(has_two_ages);
-        let found_unsat = internal.axioms.iter().any(|ax| matches!(ax,
-            Axiom::SubClassOf { sub, sup } if *sub == sub_concept && *sup == bot));
-        assert!(found_unsat, "D4: HasTwoAges ⊑ Bot should be derived from Functional + DataMin");
+        let found_unsat = internal.axioms.iter().any(|ax| {
+            matches!(ax,
+            Axiom::SubClassOf { sub, sup } if *sub == sub_concept && *sup == bot)
+        });
+        assert!(
+            found_unsat,
+            "D4: HasTwoAges ⊑ Bot should be derived from Functional + DataMin"
+        );
     }
 }

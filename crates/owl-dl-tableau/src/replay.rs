@@ -86,8 +86,7 @@ pub fn replay_with_neg_sup(
         .collect();
     let mut full_clauses = clauses.to_vec();
     full_clauses.extend(neg_sup_clauses);
-    let mut engine =
-        HyperEngine::from_snapshot_lazy(&full_clauses, snapshot, new_trigger_atoms);
+    let mut engine = HyperEngine::from_snapshot_lazy(&full_clauses, snapshot, new_trigger_atoms);
     let result = engine.decide(REPLAY_DEPTH);
     if engine.snapshot_backprop_aborted() {
         return ReplayVerdict::BackPropAborted;

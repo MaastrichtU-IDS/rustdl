@@ -47,8 +47,7 @@ const FIXTURE_DIR: &str = "tests/fixtures/datatype";
 
 fn classify_fixture(name: &str) -> owl_dl_reasoner::Classification {
     let path = Path::new(FIXTURE_DIR).join(format!("{name}.ofn"));
-    let src = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
@@ -118,8 +117,10 @@ fn datatype_definition_subsumption() {
 fn functional_data_property_unsat() {
     let c = classify_fixture("functional_data_property");
     let unsat = c.unsatisfiable_classes();
-    let sub_bot =
-        c.is_subclass("http://t/HasTwoAges", "http://www.w3.org/2002/07/owl#Nothing");
+    let sub_bot = c.is_subclass(
+        "http://t/HasTwoAges",
+        "http://www.w3.org/2002/07/owl#Nothing",
+    );
     eprintln!(
         "functional_data_property_unsat: unsat = {:?}, HasTwoAges ⊑ Nothing = {} (oracle: HasTwoAges + A unsat)",
         unsat, sub_bot
@@ -143,7 +144,7 @@ fn data_cardinality_disjointness() {
         unsat
     );
     assert!(
-        unsat.iter().any(|s| *s =="http://t/Both"),
+        unsat.iter().any(|s| *s == "http://t/Both"),
         "D1 MISSED: Both should be unsat (≥3 ⊓ ≤2 hasItem)"
     );
 }
@@ -163,7 +164,7 @@ fn datatype_facet_disjointness() {
         unsat
     );
     assert!(
-        unsat.iter().any(|s| *s =="http://t/Both"),
+        unsat.iter().any(|s| *s == "http://t/Both"),
         "D1 MISSED: Both should be unsat (age ≥18 ⊓ age <13, Functional)"
     );
 }

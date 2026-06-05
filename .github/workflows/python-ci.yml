@@ -43,10 +43,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install maturin + pytest
-        run: pip install 'maturin>=1.7,<2' pytest
+      - name: Install pytest
+        run: pip install pytest
       - name: Build + install rustdl
-        working-directory: crates/owl-dl-py
-        run: maturin develop --release
+        # `pip install <crate-dir>` drives the maturin build backend via
+        # PEP 517 and installs the wheel into the runner's active Python.
+        # (`maturin develop` is NOT used here: it requires an activated
+        # virtualenv — there's none on the CI runner — and fails with
+        # "Couldn't find a virtualenv or conda environment".)
+        run: pip install ./crates/owl-dl-py
       - name: Run pytest
         run: pytest crates/owl-dl-py/tests/python/ -v

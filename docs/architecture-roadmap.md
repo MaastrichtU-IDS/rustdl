@@ -1,5 +1,21 @@
 # Architecture roadmap — closing the default-mode gap
 
+> **⚠ 2026-06-05 update — the "blocking never fires" diagnosis below is
+> STALE.** It was measured on the *classic* tableau (pre-wedge,
+> `is_blocked_true = 0`). The default engine is now the hypertableau
+> **wedge** (since 2026-05-29), whose double-blocking **fires effectively**:
+> `rustdl hyper-classify-probe` on owlcs pizza reports **`blocks_fired =
+> 21 653` of `block_eligible = 62 528` (≈35 %)**, `stalled = 0`; SIO
+> per-class sat (`hyper-sat`) converges in 657 ms (max 15 branches/class,
+> 0 stalls). So **"stronger blocking" is NOT the lever** for the remaining
+> gaps — the wedge already converges on pizza/SIO. The real remaining gaps
+> are (a) wedge/`trust_sat` **completeness** (notgalen 18 IPBP-cluster — a
+> *saturation* gap, dead-ended in Phase 2c/2d; SIO 2 out-of-EL pairs) and
+> (b) per-pair / classify **perf** (tier-walk + label-heuristic, Phase 6/7
+> territory), not model-size blowup. Measurement counters `blocks_fired` /
+> `block_eligible` added to `SearchStats` (commit on `chore/blocking-
+> observability`). See `docs/handoff-2026-06-05.md`.
+
 Drafted 2026-05-26 after the day's three architectural experiments
 (MOMS, model-caching root-labels, syntactic module extraction) all
 hit measured dead-ends. This doc consolidates what the diagnosis

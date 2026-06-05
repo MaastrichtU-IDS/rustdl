@@ -709,10 +709,12 @@ fn main() -> Result<()> {
                 .filter(|r| r.stats.branches_taken > 0)
             {
                 println!(
-                    "#   {:?} wall={:.2}ms branches={} restores={} depth={}  {}",
+                    "#   {:?} wall={:.2}ms branches={} (disj={} merge={}) restores={} depth={}  {}",
                     r.result,
                     r.wall_ms,
                     r.stats.branches_taken,
+                    r.stats.disj_branches,
+                    r.stats.merge_branches,
                     r.stats.restores,
                     r.stats.max_branch_depth,
                     r.iri,
@@ -826,10 +828,12 @@ fn main() -> Result<()> {
             println!("# --- top pairs by branching ---");
             for r in by_interest.iter().take(15) {
                 println!(
-                    "#   {:?} wall={:.2}ms branches={} restores={} depth={}  {} <= {}",
+                    "#   {:?} wall={:.2}ms branches={} (disj={} merge={}) restores={} depth={}  {} <= {}",
                     r.result,
                     r.wall_ms,
                     r.stats.branches_taken,
+                    r.stats.disj_branches,
+                    r.stats.merge_branches,
                     r.stats.restores,
                     r.stats.max_branch_depth,
                     r.sub,

@@ -283,6 +283,13 @@ pub enum HyperResult {
 pub struct SearchStats {
     /// Disjuncts asserted across the whole search (decisions made).
     pub branches_taken: u64,
+    /// Of `branches_taken`, those from the ⊔ disjunction rule
+    /// (`find_open_disjunction`). Split out from `≤n` merge branches so
+    /// search-quality work can tell which branch kind dominates a stall.
+    pub disj_branches: u64,
+    /// Of `branches_taken`, those from the `≤n` merge rule
+    /// (`find_open_at_most`).
+    pub merge_branches: u64,
     /// Failed branches whose graph was restored (`Unsat`/`Stalled`).
     pub restores: u64,
     /// Deepest branch nesting reached (0 ⇒ no branching).
@@ -1171,6 +1178,7 @@ impl<'c> HyperEngine<'c> {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
+                self.stats.disj_branches += 1;
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return HyperResult::Sat,
@@ -1219,42 +1227,17 @@ impl<'c> HyperEngine<'c> {
                 return HyperResult::Stalled;
             }
             self.track_depth(depth);
-            let mut any_stalled = false;
-            for i in 0..succs.len() {
-                for j in (i + 1)..succs.len() {
-                    // A pair that can never be merged (`≠`-forced, or
-                    // carrying disjoint labels) only yields a clashing
-                    // branch — skip it rather than merge-clash-restore.
-                    if self.must_be_distinct(succs[i], succs[j]) {
-                        continue;
-                    }
-                    let saved = self.save();
-                    self.stats.branches_taken += 1;
-                    if self.merge(succs[i], succs[j]) {
-                        // Merge clashed on `≠` (defensive — pre-checked).
-                        self.restore(saved);
-                        continue;
-                    }
-                    match self.solve(depth - 1) {
-                        HyperResult::Sat => return HyperResult::Sat,
-                        HyperResult::Unsat => self.restore(saved),
-                        HyperResult::Stalled => {
-                            self.restore(saved);
-                            any_stalled = true;
-                        }
-                    }
-                }
-            }
-            if any_stalled {
-                return HyperResult::Stalled;
-            }
-            // `≤n` merge provenance isn't tracked precisely, so report
-            // a conservative "depends on everything" — the parent frame
-            // then backtracks chronologically past this merge decision
-            // (sound; no backjump). Backjumping through merge decisions
-            // is future work (interacts with the in-edge redirect gap).
-            self.clash_deps = DepSet::ALL;
-            return HyperResult::Unsat;
+            // `≤n` satisfaction by *canonical partition enumeration*
+            // (increment 2): rather than merge one pair per branch and
+            // recurse — which reaches each partition of the successors via
+            // many merge orders (the redundancy behind the pizza
+            // `InterestingPizza` merge blow-up) — enumerate each partition
+            // into ≤ n mutually-mergeable blocks exactly once, merge it,
+            // and recurse. Verdict-preserving: the set of reachable
+            // partitions (hence the Sat/Unsat outcome) is identical; only
+            // the order-redundancy is removed. See
+            // `docs/wedge-cardinality-clash-precheck.md`.
+            return self.solve_at_most(&succs, n as usize, depth);
         }
         HyperResult::Sat
     }
@@ -1429,6 +1412,92 @@ impl<'c> HyperEngine<'c> {
             }
         }
         false
+    }
+
+    /// Satisfy a violated `≤n` (`succs.len() > n`) by enumerating every
+    /// partition of `succs` into at most `n` mutually-mergeable blocks
+    /// (restricted-growth order, so each partition is generated exactly
+    /// once), merging the partition, and recursing. Returns `Sat` on the
+    /// first partition that completes a model (state kept), `Stalled` if
+    /// some partition hit the depth bound and none succeeded, else `Unsat`
+    /// with conservative `DepSet::ALL` deps (matching the old merge path).
+    fn solve_at_most(&mut self, succs: &[HNode], n: usize, depth: usize) -> HyperResult {
+        let mut groups: Vec<Vec<HNode>> = Vec::with_capacity(n);
+        let mut any_stalled = false;
+        if let Some(sat) = self.partition_rec(succs, 0, &mut groups, n, depth, &mut any_stalled) {
+            return sat; // Sat — completed model kept (no restore).
+        }
+        if any_stalled {
+            return HyperResult::Stalled;
+        }
+        self.clash_deps = DepSet::ALL;
+        HyperResult::Unsat
+    }
+
+    /// Recursive restricted-growth enumeration backing [`Self::solve_at_most`].
+    /// Assigns `succs[idx]` to each existing block it is mergeable with
+    /// (no `must_be_distinct` member), or opens a new block while under
+    /// the `n` cap. At a complete assignment it merges each block into its
+    /// first member and recurses via [`Self::solve`]. Returns `Some(Sat)`
+    /// to short-circuit the whole enumeration (model found, state kept);
+    /// `None` to keep enumerating (sets `*any_stalled` on a depth-bound
+    /// hit). Every branch is restored before the next partition.
+    fn partition_rec(
+        &mut self,
+        succs: &[HNode],
+        idx: usize,
+        groups: &mut Vec<Vec<HNode>>,
+        n: usize,
+        depth: usize,
+        any_stalled: &mut bool,
+    ) -> Option<HyperResult> {
+        if idx == succs.len() {
+            // Complete partition (≤ n blocks). Merge each block into its
+            // representative, then continue the search one level down.
+            let saved = self.save();
+            self.stats.branches_taken += 1;
+            self.stats.merge_branches += 1;
+            let mut clashed = false;
+            'blocks: for block in groups.iter() {
+                let rep = block[0];
+                for &other in &block[1..] {
+                    if self.merge(rep, other) {
+                        clashed = true; // defensive: pre-pruned by must_be_distinct
+                        break 'blocks;
+                    }
+                }
+            }
+            if !clashed {
+                match self.solve(depth - 1) {
+                    HyperResult::Sat => return Some(HyperResult::Sat),
+                    HyperResult::Unsat => {}
+                    HyperResult::Stalled => *any_stalled = true,
+                }
+            }
+            self.restore(saved);
+            return None;
+        }
+        let s = succs[idx];
+        for gi in 0..groups.len() {
+            // Mergeable with this block iff distinct from no member.
+            if groups[gi].iter().all(|&m| !self.must_be_distinct(s, m)) {
+                groups[gi].push(s);
+                let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled);
+                groups[gi].pop();
+                if r.is_some() {
+                    return r;
+                }
+            }
+        }
+        if groups.len() < n {
+            groups.push(vec![s]);
+            let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled);
+            groups.pop();
+            if r.is_some() {
+                return r;
+            }
+        }
+        None
     }
 
     /// Find a node with a violated `≤n` constraint: more distinct
@@ -2606,6 +2675,47 @@ mod tests {
         ];
         let mut e = HyperEngine::new(&clauses, root);
         assert_eq!(e.decide(64), HyperResult::Sat);
+    }
+
+    /// `≤2 R` with three *non*-disjoint successors is Sat: two of them
+    /// can merge into one group, leaving 2 ≤ 2. This is the case the
+    /// partition enumerator must solve (the increment-1 clique check does
+    /// not fire — no forced-distinct clique exceeds 2). Guards that the
+    /// enumerator finds a valid partition (Sat) rather than spuriously
+    /// concluding Unsat, and that it doesn't explode the branch count.
+    #[test]
+    fn at_most_two_with_three_mergeable_successors_is_sat() {
+        let role = Role::Named(RoleId::new(0));
+        let (root, ca, cb, cd) = (cls(0), cls(1), cls(2), cls(3));
+        // No disjointness among ca/cb/cd, so any two can merge.
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, ca, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cb, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, cd, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 2, X)],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, root);
+        assert_eq!(e.decide(64), HyperResult::Sat);
+        // Partitions of 3 items into ≤2 blocks = 4; the enumerator tries
+        // each once and stops at the first Sat — far below the pairwise
+        // loop's order-redundant exploration.
+        assert!(
+            e.stats().merge_branches <= 4,
+            "partition dedup should bound merge branches; got {}",
+            e.stats().merge_branches
+        );
     }
 
     /// `≤2 R` with three pairwise-disjoint successors is Unsat (the

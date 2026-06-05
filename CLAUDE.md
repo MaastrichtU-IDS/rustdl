@@ -184,11 +184,18 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   pre-check at `crates/owl-dl-reasoner/src/abox_check.rs`. Runs before
   the tableau in both `is_consistent` and `classify`; on a positive
   verdict, classify mirrors Konclude's behaviour (every class marked
-  unsatisfiable). Seven clash patterns: P1 direct-Bot, P2 disjoint
+  unsatisfiable). Eight clash patterns: P1 direct-Bot, P2 disjoint
   types per individual, P3 NegOPA-vs-OPA (with role-hierarchy
   propagation), P4 SameAs∩DifferentFrom (transitive via union-find),
   P5 Functional + two-distinct-witnesses (+ inverse-functional), P6
-  Asymmetric/Irreflexive, P7 domain/range disjointness (stretch). All
+  Asymmetric/Irreflexive, P7 domain/range disjointness (stretch), P8
+  functional-collapse (`Functional(R)` + individual implies `∃R.q1 ⊓
+  ∃R.q2` with `q1,q2` told-disjoint → ⊥; uses inverse-derived
+  domain/range so `isFatherOf`/`isMotherOf`-style inverse roles
+  contribute types). Note: P8 catches the *shallow* functional-collapse
+  pattern but does NOT close the family/family-stripped headline target —
+  that inconsistency is a deep multi-step graph entailment (tableau-scale,
+  not a pre-check pattern); see `docs/abox-consistency-check-handoff.md`. All
   16 synthetic unit tests pass; FP=0 preserved across every corpus
   closure-diff (alehif, ore-10908, ore-15672, shoiq-knowledge, sio,
   ro, sulo, galen, notgalen). Env gate `RUSTDL_ABOX_CHECK=0` reverts

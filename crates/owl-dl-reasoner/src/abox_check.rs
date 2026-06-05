@@ -84,6 +84,44 @@ pub(crate) enum ClashReason {
     },
     /// P6: `Irreflexive(R) ∧ R(a, a)` (or `R(a, b)` with `a ≡ b` after merge).
     IrreflexiveViolation { role: RoleId, a: IndividualId },
+    /// P8: `Functional(R)` and individual `a`'s type-closure implies both
+    /// `∃R.q1` and `∃R.q2` with `q1`, `q2` told-disjoint. The single
+    /// `R`-successor must be both → ⊥.
+    FunctionalCollapse {
+        individual: IndividualId,
+        role: RoleId,
+        q1: ClassId,
+        q2: ClassId,
+    },
+}
+
+/// Collect existential restrictions `∃R.Q` (atomic `Q`) that appear as
+/// `sup` itself or as a top-level `And` operand of `sup`. Used by P8 to
+/// read a class's functional-role existential implications straight from
+/// its defining axioms (`SubClassOf` / `EquivalentClasses`).
+fn existential_funcs_in(
+    sup: owl_dl_core::ir::ConceptId,
+    pool: &owl_dl_core::ir::ConceptPool,
+    out: &mut Vec<(RoleId, ClassId)>,
+) {
+    use owl_dl_core::ir::ConceptExpr;
+    match pool.get(sup) {
+        ConceptExpr::Some(r, q) => {
+            if let ConceptExpr::Atomic(qid) = pool.get(*q) {
+                out.push((r.role_id(), *qid));
+            }
+        }
+        ConceptExpr::And(ops) => {
+            for &op in ops {
+                if let ConceptExpr::Some(r, q) = pool.get(op)
+                    && let ConceptExpr::Atomic(qid) = pool.get(*q)
+                {
+                    out.push((r.role_id(), *qid));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Entry point. Runs all implemented clash patterns and returns the first
@@ -388,6 +426,33 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             _ => {}
         }
     }
+    // Inverse-derived domain/range: `range(R) = D ⟺ domain(inv(R)) = D`
+    // (and dually). Sound by definition of inverse. This is what lets a
+    // family-style `isFatherOf(a, x)` — inverse of `hasFather` whose
+    // *range* is `Man` — contribute `Man` to `types[a]`, even though
+    // `isFatherOf` has no domain of its own. Without it the functional
+    // collapse below (P8) can't see the two sexes on one individual.
+    let inv_of = |r: RoleId| -> Option<RoleId> {
+        prepared.inverse_pairs.iter().find_map(|&(a, b)| {
+            if a == r {
+                Some(b)
+            } else if b == r {
+                Some(a)
+            } else {
+                None
+            }
+        })
+    };
+    for (role, concept) in ranges.clone() {
+        if let Some(s) = inv_of(role) {
+            domains.push((s, concept)); // domain(inv(R)) = range(R)
+        }
+    }
+    for (role, concept) in domains.clone() {
+        if let Some(s) = inv_of(role) {
+            ranges.push((s, concept)); // range(inv(R)) = domain(R)
+        }
+    }
 
     let mut augmented = false;
     for &(from, role, to) in &prepared.abox.property_assertions {
@@ -443,6 +508,77 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
 
+    // P8: functional-role existential collapse. If an individual's
+    // (augmented) type set implies both `∃R.q1` and `∃R.q2` with `R`
+    // functional and `q1`, `q2` told-disjoint, its single `R`-successor
+    // must be both → ⊥. `functional_roles` is from P5; `types` is fully
+    // augmented above (incl. inverse-derived domain/range, which is what
+    // lets the family `isFatherOf`/`isMotherOf` individuals carry both
+    // `Man` and `Woman`). Sound + monotonic: only ever *adds* an
+    // inconsistency the tableau would also find.
+    if !functional_roles.is_empty() {
+        let mut existentials: std::collections::HashMap<ClassId, Vec<(RoleId, ClassId)>> =
+            std::collections::HashMap::new();
+        for ax in &prepared.axioms {
+            match ax {
+                owl_dl_core::ontology::Axiom::SubClassOf { sub, sup } => {
+                    if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(*sub) {
+                        existential_funcs_in(*sup, pool, existentials.entry(*c).or_default());
+                    }
+                }
+                owl_dl_core::ontology::Axiom::EquivalentClasses(members) => {
+                    for &m in members {
+                        if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(m) {
+                            for &o in members {
+                                if o != m {
+                                    existential_funcs_in(
+                                        o,
+                                        pool,
+                                        existentials.entry(*c).or_default(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (i, type_set) in types.iter().enumerate() {
+            let (individual, _) = prepared.abox.individuals[i];
+            let mut by_role: std::collections::HashMap<RoleId, Vec<ClassId>> =
+                std::collections::HashMap::new();
+            for &t in type_set {
+                if let Some(exs) = existentials.get(&t) {
+                    for &(r, q) in exs {
+                        if functional_roles.contains(&r) {
+                            by_role.entry(r).or_default().push(q);
+                        }
+                    }
+                }
+            }
+            for (role, quals) in &by_role {
+                for a in 0..quals.len() {
+                    for b in (a + 1)..quals.len() {
+                        if (quals[a].index() as usize) < told_n
+                            && (quals[b].index() as usize) < told_n
+                            && told.are_told_disjoint(quals[a], quals[b])
+                        {
+                            return AboxVerdict::Inconsistent {
+                                reason: ClashReason::FunctionalCollapse {
+                                    individual,
+                                    role: *role,
+                                    q1: quals[a],
+                                    q2: quals[b],
+                                },
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     AboxVerdict::Unknown
 }
 
@@ -467,5 +603,90 @@ mod tests {
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");
         assert!(matches!(check(&prepared), AboxVerdict::Unknown));
+    }
+
+    /// Parse an OFN string, lower it, and run the `ABox` pre-check.
+    fn verdict_of(src: &str) -> AboxVerdict {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use std::io::Cursor;
+        let mut r = Cursor::new(src.to_string());
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        let prepared = crate::PreparedOntology::from_internal(internal).expect("prepare");
+        check(&prepared)
+    }
+
+    /// P8 positive: `isFatherOf(a,_)` (inverse of `hasFather`, range
+    /// `Man`) and `isMotherOf(a,_)` (range `Woman`) force `a: Man ⊓
+    /// Woman`; with `Man ⊑ ∃hasSex.Male`, `Woman ⊑ ∃hasSex.Female`,
+    /// `Functional(hasSex)` and disjoint `Male`/`Female`, the single
+    /// `hasSex` witness must be both → inconsistent. Exercises the
+    /// inverse-derived domain/range augmentation *and* the functional
+    /// collapse, the path the family target needs.
+    const P8_BASE: &str = "Prefix(:=<http://t/>)\nOntology(<http://t/o>\n\
+ Declaration(Class(:Man)) Declaration(Class(:Woman)) Declaration(Class(:Person))\n\
+ Declaration(Class(:Male)) Declaration(Class(:Female))\n\
+ Declaration(ObjectProperty(:hasSex)) Declaration(ObjectProperty(:hasFather))\n\
+ Declaration(ObjectProperty(:isFatherOf)) Declaration(ObjectProperty(:hasMother))\n\
+ Declaration(ObjectProperty(:isMotherOf))\n\
+ Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:k1)) Declaration(NamedIndividual(:k2))\n\
+ EquivalentClasses(:Man ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Male)))\n\
+ EquivalentClasses(:Woman ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Female)))\n\
+ InverseObjectProperties(:hasFather :isFatherOf)\n\
+ InverseObjectProperties(:hasMother :isMotherOf)\n\
+ ObjectPropertyRange(:hasFather :Man)\n\
+ ObjectPropertyRange(:hasMother :Woman)\n\
+ ObjectPropertyAssertion(:isFatherOf :a :k1)\n\
+ ObjectPropertyAssertion(:isMotherOf :a :k2)\n";
+
+    #[test]
+    fn p8_functional_collapse_via_inverse_is_inconsistent() {
+        let src = format!(
+            "{P8_BASE} FunctionalObjectProperty(:hasSex)\n DisjointClasses(:Male :Female)\n)\n"
+        );
+        assert!(
+            matches!(
+                verdict_of(&src),
+                AboxVerdict::Inconsistent {
+                    reason: ClashReason::FunctionalCollapse { .. }
+                }
+            ),
+            "P8 must fire: {:?}",
+            verdict_of(&src)
+        );
+    }
+
+    #[test]
+    fn p8_not_functional_is_consistent() {
+        // No Functional(hasSex): the two sex witnesses needn't merge.
+        let src = format!("{P8_BASE} DisjointClasses(:Male :Female)\n)\n");
+        assert!(
+            !matches!(
+                verdict_of(&src),
+                AboxVerdict::Inconsistent {
+                    reason: ClashReason::FunctionalCollapse { .. }
+                }
+            ),
+            "P8 must NOT fire without a functional role"
+        );
+    }
+
+    #[test]
+    fn p8_non_disjoint_qualifiers_is_consistent() {
+        // Male/Female not disjoint: the merged witness can be both.
+        let src = format!("{P8_BASE} FunctionalObjectProperty(:hasSex)\n)\n");
+        assert!(
+            !matches!(
+                verdict_of(&src),
+                AboxVerdict::Inconsistent {
+                    reason: ClashReason::FunctionalCollapse { .. }
+                }
+            ),
+            "P8 must NOT fire when the qualifiers aren't disjoint"
+        );
     }
 }

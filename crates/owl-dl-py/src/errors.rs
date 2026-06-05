@@ -17,7 +17,12 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 
-create_exception!(rustdl, RustdlError, PyException, "Base exception for all rustdl errors.");
+create_exception!(
+    rustdl,
+    RustdlError,
+    PyException,
+    "Base exception for all rustdl errors."
+);
 create_exception!(rustdl, ParseError, RustdlError, "OWL parser failure.");
 create_exception!(
     rustdl,
@@ -41,10 +46,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "UnsupportedAxiomError",
         m.py().get_type::<UnsupportedAxiomError>(),
     )?;
-    m.add(
-        "UnknownClassError",
-        m.py().get_type::<UnknownClassError>(),
-    )?;
+    m.add("UnknownClassError", m.py().get_type::<UnknownClassError>())?;
     Ok(())
 }
 

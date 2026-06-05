@@ -60,9 +60,15 @@ fn anon349_diagnostic() {
     eprintln!("Anon-324 equivalents:   {eq324:?}");
     eprintln!("IPBP equivalents:       {eqipbp:?}");
 
-    assert!(s1, "classify must close Anon-349 ⊑ Anon-324 on full notgalen");
+    assert!(
+        s1,
+        "classify must close Anon-349 ⊑ Anon-324 on full notgalen"
+    );
     assert!(s2, "classify must close Anon-349 ⊑ IPBP on full notgalen");
-    assert!(s3 && s4, "classify must realize Anon-324 ≡ IPBP on full notgalen");
+    assert!(
+        s3 && s4,
+        "classify must realize Anon-324 ≡ IPBP on full notgalen"
+    );
     assert!(
         direct.iter().any(|s| *s == ANON324) || direct.iter().any(|s| *s == IPBP),
         "Anon-349 must have Anon-324 or IPBP in direct supers: {direct:?}"

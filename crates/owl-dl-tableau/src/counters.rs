@@ -131,10 +131,7 @@ impl RuleCounters {
                 "needs_deferred_or_bloom_rejects",
                 self.needs_deferred_or_bloom_rejects.get(),
             ),
-            (
-                "inverse_pair_fast_hits",
-                self.inverse_pair_fast_hits.get(),
-            ),
+            ("inverse_pair_fast_hits", self.inverse_pair_fast_hits.get()),
             (
                 "apply_deferred_concept_or_skip_missing_trigger",
                 self.apply_deferred_concept_or_skip_missing_trigger.get(),

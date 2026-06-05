@@ -13,16 +13,12 @@ use crate::load;
 /// - Pairs involving `owl:Thing` or `owl:Nothing`
 /// - Pairs from unsatisfiable classes (which trivially subsume all)
 #[pyfunction]
-pub(crate) fn materialize_inferred_subclass_axioms(
-    path: &str,
-) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn materialize_inferred_subclass_axioms(path: &str) -> PyResult<Vec<(String, String)>> {
     let ontology = load::load_path(path)?;
     let classification = owl_dl_reasoner::classify(&ontology).map_err(reason_error_to_py)?;
     let classes = classification.classes();
-    let unsat: std::collections::HashSet<&str> = classification
-        .unsatisfiable_classes()
-        .into_iter()
-        .collect();
+    let unsat: std::collections::HashSet<&str> =
+        classification.unsatisfiable_classes().into_iter().collect();
     let mut out = Vec::new();
     for sub in classes {
         if unsat.contains(sub.as_str()) {
@@ -53,9 +49,7 @@ pub(crate) fn materialize_inferred_subclass_axioms(
 /// Returns every (class IRI, individual IRI) pair `(c, i)` such that
 /// `ClassAssertion(c, i)` is entailed.
 #[pyfunction]
-pub(crate) fn materialize_inferred_class_assertions(
-    path: &str,
-) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<(String, String)>> {
     let ontology = load::load_path(path)?;
     let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
     let mut out = Vec::new();

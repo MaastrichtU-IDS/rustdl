@@ -4,6 +4,25 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-06-05
+
+### Changed
+
+- **PyO3 0.22 → 0.25.** Clears 35 build warnings: 28 from PyO3 0.22's
+  macro-generated code tripping the `unsafe_op_in_unsafe_fn` lint
+  (default-warn under Rust edition 2024) and 5 `gil-refs` cfg
+  warnings — both fixed by PyO3's edition-2024-clean codegen. The only
+  source change required was `get_type_bound::<T>()` →
+  `get_type::<T>()`. `cargo build -p owl-dl-py` is now warning-free.
+- Silenced 7 `dead_code` warnings on `ClashReason` (fields read only
+  via the derived `Debug` impl for `RUSTDL_TRACE` output).
+
+### CI
+
+- **Linux aarch64 wheels now build on a native ARM runner**
+  (`ubuntu-24.04-arm`) instead of QEMU emulation on an x86 host. Build
+  time drops from ~50 min to ~4 min. QEMU setup step removed.
+
 ## [0.2.1] — 2026-06-05
 
 ### Changed
@@ -111,6 +130,7 @@ FP=0 vs Konclude verified on every release. The closure-diff tests in
 are the soundness tripwire — any change that introduces a false-positive
 subsumption fails CI.
 
+[0.2.2]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.2
 [0.2.1]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.1.0

@@ -19,11 +19,13 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
-          # Linux aarch64 via QEMU emulation. Re-enabled in 0.2.1 after
-          # 0.2.0 dropped it to avoid 50-min waits while iterating on
-          # other CI failures. Workflow is now stable on the other
-          # platforms; one-time 50-min cost per release is acceptable.
-          - os: ubuntu-latest
+          # Linux aarch64 (ARM64): Docker-on-Apple-Silicon, AWS Graviton
+          # / Azure / GCP / Oracle ARM VMs, Raspberry Pi 4/5. Built on a
+          # NATIVE GitHub-hosted ARM runner (ubuntu-24.04-arm, GA 2025) —
+          # ~4 min, same as x86. The earlier QEMU-emulation approach
+          # (build aarch64 on an x86 host) took ~50 min per release;
+          # native runners eliminate that. No setup-qemu step needed.
+          - os: ubuntu-24.04-arm
             arch: aarch64
           # macOS Intel (macos-13 / x86_64) intentionally dropped:
           # GitHub-hosted Intel Mac runners are heavily oversubscribed
@@ -37,9 +39,6 @@ jobs:
             arch: AMD64
     steps:
       - uses: actions/checkout@v4
-      - name: Set up QEMU (for aarch64 cross-build on x86_64 host)
-        if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
       - uses: pypa/cibuildwheel@v2.21
         env:
           CIBW_BUILD: 'cp310-*'   # abi3 wheel — one build, all 3.10+ Pythons

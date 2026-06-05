@@ -971,6 +971,24 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// place, and the search back-jumps past them. (Pizza
     /// `:NamedPizza` false-positive 2026-05-25.)
     #[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
+    /// Whether `anc` lies on `start`'s parent-ancestor chain (so making
+    /// some node's parent point at `start` while that node is `anc`
+    /// would close a cycle). Cycle-safe: bounded by the node count, so it
+    /// terminates even if the forest is (transiently) malformed.
+    fn parent_chain_contains(&self, start: NodeId, anc: NodeId) -> bool {
+        let mut cur = start;
+        for _ in 0..=self.graph.len() {
+            if cur == anc {
+                return true;
+            }
+            match self.graph.node(cur).parent() {
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
+        false
+    }
+
     pub fn merge_into_with_deps(
         &mut self,
         source: NodeId,
@@ -1112,12 +1130,28 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             if self.graph.node(nid).parent() == Some(source) {
                 let prior_parent = Some(source);
                 let prior_parent_role = self.graph.node(nid).parent_role();
-                self.graph.node_mut(nid).parent = Some(target);
+                // Re-parenting `nid → target` closes a parent-pointer
+                // cycle iff `nid` already lies on `target`'s ancestor
+                // chain (e.g. `target.parent = nid`). That produced the
+                // `parent-pointer cycle` panic (TODO(blocking-cycle)).
+                // Break the back-edge instead: make `nid` a root
+                // (`parent = None`). Sound — a root is never blocked, so
+                // this only ever *reduces* blocking (more expansion,
+                // never a false block); it matches the release step-cap
+                // fallback's "treat as not-blocked", but keeps the
+                // parent forest acyclic so the walk (and the
+                // debug_assert) stay valid.
+                let new_parent = if self.parent_chain_contains(target, nid) {
+                    None
+                } else {
+                    Some(target)
+                };
+                self.graph.node_mut(nid).parent = new_parent;
                 // Mirror the parent update into the cache-dense
                 // blocking summary; `is_blocked` walks ancestors via
                 // this array, and a stale entry would cause it to
                 // miss or false-find a blocker — both unsound.
-                self.graph.blocking_mut(nid).parent = Some(target);
+                self.graph.blocking_mut(nid).parent = new_parent;
                 self.trail.record(TrailEntry::ParentRewritten {
                     node: nid,
                     prior_parent,
@@ -2194,6 +2228,44 @@ mod tests {
         let s2 = ctx.new_successor(s1, r);
         ctx.add_label(s2, a);
         assert!(ctx.is_blocked(s2));
+    }
+
+    #[test]
+    fn merge_into_does_not_create_parent_pointer_cycle() {
+        // root —r→ s1 —r→ s2 —r→ s3. Merge s1 into s3: step 5 re-parents
+        // s1's child s2 to s3 — but s3's ancestor chain already reaches
+        // s2 (s3.parent = s2), so pointing s2.parent = s3 would close a
+        // cycle s2 ⇄ s3. Pre-fix this happened and `is_blocked` looped
+        // and tripped the `parent-pointer cycle` debug_assert (the SIO
+        // closure-diff panic). The fix breaks the back-edge instead, so
+        // the ancestor walk must terminate without panicking.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(&pool);
+        let root = ctx.new_node();
+        ctx.add_label(root, a);
+        let s1 = ctx.new_successor(root, r);
+        ctx.add_label(s1, a);
+        let s2 = ctx.new_successor(s1, r);
+        ctx.add_label(s2, a);
+        let s3 = ctx.new_successor(s2, r);
+        ctx.add_label(s3, a);
+        ctx.merge_into(s1, s3);
+        // The fix breaks the back-edge: re-parenting s2 → s3 would cycle
+        // (s3.parent = s2 already), so s2 becomes a root instead. Pre-fix
+        // s2.parent was set to s3, producing the s2 ⇄ s3 cycle that made
+        // `is_blocked` loop into the `parent-pointer cycle` debug_assert
+        // (the SIO closure-diff panic). This assert fails without the fix.
+        assert_eq!(
+            ctx.graph.node(s2).parent(),
+            None,
+            "cycle-forming re-parent must break the back-edge (s2 → root)"
+        );
+        // And the ancestor walk terminates (no panic) for every node.
+        let _ = ctx.is_blocked(s3);
+        let _ = ctx.is_blocked(s2);
+        let _ = ctx.is_blocked(root);
     }
 
     #[test]

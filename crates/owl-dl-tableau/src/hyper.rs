@@ -305,6 +305,15 @@ pub struct SearchStats {
     /// `is_blocked` invocations. HF2 double-blocking profiling: if this
     /// dwarfs `match_attempts`, the blocking check is the bottleneck.
     pub is_blocked_calls: u64,
+    /// Times `is_blocked` actually returned `true` (a node was blocked).
+    /// `blocks_fired == 0` with large `is_blocked_calls` means blocking
+    /// never caps the completion — the model grows unbounded until a
+    /// deadline/stall (the pizza/SIO convergence problem).
+    pub blocks_fired: u64,
+    /// Times `is_blocked` was called on a non-root node (had a parent,
+    /// so was *eligible* to be blocked). The meaningful denominator for
+    /// `blocks_fired` (root calls can never block).
+    pub block_eligible: u64,
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
@@ -679,6 +688,7 @@ impl<'c> HyperEngine<'c> {
                 let nr = ln.parent_role.expect("non-root has parent_role");
                 (np, nr)
             };
+            self.stats.block_eligible += 1;
             // Snapshot the candidate list (clone to release the
             // immutable borrow on `block_index` before we mutate stats).
             let candidates: Vec<HNode> = self
@@ -710,6 +720,7 @@ impl<'c> HyperEngine<'c> {
                     &self.nodes[np.index()].labels,
                     &self.nodes[mp.index()].labels,
                 ) {
+                    self.stats.blocks_fired += 1;
                     return true;
                 }
             }
@@ -728,6 +739,7 @@ impl<'c> HyperEngine<'c> {
                 let ln_labels = &self.nodes[n.index()].labels;
                 let m_labels = &self.nodes[i].labels;
                 if subset_sorted(ln_labels, m_labels) {
+                    self.stats.blocks_fired += 1;
                     return true;
                 }
             }

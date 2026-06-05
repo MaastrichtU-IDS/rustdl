@@ -776,12 +776,20 @@ fn main() -> Result<()> {
                 let mut tot_blocked = 0_u64;
                 let mut tot_compares = 0_u64;
                 let mut tot_matches = 0_u64;
+                let mut tot_fired = 0_u64;
+                let mut tot_eligible = 0_u64;
                 for r in &probe.results {
                     tot_blocked += r.stats.is_blocked_calls;
                     tot_compares += r.stats.block_compares;
                     tot_matches += r.stats.match_attempts;
+                    tot_fired += r.stats.blocks_fired;
+                    tot_eligible += r.stats.block_eligible;
                 }
                 println!("# is_blocked_calls (sum retained):  {tot_blocked}");
+                println!("# block_eligible  (sum retained):  {tot_eligible}");
+                println!(
+                    "# blocks_fired    (sum retained):  {tot_fired}  <-- blocking that actually caps the model"
+                );
                 println!("# block_compares  (sum retained):  {tot_compares}");
                 println!("# match_attempts  (sum retained):  {tot_matches}");
             }

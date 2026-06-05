@@ -4,6 +4,37 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-05
+
+### Changed
+
+- **Classification now bounds each subsumption test by default**
+  (`pair_timeout_ms` / `per_pair_timeout_ms` defaults to **1000 ms**;
+  previously unbounded). Pathological SROIQ ontologies (e.g. pizza) no
+  longer hang by default. A timed-out pair is recorded as "not
+  subsumed" — **sound** (never a false subsumption), but the result may
+  be **incomplete**. Pass `0` for the complete, unbounded classification.
+  1000 ms is the empirical knee on pizza: higher budgets buy no extra
+  completeness (the remaining pairs are intractable at any reasonable
+  bound) but cost proportionally more wall time.
+- **Incompleteness is now surfaced loudly**, so a bounded run can't
+  silently hand back a hierarchy missing real edges:
+  - CLI `rustdl classify` prints a prominent `⚠ INCOMPLETE: N pair(s)
+    exceeded the timeout …` warning to stderr when any pair times out.
+  - Python `rustdl.classify` / `classify_bytes` emit an
+    `IncompleteClassificationWarning` (filterable via the `warnings`
+    module), and the `Classification` object exposes `.complete` (bool)
+    and `.timed_out_pairs` (int).
+
+### Added
+
+- **CLI multi-format input.** `rustdl <cmd> file.{owx,owl,rdf}` now
+  works — the reader is chosen by file extension (.owx → OWL/XML,
+  .owl/.rdf → RDF/XML, .ofn/other → OWL Functional). Previously the CLI
+  read OFN only; the Python bindings already auto-detected. Verified on
+  the owlcs pizza ontology (RDF/XML) — 99 classes, 2 unsatisfiable
+  (CheeseyVegetableTopping, IceCream), matching the canonical result.
+
 ## [0.2.2] — 2026-06-05
 
 ### Changed
@@ -130,6 +161,7 @@ FP=0 vs Konclude verified on every release. The closure-diff tests in
 are the soundness tripwire — any change that introduces a false-positive
 subsumption fails CI.
 
+[0.3.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.3.0
 [0.2.2]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.2
 [0.2.1]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.0

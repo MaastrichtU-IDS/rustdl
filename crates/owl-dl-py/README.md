@@ -42,15 +42,20 @@ result.direct_subsumers("http://ex.org/Margherita") # -> list[str] (Hasse-direct
 ### Classification
 
 ```python
-result = rustdl.classify(path, *, per_pair_timeout_ms=None, saturation_only=False)
-result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=None, saturation_only=False)
+result = rustdl.classify(path, *, per_pair_timeout_ms=1000, saturation_only=False)
+result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, saturation_only=False)
 ```
 
-- `per_pair_timeout_ms` — bound each subsumption test; pairs that exceed it
-  default to "not subsumed" (a sound under-approximation — robust against
-  pathological SROIQ inputs).
+- `per_pair_timeout_ms` — bound each subsumption test (**default 1000**;
+  `0` = unbounded). A pair that exceeds the budget is recorded as "not
+  subsumed": **sound** (never a false subsumption) but the result may be
+  **incomplete**. When that happens, an `IncompleteClassificationWarning`
+  is emitted and `result.complete` is `False`. Pass `0` for the complete,
+  unbounded classification. The default bounds pathological SROIQ inputs
+  so classification can't hang silently.
 - `saturation_only` — skip the tableau entirely; EL-closure-only
-  under-approximation. Dramatically faster on mostly-EL ontologies.
+  under-approximation. Dramatically faster on mostly-EL ontologies, and
+  always `complete` (no tableau ⇒ no timeout).
 
 `classify` / `classify_bytes` return a `Classification`:
 
@@ -59,6 +64,8 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=None, 
 | `.classes` | `list[str]` | all declared class IRIs |
 | `.unsatisfiable` | `list[str]` | classes proved `⊑ ⊥` |
 | `.inconsistent` | `bool` | whole ontology unsatisfiable |
+| `.complete` | `bool` | `False` if any pair hit the timeout (result may miss edges) |
+| `.timed_out_pairs` | `int` | how many pairs hit the timeout |
 | `.is_subclass(sub, sup)` | `bool` | is `sub ⊑ sup` entailed? |
 | `.subclasses_of(cls)` | `list[str]` | every `D` with `D ⊑ cls` |
 | `.superclasses_of(cls)` | `list[str]` | every `D` with `cls ⊑ D` |

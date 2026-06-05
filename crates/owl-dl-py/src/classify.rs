@@ -38,6 +38,25 @@ impl PyClassification {
         self.inner.stats().inconsistent
     }
 
+    /// Number of class pairs that exceeded the per-pair timeout and
+    /// were recorded as "not subsumed". `> 0` means the classification
+    /// is a sound under-approximation — no false subsumptions, but real
+    /// ones may be missing. `0` when classification ran to completion
+    /// (or no timeout was set).
+    #[getter]
+    fn timed_out_pairs(&self) -> usize {
+        self.inner.stats().timed_out_pairs
+    }
+
+    /// True iff classification ran to completion — no pair hit the
+    /// timeout. When `False`, the hierarchy may be missing real
+    /// subsumptions (see `timed_out_pairs`); re-classify with
+    /// `per_pair_timeout_ms=0` for the complete (unbounded) result.
+    #[getter]
+    fn complete(&self) -> bool {
+        self.inner.stats().timed_out_pairs == 0
+    }
+
     /// True iff `sub ⊑ sup` is entailed.
     fn is_subclass(&self, sub: &str, sup: &str) -> bool {
         self.inner.is_subclass(sub, sup)
@@ -74,7 +93,7 @@ impl PyClassification {
 /// `rustdl.classify(path)` — classify the ontology at `path`.
 /// Format auto-detected from the file extension.
 #[pyfunction]
-#[pyo3(signature = (path, *, per_pair_timeout_ms=None, saturation_only=false))]
+#[pyo3(signature = (path, *, per_pair_timeout_ms=1000, saturation_only=false))]
 pub(crate) fn classify(
     path: &str,
     per_pair_timeout_ms: Option<u64>,
@@ -86,7 +105,7 @@ pub(crate) fn classify(
 
 /// `rustdl.classify_bytes(data, format="ofn")` — same but from bytes.
 #[pyfunction]
-#[pyo3(signature = (data, *, format, per_pair_timeout_ms=None, saturation_only=false))]
+#[pyo3(signature = (data, *, format, per_pair_timeout_ms=1000, saturation_only=false))]
 pub(crate) fn classify_bytes(
     data: &[u8],
     format: &str,
@@ -103,9 +122,12 @@ fn do_classify(
     saturation_only: bool,
 ) -> PyResult<PyClassification> {
     use std::time::Duration;
+    // `None` or `0` → unbounded (complete); any positive value bounds
+    // each pair (sound under-approximation; check `.complete` after).
+    let bounded = per_pair_timeout_ms.filter(|&ms| ms > 0);
     let inner = if saturation_only {
         owl_dl_reasoner::classify_saturation_only(ontology).map_err(reason_error_to_py)?
-    } else if let Some(ms) = per_pair_timeout_ms {
+    } else if let Some(ms) = bounded {
         owl_dl_reasoner::classify_top_down_with_timeout(ontology, Duration::from_millis(ms))
             .map_err(reason_error_to_py)?
     } else {

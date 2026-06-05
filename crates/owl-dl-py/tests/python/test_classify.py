@@ -46,3 +46,33 @@ def test_superclasses_of(fixtures_dir):
     result = rustdl.classify(str(fixture))
     sups = result.superclasses_of("http://t/Adult")
     assert "http://t/Person" in sups
+
+
+def test_completeness_signal_and_warning(fixtures_dir):
+    import warnings
+    fixture = fixtures_dir / "datatype" / "datatype_definition.ofn"
+
+    # Default budget on a tiny EL-ish ontology: completes, no warning.
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
+        r = rustdl.classify(str(fixture))
+    assert r.complete is True
+    assert r.timed_out_pairs == 0
+    assert not any(
+        issubclass(w.category, rustdl.IncompleteClassificationWarning) for w in rec
+    )
+
+
+def test_saturation_only_is_complete(fixtures_dir):
+    fixture = fixtures_dir / "datatype" / "datatype_definition.ofn"
+    r = rustdl.classify(str(fixture), saturation_only=True)
+    # saturation-only never invokes the tableau, so no pair can time out
+    assert r.complete is True
+    assert r.timed_out_pairs == 0
+
+
+def test_unbounded_timeout_accepted(fixtures_dir):
+    fixture = fixtures_dir / "datatype" / "datatype_definition.ofn"
+    # per_pair_timeout_ms=0 means unbounded — must classify, complete.
+    r = rustdl.classify(str(fixture), per_pair_timeout_ms=0)
+    assert r.complete is True

@@ -71,15 +71,21 @@ enum Command {
     },
     /// Compute the full class hierarchy of the ontology.
     Classify {
-        /// Path to an OWL functional-syntax (.ofn) ontology.
+        /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf —
+        /// format auto-detected from the extension).
         file: PathBuf,
-        /// Optional per-pair tableau timeout in milliseconds. Pairs
-        /// exceeding the budget default to `not subsumed` (sound
-        /// under-approximation) and are counted in the output stats.
-        /// Useful for diagnosing pathological tableau queries on
-        /// SROIQ-heavy ontologies.
-        #[arg(long)]
-        pair_timeout_ms: Option<u64>,
+        /// Per-pair tableau timeout in milliseconds; `0` = unbounded.
+        /// Pairs exceeding the budget default to `not subsumed` (a
+        /// sound under-approximation — never a false subsumption, but
+        /// real subsumptions may be missed). When any pair times out,
+        /// the run prints a prominent INCOMPLETE warning to stderr.
+        /// Default 1000 ms bounds pathological SROIQ queries; pass
+        /// `--pair-timeout-ms 0` for the complete (unbounded) result.
+        /// (1000 ms is the empirical knee on pizza: higher budgets buy
+        /// no extra completeness — the remaining pairs are intractable
+        /// at any reasonable bound — but cost proportionally more wall.)
+        #[arg(long, default_value_t = 1000)]
+        pair_timeout_ms: u64,
         /// Deprecated no-op: top-down classification is now the
         /// default. Flag is retained so existing scripts keep
         /// working. To get the legacy `n²` pair-loop behaviour
@@ -269,6 +275,24 @@ fn print_classification(h: &Classification) {
     let _ = out.flush();
 }
 
+/// Print a prominent stderr warning if any class pair hit the per-pair
+/// timeout — those pairs were recorded as "not subsumed", so the
+/// hierarchy may be missing real subsumptions. Sound (no false edges),
+/// but the user must know the result is an under-approximation.
+fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64) {
+    if timed_out_pairs == 0 {
+        return;
+    }
+    eprintln!(
+        "\n⚠  INCOMPLETE: {timed_out_pairs} class pair(s) exceeded the {pair_timeout_ms} ms \
+         per-pair timeout and were recorded as 'not subsumed'."
+    );
+    eprintln!(
+        "   The classification is SOUND (no false subsumptions) but may be missing real ones. \
+         Re-run with `--pair-timeout-ms 0` for the complete (unbounded) result."
+    );
+}
+
 fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::Result<()> {
     let classes = h.classes();
     let stats = h.stats();
@@ -453,7 +477,9 @@ fn main() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
-            let timeout = pair_timeout_ms.map(std::time::Duration::from_millis);
+            // 0 = unbounded; any positive value bounds each pair.
+            let timeout =
+                (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let h = if saturation_only {
                 classify_saturation_only(&onto).context("classify_saturation_only")?
             } else {
@@ -469,6 +495,7 @@ fn main() -> Result<()> {
                 }
             };
             print_classification(&h);
+            warn_if_incomplete(h.stats().timed_out_pairs, pair_timeout_ms);
         }
         Command::Instance {
             file,

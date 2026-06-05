@@ -36,4 +36,4 @@ python-source = "python"
 module-name = "rustdl._native"
 features = ["pyo3/extension-module"]
 strip = true
-include = ["python/rustdl/data/*.owl"]
+include = ["python/rustdl/data/*.owl.gz"]

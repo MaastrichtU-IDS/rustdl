@@ -23,9 +23,10 @@ Wheels are published for CPython 3.10+ on Linux (x86_64, aarch64), macOS
 ```python
 import rustdl
 
-# A small OWL 2 DL ontology ships inside the wheel — no download needed.
-# `examples.pizza()` is the file path; `examples.PIZZA_NS` is its namespace,
-# so class IRIs are PIZZA_NS + local name (e.g. PIZZA_NS + "Margherita").
+# A small OWL 2 DL ontology ships inside the wheel (gzip-compressed) — no
+# download needed. `examples.pizza()` returns its file path (decompressed
+# into a per-user cache dir on first use); `examples.PIZZA_NS` is its
+# namespace, so class IRIs are PIZZA_NS + local name (e.g. + "Margherita").
 from rustdl.examples import pizza, PIZZA_NS
 
 # Classify. Format is auto-detected from the extension:
@@ -53,6 +54,29 @@ result.direct_subsumers(PIZZA_NS + "Margherita")  # -> list[str] (Hasse-direct p
 > reported subsumption holds; only a handful of pairs are recorded as "not
 > subsumed" without a full proof. See [Classification](#classification) for the
 > `per_pair_timeout_ms` knob.
+
+### Bundled examples
+
+Three real ontologies ship inside the wheel, gzip-compressed (~200 KB total).
+They classify with **no network access** — each `examples.X()` decompresses
+its ontology into a per-user cache dir (`$XDG_CACHE_HOME/rustdl/examples` or
+`~/.cache/rustdl/examples`) on first use, then reuses it. Each `examples.X_NS`
+is the namespace, so a class IRI is the namespace plus the local name.
+
+| helper | ontology | classes | notes |
+|---|---|---|---|
+| `pizza()` / `PIZZA_NS` | Pizza | 99 | classic SROIQ teaching ontology; a few hard pairs (see note above) |
+| `sulo()` / `SULO_NS` | SULO (Simple Upper-Level Ontology) | 17 | tiny; classifies in milliseconds |
+| `sio()` / `SIO_NS` | SIO (Semanticscience Integrated Ontology) | ~1600 | realistic larger workload; takes tens of seconds. Class IRIs are numeric codes, e.g. `SIO_NS + "SIO_000006"` ("process") |
+
+```python
+import rustdl
+from rustdl import examples
+
+r = rustdl.classify(examples.sulo())
+print(r.is_subclass(examples.SULO_NS + "StartTime", examples.SULO_NS + "Object"))
+# -> True
+```
 
 ## API
 

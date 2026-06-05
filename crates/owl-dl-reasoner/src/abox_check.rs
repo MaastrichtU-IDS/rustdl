@@ -34,7 +34,14 @@ pub(crate) enum AboxVerdict {
 /// The specific clash the check detected. Surfaced in `RUSTDL_TRACE`
 /// output and intended for a future `consistent --explain` extension
 /// (not part of this project's scope).
+///
+/// The per-variant fields are read only through the derived `Debug`
+/// impl (the `RUSTDL_TRACE=1` `abox_check: inconsistent — {reason:?}`
+/// line). Rust's dead-code analysis doesn't count `Debug`-only reads,
+/// so the fields would warn without this allow. They're load-bearing
+/// for the trace output and the planned `--explain` surface — keep them.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "fields read via Debug in RUSTDL_TRACE output + future --explain")]
 pub(crate) enum ClashReason {
     /// P1: `ClassAssertion(C, a)` with `Subsumers::is_unsatisfiable(C)`.
     AssertedBot { individual: IndividualId, class: ClassId },

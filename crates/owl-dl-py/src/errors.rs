@@ -35,15 +35,15 @@ create_exception!(
 /// Register all rustdl exception types on the module so Python
 /// callers can `except rustdl.RustdlError:` etc.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("RustdlError", m.py().get_type_bound::<RustdlError>())?;
-    m.add("ParseError", m.py().get_type_bound::<ParseError>())?;
+    m.add("RustdlError", m.py().get_type::<RustdlError>())?;
+    m.add("ParseError", m.py().get_type::<ParseError>())?;
     m.add(
         "UnsupportedAxiomError",
-        m.py().get_type_bound::<UnsupportedAxiomError>(),
+        m.py().get_type::<UnsupportedAxiomError>(),
     )?;
     m.add(
         "UnknownClassError",
-        m.py().get_type_bound::<UnknownClassError>(),
+        m.py().get_type::<UnknownClassError>(),
     )?;
     Ok(())
 }

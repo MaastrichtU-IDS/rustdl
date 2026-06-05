@@ -17,7 +17,7 @@ name = "rustdl"           # Python import name: `import rustdl`
 crate-type = ["cdylib"]   # Python C extension
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["abi3-py310", "extension-module"] }
+pyo3 = { version = "0.25", features = ["abi3-py310", "extension-module"] }
 owl-dl-reasoner.workspace = true
 owl-dl-core.workspace = true
 horned-owl.workspace = true

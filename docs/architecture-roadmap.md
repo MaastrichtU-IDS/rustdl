@@ -31,6 +31,25 @@ Earlier docs:
 
 ## ⚠ 2026-05-27 finding: per-class `sat(A)` does NOT converge on pizza/SIO
 
+> **Update 2026-06-05 — the build-a-model premise below is STALE for the
+> wedge.** This finding was measured on the *classic* tableau (`owl-dl-bench
+> sat`, `run_satisfiability`). The hypertableau **wedge** — the engine whose
+> models would actually be cached — builds per-class models cheaply:
+> `rustdl hyper-sat sio.ofn` decides **all 1585 SIO classes Sat in 668.7 ms**
+> (max 11.84 ms/class, 0 stalled, deferred=0 → real models); pizza in 32.6 ms.
+> So "there is no completed model to cache" and "blocking never fires" are both
+> false for the wedge (same shape as the blocking-lever correction, PR #13).
+>
+> **This does NOT revive Lever C.** The build-a-model cost was never the
+> load-bearing objection — [`model-caching-plan.md`](model-caching-plan.md) §2
+> /[`hypertableau-dead-ends.md`](hypertableau-dead-ends.md) §2 kill it on the
+> *reuse* soundness trap (back-prop via `∀R⁻`/nominal/cardinality), which
+> convergence does not touch. The sound form is already shipped as the
+> Phase 1b/1c snapshot cache (`BackPropRisk::Safe`-gated). And it recovers no
+> MISSES: those are `trust_sat` short-circuits, and caching the wedge model
+> just reproduces the incomplete answer faster. Full analysis:
+> [`sub-tableau-caching-scoping-2026-06-05.md`](sub-tableau-caching-scoping-2026-06-05.md).
+
 A model-caching idea looked promising: the classify per-class
 unsat probe runs `sat(A)` for every class; if that converges, we
 could cache A's satisfying model and answer each pair `sat(A ⊓

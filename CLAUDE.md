@@ -62,6 +62,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   so the tableau doesn't apply every axiom universally), `told.rs` (told-subsumer
   + told-disjoint tables, transitively closed at build), `locality.rs` +
   `model_cache.rs` analyses. `convert_back.rs` reverses IR → horned-owl.
+  `disjunction_existential.rs` (run in `convert_ontology`) derives
+  `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the atomic disjuncts share
+  a minimal common told-subsumer C — a sound under-approximation that
+  feeds the EL saturator a case-split it otherwise drops. **Closed SIO's
+  last 2 MISSES → full corpus parity (FP=0, MISSED=0 across all 9
+  fixtures).** See `docs/sio-disjunction-results.md`.
 
 - **`crates/owl-dl-saturation`** — single-file consequence-based EL engine
   following ELK (Kazakov et al., JAR 2014). One fixed-point loop computing the

@@ -23,19 +23,36 @@ Wheels are published for CPython 3.10+ on Linux (x86_64, aarch64), macOS
 ```python
 import rustdl
 
-# Classify an ontology. Format auto-detected from the extension:
+# A small OWL 2 DL ontology ships inside the wheel — no download needed.
+# `examples.pizza()` is the file path; `examples.PIZZA_NS` is its namespace,
+# so class IRIs are PIZZA_NS + local name (e.g. PIZZA_NS + "Margherita").
+from rustdl.examples import pizza, PIZZA_NS
+
+# Classify. Format is auto-detected from the extension:
 # .ofn (OWL Functional), .owx (OWL/XML), .rdf / .owl (RDF/XML).
-result = rustdl.classify("pizza.ofn")
+result = rustdl.classify(pizza())
 
 print(f"{len(result.classes)} classes, {len(result.unsatisfiable)} unsatisfiable")
+# -> 99 classes, 2 unsatisfiable
 
 # Query the computed hierarchy
-result.is_subclass("http://ex.org/Margherita", "http://ex.org/Pizza")  # -> bool
-result.subclasses_of("http://ex.org/Pizza")     # -> list[str]
-result.superclasses_of("http://ex.org/Margherita")  # -> list[str]
-result.equivalent_classes("http://ex.org/Pizza")    # -> list[str]
-result.direct_subsumers("http://ex.org/Margherita") # -> list[str] (Hasse-direct parents)
+print(result.is_subclass(PIZZA_NS + "Margherita", PIZZA_NS + "Pizza"))
+# -> True
+print(len(result.subclasses_of(PIZZA_NS + "Pizza")))
+# -> 38
+
+# Other hierarchy queries (all take full class IRIs):
+result.superclasses_of(PIZZA_NS + "Margherita")   # -> list[str]
+result.equivalent_classes(PIZZA_NS + "Pizza")     # -> list[str]
+result.direct_subsumers(PIZZA_NS + "Margherita")  # -> list[str] (Hasse-direct parents)
 ```
+
+> The pizza ontology has a few SROIQ-hard satisfiability pairs that exceed the
+> 1 s per-pair budget, so this run prints an `IncompleteClassificationWarning`
+> and leaves `result.complete is False`. The result is still **sound** — every
+> reported subsumption holds; only a handful of pairs are recorded as "not
+> subsumed" without a full proof. See [Classification](#classification) for the
+> `per_pair_timeout_ms` knob.
 
 ## API
 

@@ -28,6 +28,8 @@ from rustdl._native import (
     materialize_inferred_class_assertions as materialize_inferred_class_assertions,
 )
 
+from . import examples as examples
+
 
 def _subclasses_of(self: "Classification", cls: str) -> list[str]:
     """All classes D in the ontology with D ⊑ cls (reflexive + proper).
@@ -110,6 +112,7 @@ def classify_bytes(data, *, format, per_pair_timeout_ms=1000, saturation_only=Fa
 
 __all__ = [
     "__version__",
+    "examples",
     "Classification",
     "IncompleteClassificationWarning",
     "classify",

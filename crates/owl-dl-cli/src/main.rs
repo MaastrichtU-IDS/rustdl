@@ -10,14 +10,15 @@
 //! from disk via horned-owl. Verdicts go to stdout; tracing/logging
 //! goes to stderr.
 
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use horned_owl::io::ParserConfiguration;
-use horned_owl::io::ofn::reader::read;
+use horned_owl::io::ofn::reader::read as read_ofn;
+use horned_owl::io::owx::reader::read as read_owx;
+use horned_owl::io::rdf::reader::read as read_rdf;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
@@ -234,12 +235,30 @@ enum Command {
     },
 }
 
+/// Parse an ontology, picking the reader from the file extension:
+/// `.ofn` → OWL Functional, `.owx` → OWL/XML, `.owl`/`.rdf` → RDF/XML.
+/// Unknown extensions default to OFN (backward-compatible).
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
-    let file =
-        File::open(path).with_context(|| format!("opening ontology file: {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let (ontology, _prefixes) = read(&mut reader, ParserConfiguration::default())
-        .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display()))?;
+    let src = std::fs::read_to_string(path)
+        .with_context(|| format!("opening ontology file: {}", path.display()))?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase);
+    let mut reader = std::io::Cursor::new(src);
+    let cfg = ParserConfiguration::default();
+    let ontology: SetOntology<RcStr> = match ext.as_deref() {
+        Some("owx") => read_owx(&mut reader, cfg)
+            .map(|(o, _)| o)
+            .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display()))?,
+        Some("owl" | "rdf") => read_rdf(&mut reader, cfg)
+            .map(|(o, _)| o.into())
+            .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display()))?,
+        // .ofn and everything else: OWL Functional syntax (the historical default).
+        _ => read_ofn(&mut reader, cfg)
+            .map(|(o, _)| o)
+            .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display()))?,
+    };
     Ok(ontology)
 }
 

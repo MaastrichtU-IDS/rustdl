@@ -2337,7 +2337,20 @@ mod phase3b_canaries {
         let some_r1_b = pool.some(Role::named(r1), b);
         let a_expr = pool.and([max_inv_s1, some_r1_b]);
 
-        InverseHeavySynth { pool, a_expr, r1, s1, r2, s2, r3, s3, r4, s4, r5, s5 }
+        InverseHeavySynth {
+            pool,
+            a_expr,
+            r1,
+            s1,
+            r2,
+            s2,
+            r3,
+            s3,
+            r4,
+            s4,
+            r5,
+            s5,
+        }
     }
 
     // ── Canary 1: verdict preservation ──────────────────────────────────────
@@ -2347,8 +2360,20 @@ mod phase3b_canaries {
     // PASSES pre-fix and must CONTINUE to pass after T3 swaps in the hashset.
     #[test]
     fn phase3b_inverse_heavy_classification_completes() {
-        let InverseHeavySynth { pool, a_expr, r1, s1, r2, s2, r3, s3, r4, s4, r5, s5 } =
-            build_inverse_heavy_synth();
+        let InverseHeavySynth {
+            pool,
+            a_expr,
+            r1,
+            s1,
+            r2,
+            s2,
+            r3,
+            s3,
+            r4,
+            s4,
+            r5,
+            s5,
+        } = build_inverse_heavy_synth();
 
         let mut ctx = TableauContext::new(&pool);
         ctx.declare_inverse_pair(r1, s1)
@@ -2382,8 +2407,20 @@ mod phase3b_canaries {
     #[cfg(feature = "counters")]
     #[test]
     fn phase3b_inverse_pair_fast_path_consulted() {
-        let InverseHeavySynth { pool, a_expr, r1, s1, r2, s2, r3, s3, r4, s4, r5, s5 } =
-            build_inverse_heavy_synth();
+        let InverseHeavySynth {
+            pool,
+            a_expr,
+            r1,
+            s1,
+            r2,
+            s2,
+            r3,
+            s3,
+            r4,
+            s4,
+            r5,
+            s5,
+        } = build_inverse_heavy_synth();
 
         let mut ctx = TableauContext::new(&pool);
         ctx.declare_inverse_pair(r1, s1)

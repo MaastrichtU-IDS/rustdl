@@ -1480,7 +1480,7 @@ pub fn apply_role_axioms(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> 
 #[allow(clippy::many_single_char_names)]
 mod phase3_canaries {
     use crate::TableauContext;
-    use owl_dl_core::{AbsorbedTBox, ClassId, ConceptRule, ConceptPool};
+    use owl_dl_core::{AbsorbedTBox, ClassId, ConceptPool, ConceptRule};
 
     // ── Synthetic Or-heavy ontology fixture ─────────────────────────────
     //
@@ -1531,13 +1531,25 @@ mod phase3_canaries {
         let mut tbox = AbsorbedTBox {
             concept_rules: vec![
                 // A ⊑ Or(B, C)
-                ConceptRule { trigger: a_cls, conclusion: or_b_or_c },
+                ConceptRule {
+                    trigger: a_cls,
+                    conclusion: or_b_or_c,
+                },
                 // D ⊑ Or(B, E)
-                ConceptRule { trigger: d_cls, conclusion: or_b_or_e },
+                ConceptRule {
+                    trigger: d_cls,
+                    conclusion: or_b_or_e,
+                },
                 // F ⊑ B
-                ConceptRule { trigger: f_cls, conclusion: b },
+                ConceptRule {
+                    trigger: f_cls,
+                    conclusion: b,
+                },
                 // G ⊑ E
-                ConceptRule { trigger: g_cls, conclusion: e },
+                ConceptRule {
+                    trigger: g_cls,
+                    conclusion: e,
+                },
             ],
             ..AbsorbedTBox::default()
         };
@@ -1545,7 +1557,16 @@ mod phase3_canaries {
         // takes the fast indexed path, not the linear fallback.
         tbox.finalize();
 
-        OrHeavySynth { pool, tbox, a, d, f, g, b, e }
+        OrHeavySynth {
+            pool,
+            tbox,
+            a,
+            d,
+            f,
+            g,
+            b,
+            e,
+        }
     }
 
     // ── Canary 1: verdict preservation ──────────────────────────────────
@@ -1556,7 +1577,17 @@ mod phase3_canaries {
     // after T4 adds the bloom prefilter — the fix is speed-only.
     #[test]
     fn phase3_or_heavy_synthetic_verdicts() {
-        let OrHeavySynth { pool, tbox, a, d, f, g, b, e, .. } = build_or_heavy_synth();
+        let OrHeavySynth {
+            pool,
+            tbox,
+            a,
+            d,
+            f,
+            g,
+            b,
+            e,
+            ..
+        } = build_or_heavy_synth();
 
         // A is satisfiable: A triggers Or(B,C); the search picks B (or C).
         let sat_a = TableauContext::with_tbox(&pool, &tbox).is_satisfiable(a);
@@ -1601,7 +1632,15 @@ mod phase3_canaries {
     #[cfg(feature = "counters")]
     #[test]
     fn phase3_bloom_prefilter_rejects_on_or_heavy_synthetic() {
-        let OrHeavySynth { mut pool, tbox, a, d, f, g, .. } = build_or_heavy_synth();
+        let OrHeavySynth {
+            mut pool,
+            tbox,
+            a,
+            d,
+            f,
+            g,
+            ..
+        } = build_or_heavy_synth();
 
         // Pre-compute the compound concept before lending pool to any
         // context — pool.and() requires &mut, which conflicts with
@@ -1655,7 +1694,9 @@ mod phase3_canaries {
     #[cfg(feature = "counters")]
     #[test]
     fn phase3d_indexed_branch_skips_missing_triggers() {
-        let OrHeavySynth { pool, tbox, b, e, .. } = build_or_heavy_synth();
+        let OrHeavySynth {
+            pool, tbox, b, e, ..
+        } = build_or_heavy_synth();
 
         // Sanity: finalize() must have populated the index, otherwise
         // the canary would exercise the linear-scan fallback, not the

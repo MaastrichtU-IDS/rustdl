@@ -27,11 +27,7 @@ pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<bool>
 }
 
 #[pyfunction]
-pub(crate) fn is_instance_of(
-    path: &str,
-    class_iri: &str,
-    individual_iri: &str,
-) -> PyResult<bool> {
+pub(crate) fn is_instance_of(path: &str, class_iri: &str, individual_iri: &str) -> PyResult<bool> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::is_instance_of(&ontology, class_iri, individual_iri)
         .map_err(reason_error_to_py)
@@ -50,9 +46,7 @@ pub(crate) fn realize(path: &str) -> PyResult<HashMap<String, Vec<String>>> {
     Ok(realization_to_dict(&rs_realization))
 }
 
-fn realization_to_dict(
-    realization: &owl_dl_reasoner::Realization,
-) -> HashMap<String, Vec<String>> {
+fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<String, Vec<String>> {
     realization
         .individuals()
         .iter()

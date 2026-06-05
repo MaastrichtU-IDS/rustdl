@@ -41,24 +41,47 @@ pub(crate) enum AboxVerdict {
 /// so the fields would warn without this allow. They're load-bearing
 /// for the trace output and the planned `--explain` surface — keep them.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "fields read via Debug in RUSTDL_TRACE output + future --explain")]
+#[allow(
+    dead_code,
+    reason = "fields read via Debug in RUSTDL_TRACE output + future --explain"
+)]
 pub(crate) enum ClashReason {
     /// P1: `ClassAssertion(C, a)` with `Subsumers::is_unsatisfiable(C)`.
-    AssertedBot { individual: IndividualId, class: ClassId },
+    AssertedBot {
+        individual: IndividualId,
+        class: ClassId,
+    },
     /// P2 / P7: individual `a` has both `c` and `d` in its asserted-
     /// or-derived type set, and `(c, d)` is in `told_disjoint_pairs`.
-    DisjointTypes { individual: IndividualId, c: ClassId, d: ClassId },
+    DisjointTypes {
+        individual: IndividualId,
+        c: ClassId,
+        d: ClassId,
+    },
     /// P3: positive `R(a, b)` and `NegativeObjectPropertyAssertion(R, a, b)`.
-    NegOpaConflict { from: IndividualId, role: RoleId, to: IndividualId },
+    NegOpaConflict {
+        from: IndividualId,
+        role: RoleId,
+        to: IndividualId,
+    },
     /// P4 / P5: `(a, b)` in `DifferentIndividuals` and union-find
     /// (post-`SameIndividual` and post-functional-merges) finds them equal.
     SameDifferent { a: IndividualId, b: IndividualId },
     /// P5 detail: `Functional(R) ∧ R(a, b1) ∧ R(a, b2)` forced a
     /// merge of `b1` and `b2` that subsequently clashed with a
     /// `DifferentIndividuals` declaration.
-    FunctionalDiff { role: RoleId, a: IndividualId, b1: IndividualId, b2: IndividualId },
+    FunctionalDiff {
+        role: RoleId,
+        a: IndividualId,
+        b1: IndividualId,
+        b2: IndividualId,
+    },
     /// P6: `Asymmetric(R) ∧ R(a, b) ∧ R(b, a)`.
-    AsymmetricViolation { role: RoleId, a: IndividualId, b: IndividualId },
+    AsymmetricViolation {
+        role: RoleId,
+        a: IndividualId,
+        b: IndividualId,
+    },
     /// P6: `Irreflexive(R) ∧ R(a, a)` (or `R(a, b)` with `a ≡ b` after merge).
     IrreflexiveViolation { role: RoleId, a: IndividualId },
 }
@@ -78,7 +101,10 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept) {
             if closure.is_unsatisfiable(*c) {
                 return AboxVerdict::Inconsistent {
-                    reason: ClashReason::AssertedBot { individual, class: *c },
+                    reason: ClashReason::AssertedBot {
+                        individual,
+                        class: *c,
+                    },
                 };
             }
         }
@@ -88,8 +114,13 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // For each ClassAssertion(C, a) with C atomic, insert c and
     // every subsumer of c from the EL closure.
     let n = prepared.abox.individuals.len();
-    let ind_index: std::collections::HashMap<owl_dl_core::ir::IndividualId, usize> =
-        prepared.abox.individuals.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
+    let ind_index: std::collections::HashMap<owl_dl_core::ir::IndividualId, usize> = prepared
+        .abox
+        .individuals
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (*id, i))
+        .collect();
     let mut types: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>> =
         vec![std::collections::HashSet::new(); n];
     for &(individual, class_concept) in &prepared.abox.class_assertions {
@@ -119,7 +150,11 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             for b in (a + 1)..cs.len() {
                 if told.are_told_disjoint(cs[a], cs[b]) {
                     return AboxVerdict::Inconsistent {
-                        reason: ClashReason::DisjointTypes { individual, c: cs[a], d: cs[b] },
+                        reason: ClashReason::DisjointTypes {
+                            individual,
+                            c: cs[a],
+                            d: cs[b],
+                        },
                     };
                 }
             }
@@ -129,10 +164,11 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // P3: NegativeObjectPropertyAssertion vs positive
     // ObjectPropertyAssertion. Build a HashSet of positive triples
     // and test each negative against it.
-    let pos: std::collections::HashSet<(owl_dl_core::ir::IndividualId,
-                                        owl_dl_core::ir::RoleId,
-                                        owl_dl_core::ir::IndividualId)> =
-        prepared.abox.property_assertions.iter().copied().collect();
+    let pos: std::collections::HashSet<(
+        owl_dl_core::ir::IndividualId,
+        owl_dl_core::ir::RoleId,
+        owl_dl_core::ir::IndividualId,
+    )> = prepared.abox.property_assertions.iter().copied().collect();
     for &(from, role, to) in &prepared.abox.negative_property_triples {
         // Role-hierarchy downward propagation: a positive assertion on
         // any sub-role S of `role` (S ⊑ R) implies `R(a, b)` and so
@@ -182,8 +218,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // merge, re-test all `different_pairs`. Inverse-functional is
     // the dual: group `(role, to)`.
     use std::collections::HashMap as Map;
-    let mut functional_roles: std::collections::HashSet<RoleId> =
-        std::collections::HashSet::new();
+    let mut functional_roles: std::collections::HashSet<RoleId> = std::collections::HashSet::new();
     let mut inverse_functional_roles: std::collections::HashSet<RoleId> =
         std::collections::HashSet::new();
     for ax in &prepared.axioms {
@@ -221,9 +256,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                 ) {
                     // New merge — re-check all different_pairs.
                     for &(da, db) in &prepared.abox.different_pairs {
-                        if let (Some(&ip), Some(&jp)) =
-                            (ind_index.get(&da), ind_index.get(&db))
-                        {
+                        if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db)) {
                             if uf.same(
                                 u32::try_from(ip).expect("fits"),
                                 u32::try_from(jp).expect("fits"),
@@ -266,9 +299,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                     u32::try_from(j).expect("fits"),
                 ) {
                     for &(da, db) in &prepared.abox.different_pairs {
-                        if let (Some(&ip), Some(&jp)) =
-                            (ind_index.get(&da), ind_index.get(&db))
-                        {
+                        if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db)) {
                             if uf.same(
                                 u32::try_from(ip).expect("fits"),
                                 u32::try_from(jp).expect("fits"),
@@ -309,7 +340,11 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     for &(from, role, to) in &prepared.abox.property_assertions {
         if asymmetric_roles.contains(&role) && pos.contains(&(to, role, from)) {
             return AboxVerdict::Inconsistent {
-                reason: ClashReason::AsymmetricViolation { role, a: from, b: to },
+                reason: ClashReason::AsymmetricViolation {
+                    role,
+                    a: from,
+                    b: to,
+                },
             };
         }
     }
@@ -429,8 +464,8 @@ mod tests {
             concepts: ConceptPool::default(),
             axioms: Vec::new(),
         };
-        let prepared = crate::PreparedOntology::from_internal(internal)
-            .expect("empty ontology prepares");
+        let prepared =
+            crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");
         assert!(matches!(check(&prepared), AboxVerdict::Unknown));
     }
 }

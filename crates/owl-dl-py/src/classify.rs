@@ -1,5 +1,5 @@
 //! `classify` / `classify_bytes` top-level functions + the
-//! `Classification` PyO3 class that wraps `owl_dl_reasoner::Classification`.
+//! `Classification` `PyO3` class that wraps `owl_dl_reasoner::Classification`.
 
 use owl_dl_reasoner::{Classification as RsClassification, classify as rs_classify};
 use pyo3::prelude::*;
@@ -32,7 +32,7 @@ impl PyClassification {
     }
 
     /// True iff the whole ontology was flagged inconsistent.
-    /// (Set by the Phase-A1 ABox consistency check.)
+    /// (Set by the Phase-A1 `ABox` consistency check.)
     #[getter]
     fn inconsistent(&self) -> bool {
         self.inner.stats().inconsistent

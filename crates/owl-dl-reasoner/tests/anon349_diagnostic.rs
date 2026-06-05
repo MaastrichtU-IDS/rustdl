@@ -70,11 +70,11 @@ fn anon349_diagnostic() {
         "classify must realize Anon-324 ≡ IPBP on full notgalen"
     );
     assert!(
-        direct.iter().any(|s| *s == ANON324) || direct.iter().any(|s| *s == IPBP),
+        direct.contains(&ANON324) || direct.contains(&IPBP),
         "Anon-349 must have Anon-324 or IPBP in direct supers: {direct:?}"
     );
     assert!(
-        eq324.iter().any(|c| *c == IPBP),
+        eq324.contains(&IPBP),
         "Anon-324's equivalence partners must include IPBP: {eq324:?}"
     );
 }

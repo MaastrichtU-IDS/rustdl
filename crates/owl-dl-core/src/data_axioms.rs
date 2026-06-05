@@ -714,12 +714,14 @@ mod tests {
 
     fn parse_str(src: &str) -> SetOntology<RcStr> {
         let mut r = Cursor::new(src);
-        read_ofn(&mut r, ParserConfiguration::default()).unwrap().0
+        read_ofn(&mut r, ParserConfiguration::default())
+            .expect("test fixture parses")
+            .0
     }
 
     #[test]
     fn extracts_functional_dp_min_clash() {
-        let src = r#"Prefix(:=<http://t/>)
+        let src = r"Prefix(:=<http://t/>)
 Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
 Ontology(<http://t/x>
     Declaration(Class(:HasTwoAges))
@@ -727,7 +729,7 @@ Ontology(<http://t/x>
     FunctionalDataProperty(:age)
     SubClassOf(:HasTwoAges DataMinCardinality(2 :age))
 )
-"#;
+";
         let onto = parse_str(src);
         let facts = extract_facts(&onto);
         assert!(facts.functional_dps.contains("http://t/age"));
@@ -742,7 +744,7 @@ Ontology(<http://t/x>
 
     #[test]
     fn derives_functional_dp_min_unsat_in_convert() {
-        let src = r#"Prefix(:=<http://t/>)
+        let src = r"Prefix(:=<http://t/>)
 Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
 Ontology(<http://t/x>
     Declaration(Class(:HasTwoAges))
@@ -750,9 +752,9 @@ Ontology(<http://t/x>
     FunctionalDataProperty(:age)
     SubClassOf(:HasTwoAges DataMinCardinality(2 :age))
 )
-"#;
+";
         let onto = parse_str(src);
-        let mut internal = convert_ontology(&onto).unwrap();
+        let mut internal = convert_ontology(&onto).expect("test ontology converts");
         let has_two_ages = internal
             .vocabulary
             .class_id("http://t/HasTwoAges")

@@ -68,7 +68,7 @@ fn read_konclude_verdict(path: &Path) -> KoncludeVerdict {
     let mut edges = BTreeSet::new();
     let mut unsat = BTreeSet::new();
     let mut thing_equiv = BTreeSet::new();
-    for ax in onto.iter() {
+    for ax in &onto {
         match &ax.component {
             Component::SubClassOf(SubClassOf { sub, sup }) => {
                 if let (ClassExpression::Class(sub_c), ClassExpression::Class(sup_c)) = (sub, sup) {

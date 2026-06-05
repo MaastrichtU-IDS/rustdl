@@ -55,7 +55,7 @@ pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<
     let mut out = Vec::new();
     for ind in realization.individuals() {
         for c in realization.most_specific_types(ind) {
-            out.push((c.to_string(), ind.to_string()));
+            out.push((c.clone(), ind.clone()));
         }
     }
     Ok(out)

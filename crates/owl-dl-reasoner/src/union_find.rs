@@ -1,6 +1,6 @@
 //! Disjoint-set union (union-find) over `u32` indices.
 //!
-//! Used by the ABox consistency check (`abox_check.rs`) to track
+//! Used by the `ABox` consistency check (`abox_check.rs`) to track
 //! merge-equivalence classes induced by `SameIndividual` axioms and
 //! `FunctionalObjectProperty` / `InverseFunctionalObjectProperty`
 //! inferences. The keys are indices into `Abox::individuals`, not

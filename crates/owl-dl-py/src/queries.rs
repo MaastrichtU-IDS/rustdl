@@ -50,16 +50,7 @@ fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<St
     realization
         .individuals()
         .iter()
-        .map(|ind| {
-            (
-                ind.clone(),
-                realization
-                    .most_specific_types(ind)
-                    .iter()
-                    .map(|s| s.clone())
-                    .collect(),
-            )
-        })
+        .map(|ind| (ind.clone(), realization.most_specific_types(ind).to_vec()))
         .collect()
 }
 

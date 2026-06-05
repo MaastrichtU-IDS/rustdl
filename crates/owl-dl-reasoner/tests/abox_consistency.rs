@@ -1,4 +1,4 @@
-//! Pattern unit tests for the ABox consistency pre-check.
+//! Pattern unit tests for the `ABox` consistency pre-check.
 //!
 //! Each pattern (P1–P7) has a positive fixture (asserts
 //! `is_consistent → false`) and a negative near-miss (asserts

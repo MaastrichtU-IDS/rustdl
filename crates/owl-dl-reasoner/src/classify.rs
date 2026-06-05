@@ -56,7 +56,7 @@ pub enum FragmentClassification {
     /// Horn DL-clauses (every clausified axiom has ≤ 1 head atom
     /// and the clausifier handles every axiom). The hyper Horn
     /// fixpoint is complete by construction. `trust_sat` is sound by
-    /// construction. Strict superset of PureEl by classification,
+    /// construction. Strict superset of `PureEl` by classification,
     /// but tagged separately so users see which engine carries the
     /// guarantee.
     Horn,
@@ -188,7 +188,7 @@ pub struct ClassificationStats {
     /// build failed (Unsat/Stalled on `sub`). Orchestrator fell through.
     pub snapshot_cache_falls_through: usize,
     /// Phase 1b.5 recon: per-sub count of pairs reaching
-    /// `subsumes_via_tableau`. Keyed by sub ClassId index. Used to
+    /// `subsumes_via_tableau`. Keyed by sub `ClassId` index. Used to
     /// derive the pairs-per-sub distribution that determines whether
     /// snapshot caching can amortize on a workload.
     ///
@@ -232,7 +232,7 @@ pub struct ClassificationStats {
     /// Phase 3a recon: count of classes that the per-class classifier
     /// would mark Unsafe. Diagnostic only.
     pub per_class_unsafe_count: usize,
-    /// ABox consistency check fired (and the verdict was
+    /// `ABox` consistency check fired (and the verdict was
     /// `Inconsistent`). When true, every class is unsatisfiable; the
     /// classify result mirrors Konclude's behaviour on inconsistent
     /// input. See `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
@@ -706,7 +706,7 @@ fn classify_pure_el(
 /// Build a `Classification` representing an inconsistent ontology:
 /// every class is unsatisfiable and therefore a subclass of every
 /// other class (the trivial entailment under inconsistency). Mirrors
-/// Konclude's behaviour. Used when the ABox consistency pre-check
+/// Konclude's behaviour. Used when the `ABox` consistency pre-check
 /// fires.
 fn classify_inconsistent(
     classes: Vec<String>,
@@ -837,8 +837,8 @@ pub fn classify_top_down_with_timeout<A: ForIRI>(
     classify_top_down_internal(&internal, Some(per_pair_timeout))
 }
 
-/// Returns true iff the ontology contains any ABox axiom. Cheap
-/// scan over `internal.axioms` used to skip the ABox consistency
+/// Returns true iff the ontology contains any `ABox` axiom. Cheap
+/// scan over `internal.axioms` used to skip the `ABox` consistency
 /// pre-check entirely on TBox-only inputs (e.g. GALEN), where
 /// building `PreparedOntology` solely to consult `abox_verdict()`
 /// is wasted work — the check would early-return `Unknown` on
@@ -2065,7 +2065,7 @@ Ontology(<http://rustdl.test/test>\n\
     /// distrusted and the tableau should be asked. Verified via stats:
     /// `hyper_refuted_fast_pairs > 0` proves the new code path was taken.
     ///
-    /// The ontology includes an isolated class D (no SubClassOf axioms
+    /// The ontology includes an isolated class D (no `SubClassOf` axioms
     /// linking it to A/B/C). The top-down walk places B and C first,
     /// then when it processes D it cannot find D⊑B or D⊑C in the
     /// saturation closure, so it calls `subsumes_via_tableau` for those
@@ -2074,7 +2074,7 @@ Ontology(<http://rustdl.test/test>\n\
     /// the new code path.
     ///
     /// SAFETY: env-var mutation; tests in this module that mutate
-    /// RUSTDL_HYPER_TRUST_SAT_MIN_MS must run with --test-threads=1.
+    /// `RUSTDL_HYPER_TRUST_SAT_MIN_MS` must run with --test-threads=1.
     /// Also disables `RUSTDL_LABEL_HEURISTIC` so the per-class label
     /// cache (Phase 7) doesn't prune the D⊑B/D⊑C non-subsumptions
     /// before they reach the wedge — the cache would soundly catch

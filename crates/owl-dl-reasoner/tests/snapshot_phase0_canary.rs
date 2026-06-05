@@ -28,7 +28,9 @@ fn snapshot_capture_flag_defaults_on() {
     // ENV_MUTEX serialization: reads process env, must not race with
     // the Phase 1b flag-ON tests below that briefly set/restore
     // RUSTDL_SNAPSHOT_CAPTURE.
-    let _serial = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(
         std::env::var("RUSTDL_SNAPSHOT_CAPTURE").is_err(),
         "Phase 1c canary: RUSTDL_SNAPSHOT_CAPTURE must not be set in the test env"
@@ -43,7 +45,9 @@ fn snapshot_capture_flag_defaults_on() {
 fn classify_unchanged_at_default() {
     // Sanity: a tiny ontology classifies to the same result as
     // it did pre-project, with the Phase 1c default-on path in play.
-    let _serial = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let src = "\
 Prefix(:=<http://t/>)
 Ontology(<http://t>
@@ -79,7 +83,9 @@ Ontology(<http://t>
 
 #[test]
 fn replay_returns_subsumed_on_horn_chain_with_flag_on() {
-    let _serial = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _guard = SetEnvGuard::set("RUSTDL_SNAPSHOT_CAPTURE", "1");
     // The Phase 7 per-class label cache prunes non-subsumptions
     // *before* `subsumes_via_tableau` is called — bypassing the
@@ -120,8 +126,7 @@ Ontology(<http://t>
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read(&mut reader, ParserConfiguration::default()).expect("parse");
-    let result =
-        classify_top_down_with_timeout(&onto, Duration::from_millis(5_000)).expect("classify");
+    let result = classify_top_down_with_timeout(&onto, Duration::from_secs(5)).expect("classify");
 
     // Inv-1 synthetic: verdicts match flag-OFF expectations.
     assert!(result.is_subclass("http://t/A", "http://t/B"));
@@ -144,7 +149,9 @@ Ontology(<http://t>
 
 #[test]
 fn replay_no_op_on_unsafe_ontology_with_flag_on() {
-    let _serial = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _guard = SetEnvGuard::set("RUSTDL_SNAPSHOT_CAPTURE", "1");
     // Same rationale as the Safe test: keep the label cache from
     // pruning probes before they hit `subsumes_via_tableau`.
@@ -182,8 +189,7 @@ Ontology(<http://t>
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read(&mut reader, ParserConfiguration::default()).expect("parse");
-    let result =
-        classify_top_down_with_timeout(&onto, Duration::from_millis(5_000)).expect("classify");
+    let result = classify_top_down_with_timeout(&onto, Duration::from_secs(5)).expect("classify");
 
     // Inv-1 synthetic: verdicts unchanged on Unsafe inputs.
     assert!(result.is_subclass("http://t/A", "http://t/B"));

@@ -4,6 +4,18 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-06-05
+
+### Changed
+
+- **Python package documentation.** The `rustdl` PyPI page now ships a
+  complete README: install, quick-start, full API reference (classify +
+  Classification members, one-shot queries, inference materialization,
+  exception hierarchy), and the soundness/coverage contract. The 0.2.0
+  wheel shipped a four-line placeholder README; this release replaces it.
+- Re-added the Linux aarch64 wheel to the release matrix (dropped in 0.2.0
+  to speed up release-workflow iteration).
+
 ## [0.2.0] — 2026-06-04
 
 ### Added
@@ -99,5 +111,6 @@ FP=0 vs Konclude verified on every release. The closure-diff tests in
 are the soundness tripwire — any change that introduces a false-positive
 subsumption fails CI.
 
+[0.2.1]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.1.0

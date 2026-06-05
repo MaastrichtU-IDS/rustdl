@@ -1471,11 +1471,7 @@ fn lower_sub_class_of(
                         // operand, all sharing the marker so any
                         // operand satisfies it.
                         let marker = if body_ids.len() == 1 {
-                            tseitin.introduce_existential_marker(
-                                role.role_id(),
-                                body_ids[0],
-                                rules,
-                            )
+                            tseitin.introduce_existential_marker(role.role_id(), body_ids[0], rules)
                         } else {
                             let primary = tseitin.introduce_existential_marker(
                                 role.role_id(),
@@ -1551,8 +1547,7 @@ fn lower_sub_class_of(
                 // completing the chain `{bodies} ⊑ M ⊑ ∃R.B ⊑ T`. A
                 // one-way marker would not complete: Y gains M but never
                 // gets the R-witness needed for downstream triggers.
-                let marker =
-                    tseitin.introduce_equivalent_existential_marker(role, body_id, rules);
+                let marker = tseitin.introduce_equivalent_existential_marker(role, body_id, rules);
                 rules.conjunctive_triggers.push(ConjunctiveTrigger {
                     bodies: bodies.clone(),
                     head: marker,
@@ -1683,30 +1678,22 @@ fn atomic_or_tseitin_body_with_extras(
 ) -> Option<ClassId> {
     let body_atomics: Vec<ClassId> = match pool.get(body) {
         ConceptExpr::Atomic(id) => vec![*id],
-        ConceptExpr::And(operands) => atomic_classes_with_existential_markers(
-            operands, pool, rules, tseitin,
-        )?,
+        ConceptExpr::And(operands) => {
+            atomic_classes_with_existential_markers(operands, pool, rules, tseitin)?
+        }
         ConceptExpr::Some(role, inner_body) if !role.is_inverse() => {
             // Top-level nested existential as the outer body:
             // `∃R.∃S.X` style. Introduce a marker for the inner
             // existential and use it as the single-class body.
             let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-            let marker = tseitin.introduce_existential_marker(
-                role.role_id(),
-                inner_id,
-                rules,
-            );
+            let marker = tseitin.introduce_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
         }
         ConceptExpr::Min(n, role, inner_body) if *n >= 1 && !role.is_inverse() => {
             // `≥n R.X` as a nested body — sound underapproximation
             // to ∃R.X (same lowering as `atomic_existential_rhs`).
             let inner_id = atomic_or_tseitin_body(*inner_body, pool, rules, tseitin)?;
-            let marker = tseitin.introduce_existential_marker(
-                role.role_id(),
-                inner_id,
-                rules,
-            );
+            let marker = tseitin.introduce_existential_marker(role.role_id(), inner_id, rules);
             vec![marker]
         }
         _ => return None,
@@ -2825,8 +2812,7 @@ Ontology(<http://rustdl.test/p2d/test>
         let n = internal.vocabulary.num_classes();
         let role_super = build_role_super(&internal);
         let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
-        let mut engine =
-            WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
+        let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
         engine.seed();
         engine.run();
 
@@ -3044,8 +3030,14 @@ Ontology(<http://rustdl.test/p2b/test>
             read(&mut reader, ParserConfiguration::default()).expect("canary parses");
         let internal = convert_ontology(&set_onto).expect("canary lowers");
         let subsumers = crate::saturate(&internal);
-        let x = internal.vocabulary.class_id("http://rustdl.test/p2b/X").expect("X declared");
-        let t = internal.vocabulary.class_id("http://rustdl.test/p2b/T").expect("T declared");
+        let x = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2b/X")
+            .expect("X declared");
+        let t = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2b/T")
+            .expect("T declared");
 
         assert!(
             subsumers.contains(x, t),
@@ -3090,13 +3082,14 @@ Ontology(<http://rustdl.test/p2bA/test>
             read(&mut reader, ParserConfiguration::default()).expect("parses");
         let internal = convert_ontology(&set_onto).expect("lowers");
         let subsumers = crate::saturate(&internal);
-        let femur =
-            internal.vocabulary.class_id("http://rustdl.test/p2bA/Femur").expect("Femur declared");
-        let paired =
-            internal
-                .vocabulary
-                .class_id("http://rustdl.test/p2bA/Paired")
-                .expect("Paired declared");
+        let femur = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2bA/Femur")
+            .expect("Femur declared");
+        let paired = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2bA/Paired")
+            .expect("Paired declared");
 
         assert!(
             subsumers.contains(femur, paired),
@@ -3148,8 +3141,14 @@ Ontology(<http://rustdl.test/p2b5/test>
             read(&mut reader, ParserConfiguration::default()).expect("parses");
         let internal = convert_ontology(&set_onto).expect("lowers");
         let subsumers = crate::saturate(&internal);
-        let y = internal.vocabulary.class_id("http://rustdl.test/p2b5/Y").expect("Y declared");
-        let t = internal.vocabulary.class_id("http://rustdl.test/p2b5/T").expect("T declared");
+        let y = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2b5/Y")
+            .expect("Y declared");
+        let t = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2b5/T")
+            .expect("T declared");
         // Asserts the FIX (Phase 2b.5 active). When the fix lands, this passes.
         assert!(
             subsumers.contains(y, t),
@@ -3196,8 +3195,14 @@ Ontology(<http://rustdl.test/p2bD/test>
             read(&mut reader, ParserConfiguration::default()).expect("parses");
         let internal = convert_ontology(&set_onto).expect("lowers");
         let subsumers = crate::saturate(&internal);
-        let x = internal.vocabulary.class_id("http://rustdl.test/p2bD/X").expect("X declared");
-        let t = internal.vocabulary.class_id("http://rustdl.test/p2bD/T").expect("T declared");
+        let x = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2bD/X")
+            .expect("X declared");
+        let t = internal
+            .vocabulary
+            .class_id("http://rustdl.test/p2bD/T")
+            .expect("T declared");
 
         assert!(
             subsumers.contains(x, t),

@@ -721,7 +721,13 @@ fn classify_inconsistent(
         fragment,
         ..ClassificationStats::default()
     };
-    Classification { classes, index, entailed, unsatisfiable_idxs, stats }
+    Classification {
+        classes,
+        index,
+        entailed,
+        unsatisfiable_idxs,
+        stats,
+    }
 }
 
 /// True iff every axiom in `internal` lies inside the EL fragment
@@ -899,13 +905,16 @@ pub(crate) fn classify_top_down_internal(
         // microseconds even on GALEN.
         if crate::abox_check_enabled() && has_abox_axioms(internal) {
             let prepared = PreparedOntology::from_internal(internal.clone())?;
-            if let crate::abox_check::AboxVerdict::Inconsistent { reason } =
-                prepared.abox_verdict()
+            if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict()
             {
                 if std::env::var_os("RUSTDL_TRACE").is_some() {
                     eprintln!("abox_check: inconsistent — {reason:?}");
                 }
-                return Ok(classify_inconsistent(classes, index, analyze_fragment(internal)));
+                return Ok(classify_inconsistent(
+                    classes,
+                    index,
+                    analyze_fragment(internal),
+                ));
             }
         }
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
@@ -919,7 +928,11 @@ pub(crate) fn classify_top_down_internal(
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("abox_check: inconsistent — {reason:?}");
         }
-        return Ok(classify_inconsistent(classes, index, analyze_fragment(internal)));
+        return Ok(classify_inconsistent(
+            classes,
+            index,
+            analyze_fragment(internal),
+        ));
     }
 
     // Per-class unsat probes — identical to the naive path. Reuse

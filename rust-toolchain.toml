@@ -1,4 +1,12 @@
+# Pinned toolchain. CI's floating `stable` drifted to a newer rustfmt/clippy
+# (1.9.0) than the repo was formatted/linted against, turning the fmt and
+# clippy jobs red. Pin the version so that drift can't recur: rustup honours
+# this file for every `cargo` invocation (CI and local), so contributors
+# format/lint with exactly what CI enforces.
+#
+# Bump deliberately in a dedicated PR, and keep the version in sync with the
+# `toolchain:` input in .github/workflows/ci.yml.
 [toolchain]
-channel = "stable"
+channel = "1.95.0"
 components = ["rustfmt", "clippy"]
-profile = "default"
+profile = "minimal"

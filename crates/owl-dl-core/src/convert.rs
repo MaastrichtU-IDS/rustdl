@@ -527,6 +527,11 @@ pub fn convert_ontology<A: ForIRI>(
         })
     };
     out.axioms.extend(derived);
+    // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
+    // share a told-subsumer C (sound under-approximation; feeds the EL
+    // saturator a case-split it otherwise drops). Runs on the fully
+    // populated IR.
+    crate::disjunction_existential::derive_disjunction_existentials(&mut out);
     out.axioms.sort();
     Ok(out)
 }

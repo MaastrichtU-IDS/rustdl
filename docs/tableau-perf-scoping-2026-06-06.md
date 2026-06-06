@@ -67,7 +67,32 @@ are all inside the 129-class component. A finer ⊥-locality module (Lever D)
 would have to fragment a dense, covering-axiom-entangled component; unlikely to
 shrink per-pair clause sets meaningfully. **Relevance is not the lever for wine.**
 
-## Refined lever: why backjumping isn't pruning (candidate, needs one check)
+## FINAL: it's genuine disjunction interdependence → learning is the only lever
+
+Checked the three `DepSet::ALL` construction sites in `hyper.rs` (1235/1445/1552):
+**all three are the `≤n` cardinality merge** (algebraic clash pre-check,
+`partition_rec` exhaustion, `merge()` ≠-violation). There is **no separate
+NN-rule `DepSet::ALL` source** — so the NN-rule hypothesis below is also wrong.
+
+The merge=0 stalled classes therefore hit **no `DepSet::ALL` source**, and they
+reach depth ~26 (well under the 128-level overflow). So their dep-sets are
+tracked **precisely** and backjumping **is** functioning — yet `restores =
+branches` (CabernetFranc: 21 798 disj / 0 merge / 21 798 restores). The only
+consistent explanation: the disjunction clashes are **genuinely interdependent**
+(each clash's dep-set contains the recent disjunction decisions, so there is no
+sibling to backjump past). Backjumping cannot help by construction.
+
+**Therefore the lever is conflict-driven nogood learning — full stop.**
+Dep-precision is ruled out (no `DepSet::ALL` on these classes' hot path);
+relevance is ruled out (monolithic component); blocking is ruled out (fires /
+depth bounded); completeness is ruled out (deferred=0). Two hypotheses were
+measured and discarded en route (merge-backjumping, NN-rule dep-precision).
+
+Conflict-driven learning is multi-week and **soundness-critical** (a learned
+nogood with under-reported deps → unsound prune → false subsumption, the #1
+failure mode); requires heavy closure-diff + Konclude gating.
+
+## (discarded) Refined lever: why backjumping isn't pruning (candidate, needs one check)
 
 `restores = branches` even on a **merge=0** stalled class (CabernetFranc: 21 798
 disj / 0 merge) means dependency-directed backjumping prunes *nothing* — yet with

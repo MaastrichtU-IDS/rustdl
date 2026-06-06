@@ -390,7 +390,11 @@ fn wine_closure_matches_konclude() {
         eprintln!("SKIP: missing wine fixture");
         return;
     }
-    let (_r, _k, fp, _m) = diff_corpus_ontology("wine", input, truth, 200);
+    let budget = std::env::var("RUSTDL_TEST_PAIR_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let (_r, _k, fp, _m) = diff_corpus_ontology("wine", input, truth, budget);
     assert_eq!(
         fp, 0,
         "wine has FPs — soundness regression on nominals/datatypes"

@@ -150,6 +150,22 @@ struct HyperNode {
     /// node (H3c). Enforced by the merge rule when the node has more
     /// matching `role`-successors than `bound`.
     at_most: Vec<(Role, Option<ClassId>, u32)>,
+    /// Backjumping: union of the derivation dep-sets of the `≤n` constraints
+    /// in `at_most` (the `body_deps` of the clause whose `AtMost` head fired
+    /// onto this node). `at_most` itself is a dep-less tuple, so without this
+    /// the constraint's own provenance is invisible to `card_clash_deps` —
+    /// a `≤n` derived under a decision (e.g. a role-body domain/range clause
+    /// `R(x,y) → ≤n(x)`) would be missed, causing an unsound backjump
+    /// (Hole C). Captured by save/restore (whole-node clone); EMPTY for a
+    /// snapshot-replayed node (which carries no `at_most`).
+    at_most_dep: DepSet,
+    /// Backjumping: set when a `merge` redirects another node's `at_most`
+    /// onto this one. The merge *causation* dep (why the two nodes coincide)
+    /// is not decision-tracked, so a merge-inherited `≤n` can depend on
+    /// decisions absent from `at_most_dep`. `card_clash_deps` conservatively
+    /// returns `DepSet::ALL` when this is set (sound; the precise-card-deps
+    /// narrowing only applies to constraints derived directly on the node).
+    at_most_tainted: bool,
     /// `≥n` constraints `(role, qualifier, bound)` already *generated*
     /// at this node (`HF3a`). Fire-once tracking: the `≥n`-rule creates
     /// `n` fresh pairwise-`≠` successors exactly once per constraint, so
@@ -366,6 +382,17 @@ pub struct HyperEngine<'c> {
     /// soundness with inverse roles; without it, `RUSTDL_HYPERTABLEAU_TRUST_SAT`
     /// is corpus-only safe (see SIO finding).
     double_blocking: bool,
+    /// Opt-in (`RUSTDL_PRECISE_CARD_DEPS`, via [`with_precise_card_deps`]): at a
+    /// `≤n` cardinality clash, report a **sound over-approximation** of the
+    /// clash's true dependency set instead of `DepSet::ALL`, so backjumping can
+    /// fire past decisions the clash provably doesn't depend on. The
+    /// over-approx is `⋃(birth_deps ∪ label_deps of succs) ∪ parent(birth ∪
+    /// label)` — a superset when distinctness is disjoint-label-derived. The
+    /// `≠`-forced channel is *not* captured by birth/label deps, so the helper
+    /// conservatively falls back to `DepSet::ALL` whenever a participating pair
+    /// is distinct only via `are_neq && !labels_disjoint`. Sound by
+    /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
+    precise_card_deps: bool,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -528,6 +555,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            precise_card_deps: false,
             block_index: None,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
@@ -544,6 +572,82 @@ impl<'c> HyperEngine<'c> {
         self.double_blocking = true;
         self.block_index = Some(std::collections::HashMap::new());
         self
+    }
+
+    /// Opt into precise (sound over-approx) `≤n`-cardinality clash deps in
+    /// place of `DepSet::ALL`, unblocking dependency-directed backjumping on
+    /// cardinality clashes. See [`Self::precise_card_deps`].
+    #[must_use]
+    pub fn with_precise_card_deps(mut self) -> Self {
+        self.precise_card_deps = true;
+        self
+    }
+
+    /// Sound over-approximation of a **structural** `≤n` cardinality clash's
+    /// dependency set (used only at the `forced_distinct_exceeds` pre-check site,
+    /// where the clash is "`>n` pairwise-must-distinct successors of `parent`"
+    /// with no deeper search involved), gated by [`Self::precise_card_deps`].
+    ///
+    /// Returns `DepSet::ALL` (the conservative default — always sound) when the
+    /// flag is off, or when the over-approx cannot be guaranteed a superset of
+    /// the true clash deps. It IS a guaranteed superset, hence sound for
+    /// backjumping, exactly when:
+    ///  1. **every succ is generated directly by the canonical `parent`**
+    ///     (`succ.parent == Some(parent)`), so its `birth_deps` carries the
+    ///     decision under which `parent` made it an R-successor. A merge-redirected
+    ///     edge (`merge()` pushes `s_j`'s edges onto `s_i` without updating target
+    ///     `parent`) does NOT carry the redirect decision, so any such succ forces
+    ///     the `DepSet::ALL` fallback; and
+    ///  2. **no pair is distinct only via the uncaptured `≠` channel**
+    ///     (`are_neq && !labels_disjoint`) — disjoint-label distinctness lives in
+    ///     `label_deps`, but a decision-derived `≠` does not, so it forces fallback; and
+    ///  3. **the `≤n` constraint was not merge-inherited** (`!parent.at_most_tainted`)
+    ///     — a merge's causation dep is untracked (Hole C, merge half).
+    ///
+    /// Under (1)+(2)+(3), `⋃(birth ∪ label of succs) ∪ parent(birth ∪ label) ∪
+    /// parent.at_most_dep` covers every contributor to the structural clash: succ
+    /// existence + R-membership (`birth_deps`), pairwise distinctness
+    /// (`label_deps`), and the `≤n` constraint's own derivation provenance
+    /// (`at_most_dep` — Hole C, derivation half) ⟹ superset ⟹ sound. The
+    /// `solve_at_most` partition-exhaustion site does NOT use this (its Unsat can
+    /// depend on broader-graph decisions reached by the deeper search / inverse
+    /// back-prop, which this local set need not cover); it keeps `DepSet::ALL`.
+    fn card_clash_deps(&self, parent: HNode, succs: &[HNode]) -> DepSet {
+        if !self.precise_card_deps {
+            return DepSet::ALL;
+        }
+        let p = self.resolve(parent);
+        // (3) merge-inherited `≤n`: causation dep untracked → conservative.
+        if self.nodes[p.index()].at_most_tainted {
+            return DepSet::ALL;
+        }
+        for &s in succs {
+            // (1) own-successor guard: only edges generated directly by the
+            // canonical parent carry the parent's decision in birth_deps.
+            if self.nodes[s.index()].parent != Some(p) {
+                return DepSet::ALL;
+            }
+        }
+        // (2) uncaptured ≠-only distinctness forces the conservative fallback.
+        for (i, &a) in succs.iter().enumerate() {
+            for &b in &succs[i + 1..] {
+                if self.are_neq(a, b) && !self.labels_disjoint(a, b) {
+                    return DepSet::ALL;
+                }
+            }
+        }
+        // The `≤n` constraint's own derivation provenance (Hole C, derivation
+        // half): `at_most` is a dep-less tuple, so this is the only place the
+        // constraint's decision deps enter `over`.
+        let mut over = self.nodes[p.index()].at_most_dep;
+        for node in std::iter::once(p).chain(succs.iter().copied()) {
+            let hn = &self.nodes[self.resolve(node).index()];
+            over = over.union(hn.birth_deps);
+            for &ld in &hn.label_deps {
+                over = over.union(ld);
+            }
+        }
+        over
     }
 
     /// Supply the `HF4a` nominal class range `[start, start + count)` so
@@ -1223,7 +1327,7 @@ impl<'c> HyperEngine<'c> {
         }
         // `≤n` merge branching (H3c): merge one pair of the violating
         // node's successors per branch, recursing.
-        if let Some((_node, succs, n)) = self.find_open_at_most() {
+        if let Some((node, succs, n)) = self.find_open_at_most() {
             // Algebraic cardinality clash pre-check: if more than `n`
             // successors are pairwise must-distinct (`≠`-forced or
             // disjoint-labelled, hence unmergeable), the `≤n` is violated
@@ -1232,7 +1336,7 @@ impl<'c> HyperEngine<'c> {
             // search below would also reach. See
             // `docs/wedge-cardinality-clash-precheck.md`.
             if self.forced_distinct_exceeds(&succs, n) {
-                self.clash_deps = DepSet::ALL;
+                self.clash_deps = self.card_clash_deps(node, &succs);
                 return HyperResult::Unsat;
             }
             if depth == 0 {
@@ -1432,7 +1536,11 @@ impl<'c> HyperEngine<'c> {
     /// once), merging the partition, and recursing. Returns `Sat` on the
     /// first partition that completes a model (state kept), `Stalled` if
     /// some partition hit the depth bound and none succeeded, else `Unsat`
-    /// with conservative `DepSet::ALL` deps (matching the old merge path).
+    /// with conservative `DepSet::ALL` deps. This site keeps `DepSet::ALL`
+    /// (NOT the `card_clash_deps` over-approx): partition-exhaustion Unsat can
+    /// depend on decisions reached by the deeper `solve(depth-1)` / inverse
+    /// back-propagation that the local `succs`/`parent` dep set need not cover,
+    /// so narrowing here is not provably sound. See `card_clash_deps`.
     fn solve_at_most(&mut self, succs: &[HNode], n: usize, depth: usize) -> HyperResult {
         let mut groups: Vec<Vec<HNode>> = Vec::with_capacity(n);
         let mut any_stalled = false;
@@ -1573,6 +1681,14 @@ impl<'c> HyperEngine<'c> {
             if !self.nodes[s_i.index()].at_most.contains(&c) {
                 self.nodes[s_i.index()].at_most.push(c);
             }
+        }
+        if !self.nodes[s_j.index()].at_most.is_empty() {
+            // A merge-inherited `≤n`: its causation dep isn't tracked, so taint
+            // `s_i` — `card_clash_deps` falls back to `DepSet::ALL` for it.
+            let sj_dep = self.nodes[s_j.index()].at_most_dep;
+            let ni = &mut self.nodes[s_i.index()];
+            ni.at_most_tainted = true;
+            ni.at_most_dep = ni.at_most_dep.union(sj_dep);
         }
         for c in self.nodes[s_j.index()].at_least_done.clone() {
             if !self.nodes[s_i.index()].at_least_done.contains(&c) {
@@ -1796,7 +1912,12 @@ impl<'c> HyperEngine<'c> {
                 if self.nodes[target.index()].at_most.contains(&c) {
                     FireOutcome::NoChange
                 } else {
-                    self.nodes[target.index()].at_most.push(c);
+                    let tn = &mut self.nodes[target.index()];
+                    tn.at_most.push(c);
+                    // Record the constraint's derivation deps (closes Hole C):
+                    // `card_clash_deps` unions this into the clash dep-set, so a
+                    // `≤n` derived under a decision contributes that decision.
+                    tn.at_most_dep = tn.at_most_dep.union(deps);
                     FireOutcome::Changed
                 }
             }
@@ -2137,6 +2258,88 @@ mod tests {
         ];
         let mut e = HyperEngine::new(&clauses, cls(0));
         assert_eq!(e.run(1024), HyperResult::Unsat);
+    }
+
+    /// Soundness guard for `with_precise_card_deps` / `card_clash_deps`: the
+    /// `≤n`-clash dep over-approx must NEVER change a verdict — it only prunes
+    /// search via backjumping. This is the ONLY flag-ON tableau test (the other
+    /// 96 run flag-OFF), so it pins the soundness property against refactors of
+    /// `card_clash_deps`. Per `docs/backjump-reconcile-2026-06-06.md`.
+    ///
+    /// Unsat case exercising the pre-check NARROWING branch: `A ⊑ ∃R.B`,
+    /// `A ⊑ ∃R.C`, `B ⊓ C ⊑ ⊥`, `A ⊑ ≤1 R` ⇒ two disjoint-labelled
+    /// root-generated R-successors under `≤1` ⇒ Unsat via `forced_distinct_
+    /// exceeds`. The succs are own-generated (own-succ guard passes), distinct
+    /// via disjoint labels not `≠` (no fallback), and the `≤n` is derived
+    /// directly (not merge-tainted) — so the over-approx branch is taken. The
+    /// `A ⊑ D1 ⊔ D2` disjunction adds a decision the clash is independent of, so
+    /// flag-ON backjumps past it and flag-OFF does not — the verdict must match.
+    #[test]
+    fn precise_card_deps_preserves_unsat_verdict() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c, d1, d2) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let on = HyperEngine::new(&clauses, a)
+            .with_precise_card_deps()
+            .decide(64);
+        assert_eq!(
+            off,
+            HyperResult::Unsat,
+            "baseline: ≤1 R with two disjoint-labelled R-succs is Unsat"
+        );
+        assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    /// Companion Sat case: same shape but `B`/`C` are NOT disjoint, so the two
+    /// R-successors merge to satisfy `≤1 R` ⇒ Sat. Pins that the over-approx
+    /// (and the `solve_at_most` fallback it does NOT touch) never flips a Sat to
+    /// a spurious Unsat.
+    #[test]
+    fn precise_card_deps_preserves_sat_verdict() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let on = HyperEngine::new(&clauses, a)
+            .with_precise_card_deps()
+            .decide(64);
+        assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
+        assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
     }
 
     #[test]

@@ -577,6 +577,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if hyper_double_block_enabled() {
                 engine = engine.with_double_blocking();
             }
+            if hyper_precise_card_deps_enabled() {
+                engine = engine.with_precise_card_deps();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -635,6 +638,19 @@ pub fn hyper_wedge_enabled() -> bool {
 #[must_use]
 pub fn hyper_double_block_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Precise (sound over-approx) `≤n`-cardinality clash deps
+/// (`RUSTDL_PRECISE_CARD_DEPS`). Replaces the conservative `DepSet::ALL` at the
+/// two cardinality clash sites with `⋃(birth ∪ label of succs) ∪ parent(birth ∪
+/// label)` — a superset of the true deps when distinctness is disjoint-label-
+/// derived, falling back to `DepSet::ALL` on any `≠`-forced-only pair. Unblocks
+/// dependency-directed backjumping on cardinality clashes (measured: ~43 % of
+/// wine's cardinality clashes; see `docs/backjump-reconcile-2026-06-06.md`).
+/// **Default off** — opt-in experimental lever, sound by construction.
+#[must_use]
+pub fn hyper_precise_card_deps_enabled() -> bool {
+    std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -914,6 +930,9 @@ impl HyperCache {
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
+        if hyper_precise_card_deps_enabled() {
+            engine = engine.with_precise_card_deps();
+        }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
@@ -941,6 +960,9 @@ impl HyperCache {
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
+        }
+        if hyper_precise_card_deps_enabled() {
+            engine = engine.with_precise_card_deps();
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,

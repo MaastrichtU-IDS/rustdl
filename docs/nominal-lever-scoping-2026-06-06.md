@@ -112,6 +112,31 @@ closure (or vice versa):
 Both links verified present (2026-06-06). The lever therefore adds nothing on
 inverse roles; the tableau continues to handle inverse × nominal soundly.
 
+### Why the residual 34 are tableau-grade (verified 2026-06-06)
+
+The region/color-via-region cluster the lever closed was the part that is sound
+EL+nominal (∃ + transitive nominals). The residual 34 all require ∀ and/or
+≤-cardinality reasoning over nominals, which the sound EL saturator cannot do
+and which the complete tableau cannot finish on wine's nominal-heavy graph:
+
+- **Grape (~12).** `SauvignonBlanc ≡ SemillonOrSauvignonBlanc ⊓
+  ∃madeFromGrape.{SBG} ⊓ ≤1 madeFromGrape`, and `SemillonOrSauvignonBlanc ≡
+  Wine ⊓ ∀madeFromGrape.{SauvignonBlancGrape, SemillonGrape}`. Closing
+  `Sancerre ⊑ SauvignonBlanc` needs `≤1 + ∃.{SBG}` ⟹ "the unique grape is SBG"
+  ⟹ `∀madeFromGrape.{set}` (membership of the singleton in the OneOf) — combined
+  functional-cardinality + ∀ + nominal-set. `saturation-only` = no; complete
+  engine times out >60 s.
+- **Color (~6).** `Muscadet ⊑ WhiteWine`: Muscadet has *no told colour*; white
+  is a deep derivation (complete engine times out on `Muscadet ⊑ WhiteLoire`).
+- **Sugar (~8).** `WhiteNonSweetWine ≡ WhiteWine ⊓ ∀hasSugar.{Dry, OffDry}` —
+  blocked on both the (hard) colour and a `∀`.
+
+These are the wine ontology's classic hard SROIQ entailments. The sound paths
+are (1) make the tableau tractable on nominal-heavy completions (the multi-week
+blocking/perf frontier) or (2) add ∀ + ≤-cardinality reasoning over nominals to
+the saturator — three of the historically FP-prone constructs combined, high
+soundness risk for an informational (FP=0-only-gated) stressor. **Not pursued.**
+
 ### Known bounds
 
 - **Scaling:** `build_abox_nominal_reach` allocates one NomKey per individual in

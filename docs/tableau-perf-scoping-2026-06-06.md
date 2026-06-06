@@ -56,6 +56,36 @@ Highest-impact options, in rough order:
    signature component (per `module-extraction-plan.md` §A, pizza/SIO were) —
    measure module sizes first.
 
+## Relevance is exhausted (measured)
+
+`rustdl locality-stats wine` → **137 classes, 4 components, largest = 129
+(94.2 % dominance)**. Wine is one monolithic co-occurrence component (all wines
++ grapes + colours + regions entangled through the covering/disjointness
+axioms). The co-occurrence locality filter is **already wired** (`lib.rs:1252`,
+skips different-component pairs) and therefore **cannot help wine's 34** — they
+are all inside the 129-class component. A finer ⊥-locality module (Lever D)
+would have to fragment a dense, covering-axiom-entangled component; unlikely to
+shrink per-pair clause sets meaningfully. **Relevance is not the lever for wine.**
+
+## Refined lever: why backjumping isn't pruning (candidate, needs one check)
+
+`restores = branches` even on a **merge=0** stalled class (CabernetFranc: 21 798
+disj / 0 merge) means dependency-directed backjumping prunes *nothing* — yet with
+independent disjunctions it should. The likely cause: a construct reporting
+`DepSet::ALL` (overflow → "don't backjump past") on wine's hot path. Two known
+`DepSet::ALL` sources (`hyper.rs` ~line 81): the `≤n` merge **and the NN-rule
+(nominal merge)**. Wine is nominal-heavy, so the **NN-rule** is the prime suspect
+for defeating backjumping even where `merge=0` (that counter is the `≤n` merge,
+not the NN nominal merge). **Unverified** — the next step before committing to a
+lever is to confirm whether wine's branching is downstream of NN-rule /
+merge `DepSet::ALL`:
+- If yes → the lever is **precise (or sound-narrower) dep provenance for the
+  NN-rule / merge** so backjumping prunes — bounded (1–2 sessions) but
+  **soundness-critical** (under-report → false backjump → missed model → false
+  subsumption; the #1 failure mode).
+- If no (clashes genuinely depend on all decisions) → only **conflict-driven
+  nogood learning** helps — multi-week, equally soundness-critical.
+
 ## Recommendation
 
 Wine is an **outlier**: the measured corpus (pizza, SIO, GALEN, ORE) already

@@ -207,7 +207,7 @@ Corpus closure-diff, sound version, flag ON (FP=0 = sound, MISSED = completeness
 
 | fixture | FP | MISSED | budget-indep? | note |
 |---|---|---|---|---|
-| **wine** | **0** | **34 → 31** | **yes** (31 at both 200 ms & 2000 ms) | recovered 3; closure 619 → 622; −25 % wall @200 ms |
+| **wine** | **0** | **34 → 31** | **yes** (31 at both 200 ms & 2000 ms) | recovered 3; closure 619 → 622; wall **neutral** (see note) |
 | ore-10908 (SROIQ Q) | 0 | 0 | — | 6001 = 6001 |
 | ore-15672 (SHOIN N) | 0 | 0 | — | unchanged |
 | shoiq-knowledge | 0 | 0 | — | unchanged |
@@ -221,6 +221,14 @@ wedge never reaches at any time budget. The 4 extra recoveries the first cut got
 (31→27) came from the now-reverted fallback site (Hole A); they are **not**
 provably sound and are not shipped. Residual 31 are likely wedge *incompleteness*
 (`Sat`-when-should-be-`Unsat`), unfixable by backjumping (verdict-preserving).
+
+**Wall is neutral — `−25%` retracted.** Earlier drafts of this doc and the 0.3.5
+commit messages cited a `−25%` wine wall, from a single closure-diff OFF-vs-ON
+pair (311 s vs 232 s). A clean 5-run re-measurement (`docs/perf-2026-06-06-
+konclude-vs-rustdl.md`) shows the 232 s was a light-load outlier: OFF and ON both
+sit at ~311 s. The gain is **completeness only** (the 3 recovered pairs were
+capped at the 200 ms budget anyway, so resolving them faster is ≈0.6 s — noise on
+a 311 s wall). No regression; the perf is neutral.
 
 ### Promotion path
 

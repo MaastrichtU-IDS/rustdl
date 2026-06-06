@@ -343,10 +343,13 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   fallbacks — see `card_clash_deps` + `docs/backjump-reconcile-2026-06-06.md`).
   The `solve_at_most` partition-exhaustion site is deliberately NOT
   narrowed (kept `DepSet::ALL`). Recovered wine MISSED 34→31
-  (algorithmic, budget-independent), −25% wall on wine; FP=0 across
-  wine/ore-10908/ore-15672/shoiq-knowledge/sio/alehif; inert on the
-  EL/Horn corpus (Horn-shortcircuited). Set `RUSTDL_PRECISE_CARD_DEPS=0`
-  to revert. Verdict-preservation regression tests:
+  (algorithmic, budget-independent), FP=0 across
+  wine/ore-10908/ore-15672/shoiq-knowledge/sio/alehif; **perf-neutral**
+  (the precise-card-deps flip does not move walls — A/B flat corpus-wide,
+  GALEN Horn exactly flat; an earlier "−25% wall" figure was a single-run
+  host-load artifact, retracted — see
+  `docs/perf-2026-06-06-konclude-vs-rustdl.md`); inert on the EL/Horn
+  corpus (Horn-shortcircuited). Set `RUSTDL_PRECISE_CARD_DEPS=0` to revert. Verdict-preservation regression tests:
   `precise_card_deps_preserves_{unsat,sat}_verdict` in `owl-dl-tableau`.
 
 When changing the saturation/wedge engines or caches, the failure mode that

@@ -175,6 +175,12 @@ struct HyperNode {
     /// node. `None` for the root. Set once at creation. Used by the
     /// double-blocking condition to require equal incoming-edge labels.
     parent_role: Option<Role>,
+    /// Conflict-learning: canonical identity by creation provenance
+    /// (`(parent_canon, role, qualifier, decision-path-at-creation)`).
+    /// Root = 1; deterministic/unset = 0. Only maintained when learning
+    /// is enabled; stable across subtrees for the same logical node so a
+    /// learned nogood transfers. Captured by save/restore with the node.
+    canon: u32,
 }
 
 impl HyperNode {
@@ -410,6 +416,189 @@ pub struct HyperEngine<'c> {
     /// [`Self::from_snapshot`]). `Some` only via
     /// [`Self::from_snapshot_lazy`].
     lazy_replay_state: Option<LazyReplayState>,
+    /// Conflict-driven nogood learning state. `None` (default) ⇒ learning
+    /// off, zero overhead, behaviour byte-identical to before. `Some` only
+    /// via [`HyperEngine::with_learning`] (gated by `RUSTDL_HYPER_LEARNING`).
+    learn: Option<Box<Learn>>,
+}
+
+/// Per-disjunction-decision record (indexed by decision level `d`).
+#[derive(Clone, Copy)]
+struct DecFrame {
+    /// Interned decision identity `(clause, node_canon, disjunct)`.
+    dec_id: u32,
+    /// Decision-path id active *before* this level's decision (for restore).
+    prev_path: u32,
+}
+
+/// Conflict-driven nogood learning state (see
+/// `docs/conflict-learning-design-2026-06-06.md`). All ids are interned so
+/// "the same decision / node" is structurally identical across subtrees,
+/// which is what lets a learned nogood transfer. Reset per `decide`.
+#[derive(Default)]
+struct Learn {
+    /// `(parent_canon, role_id, qual_or_-1, decision_path, disamb) → node canon`.
+    /// `disamb` separates the `n` symmetric successors of a `≥n` rule.
+    canon_intern: std::collections::HashMap<(u32, u32, i64, u32, u32), u32>,
+    next_canon: u32,
+    /// `(prev_path, clause, node_canon, disjunct) → path id`. 0 = empty path.
+    path_intern: std::collections::HashMap<(u32, u32, u32, u32), u32>,
+    next_path: u32,
+    /// `(clause, node_canon, disjunct) → decision id`.
+    dec_intern: std::collections::HashMap<(u32, u32, u32), u32>,
+    next_dec: u32,
+    /// Active decisions indexed by level `d`, and the current path id.
+    decisions: Vec<DecFrame>,
+    cur_path: u32,
+    /// Learned nogoods: each a sorted, deduped set of decision ids that
+    /// (with the deterministic closure) provably clash.
+    nogoods: Vec<Box<[u32]>>,
+    /// Index `decision id → nogood indices containing it` (for the prune check).
+    by_dec: std::collections::HashMap<u32, Vec<usize>>,
+    /// Dedup of recorded nogoods (by a content hash).
+    seen: std::collections::HashSet<u64>,
+    recorded: u64,
+    pruned: u64,
+}
+
+impl Learn {
+    fn reset(&mut self) {
+        self.canon_intern.clear();
+        self.path_intern.clear();
+        self.dec_intern.clear();
+        self.decisions.clear();
+        self.nogoods.clear();
+        self.by_dec.clear();
+        self.seen.clear();
+        self.cur_path = 0;
+        self.next_canon = 2; // 0 = unset, 1 = root
+        self.next_path = 1; // 0 = empty path
+        self.next_dec = 1;
+        // recorded / pruned accumulate across decides (diagnostic only).
+    }
+
+    /// Canonical id for a node created under the current decision path.
+    /// `disamb` distinguishes the `n` symmetric successors of a `≥n` rule
+    /// (0 for the single `∃` successor).
+    fn node_canon(&mut self, parent_canon: u32, role: Role, qual: i64, disamb: u32) -> u32 {
+        let role_ix = u32::try_from(role_id_index(role)).unwrap_or(u32::MAX);
+        let key = (parent_canon, role_ix, qual, self.cur_path, disamb);
+        if let Some(&c) = self.canon_intern.get(&key) {
+            return c;
+        }
+        let c = self.next_canon;
+        self.next_canon += 1;
+        self.canon_intern.insert(key, c);
+        c
+    }
+
+    fn intern_dec(&mut self, clause: u32, node_canon: u32, disjunct: u32) -> u32 {
+        let key = (clause, node_canon, disjunct);
+        if let Some(&d) = self.dec_intern.get(&key) {
+            return d;
+        }
+        let d = self.next_dec;
+        self.next_dec += 1;
+        self.dec_intern.insert(key, d);
+        d
+    }
+
+    fn intern_path(&mut self, prev: u32, clause: u32, node_canon: u32, disjunct: u32) -> u32 {
+        let key = (prev, clause, node_canon, disjunct);
+        if let Some(&p) = self.path_intern.get(&key) {
+            return p;
+        }
+        let p = self.next_path;
+        self.next_path += 1;
+        self.path_intern.insert(key, p);
+        p
+    }
+
+    /// Set (or overwrite) the decision at level `d`; updates `cur_path`.
+    /// `prev_path` is the path active before level `d` (saved by the caller
+    /// once per level so all disjuncts of the level share it).
+    fn set_decision(
+        &mut self,
+        d: usize,
+        clause: u32,
+        node_canon: u32,
+        disjunct: u32,
+        prev_path: u32,
+    ) {
+        let dec_id = self.intern_dec(clause, node_canon, disjunct);
+        let level_path = self.intern_path(prev_path, clause, node_canon, disjunct);
+        if self.decisions.len() <= d {
+            self.decisions.resize(d + 1, DecFrame { dec_id, prev_path });
+        }
+        self.decisions[d] = DecFrame { dec_id, prev_path };
+        self.cur_path = level_path;
+    }
+
+    fn restore_level(&mut self, d: usize) {
+        if let Some(f) = self.decisions.get(d) {
+            self.cur_path = f.prev_path;
+        }
+        self.decisions.truncate(d);
+    }
+
+    /// Record a nogood from a clash whose deps are the decision *levels* in
+    /// `bits` (caller guarantees non-overflow). The nogood is the set of
+    /// decision ids at those levels.
+    fn record_clash(&mut self, mut bits: u128) {
+        let mut ng: Vec<u32> = Vec::new();
+        while bits != 0 {
+            let l = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            if let Some(f) = self.decisions.get(l) {
+                ng.push(f.dec_id);
+            }
+        }
+        if ng.is_empty() {
+            return;
+        }
+        ng.sort_unstable();
+        ng.dedup();
+        // dedup by content hash
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for &x in &ng {
+            h = (h ^ u64::from(x)).wrapping_mul(0x0000_0001_0000_01b3);
+        }
+        if !self.seen.insert(h) {
+            return;
+        }
+        let idx = self.nogoods.len();
+        for &x in &ng {
+            self.by_dec.entry(x).or_default().push(idx);
+        }
+        self.nogoods.push(ng.into_boxed_slice());
+        self.recorded += 1;
+    }
+
+    /// After setting the decision at level `d` (dec id `δ`), check whether
+    /// the active decision set `{decisions[0..=d].dec_id}` is a superset of
+    /// any stored nogood. Returns the matching nogood's levels as a dep-set
+    /// (sound to backjump on) if so.
+    fn check_prune(&mut self, d: usize) -> Option<DepSet> {
+        let active: std::collections::HashSet<u32> =
+            self.decisions[..=d].iter().map(|f| f.dec_id).collect();
+        let delta = self.decisions[d].dec_id;
+        let candidates = self.by_dec.get(&delta)?;
+        for &ngi in candidates {
+            let ng = &self.nogoods[ngi];
+            if ng.iter().all(|x| active.contains(x)) {
+                // Build the dep-set: levels of this path holding ng's decisions.
+                let mut deps = DepSet::EMPTY;
+                for (lvl, f) in self.decisions[..=d].iter().enumerate() {
+                    if ng.contains(&f.dec_id) {
+                        deps = deps.insert(u32::try_from(lvl).unwrap_or(u32::MAX));
+                    }
+                }
+                self.pruned += 1;
+                return Some(deps);
+            }
+        }
+        None
+    }
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -510,6 +699,7 @@ impl<'c> HyperEngine<'c> {
     pub fn new(clauses: &'c [DlClause], root: ClassId) -> Self {
         let mut root_node = HyperNode {
             order: 0,
+            canon: 1, // stable root canonical id (used only when learning is on)
             ..HyperNode::default()
         };
         root_node.add(root, DepSet::EMPTY);
@@ -532,7 +722,21 @@ impl<'c> HyperEngine<'c> {
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
+            learn: None,
         }
+    }
+
+    /// Opt into conflict-driven nogood learning (`RUSTDL_HYPER_LEARNING`).
+    /// Off by default — production behaviour is byte-identical without it.
+    /// Soundness rests on monotonicity of the learnable clashes + the
+    /// overflow-exclusion of the non-monotone (`≤n`/`≠`/NN) cases. See
+    /// `docs/conflict-learning-design-2026-06-06.md`.
+    #[must_use]
+    pub fn with_learning(mut self) -> Self {
+        let mut l = Box::new(Learn::default());
+        l.reset();
+        self.learn = Some(l);
+        self
     }
 
     /// Opt into HF2 double-blocking — the SROIQ-sound blocking
@@ -640,6 +844,16 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn stats(&self) -> SearchStats {
         self.stats
+    }
+
+    /// Conflict-learning diagnostics: `(nogoods recorded, disjuncts pruned)`
+    /// accumulated across this engine's `decide` calls. `(0, 0)` when
+    /// learning is disabled.
+    #[must_use]
+    pub fn learn_stats(&self) -> (u64, u64) {
+        self.learn
+            .as_ref()
+            .map_or((0, 0), |l| (l.recorded, l.pruned))
     }
 
     /// True iff every clause is Horn (≤1 head atom). H1 only
@@ -913,6 +1127,11 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        // Conflict learning: nogoods are decide-relative (canon depends on
+        // the per-call root); reset the store + path state each call.
+        if let Some(l) = self.learn.as_mut() {
+            l.reset();
+        }
         self.solve(max_depth)
     }
 
@@ -1168,7 +1387,18 @@ impl<'c> HyperEngine<'c> {
             return HyperResult::Stalled;
         }
         match self.horn_fixpoint(FIXPOINT_ITERS) {
-            HyperResult::Unsat => return HyperResult::Unsat,
+            HyperResult::Unsat => {
+                // Conflict learning: record this primitive clash's nogood
+                // (non-overflow only — overflow = the non-monotone ≤n/≠/NN
+                // clashes, excluded for soundness).
+                let cd = self.clash_deps;
+                if let Some(l) = self.learn.as_mut()
+                    && !cd.overflow
+                {
+                    l.record_clash(cd.bits);
+                }
+                return HyperResult::Unsat;
+            }
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
@@ -1186,7 +1416,29 @@ impl<'c> HyperEngine<'c> {
             let head_len = self.clauses[ci].head.len();
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
+            // Learning: this node's canonical id + the decision path before
+            // this level (shared by all disjuncts of the level).
+            let node_canon = self.nodes[node.index()].canon;
+            let prev_path = self.learn.as_ref().map_or(0, |l| l.cur_path);
             for k in 0..head_len {
+                // Learning: register this level's decision; if the active
+                // decision set now ⊇ a learned nogood, this disjunct is a
+                // known conflict — prune without exploring (sound: deps ⊇
+                // nogood ⟹ clash, by monotonicity).
+                if let Some(l) = self.learn.as_mut() {
+                    let dk = d as usize;
+                    l.set_decision(
+                        dk,
+                        u32::try_from(ci).unwrap_or(u32::MAX),
+                        node_canon,
+                        u32::try_from(k).unwrap_or(u32::MAX),
+                        prev_path,
+                    );
+                    if let Some(pd) = l.check_prune(dk) {
+                        combined = combined.union(pd);
+                        continue;
+                    }
+                }
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
@@ -1203,6 +1455,9 @@ impl<'c> HyperEngine<'c> {
                             // dep-set up, skipping the remaining
                             // disjuncts (and this whole decision).
                             self.clash_deps = child_deps;
+                            if let Some(l) = self.learn.as_mut() {
+                                l.restore_level(d as usize);
+                            }
                             return HyperResult::Unsat;
                         }
                         combined = combined.union(child_deps);
@@ -1212,6 +1467,9 @@ impl<'c> HyperEngine<'c> {
                         any_stalled = true;
                     }
                 }
+            }
+            if let Some(l) = self.learn.as_mut() {
+                l.restore_level(d as usize);
             }
             if any_stalled {
                 return HyperResult::Stalled;
@@ -1833,6 +2091,14 @@ impl<'c> HyperEngine<'c> {
         self.nodes[succ.index()].birth_deps = deps;
         self.nodes[succ.index()].parent = Some(src);
         self.nodes[succ.index()].parent_role = Some(role);
+        if self.learn.is_some() {
+            let pc = self.nodes[src.index()].canon;
+            let canon = self
+                .learn
+                .as_mut()
+                .map_or(0, |l| l.node_canon(pc, role, i64::from(cls.index()), 0));
+            self.nodes[succ.index()].canon = canon;
+        }
         if let Some(ix) = self.block_index.as_mut() {
             ix.entry(role).or_default().push(succ);
         }
@@ -1923,11 +2189,20 @@ impl<'c> HyperEngine<'c> {
         }
         self.nodes[x.index()].at_least_done.push(key);
         let mut fresh = Vec::with_capacity(n as usize);
-        for _ in 0..n {
+        for i in 0..n {
             let succ = self.new_node();
             self.nodes[succ.index()].birth_deps = deps;
             self.nodes[succ.index()].parent = Some(x);
             self.nodes[succ.index()].parent_role = Some(role);
+            if self.learn.is_some() {
+                let pc = self.nodes[x.index()].canon;
+                let q = qual.map_or(-1i64, |c| i64::from(c.index()));
+                let canon = self
+                    .learn
+                    .as_mut()
+                    .map_or(0, |l| l.node_canon(pc, role, q, i));
+                self.nodes[succ.index()].canon = canon;
+            }
             if let Some(ix) = self.block_index.as_mut() {
                 ix.entry(role).or_default().push(succ);
             }

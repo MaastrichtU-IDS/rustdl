@@ -398,6 +398,27 @@ fn wine_closure_matches_konclude() {
 }
 
 #[test]
+#[ignore = "needs ontologies/real/bibtex.ofn + konclude-input/bibtex-classified.owx \
+            (ORE-2015 ore_ont_3341, a BibTeX ontology; HermiT oracle). \
+            Datatype-heavy + real class hierarchy: 41 DataMinCardinality + 40 \
+            DataPropertyDomain + 39 DataPropertyRange, 15 classes, 56 inferred \
+            edges — exercises Phase-D classification on real data. Fetch via \
+            scripts/fetch-real-ontologies.sh."]
+fn bibtex_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/real/bibtex.ofn");
+    let truth = Path::new("../../ontologies/real/konclude-input/bibtex-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing bibtex fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("bibtex", input, truth, 200);
+    assert_eq!(
+        fp, 0,
+        "bibtex has FPs — Phase-D sound-under-approximation broken"
+    );
+}
+
+#[test]
 #[ignore = "needs ontologies/real/ro.ofn + konclude-input/ro-classified.owx; Phase D1 fixture (was UnsupportedAxiom-erroring pre-D1; HermiT oracle generated 2026-06-03)"]
 fn ro_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/ro.ofn");

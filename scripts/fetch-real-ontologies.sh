@@ -85,6 +85,31 @@ fetch_wine() {
 }
 fetch_wine
 
+# bibtex: a datatype-heavy fixture (41 DataMinCardinality + 40
+# DataPropertyDomain + 39 DataPropertyRange, 15 classes) extracted from
+# the ORE-2015 sample (ore_ont_3341 = edu.mit.visus.bibtex). Exercises
+# Phase-D classification on real data; rustdl matches HermiT (FP=0,
+# MISSED=0). See docs/corpus-datatype-2026-06-06.md. Requires the
+# (gitignored) ore2015_sample.zip in ontologies/external/.
+fetch_bibtex() {
+    local zip="$REPO_ROOT/ontologies/external/ore2015_sample.zip"
+    if [[ ! -f "$zip" ]]; then
+        echo "==> bibtex: SKIP (ore2015_sample.zip not present)"
+        return
+    fi
+    echo "==> bibtex (ORE ore_ont_3341, edu.mit.visus.bibtex)"
+    local tmp
+    tmp="$(mktemp -d)"
+    unzip -o -j "$zip" 'pool_sample/files/ore_ont_3341.owl' -d "$tmp" >/dev/null
+    cp "$tmp/ore_ont_3341.owl" "$OUT/bibtex-in.owl"
+    docker run --rm -v "$OUT:/work" -w /work "$ROBOT_IMAGE" \
+        robot convert --input bibtex-in.owl --format ofn --output bibtex.ofn >/dev/null
+    rm -f "$OUT/bibtex-in.owl"
+    rm -rf "$tmp"
+    printf "    saved: ontologies/real/bibtex.ofn (%s bytes)\n" "$(stat -c%s "$OUT/bibtex.ofn")"
+}
+fetch_bibtex
+
 cat <<EOF
 
 Done. Files in $OUT:

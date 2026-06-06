@@ -379,6 +379,25 @@ fn sio_closure_matches_konclude() {
 }
 
 #[test]
+#[ignore = "needs ontologies/real/wine.ofn + konclude-input/wine-classified.owx \
+            (W3C wine+food merged, circular imports stripped; HermiT oracle). \
+            SHOIN(D): nominal- + disjointness-heavy expressivity stressor. \
+            Fetch via scripts/fetch-real-ontologies.sh."]
+fn wine_closure_matches_konclude() {
+    let input = Path::new("../../ontologies/real/wine.ofn");
+    let truth = Path::new("../../ontologies/real/konclude-input/wine-classified.owx");
+    if !input.exists() || !truth.exists() {
+        eprintln!("SKIP: missing wine fixture");
+        return;
+    }
+    let (_r, _k, fp, _m) = diff_corpus_ontology("wine", input, truth, 200);
+    assert_eq!(
+        fp, 0,
+        "wine has FPs — soundness regression on nominals/datatypes"
+    );
+}
+
+#[test]
 #[ignore = "needs ontologies/real/ro.ofn + konclude-input/ro-classified.owx; Phase D1 fixture (was UnsupportedAxiom-erroring pre-D1; HermiT oracle generated 2026-06-03)"]
 fn ro_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/ro.ofn");

@@ -32,6 +32,23 @@ upstream rather than vendored.
 | `ore-10908-sroiq` | ORE 2015 sample (`ore_ont_10908.owl` from `ontologies/external/ore2015_sample.zip`) | RDF/XML | Phase 0 soundness-net broadening: full SROIQ with complex role chains (R), qualified cardinality (Q), inverses, and nominals — the same fragment as SIO that produced all 38 recorded `trust_sat` false positives; 693 classes, HermiT-classified reference produced (1 738 axioms). |
 | `ore-15516-alchoiq` | ORE 2015 sample (`ore_ont_15516.owl` from `ontologies/external/ore2015_sample.zip`) | RDF/XML | Phase 0 soundness-net broadening: ALCHOIQ(D) with qualified cardinality, inverses, role hierarchy, and nominals in 85 classes; **HermiT reports inconsistent** — .ofn fixture left on disk for future use (no current test references it). |
 | `ore-15672-shoin` | ORE 2015 sample (`ore_ont_15672.owl` from `ontologies/external/ore2015_sample.zip`) | RDF/XML | Phase 0 soundness-net broadening: SHOIN with unqualified cardinality (N), inverses, role hierarchy, and nominals in 83 classes — covers the N-flavour number restriction clash semantics not present in the Q-carrying picks; HermiT-classified reference produced (324 axioms). |
+| `wine` | W3C OWL-guide `wine` + `food` (`http://www.w3.org/TR/2003/PR-owl-guide-20031209/{wine,food}`), merged | RDF/XML | The canonical SHOIN(D) tutorial ontology — **nominal-heavy** (207 `ObjectHasValue`/`ObjectOneOf` value restrictions on regions/grapes/colors) + 39 `DisjointClasses` + 88 equivalences in 137 classes. The corpus's stressor for **nominal / value-restriction reasoning**, a class of entailment no other fixture exercised. wine imports food which circularly imports wine; `fetch_wine` strips both `owl:imports` and merges locally. **FP=0, MISSED=57** (HermiT ref 653 vs rustdl 596) — the 57 are nominal/value-restriction subsumptions (`AlsatianWine ⊑ FrenchWine` via region nominals; `Sancerre ⊑ SauvignonBlanc` via grape `hasValue`); sound, an open completeness gap. See `docs/corpus-wine-2026-06-06.md`. |
+
+## Ground-truth (reference classification)
+
+The closure-diff harness compares against a HermiT-inferred reference at
+`ontologies/real/konclude-input/<slug>-classified.owx`, produced by
+[`docker/robot/classify-oracle.sh`](../docker/robot/classify-oracle.sh):
+
+```sh
+docker/robot/classify-oracle.sh ontologies/real/wine.ofn \
+    ontologies/real/konclude-input/wine-classified.owx
+```
+
+Both `ontologies/real/` and the references are gitignored; regenerate from
+upstream with the fetch script + the oracle above. The closure-diff tests
+(`crates/owl-dl-reasoner/tests/konclude_closure_diff.rs`, all `#[ignore]`d) SKIP
+when a fixture is absent.
 
 ## Refresh
 

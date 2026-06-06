@@ -93,3 +93,31 @@ corpus-wide. Residual 34 = grape (`≤1` cardinality) + sugar (`∀`+nominal set
 misc — the hard buckets, deferred as planned. Canary
 `nominal_transitive_abox_fold_classifies` (also asserts the unsound reverse does
 NOT hold).
+
+### Soundness of the inverse × nominal interaction (by invariant, not by test)
+
+The historical 38 SIO false positives came from the inverse-role × nominal ×
+cardinality interaction. Wine's `locatedIn` is transitive but **not** inverse,
+so the corpus FP=0 does **not** empirically exercise an inverse propagation — it
+would be vacuous on this path. The guarantee is a code invariant: no
+`(X, R⁻, NomKey)` fact is ever produced, and the ABox closure ignores inverse
+roles, so a forward NomKey fact can never be matched against an inverse-role
+closure (or vice versa):
+- `atomic_existential_rhs` returns `None` when `role.is_inverse()` — no inverse
+  existential fact (nominal or otherwise) is seeded.
+- `build_abox_nominal_reach` skips inverse roles on both the
+  `TransitiveObjectProperty` declaration scan and the `ObjectPropertyAssertion`
+  edge scan, so `abox_nominal_reach` is keyed only by forward (named) roles.
+
+Both links verified present (2026-06-06). The lever therefore adds nothing on
+inverse roles; the tableau continues to handle inverse × nominal soundly.
+
+### Known bounds
+
+- **Scaling:** `build_abox_nominal_reach` allocates one NomKey per individual in
+  a transitive role's ABox closure, inflating `num_total_classes` (the engine's
+  `subsumed_by` is N² bitsets). Wine's 65 individuals are nothing; an ontology
+  with a large ABox on a transitive role (10⁵ individuals) would be a memory
+  concern. The lever no-ops (single `is_empty` check) on ontologies lacking
+  transitive-role + nominal-body combinations, so non-nominal workloads are
+  unaffected.

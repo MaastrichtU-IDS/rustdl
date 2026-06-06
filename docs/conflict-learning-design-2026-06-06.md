@@ -97,6 +97,15 @@ late extension — root-only is not a useful milestone.**
   disjunct_index}`. **Gate: corpus closure-diff byte-identical** (pure bookkeeping).
   This is the load-bearing, risky piece (provenance must be a true invariant
   across subtrees) and there is no smaller useful version — confront it first.
+- **Inc 0.5 — recurrence probe (GATES the multi-week commitment).** On top of
+  Inc 0's canonicalization, at each clash with non-overflow `clash_deps`,
+  canonicalize its decision-set and record it; count distinct nogoods and the
+  **recurrence rate** (clashes whose decision-set repeats / is a superset of a
+  prior nogood). **Zero pruning, zero soundness risk** — pure measurement on the
+  current engine. This is a *lower bound on Inc 1's pruning power*: high
+  recurrence → Inc 1 pays off, commit with evidence; near-zero → Inc 1 prunes
+  nothing, **stop before building it**. (Per review: canonicalize exactly as Inc 0
+  does — a coarser key inflates the rate into false optimism.)
 - **Inc 1 — record + match nogoods (non-overflow clashes only).** At a clash with
   non-overflow `clash_deps`, map its levels → decisions → store the nogood. Before
   recursing a disjunct, if the current decision-set ⊇ a stored nogood, prune
@@ -127,8 +136,32 @@ Targets wine's 34 + covering-disjunction-heavy ontologies. The corpus already
 converges, so **no corpus speedup expected** — the metric is wine
 `restores/branches` reduction and recovering some of the 34 within budget.
 
-**Honest assessment (post go/no-go).** Two facts make this a high-risk,
-uncertain-payoff effort with no cheap on-ramp:
+## RECURRENCE PROBE RESULT (2026-06-06) — decisive GO
+
+Built the recurrence probe (Inc 0 canonicalization + per-decide nogood store,
+zero pruning, thread-local; reverted after measuring). On wine (`hyper-sat`,
+1 s/class):
+
+```
+learnable_clashes = 159 908   distinct_nogoods = 1 017   recur_hits = 158 891
+overflow_clashes  = 0
+```
+
+- **99.4 % recurrence** — only **1 017 distinct conflicts**, re-derived **~160 k
+  times**. Conflict-driven learning records the 1 017 and prunes the ~158.9 k
+  recurrences ⟹ ~99 % of the disjunction clashes collapse.
+- **0 overflow clashes** — *every* clash is learnable; no `≤n`/`≠`/NN
+  non-monotone case on wine's hot path (pure disjunction). The
+  overflow-exclusion guard costs nothing here.
+- The probe canon is **finer-than-needed** (includes the full decision prefix),
+  which only *deflates* recurrence — so **99.4 % is a lower bound**.
+
+**Verdict: GO, evidence-backed.** Payoff is no longer "uncertain until built" —
+the lower bound is ~99 % clash reduction. Proceed to production Inc 1.
+
+## Honest assessment (now superseded by the probe — kept for the record)
+
+Two facts had made this look high-risk before the probe:
 1. **No de-risked increment.** The provenance-based canonical node identity
    (Inc 0) is the load-bearing, soundness-critical piece and must come first;
    there's no "root-only" warm-up that validates anything (~4 % coverage).

@@ -59,6 +59,57 @@ for entry in "${SOURCES[@]}"; do
     fetch_one "$entry"
 done
 
+# Wine needs special handling: the W3C OWL-guide wine ontology imports
+# food, and food circularly imports wine. ROBOT hangs trying to resolve
+# those web imports, so we fetch both, strip the `owl:imports` triples,
+# and merge them locally into one self-contained ontology. SHOIN(D) —
+# nominal- + disjointness-heavy; the corpus's expressivity stressor for
+# nominal/value-restriction reasoning. See docs/real-ontology-corpus.md.
+fetch_wine() {
+    echo "==> wine (W3C wine+food, merged)"
+    local base="http://www.w3.org/TR/2003/PR-owl-guide-20031209"
+    curl -sS --fail --max-time 120 -L -o "$OUT/wine.rdf" "$base/wine"
+    curl -sS --fail --max-time 120 -L -o "$OUT/food.rdf" "$base/food"
+    # Strip circular owl:imports so ROBOT does not try to resolve them
+    # over the network (food imports wine imports food).
+    grep -v 'owl:imports' "$OUT/wine.rdf" > "$OUT/wine-noimport.rdf"
+    grep -v 'owl:imports' "$OUT/food.rdf" > "$OUT/food-noimport.rdf"
+    echo "    merge wine+food -> wine.ofn"
+    docker run --rm \
+        -v "$OUT:/work" -w /work \
+        "$ROBOT_IMAGE" \
+        robot merge --input wine-noimport.rdf --input food-noimport.rdf \
+              convert --format ofn --output wine.ofn >/dev/null
+    rm -f "$OUT/wine-noimport.rdf" "$OUT/food-noimport.rdf"
+    printf "    saved: ontologies/real/wine.ofn (%s bytes)\n" "$(stat -c%s "$OUT/wine.ofn")"
+}
+fetch_wine
+
+# bibtex: a datatype-heavy fixture (41 DataMinCardinality + 40
+# DataPropertyDomain + 39 DataPropertyRange, 15 classes) extracted from
+# the ORE-2015 sample (ore_ont_3341 = edu.mit.visus.bibtex). Exercises
+# Phase-D classification on real data; rustdl matches HermiT (FP=0,
+# MISSED=0). See docs/corpus-datatype-2026-06-06.md. Requires the
+# (gitignored) ore2015_sample.zip in ontologies/external/.
+fetch_bibtex() {
+    local zip="$REPO_ROOT/ontologies/external/ore2015_sample.zip"
+    if [[ ! -f "$zip" ]]; then
+        echo "==> bibtex: SKIP (ore2015_sample.zip not present)"
+        return
+    fi
+    echo "==> bibtex (ORE ore_ont_3341, edu.mit.visus.bibtex)"
+    local tmp
+    tmp="$(mktemp -d)"
+    unzip -o -j "$zip" 'pool_sample/files/ore_ont_3341.owl' -d "$tmp" >/dev/null
+    cp "$tmp/ore_ont_3341.owl" "$OUT/bibtex-in.owl"
+    docker run --rm -v "$OUT:/work" -w /work "$ROBOT_IMAGE" \
+        robot convert --input bibtex-in.owl --format ofn --output bibtex.ofn >/dev/null
+    rm -f "$OUT/bibtex-in.owl"
+    rm -rf "$tmp"
+    printf "    saved: ontologies/real/bibtex.ofn (%s bytes)\n" "$(stat -c%s "$OUT/bibtex.ofn")"
+}
+fetch_bibtex
+
 cat <<EOF
 
 Done. Files in $OUT:

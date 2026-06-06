@@ -107,6 +107,18 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   32739=32739); GALEN stays 0; FP=0 across the whole corpus.** The
   only remaining corpus MISS is SIO's 2 (out-of-EL). Canary
   `functional_role_merge_body_on_sub_role`. See `docs/phase2e-results.md`.
+  Nominal lever (2026-06-06): the EL fold now handles nominal-filler
+  existentials (`∃R.{a}`, i.e. `ObjectHasValue`) by mapping each
+  individual to an opaque per-individual synthetic class (NomKey) at the
+  lowering chokepoint (`atomic_or_tseitin_body_with_extras`), plus
+  transitive-ABox propagation (`build_abox_nominal_reach`): `X ⊑ ∃R.{a}`,
+  `a R⁺ b` (R transitive) ⟹ `X ⊑ ∃R.{b}`. Sound (1:1 individual identity;
+  propagation gated on role transitivity; nominal singleton/cardinality
+  semantics deliberately unmodeled — under-approximation). Closed the
+  wine region/color cluster: **wine MISSED 57 → 34, FP=0 across all 10
+  fixtures**. Residual 34 = grape (`≤1` cardinality) + sugar (`∀`+nominal
+  set), deferred. Canary `nominal_transitive_abox_fold_classifies`. See
+  `docs/nominal-lever-scoping-2026-06-06.md`.
 
 - **`crates/owl-dl-tableau`** — SROIQ tableau. `CompletionGraph` (`graph.rs`)
   of label-carrying nodes; `TableauTrail` (`trail.rs`) gives log-and-undo

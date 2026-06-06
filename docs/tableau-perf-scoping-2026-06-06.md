@@ -1,0 +1,128 @@
+# Scoping: making the complete engine tractable on nominal/disjunction-heavy
+# ontologies (wine, and the hard-SROIQ frontier)
+
+Scoped 2026-06-06. Question: what makes the complete (wedge/tableau) engine time
+out on wine — and is there a tractable lever to close wine's residual 34 (and the
+broader hard-SROIQ perf gap)?
+
+**Verdict (measured, not inferred): the bottleneck is disjunction-branching
+explosion in the wedge — not blocking, not model size, not completeness, not
+merges.** The lever is conflict-driven search efficiency (nogood learning /
+stronger dependency-directed backjumping). Multi-week, soundness-delicate, and
+wine is an *outlier* relative to the otherwise-converging corpus.
+
+## What was measured
+
+| Probe | Result |
+|---|---|
+| `clause-stats wine` | **deferred=0** — the wedge fully represents wine (nominals + cardinality as 76 disjunctive clauses). Not a representation gap. |
+| grape pair in **isolation** (`/tmp/grape.ofn`) | wedge **proves `Sancerre ⊑ SauvignonBlanc` (Unsat) in 0.10 ms**, disj=10, **merge=0**, stalled=0. Not a completeness gap, not a merge/backjump issue, not intrinsically hard. |
+| `hyper-sat wine` (per-class, 1 s budget) | **90 / 137 classes STALL**, 1.20 M total branches, max depth 59. |
+| stalled-class breakdown | disj branches dominate: CabernetFranc 21 798 disj / **0 merge** (depth 21); Merlot 21 376 disj / 0 merge; most stalled classes are **merge=0**. **restores = branches** → every branch fully unwound, pruning isn't capping the tree. |
+
+Contrast (from the 2026-06-05 roadmap addendum): pizza blocks 35 % / 0 stalls;
+SIO per-class sat 668 ms / 0 stalls. **Wine is qualitatively harder** — 76
+disjunctive covering/disjointness clauses (every wine's colour/grape/region is a
+covering disjunction) create a combinatorial branch tree the wedge re-explores.
+
+## Why my first hypothesis was wrong
+
+I initially named the lever as "precise merge DepSets to fix backjumping through
+`≤n` merges" (the deferred `wedge-merge-deps-defeat-backjumping` memory note,
+which explains `SpicyPizza`). The single-pair discriminator refuted it: the grape
+pair has **merge=0** and is proved in 0.1 ms in isolation; the stalled wine
+classes are disj-dominated with merge=0. Wine's explosion is **pure disjunction
+branching**, a different lever. (Lesson re-confirmed: measure the per-pair
+`disj/merge/stalled` before naming a lever.)
+
+## The lever(s)
+
+The wedge already has dependency-directed backjumping but **no learning**
+(`restores = branches` on the stalled classes: it re-derives the same conflicts).
+Highest-impact options, in rough order:
+
+1. **Conflict-driven nogood learning** (CDCL-style, adapted to tableau): record
+   the clash dep-set as a learned constraint so the search never re-enters an
+   equivalent subtree. Directly attacks `restores = branches`. Multi-week;
+   **soundness-critical** (a learned nogood with under-reported deps → unsound
+   prune → false subsumption, the #1 failure mode). Heavy closure-diff + Konclude
+   gating required.
+2. **Stronger dependency-directed backjumping**, including the deferred
+   `≤n`-merge precise-DepSet work (helps `SpicyPizza`-style cardinality pairs;
+   *not* wine, which is merge=0).
+3. **Relevance / module extraction per pair** (Lever D): restrict the 76
+   disjunctions to those reachable from the pair's signature, so unrelated
+   covering axioms don't branch. Cheaper than learning, but wine may be a single
+   signature component (per `module-extraction-plan.md` §A, pizza/SIO were) —
+   measure module sizes first.
+
+## Relevance is exhausted (measured)
+
+`rustdl locality-stats wine` → **137 classes, 4 components, largest = 129
+(94.2 % dominance)**. Wine is one monolithic co-occurrence component (all wines
++ grapes + colours + regions entangled through the covering/disjointness
+axioms). The co-occurrence locality filter is **already wired** (`lib.rs:1252`,
+skips different-component pairs) and therefore **cannot help wine's 34** — they
+are all inside the 129-class component. A finer ⊥-locality module (Lever D)
+would have to fragment a dense, covering-axiom-entangled component; unlikely to
+shrink per-pair clause sets meaningfully. **Relevance is not the lever for wine.**
+
+## FINAL: it's genuine disjunction interdependence → learning is the only lever
+
+Checked the three `DepSet::ALL` construction sites in `hyper.rs` (1235/1445/1552):
+**all three are the `≤n` cardinality merge** (algebraic clash pre-check,
+`partition_rec` exhaustion, `merge()` ≠-violation). There is **no separate
+NN-rule `DepSet::ALL` source** — so the NN-rule hypothesis below is also wrong.
+
+The merge=0 stalled classes therefore hit **no `DepSet::ALL` source**, and they
+reach depth ~26 (well under the 128-level overflow). So their dep-sets are
+tracked **precisely** and backjumping **is** functioning — yet `restores =
+branches` (CabernetFranc: 21 798 disj / 0 merge / 21 798 restores). The only
+consistent explanation: the disjunction clashes are **genuinely interdependent**
+(each clash's dep-set contains the recent disjunction decisions, so there is no
+sibling to backjump past). Backjumping cannot help by construction.
+
+**Therefore the lever is conflict-driven nogood learning — full stop.**
+Dep-precision is ruled out (no `DepSet::ALL` on these classes' hot path);
+relevance is ruled out (monolithic component); blocking is ruled out (fires /
+depth bounded); completeness is ruled out (deferred=0). Two hypotheses were
+measured and discarded en route (merge-backjumping, NN-rule dep-precision).
+
+Conflict-driven learning is multi-week and **soundness-critical** (a learned
+nogood with under-reported deps → unsound prune → false subsumption, the #1
+failure mode); requires heavy closure-diff + Konclude gating.
+
+## (discarded) Refined lever: why backjumping isn't pruning (candidate, needs one check)
+
+`restores = branches` even on a **merge=0** stalled class (CabernetFranc: 21 798
+disj / 0 merge) means dependency-directed backjumping prunes *nothing* — yet with
+independent disjunctions it should. The likely cause: a construct reporting
+`DepSet::ALL` (overflow → "don't backjump past") on wine's hot path. Two known
+`DepSet::ALL` sources (`hyper.rs` ~line 81): the `≤n` merge **and the NN-rule
+(nominal merge)**. Wine is nominal-heavy, so the **NN-rule** is the prime suspect
+for defeating backjumping even where `merge=0` (that counter is the `≤n` merge,
+not the NN nominal merge). **Unverified** — the next step before committing to a
+lever is to confirm whether wine's branching is downstream of NN-rule /
+merge `DepSet::ALL`:
+- If yes → the lever is **precise (or sound-narrower) dep provenance for the
+  NN-rule / merge** so backjumping prunes — bounded (1–2 sessions) but
+  **soundness-critical** (under-report → false backjump → missed model → false
+  subsumption; the #1 failure mode).
+- If no (clashes genuinely depend on all decisions) → only **conflict-driven
+  nogood learning** helps — multi-week, equally soundness-critical.
+
+## Recommendation
+
+Wine is an **outlier**: the measured corpus (pizza, SIO, GALEN, ORE) already
+converges (blocking fires, 0 stalls), so this lever does **not** unblock the
+corpus — it targets covering-disjunction-heavy ontologies (wine and similar).
+Cost/benefit: conflict-driven learning is a multi-week, soundness-critical engine
+change for an *informational* (FP=0-only-gated) stressor plus future
+covering-heavy inputs.
+
+**Suggested order if pursued:** (a) measure wine's per-pair module sizes (cheap)
+— if small, relevance/Lever D is the low-risk first cut; (b) only if modules are
+large does conflict-driven learning become the necessary (and risky) lever. Bank
+the region-cluster win (wine 57 → 34, FP=0) and treat the 34 as the documented
+hard-SROIQ-disjunction frontier until a covering-heavy workload makes the
+learning investment pay off.

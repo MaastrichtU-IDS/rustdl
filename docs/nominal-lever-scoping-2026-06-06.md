@@ -74,3 +74,22 @@ reasoning. Options:
 
 Either way the test asserts only FP=0 today (MISالسED informational, as for
 sio/ro/sulo), so no regression risk in deferring.
+
+## SHIPPED (2026-06-06) — option 1, region/color cluster
+
+Built (A)+(B) **saturator-private** (no tableau impact, lowest FP risk):
+- **(B)** `atomic_or_tseitin_body_with_extras` maps `Nominal(a)` bodies to an
+  opaque per-individual synthetic class (`TseitinAllocator::introduce_nominal`),
+  so the EL fold of `C ≡ D ⊓ ∃R.{a}` matches the `X ⊑ ∃R.{a}` fact. Fact side
+  (`atomic_existential_rhs`) emits the bare NomKey (bypassing the range-extras
+  wrap, which would hide the NomKey behind a synthetic and defeat (A)).
+- **(A)** `build_abox_nominal_reach` builds the transitive closure of each
+  transitive role over the named-individual ABox; `process_fact` propagates
+  `X ⊑ ∃R.{a}` → `X ⊑ ∃R.{b}` for `b` in `a`'s reach.
+
+**Result: wine MISSED 57 → 34 (23 recovered: region + color), FP=0 across all
+10 corpus fixtures; the 9 parity fixtures stay MISSED=0.** Soundness gate held
+corpus-wide. Residual 34 = grape (`≤1` cardinality) + sugar (`∀`+nominal set) +
+misc — the hard buckets, deferred as planned. Canary
+`nominal_transitive_abox_fold_classifies` (also asserts the unsound reverse does
+NOT hold).

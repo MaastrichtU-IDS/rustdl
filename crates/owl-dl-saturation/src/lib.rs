@@ -53,8 +53,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use fixedbitset::FixedBitSet;
 use owl_dl_core::{
-    Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, RoleId,
-    SubRolePath,
+    Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, InternalOntology, Role,
+    RoleId, SubRolePath,
 };
 
 /// Compute the subsumer closure over the EL-fragment subset of
@@ -676,6 +676,22 @@ impl WorklistEngine {
     #[allow(clippy::too_many_lines)]
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
+        // Nominal/ABox transitive propagation: if `fact` is
+        // `X ⊑ ∃R.{a}` (target is a NomKey) and `R` is transitive with
+        // `a R⁺ b` in the ABox, derive `X ⊑ ∃R.{b}`. Sound: `X R a`,
+        // `a R⁺ b`, `R` transitive ⟹ `X R b`. See `build_abox_nominal_reach`.
+        if !self.rules.abox_nominal_reach.is_empty()
+            && let Some(reach) = self.rules.abox_nominal_reach.get(&(fact.role, fact.target))
+        {
+            let derived: Vec<ClassId> = reach.clone();
+            for b_key in derived {
+                self.push_fact(ExistentialFact {
+                    sub: fact.sub,
+                    role: fact.role,
+                    target: b_key,
+                });
+            }
+        }
         let role_supers = supers_of(&self.role_super, fact.role);
         // NOTE: range propagation deliberately omitted.
         //
@@ -1034,6 +1050,16 @@ struct ElRules {
     /// Pairwise disjoint atomic-class pairs, decomposed from n-ary
     /// `DisjointClasses` axioms. Read as `A ⊓ B ⊑ ⊥`.
     disjoint_pairs: Vec<(ClassId, ClassId)>,
+    /// Nominal-reasoning support (wine region cluster). For a
+    /// **transitive** role `R` and a nominal-key class `NomKey(a)`
+    /// (synthetic stand-in for the singleton `{a}`),
+    /// `abox_nominal_reach[(R, NomKey(a))]` lists `NomKey(b)` for every
+    /// individual `b` reachable from `a` via the transitive closure of
+    /// `R` over the named-individual `ABox`. Lets a fact
+    /// `X ⊑ ∃R.{a}` derive `X ⊑ ∃R.{b}` (sound: `X R a`, `a R⁺ b`,
+    /// `R` transitive ⟹ `X R b`). Empty unless the ontology has both
+    /// nominal existential bodies and transitive-role `ABox` edges.
+    abox_nominal_reach: std::collections::HashMap<(RoleId, ClassId), Vec<ClassId>>,
     /// Atomic classes told directly to be unsatisfiable via
     /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
     /// at `seed` time so the standard `process_unsat` propagation
@@ -1146,6 +1172,12 @@ struct TseitinAllocator {
     /// by `(role, body_class_id)` so repeated occurrences of the same
     /// `∃R.B` shape across different conjunctions share one marker.
     by_existential: HashMap<(RoleId, ClassId), ClassId>,
+    /// Stable synthetic atomic class per individual used as a nominal
+    /// (`{a}`) in an existential body. Treated as an opaque atom
+    /// (no subsumers, no triggers) — a 1:1 structural stand-in so the
+    /// EL fold of `C ≡ D ⊓ ∃R.{a}` fires on the same key the fact
+    /// `X ⊑ ∃R.{a}` produced. Injective, so no two individuals merge.
+    nominal_by_ind: HashMap<IndividualId, ClassId>,
 }
 
 impl TseitinAllocator {
@@ -1154,7 +1186,21 @@ impl TseitinAllocator {
             next_id: u32::try_from(num_original_classes).expect("class count fits in u32"),
             by_body: HashMap::new(),
             by_existential: HashMap::new(),
+            nominal_by_ind: HashMap::new(),
         }
+    }
+
+    /// Get-or-allocate the opaque synthetic atomic class standing in for
+    /// the nominal `{ind}`. Sound: matching is by individual identity
+    /// (structural), so `∃R.{a}` folds only against the same `a`.
+    fn introduce_nominal(&mut self, ind: IndividualId) -> ClassId {
+        if let Some(&existing) = self.nominal_by_ind.get(&ind) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.nominal_by_ind.insert(ind, synthetic);
+        synthetic
     }
 
     fn introduce(&mut self, mut body: Vec<ClassId>, rules: &mut ElRules) -> ClassId {
@@ -1362,6 +1408,12 @@ fn collect_el_rules(
             _ => {}
         }
     }
+
+    // Nominal/ABox transitive propagation (wine region cluster).
+    // Allocates NomKeys for ABox individuals, so it must run before
+    // `total_classes` is captured.
+    build_abox_nominal_reach(internal, &mut tseitin, &mut rules);
+
     let total_classes = tseitin.next_id as usize;
 
     // Phase 2a: collect functional-role declarations and precompute
@@ -1638,6 +1690,15 @@ fn atomic_existential_rhs(
     if role.is_inverse() {
         return None;
     }
+    // Nominal body `∃R.{a}`: emit the bare per-individual NomKey, NOT a
+    // range-wrapped synthetic. The wrap (`NomKey ⊓ Range(R)`) would make
+    // the fact target a fresh synthetic, defeating the `abox_nominal_reach`
+    // lookup in `process_fact` (keyed on the bare NomKey). Dropping the
+    // range-typing of the witness is a sound under-approximation — the
+    // nominal fold needs only the NomKey identity.
+    if let ConceptExpr::Nominal(ind) = pool.get(*body) {
+        return Some((role.role_id(), tseitin.introduce_nominal(*ind)));
+    }
     let extras = effective_ranges
         .get(&role.role_id())
         .map_or(&[][..], Vec::as_slice);
@@ -1656,6 +1717,90 @@ fn atomic_or_tseitin_body(
     tseitin: &mut TseitinAllocator,
 ) -> Option<ClassId> {
     atomic_or_tseitin_body_with_extras(body, &[], pool, rules, tseitin)
+}
+
+/// Populate [`ElRules::abox_nominal_reach`]: for each **transitive**
+/// named role `R`, compute the transitive closure of `R` over named
+/// individuals (`ObjectPropertyAssertion`s) and map each source's
+/// `NomKey` to the `NomKey`s of all reachable individuals. Enables the
+/// sound `X ⊑ ∃R.{a}`, `a R⁺ b` ⟹ `X ⊑ ∃R.{b}` propagation in
+/// `process_fact`. No-op unless the ontology has transitive roles with
+/// `ABox` edges.
+fn build_abox_nominal_reach(
+    internal: &InternalOntology,
+    tseitin: &mut TseitinAllocator,
+    rules: &mut ElRules,
+) {
+    use std::collections::BTreeSet;
+    let mut transitive: HashSet<RoleId> = HashSet::new();
+    for ax in &internal.axioms {
+        if let Axiom::TransitiveRole(role) = ax
+            && !role.is_inverse()
+        {
+            transitive.insert(role.role_id());
+        }
+    }
+    if transitive.is_empty() {
+        return;
+    }
+    // Direct R-successor graph over individuals (named, transitive R only).
+    let mut direct: HashMap<RoleId, HashMap<IndividualId, BTreeSet<IndividualId>>> = HashMap::new();
+    for ax in &internal.axioms {
+        if let Axiom::ObjectPropertyAssertion {
+            role,
+            subject,
+            object,
+        } = ax
+            && !role.is_inverse()
+            && transitive.contains(&role.role_id())
+        {
+            direct
+                .entry(role.role_id())
+                .or_default()
+                .entry(*subject)
+                .or_default()
+                .insert(*object);
+        }
+    }
+    for (role, graph) in &direct {
+        // Naive transitive-closure fixpoint (ABoxes here are tiny).
+        let mut closure = graph.clone();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let sources: Vec<IndividualId> = closure.keys().copied().collect();
+            for a in sources {
+                let mids: Vec<IndividualId> = closure
+                    .get(&a)
+                    .map(|s| s.iter().copied().collect())
+                    .unwrap_or_default();
+                let mut additions: Vec<IndividualId> = Vec::new();
+                for m in mids {
+                    if let Some(ms) = graph.get(&m) {
+                        additions.extend(ms.iter().copied());
+                    }
+                }
+                if let Some(reach) = closure.get_mut(&a) {
+                    for t in additions {
+                        if t != a && reach.insert(t) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        for (a, reach) in &closure {
+            if reach.is_empty() {
+                continue;
+            }
+            let a_key = tseitin.introduce_nominal(*a);
+            let targets: Vec<ClassId> = reach
+                .iter()
+                .map(|&b| tseitin.introduce_nominal(b))
+                .collect();
+            rules.abox_nominal_reach.insert((*role, a_key), targets);
+        }
+    }
 }
 
 /// Return the list of alternative body class ids for an existential
@@ -1701,6 +1846,13 @@ fn atomic_or_tseitin_body_with_extras(
 ) -> Option<ClassId> {
     let body_atomics: Vec<ClassId> = match pool.get(body) {
         ConceptExpr::Atomic(id) => vec![*id],
+        // Nominal `{a}` body (`∃R.{a}`, i.e. ObjectHasValue): use an
+        // opaque per-individual synthetic class as a structural
+        // stand-in so the EL fold of `C ≡ D ⊓ ∃R.{a}` matches the
+        // `X ⊑ ∃R.{a}` fact. Sound (1:1 individual identity); the
+        // singleton/cardinality semantics of `{a}` are deliberately
+        // not modeled (under-approximation — the tableau handles those).
+        ConceptExpr::Nominal(ind) => vec![tseitin.introduce_nominal(*ind)],
         ConceptExpr::And(operands) => {
             atomic_classes_with_existential_markers(operands, pool, rules, tseitin)?
         }
@@ -2597,6 +2749,47 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "X"), class(&internal, "W")));
+    }
+
+    #[test]
+    fn nominal_transitive_abox_fold_classifies() {
+        // Wine region pattern: AlsatianWine ≡ Wine ⊓ ∃locatedIn.{Alsace};
+        // FrenchWine ≡ Wine ⊓ ∃locatedIn.{French}; locatedIn transitive;
+        // ABox Alsace locatedIn French. By transitivity AlsatianWine's
+        // locatedIn-witness reaches French ⟹ AlsatianWine ⊑ FrenchWine.
+        // Exercises the nominal NomKey fold (B) + transitive-ABox
+        // propagation (A). EL alone drops nominal-filler existentials.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Wine))\n\
+    Declaration(Class(:AlsatianWine))\n\
+    Declaration(Class(:FrenchWine))\n\
+    Declaration(NamedIndividual(:Alsace))\n\
+    Declaration(NamedIndividual(:French))\n\
+    Declaration(ObjectProperty(:locatedIn))\n\
+    TransitiveObjectProperty(:locatedIn)\n\
+    ObjectPropertyAssertion(:locatedIn :Alsace :French)\n\
+    EquivalentClasses(:AlsatianWine ObjectIntersectionOf(:Wine ObjectHasValue(:locatedIn :Alsace)))\n\
+    EquivalentClasses(:FrenchWine ObjectIntersectionOf(:Wine ObjectHasValue(:locatedIn :French)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(
+                class(&internal, "AlsatianWine"),
+                class(&internal, "FrenchWine")
+            ),
+            "nominal transitive-ABox fold failed: AlsatianWine ⊑ FrenchWine"
+        );
+        // Soundness: the reverse must NOT hold (French does not locate in Alsace).
+        assert!(
+            !subs.contains(
+                class(&internal, "FrenchWine"),
+                class(&internal, "AlsatianWine")
+            ),
+            "unsound: FrenchWine ⊑ AlsatianWine should not hold"
+        );
     }
 
     #[test]

@@ -190,6 +190,9 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
     let mut results = Vec::with_capacity(internal.vocabulary.num_classes());
     for (class_id, iri) in internal.vocabulary.classes() {
         let mut engine = HyperEngine::new(&clauses, class_id);
+        if hyper_learning_enabled() {
+            engine = engine.with_learning();
+        }
         let deadline = per_class_timeout.map(|t| std::time::Instant::now() + t);
         let start = std::time::Instant::now();
         let result = engine.decide_with_deadline(max_depth, deadline);
@@ -577,6 +580,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if hyper_double_block_enabled() {
                 engine = engine.with_double_blocking();
             }
+            if hyper_learning_enabled() {
+                engine = engine.with_learning();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -635,6 +641,15 @@ pub fn hyper_wedge_enabled() -> bool {
 #[must_use]
 pub fn hyper_double_block_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Conflict-driven nogood learning in the wedge (`RUSTDL_HYPER_LEARNING`).
+/// **Default OFF** — opt-in only (`RUSTDL_HYPER_LEARNING=1`). Soundness-
+/// critical and under evaluation; default behaviour is byte-identical
+/// without it. See `docs/conflict-learning-design-2026-06-06.md`.
+#[must_use]
+pub fn hyper_learning_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPER_LEARNING").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -914,6 +929,9 @@ impl HyperCache {
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
+        if hyper_learning_enabled() {
+            engine = engine.with_learning();
+        }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
@@ -941,6 +959,9 @@ impl HyperCache {
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
+        }
+        if hyper_learning_enabled() {
+            engine = engine.with_learning();
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,

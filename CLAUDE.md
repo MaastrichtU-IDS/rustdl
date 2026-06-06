@@ -332,6 +332,23 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §5
   + `docs/phase2a-recon.md` + `docs/phase2b-snapshot-results.md`.
 
+- **New as of 2026-06-06**: `RUSTDL_PRECISE_CARD_DEPS` defaults ON.
+  At the wedge's `≤n` cardinality-clash pre-check, reports a sound
+  over-approximation of the clash's dependency set
+  (`parent.at_most_dep ∪ ⋃(birth ∪ label of succs) ∪ parent(birth ∪
+  label)`) instead of the conservative `DepSet::ALL`, unblocking
+  dependency-directed backjumping on cardinality clashes. **Sound by
+  construction** (superset ⟹ backjumping never under-reports; four
+  contributors proven, guarded by own-successor / `≠`-only / merge-taint
+  fallbacks — see `card_clash_deps` + `docs/backjump-reconcile-2026-06-06.md`).
+  The `solve_at_most` partition-exhaustion site is deliberately NOT
+  narrowed (kept `DepSet::ALL`). Recovered wine MISSED 34→31
+  (algorithmic, budget-independent), −25% wall on wine; FP=0 across
+  wine/ore-10908/ore-15672/shoiq-knowledge/sio/alehif; inert on the
+  EL/Horn corpus (Horn-shortcircuited). Set `RUSTDL_PRECISE_CARD_DEPS=0`
+  to revert. Verdict-preservation regression tests:
+  `precise_card_deps_preserves_{unsat,sat}_verdict` in `owl-dl-tableau`.
+
 When changing the saturation/wedge engines or caches, the failure mode that
 matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cache-project-complete.md` and `docs/abox-consistency-check-handoff.md` for
 current engine state, characterized MISSED, open levers, and dead-ends;

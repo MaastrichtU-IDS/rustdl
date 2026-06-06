@@ -641,16 +641,20 @@ pub fn hyper_double_block_enabled() -> bool {
 }
 
 /// Precise (sound over-approx) `≤n`-cardinality clash deps
-/// (`RUSTDL_PRECISE_CARD_DEPS`). Replaces the conservative `DepSet::ALL` at the
-/// two cardinality clash sites with `⋃(birth ∪ label of succs) ∪ parent(birth ∪
-/// label)` — a superset of the true deps when distinctness is disjoint-label-
-/// derived, falling back to `DepSet::ALL` on any `≠`-forced-only pair. Unblocks
-/// dependency-directed backjumping on cardinality clashes (measured: ~43 % of
-/// wine's cardinality clashes; see `docs/backjump-reconcile-2026-06-06.md`).
-/// **Default off** — opt-in experimental lever, sound by construction.
+/// (`RUSTDL_PRECISE_CARD_DEPS`). At the `forced_distinct_exceeds` pre-check site
+/// replaces the conservative `DepSet::ALL` with `parent.at_most_dep ∪ ⋃(birth ∪
+/// label of succs) ∪ parent(birth ∪ label)` — a provable superset of the clash's
+/// true deps (sound by construction; see `card_clash_deps`), guarded by the
+/// own-successor / `≠`-only / merge-taint fallbacks. Unblocks dependency-directed
+/// backjumping on cardinality clashes (wine MISSED 34→31, −25% wall, FP=0;
+/// see `docs/backjump-reconcile-2026-06-06.md`). **Default on** as of the flip
+/// (2026-06-06): sound by construction, FP=0 across the cardinality/nominal
+/// corpus, and inert on the EL/Horn corpus (Horn-shortcircuited, never enters
+/// the wedge cardinality path). Set `RUSTDL_PRECISE_CARD_DEPS=0` to revert to the
+/// conservative `DepSet::ALL` behaviour.
 #[must_use]
 pub fn hyper_precise_card_deps_enabled() -> bool {
-    std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`

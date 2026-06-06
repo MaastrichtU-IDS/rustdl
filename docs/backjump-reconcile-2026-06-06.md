@@ -241,10 +241,16 @@ Horn-shortcircuited and never enter the wedge cardinality path. The
 cardinality-bearing fixtures wine/ore-10908/ore-15672/shoiq are the real corpus
 coverage and are already green.)
 
-Remaining before a default-ON flip: an explicit flip decision. Kept **default
-OFF** in-commit. Recovering the extra 4 (the `solve_at_most` fallback site /
-Hole A) needs precise deeper-search provenance — real conflict analysis
-(1-UIP-style) or `≠`-relation dep tracking — a larger effort, deferred.
+**Flipped to default ON (2026-06-06).** By explicit decision, after: sound by
+construction (4-contributor proof + advisor sign-off), FP=0 across all six
+cardinality/nominal fixtures, verdict-preservation regression tests in CI, inert
+on the EL/Horn corpus (Horn-shortcircuited), and no test regressions (reasoner +
+tableau suites identical with the flag forced OFF vs the new default). Set
+`RUSTDL_PRECISE_CARD_DEPS=0` to revert to the conservative `DepSet::ALL`.
+
+Recovering the extra 4 (the `solve_at_most` fallback site / Hole A) needs precise
+deeper-search provenance — real conflict analysis (1-UIP-style) or `≠`-relation
+dep tracking — a larger effort, deferred.
 
 ## Original next-step note (superseded by the build above)
 

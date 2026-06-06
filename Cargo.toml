@@ -22,7 +22,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0 OR MIT"
@@ -34,11 +34,11 @@ keywords = ["owl", "ontology", "reasoner", "description-logic", "semantic-web"]
 categories = ["science", "data-structures"]
 
 [workspace.dependencies]
-owl-dl-core = { path = "crates/owl-dl-core", version = "0.3.3" }
-owl-dl-saturation = { path = "crates/owl-dl-saturation", version = "0.3.3" }
-owl-dl-tableau = { path = "crates/owl-dl-tableau", version = "0.3.3" }
-owl-dl-datatypes = { path = "crates/owl-dl-datatypes", version = "0.3.3" }
-owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.3.3" }
+owl-dl-core = { path = "crates/owl-dl-core", version = "0.3.4" }
+owl-dl-saturation = { path = "crates/owl-dl-saturation", version = "0.3.4" }
+owl-dl-tableau = { path = "crates/owl-dl-tableau", version = "0.3.4" }
+owl-dl-datatypes = { path = "crates/owl-dl-datatypes", version = "0.3.4" }
+owl-dl-reasoner = { path = "crates/owl-dl-reasoner", version = "0.3.4" }
 
 horned-owl = { version = "1.4", default-features = false }
 

@@ -130,10 +130,43 @@ testing reachable sups independently) would be the safe behavior.
 The dominant remainder. Genuine reasoning gaps in the under-approximated nominal
 semantics (`∃R.{a}`+functional ⟹ `∀R.{a}`, `{a}⊆{a,b}` nominal-set, region→grape
 + `≤1`). Representatives don't resolve even unbounded (`trust_sat=0` timeout).
-This is the same lever the nominal-lever scoping doc deferred; out of scope for
-the two cheap classify fixes above. NB: item 2 may reveal some B/C/D timeouts are
-partly the ABox-seed perf bug rather than pure modeling — re-check a B/C pair via
-the fresh path once item 2 is addressed.
+This is the same lever the nominal-lever scoping doc deferred.
+
+### Cluster B (sugar) — sound rule designed, ceiling measured = 2 pairs ⇒ bundle, don't ship solo (2026-06-07)
+
+**Sound rule** (advisor-confirmed): when the saturator processes an existential
+fact `C ⊑ ∃R.{a}` (`target = NomKey(a)`) with `R` **functional**, `a ∈ S` for a
+target `T ≡ B ⊓ ∀R.OneOf(S)`, and the closure has `C ⊑ B`, derive `C ⊑ T`.
+Sound: functional + `∃R.{a}` ⟹ the unique R-filler is `a ∈ S` ⟹ `C ⊑ ∀R.OneOf(S)`;
+with `C ⊑ B` ⟹ `C ⊑ T`. Hook: a new rule in `saturation/process_fact` (the
+fixpoint, not a post-pass — clusters interact). NomKey-opaque (uses only
+individual identity + functionality).
+
+**Soundness checklist (must hold):** (1) target `T` must be `EquivalentClasses`
+(need the `definition ⊑ T` direction) — **NOT `SubClassOf`**; most wine
+`∀hasSugar.OneOf` axioms are one-way `SubClassOf` (CheninBlanc, DessertWine, …),
+only `WhiteNonSweetWine ≡ WhiteWine ⊓ ∀hasSugar.OneOf(Dry,OffDry)` qualifies.
+(2) role identity: the functional role, the `∃`-fact role, and the `∀`-target
+role must be the same `R` (mind sub-role propagation — the precise-card-deps
+role-hierarchy subtlety).
+
+**Ceiling (measured, not built):** for `T = WhiteNonSweetWine`, the rule fires on
+`C` only if closure has `C ⊑ WhiteWine` AND `C ⊑ ∃hasSugar.{Dry|OffDry}`. Of the
+8 `⊑WhiteNonSweetWine` MISالسES: 5 have `C ⊑ WhiteWine` (DryWhiteWine, DryRiesling,
+Meursault, WhiteBurgundy, WhiteTableWine), but only **2 also have the sugar
+existential** (DryWhiteWine, DryRiesling — told-Dry). The other 3 have WhiteWine
+but no own `hasSugar` fact (they reach `∀hasSugar` by inheritance, which this rule
+doesn't model). **So cluster-B-alone = 2 pairs.**
+
+**Decision: do NOT ship cluster B in isolation** — a soundness-critical saturator
+change in the highest-risk area for 2 pairs is the wrong trade (the advisor's
+Inc-1 gate). The clusters **interact** (color→WhiteWine (D) unlocks more sugar
+pairs; region→grape (C) the varietals), so the real teeth come from **B+C+D as
+one scoped nominal-completeness increment**, designed and reviewed together —
+NOT three rushed isolated rules. That increment (∀-OneOf+functional, nominal-set
+`{a}⊆{a,b}`, `≤1`+nominal cardinality, nominal-color fold, region→grape) is the
+standalone project; the cluster-B rule above is its first, validated building
+block.
 
 ---
 

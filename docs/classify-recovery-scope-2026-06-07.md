@@ -7,7 +7,15 @@ ascending cost/risk.
 
 ---
 
-## 1. Cluster A — extend the defined-sup sweep to defined SUBS (cheap, sound)
+## 1. Cluster A — extend the defined-sup sweep to defined SUBS (cheap, sound) ✅ DONE (commit 3dbe3d8)
+
+**Implemented + validated:** companion defined-SUB sweep in `classify.rs`; for
+each `C ≡ D₁⊔…⊔Dₙ`, candidate sups = `∩ᵢ subsumers(Dᵢ)`, added directly (no
+tableau — sound by construction). **wine MISSED 31→29** (closure 622→624,
+recovers `food#Fruit ⊑ EdibleThing` + `⊑ ConsumableThing`), FP=0 across
+wine/ore-10908/ore-15672/shoiq/sio/alehif. Regression test
+`defined_union_sub_under_primitive_sup`. Original scoping below.
+
 
 **Bug.** The top-down classifier (`classify.rs`) places classes by a tier-walk
 ordered on EL-closure-subsumer count, then recovers walk-missed pairs with a

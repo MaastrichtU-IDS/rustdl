@@ -703,6 +703,24 @@ needed for SROIQ); §4 (label-only dep-sets — another case where
 "sound architecturally" turned out to be unsound in practice on
 GALEN-shaped workloads).
 
+**Re-confirmed 2026-06-07 (throwaway spike, reverted).** Revisiting the
+"model-reuse hybrid" thread, a one-line spike forced
+`SnapshotCache::build`'s `risk` to `Safe` unconditionally (strictly more
+aggressive than per-class — relies *entirely* on the runtime back-prop
+sentinel) and ran the corpus closure-diff vs HermiT at the 1000 ms budget:
+**pizza FP=100, ro-stripped FP=275, sio-stripped FP=225** (sulo-stripped
+FP=0 — genuinely Safe). This is the same Failure-1 mechanism, but the
+clean data point sharpens the lesson: **the structural `BackPropRisk` gate
+is load-bearing for FP=0, and the runtime sentinel is NOT a complete
+guard** — unsound reuse surfaces as false `Subsumed` (FP), not merely MISSED.
+The wall *did* drop (pizza tier_walk 8478→3637 ms) but is irrelevant since
+the result is unsound. **Do not re-propose loosening this gate.** The
+valuable model-reuse is either §2 (Konclude-style sub-tableau caching, a
+structurally-different engine) or making lazy replay *sound under
+back-propagation* (the "reuse trap" — overlaps the nominal-termination
+work, since both need a terminating, reusable model on the inverse/nominal/
+cardinality fragment). Both are major fresh undertakings, not gate tweaks.
+
 ---
 
 ## 21. Family / family-stripped functional-witness-merge follow-on (recon-only, 2026-06-04)

@@ -529,7 +529,8 @@ fn corpus_closure_matches_konclude() {
             eprintln!("--- {label} --- SKIP: missing fixture");
             continue;
         }
-        let (_r, _k, fp, _m) = diff_corpus_ontology(label, &input_path, &truth_path, test_pair_ms());
+        let (_r, _k, fp, _m) =
+            diff_corpus_ontology(label, &input_path, &truth_path, test_pair_ms());
         if fp > 0 {
             any_fp = true;
         }

@@ -2674,7 +2674,10 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 }
             }
         }
-        eprintln!("found {} hard (Unknown@200ms) pairs in {probes} probes", hard.len());
+        eprintln!(
+            "found {} hard (Unknown@200ms) pairs in {probes} probes",
+            hard.len()
+        );
 
         for (sub, sup) in hard {
             // Timer 1: clone + push (the per-pair allocation).

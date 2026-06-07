@@ -1625,6 +1625,84 @@ mod tests {
         ontology
     }
 
+    /// Diagnostic probe (wine residual-31, cluster A): why does classify miss
+    /// `food#Fruit ⊑ food#EdibleThing` when `is_subclass_of` proves it in 0.01s?
+    /// Compares the fresh tableau (`is_subclass_of_internal`) against the
+    /// classify-path `PreparedOntology::decide` (the ABox-seeded snapshot) on the
+    /// exact query `Fruit ⊓ ¬EdibleThing`, unbounded and at the 200ms classify
+    /// budget. Settles timeout-vs-wrong-verdict. See
+    /// `docs/wine-residual-31-diagnosis-2026-06-07.md`. `#[ignore]`d (needs the
+    /// gitignored wine fixture); run with `-- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs ontologies/real/wine.ofn; diagnostic for the Fruit cluster-A classify miss"]
+    fn wine_fruit_prepared_vs_fresh_probe() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        let path = std::path::Path::new("../../ontologies/real/wine.ofn");
+        if !path.exists() {
+            eprintln!("SKIP: missing {}", path.display());
+            return;
+        }
+        let f = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/food#Fruit";
+        let e = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/food#EdibleThing";
+        let src = std::fs::read_to_string(path).expect("read wine");
+        let parse_onto = || {
+            let mut r = Cursor::new(src.clone());
+            let (o, _): (SetOntology<RcStr>, _) =
+                read_ofn(&mut r, ParserConfiguration::default()).expect("parse wine");
+            o
+        };
+
+        // Fresh path (what subclass / explain use).
+        let fresh = crate::is_subclass_of(&parse_onto(), f, e).expect("fresh is_subclass_of");
+        eprintln!("FRESH is_subclass_of(Fruit, EdibleThing) = {fresh}");
+
+        // Classify-path: PreparedOntology::decide on `Fruit ⊓ ¬EdibleThing`.
+        let internal = owl_dl_core::convert::convert_ontology(&parse_onto()).expect("convert");
+        let fid = internal.vocabulary.class_id(f).expect("Fruit id");
+        let eid = internal.vocabulary.class_id(e).expect("EdibleThing id");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepare");
+        // The classify walk calls `prepared.decide` (the ABox/nominal-seeded
+        // snapshot). On nominal-heavy wine it is pathologically slow even for
+        // this nominal-irrelevant food pair: a *5 s* deadline still times out,
+        // vs the fresh path's 0.01 s. (An unbounded `prepared.decide` here does
+        // not terminate in 150 s — do NOT call it.) So cluster A's classify miss
+        // is a PERFORMANCE pathology from ABox-seeding, not a wrong verdict.
+        let build = |pool: &mut owl_dl_core::ir::ConceptPool| {
+            let fc = pool.atomic(fid);
+            let ec = pool.atomic(eid);
+            let nec = pool.not(ec);
+            pool.and(vec![fc, nec])
+        };
+        let t0 = std::time::Instant::now();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let bounded = prepared
+            .decide_with_deadline(deadline, build)
+            .expect("prepared.decide_with_deadline");
+        let ms = t0.elapsed().as_millis();
+        eprintln!("PREPARED.decide_with_deadline(5s) = {bounded:?} (None=timeout) in {ms} ms");
+
+        eprintln!(
+            "VERDICT: {}",
+            match (fresh, bounded) {
+                (true, None) =>
+                    "fresh proves it in 0.01s; prepared (ABox-seeded) times out even at 5s \
+                     ⇒ classify miss is a PERFORMANCE pathology, not a wrong verdict",
+                (true, Some(false)) =>
+                    "prepared agrees (subsumed) within 5s ⇒ the miss is only the 200ms budget",
+                (true, Some(true)) =>
+                    "prepared returns WRONG Sat ⇒ PreparedOntology completeness bug",
+                _ => "fresh disagrees — re-examine",
+            }
+        );
+        // Pin the established finding: fresh proves it; prepared cannot in 5s.
+        assert!(fresh, "fresh is_subclass_of must prove Fruit ⊑ EdibleThing");
+        assert_eq!(
+            bounded, None,
+            "regression: prepared.decide now finishes in 5s — the ABox-seeding \
+             pathology may be fixed; update docs/wine-residual-31-diagnosis"
+        );
+    }
+
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";

@@ -40,15 +40,29 @@ So the `Fruit` covering subsumption is dropped by a **classify-snapshot
 discrepancy**: the ABox-seeded `PreparedOntology` tableau disagrees with the
 fresh tableau on a union-defined sub. Recoverable (the fresh tableau proves it
 trivially); the fix lives in the classify/`PreparedOntology` path, not in
-reasoning power. **Open sub-question for the fix:** does `prepared.decide` *time
-out* at 200 ms (the nominal/ABox seed dragging the `Fruit` tableau through wine's
-nominal mess) or return a *wrong Sat* verdict? Settle this with a **direct unit
-test** comparing `prepared.decide(Fruit ⊓ ¬EdibleThing)` vs a fresh
-`run_satisfiability` of the same query (the right tool — a 5000 ms corpus re-run
-burns 5 s on each of the 29 known-gap pairs for one bit of info, so it was not
-pursued here). Timeout → skip ABox-seeding for ABox-irrelevant pairs / fall back
-to the fresh tableau on stall; wrong verdict → a `PreparedOntology` completeness
-bug.
+reasoning power.
+
+**SETTLED (direct unit test `wine_fruit_prepared_vs_fresh_probe`, classify.rs):
+it is a PERFORMANCE pathology, not a wrong verdict.** `is_subclass_of` (fresh
+`run_satisfiability`) → `true` in **0.01 s**. `prepared.decide(Fruit ⊓
+¬EdibleThing)` **does not terminate in 150 s** unbounded, and **still times out
+at a 5 s deadline** — vs the fresh path's 0.01 s, a >10⁴× slowdown. So classify's
+200 ms budget yields `NoVerdict` → missed. The cause: `PreparedOntology` is
+**ABox/nominal-seeded once** (`from_internal`), so *every* per-pair `decide`
+drags wine's 207-nominal ABox into the tableau — even for `food#Fruit`, which is
+nominal-irrelevant. The fresh path does not carry that seed and is instant.
+
+**Broader implication:** this ABox-seeding slowdown is almost certainly not
+specific to `Fruit` — it inflates *every* per-pair tableau check on wine, so it
+likely drives much of wine's 311 s classify wall AND contributes to the B/C/D
+timeouts (they may be partly perf, not purely modeling — worth re-checking a B/C
+pair via the fresh path once the seeding is addressed). **Fix directions:** (a)
+don't ABox-seed the per-pair `decide` for pairs whose classes don't reach a
+nominal/individual (food vs vin namespaces are a coarse proxy); (b) fall back to
+the fresh, un-seeded tableau when `prepared.decide` stalls (sound iff the fresh
+path models the ABox correctly for nominal-dependent pairs — verify); or (c)
+root-cause why the seeded state fails to terminate (a blocking/termination
+interaction with the seeded nominals) rather than papering over it with (a)/(b).
 
 (Two earlier drafts mis-attributed this — first to the label heuristic, then to
 trust-Sat. Both refuted by the flag-off runs; the real cause is the prepared-vs-

@@ -125,12 +125,26 @@ testing reachable sups independently) would be the safe behavior.
 
 ---
 
-## 3. Clusters B/C/D — the nominal-completeness project (29 pairs, deferred)
+## 3. Clusters B/C/D — the nominal-completeness project (29 → **9**)
 
 The dominant remainder. Genuine reasoning gaps in the under-approximated nominal
 semantics (`∃R.{a}`+functional ⟹ `∀R.{a}`, `{a}⊆{a,b}` nominal-set, region→grape
 + `≤1`). Representatives don't resolve even unbounded (`trust_sat=0` timeout).
-This is the same lever the nominal-lever scoping doc deferred.
+
+### Cluster C (≤n+nominal varietal) — DONE (commit 635f3b2): MaxKey lever, wine 29→**9** (+20)
+
+Shipped the `MaxKey` synthetic-subsumer lever in the saturator: an unqualified
+`≤n R` conjunct of a defined class lowers to an opaque `MaxKey(n,R)` (in the
+conjunctive-trigger builder), matched by a told-`≤n R` seed (`C ⊑ MaxKey(n,R)`),
+so the existing conjunctive-trigger machinery derives `C ⊑ T` iff C has every
+defining conjunct incl. the cardinality one. Sound by construction (`MaxKey`
+seeded only from genuine told `≤n R`; exact `(n,R)`; unqualified; non-inverse;
+the trigger requires it). **wine MISالسED 29→9, FP=0** (closure 624→644; the
+appellation⊑varietal recoveries — Beaujolais⊑Gamay etc. — cascade transitively,
+hence +20 not +11). FP=0/MISالسED=0 unchanged on ore-10908/ore-15672/shoiq/sio/
+alehif. Canary `max_cardinality_nominal_varietal_classifies` + `MultiGrape`
+soundness negative. **Residual 9 = cluster B (sugar `∀hasSugar.OneOf`) + 1 stray
+varietal (Sancerre⊑SauvignonBlanc).**
 
 ### Cluster B (sugar) — sound rule designed, ceiling measured = 2 pairs ⇒ bundle, don't ship solo (2026-06-07)
 

@@ -1658,15 +1658,52 @@ mod tests {
 
         // Classify-path: PreparedOntology::decide on `Fruit ⊓ ¬EdibleThing`.
         let internal = owl_dl_core::convert::convert_ontology(&parse_onto()).expect("convert");
+        let cons = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/food#ConsumableThing";
         let fid = internal.vocabulary.class_id(f).expect("Fruit id");
         let eid = internal.vocabulary.class_id(e).expect("EdibleThing id");
+        let cid = internal
+            .vocabulary
+            .class_id(cons)
+            .expect("ConsumableThing id");
+        // EL closure witness?
+        let closure = owl_dl_saturation::saturate(&internal);
+        eprintln!(
+            "CLOSURE.contains(Fruit, EdibleThing) = {}",
+            closure.contains(fid, eid)
+        );
         let prepared = PreparedOntology::from_internal(internal).expect("prepare");
-        // The classify walk calls `prepared.decide` (the ABox/nominal-seeded
-        // snapshot). On nominal-heavy wine it is pathologically slow even for
-        // this nominal-irrelevant food pair: a *5 s* deadline still times out,
-        // vs the fresh path's 0.01 s. (An unbounded `prepared.decide` here does
-        // not terminate in 150 s — do NOT call it.) So cluster A's classify miss
-        // is a PERFORMANCE pathology from ABox-seeding, not a wrong verdict.
+        // The classify walk tries the WEDGE first (hyper_decide), only falling
+        // to the tableau on a non-proof. Measure both deadlines.
+        let tw = std::time::Instant::now();
+        let wedge_unbounded = prepared.hyper_decide(fid, eid, None);
+        eprintln!(
+            "WEDGE prepared.hyper_decide(None) = {wedge_unbounded:?} in {} ms",
+            tw.elapsed().as_millis()
+        );
+        let tw2 = std::time::Instant::now();
+        let wdl = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        let wedge_200 = prepared.hyper_decide(fid, eid, Some(wdl));
+        eprintln!(
+            "WEDGE prepared.hyper_decide(Fruit,EdibleThing,200ms) = {wedge_200:?} in {} ms",
+            tw2.elapsed().as_millis()
+        );
+        // The descent GATE: EdibleThing ⊑ ConsumableThing (top-level), so the
+        // walk reaches EdibleThing only by first accepting ConsumableThing.
+        let tc = std::time::Instant::now();
+        let cdl = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        let wedge_cons = prepared.hyper_decide(fid, cid, Some(cdl));
+        eprintln!(
+            "WEDGE prepared.hyper_decide(Fruit,ConsumableThing,200ms) = {wedge_cons:?} in {} ms  [descent gate]",
+            tc.elapsed().as_millis()
+        );
+        // SEPARATE finding (NOT cluster A's cause — the WEDGE proves Fruit ⊑
+        // EdibleThing in 0 ms above, so the tableau is never reached for this
+        // pair in classify). The ABox/nominal-seeded `prepared.decide` is
+        // pathologically slow / non-terminating: a 5 s deadline times out, vs the
+        // fresh path's 0.01 s (unbounded does not return in 150 s — do NOT call
+        // it). This matters for the B/C/D pairs (whose wedge does NOT prove them
+        // → tableau fallback). Cluster A's actual cause is the defined-sup sweep
+        // coverage gap; see docs/classify-recovery-scope-2026-06-07.md.
         let build = |pool: &mut owl_dl_core::ir::ConceptPool| {
             let fc = pool.atomic(fid);
             let ec = pool.atomic(eid);
@@ -1685,8 +1722,9 @@ mod tests {
             "VERDICT: {}",
             match (fresh, bounded) {
                 (true, None) =>
-                    "fresh proves it in 0.01s; prepared (ABox-seeded) times out even at 5s \
-                     ⇒ classify miss is a PERFORMANCE pathology, not a wrong verdict",
+                    "wedge proves it in 0ms (cluster A = defined-sup-sweep gap); \
+                     SEPARATELY the ABox-seeded prepared.decide tableau times out even at 5s \
+                     (non-termination, affects B/C/D)",
                 (true, Some(false)) =>
                     "prepared agrees (subsumed) within 5s ⇒ the miss is only the 200ms budget",
                 (true, Some(true)) =>

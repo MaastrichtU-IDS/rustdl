@@ -158,9 +158,12 @@ canary negatives: `a∉S`, non-functional role). **wine MISSED 9→8 (a) → 2 (
 FP=0** across the full corpus incl. GALEN/notgalen. Canaries
 `forall_oneof_nominal_sugar_classifies` + `forall_oneof_functional_existential_classifies`.
 
-**Residual 2 = both `Sancerre`** (⊑SauvignonBlanc + ⊑WhiteNonSweetWine) — the one
-appellation that never acquires WhiteWine (its color/varietal chain differs); the
-last nominal frontier. **wine arc this session: 57→34→31→29→9→8→2, FP=0 corpus-wide.**
+**Residual 0 — full Konclude parity (653=653).** The last 2 (both Sancerre) were
+closed by the **≤1-driven ForallKey variant** (commit b0d3ec6): per-class `≤1 R`
+(not just global `Functional(R)`) + `∃R.{a}` ⟹ `∀R.OneOf(S)`, with bidirectional
+fixpoint triggering, resolving `Sancerre ⊑ SemillonOrSauvignonBlanc` (≡ Wine ⊓
+`∀madeFromGrape.OneOf(SBG,SG)`). **wine arc this session: 57→34→31→29→9→8→2→0,
+FP=0 AND MISSED=0 corpus-wide incl. GALEN/notgalen. Nominal-completeness project complete.**
 
 ### Cluster B (sugar) — sound rule designed, ceiling measured = 2 pairs ⇒ bundle, don't ship solo (2026-06-07)
 

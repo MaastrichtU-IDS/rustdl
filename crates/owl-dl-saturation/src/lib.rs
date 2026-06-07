@@ -1178,6 +1178,15 @@ struct TseitinAllocator {
     /// EL fold of `C ≡ D ⊓ ∃R.{a}` fires on the same key the fact
     /// `X ⊑ ∃R.{a}` produced. Injective, so no two individuals merge.
     nominal_by_ind: HashMap<IndividualId, ClassId>,
+    /// Stable synthetic atomic class per unqualified `≤n R` cardinality
+    /// restriction (`(n, R)`), used as a structural stand-in (cluster-C lever,
+    /// wine residual-29). Like `nominal_by_ind`: an opaque atom. `C ⊑ MaxKey(n,R)`
+    /// is seeded iff `C ⊑ ≤n R` is told, and a defined class's `≤n R` conjunct
+    /// lowers to the SAME key, so the conjunctive trigger for that definition
+    /// fires only when the cardinality conjunct genuinely holds. Sound: keyed on
+    /// `(n, R)` identity; exact match only (no `≤m ⊑ ≤n` cross-`n`), qualifier
+    /// must be `⊤` (unqualified). See `docs/classify-recovery-scope-2026-06-07.md`.
+    max_key_by_role: HashMap<(u32, RoleId), ClassId>,
 }
 
 impl TseitinAllocator {
@@ -1187,6 +1196,7 @@ impl TseitinAllocator {
             by_body: HashMap::new(),
             by_existential: HashMap::new(),
             nominal_by_ind: HashMap::new(),
+            max_key_by_role: HashMap::new(),
         }
     }
 
@@ -1200,6 +1210,18 @@ impl TseitinAllocator {
         let synthetic = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         self.nominal_by_ind.insert(ind, synthetic);
+        synthetic
+    }
+
+    /// Get-or-allocate the opaque synthetic class standing in for an
+    /// unqualified `≤n R`. See `max_key_by_role`.
+    fn introduce_max_key(&mut self, n: u32, role: RoleId) -> ClassId {
+        if let Some(&existing) = self.max_key_by_role.get(&(n, role)) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.max_key_by_role.insert((n, role), synthetic);
         synthetic
     }
 
@@ -1478,6 +1500,18 @@ fn lower_sub_class_of(
                     sup: atomic_sup,
                 });
             }
+            // Cluster-C lever: a told unqualified `≤n R` (top-level or an And
+            // operand of the RHS) seeds `sub ⊑ MaxKey(n,R)` — the same opaque
+            // key a defined class's `≤n R` conjunct lowers to, so the
+            // defined-class conjunctive trigger requires the cardinality
+            // conjunct soundly (fires only when an identical told `≤n R` holds).
+            for (n, role) in unqualified_max_operands_on_right(sup, pool) {
+                let key = tseitin.introduce_max_key(n, role);
+                rules.atomic_subsumptions.push(AtomicSubsumption {
+                    sub: *sub_id,
+                    sup: key,
+                });
+            }
             // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
             // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
             // `disjoint(X, Y)`. The saturator otherwise drops the `¬Y`
@@ -1567,6 +1601,15 @@ fn lower_sub_class_of(
                             primary
                         };
                         bodies.push(marker);
+                    }
+                    // Cluster-C lever: an unqualified `≤n R` conjunct of a
+                    // defined class lowers to the opaque `MaxKey(n,R)` body,
+                    // matched by the told-`≤n R` seed (`unqualified_max_operands_
+                    // on_right`). Qualified / inverse stay un-salvageable.
+                    ConceptExpr::Max(n, role, inner)
+                        if !role.is_inverse() && matches!(pool.get(*inner), ConceptExpr::Top) =>
+                    {
+                        bodies.push(tseitin.introduce_max_key(*n, role.role_id()));
                     }
                     _ => {
                         salvageable = false;
@@ -1919,10 +1962,38 @@ fn atomic_classes_with_existential_markers(
                 );
                 out.push(marker);
             }
+            // NB: `≤n R` conjuncts are deliberately NOT lowered here — this
+            // function lowers an existential *body* (the filler's type), where a
+            // `MaxKey` would assert the filler's cardinality, a different (and
+            // un-modeled) fact than the subject's own `≤n R`. The cluster-C lever
+            // lives only in the conjunctive-trigger builder + the told-`≤n` seed.
             _ => return None,
         }
     }
     Some(out)
+}
+
+/// Unqualified `≤n R` restrictions that are `c` itself or a top-level `And`
+/// operand of `c` — each `(n, R)` seeds the cluster-C `MaxKey` subsumer.
+/// Only `inner = ⊤` (unqualified) and non-inverse roles are recognised (a sound
+/// under-approximation; qualified / inverse stay dropped). Mirrors the `Max`
+/// arm of `atomic_classes_with_existential_markers` so the seed key and the
+/// defined-class trigger key coincide.
+fn unqualified_max_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(u32, RoleId)> {
+    let one = |cid: ConceptId| -> Option<(u32, RoleId)> {
+        match pool.get(cid) {
+            ConceptExpr::Max(n, role, inner)
+                if !role.is_inverse() && matches!(pool.get(*inner), ConceptExpr::Top) =>
+            {
+                Some((*n, role.role_id()))
+            }
+            _ => None,
+        }
+    };
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands.iter().filter_map(|&op| one(op)).collect(),
+        _ => one(c).into_iter().collect(),
+    }
 }
 
 fn atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<ClassId> {
@@ -2789,6 +2860,46 @@ Ontology(<http://rustdl.test/test>\n\
                 class(&internal, "AlsatianWine")
             ),
             "unsound: FrenchWine ⊑ AlsatianWine should not hold"
+        );
+    }
+
+    /// Cluster-C canary (wine residual-29, grape-varietal pattern): a defined
+    /// class with a `≤n R` cardinality conjunct.
+    /// `Gamay ≡ Wine ⊓ ∃madeFromGrape.{GamayGrape} ⊓ ≤1 madeFromGrape`;
+    /// `Beaujolais` has all three told ⟹ `Beaujolais ⊑ Gamay`. Requires the
+    /// `MaxKey` synthetic-subsumer lever (lower the `≤n` conjunct into a trackable
+    /// marker on both the defined-class trigger and the told `≤n` seed) — EL
+    /// drops the `≤n` conjunct today, so the whole `Gamay` trigger is dropped.
+    /// The `MultiGrape` negative pins soundness: `∃grape` WITHOUT `≤1` must NOT
+    /// classify under `Gamay` (else the lever degenerates to "drop the ≤n").
+    /// See `docs/classify-recovery-scope-2026-06-07.md` §3.
+    #[test]
+    fn max_cardinality_nominal_varietal_classifies() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Wine))\n\
+    Declaration(Class(:Gamay))\n\
+    Declaration(Class(:Beaujolais))\n\
+    Declaration(Class(:MultiGrape))\n\
+    Declaration(NamedIndividual(:GamayGrape))\n\
+    Declaration(ObjectProperty(:madeFromGrape))\n\
+    EquivalentClasses(:Gamay ObjectIntersectionOf(:Wine ObjectHasValue(:madeFromGrape :GamayGrape) ObjectMaxCardinality(1 :madeFromGrape)))\n\
+    SubClassOf(:Beaujolais :Wine)\n\
+    SubClassOf(:Beaujolais ObjectHasValue(:madeFromGrape :GamayGrape))\n\
+    SubClassOf(:Beaujolais ObjectMaxCardinality(1 :madeFromGrape))\n\
+    SubClassOf(:MultiGrape :Wine)\n\
+    SubClassOf(:MultiGrape ObjectHasValue(:madeFromGrape :GamayGrape))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "Beaujolais"), class(&internal, "Gamay")),
+            "MaxKey lever: Beaujolais ⊑ Gamay (Wine ⊓ ∃madeFromGrape.{{g}} ⊓ ≤1)"
+        );
+        assert!(
+            !subs.contains(class(&internal, "MultiGrape"), class(&internal, "Gamay")),
+            "unsound: MultiGrape (∃grape, no ≤1) must NOT be ⊑ Gamay"
         );
     }
 

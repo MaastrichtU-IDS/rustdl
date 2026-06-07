@@ -1187,6 +1187,15 @@ struct TseitinAllocator {
     /// `(n, R)` identity; exact match only (no `≤m ⊑ ≤n` cross-`n`), qualifier
     /// must be `⊤` (unqualified). See `docs/classify-recovery-scope-2026-06-07.md`.
     max_key_by_role: HashMap<(u32, RoleId), ClassId>,
+    /// Stable synthetic atomic class per `∀R.OneOf(S)` universal-over-nominal-set
+    /// restriction (`(R, sorted S)`), used as a structural stand-in (cluster-B
+    /// lever, wine residual-9). Same opaque-atom discipline as `max_key_by_role`:
+    /// `C ⊑ ForallKey(R,S)` is seeded iff `C ⊑ ∀R.OneOf(S)` is told, and a
+    /// defined class's `∀R.OneOf(S)` conjunct lowers to the SAME key, so its
+    /// conjunctive trigger fires only when the universal conjunct genuinely
+    /// holds. Sound: keyed on `(R, exactly-S)` identity (no subset `∀R.S' ⊑
+    /// ∀R.S` lattice — under-approximation), non-inverse, `OneOf`-of-nominals.
+    forall_key_by_role: HashMap<(RoleId, Vec<IndividualId>), ClassId>,
 }
 
 impl TseitinAllocator {
@@ -1197,6 +1206,7 @@ impl TseitinAllocator {
             by_existential: HashMap::new(),
             nominal_by_ind: HashMap::new(),
             max_key_by_role: HashMap::new(),
+            forall_key_by_role: HashMap::new(),
         }
     }
 
@@ -1222,6 +1232,20 @@ impl TseitinAllocator {
         let synthetic = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
         self.max_key_by_role.insert((n, role), synthetic);
+        synthetic
+    }
+
+    /// Get-or-allocate the opaque synthetic class for `∀R.OneOf(S)`. `members`
+    /// is sorted+deduped for a canonical key. See `forall_key_by_role`.
+    fn introduce_forall_key(&mut self, role: RoleId, mut members: Vec<IndividualId>) -> ClassId {
+        members.sort();
+        members.dedup();
+        if let Some(&existing) = self.forall_key_by_role.get(&(role, members.clone())) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.forall_key_by_role.insert((role, members), synthetic);
         synthetic
     }
 
@@ -1512,6 +1536,17 @@ fn lower_sub_class_of(
                     sup: key,
                 });
             }
+            // Cluster-B lever: a told `∀R.OneOf(S)` (top-level or And operand)
+            // seeds `sub ⊑ ForallKey(R,S)` — the same opaque key a defined
+            // class's `∀R.OneOf(S)` conjunct lowers to. Sound: `C ⊑ ∀R.OneOf(S)`
+            // is a genuine told (or subsumption-propagated) fact, exact-`S` match.
+            for (role, members) in forall_oneof_operands_on_right(sup, pool) {
+                let key = tseitin.introduce_forall_key(role, members);
+                rules.atomic_subsumptions.push(AtomicSubsumption {
+                    sub: *sub_id,
+                    sup: key,
+                });
+            }
             // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
             // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
             // `disjoint(X, Y)`. The saturator otherwise drops the `¬Y`
@@ -1610,6 +1645,14 @@ fn lower_sub_class_of(
                         if !role.is_inverse() && matches!(pool.get(*inner), ConceptExpr::Top) =>
                     {
                         bodies.push(tseitin.introduce_max_key(*n, role.role_id()));
+                    }
+                    // Cluster-B lever: a `∀R.OneOf(S)` conjunct lowers to the
+                    // opaque `ForallKey(R,S)` body (matched by the told-`∀` seed
+                    // in `forall_oneof_operands_on_right`).
+                    _ if forall_oneof_members(op, pool).is_some() => {
+                        let (role, members) =
+                            forall_oneof_members(op, pool).expect("just checked Some");
+                        bodies.push(tseitin.introduce_forall_key(role, members));
                     }
                     _ => {
                         salvageable = false;
@@ -1993,6 +2036,51 @@ fn unqualified_max_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(u
     match pool.get(c) {
         ConceptExpr::And(operands) => operands.iter().filter_map(|&op| one(op)).collect(),
         _ => one(c).into_iter().collect(),
+    }
+}
+
+/// If `c` is `∀R.OneOf(S)` — an `All(R, inner)` where `inner` is a single
+/// `Nominal` or an `Or` of `Nominal`s and `R` is non-inverse — return
+/// `(R, members)`. The cluster-B `ForallKey` recogniser; anything else → None.
+fn forall_oneof_members(c: ConceptId, pool: &ConceptPool) -> Option<(RoleId, Vec<IndividualId>)> {
+    let ConceptExpr::All(role, inner) = pool.get(c) else {
+        return None;
+    };
+    if role.is_inverse() {
+        return None;
+    }
+    let mut members = Vec::new();
+    match pool.get(*inner) {
+        ConceptExpr::Nominal(ind) => members.push(*ind),
+        ConceptExpr::Or(ops) => {
+            for &op in ops {
+                match pool.get(op) {
+                    ConceptExpr::Nominal(ind) => members.push(*ind),
+                    _ => return None,
+                }
+            }
+        }
+        _ => return None,
+    }
+    if members.is_empty() {
+        return None;
+    }
+    Some((role.role_id(), members))
+}
+
+/// `∀R.OneOf(S)` restrictions that are `c` itself or a top-level `And` operand
+/// of `c` — each `(R, S)` seeds the cluster-B `ForallKey` subsumer. Mirrors
+/// `unqualified_max_operands_on_right` (told side) and the trigger-builder arm.
+fn forall_oneof_operands_on_right(
+    c: ConceptId,
+    pool: &ConceptPool,
+) -> Vec<(RoleId, Vec<IndividualId>)> {
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands
+            .iter()
+            .filter_map(|&op| forall_oneof_members(op, pool))
+            .collect(),
+        _ => forall_oneof_members(c, pool).into_iter().collect(),
     }
 }
 
@@ -2900,6 +2988,51 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !subs.contains(class(&internal, "MultiGrape"), class(&internal, "Gamay")),
             "unsound: MultiGrape (∃grape, no ≤1) must NOT be ⊑ Gamay"
+        );
+    }
+
+    /// Cluster-B canary, path (a) (wine residual-9, sugar pattern): a defined
+    /// class with a `∀R.OneOf(S)` conjunct. `WhiteNonSweet ≡ White ⊓
+    /// ∀hasSugar.{Dry,OffDry}`; a sub `C` that has `C ⊑ White` and inherits a
+    /// TOLD `∀hasSugar.{Dry,OffDry}` (via a varietal superclass `CheninBlanc`)
+    /// ⟹ `C ⊑ WhiteNonSweet`. Requires the `ForallKey` synthetic-subsumer lever
+    /// (the `∀R.OneOf` analog of `MaxKey`: lower the conjunct into a trackable
+    /// `(R, S)` marker on both the defined-class trigger and the told-`∀` seed).
+    /// `RedSugar` negative pins soundness: a `∀hasSugar.{Dry,Sweet}` (Sweet ∉
+    /// the target set) must NOT classify under `WhiteNonSweet`.
+    #[test]
+    fn forall_oneof_nominal_sugar_classifies() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:White))\n\
+    Declaration(Class(:WhiteNonSweet))\n\
+    Declaration(Class(:CheninBlanc))\n\
+    Declaration(Class(:Tours))\n\
+    Declaration(Class(:RedSugar))\n\
+    Declaration(NamedIndividual(:Dry))\n\
+    Declaration(NamedIndividual(:OffDry))\n\
+    Declaration(NamedIndividual(:Sweet))\n\
+    Declaration(ObjectProperty(:hasSugar))\n\
+    EquivalentClasses(:WhiteNonSweet ObjectIntersectionOf(:White ObjectAllValuesFrom(:hasSugar ObjectOneOf(:Dry :OffDry))))\n\
+    SubClassOf(:CheninBlanc ObjectAllValuesFrom(:hasSugar ObjectOneOf(:Dry :OffDry)))\n\
+    SubClassOf(:Tours :CheninBlanc)\n\
+    SubClassOf(:Tours :White)\n\
+    SubClassOf(:RedSugar :White)\n\
+    SubClassOf(:RedSugar ObjectAllValuesFrom(:hasSugar ObjectOneOf(:Dry :Sweet)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "Tours"), class(&internal, "WhiteNonSweet")),
+            "ForallKey lever: Tours ⊑ WhiteNonSweet (White ⊓ inherited ∀hasSugar.{{Dry,OffDry}})"
+        );
+        assert!(
+            !subs.contains(
+                class(&internal, "RedSugar"),
+                class(&internal, "WhiteNonSweet")
+            ),
+            "unsound: RedSugar (∀hasSugar.{{Dry,Sweet}}, Sweet∉target) must NOT be ⊑ WhiteNonSweet"
         );
     }
 

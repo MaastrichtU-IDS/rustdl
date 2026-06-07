@@ -5,6 +5,52 @@ undertaking; this doc is the entry point so a clean session can start without
 re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 `moms-plan.md`.
 
+> ## ⚠ MEASUREMENT UPDATE 2026-06-07 — the "nominal-termination" half of this
+> ## thesis is REFUTED. Read this before the rest of the doc.
+>
+> A worktree measurement (instrumented the wedge on 4 distinct hard wine
+> sub-classes, depth-256, 5 s cap) found the wedge's non-termination on wine is
+> **NOT** model growth, a blocking gap, or construction cost. It is a
+> **backtracking search explosion**:
+> - **node count stays at 10** (the per-branch model is finite and terminates in
+>   0.0 ms) while **`branches_taken` climbs to 13k–21k**, **`restores ==
+>   branches`** (every branch fails and is undone), **~20M `match_attempts`**.
+> - `is_blocked` fired **0** times — nothing to block (9 non-root nodes). So
+>   nominal-aware blocking would do **nothing** here.
+> - The branching is **disjunction + `≤n`-merge**, not nominals — and in fact
+>   nominals aren't even wired into the production wine wedge path
+>   (`HyperCache::decide` at `lib.rs:909` sets `with_double_blocking` +
+>   `with_precise_card_deps` only, NOT `with_nominals`).
+>
+> **Consequence — re-scope:** the wine *wall* is a **search-pruning problem**,
+> the lever is **CDCL-style conflict learning + incremental fixpoint** (avoid the
+> full `save()` graph-clone-per-branch that drives the 20M match attempts), NOT
+> terminating model construction. This **converges with the existing memory note
+> `conflict-learning-simple-is-weak`** (1-UIP CDCL is the real lever; foundation
+> on PR #19, unmerged) — independent confirmation.
+>
+> **The two halves therefore SPLIT (they are more separable than this doc
+> claimed), not unify:**
+> 1. **Wine wall / search-explosion** → CDCL conflict-driven backjumping +
+>    learning over the wedge's disjunction/`≤n` branches + incremental fixpoint.
+>    Pick up PR #19's foundation. This is approach (C) re-scoped — and it has
+>    nothing to do with nominals or blocking.
+> 2. **Model-reuse generalization (reuse-trap)** → snapshot-replay soundness
+>    under back-propagation (approach (A) below) — still stands as written, an
+>    independent problem.
+>
+> **Open sub-question (flagged, unresolved):** with `restores==branches` and no
+> Sat leaf kept in 5 s, are these pairs genuinely Unsat (a proof the search order
+> makes exponential) or Sat-with-pathological-order? HermiT is fast either way.
+> This bears on whether *learning* or better *branch ordering* is the bigger win
+> — resolve it early in the CDCL thread.
+>
+> The original thesis and "approach (C) = terminating model construction" framing
+> below are kept as the historical reasoning trail, but treat them as superseded
+> by this block. Diagnostic instrumentation that produced these numbers lives in
+> worktree branch `worktree-agent-aa2bcc7a5e964341c` (`SearchStats.stall_site`,
+> `diag_block_analysis`, the extended `wine_wedge_construct_vs_solve_probe`).
+
 ## The thesis: two threads are one problem
 
 Two long-standing levers turn out to share a single prerequisite:

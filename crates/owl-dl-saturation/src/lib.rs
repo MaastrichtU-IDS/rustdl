@@ -447,6 +447,18 @@ impl WorklistEngine {
         }
     }
 
+    /// Cluster-B path (b) core: seed `sub ⊑ ForallKey(role, S)` for every
+    /// `∀role.OneOf(S)` target with `ind ∈ S`. The caller has established the
+    /// gate (`role` functional, or `sub ⊑ ≤1 role`) under which `∃role.{ind}`
+    /// forces the unique `role`-filler to be `ind ∈ S`.
+    fn enqueue_forall_targets(&mut self, sub: ClassId, role: RoleId, ind: IndividualId) {
+        if let Some(keys) = self.rules.forall_key_targets.get(&(role, ind)) {
+            for key in keys.clone() {
+                self.enqueue_subsumer(sub, key);
+            }
+        }
+    }
+
     /// Push a class onto the unsat worklist if not yet flagged.
     fn enqueue_unsat(&mut self, c: ClassId) {
         let ci = c.index() as usize;
@@ -509,6 +521,22 @@ impl WorklistEngine {
     fn process_subsumer(&mut self, c: ClassId, d: ClassId) {
         if !self.record_subsumer(c, d) {
             return;
+        }
+        // Cluster-B path (b), ≤1-driven symmetric direction: if D is a
+        // `MaxKey(1, R)` marker (C now known `⊑ ≤1 R`), every existing
+        // `∃R.{a}` fact of C forces the unique R-filler to `a` — seed
+        // `C ⊑ ForallKey(R,S)` for targets with `a ∈ S`. The fact-first order
+        // is handled in `process_fact`; this covers subsumer-first.
+        if let Some(&role) = self.rules.max1_role_by_key.get(&d) {
+            let fact_idxs = self.facts_by_sub[c.index() as usize].clone();
+            for fi in fact_idxs {
+                let f = self.facts[fi];
+                if f.role == role
+                    && let Some(&ind) = self.rules.nominal_to_ind.get(&f.target)
+                {
+                    self.enqueue_forall_targets(c, role, ind);
+                }
+            }
         }
         // Transitivity (forward): anything D ⊑ is also a subsumer
         // of C.
@@ -702,17 +730,24 @@ impl WorklistEngine {
         if !self.rules.forall_key_targets.is_empty()
             && let Some(&ind) = self.rules.nominal_to_ind.get(&fact.target)
         {
+            // Functional roles among {R} ∪ functional super-roles.
             let mut froles: Vec<RoleId> = Vec::new();
             if self.rules.is_functional(fact.role) {
                 froles.push(fact.role);
             }
             froles.extend_from_slice(self.rules.functional_supers_of(fact.role));
             for fr in froles {
-                if let Some(keys) = self.rules.forall_key_targets.get(&(fr, ind)) {
-                    for key in keys.clone() {
-                        self.enqueue_subsumer(fact.sub, key);
-                    }
-                }
+                self.enqueue_forall_targets(fact.sub, fr, ind);
+            }
+            // ≤1-driven: if `C ⊑ ≤1 R` (the `MaxKey(1,R)` marker is a current
+            // subsumer of C), the same "unique R-filler is `a`" reasoning applies
+            // on R itself even when R is not globally functional. The symmetric
+            // direction (subsumer arrives after the fact) is handled in
+            // `process_subsumer`.
+            if let Some(&mk) = self.rules.max1_key_by_role.get(&fact.role)
+                && self.supers_of_class(fact.sub).contains(&mk)
+            {
+                self.enqueue_forall_targets(fact.sub, fact.role, ind);
             }
         }
         let role_supers = supers_of(&self.role_super, fact.role);
@@ -1095,6 +1130,15 @@ struct ElRules {
     /// id back to its individual, so `process_fact` can recover `a` from a
     /// `∃R.{a}` fact's target. Used only by the path-(b) rule above.
     nominal_to_ind: std::collections::HashMap<ClassId, IndividualId>,
+    /// `MaxKey(1, R)` synthetic ids by role — the `≤1 R` markers. Path (b)'s
+    /// `≤1`-driven variant: a told/derived `C ⊑ ≤1 R` (per-class, R need NOT be
+    /// globally functional) + `∃R.{a}` (a∈S) ⟹ `∀R.OneOf(S)` (the unique R-filler
+    /// is `a`). `process_fact` checks `MaxKey(1,R) ∈ supers(C)`; `process_subsumer`
+    /// fires the symmetric direction when the `≤1 R` subsumer arrives.
+    max1_key_by_role: std::collections::HashMap<RoleId, ClassId>,
+    /// Reverse of `max1_key_by_role` (the `MaxKey(1,R)` class id back to its role),
+    /// so `process_subsumer` can detect a `≤1 R` subsumer and fire path (b).
+    max1_role_by_key: std::collections::HashMap<ClassId, RoleId>,
     /// Atomic classes told directly to be unsatisfiable via
     /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
     /// at `seed` time so the standard `process_unsat` propagation
@@ -1509,6 +1553,13 @@ fn collect_el_rules(
     }
     for (&ind, &nomkey) in &tseitin.nominal_by_ind {
         rules.nominal_to_ind.insert(nomkey, ind);
+    }
+    // Path (b) ≤1-driven variant: index the `MaxKey(1, R)` markers by role.
+    for (&(n, role), &key) in &tseitin.max_key_by_role {
+        if n == 1 {
+            rules.max1_key_by_role.insert(role, key);
+            rules.max1_role_by_key.insert(key, role);
+        }
     }
 
     let total_classes = tseitin.next_id as usize;
@@ -3104,6 +3155,7 @@ Ontology(<http://rustdl.test/test>\n\
     Declaration(Class(:DryThing))\n\
     Declaration(Class(:SweetThing))\n\
     Declaration(Class(:NonFunc))\n\
+    Declaration(Class(:Max1Thing))\n\
     Declaration(NamedIndividual(:Dry))\n\
     Declaration(NamedIndividual(:OffDry))\n\
     Declaration(NamedIndividual(:Sweet))\n\
@@ -3118,6 +3170,9 @@ Ontology(<http://rustdl.test/test>\n\
     SubClassOf(:SweetThing ObjectHasValue(:hasSugar :Sweet))\n\
     SubClassOf(:NonFunc :White)\n\
     SubClassOf(:NonFunc ObjectHasValue(:g :Dry))\n\
+    SubClassOf(:Max1Thing :White)\n\
+    SubClassOf(:Max1Thing ObjectHasValue(:g :Dry))\n\
+    SubClassOf(:Max1Thing ObjectMaxCardinality(1 :g))\n\
 )\n"
         ));
         let subs = saturate(&internal);
@@ -3128,6 +3183,12 @@ Ontology(<http://rustdl.test/test>\n\
             ),
             "ForallKey path (b): DryThing ⊑ WhiteNonSweet (functional hasSugar + ∃hasSugar.{{Dry}})"
         );
+        // ≤1-driven path (b): a told `≤1 g` (per-class, g NOT globally functional)
+        // + `∃g.{Dry}` ⟹ `∀g.OneOf(Dry,OffDry)` ⟹ ⊑ NfTarget. (Sancerre pattern.)
+        assert!(
+            subs.contains(class(&internal, "Max1Thing"), class(&internal, "NfTarget")),
+            "ForallKey path (b) ≤1-driven: Max1Thing ⊑ NfTarget (≤1 g + ∃g.{{Dry}})"
+        );
         assert!(
             !subs.contains(
                 class(&internal, "SweetThing"),
@@ -3137,7 +3198,7 @@ Ontology(<http://rustdl.test/test>\n\
         );
         assert!(
             !subs.contains(class(&internal, "NonFunc"), class(&internal, "NfTarget")),
-            "unsound: NonFunc (∃g.{{Dry}} on NON-functional g) must NOT be ⊑ NfTarget"
+            "unsound: NonFunc (∃g.{{Dry}}, NO ≤1, g non-functional) must NOT be ⊑ NfTarget"
         );
     }
 

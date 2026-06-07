@@ -139,12 +139,28 @@ conjunctive-trigger builder), matched by a told-`≤n R` seed (`C ⊑ MaxKey(n,R
 so the existing conjunctive-trigger machinery derives `C ⊑ T` iff C has every
 defining conjunct incl. the cardinality one. Sound by construction (`MaxKey`
 seeded only from genuine told `≤n R`; exact `(n,R)`; unqualified; non-inverse;
-the trigger requires it). **wine MISالسED 29→9, FP=0** (closure 624→644; the
+the trigger requires it). **wine MISSED 29→9, FP=0** (closure 624→644; the
 appellation⊑varietal recoveries — Beaujolais⊑Gamay etc. — cascade transitively,
-hence +20 not +11). FP=0/MISالسED=0 unchanged on ore-10908/ore-15672/shoiq/sio/
+hence +20 not +11). FP=0/MISSED=0 unchanged on ore-10908/ore-15672/shoiq/sio/
 alehif. Canary `max_cardinality_nominal_varietal_classifies` + `MultiGrape`
-soundness negative. **Residual 9 = cluster B (sugar `∀hasSugar.OneOf`) + 1 stray
-varietal (Sancerre⊑SauvignonBlanc).**
+soundness negative.
+
+### Cluster B (∀R.OneOf sugar) — DONE (commits a99a844 + a5713d7): ForallKey lever, wine 9→**2**
+
+The `∀R.OneOf` analog of MaxKey. A `∀R.OneOf(S)` defined-class conjunct lowers to
+an opaque `ForallKey(R,S)` synthetic (exactly-`(R,S)` key); two seed paths:
+**(a)** told `∀R.OneOf(S)` → `C ⊑ ForallKey(R,S)` (syntactic, subsumption-
+propagated — `Tours ⊑ CheninBlanc ⊑ ∀hasSugar.{Dry,OffDry}`); **(b)**
+saturation-time: functional `R` + `∃R.{a}` (a∈S) → `C ⊑ ForallKey(R,S)` (unique
+R-filler is `a∈S`; recovers `∃hasSugar.{Dry}` subs DryRiesling/DryWhiteWine).
+Sound by construction (exact-S key; path b gated on `is_functional` + `a∈S`;
+canary negatives: `a∉S`, non-functional role). **wine MISSED 9→8 (a) → 2 (b),
+FP=0** across the full corpus incl. GALEN/notgalen. Canaries
+`forall_oneof_nominal_sugar_classifies` + `forall_oneof_functional_existential_classifies`.
+
+**Residual 2 = both `Sancerre`** (⊑SauvignonBlanc + ⊑WhiteNonSweetWine) — the one
+appellation that never acquires WhiteWine (its color/varietal chain differs); the
+last nominal frontier. **wine arc this session: 57→34→31→29→9→8→2, FP=0 corpus-wide.**
 
 ### Cluster B (sugar) — sound rule designed, ceiling measured = 2 pairs ⇒ bundle, don't ship solo (2026-06-07)
 
@@ -166,7 +182,7 @@ role-hierarchy subtlety).
 
 **Ceiling (measured, not built):** for `T = WhiteNonSweetWine`, the rule fires on
 `C` only if closure has `C ⊑ WhiteWine` AND `C ⊑ ∃hasSugar.{Dry|OffDry}`. Of the
-8 `⊑WhiteNonSweetWine` MISالسES: 5 have `C ⊑ WhiteWine` (DryWhiteWine, DryRiesling,
+8 `⊑WhiteNonSweetWine` MISES: 5 have `C ⊑ WhiteWine` (DryWhiteWine, DryRiesling,
 Meursault, WhiteBurgundy, WhiteTableWine), but only **2 also have the sugar
 existential** (DryWhiteWine, DryRiesling — told-Dry). The other 3 have WhiteWine
 but no own `hasSugar` fact (they reach `∀hasSugar` by inheritance, which this rule

@@ -209,6 +209,16 @@ fn closure_from_classification(
     out
 }
 
+/// Per-pair tableau/wedge budget for corpus closure-diffs. Override with
+/// `RUSTDL_TEST_PAIR_MS` to sweep the timeout (e.g. measuring whether a low
+/// budget introduces MISSED vs ground truth); defaults to 200 ms.
+fn test_pair_ms() -> u64 {
+    std::env::var("RUSTDL_TEST_PAIR_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200)
+}
+
 /// Print and return (rustdl_closure, konclude_closure, fp, missed).
 fn diff_corpus_ontology(
     label: &str,
@@ -332,7 +342,7 @@ fn ore_10908_sroiq_closure_matches_hermit() {
         eprintln!("SKIP: missing ore-10908-sroiq fixture");
         return;
     }
-    let (_r, _k, fp, _m) = diff_corpus_ontology("ore-10908-sroiq", input, truth, 200);
+    let (_r, _k, fp, _m) = diff_corpus_ontology("ore-10908-sroiq", input, truth, test_pair_ms());
     assert_eq!(fp, 0, "ore-10908-sroiq has FPs — soundness regression");
 }
 
@@ -374,7 +384,7 @@ fn sio_closure_matches_konclude() {
         eprintln!("SKIP: missing sio fixture");
         return;
     }
-    let (_r, _k, fp, _m) = diff_corpus_ontology("sio", input, truth, 200);
+    let (_r, _k, fp, _m) = diff_corpus_ontology("sio", input, truth, test_pair_ms());
     assert_eq!(fp, 0, "sio has FPs — D1 sound-under-approximation broken");
 }
 
@@ -519,7 +529,7 @@ fn corpus_closure_matches_konclude() {
             eprintln!("--- {label} --- SKIP: missing fixture");
             continue;
         }
-        let (_r, _k, fp, _m) = diff_corpus_ontology(label, &input_path, &truth_path, 200);
+        let (_r, _k, fp, _m) = diff_corpus_ontology(label, &input_path, &truth_path, test_pair_ms());
         if fp > 0 {
             any_fp = true;
         }

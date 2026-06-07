@@ -2600,6 +2600,115 @@ mod tests {
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
+    /// Perf probe (wine wall, 2026-06-07): split the per-pair wedge cost into
+    /// `clauses.clone()` + `HyperEngine::new` (construction, un-preemptable by a
+    /// deadline) vs `decide_with_deadline` (search). The histogram showed 9183
+    /// wine pairs cost the wedge 100-999ms; this test decides whether that 200ms
+    /// is construction (→ build-once-reuse lever) or search (→ deadline lever),
+    /// and whether the search EVER completes (5s cap, not None). `#[ignore]`d
+    /// (needs the gitignored wine fixture); run with `-- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs ontologies/real/wine.ofn; perf probe for the wine wedge-stall wall"]
+    fn wine_wedge_construct_vs_solve_probe() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        use std::time::{Duration, Instant};
+        let path = std::path::Path::new("../../ontologies/real/wine.ofn");
+        if !path.exists() {
+            eprintln!("SKIP: missing {}", path.display());
+            return;
+        }
+        let src = std::fs::read_to_string(path).expect("read wine");
+        let mut r = Cursor::new(src);
+        let (o, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse wine");
+        let internal = owl_dl_core::convert::convert_ontology(&o).expect("convert");
+        let cache = HyperCache::build(&internal);
+        eprintln!("wine: {} base clauses", cache.clauses.len());
+
+        // Helper: replicate HyperCache::decide's clause construction, returning
+        // the assembled per-pair clause vec.
+        let assemble = |sub: owl_dl_core::ir::ClassId, sup: owl_dl_core::ir::ClassId| {
+            let mut clauses = cache.clauses.clone();
+            clauses.push(DlClause {
+                body: vec![Atom::Class(cache.fresh_q, X)],
+                head: vec![Atom::Class(sub, X)],
+            });
+            if let Some(atoms) = cache.sup_neg.get(&sup) {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X)],
+                    head: atoms.clone(),
+                });
+            } else {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X), Atom::Class(sup, X)],
+                    head: vec![],
+                });
+            }
+            clauses
+        };
+
+        // Find a few hard pairs: decide → Unknown at a 200ms deadline.
+        let ids: Vec<owl_dl_core::ir::ClassId> =
+            internal.vocabulary.classes().map(|(id, _)| id).collect();
+        let n = ids.len();
+        eprintln!("wine: {n} classes");
+        let mut hard: Vec<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId)> = Vec::new();
+        let mut probes = 0usize;
+        'outer: for i in 0..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                probes += 1;
+                if probes > 400 {
+                    break 'outer;
+                }
+                let dl = Instant::now() + Duration::from_millis(200);
+                if cache.decide(ids[i], ids[j], Some(dl)) == HyperVerdict::Unknown {
+                    hard.push((ids[i], ids[j]));
+                    if hard.len() >= 3 {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        eprintln!("found {} hard (Unknown@200ms) pairs in {probes} probes", hard.len());
+
+        for (sub, sup) in hard {
+            // Timer 1: clone + push (the per-pair allocation).
+            let t_clone = Instant::now();
+            let clauses = assemble(sub, sup);
+            let clone_ms = t_clone.elapsed().as_secs_f64() * 1000.0;
+            // Timer 2: HyperEngine::new (build_disjoint_pairs + build_clause_indexes).
+            let t_new = Instant::now();
+            let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+            if hyper_double_block_enabled() {
+                engine = engine.with_double_blocking();
+            }
+            if hyper_precise_card_deps_enabled() {
+                engine = engine.with_precise_card_deps();
+            }
+            let new_ms = t_new.elapsed().as_secs_f64() * 1000.0;
+            // Timer 3: the actual search, 5s cap (NOT None — may not terminate).
+            let t_solve = Instant::now();
+            let dl = Instant::now() + Duration::from_secs(5);
+            let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, Some(dl));
+            let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
+            let verdict_str = match verdict {
+                HyperResult::Sat => "Sat(NotSubsumed)",
+                HyperResult::Unsat => "Unsat(Subsumed)",
+                HyperResult::Stalled => "Stalled",
+            };
+            eprintln!(
+                "pair({},{}) clone={clone_ms:.1}ms new={new_ms:.1}ms solve(5s cap)={solve_ms:.1}ms -> {verdict_str}",
+                sub.index(),
+                sup.index()
+            );
+        }
+    }
+
     fn check(onto: &SetOntology<RcStr>, iri: &str) -> bool {
         is_class_satisfiable(onto, iri).expect("verdict returned")
     }

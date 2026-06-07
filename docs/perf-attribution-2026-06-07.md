@@ -70,31 +70,66 @@ The one frame hot in both. **Already bloom-prefiltered** (Phase 3,
 `needs_deferred_or` + `label_sig`, `rules.rs:589–609`). The residual is intrinsic
 work over the deferred-OR rules per node; no obvious further win.
 
-## wine root cause, one level deeper — the wedge stalls *fast* (structural, not deadline)
+## wine root cause — MEASURED (corrects the earlier "stalls fast/structural" guess)
 
-Followed the "why does the wedge stall on 9165 pairs?" thread. The wedge
-(`hyper.rs solve`) returns `Stalled` from three sites: deadline exceeded (1272),
-`horn_fixpoint(FIXPOINT_ITERS)` cap (1276), or an open disjunction at `depth==0`
-(1284, the branching-depth bound). The flamegraph shows the wedge is **not** hot
-(the tableau is) → it stalls **fast**, i.e. **structurally** (depth / fixpoint-iters
-bound on wine's nominal+disjunction shape), **not** via the 200 ms deadline.
+The 2026-06-07 follow-up *measured* the per-pair wedge cost (CLI
+`wedge-cost-histogram` + a construct-vs-solve probe + corpus closure-diffs at
+swept timeouts). The earlier "stalls fast / structural depth-bound" reading was
+**wrong**. The data:
 
-Consequence: *everything* that could skip the slow tableau —`trust_sat`
-short-circuit AND the Phase-7 label heuristic (its label oracle is built from the
-same wedge) — depends on the wedge **returning a verdict**, which it can't on
-these pairs. So the single root of wine's 412 s is **the wedge stalling on the
-nominal+disjunction fragment**.
+- **wedge-cost histogram (wine, 200 ms budget):** bucket 7 (100-999 ms) = **9183**
+  pairs; buckets 0-1 = 4272. So the wedge burns its **full ~200 ms deadline** on
+  9183 pairs — a **slow deadline-stall**, not a cheap structural one.
+- **construct-vs-solve probe** (`wine_wedge_construct_vs_solve_probe`, lib.rs):
+  on 3 confirmed bucket-7 pairs, `clauses.clone()` = 0.1 ms, `HyperEngine::new` =
+  0.0 ms, **`solve` (5 s cap) = 5000 ms → Stalled**. Construction is negligible
+  (661 clauses); the **search genuinely does not terminate** on wine's
+  nominal+cardinality fragment, even at 5 s. (Refutes the "build-once-reuse" and
+  "raise the deadline to reach `Sat`" levers both.)
+- Each hard wine pair therefore costs ~wedge(200) + ~tableau(200) ≈ 400 ms, and
+  **the tableau finds zero** (`tableau=0`): both engines correctly fail to refute
+  a genuine **non-subsumption**, defaulting to "not subsumed" (sound). wine's
+  412 s is the engines *correctly* spending their full budget on 9165
+  non-subsumptions that no amount of time refutes.
 
-**The fix is a wedge depth/iteration tuning experiment** (raise
-`HYPER_WEDGE_DEPTH` / `FIXPOINT_ITERS` so the wedge reaches `Sat`/`NotSubsumed`
-instead of `Stalled`) — but it carries real **convergence risk**: the in-tree
-docstring explicitly names the "pizza/SIO convergence problem," and a higher bound
-that wins wine can blow up or regress pizza/SIO/GALEN walls. Same workload-
-dependent break-even shape as the reverted Phase 3e. Must be a measured experiment
-gated on **FP=0 + MISSED=0 + per-fixture wall non-regression across the whole
-corpus** — a fresh, focused session, not a session-tail change.
+## The budget is workload-dependent at BOTH engine levels — no safe static lever
+
+Swept `--pair-timeout-ms` / `RUSTDL_TEST_PAIR_MS` vs **ground truth** across the
+non-Horn corpus:
+
+| fixture | MISSED @25 ms | needs >25 ms? |
+|---|---|---|
+| wine, ore-10908, ore-15672, sio, sio-stripped, ro-stripped, sulo-stripped, shoiq-knowledge, alehif | **0** | no — identical to default |
+| **pizza** | **4** | yes — `{AmericanHot,Cajun,PolloAdAstra,SloppyGiuseppe} ⊑ InterestingPizza` |
+
+So `--pair-timeout-ms 25` gives **wine 7.5×** (412 s → **54.8 s**) with the
+hierarchy **byte-identical** to the 200 ms baseline (MISSED=0), and is MISSED=0 on
+every other non-Horn fixture — **except pizza**, which needs ~1000 ms.
+
+**A wedge-only cap was built, tested, and reverted.** Hypothesis: cap the wedge
+(useless on hard pairs everywhere) but keep the tableau's full budget, so pizza's
+deep subsumptions still resolve. **Falsified by direct test:** at wedge-50 ms /
+tableau-1000 ms, pizza recovered only 1 of 4 — `Cajun`/`PolloAdAstra`/
+`SloppyGiuseppe ⊑ InterestingPizza` are **wedge-proved** (need 50-1000 ms of
+*wedge*), not tableau-proved as assumed; the tableau alone gets only `AmericanHot`
+in 1000 ms. So pizza needs **both** engines' full budget; wine wastes **both**.
+There is no ontology that wants tableau-full + wedge-capped → **the wedge-only cap
+serves no workload and was reverted** (kept: the `RUSTDL_TEST_PAIR_MS` harness
+generalization + the construct-vs-solve probe).
 
 ## Recommendation
+
+- **The right lever already exists: `--pair-timeout-ms` (caps both engines).**
+  Document it for nominal-heavy / non-terminating-wedge ontologies: `25` gives
+  wine 7.5× at MISSED=0; pizza-class needs the 1000 ms default. The default stays
+  1000 ms (commit 6b06b1d's pizza-knee rationale holds).
+- **No safe code change improves wine's wall** without regressing pizza-class —
+  it's an intrinsic budget/workload tradeoff, surfaced (correctly) via the
+  existing knob + the ⚠ loud-incompleteness signal.
+- The only remaining engine-level lever would be **adaptive** (detect mid-search
+  that the wedge/tableau is exploring an unbounded model vs progressing toward a
+  clash, and back off only the former) — convergence-risky, a fresh-session
+  undertaking, explicitly out of scope here.
 
 - **Don't** open the editor on a lever now: the SROIQ one is the reverted-3e
   dead-end (verify redundancy first), the shared frame is already optimized, and

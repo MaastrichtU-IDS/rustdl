@@ -692,6 +692,29 @@ impl WorklistEngine {
                 });
             }
         }
+        // Cluster-B path (b): functional R + `∃R.{a}` (a ∈ S) ⟹
+        // `C ⊑ ForallKey(R,S)`. The unique R-filler (functionality) is the
+        // nominal `a`; if `a ∈ S` then `∀R.OneOf(S)` holds. Fire on the fact's
+        // own role if functional, and on each functional super-role `R''`
+        // (`R ⊑ R''` ⟹ `∃R''.{a}`, functional `R''` ⟹ unique filler `a`).
+        // Sound; if `C` also had `∃R.{b}` with b ∉ S, functionality forces a=b →
+        // `C` unsat → vacuously ⊑ everything.
+        if !self.rules.forall_key_targets.is_empty()
+            && let Some(&ind) = self.rules.nominal_to_ind.get(&fact.target)
+        {
+            let mut froles: Vec<RoleId> = Vec::new();
+            if self.rules.is_functional(fact.role) {
+                froles.push(fact.role);
+            }
+            froles.extend_from_slice(self.rules.functional_supers_of(fact.role));
+            for fr in froles {
+                if let Some(keys) = self.rules.forall_key_targets.get(&(fr, ind)) {
+                    for key in keys.clone() {
+                        self.enqueue_subsumer(fact.sub, key);
+                    }
+                }
+            }
+        }
         let role_supers = supers_of(&self.role_super, fact.role);
         // NOTE: range propagation deliberately omitted.
         //
@@ -1060,6 +1083,18 @@ struct ElRules {
     /// `R` transitive ⟹ `X R b`). Empty unless the ontology has both
     /// nominal existential bodies and transitive-role `ABox` edges.
     abox_nominal_reach: std::collections::HashMap<(RoleId, ClassId), Vec<ClassId>>,
+    /// Cluster-B path (b): `ForallKey` targets indexed by `(role, member)`.
+    /// `forall_key_targets[(R, a)]` lists the `ForallKey(R,S)` synthetic class
+    /// ids with `a ∈ S`. When a fact `C ⊑ ∃R.{a}` is processed and `R` (or a
+    /// functional super-role) is functional, each such key is enqueued as a
+    /// subsumer of `C` — sound: functional + `∃R.{a}` ⟹ the unique R-filler is
+    /// `a ∈ S` ⟹ `C ⊑ ∀R.OneOf(S)`. Empty unless the ontology has both
+    /// `∀R.OneOf` defined-class conjuncts and functional roles.
+    forall_key_targets: std::collections::HashMap<(RoleId, IndividualId), Vec<ClassId>>,
+    /// Reverse of `TseitinAllocator::nominal_by_ind`: a `NomKey` synthetic class
+    /// id back to its individual, so `process_fact` can recover `a` from a
+    /// `∃R.{a}` fact's target. Used only by the path-(b) rule above.
+    nominal_to_ind: std::collections::HashMap<ClassId, IndividualId>,
     /// Atomic classes told directly to be unsatisfiable via
     /// `SubClassOf(Atomic(C), Bot)`. Seeded into the unsat worklist
     /// at `seed` time so the standard `process_unsat` propagation
@@ -1459,6 +1494,22 @@ fn collect_el_rules(
     // Allocates NomKeys for ABox individuals, so it must run before
     // `total_classes` is captured.
     build_abox_nominal_reach(internal, &mut tseitin, &mut rules);
+
+    // Cluster-B path (b) setup: index ForallKey targets by (role, member) and
+    // build the NomKey→individual reverse, so `process_fact` can fire
+    // `functional R + ∃R.{a}(a∈S) ⟹ C ⊑ ForallKey(R,S)`.
+    for ((role, members), &key) in &tseitin.forall_key_by_role {
+        for &a in members {
+            rules
+                .forall_key_targets
+                .entry((*role, a))
+                .or_default()
+                .push(key);
+        }
+    }
+    for (&ind, &nomkey) in &tseitin.nominal_by_ind {
+        rules.nominal_to_ind.insert(nomkey, ind);
+    }
 
     let total_classes = tseitin.next_id as usize;
 
@@ -3033,6 +3084,60 @@ Ontology(<http://rustdl.test/test>\n\
                 class(&internal, "WhiteNonSweet")
             ),
             "unsound: RedSugar (∀hasSugar.{{Dry,Sweet}}, Sweet∉target) must NOT be ⊑ WhiteNonSweet"
+        );
+    }
+
+    /// Cluster-B canary, path (b): a FUNCTIONAL role + `∃R.{a}` with `a ∈ S` ⟹
+    /// `∀R.OneOf(S)` (the unique R-filler is `a`). `hasSugar` functional,
+    /// `DryThing ⊑ White` + `∃hasSugar.{Dry}` ⟹ `DryThing ⊑ WhiteNonSweet`.
+    /// Two soundness negatives: `SweetThing` (`∃hasSugar.{Sweet}`, Sweet∉target)
+    /// and `NonFunc` (`∃g.{Dry}` on a NON-functional role) must NOT classify —
+    /// `∃` without both `a∈S` AND functionality does not give `∀`.
+    #[test]
+    fn forall_oneof_functional_existential_classifies() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:White))\n\
+    Declaration(Class(:WhiteNonSweet))\n\
+    Declaration(Class(:NfTarget))\n\
+    Declaration(Class(:DryThing))\n\
+    Declaration(Class(:SweetThing))\n\
+    Declaration(Class(:NonFunc))\n\
+    Declaration(NamedIndividual(:Dry))\n\
+    Declaration(NamedIndividual(:OffDry))\n\
+    Declaration(NamedIndividual(:Sweet))\n\
+    Declaration(ObjectProperty(:hasSugar))\n\
+    Declaration(ObjectProperty(:g))\n\
+    FunctionalObjectProperty(:hasSugar)\n\
+    EquivalentClasses(:WhiteNonSweet ObjectIntersectionOf(:White ObjectAllValuesFrom(:hasSugar ObjectOneOf(:Dry :OffDry))))\n\
+    EquivalentClasses(:NfTarget ObjectIntersectionOf(:White ObjectAllValuesFrom(:g ObjectOneOf(:Dry :OffDry))))\n\
+    SubClassOf(:DryThing :White)\n\
+    SubClassOf(:DryThing ObjectHasValue(:hasSugar :Dry))\n\
+    SubClassOf(:SweetThing :White)\n\
+    SubClassOf(:SweetThing ObjectHasValue(:hasSugar :Sweet))\n\
+    SubClassOf(:NonFunc :White)\n\
+    SubClassOf(:NonFunc ObjectHasValue(:g :Dry))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(
+                class(&internal, "DryThing"),
+                class(&internal, "WhiteNonSweet")
+            ),
+            "ForallKey path (b): DryThing ⊑ WhiteNonSweet (functional hasSugar + ∃hasSugar.{{Dry}})"
+        );
+        assert!(
+            !subs.contains(
+                class(&internal, "SweetThing"),
+                class(&internal, "WhiteNonSweet")
+            ),
+            "unsound: SweetThing (∃hasSugar.{{Sweet}}, Sweet∉target) must NOT be ⊑ WhiteNonSweet"
+        );
+        assert!(
+            !subs.contains(class(&internal, "NonFunc"), class(&internal, "NfTarget")),
+            "unsound: NonFunc (∃g.{{Dry}} on NON-functional g) must NOT be ⊑ NfTarget"
         );
     }
 

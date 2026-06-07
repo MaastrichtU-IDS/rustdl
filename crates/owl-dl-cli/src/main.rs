@@ -84,6 +84,13 @@ enum Command {
         /// (1000 ms is the empirical knee on pizza: higher budgets buy
         /// no extra completeness — the remaining pairs are intractable
         /// at any reasonable bound — but cost proportionally more wall.)
+        /// Conversely, on nominal-heavy ontologies (e.g. wine) the
+        /// engines never terminate on the hard pairs — they only ever
+        /// burn the full budget and time out without finding anything —
+        /// so a *low* budget like `--pair-timeout-ms 25` is much faster
+        /// with no completeness loss (wine: 7.5× faster, identical
+        /// hierarchy, verified MISSED=0 vs HermiT across the corpus;
+        /// only pizza-class ontologies actually need the larger default).
         #[arg(long, default_value_t = 1000)]
         pair_timeout_ms: u64,
         /// Deprecated no-op: top-down classification is now the

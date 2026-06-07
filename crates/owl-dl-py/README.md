@@ -92,7 +92,11 @@ result = rustdl.classify_bytes(data, format="ofn", *, per_pair_timeout_ms=1000, 
   **incomplete**. When that happens, an `IncompleteClassificationWarning`
   is emitted and `result.complete` is `False`. Pass `0` for the complete,
   unbounded classification. The default bounds pathological SROIQ inputs
-  so classification can't hang silently.
+  so classification can't hang silently. Conversely, on nominal-heavy
+  ontologies (e.g. the W3C wine ontology) the engines never terminate on
+  the hard pairs and only burn the full budget, so a *low* value like
+  `per_pair_timeout_ms=25` is much faster with no completeness loss
+  (wine: 7.5× faster, identical hierarchy, MISSED=0 vs HermiT).
 - `saturation_only` — skip the tableau entirely; EL-closure-only
   under-approximation. Dramatically faster on mostly-EL ontologies, and
   always `complete` (no tableau ⇒ no timeout).

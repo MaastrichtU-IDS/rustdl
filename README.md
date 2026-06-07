@@ -181,6 +181,14 @@ Requires Rust 1.88+.
 # the budget default to "not subsumed".
 ./target/release/rustdl classify --pair-timeout-ms 200 path/to/ontology.ofn
 
+# Tip: on nominal-heavy ontologies (e.g. the W3C wine ontology) the
+# engines never terminate on the hard pairs — they only burn the full
+# budget and time out without finding anything. A *low* deadline is then
+# much faster at no completeness cost. Measured on wine: 412 s -> 55 s
+# (7.5x), byte-identical hierarchy, MISSED=0 vs HermiT. Only pizza-class
+# ontologies genuinely need the larger 1000 ms default.
+./target/release/rustdl classify --pair-timeout-ms 25 path/to/wine.ofn
+
 # Saturation-only mode — skips every tableau probe. Closure-only
 # under-approximation: every reported subsumption holds, but
 # subsumptions that need tableau reasoning are missed. Dramatically

@@ -70,6 +70,30 @@ The one frame hot in both. **Already bloom-prefiltered** (Phase 3,
 `needs_deferred_or` + `label_sig`, `rules.rs:589–609`). The residual is intrinsic
 work over the deferred-OR rules per node; no obvious further win.
 
+## wine root cause, one level deeper — the wedge stalls *fast* (structural, not deadline)
+
+Followed the "why does the wedge stall on 9165 pairs?" thread. The wedge
+(`hyper.rs solve`) returns `Stalled` from three sites: deadline exceeded (1272),
+`horn_fixpoint(FIXPOINT_ITERS)` cap (1276), or an open disjunction at `depth==0`
+(1284, the branching-depth bound). The flamegraph shows the wedge is **not** hot
+(the tableau is) → it stalls **fast**, i.e. **structurally** (depth / fixpoint-iters
+bound on wine's nominal+disjunction shape), **not** via the 200 ms deadline.
+
+Consequence: *everything* that could skip the slow tableau —`trust_sat`
+short-circuit AND the Phase-7 label heuristic (its label oracle is built from the
+same wedge) — depends on the wedge **returning a verdict**, which it can't on
+these pairs. So the single root of wine's 412 s is **the wedge stalling on the
+nominal+disjunction fragment**.
+
+**The fix is a wedge depth/iteration tuning experiment** (raise
+`HYPER_WEDGE_DEPTH` / `FIXPOINT_ITERS` so the wedge reaches `Sat`/`NotSubsumed`
+instead of `Stalled`) — but it carries real **convergence risk**: the in-tree
+docstring explicitly names the "pizza/SIO convergence problem," and a higher bound
+that wins wine can blow up or regress pizza/SIO/GALEN walls. Same workload-
+dependent break-even shape as the reverted Phase 3e. Must be a measured experiment
+gated on **FP=0 + MISSED=0 + per-fixture wall non-regression across the whole
+corpus** — a fresh, focused session, not a session-tail change.
+
 ## Recommendation
 
 - **Don't** open the editor on a lever now: the SROIQ one is the reverted-3e

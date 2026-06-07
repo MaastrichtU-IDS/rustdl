@@ -138,6 +138,10 @@ pub struct ClassificationStats {
     /// entailment matrix — sound (never reports a false positive),
     /// but may under-report subsumption.
     pub timed_out_pairs: usize,
+    /// Subsumptions recovered by the defined-SUB sweep: a union-defined
+    /// `C ≡ D₁ ⊔ … ⊔ Dₙ` ⊑ a primitive sup `X` where every `Dᵢ ⊑ X` holds
+    /// in the EL closure (sound by construction). Added directly, no tableau.
+    pub defined_sub_sweep_recovered: usize,
     /// Pairs proved subsumed by the H4 hypertableau wedge (sound
     /// `Unsat`), skipping the tableau. Zero unless the wedge is
     /// enabled (`RUSTDL_HYPERTABLEAU`).
@@ -1262,6 +1266,84 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    // Defined-SUB sweep (cluster A; wine residual-31, 2026-06-07). The
+    // defined-sup sweep above only tests pairs whose SUP is a defined class.
+    // A union/covering-defined SUB `C ≡ D₁ ⊔ … ⊔ Dₙ` ⊑ a *primitive* sup X
+    // (e.g. `Fruit ≡ NonSweetFruit ⊔ SweetFruit ⊑ EdibleThing`, where
+    // `EdibleThing` is `SubClassOf`-only) is missed by BOTH the tier-walk (the
+    // covering subsumption isn't in the EL closure) AND the defined-sup sweep
+    // (X is primitive). Recover it soundly *by construction*: if the sound EL
+    // closure has `Dᵢ ⊑ X` for EVERY disjunct, then `C ⊑ ⊔Dᵢ ⊑ X`. So the
+    // candidate sups are exactly the common closure-supersumers of the
+    // disjuncts (`∩ᵢ subsumers(Dᵢ)`); each is a genuine entailment — added
+    // directly, no tableau/wedge call (hence no per-pair-budget timeout risk).
+    // See docs/classify-recovery-scope-2026-06-07.md.
+    for ax in &internal.axioms {
+        let owl_dl_core::ontology::Axiom::EquivalentClasses(ids) = ax else {
+            continue;
+        };
+        // Identify the named class `C` (an Atomic operand) and a union
+        // operand whose disjuncts are all atomic.
+        let mut name: Option<usize> = None;
+        let mut disjuncts: Option<Vec<usize>> = None;
+        for cid in ids {
+            match internal.concepts.get(*cid) {
+                owl_dl_core::ir::ConceptExpr::Atomic(cls) => name = Some(cls.index() as usize),
+                owl_dl_core::ir::ConceptExpr::Or(ds) => {
+                    let atoms: Option<Vec<usize>> = ds
+                        .iter()
+                        .map(|d| match internal.concepts.get(*d) {
+                            owl_dl_core::ir::ConceptExpr::Atomic(dc) => Some(dc.index() as usize),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(a) = atoms {
+                        disjuncts = Some(a);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (Some(c), Some(ds)) = (name, disjuncts) else {
+            continue;
+        };
+        if c >= n || ds.is_empty() || unsatisfiable_idxs.contains(&c) {
+            continue;
+        }
+        // Candidate sups = intersection of the disjuncts' closure-subsumers.
+        let mut cand: Option<std::collections::HashSet<usize>> = None;
+        for &d in &ds {
+            let d_id =
+                owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
+            let subs: std::collections::HashSet<usize> = closure
+                .subsumers_of(d_id)
+                .into_iter()
+                .map(|s| s.index() as usize)
+                .filter(|&j| j < n)
+                .collect();
+            cand = Some(match cand {
+                None => subs,
+                Some(prev) => prev.intersection(&subs).copied().collect(),
+            });
+        }
+        let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+        for x in cand.unwrap_or_default() {
+            if x == c || unsatisfiable_idxs.contains(&x) {
+                continue;
+            }
+            let x_id =
+                owl_dl_core::ClassId::new(u32::try_from(x).expect("class index fits in u32"));
+            // Skip subsumptions already on `C`'s closure ray (the entailment
+            // matrix seeds those) or already recorded.
+            if closure.contains(c_id, x_id) || direct_supers[c].contains(&x) {
+                continue;
+            }
+            stats.defined_sub_sweep_recovered += 1;
+            direct_supers[c].push(x);
+            direct_children[x].push(c);
+        }
+    }
+
     // Build the full entailment matrix. Three sources contribute:
     //
     // 1. **Closure seed.** Every saturation-derived subsumption is
@@ -1814,6 +1896,41 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(!h.is_subclass(&iri("C"), &iri("A")));
         let direct = h.direct_subsumers(&iri("A"));
         assert_eq!(direct, vec![iri("B")]);
+    }
+
+    /// Regression for the defined-SUB sweep (cluster A; wine residual-31,
+    /// 2026-06-07). A union/covering-defined sub `C ≡ A ⊔ B` ⊑ a PRIMITIVE sup
+    /// `X` (every disjunct `⊑ X`) is missed by both the tier-walk (the covering
+    /// subsumption isn't in the EL closure) and the defined-sup sweep (`X` is
+    /// primitive). The companion defined-SUB sweep recovers it soundly by
+    /// construction. Mirrors wine's `Fruit ≡ NonSweetFruit ⊔ SweetFruit ⊑
+    /// EdibleThing`. See docs/classify-recovery-scope-2026-06-07.md.
+    #[test]
+    fn defined_union_sub_under_primitive_sup() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:X))\n\
+    EquivalentClasses(:C ObjectUnionOf(:A :B))\n\
+    SubClassOf(:A :X)\n\
+    SubClassOf(:B :X)\n\
+)\n"
+        ));
+        let h = classify(&onto).expect("classification");
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        // C ≡ A ⊔ B, A ⊑ X, B ⊑ X ⟹ C ⊑ X (every model element of C is in
+        // A or B, both ⊑ X). `X` is primitive, so only the defined-SUB sweep
+        // recovers this.
+        assert!(
+            h.is_subclass(&iri("C"), &iri("X")),
+            "defined-SUB sweep must place C ⊑ X"
+        );
+        // Disjuncts and the union are mutually subsumed by X but not vice versa.
+        assert!(h.is_subclass(&iri("A"), &iri("X")));
+        assert!(!h.is_subclass(&iri("X"), &iri("C")));
     }
 
     #[test]

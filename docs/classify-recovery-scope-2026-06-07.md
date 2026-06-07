@@ -63,22 +63,56 @@ wine's 207-nominal ABox into the tableau. Irrelevant to cluster A (the wedge
 short-circuits before the tableau), but it is the **fallback for B/C/D** (whose
 wedge does not prove them) and likely inflates wine's ~311 s classify wall.
 
-**>150 s on a 137-class ontology is not "slow" — it is probable
-non-termination.** First step is *diagnosis, not a fix*: instrument
-`prepared.decide` on `Fruit ⊓ ¬EdibleThing` (RUSTDL_TRACE / RUSTDL_COUNTERS) to
-see whether blocking ever fires on the seeded-nominal graph, or whether
-`≥n`/nominal generation loops. Hypothesis: a double-blocking / nominal-merge
-interaction that doesn't terminate when the graph is pre-seeded with 207
-mutually-related nominal roots.
+**DIAGNOSED (2026-06-07, `--features counters` on the 5 s `decide`): NOT
+non-termination — a bounded but massive redundant fixpoint.** Counter histogram:
+`is_blocked_calls = 8,854,932`; each `apply_*` rule = 1,475,822; `add_label_calls
+= 3,292,064` but **`add_label_inserted = 33,255`**; `add_edge_calls = 7,751`. So
+the graph is small and bounded (33 K labels, 7.7 K edges) — no runaway
+`≥n`/nominal generation. The cost is the completion **re-processing the seeded
+207-nominal ABox ~1.48 M times** (8.85 M `is_blocked` checks, each an O(n) scan;
+3.29 M `add_label` calls, 99 % redundant). Every per-pair `decide` redundantly
+completes wine's entire ABox — even for `Fruit`, which is **disconnected from
+every individual**. It terminates eventually (hence >150 s, not ∞), but the work
+is pure waste for ABox-irrelevant pairs. Dominant cost = `is_blocked`'s O(n) scan
+× 8.85 M calls.
 
-**Possible fixes (pending the diagnosis):** (a) don't seed the full ABox for a
-per-pair `decide` whose sub/sup can't reach an individual (sound iff the
-reachability check is conservative); (b) fix the termination bug directly (the
-principled fix — the seeded state should block/terminate like the fresh one
-does); (c) cap+fall-back to the fresh un-seeded tableau on stall — **but** verify
-this is sound for nominal-*dependent* pairs (the fresh path may omit ABox-driven
-entailments, which would be a *completeness* loss, acceptable as a sound
-under-approximation, not an FP risk). Recommend (a)/(b) over (c).
+**Fix directions:** (a) **don't seed/complete the ABox for a per-pair `decide`
+whose sub/sup cannot reach an individual** — for `Fruit`/`EdibleThing` (no
+nominals) the 207 ABox roots are a disconnected component that only adds cost.
+Sound: if neither class reaches a nominal/individual, the (consistent) ABox can't
+change the `C ⊓ ¬D` verdict; ABox *inconsistency* is handled separately by the
+Phase-A1 `abox_check` (which marks all classes unsat). Worst case it's a sound
+under-approximation. Limited reach (see below). (b) fix the perf directly — the
+real lever.
+
+**Refinement (refutes the "fresh seam" idea): there is NO fast tableau path.**
+`run_satisfiability` is literally `PreparedOntology::from_internal(internal)
+.decide(...)` (`lib.rs:1733`) — the same ABox-seeded tableau. The "fresh 0.01 s"
+for `is_subclass_of(Fruit, EdibleThing)` was the **wedge short-circuit** (step 4
+of `is_subclass_of_internal_full`, `lib.rs:1682`), not a faster tableau. So:
+- **Cluster A never hit this** — its wedge proves it; classify's
+  `subsumes_via_tableau` also tries the wedge first, so the tableau is unreached.
+  (Cluster A was the sweep-coverage gap, fixed in item 1.)
+- The 150 s tableau bites the **B/C/D** pairs, whose wedge does NOT prove them →
+  fall to the seeded tableau → timeout.
+- **Option (a) has limited reach**: ABox-disconnected pairs (food) are mostly
+  proved by the wedge already; and B/C/D are ABox-*connected* (they need the
+  nominals), so (a) does not help them. (a) only trims wall on disconnected
+  wedge-failures.
+- **The real lever is (b): the `is_blocked` O(n) scan × 8.85 M + non-deduping
+  worklist (re-deriving 33 K facts ~44×).** Same `is_blocked` hot path Phase
+  3b/3e fought on the tableau side. Speeding it cuts wine's wall on *every*
+  nominal pair.
+
+**But weigh the payoff honestly:** B/C/D appear to be genuine **modeling gaps**
+(Beaujolais⊑Gamay / DryWhiteWine⊑WhiteNonSweetWine time out even at `trust_sat=0`
+*unbounded* — the seeded tableau builds an open under-approximated model, i.e. it
+would return `Sat`=not-subsumed, not `Unsat`, if it finished). So a faster
+`is_blocked`/worklist recovers **wall time, not completeness** — B/C/D stay
+missed (they need the nominal-completeness work, item 3). Confirm this first
+(does a B/C `decide` ever return `Unsat`, or only stall→`Sat`?) before investing
+in the tableau perf fix: if it's wall-only, scope it as a perf task, not a
+completeness one.
 
 **Note — the `unwrap_or_default()` latent bug.** `find_direct_parents_top_down`
 (`classify.rs:1392/1408`) turns a tableau **timeout** (`Ok(None)`) into

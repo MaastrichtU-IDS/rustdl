@@ -288,6 +288,31 @@ A1 hazard), but still corpus-gated FP=0/MISSED=0 + a wine-wall measurement.
 branches ~4.4:1, so this increment may not *fully* close wine — but it's the
 correct, sound, measured first increment, and M1's deep rewrite is off the table.
 
+### INCREMENT 1 LANDED 2026-06-08 (commit `512fe56`) — sound completeness fix; wall flat
+
+`HyperCache::build` now emits `{a}⊓{b}→⊥` for each `DifferentIndividuals` pair.
+Re-verified on main: **FP=0 AND MISSED=0** across pizza/ore-10908/ore-15672/sio/
+wine (exact closure + `unsat` matches); positive canary RED→GREEN, negatives
+green; fmt+clippy clean. **Sound completeness fix** (the wedge no longer drops an
+asserted axiom type — a closed latent gap). Mechanism engages: **merge-branches
+−16%** on wine hard pairs. But the **wine wall is FLAT** (412→405 s, noise).
+
+**What this proves about the path forward (the important part):** clashing the
+`≤1` nodes early did **not** prune the disjunctions — total branches fell only
+7.7 % while merge-branches fell 16 %. So the "~99 % of disjunctions are downstream
+of a `≤n` node" was *descriptive, not causal*: the residual hard-pair cost is
+**independent disjunction fan-out**, not the `≤n`/nominal interaction increment 1
+fixed. **Increment 2 = that disjunction fan-out — and its known levers are already
+dead** (1-UIP NO-GO dist≈1; MOMS reverted; semantic branching already shipped in
+`search.rs`). The only remaining mechanism for it is **M3 (Konclude's
+deterministic/non-deterministic saturation split + critical-node patching)** — a
+deep new subsystem — or **accept the wine wall** (it's correctness-complete at
+MISSED=0; the wall is perf-on-pathological-SROIQ, addressable by the shipped
+`--pair-timeout-ms 25` knob). **Decision point:** increment 1 banked a real sound
+completeness gain; closing the wine *wall* now requires committing to M3 (months,
+its own design pass) or accepting the gap. There is no measured incremental lever
+between here and M3.
+
 ## §5 Soundness/completeness obligations + dead-ends NOT to repeat
 
 - **A1 (the governing lesson):** a `Subsumed` derived from *one* model is unsound

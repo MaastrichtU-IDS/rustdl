@@ -309,13 +309,22 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   integer to opt in.
 - `--saturation-only` and `--pair-timeout-ms` are also sound under-approximations
   (every reported subsumption holds; positives may be missed).
-- **New as of Phase 1c (project-headline)**: `RUSTDL_SNAPSHOT_CAPTURE`
-  defaults ON. The classify path consults a per-class snapshot cache
-  ahead of the wedge for `BackPropRisk::Safe` ontologies (Horn-only
-  in the first-cut classifier). Set `RUSTDL_SNAPSHOT_CAPTURE=0` to
-  revert to pre-project pure-wedge behavior. `RUSTDL_SNAPSHOT_LAZY`
-  also defaults ON (Phase 1b.5 lazy expansion); set to `0` to revert
-  to Phase 1b full-re-run for A/B isolation. See
+- **`RUSTDL_SNAPSHOT_CAPTURE` defaults OFF as of 2026-06-08 — SOUNDNESS
+  FIX (was default-ON in Phase 1c).** The per-class snapshot cache is
+  FP-unsound on the non-Horn fragment: replay trusts ONE satisfying
+  model, but on non-Horn `sup ∈ that-model ≠ sub ⊑ sup` (the A1
+  analysis, `docs/reuse-trap-A1-scoping-2026-06-08.md`). Its
+  `BackPropRisk::Safe` gate excludes inverse/nominal/cardinality but
+  **NOT disjunction**, so a disjunctive inv/nom/card-free ontology
+  passes as Safe and the cache emits spurious subsumptions — ORE 2015
+  surfaced this (`ore_ont_13723` etc.: 30+ FP each vs a Konclude∩HermiT
+  oracle, silently, no incompleteness signal;
+  `docs/perf-2026-06-08-konclude-vs-rustdl.md`). And its only *sound*
+  domain (Horn, canonical model) is already taken by the
+  Horn-shortcircuit, so it has no sound active domain. Now opt-in
+  (`=1`) for A/B only. Verified: the flip fixes the ORE FP and leaves
+  the tuned corpus byte-identical at FP=0/MISSED=0. `RUSTDL_SNAPSHOT_LAZY`
+  is moot while capture is off. See
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`.
 - **New as of Phase 2b**: `RUSTDL_HORN_SHORTCIRCUIT` defaults ON.
   For ontologies classified as `Horn` fragment (`analyze_fragment`

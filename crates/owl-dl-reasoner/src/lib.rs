@@ -691,14 +691,27 @@ pub fn label_heuristic_enabled() -> bool {
 ///
 /// **Default ON as of Phase 1c (project-headline landing).** Set
 /// `RUSTDL_SNAPSHOT_CAPTURE=0` (or empty) to revert to pre-project
-/// pure-wedge behavior. Sibling-style env helper: any non-empty,
-/// non-`"0"` value (`=1`/`=true`/`=yes`/`=on`) keeps it ON; only
-/// `=0` or empty disables.
+/// pure-wedge behavior. Opt-IN only: `RUSTDL_SNAPSHOT_CAPTURE=1` (or
+/// `=true`/`=yes`/`=on`) enables it; default and any other value = OFF.
 ///
-/// Spec: `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`
+/// **DEFAULT FLIPPED TO OFF 2026-06-08 — SOUNDNESS FIX.** The snapshot
+/// cache is unsound (false-positive subsumptions) on the non-Horn
+/// fragment: replay trusts ONE satisfying model, but on non-Horn
+/// `sup ∈ that-model ≠ sub ⊑ sup` (the "A1" analysis,
+/// `docs/reuse-trap-A1-scoping-2026-06-08.md`). The `BackPropRisk::Safe`
+/// gate that guards it only excludes inverse/nominal/cardinality — **not
+/// disjunction** — so a disjunctive, inv/nom/card-free ontology passes as
+/// Safe and the cache emits spurious subsumptions (ORE 2015 surfaced this:
+/// `ore_ont_13723` etc., 30+ FP each vs a Konclude∩HermiT oracle, with NO
+/// incompleteness signal). Moreover the cache's only *sound* domain (Horn,
+/// canonical least model) is already taken by the Horn-shortcircuit, so the
+/// cache has no sound active domain. Hence: OFF by default. Re-enable with
+/// `=1` only for snapshot A/B experiments. See
+/// `docs/perf-2026-06-08-konclude-vs-rustdl.md` (ORE findings).
 #[must_use]
 pub fn snapshot_capture_enabled() -> bool {
-    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE").is_none_or(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_SNAPSHOT_CAPTURE")
+        .is_some_and(|v| v == "1" || v == "true" || v == "yes" || v == "on")
 }
 
 /// Phase 1b.5 lazy expansion toggle. Default ON (unset → ON);

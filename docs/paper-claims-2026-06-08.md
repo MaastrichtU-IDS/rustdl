@@ -233,6 +233,46 @@ only the truly-uncertain). Without (b), C2 is not a strong standalone contributi
   OR full-ORE evidence where the self-aware/anytime behavior delivers a measurable
   win. **This is the framing decision now on the table.**
 
+## 10. ORE 2015 at-scale run — DONE (`ore-2015-results-2026-06-08.md`)
+
+Fetched ORE 2015 (Zenodo 18578, 1920 ontologies); pilot 232 (187 full-oracle =
+Konclude∩HermiT). Stratified: 256 PureEl / 233 Horn / 190 OutOfFragment (so the
+C2 hunt is non-vacuous, unlike the tuned corpus). **Two defects the tuned corpus
+could not surface:**
+- **(FIXED) Default-config SOUNDNESS bug:** the snapshot cache emits spurious
+  subsumptions on ≥5 ontologies (`ore_ont_13723`: 30 FP vs oracle, silent). Root:
+  `BackPropRisk::Safe` ignores disjunction → disjunctive inv/nom/card-free
+  ontologies pass Safe → A1-unsound reuse. **Fixed: `RUSTDL_SNAPSHOT_CAPTURE`
+  default→OFF** (its sound domain is Horn-shortcircuited anyway). Verified: 13723
+  FP gone, tuned corpus byte-identical FP=0/MISSED=0, 96 tests pass.
+- **(CHARACTERIZED) C2 silent false-negatives — the headline at-scale result:**
+  ≥72 pairs across 4 ontologies are genuine *calculus* false-negatives (subclass
+  =NO, oracle=yes, **no timeout flag**), validated with all silent channels off +
+  unbounded tableau. Largest: `ore_ont_9054` (60 pairs) = the Phase-D1 datatype
+  under-approximation surfacing as a *silent* incompleteness; + SAO BFO-chain;
+  xenc. Lower bound (183 MISSED pairs unresolved at the 15 s subclass cap). **So
+  C2's "self-aware" signal provably misses real subsumptions silently at scale.**
+- **C3 comparative anytime: NOT supported even at scale** — 4 ontologies where
+  HermiT hit 300 s but rustdl finished, yet Konclude does them in 1–2 s (never
+  "complete reasoners give nothing"). No all-complete-DNF case.
+- **C1 calculus soundness held at scale:** FP=0 at the `subclass`/calculus level
+  across 187 (modulo 1 DNF ontology). The FP above was a snapshot *integration*
+  bug, not a calculus bug.
+- **Headline distribution (187): 86.1% sound+complete.** EL/Horn: 0 FP/MISSED.
+  Median wall Konclude 0.2 s / rustdl 0.5 s / HermiT 5.0 s; rustdl beats HermiT on
+  EL/Horn, loses to Konclude; 30 SROIQ DNF at 300 s. Plus an inconsistency-
+  detection gap (11 ontologies: HermiT classify-crashes on incoherent KBs; rustdl
+  returns an unflagged hierarchy).
+
+**Consequence for framing:** ORE did NOT rescue a clean research-track win
+(C3 unsupported; C2-as-self-aware *fails* — silent FNs demonstrated). It DID (a)
+find+fix a real default-config soundness bug, and (b) characterize a concrete,
+fixable incompleteness (the datatype under-approximation). The publishable shape
+is **characterization + fixes** (resource/experience), or a research contribution
+only if the datatype gap is closed and/or the signal is tightened to catch the
+silent channels. The robust positives stand: **C1 (calculus FP=0 at scale) +
+C5 (embedding) + EL/Horn-beats-HermiT.**
+
 **Honest reframe from de-risking:** the comparative anytime claim ("sound partial
 where complete reasoners give nothing") has **no support on this corpus** —
 Konclude completes everything in <0.3 s. C3's defensible form is a *property*

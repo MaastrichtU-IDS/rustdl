@@ -313,6 +313,39 @@ completeness gain; closing the wine *wall* now requires committing to M3 (months
 its own design pass) or accepting the gap. There is no measured incremental lever
 between here and M3.
 
+### M3 PREMISE-TEST 2026-06-08 — RED. Accept the wall (settled).
+
+Before scoping M3 (months of greenfield SROIQ-approximate saturation), the advisor
+gated it on: *would stronger propagation actually collapse wine's disjunction fan-
+out?* Measured (viable-disjunct histogram at wine hard-pair disjunction branch
+points): **~100 % OPEN** — 4,414 of ~4,555 branch points have BOTH binary-covering
+disjuncts viable; 0–1 were near-forced. Wine's disjunctions are *genuine* open
+nondeterministic choices, not missed-forced ones.
+- **Caveat (honest):** measured at Horn-fixpoint → proves *Horn-level* propagation
+  doesn't force them; M3's richer saturation *could* force some. Strong evidence,
+  not proof. Upper bound on openness.
+- **Independent cap:** ~32 % of wine's branching is `≤n` cardinality-merge
+  nondeterminism, which saturation does not address — so even a best-case M3
+  leaves a third of the search.
+
+**Verdict — ACCEPT THE WALL.** Per the advisor's pre-set decision rule, a "mostly
+open" result makes accept-the-wall the settled, correct answer. M3 is months of
+greenfield for a now-strongly-doubted, at-best-partial perf gain on one
+pathological ontology, where correctness is already complete (FP=0/MISSED=0
+corpus-wide) and `--pair-timeout-ms 25` already makes wine practical (7.5×,
+identical hierarchy). **The only escalation that could overturn this is observing
+Konclude directly** (the advisor's "most authoritative" test — does Konclude make
+few/no branching calls on wine's residual pairs?); but the 32 % cardinality cap +
+the cost make accept-the-wall the recommendation regardless.
+
+**This closes the wine-wall / B arc.** Every lever was measured out: 1-UIP
+(NO-GO, bjgap≈1), A1 (FP-unsound), B-perf (told-bracket 0 %), M1 (ruled out, wine
+is all `≤1`), M2/`DifferentIndividuals` (shipped sound, wall flat), M3 (premise
+red). **Durable close = the trio:** correctness-complete corpus (FP=0/MISSED=0) +
+the `--pair-timeout-ms 25` knob + increment 1's sound completeness fix. The wine
+*wall* is an accepted, characterized perf gap on pathological nominal+disjunction
+SROIQ, not a soundness or completeness defect.
+
 ## §5 Soundness/completeness obligations + dead-ends NOT to repeat
 
 - **A1 (the governing lesson):** a `Subsumed` derived from *one* model is unsound

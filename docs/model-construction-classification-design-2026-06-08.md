@@ -258,6 +258,36 @@ a `≤n`-discharge rewrite rushed while fatigued is precisely how an FP ships. T
 right cadence: pick the increment (`#mcands`), land the canaries + equivalence
 harness, then implement in a focused, corpus-gated session.
 
+### #mcands RESULT 2026-06-08 — M1 RULED OUT; increment 1 = `DifferentIndividuals`→wedge `≠`
+
+Measured (production-faithful wedge `.with_nominals`/`.with_sub_roles`, 3 wine hard
+pairs, ~7–8k `≤n`-hits each, validity-guarded):
+- **Every wine `≤n` is `≤1` with `k≤3` successors** → `partition_rec` produces ≤1
+  block-assignment, avg fan-out **0.36**. **M1 (partition-enumeration blow-up) is
+  empirically ABSENT** — it needs `n≥2` + combinatorial partitions, which wine
+  doesn't have. The deep `≤n`-clause-head rewrite is **not needed** for wine.
+- ~50 % of `≤1` nodes have `#mcands > n`, and those successors are **100 %
+  distinct-nominal** (`{Red}` vs `{White}`, `{Dry}` vs `{Sweet}`) — never shared.
+  So M2-as-originally-framed ("eager co-nominal MERGE") is also wrong: there's
+  nothing to merge. The fan-out is because those distinct nominals are **not
+  marked `≠`** (`must_be_distinct` is false for them).
+- **Root cause (verified in code):** the wedge clausifier (`clause.rs`) **drops
+  `DifferentIndividuals`**; wine asserts it on exactly the `≤1` fillers
+  (`DifferentIndividuals(Dry OffDry Sweet)`, …); the wedge has a `≠`/`neq`
+  relation + disjoint-label distinctness but is never seeded from it. (The full
+  tableau consumes it at lib.rs:2515 — wedge-only gap.)
+
+**Increment 1 (picked, building now): propagate the ENTAILED `DifferentIndividuals`
+distinctness into the wedge** (translate to pairwise singleton-nominal-class
+disjointness so distinct-nominal successors clash → `≤1` fires `forced_distinct`
+with no merge search → prunes the downstream disjunction subtrees ~99 % of which
+sit below a `≤n` node). **FP-safe by construction** (adding an entailed constraint
+can only find REAL subsumptions, never create an unsound one — the inverse of the
+A1 hazard), but still corpus-gated FP=0/MISSED=0 + a wine-wall measurement.
+**Honest hedge (from the measurement):** disjunction branches outnumber merge
+branches ~4.4:1, so this increment may not *fully* close wine — but it's the
+correct, sound, measured first increment, and M1's deep rewrite is off the table.
+
 ## §5 Soundness/completeness obligations + dead-ends NOT to repeat
 
 - **A1 (the governing lesson):** a `Subsumed` derived from *one* model is unsound

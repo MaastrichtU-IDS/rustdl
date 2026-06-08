@@ -143,6 +143,64 @@ completion) and, if feasible, profiling/observing HermiT on a wine pass_through
 pair. Until that mechanism is named, there is nothing concrete to build — the
 "architectural rewrite" has no defined mechanism yet, only a target.
 
+### CHARACTERIZATION RESULT 2026-06-08 — mechanism NAMED; B-complete is ≤n-reform, not greenfield
+
+Literature dig (HermiT JAIR 36/2009; Konclude/saturation-coupling JAIR 54/2015;
+Konclude JWS 27/2014), cross-checked against `hyper.rs`. The wine explosion is
+**not a missing big mechanism** — rustdl already does Horn-first hyperresolution,
+restricted *semantic* branching (`search.rs` — do NOT "add semantic branching"),
+dep-directed backjumping, and global label-oracle pruning. The cause is **how the
+two nondeterminisms compose**:
+
+- **M1 (most likely dominant) — `≤n` partition-enumeration is nested under
+  disjunction branching and re-run per disjunction branch.** `solve` branches on
+  `find_open_disjunction`; deeper in the recursion `find_open_at_most` →
+  `solve_at_most`/`partition_rec` (hyper.rs:1330/1544/1564) enumerate
+  restricted-growth partitions of the successors and recurse `solve` *inside each
+  partition* — so the ~60k merge-branches are re-enumerated within each of the
+  ~108k disjunction branches (the JAIR §3.1 And/Or-branching interaction). HermiT
+  encodes at-most as a **DL-clause with a disjunction-of-equalities head over the
+  concrete present successors** (JAIR §3.1.1/§4.1), discharged by *unit
+  propagation* — merges are **forced** once all-but-one equality disjunct is
+  refuted, not enumerated. **Change: deep but bounded** — replace the
+  partition-enumeration discharge of `≤n` with clause-head resolution in the same
+  hyperresolution loop the disjunction path already uses. (The clausifier already
+  produces `AtMost` heads; it's the *solver* discharge that must change.) Also
+  fixes the `clash_deps = DepSet::ALL` (hyper.rs:1553) backjump-defeat as a
+  side-effect.
+- **M2 (the real content of "`with_nominals` didn't help") — nominal identity
+  must FORCE merges before partitioning.** rustdl's `apply_nn_rule` (hyper.rs:931)
+  merges nodes already carrying the same nominal *label*; but wine's nominal-
+  filler successors (`∃R.{a}`, `≤1 R`) don't carry the literal nominal label at
+  partition time, so `must_be_distinct` (1604) is false and the full partition
+  fan-out runs. HermiT's **NI-rule** (JAIR §3.2, annotated equalities) and
+  Konclude's **`C°≤`-rule + `#mcands`** (JAIR'15 §3.1) force co-nominal successors
+  equal so `#mcands ≤ m` and the node is never "critical" → no branching merge.
+  **Change: medium** — eagerly merge/force co-nominal-filler successors (propagate
+  the nominal guard) so the merge-candidate count reflects identity *before*
+  `partition_rec`.
+- **M3 (deepest, optional) — Konclude's deterministic/non-deterministic
+  saturation-graph split + critical-node "patching"** resolves many residual
+  ("critical") pairs without a full tableau test. rustdl's label oracle already
+  matches Konclude's *global* pruning; this adds the *patching loop* that shrinks
+  the critical set. New subsystem; highest-effort/highest-payoff.
+- **Backjumping confirmed a dead fallback** (our 1-UIP dist≈1 + the `DepSet::ALL`
+  site): the thesis is *generate fewer branches* (M1/M2), not prune better.
+
+**The open question that picks the first increment (NOT yet measured):** is M1 or
+M2 primary on wine? The `with_nominals`-didn't-help datum *leans M1* (collapsing
+merges can't dent a disjunction-dominated total). **Decisive next measurement:
+instrument `#mcands` (how many `≤n` successors are *actually* merge-eligible vs
+forced-distinct) on the real wine completion graph.** Small `#mcands` but rustdl
+still branches → M2 (force the merges). Genuinely large fan-out independent of
+merges → M1 (clause-head encoding). That result picks the first engine increment.
+
+**So B-complete = reform the wedge's `≤n` cardinality discharge (M1) + eager
+nominal-filler merge (M2), in `hyper.rs` — a deep but BOUNDED change to
+`solve`/`solve_at_most`/`partition_rec`/`apply_nn_rule`, NOT a new engine.** Every
+increment FP=0 + MISSED=0 corpus-gated (the `≤n` discharge is soundness-critical).
+Sources + exact sites in the characterization agent's report (banked below).
+
 ## §5 Soundness/completeness obligations + dead-ends NOT to repeat
 
 - **A1 (the governing lesson):** a `Subsumed` derived from *one* model is unsound

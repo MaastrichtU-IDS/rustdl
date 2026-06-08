@@ -77,7 +77,38 @@ re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 > below are kept as the historical reasoning trail, but treat them as superseded
 > by this block. Diagnostic instrumentation that produced these numbers lives in
 > worktree branch `worktree-agent-aa2bcc7a5e964341c` (`SearchStats.stall_site`,
-> `diag_block_analysis`, the extended `wine_wedge_construct_vs_solve_probe`).
+> `diag_block_analysis`, the extended `wine_wedge_construct_vs_solve_probe`, plus
+> `wine_wedge_long_deadline_nominals_probe`).
+>
+> ## ⚠⚠ GO/NO-GO RESULT 2026-06-08 — the wine-wall wedge lever is NO-GO.
+>
+> The decisive measurement (`wine_wedge_long_deadline_nominals_probe`, one
+> representative hard pair, 60 s each config — the 5 s profile is consistent
+> across 4 subs):
+> - **(A) production config (no nominals), 60 s:** `Stalled`, **168 246 branches**
+>   (vs ~14 k at 5 s → a *linear* ~2800 branches/s climb), `restores==branches`,
+>   `nodes` flat at 10. The model exists (non-subsumption) but the search order
+>   never reaches it; the tree is effectively unbounded. **Not findable in any
+>   practical budget.**
+> - **(B) nominals + sub-roles wired, 60 s:** `Stalled`, **166 206 branches** —
+>   essentially identical. **Wiring `with_nominals` does NOT help** (it only
+>   shifts the disj/merge ratio). The incompleteness hypothesis is refuted.
+>
+> **Conclusion — accept the gap on the wine wall.** All wedge-based levers are
+> exhausted or refuted: simple conflict learning → 0 wine un-stalled (leaves);
+> 1-UIP → NO-GO (would need to prune the bulk of a linearly-growing tree, which
+> "clashes are leaves" says it can't); nominal wiring → no effect; better branch
+> *ordering* → MOMS already dead-ended (`moms-plan.md` §A). The gap is
+> **architectural**: per-pair backtracking search vs HermiT/Konclude **global
+> model construction** (HermiT finds this model in seconds because it *builds* a
+> model rather than backtrack-searching for it). The only thing that closes it is
+> the §2 Konclude-style model-construction rewrite — a major undertaking, not an
+> incremental wedge lever.
+>
+> **Practical answer (already shipped):** `--pair-timeout-ms 25` — these pairs
+> find nothing regardless, so cutting the budget is free (wine 7.5×, MISSED=0).
+> **The reuse-trap half (approach (A)) still stands as an independent problem;
+> only the wine-wall/search half is closed as NO-GO.**
 
 ## The thesis: two threads are one problem
 

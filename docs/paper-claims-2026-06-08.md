@@ -188,18 +188,50 @@ rustdl has the **lowest startup AND smallest footprint** — ~50–160× lower s
 than JVM reasoners, ~6× smaller RSS than even native Konclude on a trivial query.
 This is the most unambiguous numeric win and the backbone of the embedding story.
 
-**(iii) Calibration confusion matrix — RUNNING.** Per ontology × budget ×
-`trust_sat`{0,1}, tabulate `timed_out_pairs` (signal) vs actual MISSED (oracle),
-at the pair level: false-negatives `|MISSED ∖ timed_out|` (the C2-killer — only
-provably 0 with `trust_sat=0`, since `trust_sat` can mask misses), over-warn rate,
-FP. Quantifies whether C2 is a "sound conservative flag" or needs trust_sat=0 +
-a tightening contribution.
+**(iii) Calibration confusion matrix — DONE** (full data:
+`c2-calibration-matrix-2026-06-08.md`; 11 oracle ontologies × budgets × trust_sat
+× label_heuristic; conservation-identity-verified). **Pivotal — and it weakens C2:**
+- **C1: FP=0 every cell/budget/config.** Rock-solid.
+- **TWO silent (unflagged) not-subsumed channels, not one:** `trusted_refute`
+  (wedge `Sat`, gated by `trust_sat`) AND `label_pruned` (Phase-7 label heuristic,
+  ungated). Both large on every SROIQ row even when `timed_out=0` (sio@1000: signal
+  says "complete" while ~111k pairs — 78850 wedge + 32209 label — were never
+  tableau-verified). If either is incomplete anywhere, C2's boolean breaks silently.
+- **Over-warn 84% (pizza@25), 100% elsewhere** — sound but a *very* loose flag
+  (flags thousands of correctly-resolved non-subs); near-useless as a *precise*
+  uncertainty oracle in the fast config.
+- **No realized false-negative** here — but the FN test is **vacuous** (corpus
+  tuned to MISSED=0); `trust_sat=0` did not lower MISSED on any row.
+- **C2 provably sound (MISSED ⊆ flagged) ONLY under `trust_sat=0` AND
+  `label_heuristic=0`** (both channels → 0; demonstrated, MISSED still 0) — at
+  ~20–30 s vs ~1–2 s, even heavier over-warning.
+- **Conservation identities** (`timed_out(ts0)=timed_out(ts1)+trusted_refute(ts1)`,
+  exact every row) make the accounting airtight.
 
-(superseded) Per ontology × budget, tabulate
-`timed_out_pairs` (signal) vs actual MISSED (oracle): true/false positives, and
-confirm zero false-negatives (never `complete=true` with MISSED>0). Quantifies the
-over-warn rate — the number that decides whether C2 is "sound-conservative flag"
-or motivates a "tighten-the-signal" contribution.
+**Consequence:** C2-as-hoped ("certain set is exact; here are the uncertain pairs")
+**fails in the fast config** (two silent channels) and is *useless-as-precise* even
+when sound (100% over-warn); it holds *provably* only in a slow, flooding config.
+So C2 is either (a) honestly a **configurable soundness contract** (fast ↔
+provably-self-aware) with the conservation-identity characterization as the
+contribution, or (b) upgraded by an **unsolved signal-tightening** result (flag
+only the truly-uncertain). Without (b), C2 is not a strong standalone contribution.
+
+## 9. Post-de-risking honest standing (which claims survive)
+
+- **Strongest numeric wins: C1 (soundness, FP=0 — a guarantee) + C5 (embedding —
+  lowest startup + smallest RSS).**
+- **C4** EL/Horn: honest support — competitive with HermiT, loses to ELK on big-EL
+  and Konclude everywhere; + the ELK-rejects-out-of-EL graceful foil.
+- **C3** anytime: a *property*, not a comparative win here (Konclude all <0.3 s).
+- **C2** (intended novel core): **weaker than hoped** — sound-conservative, two
+  silent channels, provable only in a slow config; needs signal-tightening
+  (unsolved) to be strong.
+- **Net:** the data supports a **sound, lightweight, embeddable reasoner with a
+  configurable soundness contract** (Resource/In-Use strength) more than a
+  novel-algorithm research-track result. Research-track needs EITHER the
+  signal-tightening contribution (b) OR a validated application (sound prefilter)
+  OR full-ORE evidence where the self-aware/anytime behavior delivers a measurable
+  win. **This is the framing decision now on the table.**
 
 **Honest reframe from de-risking:** the comparative anytime claim ("sound partial
 where complete reasoners give nothing") has **no support on this corpus** —

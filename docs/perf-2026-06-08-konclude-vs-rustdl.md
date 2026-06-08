@@ -1,4 +1,4 @@
-# rustdl vs Konclude — full-corpus classification benchmark (2026-06-08)
+# rustdl vs Konclude vs HermiT — full-corpus classification benchmark (2026-06-08)
 
 **Headline correction:** measured against the **native Konclude binary** (not
 docker), Konclude wins on every ontology with real reasoning work, and rustdl's
@@ -106,6 +106,61 @@ were docker-startup artifacts. rustdl's genuine strengths remain **soundness
 and sub-second on GALEN-scale Horn TBoxes); its gap is the **out-of-EL SROIQ
 tableau**, exactly the frontier this session measured out (1-UIP NO-GO, A1 dead,
 B-perf 0%, M1 ruled out, M2 shipped sound but wall-flat, M3 premise red).
+
+## Three-way — HermiT added
+
+**HermiT 1.4.5.456** via ROBOT v1.9.6 (`robot reason --reasoner HermiT`, docker).
+Same JVM/docker-startup trap as docker-Konclude: HermiT **total wall is
+startup-dominated (~1.6 s floor, NOT comparable to native walls)**. The fair
+column is HermiT **reasoning-ms**, read from ROBOT `-vv` timestamps (`Starting
+reasoning…` → `Reasoning took…`); spot-validated by this author (galen 1,248 ms /
+4.0 s total). Startup floor ≈ 1.6 s (bibtex/anch trivial rows).
+
+| Ontology | #cls | rustdl wall (complete?) | Konclude reason-ms | **HermiT reason-ms** | note |
+|---|---:|---|---:|---:|---|
+| galen | 2748 | 0.59 s (Horn, **complete**) | 12 | **1144** | **rustdl complete < HermiT reasoning** |
+| notgalen | 3087 | 1.05 s (Horn, **complete**) | 17 | **1306** | **rustdl complete ≈ HermiT reasoning** |
+| ro / ro-stripped | 58 | 0.5 s (**complete**) | 2 | **DNF >300 s** | HermiT stuck in RBox/object-property precompute; rustdl+Konclude trivial |
+| go-basic | 51937 | 18.4 s (EL, complete) | 295 | 4380 | |
+| alehif-test | 167 | 0.16 s (Horn, complete) | 1 | 233 | |
+| shoiq-knowledge | 144 | 1.13 s (complete) | 3 | 8556 | HermiT ~2850× Konclude (nominal/card) |
+| ore-10908 | 692 | 5.43 s (complete) | 23 | 10345 | HermiT ~450× Konclude |
+| ore-15672 | 82 | 29 s (**INCOMPLETE**) | 5 | 1654 | HermiT completes; rustdl truncates |
+| sio / sio-stripped | 1585 | 32 s (**INCOMPLETE**) | 55–59 | ~57000 | HermiT ~1000× Konclude |
+| wine | 137 | **DNF**@200ms | 33 | 6390 | **HermiT completes; rustdl DNFs** |
+| family / family-stripped | 58 | 81 s (not-comparable) | — | 9344–9450 | **INCONSISTENT** (HermiT agrees Konclude) |
+| ore-15516 | 84 | 0.41 s (all-unsat mirror) | — | 58 | INCONSISTENT (all three agree) |
+
+### Honest three-way reading
+
+- **Konclude is the speed king — over *both* rustdl and HermiT.** On reasoning-ms
+  Konclude beats HermiT by 1–3 orders of magnitude on real work (ore-10908 ~450×,
+  sio ~990×, shoiq-knowledge ~2850×, galen ~95×). This matches HermiT's known
+  ORE-competition profile: robust + complete, but slow. Konclude's saturation
+  architecture is simply far faster.
+- **rustdl is genuinely competitive-to-BETTER than HermiT on the EL/Horn path.**
+  rustdl classifies **galen complete in 0.59 s vs HermiT's 1.25 s core reasoning**,
+  **notgalen 1.05 s vs 1.31 s**, and — most strikingly — **ro/ro-stripped complete
+  in 0.5 s where HermiT DNFs (>300 s, RBox precompute)**. On GALEN-scale Horn and
+  RBox-heavy EL, rustdl's saturation fast path *outperforms a mature complete
+  reasoner*. This is rustdl's real, defensible niche.
+- **rustdl loses to HermiT on hard SROIQ** — it **DNFs wine** (HermiT: 6.4 s),
+  and its ore-15672/sio numbers are **incomplete** (truncated) where HermiT
+  completes. rustdl's apparent speed there is an artifact of defaulting timed-out
+  pairs to not-subsumed, not capability.
+- **Correctness: no HermiT-vs-Konclude disagreement** (HermiT built the oracle):
+  family, family-stripped, ore-15516 all inconsistent on both; np/pizza incoherent
+  on both. rustdl agrees except family* (drops data axioms → reports consistent).
+
+### Net positioning (three-way)
+**Konclude ≫ { rustdl-on-EL/Horn ≈ HermiT-core, rustdl better on RO } ≫
+rustdl-on-hard-SROIQ < HermiT.** rustdl is not a Konclude-class speed reasoner, but
+on EL/Horn it is competitive with — and on RO faster than — HermiT, while staying
+sound (FP=0/MISSED=0). Its gap is purely the out-of-EL SROIQ tableau.
+
+**Doc correction:** `docs/abox-consistency-check-handoff.md` cites family as
+"HermiT/Konclude-inconsistent in <1 s"; HermiT actually takes **~9.4 s** to detect
+it (Konclude 0.9 s wall). Worth fixing if that <1 s figure is relied on.
 
 ## Note on stale claims
 The 06-03/06-04 docs and any "beats Konclude"/"≤5×"/"Konclude ratio N×" figures

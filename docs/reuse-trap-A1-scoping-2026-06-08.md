@@ -82,7 +82,51 @@ ore-10908 + ore-15672. Report, per ontology:
   → **A1 is alive**; then design the complete sentinel (crux 1) and re-measure
   FP=0 + wall corpus-wide.
 
-(Results to be appended here when the agent completes.)
+### RESULT 2026-06-08 — A1 is DEAD, for a STRONGER reason than a high abort rate
+
+Measured (worktree agent; gate forced open, back-prop events counted not aborted,
+250 ms deadlines, FP cross-checked vs oracle):
+
+| ontology | replay attempts | zero-event % | events label/merge/edge | FP vs oracle |
+|---|---:|---:|---|---:|
+| pizza | 1358 | 100 % | 0 / 0 / 0 | 100 |
+| ore-10908 | 6881 | ~100 % | 0 / 0 / 20 (10 pairs) | 2 |
+| ore-15672 | 1901 | 100 % | 0 / 0 / 0 | 19 |
+
+**PROVEN (mechanism-independent — this is the kill):** the abort rate is ~0 %
+(back-prop events almost never occur) yet every ontology has zero-event false
+`Subsumed`. So **a mutation sentinel cannot guard this reuse** — it is
+structurally blind to a zero-mutation FP. This follows directly from `FP>0 with
+events=0` (pizza: 100 FP, 0 events) and does **not** depend on the exact FP
+mechanism. Lazy and full-rerun replay give identical FPs (100/2/19) → the
+unsoundness is in the snapshot *model*, not in lazy fingerprint-skip. **A1 as
+scoped (mutation-sentinel-guarded reuse) is dead.**
+
+**Mechanism (agent-traced + architecture-consistent; one link NOT independently
+verified):** the agent traced the FP to a clash against a label *already present*
+in the seeded snapshot — i.e. `Subsumed` fires because `sup ∈ the one cached
+model's labels`, adding no label/merge/edge. This is **consistent with the
+shipped Phase-7 label oracle**, which already treats "`sup ∈ wedge-Sat-model(sub)`
+labels" as a *candidate requiring verification* (`pass_through`), precisely
+because on non-Horn `sup ∈ one-model(sub)` ≠ `sub ⊑ sup` (sound only on Horn,
+where the least model is canonical — which is why the gate is Horn-only). *Caveat
+(honest):* "zero snapshot-events + `Subsumed`" does not *strictly* entail the
+seeded-label story (the clash could arise in freshly-built non-snapshot
+structure); the per-FP seeded-label split was not independently run. The kill
+above holds regardless. ore-10908's 20 edge events (10 pairs) don't change it —
+pizza's 100 *zero-event* FPs are decisive on their own.
+
+**Reframed conclusion (sharper than "need B"):** the *sound* use of a single
+cached model is the `NotSubsumed` prune — **already shipped as the Phase-7 label
+oracle** (pruning 96–100 %). A1's only new content was the *positive* (`Subsumed`)
+direction, which is the unsound part. So **A1 adds no new sound value over what
+ships today.** Sound *acceleration* of the candidate verification the label
+oracle defers would need per-pair model validation (≈ dead-end §9 — verify
+before writing "rejected" into a plan, but it defeats the perf purpose) or
+HermiT-style sound reuse-through-construction (= the §2 rewrite, **approach B**).
+**Option space collapses to B (rewrite) or C (pivot).** Instrumentation lives on
+worktree branch `worktree-agent-ae38f05e3f17aa3cc` (throwaway; env-gated,
+default-inert).
 
 ## Pointers
 - `crates/owl-dl-tableau/src/replay.rs` (replay + verdict), `hyper.rs`

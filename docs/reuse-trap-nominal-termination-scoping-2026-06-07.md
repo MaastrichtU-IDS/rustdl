@@ -80,35 +80,53 @@ re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 > `diag_block_analysis`, the extended `wine_wedge_construct_vs_solve_probe`, plus
 > `wine_wedge_long_deadline_nominals_probe`).
 >
-> ## ⚠⚠ GO/NO-GO RESULT 2026-06-08 — the wine-wall wedge lever is NO-GO.
+> ## GO/NO-GO RESULT 2026-06-08 — DEFERRED (not built), 1-UIP still OPEN. One firm sub-result (nominals refuted).
 >
-> The decisive measurement (`wine_wedge_long_deadline_nominals_probe`, one
-> representative hard pair, 60 s each config — the 5 s profile is consistent
-> across 4 subs):
+> *(An earlier draft of this block over-claimed "NO-GO / accept the gap /
+> architectural"; corrected after advisor review + an oracle check. What's
+> below is the corrected, evidence-bounded verdict.)*
+>
+> The measurement (`wine_wedge_long_deadline_nominals_probe`, 60 s each config):
 > - **(A) production config (no nominals), 60 s:** `Stalled`, **168 246 branches**
->   (vs ~14 k at 5 s → a *linear* ~2800 branches/s climb), `restores==branches`,
->   `nodes` flat at 10. The model exists (non-subsumption) but the search order
->   never reaches it; the tree is effectively unbounded. **Not findable in any
->   practical budget.**
+>   (vs ~14 k at 5 s → linear ~2800/s climb), `restores==branches`, `nodes` flat
+>   at 10, **disjunction-dominated** (107 834 disj / 60 412 merge).
 > - **(B) nominals + sub-roles wired, 60 s:** `Stalled`, **166 206 branches** —
->   essentially identical. **Wiring `with_nominals` does NOT help** (it only
->   shifts the disj/merge ratio). The incompleteness hypothesis is refuted.
+>   essentially identical. **Wiring `with_nominals` does NOT help** — this sub-
+>   result is FIRM (refutes the incompleteness hypothesis; nominals are not the
+>   wine-wall lever).
 >
-> **Conclusion — accept the gap on the wine wall.** All wedge-based levers are
-> exhausted or refuted: simple conflict learning → 0 wine un-stalled (leaves);
-> 1-UIP → NO-GO (would need to prune the bulk of a linearly-growing tree, which
-> "clashes are leaves" says it can't); nominal wiring → no effect; better branch
-> *ordering* → MOMS already dead-ended (`moms-plan.md` §A). The gap is
-> **architectural**: per-pair backtracking search vs HermiT/Konclude **global
-> model construction** (HermiT finds this model in seconds because it *builds* a
-> model rather than backtrack-searching for it). The only thing that closes it is
-> the §2 Konclude-style model-construction rewrite — a major undertaking, not an
-> incremental wedge lever.
+> **Sat/Unsat of the hard pairs — VERIFIED.** The hard pairs found are
+> `food#BlandFishCourse ⊑? {BlandFish, CheeseNutsDessert, DarkMeatFowl, Dessert,
+> …}` — a *course* vs unrelated *food/dish* classes. The HermiT oracle
+> (`wine-classified.owx`) has **no** such `SubClassOf` → they are genuine
+> **non-subsumptions (Sat)**, i.e. representative wall pairs. So `C⊓¬D` is
+> **satisfiable with a ~10-node model that the wedge never reaches in 168k+
+> branches**.
+>
+> **Corrected verdict — DEFERRED, not NO-GO. 1-UIP remains the OPEN candidate.**
+> The earlier "leaves ⟹ 1-UIP can't help" was **backwards**: resolving leaf-level
+> dep-set conflicts into short asserting clauses that fire high and prune subtrees
+> is exactly 1-UIP's *purpose*; the leaf-ness of the simple nogoods is its
+> *motivation*. And the wall pair is **disjunction-dominated** — the regime the
+> prior note (`conflict-learning-simple-is-weak`) flagged as "1-UIP may matter."
+> A confirmed-Sat tiny (10-node) model that backtracking can't find in 168k
+> branches is **itself a lever to chase**, not a dead end. Candidates that remain
+> open: (i) 1-UIP asserting-clause learning on disjunction-dominated stalls;
+> (ii) model-guided / better branch ordering (distinct from MOMS's reverted static
+> heuristic). The architectural alternative (§2 global model construction) is the
+> bigger fallback, not the only option.
+>
+> **Before building 1-UIP, the fresh session must first establish** whether the
+> 168k disjunction-level clashes share structure an asserting clause can exploit
+> (do conflict dep-sets span shallow decision levels a 1-UIP backjump would reach,
+> or are they all deep/independent?). That's the real go/no-go, and it is *not yet
+> measured*.
 >
 > **Practical answer (already shipped):** `--pair-timeout-ms 25` — these pairs
 > find nothing regardless, so cutting the budget is free (wine 7.5×, MISSED=0).
-> **The reuse-trap half (approach (A)) still stands as an independent problem;
-> only the wine-wall/search half is closed as NO-GO.**
+> **Session-management note:** don't build 1-UIP now (defer to a fresh session);
+> this is "not built," NOT "proven impossible." The reuse-trap half (approach (A))
+> also remains open and independent.
 
 ## The thesis: two threads are one problem
 

@@ -6,15 +6,75 @@
 //!   [`convert_ontology`]) — this file.
 //! - Day 12: reverse conversion + round-trip proptest (still to come).
 
-use horned_owl::model::{AnnotatedComponent, Class, SubObjectPropertyExpression};
+use horned_owl::model::{AnnotatedComponent, Class, Literal, SubObjectPropertyExpression};
 use horned_owl::model::{ClassExpression, Component, ForIRI, Individual, ObjectPropertyExpression};
 use horned_owl::ontology::set::SetOntology;
 use thiserror::Error;
 
 use crate::ConceptPool;
 use crate::Vocabulary;
+use crate::data_axioms::IntegerRange;
 use crate::ir::{ClassId, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
+
+/// IRI namespace for synthetic *data-key* (`DKey`) classes. These are
+/// opaque atomic fillers introduced when lowering `xsd:integer`-typed
+/// `DataHasValue` / `DataSomeValuesFrom` restrictions to the
+/// object-style `∃p.DKey(range)` encoding (see the data-property arms of
+/// [`convert_class_expression`]). They are NOT user classes: the
+/// classifier filters this prefix out of the reported class list so
+/// `DKey` subsumptions never appear in output (see
+/// `crates/owl-dl-reasoner/src/classify.rs`).
+///
+/// The full IRI deterministically encodes the integer range as
+/// `urn:rustdl-dkey:<min>:<max>` where each bound is a decimal i64 or
+/// `*` for the unbounded (`None`) end. This makes interning idempotent
+/// (same range → same IRI → same `ClassId` via vocabulary dedup) and
+/// lets the post-conversion pass recover each range by parsing the IRI.
+pub const DKEY_IRI_PREFIX: &str = "urn:rustdl-dkey:";
+
+/// Build the deterministic `DKey` IRI for an integer range.
+fn dkey_iri(range: IntegerRange) -> String {
+    fn bound(b: Option<i64>) -> String {
+        b.map_or_else(|| "*".to_string(), |v| v.to_string())
+    }
+    format!("{DKEY_IRI_PREFIX}{}:{}", bound(range.min), bound(range.max))
+}
+
+/// Parse a `DKey` IRI back into its integer range. Returns `None` for
+/// any IRI that is not a well-formed `DKey` IRI.
+pub(crate) fn parse_dkey_iri(iri: &str) -> Option<IntegerRange> {
+    let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?;
+    let (min_s, max_s) = rest.split_once(':')?;
+    // Each bound is "*" (unbounded → None) or a decimal i64. A non-"*"
+    // token that fails to parse is a malformed IRI → reject the whole.
+    fn bound(s: &str) -> Result<Option<i64>, ()> {
+        if s == "*" {
+            Ok(None)
+        } else {
+            s.parse::<i64>().map(Some).map_err(|_| ())
+        }
+    }
+    Some(IntegerRange {
+        min: bound(min_s).ok()?,
+        max: bound(max_s).ok()?,
+    })
+}
+
+/// Intern the synthetic `DKey(range)` filler class and return the
+/// `∃p.DKey(range)` concept. `p` is the data property treated as a
+/// (forward) object-style role.
+fn lower_data_to_some(
+    range: IntegerRange,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> ConceptId {
+    let role_id = vocab.intern_role(dp_iri);
+    let dkey_class = vocab.intern_class(&dkey_iri(range));
+    let filler = pool.atomic(dkey_class);
+    pool.some(Role::named(role_id), filler)
+}
 
 /// Errors produced by conversion from `horned-owl` to our IR.
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
@@ -147,14 +207,60 @@ pub fn convert_class_expression<A: ForIRI>(
             let hi = pool.max(*n, role, inner);
             Ok(pool.and([lo, hi]))
         }
-        ClassExpression::DataSomeValuesFrom { .. }
-        | ClassExpression::DataAllValuesFrom { .. }
-        | ClassExpression::DataHasValue { .. }
+        // Integer-facet data restrictions lower to the object-style
+        // `∃p.DKey(range)` encoding so the enclosing existential /
+        // conjunction axiom SURVIVES `ce_or_skip!` (instead of being
+        // dropped wholesale). Sound by construction: we only ever ADD
+        // subsumptions that genuinely hold (value ∈ range / r1 ⊆ r2,
+        // seeded in `convert_ontology`). The property `p` becomes the
+        // role, so CR5's role-match keeps height-keys from subsuming
+        // width-keys for free.
+        //
+        // SCOPE — integer facets ONLY. Any unrecognized data range
+        // (non-integer datatype, float/decimal/dateTime/string, an
+        // unparseable literal, `DataAllValuesFrom`, or any data
+        // cardinality) MUST still return `UnsupportedDataRange` so the
+        // whole axiom drops. Partial lowering of a mixed conjunction
+        // would WEAKEN an equivalence RHS → false-positive subsumption
+        // via the sufficient direction. Do not best-effort.
+        ClassExpression::DataSomeValuesFrom { dp, dr } => {
+            match crate::data_axioms::parse_integer_range(dr) {
+                Some(range) => Ok(lower_data_to_some(range, dp.0.as_ref(), vocab, pool)),
+                None => Err(ConversionError::UnsupportedDataRange),
+            }
+        }
+        ClassExpression::DataHasValue { dp, l } => match integer_literal_value(l) {
+            Some(v) => Ok(lower_data_to_some(
+                IntegerRange::point(v),
+                dp.0.as_ref(),
+                vocab,
+                pool,
+            )),
+            None => Err(ConversionError::UnsupportedDataRange),
+        },
+        ClassExpression::DataAllValuesFrom { .. }
         | ClassExpression::DataMinCardinality { .. }
         | ClassExpression::DataMaxCardinality { .. }
         | ClassExpression::DataExactCardinality { .. } => {
             Err(ConversionError::UnsupportedDataRange)
         }
+    }
+}
+
+/// Extract an `xsd:integer`-typed literal's value. Returns `None` for
+/// any other literal kind (`Simple` = `xsd:string`, `Language`, or a
+/// `Datatype` whose IRI is not exactly `xsd:integer`) or an unparseable
+/// value — sound under-approximation (a dropped restriction is a miss,
+/// never an FP).
+fn integer_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+            literal.parse::<i64>().ok()
+        }
+        _ => None,
     }
 }
 
@@ -527,6 +633,18 @@ pub fn convert_ontology<A: ForIRI>(
         })
     };
     out.axioms.extend(derived);
+    // Seed told-subsumptions between the synthetic `DKey(range)` filler
+    // classes introduced by the integer-facet data lowering above:
+    // `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2` (and `r1` is the sub).
+    // This is the ONE missing inference that makes
+    // `DataHasValue(p, v) ⊑ DataSomeValuesFrom(p, range)` hold when
+    // `v ∈ range` — the property match is handled by CR5 (both lower to
+    // `∃p.DKey(...)` on the same role). Sound by construction: every
+    // emitted edge is a genuine value-space containment. The `DKey`
+    // classes never appear in the reported class list (filtered by
+    // `DKEY_IRI_PREFIX` in the reasoner), so these edges add no output
+    // noise — they only relay through the existential machinery.
+    seed_dkey_subsumptions(&mut out);
     // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully
@@ -534,6 +652,37 @@ pub fn convert_ontology<A: ForIRI>(
     crate::disjunction_existential::derive_disjunction_existentials(&mut out);
     out.axioms.sort();
     Ok(out)
+}
+
+/// Emit `SubClassOf(DKey(r1), DKey(r2))` for every ordered pair of
+/// distinct synthetic `DKey` filler classes where `r1 ⊆ r2`. O(k²) in
+/// the number of distinct integer ranges (small in practice — bounded
+/// by the count of distinct facet/value combinations in the ontology).
+fn seed_dkey_subsumptions(out: &mut InternalOntology) {
+    // Collect (ClassId, IntegerRange) for all interned DKey classes.
+    let dkeys: Vec<(ClassId, IntegerRange)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    if dkeys.len() < 2 {
+        return;
+    }
+    for &(sub_cid, sub_r) in &dkeys {
+        for &(sup_cid, sup_r) in &dkeys {
+            if sub_cid == sup_cid {
+                continue;
+            }
+            // r1 ⊆ r2 (proper containment or equal-range distinct keys
+            // can't occur — equal ranges share one ClassId — so this is
+            // strict subset between distinct synthetic classes).
+            if sub_r.subset(sup_r) {
+                let sub = out.concepts.atomic(sub_cid);
+                let sup = out.concepts.atomic(sup_cid);
+                out.axioms.push(Axiom::SubClassOf { sub, sup });
+            }
+        }
+    }
 }
 
 impl<A: ForIRI> TryFrom<&SetOntology<A>> for InternalOntology {

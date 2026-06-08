@@ -264,6 +264,16 @@ could not surface:**
   detection gap (11 ontologies: HermiT classify-crashes on incoherent KBs; rustdl
   returns an unflagged hierarchy).
 
+**UPDATE 2026-06-08 — datatype gap (the largest silent-C2-FN source) PARTIALLY
+CLOSED.** Phase D6 (DataKey value-membership reduction, integer facets) recovers
+`ore_ont_9054` MISSED 79→37 (42 pairs), FP=0/MISSED=0 re-verified corpus-wide.
+So the biggest concrete silent incompleteness is now a *sound* completeness gain
+for integer facets; the 37 residuals are out-of-scope-by-construction (31 float +
+6 bare-integer — both straightforwardly closeable by extending the same reduction
+to float ranges / bare-`xsd:integer`). This turns the C2-silent-FN finding from a
+*defect* into a *characterized, progressively-closeable* gap — a better paper
+story (a sound concrete-domain completeness lever with a clear frontier).
+
 **Consequence for framing:** ORE did NOT rescue a clean research-track win
 (C3 unsupported; C2-as-self-aware *fails* — silent FNs demonstrated). It DID (a)
 find+fix a real default-config soundness bug, and (b) characterize a concrete,

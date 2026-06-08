@@ -276,6 +276,31 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   xsd:double, xsd:dateTime) extend with their own range types but
   share this preprocessing's algebra.
 
+  **Phase D6 (2026-06-08)** — datatype VALUE-MEMBERSHIP subsumption
+  (closes the silent-incompleteness ORE 2015 surfaced on
+  `ore_ont_9054`, `docs/ore-2015-results-2026-06-08.md`). The missing
+  inference `DataHasValue(p,v) ⊑ DataSomeValuesFrom(p, range)` iff
+  `v ∈ range` is enabled via the NomKey-style synthetic-subsumer
+  reduction: `convert.rs` lowers (integer-only) `DataHasValue(p,v)` →
+  `∃p.DKey([v,v])` and `DataSomeValuesFrom(p, int facets)` →
+  `∃p.DKey(range)` (data property `p` as a role; `DKey(range)` an
+  opaque filler class, IRI `urn:rustdl-dkey:<min>:<max>`), and
+  `seed_dkey_subsumptions` emits told `DKey(r1) ⊑ DKey(r2)` iff
+  `IntegerRange::subset` (`r1 ⊆ r2`); same-property keying comes free
+  from CR5 role-match; the saturator's `∃`/`⊓`/defined-sup machinery
+  propagates. DKeys are filtered from reported classes via
+  `reportable_class_iris`. **Sound by construction** (only adds genuine
+  value∈range / range⊆range subsumptions); FP=0/MISSED=0 re-verified
+  corpus-wide (sio/shoiq-knowledge/wine/ore-10908/ore-15672/pizza/
+  alehif). Recovered `ore_ont_9054` MISSED 79→37 (42 pairs). **Scope:
+  integer facets only** — float/decimal/double/dateTime/string,
+  bare-`xsd:integer` (no facet), `DataAllValuesFrom`, and data
+  cardinality still DROP (sound under-approximation; the 37 residuals
+  = 31 float + 6 bare-integer). Negatives-first canaries:
+  `crates/owl-dl-reasoner/tests/datatype_value_membership.rs` (10,
+  incl. exclusive-boundary + wrong-property + outside-range) +
+  `IntegerRange::subset` unit test.
+
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).
   Tests are `#[ignore]`d; invoke with `cargo test ... -- --ignored`.

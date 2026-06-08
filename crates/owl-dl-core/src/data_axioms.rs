@@ -224,19 +224,57 @@ fn propagate_intersection_bounds<A: ForIRI>(src: &SetOntology<A>, facts: &mut Fa
 /// integer-typed value space; other numeric types (`xsd:decimal`,
 /// `xsd:double`, `xsd:dateTime`) would extend with their own range
 /// types but share the same algebra.
-#[derive(Clone, Copy, Debug)]
-struct IntegerRange {
-    min: Option<i64>,
-    max: Option<i64>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IntegerRange {
+    pub(crate) min: Option<i64>,
+    pub(crate) max: Option<i64>,
 }
 
 impl IntegerRange {
-    const fn unbounded() -> Self {
+    pub(crate) const fn unbounded() -> Self {
         Self {
             min: None,
             max: None,
         }
     }
+
+    /// A single integer point value `v`, i.e. the inclusive range `[v, v]`.
+    pub(crate) const fn point(v: i64) -> Self {
+        Self {
+            min: Some(v),
+            max: Some(v),
+        }
+    }
+
+    /// `self ⊆ other` over the `xsd:integer` value space.
+    ///
+    /// An empty `self` is a subset of everything (the empty set is
+    /// contained in every set). This empty-self short-circuit is a
+    /// *completeness* aid — the bare bound comparison would otherwise
+    /// (soundly, but incompletely) report empty-self as a non-subset.
+    ///
+    /// Non-empty case: every bound of `self` must be at least as tight
+    /// as the corresponding bound of `other`. An unbounded end on
+    /// `other` (`None`) imposes no constraint; an unbounded end on
+    /// `self` against a bounded `other` end means `self` reaches past
+    /// `other`, so it is NOT contained.
+    pub(crate) fn subset(self, other: Self) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let min_ok = match (self.min, other.min) {
+            (_, None) => true,
+            (Some(s), Some(o)) => s >= o,
+            (None, Some(_)) => false,
+        };
+        let max_ok = match (self.max, other.max) {
+            (_, None) => true,
+            (Some(s), Some(o)) => s <= o,
+            (None, Some(_)) => false,
+        };
+        min_ok && max_ok
+    }
+
     fn intersect(self, other: Self) -> Self {
         let min = match (self.min, other.min) {
             (None, x) | (x, None) => x,
@@ -440,7 +478,7 @@ fn scan_class_for_existentials<A: ForIRI>(class_iri: &str, ce: &ClassExpression<
 /// datatypes, unrecognized facets, unparseable literals, or
 /// overflowing exclusive-bound adjustments — sound under-approximation:
 /// unrecognized ranges contribute no constraint (vs. wrong constraints).
-fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<IntegerRange> {
+pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<IntegerRange> {
     let DataRange::DatatypeRestriction(dt, facets) = dr else {
         return None;
     };
@@ -717,6 +755,87 @@ mod tests {
         read_ofn(&mut r, ParserConfiguration::default())
             .expect("test fixture parses")
             .0
+    }
+
+    fn incl(lo: i64, hi: i64) -> IntegerRange {
+        IntegerRange {
+            min: Some(lo),
+            max: Some(hi),
+        }
+    }
+
+    #[test]
+    fn integer_range_subset_boundaries() {
+        // Recovery target: MediumFormat height range is (36,101) =
+        // inclusive [37, 100]; point value 60 must be inside.
+        let medium_h = incl(37, 100);
+        assert!(IntegerRange::point(60).subset(medium_h), "60 ∈ [37,100]");
+
+        // Exclusive boundaries: 36 and 101 are OUTSIDE [37,100].
+        assert!(
+            !IntegerRange::point(36).subset(medium_h),
+            "36 ∉ [37,100] (minExclusive 36)"
+        );
+        assert!(
+            !IntegerRange::point(101).subset(medium_h),
+            "101 ∉ [37,100] (maxExclusive 101)"
+        );
+        // Inclusive endpoints ARE inside.
+        assert!(IntegerRange::point(37).subset(medium_h), "37 ∈ [37,100]");
+        assert!(IntegerRange::point(100).subset(medium_h), "100 ∈ [37,100]");
+
+        // Value far outside.
+        assert!(!IntegerRange::point(200).subset(medium_h), "200 ∉ [37,100]");
+
+        // range ⊆ range.
+        assert!(incl(40, 50).subset(medium_h), "[40,50] ⊆ [37,100]");
+        assert!(!medium_h.subset(incl(40, 50)), "[37,100] ⊄ [40,50]");
+
+        // Unbounded-below self vs bounded other → NOT a subset.
+        let unbounded_below = IntegerRange {
+            min: None,
+            max: Some(50),
+        };
+        assert!(!unbounded_below.subset(medium_h), "(-∞,50] ⊄ [37,100]");
+        // Unbounded-above self vs bounded other → NOT a subset.
+        let unbounded_above = IntegerRange {
+            min: Some(40),
+            max: None,
+        };
+        assert!(!unbounded_above.subset(medium_h), "[40,+∞) ⊄ [37,100]");
+        // [100,+∞) ⊄ [37,100] (the real ontology has a minInclusive 100
+        // range that must NOT be a subset of MediumFormat's height).
+        assert!(
+            !IntegerRange {
+                min: Some(100),
+                max: None
+            }
+            .subset(medium_h),
+            "[100,+∞) ⊄ [37,100]"
+        );
+
+        // other unbounded → everything is a subset.
+        assert!(medium_h.subset(IntegerRange::unbounded()), "any ⊆ (-∞,+∞)");
+        assert!(
+            IntegerRange::unbounded().subset(IntegerRange::unbounded()),
+            "(-∞,+∞) ⊆ (-∞,+∞)"
+        );
+        assert!(
+            !IntegerRange::unbounded().subset(medium_h),
+            "(-∞,+∞) ⊄ [37,100]"
+        );
+
+        // Empty self (minIncl 100, maxExcl 100 → [100,99]) ⊆ anything.
+        let empty = IntegerRange {
+            min: Some(100),
+            max: Some(99),
+        };
+        assert!(empty.is_empty(), "[100,99] is empty");
+        assert!(empty.subset(medium_h), "∅ ⊆ [37,100]");
+        assert!(empty.subset(incl(0, 0)), "∅ ⊆ [0,0]");
+
+        // Reflexive.
+        assert!(medium_h.subset(medium_h), "R ⊆ R");
     }
 
     #[test]

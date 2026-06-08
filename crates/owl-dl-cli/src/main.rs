@@ -89,7 +89,7 @@ enum Command {
         /// burn the full budget and time out without finding anything —
         /// so a *low* budget like `--pair-timeout-ms 25` is much faster
         /// with no completeness loss (wine: 7.5× faster, identical
-        /// hierarchy, verified MISSED=0 vs HermiT across the corpus;
+        /// hierarchy, verified `MISSED=0` vs `HermiT` across the corpus;
         /// only pizza-class ontologies actually need the larger default).
         #[arg(long, default_value_t = 1000)]
         pair_timeout_ms: u64,

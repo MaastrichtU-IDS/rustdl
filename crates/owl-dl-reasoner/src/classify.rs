@@ -29,6 +29,28 @@ use crate::{PreparedOntology, ReasonError};
 /// pairwise subsumption check returned from the parallel work loop.
 type PairResult = (usize, usize, bool, bool, bool);
 
+/// Collect the IRIs of every *reportable* named class, in vocabulary
+/// interning order. Excludes the synthetic `DKey(range)` filler classes
+/// introduced by the integer-facet data lowering
+/// ([`owl_dl_core::DKEY_IRI_PREFIX`]): they participate in the internal
+/// saturation/tableau reasoning (their told-subsumptions relay datatype
+/// containment through the existential machinery) but are NOT user
+/// classes, so they must never appear in the classified hierarchy, the
+/// unsatisfiable set, or any closure diff.
+fn reportable_class_iris(internal: &InternalOntology) -> Vec<String> {
+    (0..internal.vocabulary.num_classes())
+        .map(|i| {
+            internal
+                .vocabulary
+                .class_iri(owl_dl_core::ClassId::new(
+                    u32::try_from(i).expect("class count fits in u32"),
+                ))
+                .to_owned()
+        })
+        .filter(|iri| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
+        .collect()
+}
+
 /// Result of [`classify`]. Holds the complete pairwise subsumption
 /// matrix over every declared named class plus the IRIs themselves,
 /// keyed by stable insertion order.
@@ -427,16 +449,7 @@ pub fn classify_saturation_only<A: ForIRI>(
 pub(crate) fn classify_saturation_only_internal(
     internal: &InternalOntology,
 ) -> Result<Classification, ReasonError> {
-    let classes: Vec<String> = (0..internal.vocabulary.num_classes())
-        .map(|i| {
-            internal
-                .vocabulary
-                .class_iri(owl_dl_core::ClassId::new(
-                    u32::try_from(i).expect("class count fits in u32"),
-                ))
-                .to_owned()
-        })
-        .collect();
+    let classes: Vec<String> = reportable_class_iris(internal);
     let index: HashMap<String, usize> = classes
         .iter()
         .enumerate()
@@ -463,16 +476,7 @@ pub(crate) fn classify_internal_with_timeout(
 ) -> Result<Classification, ReasonError> {
     // Snapshot the class IRIs before we clone the ontology into each
     // subsumption call. Order is the vocabulary's interning order.
-    let classes: Vec<String> = (0..internal.vocabulary.num_classes())
-        .map(|i| {
-            internal
-                .vocabulary
-                .class_iri(owl_dl_core::ClassId::new(
-                    u32::try_from(i).expect("class count fits in u32"),
-                ))
-                .to_owned()
-        })
-        .collect();
+    let classes: Vec<String> = reportable_class_iris(internal);
     let n = classes.len();
     let index: HashMap<String, usize> = classes
         .iter()
@@ -871,16 +875,7 @@ pub(crate) fn classify_top_down_internal(
     // Phase 2a recon: top-level classify wall, used to derive
     // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
     let classify_start = std::time::Instant::now();
-    let classes: Vec<String> = (0..internal.vocabulary.num_classes())
-        .map(|i| {
-            internal
-                .vocabulary
-                .class_iri(owl_dl_core::ClassId::new(
-                    u32::try_from(i).expect("class count fits in u32"),
-                ))
-                .to_owned()
-        })
-        .collect();
+    let classes: Vec<String> = reportable_class_iris(internal);
     let n = classes.len();
     let index: HashMap<String, usize> = classes
         .iter()

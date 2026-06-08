@@ -152,3 +152,44 @@ known/possible-subsumer optimization (Glimm et al. 2010).
 (i) ELK baseline on the EL/Horn subset; (ii) the anytime Pareto figure on the
 secondary set; (iii) the signal-calibration confusion matrix. These three
 validate C2/C3/C4 — the novel core — before investing in the full ORE sweep.
+
+## 8. De-risking results (2026-06-08)
+
+**(i) ELK baseline — DONE** (`perf-2026-06-08-konclude-vs-rustdl.md`). C4 refined:
+rustdl is competitive with ELK on *mid-size Horn* (galen 0.59 s vs 0.85 s,
+notgalen ~tie) and faster than HermiT; **ELK wins big on large pure-EL**
+(go-basic ~8.5×); **Konclude beats even ELK** (go-basic ~7×). Bonus
+contract-supporting point: ELK *hard-rejects* pizza and *silently drops* wine/sio
+non-EL axioms (incomplete, no signal) — rustdl degrades soundly + self-aware.
+
+**(ii) Anytime sweep — DONE** (pizza/ore-15672/sio × {25,100,1000} ms):
+- **C1/soundness floor: FP=0 at EVERY budget × every ontology. Rock-solid.**
+- **C3 is real but ontology-dependent, NOT a uniform monotone curve:** *pizza*
+  buys completeness with budget (25 ms→MISSED=4, 100 ms→MISSED=0); *sio/ore-15672*
+  are **complete at every budget** (timed-out pairs are non-subsumptions), so there
+  higher budget only wastes wall (sio 17.8 s@25 ms → 72 s@1000 ms, same complete
+  answer). Knob value = recover real subsumptions (pizza) *and* cap wasted work
+  (sio), always sound.
+- **C2 sharpened (and a self-correction):** the incompleteness signal
+  (`timed_out_pairs>0`) is **SOUND but CONSERVATIVE** — `complete=true ⟹ MISSED=0`
+  holds, but `complete=false` over-warns (ore-15672, sio flag incomplete yet are
+  MISSED=0). So "calibrated incompleteness" is presently a *sound over-approximation*
+  of the uncertain set, not a tight one. **Paper implication:** either (a) report
+  it honestly as a sound conservative flag (the *certain* set is exact — still
+  useful), or (b) *tighten* it (a real contribution: shrink the flagged-uncertain
+  set toward the truly-uncertain) — measured by (iii).
+
+**(iii) Calibration confusion matrix — NEXT.** Per ontology × budget, tabulate
+`timed_out_pairs` (signal) vs actual MISSED (oracle): true/false positives, and
+confirm zero false-negatives (never `complete=true` with MISSED>0). Quantifies the
+over-warn rate — the number that decides whether C2 is "sound-conservative flag"
+or motivates a "tighten-the-signal" contribution.
+
+**Honest reframe from de-risking:** the comparative anytime claim ("sound partial
+where complete reasoners give nothing") has **no support on this corpus** —
+Konclude completes everything in <0.3 s. C3's defensible form is a *property*
+(tunable sound completeness/latency with an FP=0 floor) valuable for **embedded**
+use (couples to C5), plus the *signal* (C2). The comparative version needs the
+full ORE suite's reasoner-DNF ontologies. This pushes the paper's center of
+gravity firmly onto **C1 (soundness guarantee) + C2 (self-aware incompleteness) +
+C5 (embedding)**, with C3 as the property and C4 as honest support.

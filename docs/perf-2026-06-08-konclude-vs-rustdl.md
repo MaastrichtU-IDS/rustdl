@@ -196,6 +196,18 @@ timestamps (same ~1.6 s startup floor as HermiT). EL-only reasoner.
   inconclusive — ELK 9116 vs oracle 6480 on galen is serialization, not
   incompleteness). Also: clean same-host re-timing of all four.
 
+## Correction: "INCOMPLETE" labels were the signal, not actual MISSED
+
+The `INCOMPLETE (N timed-out)` notes in the tables above are the *conservative
+signal* (`timed_out_pairs>0`), **not** measured incompleteness. The anytime sweep
+(2026-06-08) checked actual MISSED vs oracle: **ore-15672 and sio are MISSED=0
+(complete) at 25/100/1000 ms** — their timed-out pairs are non-subsumptions that
+default correctly. Only **pizza @25 ms** is genuinely incomplete (MISSED=4,
+recovered by 100 ms). So the signal **over-warns**: `complete=true ⟹ MISSED=0`
+holds, but `complete=false` includes actually-complete ontologies. FP=0 held at
+every budget on every ontology (soundness floor). See `paper-claims-2026-06-08.md`
+§8.
+
 ## Note on stale claims
 The 06-03/06-04 docs and any "beats Konclude"/"≤5×"/"Konclude ratio N×" figures
 derived from **docker** walls overstate rustdl by the ~1.5 s docker startup in the

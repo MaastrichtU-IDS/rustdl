@@ -364,6 +364,10 @@ a deliberately un-integrated Phase-1 stub.
 close the SROIQ gap to HermiT + dead-ends already measured),
 `owl-dl-reasoner-rust-strategy-v2.md` (full strategy), and the
 `hypertableau-*-scoping.md` series for the in-progress hypertableau work.
-`docs/perf-2026-06-04-konclude-vs-rustdl.md` has the current head-to-head vs Konclude across the corpus. Performance claims in docs are backed by the corpus
-harness — re-measure with `scripts/bench-rustdl-modes.sh` rather than trusting
-stale numbers.
+`docs/perf-2026-06-08-konclude-vs-rustdl.md` has the current head-to-head vs
+Konclude across the corpus (**native Konclude binary** — supersedes the 06-03/04
+docs whose ratios used docker walls inflated by ~1.5 s container startup; on native
+walls Konclude wins on every real-reasoning ontology, 2.2×–809×, and rustdl's
+out-of-EL numbers are incomplete/DNF — the "beats Konclude"/"ORE-10908 ≤5×" claims
+were docker artifacts). Performance claims in docs are backed by the corpus harness
+— re-measure with `scripts/bench-rustdl-modes.sh` rather than trusting stale numbers.

@@ -22,28 +22,56 @@ re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 >   (`HyperCache::decide` at `lib.rs:909` sets `with_double_blocking` +
 >   `with_precise_card_deps` only, NOT `with_nominals`).
 >
-> **Consequence — re-scope:** the wine *wall* is a **search-pruning problem**,
-> the lever is **CDCL-style conflict learning + incremental fixpoint** (avoid the
-> full `save()` graph-clone-per-branch that drives the 20M match attempts), NOT
-> terminating model construction. This **converges with the existing memory note
-> `conflict-learning-simple-is-weak`** (1-UIP CDCL is the real lever; foundation
-> on PR #19, unmerged) — independent confirmation.
+> **Consequence — re-scope:** the wine *wall* is a **search-pruning problem**
+> (disjunction + `≤n`-merge branching, ~20M match attempts driven partly by the
+> full `save()` graph-clone-per-branch), NOT terminating model construction.
+>
+> **But this lever is largely already explored — and mostly NEGATIVE. Read
+> before assuming "do CDCL".** Prior work (2026-06-06, memory
+> `conflict-learning-simple-is-weak`; branches `feat/conflict-learning` (PR #19
+> foundation, ~490-line `hyper.rs` nogood store + decision stack, behind
+> `RUSTDL_HYPER_LEARNING`, default OFF) and `feat/1uip-spike`;
+> `docs/conflict-learning-inc1-results-2026-06-06.md`):
+> - **Simple dep-set nogood learning gave −13.5% branches but 0 wine classes
+>   un-stalled** — the recurring clashes are *leaves*, so each prune saves ~1
+>   branch, never a subtree. Do NOT re-attempt the simple form.
+> - Wine's stalls were measured as **`≤n` cardinality** clashes; the cardinality
+>   half was addressed (completeness, not wall) by the shipped
+>   `RUSTDL_PRECISE_CARD_DEPS` (34→31).
+> - The note's standing guidance: **1-UIP may still matter ONLY for
+>   non-cardinality *disjunction* stalls — measure the conflict structure first.**
+>
+> **The worktree measurement supplies exactly that structure** and it is the one
+> piece of *new, positive* evidence: across the 4 hard subs, `disj_branches` vs
+> `merge_branches` ranges from balanced (8833/4890) to **disjunction-dominated
+> (18631/2704)**. So a disjunction-dominated subset *does* exist — the only place
+> 1-UIP (asserting clauses → subtree pruning, where simple dep-set nogoods
+> couldn't) has a chance.
 >
 > **The two halves therefore SPLIT (they are more separable than this doc
 > claimed), not unify:**
-> 1. **Wine wall / search-explosion** → CDCL conflict-driven backjumping +
->    learning over the wedge's disjunction/`≤n` branches + incremental fixpoint.
->    Pick up PR #19's foundation. This is approach (C) re-scoped — and it has
->    nothing to do with nominals or blocking.
+> 1. **Wine wall / search-explosion** → the ONLY unexplored sliver is **1-UIP
+>    asserting-clause learning on the disjunction-dominated stalls** (simple
+>    dep-set learning already failed; cardinality half already shipped). Start
+>    from `feat/1uip-spike` / `feat/conflict-learning` (both STALE — rebase onto
+>    current main first). This is approach (C) re-scoped — nothing to do with
+>    nominals or blocking. **Treat as speculative**: the prior note is skeptical,
+>    and even 1-UIP only helps if the disjunction-dominated subtrees are deep
+>    enough that an asserting clause prunes more than a leaf.
 > 2. **Model-reuse generalization (reuse-trap)** → snapshot-replay soundness
 >    under back-propagation (approach (A) below) — still stands as written, an
 >    independent problem.
 >
-> **Open sub-question (flagged, unresolved):** with `restores==branches` and no
-> Sat leaf kept in 5 s, are these pairs genuinely Unsat (a proof the search order
-> makes exponential) or Sat-with-pathological-order? HermiT is fast either way.
-> This bears on whether *learning* or better *branch ordering* is the bigger win
-> — resolve it early in the CDCL thread.
+> **Open sub-question — RESOLVED by existing data.** The hard stalled pairs are
+> **non-subsumptions** (wine classify MISSED=0 vs HermiT ⟹ every stalled pair
+> that defaults to "not subsumed" is genuinely not subsumed ⟹ `C⊓¬D` is
+> **satisfiable**). So it's **Sat-pathological**, not Unsat-grind: the wedge is
+> failing to *find an existing model*. Residual nuance for the fresh session
+> (cheap to check): is that failure pathological search *order* (→ 1-UIP/ordering
+> helps) or wedge *incompleteness* — note nominals are NOT wired into
+> `HyperCache::decide`, so on a genuinely nominal-dependent model the wedge may
+> never close regardless of search effort, which would point at wiring
+> `with_nominals` into that path rather than (or before) 1-UIP.
 >
 > The original thesis and "approach (C) = terminating model construction" framing
 > below are kept as the historical reasoning trail, but treat them as superseded

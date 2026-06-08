@@ -94,6 +94,55 @@ Horn-shortcircuited so N/A).
   own design pass — this is the deep `hyper.rs` blocking/NN-rule work; it has its
   own dead-ends (do not re-enter via search/learning — that was measured dead).
 
+### PHASE 1 RESULT 2026-06-08 — B-perf is DEAD (told-bracket = 0%); posture (i) forced
+
+Measured (positive-control-verified — told tables populated & queried correctly;
+self-check `p1_pass_through_total == label_cache_pass_through`):
+
+| ontology | pass_through | told-decided | % |
+|---|---:|---:|---:|
+| pizza | 137 | 0 | 0 % |
+| ore-10908 | 0 | 0 | — |
+| ore-15672 | 6 | 0 | 0 % |
+| sio | 197 | 0 | 0 % |
+| wine | 12 | 0 | 0 % |
+
+The told-bracket eliminates **zero** tests beyond the shipped oracle+closure
+(told-sub ⊆ closure, caught earlier; told-disjoint ⟹ `D∉labels`, pruned earlier).
+**B-perf is marginal.** With the bracket dead, model-sharing's only justification
+(test reduction) is also gone — and it carries A1-shaped risk. So **all of B-perf
+is off the table.** The only non-marginal B content is wine. (Told access path
+for the record: `prepared.told.{is_told_sub, are_told_disjoint}`, built in
+`PreparedOntology::from_internal`, lib.rs:1811.)
+
+### CORRECTION — "B-complete = terminating model construction" is WRONG. It's search.
+
+The §2/§4 phrasing "terminating model construction on nominals" mischaracterizes
+the wine wall, and the earlier measurement (`perf-attribution-2026-06-07.md`,
+`wine_wedge_*_probe`) refutes it: on wine's hard pairs the model is **finite and
+tiny — `node_count` stays at 10, a single branch completes in 0.0 ms, `is_blocked`
+fires 0×**. There is nothing to terminate and nothing to block. The wall is a
+**per-pair backtracking SEARCH explosion** (168k branches over disjunction+`≤n`,
+`restores==branches`) trying to *find* the satisfying model — and the known search
+levers are **dead** (1-UIP NO-GO, backjump dist≈1; MOMS reverted; simple learning
+0-un-stalled).
+
+So B-complete is: **find wine's (provably small) satisfying models without the
+per-pair backtracking explosion HermiT/Konclude somehow avoid** — and *how* they
+avoid it is **NOT characterized**. It is not the told-bracket (0%), not blocking
+(model is tiny), not the dead search levers. rustdl already matches HermiT's
+*global pruning* (label oracle prunes 96–100%, = HermiT's possible-subsumers); the
+gap is the *per-candidate test efficiency* on the residual `D∈labels` candidates,
+where HermiT's model construction is fast and rustdl's backtracking detonates.
+
+**The genuine prerequisite (NOT a build): characterize WHY HermiT/Konclude
+construct wine's models efficiently** where rustdl's per-pair wedge explodes —
+literature deep-read (HermiT's deterministic-vs-nondeterministic rule ordering,
+its model-merging across the classification, Konclude's saturation-driven
+completion) and, if feasible, profiling/observing HermiT on a wine pass_through
+pair. Until that mechanism is named, there is nothing concrete to build — the
+"architectural rewrite" has no defined mechanism yet, only a target.
+
 ## §5 Soundness/completeness obligations + dead-ends NOT to repeat
 
 - **A1 (the governing lesson):** a `Subsumed` derived from *one* model is unsound

@@ -140,9 +140,27 @@ re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 >    conflict, NOT yet measured. Add that histogram first; a wide span with a deep
 >    second-highest still backjumps only one level.
 >
-> Net: the regime is favorable enough that 1-UIP is **worth the precise follow-up
-> measurement** (caveat 2) + the cardinality-deps companion (caveat 1) — a real
-> candidate, not the dead end the retracted draft claimed, not yet a proven win.
+> **Backjump-distance measurement — DONE (the decisive metric), 1-UIP is NO-GO.**
+> Added `conflict_bjgap_hist` = `highest − second-highest` set level (the true
+> 1-UIP backjump target, vs `span` = highest−lowest). Result: **dominated by
+> distance 1**, despite wide spans — pair 4 (most coupled, avg_deps 10.7) is
+> ~100 % at distance 1; pair 3 has a ~31 % tail at 9–16 but is still dominated by
+> 1–2. The dep-sets are **dense at the top** (second-highest adjacent to highest)
+> with a long sparse tail, so the wide span was a red herring (caveat 2 was the
+> right thing to check). A 1-UIP asserting clause therefore backjumps ~1 level →
+> ~chronological → prunes nothing.
+>
+> **Verdict — the wedge-search lever is exhausted (earned this time, not
+> hand-waved):** backjump distance ≈ 1 (this measurement) + simple-learning reuse
+> already gave 0 wine un-stalled + 27–45 % of conflicts are un-backjumpable
+> `DepSet::ALL` cardinality clashes + nominals don't help. Together: **1-UIP will
+> not crack the wine wall.** (Residual honesty: pair 3's 31 % deep-backjump tail
+> means *not literally zero* potential, but far too little to converge a 168k-and-
+> climbing search.) The wine wall is **architectural** — it needs HermiT/Konclude
+> global model *construction* (§2), not better search/learning on the per-pair
+> backtracking wedge. **Accept the gap on the wine wall; ship `--pair-timeout-ms
+> 25`.** The reuse-trap half (approach (A)) remains open and independent; the
+> §2 model-construction rewrite is the only thing that closes the wall.
 >
 > **Practical answer (already shipped):** `--pair-timeout-ms 25` — these pairs
 > find nothing regardless, so cutting the budget is free (wine 7.5×, MISSED=0).

@@ -179,7 +179,23 @@ non-EL axioms (incomplete, no signal) — rustdl degrades soundly + self-aware.
   useful), or (b) *tighten* it (a real contribution: shrink the flagged-uncertain
   set toward the truly-uncertain) — measured by (iii).
 
-**(iii) Calibration confusion matrix — NEXT.** Per ontology × budget, tabulate
+**(C5) Startup + footprint — DONE (clean win).** `/usr/bin/time -v`, native:
+- rustdl: bibtex **~0.00 s / 5.3 MB**, galen 0.57 s / 30 MB.
+- Konclude (native): bibtex 0.02 s / 31 MB, galen 0.10 s / 42 MB.
+- HermiT/ELK (JVM via ROBOT): ~1.6 s startup floor (measured); JVM heap RSS
+  100s of MB (clean standalone-jar RSS = a small TODO).
+rustdl has the **lowest startup AND smallest footprint** — ~50–160× lower startup
+than JVM reasoners, ~6× smaller RSS than even native Konclude on a trivial query.
+This is the most unambiguous numeric win and the backbone of the embedding story.
+
+**(iii) Calibration confusion matrix — RUNNING.** Per ontology × budget ×
+`trust_sat`{0,1}, tabulate `timed_out_pairs` (signal) vs actual MISSED (oracle),
+at the pair level: false-negatives `|MISSED ∖ timed_out|` (the C2-killer — only
+provably 0 with `trust_sat=0`, since `trust_sat` can mask misses), over-warn rate,
+FP. Quantifies whether C2 is a "sound conservative flag" or needs trust_sat=0 +
+a tightening contribution.
+
+(superseded) Per ontology × budget, tabulate
 `timed_out_pairs` (signal) vs actual MISSED (oracle): true/false positives, and
 confirm zero false-negatives (never `complete=true` with MISSED>0). Quantifies the
 over-warn rate — the number that decides whether C2 is "sound-conservative flag"

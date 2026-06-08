@@ -162,6 +162,40 @@ sound (FP=0/MISSED=0). Its gap is purely the out-of-EL SROIQ tableau.
 "HermiT/Konclude-inconsistent in <1 s"; HermiT actually takes **~9.4 s** to detect
 it (Konclude 0.9 s wall). Worth fixing if that <1 s figure is relied on.
 
+## ELK baseline (EL specialist) — added for the paper (C4)
+
+**ELK** via ROBOT v1.9.6 (`robot reason --reasoner ELK`), reasoning-ms from `-vv`
+timestamps (same ~1.6 s startup floor as HermiT). EL-only reasoner.
+
+| Ontology | ELK reason | rustdl (complete?) | Konclude reason | HermiT reason | note |
+|---|---:|---|---:|---:|---|
+| bibtex | 165 ms | 0.01 s (EL, complete) | 0 | — | |
+| sulo / sulo-stripped | 353 / 354 ms | 0.02–0.03 s | 2 | 74 / 77 | |
+| alehif | 468 ms | 0.16 s (Horn, complete) | 1 | 233 | |
+| galen | 847 ms | **0.59 s (Horn, complete)** | 12 | 1144 | rustdl ≈/< ELK *if* ELK complete (closure-diff TODO) |
+| notgalen | 1022 ms | 1.05 s (Horn, complete) | 17 | 1306 | ~tie |
+| ro / ro-stripped | 830 / 862 ms | 0.5 s (complete) | 2 | **DNF** | rustdl+ELK fast; HermiT DNFs |
+| go-basic | **2154 ms** | 18.4 s (EL, complete) | 295 | 4380 | **ELK wins big** (~8.5× rustdl); Konclude still ~7× ELK |
+| pizza | **rc=1 REJECT** | 2.07 s | 15 | 268 | ELK hard-fails on out-of-EL |
+| wine / sio | 427 / 822 ms (**EL-fragment only, INCOMPLETE**) | DNF / 32 s | 33 / 59 | 6390 / ~57000 | ELK silently drops non-EL axioms |
+
+**Findings (honest):**
+- **Konclude beats even ELK on big EL** (go-basic 295 ms vs 2154 ms, ~7×) — it is
+  in its own tier above all three others.
+- **rustdl is competitive with ELK on mid-size Horn** (galen, notgalen) and *faster
+  than HermiT* there; **ELK wins on large pure-EL** (go-basic ~8.5×). So C4 = "rustdl
+  competitive with the mature reasoners on mid-size EL/Horn," NOT "beats the EL
+  specialist."
+- **Graceful-degradation point (supports the contract thesis):** ELK *hard-rejects*
+  pizza and *silently drops* wine/sio's non-EL axioms (incomplete, no signal),
+  whereas rustdl attempts them and returns a sound under-approximation *with* an
+  explicit incompleteness flag. The EL specialist either errors or under-reports
+  without telling you; rustdl degrades soundly and self-aware.
+- **TODO before the paper claims C4 complete-vs-complete:** transitive-closure diff
+  of ELK's output vs the oracle on the EL/Horn subset (raw SubClassOf counts are
+  inconclusive — ELK 9116 vs oracle 6480 on galen is serialization, not
+  incompleteness). Also: clean same-host re-timing of all four.
+
 ## Note on stale claims
 The 06-03/06-04 docs and any "beats Konclude"/"≤5×"/"Konclude ratio N×" figures
 derived from **docker** walls overstate rustdl by the ~1.5 s docker startup in the

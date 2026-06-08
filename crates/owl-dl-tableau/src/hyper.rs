@@ -333,10 +333,87 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// DIAGNOSTIC (reuse-trap/nominal-termination scoping 2026-06-07):
+    /// which `Stalled` exit fired, recorded as the deepest/last site hit.
+    /// 0 = none (Sat/Unsat); 1 = `horn_fixpoint` `FIXPOINT_ITERS` cap;
+    /// 2 = deadline tripped inside `horn_fixpoint` (rare; not currently
+    /// checked mid-fixpoint, kept for completeness); 3 = deadline tripped
+    /// at `solve` entry; 4 = `depth==0` open-disjunction bound;
+    /// 5 = `depth==0` open-`≤n` (at-most) bound. Set on the *first*
+    /// Stalled return seen as the recursion unwinds (innermost site).
+    pub stall_site: u8,
+    /// DIAGNOSTIC (1-UIP go/no-go, 2026-06-08): conflicts observed at the
+    /// disjunction-branching site (each `Unsat` child).
+    pub disj_conflicts: u64,
+    /// Conflicts whose dep-set contained the *current* decision level `d`
+    /// (so the existing dep-directed backjump did NOT fire — the exhaustive
+    /// case where a learned asserting clause would add value).
+    pub conflict_contains_d: u64,
+    /// Conflicts whose dep-set overflowed the u128 (un-analysable).
+    pub conflict_overflow: u64,
+    /// Sum of `count_ones` over conflict dep-sets (avg #decisions/conflict).
+    pub conflict_dep_count_sum: u64,
+    /// Histogram of conflict dep-set decision-level SPAN (highest−lowest set
+    /// level), buckets 0|1|2|3-4|5-8|9-16|17-32|33+. Span≈0 ⟹ conflicts are
+    /// local to one decision level (1-UIP ≈ chronological → weak); frequent
+    /// large spans ⟹ conflicts couple shallow+deep decisions (1-UIP could
+    /// backjump far → promising).
+    pub conflict_span_hist: [u64; 8],
+    /// Histogram of the TRUE 1-UIP backjump distance proxy = `highest −
+    /// second_highest` set decision level (same buckets). This is the decisive
+    /// number: distance 0-1 ⟹ the asserting clause backjumps ~1 level
+    /// (chronological, weak) EVEN if span is wide; frequent large distances ⟹
+    /// 1-UIP prunes real subtrees. Single-level conflicts (one bit) → bucket 0.
+    pub conflict_bjgap_hist: [u64; 8],
+}
+
+/// DIAGNOSTIC (reuse-trap/nominal-termination scoping 2026-06-07):
+/// a characterisation of the completion graph at a stall, used to
+/// decide whether non-termination is a blocking-completeness gap or
+/// genuine model growth. Read via [`HyperEngine::diag_block_analysis`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DiagBlockAnalysis {
+    /// Total nodes in the graph (incl. merged-away; mirrors `node_count`).
+    pub total_nodes: usize,
+    /// Non-root (parented) nodes — the blocking-eligible population.
+    pub non_root_nodes: usize,
+    /// Label count of the root node (node 0).
+    pub root_label_count: usize,
+    /// Largest single-node label set.
+    pub max_label_count: usize,
+    /// Sum of all label counts (avg = `sum_label_count` / `total_nodes`).
+    pub sum_label_count: usize,
+    /// Non-root nodes that carry at least one nominal class label.
+    pub nodes_carrying_nominal: usize,
+    /// Distinct label-sets among ALL nodes. If this stays small while
+    /// `total_nodes` is large, the graph is generating label-equal
+    /// copies that blocking *should* cap → (a) blocking gap.
+    pub distinct_label_sets: usize,
+    /// Distinct label-sets after dropping nominal class labels. If this
+    /// is much smaller than `distinct_label_sets`, the only thing making
+    /// nodes distinct is their nominal label → nominal-aware blocking
+    /// would terminate it → (a)-ish, days.
+    pub distinct_denominalised_label_sets: usize,
+    /// Non-root nodes for which SOME earlier node subset-blocks them
+    /// under anywhere-blocking (`L(n) ⊆ L(m)`), ignoring the
+    /// double-blocking parent-role guard.
+    pub would_block_exact: usize,
+    /// Non-root nodes that would be subset-blocked if nominal labels
+    /// were dropped from the comparison.
+    pub would_block_modulo_nominal: usize,
+    /// Non-root nodes the LIVE double-blocking condition (subset +
+    /// parent-label subset + same incoming role) would block. If this
+    /// is ~0 while `would_block_exact` is large, the parent-role guard
+    /// is what's preventing termination → (a) blocking-completeness gap.
+    pub would_block_with_guard: usize,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
 /// clause set (borrowed), plus per-run search instrumentation.
+// The engine's mode flags (`double_blocking`, `precise_card_deps`,
+// `diag_fixpoint_deadline`, `snapshot_backprop_aborted`) are independent
+// opt-in toggles, not a state machine; a struct of bools is the right shape.
+#[allow(clippy::struct_excessive_bools)]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
     /// Pairwise class disjointness `(a, b)` (`a.index() < b.index()`),
@@ -393,6 +470,13 @@ pub struct HyperEngine<'c> {
     /// is distinct only via `are_neq && !labels_disjoint`. Sound by
     /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
     precise_card_deps: bool,
+    /// DIAGNOSTIC (reuse-trap/nominal-termination scoping 2026-06-07,
+    /// opt-in via [`with_diag_fixpoint_deadline`]): check the deadline
+    /// every 1024 events *inside* `horn_fixpoint`, so a single unbounded
+    /// fixpoint (e.g. wine's nominal classes at depth 0) returns `Stalled`
+    /// within the wall budget instead of running to `FIXPOINT_ITERS`.
+    /// `false` by default — production behaviour is byte-identical when off.
+    diag_fixpoint_deadline: bool,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -556,6 +640,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            diag_fixpoint_deadline: false,
             block_index: None,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
@@ -571,6 +656,20 @@ impl<'c> HyperEngine<'c> {
     pub fn with_double_blocking(mut self) -> Self {
         self.double_blocking = true;
         self.block_index = Some(std::collections::HashMap::new());
+        self
+    }
+
+    /// Opt into precise (sound over-approx) `≤n`-cardinality clash deps in
+    /// place of `DepSet::ALL`, unblocking dependency-directed backjumping on
+    /// cardinality clashes. See [`Self::precise_card_deps`].
+    /// DIAGNOSTIC opt-in (reuse-trap/nominal-termination scoping): make a
+    /// single `horn_fixpoint` honour the deadline mid-loop (checked every
+    /// 1024 events). Needed to isolate the depth-0 single-branch model on
+    /// non-terminating nominal classes (wine). Off by default; production
+    /// is unaffected. See `docs/reuse-trap-nominal-termination-scoping-2026-06-07.md`.
+    #[must_use]
+    pub fn with_diag_fixpoint_deadline(mut self) -> Self {
+        self.diag_fixpoint_deadline = true;
         self
     }
 
@@ -913,6 +1012,24 @@ impl<'c> HyperEngine<'c> {
         while let Some(ev) = self.worklist.pop() {
             steps += 1;
             if steps > max_iters {
+                if self.stats.stall_site == 0 {
+                    self.stats.stall_site = 1;
+                }
+                return HyperResult::Stalled;
+            }
+            // DIAGNOSTIC (reuse-trap/nominal-termination scoping 2026-06-07):
+            // a single Horn fixpoint can grow the graph unboundedly on wine's
+            // nominal+cardinality classes — without a mid-fixpoint deadline
+            // check, depth-0 isolation never returns inside the 5 s cap. Check
+            // every 1024 events (cheap relative to a clause firing).
+            if self.diag_fixpoint_deadline
+                && steps.trailing_zeros() >= 10
+                && let Some(dl) = self.deadline
+                && Instant::now() >= dl
+            {
+                if self.stats.stall_site == 0 {
+                    self.stats.stall_site = 2;
+                }
                 return HyperResult::Stalled;
             }
             if matches!(self.process_event(ev), FireOutcome::Clash) {
@@ -1269,6 +1386,9 @@ impl<'c> HyperEngine<'c> {
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
         {
+            if self.stats.stall_site == 0 {
+                self.stats.stall_site = 3;
+            }
             return HyperResult::Stalled;
         }
         match self.horn_fixpoint(FIXPOINT_ITERS) {
@@ -1281,6 +1401,9 @@ impl<'c> HyperEngine<'c> {
         // asserted disjunct inherits the clause body's dep-set ∪ {d}.
         if let Some((ci, node, binding)) = self.find_open_disjunction() {
             if depth == 0 {
+                if self.stats.stall_site == 0 {
+                    self.stats.stall_site = 4;
+                }
                 return HyperResult::Stalled;
             }
             self.track_depth(depth);
@@ -1300,6 +1423,54 @@ impl<'c> HyperEngine<'c> {
                     HyperResult::Sat => return HyperResult::Sat,
                     HyperResult::Unsat => {
                         let child_deps = self.clash_deps;
+                        // DIAGNOSTIC (1-UIP go/no-go, 2026-06-08): characterize
+                        // this conflict's decision-level structure.
+                        {
+                            let st = &mut self.stats;
+                            st.disj_conflicts += 1;
+                            if child_deps.overflow {
+                                st.conflict_overflow += 1;
+                            } else if child_deps.bits != 0 {
+                                let bits = child_deps.bits;
+                                let highest = 127 - bits.leading_zeros();
+                                let lowest = bits.trailing_zeros();
+                                let span = highest - lowest;
+                                let bucket = match span {
+                                    0 => 0,
+                                    1 => 1,
+                                    2 => 2,
+                                    3..=4 => 3,
+                                    5..=8 => 4,
+                                    9..=16 => 5,
+                                    17..=32 => 6,
+                                    _ => 7,
+                                };
+                                st.conflict_span_hist[bucket] += 1;
+                                st.conflict_dep_count_sum += u64::from(bits.count_ones());
+                                if child_deps.contains(d) {
+                                    st.conflict_contains_d += 1;
+                                }
+                                // True 1-UIP backjump distance proxy:
+                                // highest − second-highest set level.
+                                let rest = bits & !(1u128 << highest);
+                                let gap = if rest == 0 {
+                                    0 // single-level conflict
+                                } else {
+                                    highest - (127 - rest.leading_zeros())
+                                };
+                                let gb = match gap {
+                                    0 => 0,
+                                    1 => 1,
+                                    2 => 2,
+                                    3..=4 => 3,
+                                    5..=8 => 4,
+                                    9..=16 => 5,
+                                    17..=32 => 6,
+                                    _ => 7,
+                                };
+                                st.conflict_bjgap_hist[gb] += 1;
+                            }
+                        }
                         self.restore(saved);
                         if !child_deps.contains(d) {
                             // This decision wasn't responsible for the
@@ -1340,6 +1511,9 @@ impl<'c> HyperEngine<'c> {
                 return HyperResult::Unsat;
             }
             if depth == 0 {
+                if self.stats.stall_site == 0 {
+                    self.stats.stall_site = 5;
+                }
                 return HyperResult::Stalled;
             }
             self.track_depth(depth);
@@ -2110,6 +2284,99 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// DIAGNOSTIC (reuse-trap/nominal-termination scoping 2026-06-07).
+    /// Walk the completion graph and characterise *why* blocking isn't
+    /// capping it, to discriminate a blocking-completeness gap (some
+    /// earlier node WOULD subset-block but the live double-blocking
+    /// condition's parent-role guard rejects it) from genuine model
+    /// growth (every node's label content is distinct, so no candidate
+    /// blocker exists at all). Returns [`DiagBlockAnalysis`].
+    ///
+    /// `nominal_lo`/`nominal_hi`: the class-id range naming singleton
+    /// nominals (so we can test "would subset-block modulo nominal
+    /// labels"). Pass `(0, 0)` if the engine has no nominals configured
+    /// (the production wedge path, `HyperCache::decide`, does not set
+    /// `with_nominals`).
+    #[must_use]
+    pub fn diag_block_analysis(&self, nominal_lo: u32, nominal_hi: u32) -> DiagBlockAnalysis {
+        let n = self.nodes.len();
+        let mut a = DiagBlockAnalysis {
+            total_nodes: n,
+            root_label_count: self.nodes.first().map_or(0, |r| r.labels.len()),
+            ..DiagBlockAnalysis::default()
+        };
+        let is_nom = |c: &ClassId| {
+            let i = c.index();
+            nominal_hi > nominal_lo && i >= nominal_lo && i < nominal_hi
+        };
+        // De-nominalised label key (drop nominal class ids) for the
+        // "would block modulo nominals" test.
+        let denom = |labels: &[ClassId]| -> Vec<ClassId> {
+            labels.iter().copied().filter(|c| !is_nom(c)).collect()
+        };
+        let mut distinct_label_sets: std::collections::HashSet<Vec<u32>> =
+            std::collections::HashSet::new();
+        let mut distinct_denom_sets: std::collections::HashSet<Vec<u32>> =
+            std::collections::HashSet::new();
+        for i in 0..n {
+            let ni = &self.nodes[i];
+            a.max_label_count = a.max_label_count.max(ni.labels.len());
+            a.sum_label_count += ni.labels.len();
+            if ni.parent.is_none() {
+                continue;
+            }
+            a.non_root_nodes += 1;
+            if ni.labels.iter().any(is_nom) {
+                a.nodes_carrying_nominal += 1;
+            }
+            distinct_label_sets.insert(ni.labels.iter().map(|c| c.index()).collect());
+            distinct_denom_sets.insert(denom(&ni.labels).iter().map(|c| c.index()).collect());
+            // Does SOME earlier node m subset-block this node exactly
+            // (anywhere-blocking semantics: L(n) ⊆ L(m))?
+            let mut exact = false;
+            // ... and modulo nominal labels (denom(L(n)) ⊆ denom(L(m)))?
+            let mut modulo_nom = false;
+            // ... and with the double-blocking parent-role guard (the
+            // live wedge condition: + equal parent labels subset + same
+            // incoming role)?
+            let mut with_guard = false;
+            let dn = denom(&ni.labels);
+            for m in 0..i {
+                let nm = &self.nodes[m];
+                if nm.parent.is_none() {
+                    continue;
+                }
+                if subset_sorted(&ni.labels, &nm.labels) {
+                    exact = true;
+                    // Live double-blocking also needs parent-label subset
+                    // + same incoming edge role.
+                    if ni.parent_role == nm.parent_role
+                        && let (Some(np), Some(mp)) = (ni.parent, nm.parent)
+                        && subset_sorted(&self.nodes[np.index()].labels, &self.nodes[mp.index()].labels)
+                    {
+                        with_guard = true;
+                    }
+                }
+                let dm = denom(&nm.labels);
+                if subset_sorted(&dn, &dm) {
+                    modulo_nom = true;
+                }
+            }
+            if exact {
+                a.would_block_exact += 1;
+            }
+            if modulo_nom {
+                a.would_block_modulo_nominal += 1;
+            }
+            if with_guard {
+                a.would_block_with_guard += 1;
+            }
+        }
+        a.distinct_label_sets = distinct_label_sets.len();
+        a.distinct_denominalised_label_sets = distinct_denom_sets.len();
+        a
     }
 
     /// Class labels of the root node (node 0) — the derived

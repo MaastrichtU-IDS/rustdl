@@ -2609,6 +2609,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
     /// (needs the gitignored wine fixture); run with `-- --ignored --nocapture`.
     #[test]
     #[ignore = "needs ontologies/real/wine.ofn; perf probe for the wine wedge-stall wall"]
+    #[allow(clippy::cast_precision_loss)] // diagnostic ratios; precision irrelevant
     fn wine_wedge_construct_vs_solve_probe() {
         use horned_owl::io::ofn::reader::read as read_ofn;
         use owl_dl_core::clause::{Atom, DlClause, X};
@@ -2656,6 +2657,229 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         eprintln!("wine: {n} classes");
         let mut hard: Vec<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId)> = Vec::new();
         let mut probes = 0usize;
+        // Require DISTINCT `sub` concepts so we sample 3 different hard classes
+        // (not the same sub against three trivial ¬sup variants — that would be
+        // n=1 disguised as n=3).
+        'outer: for i in 0..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                probes += 1;
+                if probes > 4000 {
+                    break 'outer;
+                }
+                if hard.iter().any(|(s, _)| *s == ids[i]) {
+                    continue; // already have a hard pair for this sub
+                }
+                let dl = Instant::now() + Duration::from_millis(200);
+                if cache.decide(ids[i], ids[j], Some(dl)) == HyperVerdict::Unknown {
+                    hard.push((ids[i], ids[j]));
+                    if hard.len() >= 4 {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "found {} hard (Unknown@200ms) pairs in {probes} probes",
+            hard.len()
+        );
+
+        // The production wine wedge path (`HyperCache::decide`) builds the
+        // engine WITHOUT `.with_nominals(...)`/`.with_sub_roles(...)`, so the
+        // NN nominal-merge rule is inert and role matching is reflexive.
+        // Mirror that here (no nominal range) so the diagnosis reflects what
+        // production actually runs. `nominal_lo == nominal_hi == 0` ⇒ the
+        // block analysis treats no class as a nominal.
+        let stall_site_str = |s: u8| match s {
+            0 => "none(Sat/Unsat)",
+            1 => "FIXPOINT_ITERS cap",
+            2 => "deadline in horn_fixpoint",
+            3 => "deadline at solve entry",
+            4 => "depth==0 open-disjunction bound",
+            5 => "depth==0 open-≤n bound",
+            _ => "??",
+        };
+        let verdict_str = |v: HyperResult| match v {
+            HyperResult::Sat => "Sat(NotSubsumed)",
+            HyperResult::Unsat => "Unsat(Subsumed)",
+            HyperResult::Stalled => "Stalled",
+        };
+
+        for (sub, sup) in hard {
+            eprintln!("\n===== hard pair (sub={}, sup={}) =====", sub.index(), sup.index());
+            // Timer 1: clone + push (the per-pair allocation).
+            let t_clone = Instant::now();
+            let clauses = assemble(sub, sup);
+            let clone_ms = t_clone.elapsed().as_secs_f64() * 1000.0;
+
+            // ---- Run A: production-config depth-256 wedge, 5s cap. ----
+            let t_new = Instant::now();
+            let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+            if hyper_double_block_enabled() {
+                engine = engine.with_double_blocking();
+            }
+            if hyper_precise_card_deps_enabled() {
+                engine = engine.with_precise_card_deps();
+            }
+            let new_ms = t_new.elapsed().as_secs_f64() * 1000.0;
+            let t_solve = Instant::now();
+            let dl = Instant::now() + Duration::from_secs(5);
+            let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, Some(dl));
+            let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
+            let s = engine.stats();
+            eprintln!(
+                "[A depth=256] clone={clone_ms:.1}ms new={new_ms:.1}ms solve(5s)={solve_ms:.1}ms -> {}",
+                verdict_str(verdict)
+            );
+            eprintln!(
+                "[A depth=256] nodes={} stall_site={} | branches={} disj={} merge={} restores={} max_depth={} node_clones={}",
+                engine.node_count(),
+                stall_site_str(s.stall_site),
+                s.branches_taken, s.disj_branches, s.merge_branches,
+                s.restores, s.max_branch_depth, s.node_clones,
+            );
+            eprintln!(
+                "[A depth=256] is_blocked_calls={} block_eligible={} blocks_fired={} block_compares={} match_attempts={} fixpoint_passes={}",
+                s.is_blocked_calls, s.block_eligible, s.blocks_fired,
+                s.block_compares, s.match_attempts, s.fixpoint_passes,
+            );
+            // 1-UIP go/no-go: conflict decision-level structure. avg-deps ~1
+            // and span-hist concentrated at 0-1 => conflicts local to one
+            // decision (1-UIP ~= chronological, weak). Frequent large spans =>
+            // shallow+deep coupling (1-UIP could backjump far, promising).
+            let h = &s.conflict_span_hist;
+            let avg_deps = if s.disj_conflicts > 0 {
+                s.conflict_dep_count_sum as f64 / s.disj_conflicts as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[A 1-UIP] disj_conflicts={} contains_d={} ({:.0}%) overflow={} avg_deps={avg_deps:.2}",
+                s.disj_conflicts,
+                s.conflict_contains_d,
+                if s.disj_conflicts > 0 {
+                    100.0 * s.conflict_contains_d as f64 / s.disj_conflicts as f64
+                } else {
+                    0.0
+                },
+                s.conflict_overflow,
+            );
+            eprintln!(
+                "[A 1-UIP] conflict-span-hist (0|1|2|3-4|5-8|9-16|17-32|33+): {} | {} | {} | {} | {} | {} | {} | {}",
+                h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
+            );
+            let g = &s.conflict_bjgap_hist;
+            eprintln!(
+                "[A 1-UIP] BACKJUMP-DIST hi-2ndhi (0|1|2|3-4|5-8|9-16|17-32|33+): {} | {} | {} | {} | {} | {} | {} | {}   <-- DECISIVE: mass at 0-1 => ~chronological (weak); mass high => 1-UIP prunes subtrees",
+                g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7],
+            );
+
+            // ---- Run B: depth-0 isolation of the SINGLE-BRANCH model. ----
+            // At depth 0 `solve` runs ONE horn_fixpoint then returns Stalled
+            // at the first open disjunction/≤n; with the diag mid-fixpoint
+            // deadline, an unbounded single fixpoint Stalls on the clock with
+            // its true (no-backtrack) node count. This is the model-growth /
+            // blocking discriminator.
+            let mut engine0 = HyperEngine::new(&clauses, cache.fresh_q)
+                .with_diag_fixpoint_deadline();
+            if hyper_double_block_enabled() {
+                engine0 = engine0.with_double_blocking();
+            }
+            if hyper_precise_card_deps_enabled() {
+                engine0 = engine0.with_precise_card_deps();
+            }
+            let t0 = Instant::now();
+            let dl0 = Instant::now() + Duration::from_secs(5);
+            let v0 = engine0.decide_with_deadline(0, Some(dl0));
+            let solve0_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let s0 = engine0.stats();
+            eprintln!(
+                "[B depth=0]   solve(5s)={solve0_ms:.1}ms -> {} | nodes={} stall_site={}",
+                verdict_str(v0), engine0.node_count(), stall_site_str(s0.stall_site),
+            );
+            eprintln!(
+                "[B depth=0]   is_blocked_calls={} block_eligible={} blocks_fired={} fixpoint_passes={}",
+                s0.is_blocked_calls, s0.block_eligible, s0.blocks_fired, s0.fixpoint_passes,
+            );
+            // Block analysis at the depth-0 stall (no nominal range, mirroring
+            // production HyperCache::decide).
+            let ba = engine0.diag_block_analysis(0, 0);
+            eprintln!(
+                "[B analysis]  total_nodes={} non_root={} root_labels={} max_labels={} avg_labels={:.1}",
+                ba.total_nodes, ba.non_root_nodes, ba.root_label_count, ba.max_label_count,
+                if ba.total_nodes > 0 { ba.sum_label_count as f64 / ba.total_nodes as f64 } else { 0.0 },
+            );
+            eprintln!(
+                "[B analysis]  distinct_label_sets={} (of {} nodes) | would_block_exact={} would_block_with_guard={}",
+                ba.distinct_label_sets, ba.total_nodes,
+                ba.would_block_exact, ba.would_block_with_guard,
+            );
+            eprintln!(
+                "[B analysis]  VERDICT-DISCRIMINATOR: distinct/total={:.2} would_block_exact/non_root={:.2} would_block_with_guard/non_root={:.2}",
+                if ba.total_nodes > 0 { ba.distinct_label_sets as f64 / ba.total_nodes as f64 } else { 0.0 },
+                if ba.non_root_nodes > 0 { ba.would_block_exact as f64 / ba.non_root_nodes as f64 } else { 0.0 },
+                if ba.non_root_nodes > 0 { ba.would_block_with_guard as f64 / ba.non_root_nodes as f64 } else { 0.0 },
+            );
+        }
+    }
+
+    /// Decisive go/no-go for the 1-UIP bet (2026-06-08): on ONE hard wine pair,
+    /// run the wedge at a LONG deadline (60 s) in two configs — (A) production
+    /// `HyperCache::decide` config (NO nominals) and (B) nominals+sub-roles wired
+    /// (mirrors the `hyper_subsumption_probe` path). Answers: does the model
+    /// ever get FOUND given a big budget (Sat -> findable/search-order problem),
+    /// and does wiring nominals close it (-> the lever is wiring nominals, not
+    /// 1-UIP)? `#[ignore]`d; run with `-- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs ontologies/real/wine.ofn; 1-UIP go/no-go (long-deadline + nominals probe, ~2 min)"]
+    fn wine_wedge_long_deadline_nominals_probe() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        use std::time::{Duration, Instant};
+        let path = std::path::Path::new("../../ontologies/real/wine.ofn");
+        if !path.exists() {
+            eprintln!("SKIP: missing {}", path.display());
+            return;
+        }
+        let src = std::fs::read_to_string(path).expect("read wine");
+        let mut r = Cursor::new(src);
+        let (o, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse wine");
+        let internal = owl_dl_core::convert::convert_ontology(&o).expect("convert");
+        let cache = HyperCache::build(&internal);
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+        let num_individuals = u32::try_from(internal.vocabulary.num_individuals()).unwrap_or(0);
+        let role_hier = build_role_hierarchy(&internal);
+
+        let assemble = |sub: owl_dl_core::ir::ClassId, sup: owl_dl_core::ir::ClassId| {
+            let mut clauses = cache.clauses.clone();
+            clauses.push(DlClause {
+                body: vec![Atom::Class(cache.fresh_q, X)],
+                head: vec![Atom::Class(sub, X)],
+            });
+            if let Some(atoms) = cache.sup_neg.get(&sup) {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X)],
+                    head: atoms.clone(),
+                });
+            } else {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X), Atom::Class(sup, X)],
+                    head: vec![],
+                });
+            }
+            clauses
+        };
+
+        // First hard pair: wedge -> Unknown at 200 ms.
+        let ids: Vec<owl_dl_core::ir::ClassId> =
+            internal.vocabulary.classes().map(|(id, _)| id).collect();
+        let n = ids.len();
+        let mut hard: Option<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId)> = None;
+        let mut probes = 0usize;
         'outer: for i in 0..n {
             for j in 0..n {
                 if i == j {
@@ -2667,49 +2891,123 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 }
                 let dl = Instant::now() + Duration::from_millis(200);
                 if cache.decide(ids[i], ids[j], Some(dl)) == HyperVerdict::Unknown {
-                    hard.push((ids[i], ids[j]));
-                    if hard.len() >= 3 {
+                    hard = Some((ids[i], ids[j]));
+                    break 'outer;
+                }
+            }
+        }
+        let Some((sub, sup)) = hard else {
+            eprintln!("no hard pair found in {probes} probes");
+            return;
+        };
+        eprintln!(
+            "hard pair ({}, {}); 60s deadline each config",
+            sub.index(),
+            sup.index()
+        );
+        let clauses = assemble(sub, sup);
+        let vstr = |v: HyperResult| match v {
+            HyperResult::Sat => "Sat(NotSubsumed)",
+            HyperResult::Unsat => "Unsat(Subsumed)",
+            HyperResult::Stalled => "Stalled",
+        };
+
+        // (A) production config — NO nominals/sub-roles (= HyperCache::decide).
+        let mut ea = HyperEngine::new(&clauses, cache.fresh_q)
+            .with_double_blocking()
+            .with_precise_card_deps();
+        let t = Instant::now();
+        let va =
+            ea.decide_with_deadline(HYPER_WEDGE_DEPTH, Some(Instant::now() + Duration::from_secs(60)));
+        let sa = ea.stats();
+        eprintln!(
+            "[A no-nominals 60s] {} in {:.1}s | nodes={} branches={} disj={} merge={} restores={}",
+            vstr(va),
+            t.elapsed().as_secs_f64(),
+            ea.node_count(),
+            sa.branches_taken,
+            sa.disj_branches,
+            sa.merge_branches,
+            sa.restores,
+        );
+
+        // (B) nominals + sub-roles wired (mirrors hyper_subsumption_probe).
+        let mut eb = HyperEngine::new(&clauses, cache.fresh_q)
+            .with_sub_roles(role_hier.clone())
+            .with_nominals(num_classes, num_individuals)
+            .with_double_blocking()
+            .with_precise_card_deps();
+        let t = Instant::now();
+        let vb =
+            eb.decide_with_deadline(HYPER_WEDGE_DEPTH, Some(Instant::now() + Duration::from_secs(60)));
+        let sb = eb.stats();
+        eprintln!(
+            "[B nominals-wired 60s] {} in {:.1}s | nodes={} branches={} disj={} merge={} restores={}",
+            vstr(vb),
+            t.elapsed().as_secs_f64(),
+            eb.node_count(),
+            sb.branches_taken,
+            sb.disj_branches,
+            sb.merge_branches,
+            sb.restores,
+        );
+        eprintln!(
+            "INTERPRET: A-branches@60s vs ~13-21k@5s (linear climb => astronomically large tree); \
+             B Sat where A Stalls => lever is wiring nominals, not 1-UIP."
+        );
+    }
+
+    /// Print the IRIs of the first hard (`Unknown@200ms`) wine pair so its
+    /// Sat/Unsat status can be checked against the HermiT oracle
+    /// (`wine-classified.owx`). Decides whether the stall is a subsumption
+    /// refutation (Unsat → 1-UIP applies) or a non-subsumption (Sat). Fast.
+    #[test]
+    #[ignore = "needs ontologies/real/wine.ofn; prints hard-pair IRIs for oracle lookup"]
+    fn wine_hard_pair_iris() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use std::time::{Duration, Instant};
+        let path = std::path::Path::new("../../ontologies/real/wine.ofn");
+        if !path.exists() {
+            eprintln!("SKIP: missing {}", path.display());
+            return;
+        }
+        let src = std::fs::read_to_string(path).expect("read wine");
+        let mut r = Cursor::new(src);
+        let (o, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse wine");
+        let internal = owl_dl_core::convert::convert_ontology(&o).expect("convert");
+        let cache = HyperCache::build(&internal);
+        let ids: Vec<owl_dl_core::ir::ClassId> =
+            internal.vocabulary.classes().map(|(id, _)| id).collect();
+        let n = ids.len();
+        let mut count = 0;
+        let mut probes = 0usize;
+        'outer: for i in 0..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                probes += 1;
+                if probes > 400 {
+                    break 'outer;
+                }
+                let dl = Instant::now() + Duration::from_millis(200);
+                if cache.decide(ids[i], ids[j], Some(dl)) == HyperVerdict::Unknown {
+                    eprintln!(
+                        "HARD ({},{}): {}  ⊑?  {}",
+                        ids[i].index(),
+                        ids[j].index(),
+                        internal.vocabulary.class_iri(ids[i]),
+                        internal.vocabulary.class_iri(ids[j]),
+                    );
+                    count += 1;
+                    if count >= 6 {
                         break 'outer;
                     }
                 }
             }
         }
-        eprintln!(
-            "found {} hard (Unknown@200ms) pairs in {probes} probes",
-            hard.len()
-        );
-
-        for (sub, sup) in hard {
-            // Timer 1: clone + push (the per-pair allocation).
-            let t_clone = Instant::now();
-            let clauses = assemble(sub, sup);
-            let clone_ms = t_clone.elapsed().as_secs_f64() * 1000.0;
-            // Timer 2: HyperEngine::new (build_disjoint_pairs + build_clause_indexes).
-            let t_new = Instant::now();
-            let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
-            if hyper_double_block_enabled() {
-                engine = engine.with_double_blocking();
-            }
-            if hyper_precise_card_deps_enabled() {
-                engine = engine.with_precise_card_deps();
-            }
-            let new_ms = t_new.elapsed().as_secs_f64() * 1000.0;
-            // Timer 3: the actual search, 5s cap (NOT None — may not terminate).
-            let t_solve = Instant::now();
-            let dl = Instant::now() + Duration::from_secs(5);
-            let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, Some(dl));
-            let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-            let verdict_str = match verdict {
-                HyperResult::Sat => "Sat(NotSubsumed)",
-                HyperResult::Unsat => "Unsat(Subsumed)",
-                HyperResult::Stalled => "Stalled",
-            };
-            eprintln!(
-                "pair({},{}) clone={clone_ms:.1}ms new={new_ms:.1}ms solve(5s cap)={solve_ms:.1}ms -> {verdict_str}",
-                sub.index(),
-                sup.index()
-            );
-        }
+        eprintln!("({count} hard pairs printed)");
     }
 
     fn check(onto: &SetOntology<RcStr>, iri: &str) -> bool {

@@ -201,6 +201,63 @@ nominal-filler merge (M2), in `hyper.rs` — a deep but BOUNDED change to
 increment FP=0 + MISSED=0 corpus-gated (the `≤n` discharge is soundness-critical).
 Sources + exact sites in the characterization agent's report (banked below).
 
+## §7 Implementation plan (TDD-first) — the reform
+
+The first increment is picked by the `#mcands` measurement (running 2026-06-08).
+The scaffolding below applies to whichever (M1/M2) wins.
+
+**Soundness obligations (the `≤n` discharge is the most soundness-critical site
+in the engine — treat as such):**
+- **Verdict-equivalence**, not just FP=0: the new discharge must produce the SAME
+  Sat/Unsat verdict as the current partition-enumeration on every input (the
+  reachable-partitions/models set is identical; only order-redundancy + forced
+  merges change — same argument as the existing `solve_at_most` canonical-
+  partition comment). A change that flips a verdict either way is a regression.
+- **FP=0 AND MISSED=0**, full corpus closure-diff vs HermiT/Konclude
+  (pizza/ore-10908/ore-15672/sio/wine + GALEN/notgalen sanity), every increment.
+  MISSED now has teeth (§0.3) — a too-aggressive forced-merge that drops a model
+  is a MISSED, not just slower.
+- Preserve the `precise_card_deps_preserves_{unsat,sat}_verdict` tests
+  (owl-dl-tableau) as the regression baseline; the `DepSet::ALL` at
+  `solve_at_most:1553` should *improve* (narrow) under M1, not regress.
+
+**TDD order (project discipline — canaries FIRST):**
+1. Synthetic canaries with known verdicts BEFORE touching the engine: `≤n` alone,
+   `≤n` + nominal fillers (`≤1 R` + `∃R.{a}` + `∃R.{b}` with a,b distinct →
+   clash; a,b same → merge), `≤n` nested under a disjunction (the wine shape),
+   plus **soundness NEGATIVES** (cases that must stay Sat / must stay Unsat).
+2. The verdict-equivalence harness: random-ish `≤n` instances decided by BOTH the
+   old partition path and the new discharge; assert identical verdicts (keep the
+   old path behind a flag during bring-up for A/B).
+3. Implement; gate on canaries → verdict-equivalence → full corpus FP=0/MISSED=0
+   → the wine-wall *wall* measurement (does the 168k-branch explosion actually
+   collapse? — the whole point).
+
+**M2 branch (if `#mcands` says merges are forceable — medium):** at successor
+creation for nominal-filler existentials and at `≤n` solve time, eagerly merge
+co-nominal-filler successors / propagate the nominal guard so `must_be_distinct`
++ the merge-candidate count reflect individual identity *before* `partition_rec`.
+Sound because co-nominal successors *denote the same individual* (forced, not
+chosen). Sites: successor creation (`fire_exists`/`fire_at_least`), `apply_nn_rule`
+(:931), `must_be_distinct` (:1604). Lower risk; may be only a partial win if M1
+is also primary.
+
+**M1 branch (if disjunction fan-out is independent of `≤n` — deep):** replace
+`solve_at_most`/`partition_rec`'s partition-enumeration discharge with HermiT's
+encoding — a disjunction-of-equalities clause head over the *concrete present*
+successors, fed into the SAME hyperresolution + semantic-branching path the
+disjunction rule already uses, so equalities are *unit-propagated* (forced once
+all-but-one disjunct is refuted) instead of enumerated. The clausifier already
+emits `AtMost` heads; the change is the solver discharge + wiring the `≈`/merge as
+a clause consequence. Fixes the `DepSet::ALL` backjump-defeat as a side effect.
+Multi-session; the single most soundness-delicate change in the codebase — do it
+behind an A/B flag with the verdict-equivalence harness live throughout.
+
+**Session-honesty note:** the M1 implementation is *not* a session-tail change —
+a `≤n`-discharge rewrite rushed while fatigued is precisely how an FP ships. The
+right cadence: pick the increment (`#mcands`), land the canaries + equivalence
+harness, then implement in a focused, corpus-gated session.
+
 ## §5 Soundness/completeness obligations + dead-ends NOT to repeat
 
 - **A1 (the governing lesson):** a `Subsumed` derived from *one* model is unsound

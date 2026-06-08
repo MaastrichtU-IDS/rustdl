@@ -19,25 +19,26 @@ use std::io::Cursor;
 use std::time::Duration;
 
 #[test]
-fn snapshot_capture_flag_defaults_on() {
-    // Phase 1c invariant (post-headline flip): env flag defaults ON.
-    // Test guard: SAFE_TO_UNSET — assumes RUSTDL_SNAPSHOT_CAPTURE is
-    // not set in the test process env. A developer who exports it
-    // for debugging will fail this test (which is the right warning).
+fn snapshot_capture_flag_defaults_off() {
+    // SOUNDNESS FIX 2026-06-08: the snapshot cache is FP-unsound on the
+    // non-Horn fragment (it emits spurious subsumptions on disjunctive
+    // ontologies — ORE 2015 surfaced this), and its only sound domain
+    // (Horn) is Horn-shortcircuited away. So the env flag now defaults
+    // OFF; it is opt-in (`=1`) for A/B experiments only. See
+    // `snapshot_capture_enabled` + `docs/perf-2026-06-08-konclude-vs-rustdl.md`.
     //
     // ENV_MUTEX serialization: reads process env, must not race with
-    // the Phase 1b flag-ON tests below that briefly set/restore
-    // RUSTDL_SNAPSHOT_CAPTURE.
+    // the flag-ON tests below that briefly set/restore RUSTDL_SNAPSHOT_CAPTURE.
     let _serial = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(
         std::env::var("RUSTDL_SNAPSHOT_CAPTURE").is_err(),
-        "Phase 1c canary: RUSTDL_SNAPSHOT_CAPTURE must not be set in the test env"
+        "canary: RUSTDL_SNAPSHOT_CAPTURE must not be set in the test env"
     );
     assert!(
-        snapshot_capture_enabled(),
-        "Phase 1c default must be ON (unset → ON)"
+        !snapshot_capture_enabled(),
+        "default must be OFF (unset → OFF) — soundness fix 2026-06-08"
     );
 }
 

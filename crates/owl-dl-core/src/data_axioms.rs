@@ -291,6 +291,86 @@ impl IntegerRange {
     }
 }
 
+/// Phase D6 (Part B): real-number range with EXPLICIT inclusive/exclusive
+/// bounds. Used for `xsd:float` / `xsd:double` `DatatypeRestriction`
+/// facets and float `DataHasValue` point values.
+///
+/// CRITICAL — unlike [`IntegerRange`], the `±1` exclusive↔inclusive
+/// normalization is INVALID for the reals (there is no "next" real after
+/// an excluded bound), so the inclusive/exclusive flag is carried
+/// explicitly and consulted in [`FloatRange::subset`]. This is the
+/// false-positive hotspot: any imprecision in the boundary comparison
+/// is an unsound subsumption.
+///
+/// `min`/`max = None` represents the open (±∞) ends; the flag is
+/// irrelevant when the bound is `None`. All stored `f64` values are
+/// guaranteed finite (NaN / ±∞ are rejected at parse time → the whole
+/// range drops, a sound under-approximation).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FloatRange {
+    pub(crate) min: Option<f64>,
+    pub(crate) min_incl: bool,
+    pub(crate) max: Option<f64>,
+    pub(crate) max_incl: bool,
+}
+
+impl FloatRange {
+    pub(crate) const fn unbounded() -> Self {
+        Self {
+            min: None,
+            min_incl: false,
+            max: None,
+            max_incl: false,
+        }
+    }
+
+    /// A single finite point value `v`, i.e. the closed range `[v, v]`.
+    pub(crate) const fn point(v: f64) -> Self {
+        Self {
+            min: Some(v),
+            min_incl: true,
+            max: Some(v),
+            max_incl: true,
+        }
+    }
+
+    /// `self ⊆ other` over the real value space — the FP core.
+    ///
+    /// Every `x ∈ self` must satisfy `other`. For the lower bound:
+    /// - `other` unbounded-below ⟹ no lower constraint, OK.
+    /// - `self` unbounded-below but `other` bounded-below ⟹ `self`
+    ///   reaches past `other`, NOT contained.
+    /// - both bounded at `s`, `o`: OK iff `s > o`, OR (`s == o` AND
+    ///   `other.min_incl || !self.min_incl`). The equal-endpoint clause
+    ///   is the subtle part: if `other` EXCLUDES `o` but `self` INCLUDES
+    ///   `o = s`, then `o ∈ self` yet `o ∉ other` → NOT a subset.
+    ///
+    /// Upper bound is symmetric. NaN can never reach here (rejected at
+    /// parse), but the comparisons are written so a hypothetical NaN
+    /// would fail every `>`/`==` branch → `subset = false` (sound).
+    #[allow(
+        clippy::float_cmp,
+        reason = "EXACT IEEE-754 endpoint equality is the intended semantics — both \
+                  operands originate from the same parsed literal / round-tripped \
+                  to_bits key, so equal endpoints are bit-identical. An epsilon \
+                  comparison would be UNSOUND (it would widen ranges, causing FP \
+                  subsumptions). NaN is excluded at parse time."
+    )]
+    pub(crate) fn subset(self, other: Self) -> bool {
+        let min_ok = match (self.min, other.min) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(s), Some(o)) => s > o || (s == o && (other.min_incl || !self.min_incl)),
+        };
+        let max_ok = match (self.max, other.max) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(s), Some(o)) => s < o || (s == o && (other.max_incl || !self.max_incl)),
+        };
+        min_ok && max_ok
+    }
+}
+
 /// Internal: collected data-axiom facts. IRIs kept as `String` so we
 /// can look them up in the vocabulary once at emission time.
 #[derive(Default, Debug)]
@@ -479,16 +559,25 @@ fn scan_class_for_existentials<A: ForIRI>(class_iri: &str, ce: &ClassExpression<
 /// overflowing exclusive-bound adjustments — sound under-approximation:
 /// unrecognized ranges contribute no constraint (vs. wrong constraints).
 pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<IntegerRange> {
-    let DataRange::DatatypeRestriction(dt, facets) = dr else {
-        return None;
-    };
-    // Only xsd:integer for Tier C; other numeric datatypes
-    // (xsd:decimal, xsd:double, xsd:dateTime) extend with their own
-    // range types but share this preprocessing's algebra.
-    if dt.0.to_string() != "http://www.w3.org/2001/XMLSchema#integer" {
-        return None;
+    const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
+    match dr {
+        // Phase D6 (Part A): a bare `xsd:integer` datatype (no facet) is
+        // the unbounded integer range. `DataSomeValuesFrom(p, xsd:integer)`
+        // thus lowers to `∃p.DKey(-∞,+∞)` — a sound necessary condition
+        // that keeps the enclosing conjunction alive (e.g. Prime/Zoom).
+        DataRange::Datatype(dt) if dt.0.to_string() == XSD_INTEGER => {
+            Some(IntegerRange::unbounded())
+        }
+        // Only xsd:integer for Tier C; other numeric datatypes
+        // (xsd:decimal, xsd:dateTime) extend with their own range types
+        // but share this preprocessing's algebra. Float/double are
+        // handled by `parse_float_range` (a DISTINCT datatype bucket —
+        // see the DKey datatype-tagging in `convert.rs`).
+        DataRange::DatatypeRestriction(dt, facets) if dt.0.to_string() == XSD_INTEGER => {
+            parse_integer_facets(facets)
+        }
+        _ => None,
     }
-    parse_integer_facets(facets)
 }
 
 fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<IntegerRange> {
@@ -523,6 +612,97 @@ fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<Int
         }
     }
     Some(range)
+}
+
+/// Phase D6 (Part B): the float-family datatype IRIs we model. Both
+/// share the real value space and the same facet algebra. We keep them
+/// in SEPARATE DKey buckets from each other and from integer (see
+/// `convert.rs`) so no cross-datatype subsumption can ever be seeded.
+fn is_float_datatype(iri: &str) -> bool {
+    iri == "http://www.w3.org/2001/XMLSchema#float"
+        || iri == "http://www.w3.org/2001/XMLSchema#double"
+}
+
+/// Phase D6 (Part B): parse an `xsd:float` / `xsd:double` `DataRange`
+/// into a [`FloatRange`]. Returns `None` for non-float datatypes,
+/// unrecognized facets, unparseable / non-finite (NaN, ±∞) literals —
+/// sound under-approximation (a dropped range contributes no constraint,
+/// never a wrong one).
+pub(crate) fn parse_float_range<A: ForIRI>(dr: &DataRange<A>) -> Option<FloatRange> {
+    match dr {
+        // Bare `xsd:float` / `xsd:double` (no facet) is the unbounded
+        // real range. NOTE: intentionally NOT emitted from `convert.rs`'s
+        // `DataSomeValuesFrom` bare arm (it's a standalone necessary
+        // condition that drops harmlessly and is not needed for the 37);
+        // kept here only for completeness of the parser.
+        DataRange::Datatype(dt) if is_float_datatype(dt.0.as_ref()) => {
+            Some(FloatRange::unbounded())
+        }
+        DataRange::DatatypeRestriction(dt, facets) if is_float_datatype(dt.0.as_ref()) => {
+            parse_float_facets(facets)
+        }
+        _ => None,
+    }
+}
+
+fn parse_float_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<FloatRange> {
+    let mut range = FloatRange::unbounded();
+    for fr in facets {
+        // Reject NaN and ±∞ outright: a non-finite bound would poison the
+        // `==`/`>`/`<` comparisons in `subset` (NaN compares false to
+        // everything, which could spuriously hit the equal-endpoint
+        // branch). Dropping is the sound direction.
+        let val: f64 =
+            fr.l.literal()
+                .parse()
+                .ok()
+                .filter(|v: &f64| v.is_finite())?;
+        match fr.f {
+            Facet::MinInclusive => tighten_min(&mut range, val, true),
+            Facet::MinExclusive => tighten_min(&mut range, val, false),
+            Facet::MaxInclusive => tighten_max(&mut range, val, true),
+            Facet::MaxExclusive => tighten_max(&mut range, val, false),
+            _ => return None,
+        }
+    }
+    Some(range)
+}
+
+/// Tighten a [`FloatRange`]'s lower bound to the more restrictive of the
+/// existing bound and `(val, incl)`. "More restrictive" = larger lower
+/// bound; at equal values, exclusive (`!incl`) is tighter than inclusive.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact endpoint equality is intended (same datatype, two facets on the \
+              same property); epsilon would mis-merge distinct bounds"
+)]
+fn tighten_min(range: &mut FloatRange, val: f64, incl: bool) {
+    let tighter = match range.min {
+        None => true,
+        // Larger value is tighter; at equality, exclusive beats inclusive.
+        Some(existing) => val > existing || (val == existing && !incl && range.min_incl),
+    };
+    if tighter {
+        range.min = Some(val);
+        range.min_incl = incl;
+    }
+}
+
+/// Symmetric to [`tighten_min`] for the upper bound: smaller value is
+/// tighter; at equality, exclusive beats inclusive.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact endpoint equality is intended (see tighten_min)"
+)]
+fn tighten_max(range: &mut FloatRange, val: f64, incl: bool) {
+    let tighter = match range.max {
+        None => true,
+        Some(existing) => val < existing || (val == existing && !incl && range.max_incl),
+    };
+    if tighter {
+        range.max = Some(val);
+        range.max_incl = incl;
+    }
 }
 
 /// Compute the transitive closure of `sub_data_property` edges:
@@ -762,6 +942,156 @@ mod tests {
             min: Some(lo),
             max: Some(hi),
         }
+    }
+
+    // ── FloatRange helpers (Phase D6 Part B) ─────────────────────────
+    fn fr(min: Option<f64>, min_incl: bool, max: Option<f64>, max_incl: bool) -> FloatRange {
+        FloatRange {
+            min,
+            min_incl,
+            max,
+            max_incl,
+        }
+    }
+    /// `[lo, hi]` closed.
+    fn fc(lo: f64, hi: f64) -> FloatRange {
+        fr(Some(lo), true, Some(hi), true)
+    }
+    /// `(lo, hi)` open.
+    fn fo(lo: f64, hi: f64) -> FloatRange {
+        fr(Some(lo), false, Some(hi), false)
+    }
+
+    #[test]
+    fn float_range_subset_boundaries() {
+        // ── Point vs open/closed interval (the f-stop / exposure cases)
+        // 36.0 ∉ (36,101) — exclusive lower boundary.
+        assert!(
+            !FloatRange::point(36.0).subset(fo(36.0, 101.0)),
+            "36.0 ∉ (36,101)"
+        );
+        // 36.0 ∈ [36,101] — inclusive lower boundary.
+        assert!(
+            FloatRange::point(36.0).subset(fc(36.0, 101.0)),
+            "36.0 ∈ [36,101]"
+        );
+        // 101.0 ∉ (36,101) — exclusive upper boundary.
+        assert!(
+            !FloatRange::point(101.0).subset(fo(36.0, 101.0)),
+            "101.0 ∉ (36,101)"
+        );
+        // 101.0 ∈ [36,101] — inclusive upper boundary.
+        assert!(
+            FloatRange::point(101.0).subset(fc(36.0, 101.0)),
+            "101.0 ∈ [36,101]"
+        );
+        // Interior value.
+        assert!(
+            FloatRange::point(60.0).subset(fo(36.0, 101.0)),
+            "60 ∈ (36,101)"
+        );
+        // Value outside.
+        assert!(
+            !FloatRange::point(200.0).subset(fo(36.0, 101.0)),
+            "200 ∉ (36,101)"
+        );
+        assert!(
+            !FloatRange::point(0.0).subset(fo(36.0, 101.0)),
+            "0 ∉ (36,101)"
+        );
+
+        // ── Mixed inclusive/exclusive range-vs-range.
+        assert!(fc(40.0, 50.0).subset(fo(36.0, 101.0)), "[40,50] ⊆ (36,101)");
+        assert!(
+            fo(36.0, 101.0).subset(fc(36.0, 101.0)),
+            "(36,101) ⊆ [36,101]"
+        );
+        // self includes 36.0, other excludes it → NOT subset.
+        assert!(
+            !fr(Some(36.0), true, None, false).subset(fr(Some(36.0), false, None, false)),
+            "[36,..) ⊄ (36,..)"
+        );
+        // [..,101] ⊄ [..,101) — self includes 101, other excludes it.
+        assert!(
+            !fr(None, false, Some(101.0), true).subset(fr(None, false, Some(101.0), false)),
+            "(..,101] ⊄ (..,101)"
+        );
+
+        // ── VeryFastExposure ⊆ FastExposure: (-∞,0.002) ⊆ (-∞,0.01).
+        let very_fast = fr(None, false, Some(0.002), false);
+        let fast = fr(None, false, Some(0.01), false);
+        assert!(very_fast.subset(fast), "(-∞,0.002) ⊆ (-∞,0.01)");
+        assert!(!fast.subset(very_fast), "(-∞,0.01) ⊄ (-∞,0.002)");
+
+        // ── SlowExposure (0.01,1.0) vs others: not ⊆ Fast (overlaps but
+        // extends right past 0.01).
+        let slow = fo(0.01, 1.0);
+        assert!(!slow.subset(fast), "(0.01,1.0) ⊄ (-∞,0.01)");
+
+        // ── Unbounded.
+        assert!(
+            fc(1.0, 2.0).subset(FloatRange::unbounded()),
+            "any ⊆ (-∞,+∞)"
+        );
+        assert!(
+            !FloatRange::unbounded().subset(fc(1.0, 2.0)),
+            "(-∞,+∞) ⊄ [1,2]"
+        );
+        // unbounded-below self vs bounded-below other → NOT subset.
+        assert!(
+            !fr(None, false, Some(50.0), true).subset(fc(37.0, 100.0)),
+            "(-∞,50] ⊄ [37,100]"
+        );
+
+        // ── Reflexive (uses PartialEq via the same flags).
+        assert!(fo(36.0, 101.0).subset(fo(36.0, 101.0)), "R ⊆ R (open)");
+        assert!(fc(36.0, 101.0).subset(fc(36.0, 101.0)), "R ⊆ R (closed)");
+    }
+
+    fn float_facet(facet: Facet, lit: &str) -> FacetRestriction<RcStr> {
+        use horned_owl::model::{Build, Literal};
+        let b: Build<RcStr> = Build::new_rc();
+        FacetRestriction {
+            f: facet,
+            l: Literal::Datatype {
+                literal: lit.to_string(),
+                datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#float"),
+            },
+        }
+    }
+
+    #[test]
+    fn float_facets_reject_nan_and_inf() {
+        // A NaN or ±∞ facet literal must drop the WHOLE range (None),
+        // never yield a spurious subset.
+        assert_eq!(
+            parse_float_facets(&[float_facet(Facet::MinInclusive, "NaN")]),
+            None,
+            "NaN facet → drop"
+        );
+        assert_eq!(
+            parse_float_facets(&[float_facet(Facet::MaxExclusive, "INF")]),
+            None,
+            "INF facet → drop"
+        );
+        assert_eq!(
+            parse_float_facets(&[float_facet(Facet::MaxExclusive, "-INF")]),
+            None,
+            "-INF facet → drop"
+        );
+        // A finite facet still parses.
+        assert!(parse_float_facets(&[float_facet(Facet::MaxExclusive, "0.01")]).is_some());
+    }
+
+    #[test]
+    fn float_facet_min_exclusive_is_not_normalized() {
+        // CRITICAL: unlike integer (±1), float exclusive bounds must NOT
+        // be shifted. (36,..) must keep min=36.0 min_incl=false so that
+        // [36,..) is correctly NOT a subset of (36,..).
+        let parsed =
+            parse_float_facets(&[float_facet(Facet::MinExclusive, "36.0")]).expect("parses");
+        assert_eq!(parsed.min, Some(36.0), "min value unchanged (no ±1 shift)");
+        assert!(!parsed.min_incl, "min is exclusive");
     }
 
     #[test]

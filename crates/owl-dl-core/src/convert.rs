@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::ConceptPool;
 use crate::Vocabulary;
-use crate::data_axioms::IntegerRange;
+use crate::data_axioms::{FloatRange, IntegerRange};
 use crate::ir::{ClassId, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 
@@ -26,14 +26,29 @@ use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 /// `DKey` subsumptions never appear in output (see
 /// `crates/owl-dl-reasoner/src/classify.rs`).
 ///
-/// The full IRI deterministically encodes the integer range as
-/// `urn:rustdl-dkey:<min>:<max>` where each bound is a decimal i64 or
-/// `*` for the unbounded (`None`) end. This makes interning idempotent
-/// (same range → same IRI → same `ClassId` via vocabulary dedup) and
-/// lets the post-conversion pass recover each range by parsing the IRI.
+/// The full IRI deterministically encodes the range, DATATYPE-TAGGED so
+/// integer and float (real) keys live in disjoint namespaces and can
+/// NEVER cross-subsume — a soundness requirement (an integer value must
+/// not subsume a float range or vice versa):
+/// - **integer**: `urn:rustdl-dkey:<min>:<max>` where each bound is a
+///   decimal i64 or `*` for the unbounded (`None`) end.
+/// - **float/double** (Phase D6 Part B): `urn:rustdl-dkey:f:<min>:<min_incl>:<max>:<max_incl>`
+///   where each bound is the `f64::to_bits()` decimal (EXACT round-trip,
+///   so `"1.0"` and `"1.00"` key identically) or `*`, and each `_incl`
+///   flag is `i` (inclusive) or `e` (exclusive). The `f:` tag makes the
+///   integer parser reject float keys (its `split_once(':')` yields the
+///   token `"f"`, which fails `parse::<i64>()`).
+///
+/// This makes interning idempotent (same range → same IRI → same
+/// `ClassId` via vocabulary dedup) and lets the post-conversion pass
+/// recover each range — and its datatype kind — by parsing the IRI.
 pub const DKEY_IRI_PREFIX: &str = "urn:rustdl-dkey:";
 
-/// Build the deterministic `DKey` IRI for an integer range.
+/// Datatype tag distinguishing the float/double `DKey` namespace from the
+/// untagged integer one. Full prefix is `urn:rustdl-dkey:f:`.
+const DKEY_FLOAT_TAG: &str = "f:";
+
+/// Build the deterministic integer `DKey` IRI.
 fn dkey_iri(range: IntegerRange) -> String {
     fn bound(b: Option<i64>) -> String {
         b.map_or_else(|| "*".to_string(), |v| v.to_string())
@@ -41,8 +56,27 @@ fn dkey_iri(range: IntegerRange) -> String {
     format!("{DKEY_IRI_PREFIX}{}:{}", bound(range.min), bound(range.max))
 }
 
-/// Parse a `DKey` IRI back into its integer range. Returns `None` for
-/// any IRI that is not a well-formed `DKey` IRI.
+/// Build the deterministic float/double `DKey` IRI. Bounds are encoded
+/// via `f64::to_bits()` for exact round-trip; inclusivity is `i`/`e`.
+fn float_dkey_iri(range: FloatRange) -> String {
+    fn bound(b: Option<f64>) -> String {
+        b.map_or_else(|| "*".to_string(), |v| v.to_bits().to_string())
+    }
+    fn flag(incl: bool) -> char {
+        if incl { 'i' } else { 'e' }
+    }
+    format!(
+        "{DKEY_IRI_PREFIX}{DKEY_FLOAT_TAG}{}:{}:{}:{}",
+        bound(range.min),
+        flag(range.min_incl),
+        bound(range.max),
+        flag(range.max_incl),
+    )
+}
+
+/// Parse a `DKey` IRI back into its INTEGER range. Returns `None` for
+/// any IRI that is not a well-formed integer `DKey` IRI (including all
+/// float-tagged keys — the `f:` tag's `"f"` token fails the i64 parse).
 pub(crate) fn parse_dkey_iri(iri: &str) -> Option<IntegerRange> {
     let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?;
     let (min_s, max_s) = rest.split_once(':')?;
@@ -61,7 +95,41 @@ pub(crate) fn parse_dkey_iri(iri: &str) -> Option<IntegerRange> {
     })
 }
 
-/// Intern the synthetic `DKey(range)` filler class and return the
+/// Parse a `DKey` IRI back into its FLOAT range. Returns `None` for any
+/// IRI that is not a well-formed float-tagged `DKey` IRI.
+pub(crate) fn parse_float_dkey_iri(iri: &str) -> Option<FloatRange> {
+    let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?;
+    let rest = rest.strip_prefix(DKEY_FLOAT_TAG)?;
+    let mut parts = rest.splitn(4, ':');
+    let min_s = parts.next()?;
+    let min_f = parts.next()?;
+    let max_s = parts.next()?;
+    let max_f = parts.next()?;
+    fn bound(s: &str) -> Result<Option<f64>, ()> {
+        if s == "*" {
+            Ok(None)
+        } else {
+            s.parse::<u64>()
+                .map(|bits| Some(f64::from_bits(bits)))
+                .map_err(|_| ())
+        }
+    }
+    fn flag(s: &str) -> Result<bool, ()> {
+        match s {
+            "i" => Ok(true),
+            "e" => Ok(false),
+            _ => Err(()),
+        }
+    }
+    Some(FloatRange {
+        min: bound(min_s).ok()?,
+        min_incl: flag(min_f).ok()?,
+        max: bound(max_s).ok()?,
+        max_incl: flag(max_f).ok()?,
+    })
+}
+
+/// Intern the synthetic integer `DKey(range)` filler class and return the
 /// `∃p.DKey(range)` concept. `p` is the data property treated as a
 /// (forward) object-style role.
 fn lower_data_to_some(
@@ -72,6 +140,20 @@ fn lower_data_to_some(
 ) -> ConceptId {
     let role_id = vocab.intern_role(dp_iri);
     let dkey_class = vocab.intern_class(&dkey_iri(range));
+    let filler = pool.atomic(dkey_class);
+    pool.some(Role::named(role_id), filler)
+}
+
+/// Float counterpart of [`lower_data_to_some`]: intern the float
+/// `DKey(range)` filler and return `∃p.DKey(range)`.
+fn lower_float_data_to_some(
+    range: FloatRange,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> ConceptId {
+    let role_id = vocab.intern_role(dp_iri);
+    let dkey_class = vocab.intern_class(&float_dkey_iri(range));
     let filler = pool.atomic(dkey_class);
     pool.some(Role::named(role_id), filler)
 }
@@ -224,20 +306,37 @@ pub fn convert_class_expression<A: ForIRI>(
         // would WEAKEN an equivalence RHS → false-positive subsumption
         // via the sufficient direction. Do not best-effort.
         ClassExpression::DataSomeValuesFrom { dp, dr } => {
-            match crate::data_axioms::parse_integer_range(dr) {
-                Some(range) => Ok(lower_data_to_some(range, dp.0.as_ref(), vocab, pool)),
-                None => Err(ConversionError::UnsupportedDataRange),
+            // Try integer (facet OR bare xsd:integer → unbounded) first,
+            // then float/double facets. Distinct DKey datatype buckets
+            // keep the two from cross-subsuming. Any other data range
+            // still drops (UnsupportedDataRange).
+            if let Some(range) = crate::data_axioms::parse_integer_range(dr) {
+                Ok(lower_data_to_some(range, dp.0.as_ref(), vocab, pool))
+            } else if let Some(frange) = crate::data_axioms::parse_float_range(dr) {
+                Ok(lower_float_data_to_some(frange, dp.0.as_ref(), vocab, pool))
+            } else {
+                Err(ConversionError::UnsupportedDataRange)
             }
         }
-        ClassExpression::DataHasValue { dp, l } => match integer_literal_value(l) {
-            Some(v) => Ok(lower_data_to_some(
-                IntegerRange::point(v),
-                dp.0.as_ref(),
-                vocab,
-                pool,
-            )),
-            None => Err(ConversionError::UnsupportedDataRange),
-        },
+        ClassExpression::DataHasValue { dp, l } => {
+            if let Some(v) = integer_literal_value(l) {
+                Ok(lower_data_to_some(
+                    IntegerRange::point(v),
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(v) = float_literal_value(l) {
+                Ok(lower_float_data_to_some(
+                    FloatRange::point(v),
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else {
+                Err(ConversionError::UnsupportedDataRange)
+            }
+        }
         ClassExpression::DataAllValuesFrom { .. }
         | ClassExpression::DataMinCardinality { .. }
         | ClassExpression::DataMaxCardinality { .. }
@@ -259,6 +358,24 @@ fn integer_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
             datatype_iri,
         } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
             literal.parse::<i64>().ok()
+        }
+        _ => None,
+    }
+}
+
+/// Phase D6 (Part B): extract an `xsd:float` / `xsd:double`-typed
+/// literal's value. Returns `None` for any other literal kind or an
+/// unparseable / non-finite (NaN, ±∞) value — sound under-approximation
+/// (a non-finite point can never be a sound subset endpoint).
+fn float_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<f64> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float"
+            || datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" =>
+        {
+            literal.parse::<f64>().ok().filter(|v| v.is_finite())
         }
         _ => None,
     }
@@ -659,23 +776,42 @@ pub fn convert_ontology<A: ForIRI>(
 /// the number of distinct integer ranges (small in practice — bounded
 /// by the count of distinct facet/value combinations in the ontology).
 fn seed_dkey_subsumptions(out: &mut InternalOntology) {
-    // Collect (ClassId, IntegerRange) for all interned DKey classes.
-    let dkeys: Vec<(ClassId, IntegerRange)> = out
+    // Bucket DKeys BY DATATYPE so edges are only ever seeded WITHIN a
+    // bucket — never integer↔float. Cross-datatype subsumption would be
+    // unsound (an int value space and a real value space are disjoint
+    // for our purposes; deliberate conservative under-approximation).
+    let int_dkeys: Vec<(ClassId, IntegerRange)> = out
         .vocabulary
         .classes()
         .filter_map(|(cid, iri)| parse_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
-    if dkeys.len() < 2 {
-        return;
-    }
-    for &(sub_cid, sub_r) in &dkeys {
-        for &(sup_cid, sup_r) in &dkeys {
+    let float_dkeys: Vec<(ClassId, FloatRange)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_float_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    // Integer bucket: `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2`.
+    for &(sub_cid, sub_r) in &int_dkeys {
+        for &(sup_cid, sup_r) in &int_dkeys {
             if sub_cid == sup_cid {
                 continue;
             }
             // r1 ⊆ r2 (proper containment or equal-range distinct keys
             // can't occur — equal ranges share one ClassId — so this is
             // strict subset between distinct synthetic classes).
+            if sub_r.subset(sup_r) {
+                let sub = out.concepts.atomic(sub_cid);
+                let sup = out.concepts.atomic(sup_cid);
+                out.axioms.push(Axiom::SubClassOf { sub, sup });
+            }
+        }
+    }
+    // Float/double bucket: same algebra with explicit-boundary subset.
+    for &(sub_cid, sub_r) in &float_dkeys {
+        for &(sup_cid, sup_r) in &float_dkeys {
+            if sub_cid == sup_cid {
+                continue;
+            }
             if sub_r.subset(sup_r) {
                 let sub = out.concepts.atomic(sub_cid);
                 let sup = out.concepts.atomic(sup_cid);

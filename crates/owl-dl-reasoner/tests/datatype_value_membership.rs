@@ -203,6 +203,285 @@ fn non_integer_datatype_dropped_no_fp() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Phase D6 Part A — bare xsd:integer (no facet).
+// ─────────────────────────────────────────────────────────────────────
+
+/// POSITIVE — bare `xsd:integer`: `DataHasValue(p,5)` (point [5,5]) ⊆
+/// `DataSomeValuesFrom(p, xsd:integer)` (unbounded). C ⊑ D must hold.
+#[test]
+fn bare_integer_unbounded_subsumes_point() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:p "5"^^xsd:integer))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:p xsd:integer))))
+"#,
+    );
+    assert!(
+        c.is_subclass(C, D),
+        "5 ∈ xsd:integer (unbounded): C ⊑ D must hold"
+    );
+}
+
+/// NEGATIVE — bare `xsd:integer` WRONG PROPERTY: value on `q`, range on
+/// `p`. Must NOT subsume (CR5 role-match).
+#[test]
+fn bare_integer_wrong_property_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:p))
+    Declaration(DataProperty(:q))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:q "5"^^xsd:integer))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:p xsd:integer))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "q-value vs p-range: C ⊑ D must NOT hold (wrong property)"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase D6 Part B — float ranges (boundary minefield, NEGATIVES FIRST).
+// ─────────────────────────────────────────────────────────────────────
+
+/// NEGATIVE — float exclusive lower boundary: `DataHasValue(h, 36.0)` is
+/// OUTSIDE `(36.0, 101.0)`.
+#[test]
+fn float_value_on_lower_exclusive_boundary_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "36.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "36.0 ∉ (36.0,101.0): C ⊑ D must NOT hold"
+    );
+}
+
+/// POSITIVE — float inclusive boundary: `DataHasValue(h, 36.0)` IS inside
+/// `[36.0, 101.0]`.
+#[test]
+fn float_value_on_lower_inclusive_boundary_subsumes() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "36.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minInclusive "36.0"^^xsd:float xsd:maxInclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(c.is_subclass(C, D), "36.0 ∈ [36.0,101.0]: C ⊑ D must hold");
+}
+
+/// NEGATIVE — float exclusive upper boundary: 101.0 ∉ (36.0,101.0).
+#[test]
+fn float_value_on_upper_exclusive_boundary_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "101.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "101.0 ∉ (36.0,101.0): C ⊑ D must NOT hold"
+    );
+}
+
+/// NEGATIVE — float value far outside.
+#[test]
+fn float_value_outside_range_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "200.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "200.0 ∉ (36.0,101.0): C ⊑ D must NOT hold"
+    );
+}
+
+/// POSITIVE — float interior value subsumes.
+#[test]
+fn float_value_in_range_subsumes() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "60.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(c.is_subclass(C, D), "60.0 ∈ (36.0,101.0): C ⊑ D must hold");
+}
+
+/// POSITIVE — float range ⊆ range, mixed incl/excl: `[40,50] ⊆ (36,101)`.
+#[test]
+fn float_range_subset_subsumes() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minInclusive "40.0"^^xsd:float xsd:maxInclusive "50.0"^^xsd:float)))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(c.is_subclass(C, D), "[40,50] ⊆ (36,101): C ⊑ D must hold");
+}
+
+/// NEGATIVE — float equal-endpoint inclusive/exclusive: `[36,..) ⊄ (36,..)`.
+/// self INCLUDES 36.0, other EXCLUDES it, so 36.0 ∈ self but ∉ other.
+#[test]
+fn float_inclusive_self_excluded_by_exclusive_other_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minInclusive "36.0"^^xsd:float)))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "[36,..) ⊄ (36,..): C ⊑ D must NOT hold (inclusive self, exclusive other)"
+    );
+}
+
+/// POSITIVE — `VeryFastExposure` pattern: `(-∞,0.002) ⊆ (-∞,0.01)`.
+#[test]
+fn float_open_below_subset_subsumes() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:maxExclusive "0.002"^^xsd:float)))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:maxExclusive "0.01"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        c.is_subclass(C, D),
+        "(-∞,0.002) ⊆ (-∞,0.01): C ⊑ D must hold"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase D6 Part B — DATATYPE KEYING (no cross-datatype subsumption).
+// ─────────────────────────────────────────────────────────────────────
+
+/// NEGATIVE — int value 60 vs FLOAT range (60.0 ∈ value-space-wise, but
+/// different datatype bucket → no `DKey` edge → NOT subsumed).
+#[test]
+fn int_value_vs_float_range_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "60"^^xsd:integer))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "int 60 vs float range: C ⊑ D must NOT hold (cross-datatype)"
+    );
+}
+
+/// NEGATIVE — float value 60.0 vs INTEGER range (different datatype
+/// bucket → no `DKey` edge → NOT subsumed).
+#[test]
+fn float_value_vs_int_range_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "60.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:integer xsd:minExclusive "36"^^xsd:integer xsd:maxExclusive "101"^^xsd:integer)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "float 60.0 vs int range: C ⊑ D must NOT hold (cross-datatype)"
+    );
+}
+
+/// NEGATIVE — float WRONG PROPERTY.
+#[test]
+fn float_wrong_property_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:height))
+    Declaration(DataProperty(:width))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:width "60.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:height DatatypeRestriction(xsd:float xsd:minExclusive "36.0"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "width=60.0 vs height float-range: C ⊑ D must NOT hold (wrong property)"
+    );
+}
+
+/// NEGATIVE — float NaN facet must DROP the whole range (no FP). The D
+/// definition's existential vanishes, so C cannot classify under D.
+#[test]
+fn float_nan_facet_dropped_no_fp() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h "60.0"^^xsd:float))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h DatatypeRestriction(xsd:float xsd:minExclusive "NaN"^^xsd:float xsd:maxExclusive "101.0"^^xsd:float)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "NaN facet: range dropped → C ⊑ D must NOT hold"
+    );
+}
+
 /// REGRESSION GUARD: no synthetic `DKey` IRI may appear in the reported
 /// class list. Guards against a future class-enumeration site that
 /// bypasses `reportable_class_iris`.

@@ -292,14 +292,44 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `reportable_class_iris`. **Sound by construction** (only adds genuine
   value∈range / range⊆range subsumptions); FP=0/MISSED=0 re-verified
   corpus-wide (sio/shoiq-knowledge/wine/ore-10908/ore-15672/pizza/
-  alehif). Recovered `ore_ont_9054` MISSED 79→37 (42 pairs). **Scope:
-  integer facets only** — float/decimal/double/dateTime/string,
-  bare-`xsd:integer` (no facet), `DataAllValuesFrom`, and data
-  cardinality still DROP (sound under-approximation; the 37 residuals
-  = 31 float + 6 bare-integer). Negatives-first canaries:
-  `crates/owl-dl-reasoner/tests/datatype_value_membership.rs` (10,
-  incl. exclusive-boundary + wrong-property + outside-range) +
-  `IntegerRange::subset` unit test.
+  alehif). Recovered `ore_ont_9054` MISSED 79→37 (42 pairs).
+
+  **Phase D6 Part A + B (2026-06-08, follow-up)** — closed
+  `ore_ont_9054`'s residual 37 → **0** (full Konclude∩HermiT oracle
+  parity, closure 676=676, FP=0). Two extensions:
+  - **Part A (bare `xsd:integer`)**: `parse_integer_range` now also
+    maps a facet-less `DataRange::Datatype(xsd:integer)` to the
+    unbounded `IntegerRange`, so `DataSomeValuesFrom(p, xsd:integer)`
+    lowers to `∃p.DKey(-∞,+∞)` (keeps Prime/Zoom-style conjunctions
+    alive). Closed 6 pairs.
+  - **Part B (float/double ranges)**: new `FloatRange { min,
+    min_incl, max, max_incl }` with EXPLICIT inclusive/exclusive flags
+    (the integer ±1 normalization is INVALID for reals — exclusive
+    bounds cannot be shifted). `parse_float_range` /
+    `float_literal_value` parse `xsd:float`/`xsd:double`
+    `DataHasValue` points + `DatatypeRestriction` facets; NaN/±∞
+    rejected at parse → whole range drops. `FloatRange::subset` does
+    explicit-boundary containment (equal-endpoint rule: `s==o` OK iff
+    `other.incl || !self.incl`). Closed 31 pairs (incl. the lone
+    range-vs-range float subset `VeryFastExposure ⊑ FastExposure`,
+    `(-∞,0.002) ⊆ (-∞,0.01)`).
+
+  **Datatype keying is soundness-critical**: float `DKey`s are
+  datatype-tagged (`urn:rustdl-dkey:f:<minbits>:<i|e>:<maxbits>:<i|e>`,
+  bounds via `f64::to_bits()` for exact round-trip) and
+  `seed_dkey_subsumptions` buckets by datatype, seeding edges ONLY
+  within a bucket — int and float NEVER cross-subsume (conservative
+  under-approximation). **Sound by construction**; FP=0/MISSED=0
+  re-verified across the full gate (sio/shoiq-knowledge/wine/ore-10908/
+  ore-15672/pizza/alehif/galen/notgalen) + `ore_ont_9054` 37→0.
+  Negatives-first canaries:
+  `crates/owl-dl-reasoner/tests/datatype_value_membership.rs` (24,
+  incl. float exclusive-boundary, equal-endpoint incl/excl,
+  cross-datatype int↔float, wrong-property, NaN-drop, bare-integer) +
+  `IntegerRange::subset` / `FloatRange::subset` / NaN-reject /
+  no-±1-normalization unit tests in `data_axioms.rs`. **Remaining
+  under-approximation**: decimal/dateTime/string data ranges,
+  `DataAllValuesFrom`, and data cardinality still DROP.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

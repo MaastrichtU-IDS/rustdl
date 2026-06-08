@@ -116,11 +116,33 @@ re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 > heuristic). The architectural alternative (§2 global model construction) is the
 > bigger fallback, not the only option.
 >
-> **Before building 1-UIP, the fresh session must first establish** whether the
-> 168k disjunction-level clashes share structure an asserting clause can exploit
-> (do conflict dep-sets span shallow decision levels a 1-UIP backjump would reach,
-> or are they all deep/independent?). That's the real go/no-go, and it is *not yet
-> measured*.
+> **Conflict-structure measurement (2026-06-08, `conflict_span_hist` in
+> `SearchStats`, 4 hard pairs, depth-256/5 s):** the regime splits.
+> - **Merge-heavy pairs:** 91–96 % of conflicts are `overflow` (= `DepSet::ALL`,
+>   the `≤n` cardinality-merge clashes `solve_at_most` deliberately reports as
+>   ALL — **un-backjumpable by construction**). Little for 1-UIP to exploit.
+> - **Disjunction-dominated pairs (the regime of interest):** `avg_deps` = 5.7 and
+>   **10.8**; conflict decision-level **span concentrated at 17–32 / 33+**. These
+>   conflicts are **NOT leaves** — they couple many decisions across a wide level
+>   range. This **refutes "leaves ⟹ 1-UIP weak" for this regime** (the prior
+>   "leaves" finding was measured on cardinality-heavy pairs). Favorable signal.
+>
+> **So 1-UIP is plausibly promising on disjunction-dominated stalls — but NOT yet
+> a clean GO. Two caveats the fresh session must resolve BEFORE building:**
+> 1. **27–45 % of even the disjunction-dominated conflicts are `DepSet::ALL`
+>    overflow** (cardinality-merge at `solve_at_most`). 1-UIP can't backjump those
+>    unless `RUSTDL_PRECISE_CARD_DEPS`'s narrowing is *extended to the
+>    `solve_at_most` partition-exhaustion site* (currently kept `ALL` by design).
+>    1-UIP and that cardinality-deps extension are a package.
+> 2. **`span` (highest−lowest level) over-approximates the true 1-UIP backjump
+>    distance** (highest−*second*-highest). The decisive number — does the
+>    asserting clause actually backjump *far* — is `highest − second_highest` per
+>    conflict, NOT yet measured. Add that histogram first; a wide span with a deep
+>    second-highest still backjumps only one level.
+>
+> Net: the regime is favorable enough that 1-UIP is **worth the precise follow-up
+> measurement** (caveat 2) + the cardinality-deps companion (caveat 1) — a real
+> candidate, not the dead end the retracted draft claimed, not yet a proven win.
 >
 > **Practical answer (already shipped):** `--pair-timeout-ms 25` — these pairs
 > find nothing regardless, so cutting the budget is free (wine 7.5×, MISSED=0).

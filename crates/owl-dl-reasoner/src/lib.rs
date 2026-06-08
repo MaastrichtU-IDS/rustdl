@@ -858,6 +858,50 @@ pub(crate) enum LabelOracle {
 /// a `Unsat` verdict, which is sound for *any* ontology (see
 /// `docs/hypertableau-h4-scoping.md` §0). A `false` means "hyper
 /// can't prove it" and the caller must fall back to the tableau.
+/// B-complete increment 1: emit `{a} ⊓ {b} ⊑ ⊥` disjointness clauses for
+/// every pair in every `DifferentIndividuals(...)` axiom, so the wedge's
+/// `build_disjoint_pairs` registers the entailed `a ≠ b` distinctness.
+///
+/// The clausifier reserves `[num_classes, num_classes + num_individuals)` for
+/// nominal classes: the singleton `{a}` is the atomic class
+/// `num_classes + a.index()` (see `clause.rs::class_id_of` /
+/// `Clausifier::nominal_base`). Each emitted clause is `⊥`-headed with a
+/// two-`Class`-atom body on the same variable `X`, the exact shape
+/// `build_disjoint_pairs` recognises (`hyper.rs:516`).
+///
+/// Sound by construction: `DifferentIndividuals(a, b)` asserts `a ≠ b` in
+/// every model (no UNA needed), so the added constraint holds in every model
+/// the wedge would otherwise explore — it can only let the wedge find real
+/// subsumptions it previously missed/timed-out on, never an unsound one.
+fn push_different_individuals_disjoint(
+    internal: &InternalOntology,
+    num_classes: u32,
+    clauses: &mut Vec<owl_dl_core::clause::DlClause>,
+) {
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_core::ir::ClassId;
+    use owl_dl_core::ontology::Axiom;
+    let nominal_class =
+        |ind: owl_dl_core::ir::IndividualId| ClassId::new(num_classes + ind.index());
+    for axiom in &internal.axioms {
+        let Axiom::DifferentIndividuals(inds) = axiom else {
+            continue;
+        };
+        for i in 0..inds.len() {
+            for j in (i + 1)..inds.len() {
+                let (a, b) = (nominal_class(inds[i]), nominal_class(inds[j]));
+                if a == b {
+                    continue;
+                }
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(a, X), Atom::Class(b, X)],
+                    head: vec![],
+                });
+            }
+        }
+    }
+}
+
 pub(crate) struct HyperCache {
     /// Base clauses + complement clash clauses (the per-pair Q-clauses
     /// are appended to a clone in `proves`).
@@ -885,6 +929,18 @@ impl HyperCache {
             .map(|(id, iri)| (id, iri.to_string()))
             .collect();
         let mut clauses = base;
+        // B-complete increment 1: seed `DifferentIndividuals`-entailed
+        // distinctness into the wedge. The wedge never consumed
+        // `DifferentIndividuals`, so two `≤1 R` successors carrying distinct
+        // nominal fillers `{a}`,`{b}` were treated as mergeable — the
+        // partition fan-out behind the wine wall. Encoding each asserted
+        // distinct pair as a `{a} ⊓ {b} ⊑ ⊥` disjointness clause makes the
+        // existing `build_disjoint_pairs → labels_disjoint → must_be_distinct`
+        // path force those successors apart, so `≤1` clashes immediately.
+        // Sound by construction: `DifferentIndividuals(a,b)` ENTAILS `a ≠ b`
+        // in every model (asserted, no UNA needed) — adding an entailed
+        // constraint can only reveal real subsumptions, never create one.
+        push_different_individuals_disjoint(&internal, num_classes, &mut clauses);
         let mut complements: std::collections::HashMap<ClassId, ClassId> =
             std::collections::HashMap::new();
         let sup_neg = build_sup_neg_map(
@@ -2699,15 +2755,18 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             let dl = Instant::now() + Duration::from_secs(5);
             let verdict = engine.decide_with_deadline(HYPER_WEDGE_DEPTH, Some(dl));
             let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
+            let st = engine.stats();
             let verdict_str = match verdict {
                 HyperResult::Sat => "Sat(NotSubsumed)",
                 HyperResult::Unsat => "Unsat(Subsumed)",
                 HyperResult::Stalled => "Stalled",
             };
             eprintln!(
-                "pair({},{}) clone={clone_ms:.1}ms new={new_ms:.1}ms solve(5s cap)={solve_ms:.1}ms -> {verdict_str}",
+                "pair({},{}) clone={clone_ms:.1}ms new={new_ms:.1}ms solve(5s cap)={solve_ms:.1}ms branches={} merge_branches={} -> {verdict_str}",
                 sub.index(),
-                sup.index()
+                sup.index(),
+                st.branches_taken,
+                st.merge_branches,
             );
         }
     }
@@ -2931,6 +2990,87 @@ ObjectIntersectionOf(:Topping ObjectUnionOf(:Cheese :Veg)))\n)\n"
         assert!(
             !(cache.decide(topping, vegetarian, None) == HyperVerdict::Subsumed),
             "Topping ⊑ Vegetarian must NOT be proven (not entailed)"
+        );
+    }
+
+    /// B-complete increment 1 — POSITIVE canary. `DifferentIndividuals(a,b)`
+    /// must reach the wedge so that `C ⊑ ≤1 R`, `C ⊑ ∃R.{a}`, `C ⊑ ∃R.{b}`
+    /// forces two distinct R-fillers under a `≤1`, hence `C ⊑ ⊥`.
+    /// Before the fix the wedge dropped `DifferentIndividuals`, treated the
+    /// `{a}`/`{b}` fillers as mergeable, and reported Sat (a MISS); after the
+    /// fix the entailed distinctness makes the `≤1` clash, so `C` is Unsat.
+    #[test]
+    fn different_individuals_forces_at_most_one_clash_in_wedge() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:C))\nDeclaration(ObjectProperty(:r))\n\
+Declaration(NamedIndividual(:a))\nDeclaration(NamedIndividual(:b))\n\
+SubClassOf(:C ObjectMaxCardinality(1 :r))\n\
+SubClassOf(:C ObjectHasValue(:r :a))\n\
+SubClassOf(:C ObjectHasValue(:r :b))\n\
+DifferentIndividuals(:a :b)\n)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let c = internal
+            .vocabulary
+            .class_id("http://rustdl.test/C")
+            .expect("interned");
+        let cache = HyperCache::build(&internal);
+        assert!(
+            matches!(cache.classify_labels(c, None), LabelOracle::Unsat),
+            "DifferentIndividuals(a,b) must make C ⊑ ≤1 r with distinct {{a}},{{b}} fillers unsatisfiable"
+        );
+    }
+
+    /// B-complete increment 1 — SOUNDNESS NEGATIVE. The SAME ontology WITHOUT
+    /// `DifferentIndividuals(a,b)`: under OWA `a` and `b` may denote the same
+    /// individual, so the single `≤1 r` filler is satisfiable. The wedge must
+    /// NOT clash — guards against over-forcing distinctness on co-nominal
+    /// fillers that are not asserted distinct.
+    #[test]
+    fn co_nominal_fillers_without_different_individuals_stay_sat() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:C))\nDeclaration(ObjectProperty(:r))\n\
+Declaration(NamedIndividual(:a))\nDeclaration(NamedIndividual(:b))\n\
+SubClassOf(:C ObjectMaxCardinality(1 :r))\n\
+SubClassOf(:C ObjectHasValue(:r :a))\n\
+SubClassOf(:C ObjectHasValue(:r :b))\n)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let c = internal
+            .vocabulary
+            .class_id("http://rustdl.test/C")
+            .expect("interned");
+        let cache = HyperCache::build(&internal);
+        assert!(
+            !matches!(cache.classify_labels(c, None), LabelOracle::Unsat),
+            "without DifferentIndividuals, {{a}} and {{b}} may be equal ⇒ C stays satisfiable"
+        );
+    }
+
+    /// B-complete increment 1 — SECOND NEGATIVE. `DifferentIndividuals(a,b)`
+    /// with NO `≤1` constraint: distinctness alone never produces a clash, so
+    /// `C` (with two distinct fillers and no cardinality bound) stays Sat.
+    #[test]
+    fn different_individuals_without_at_most_stays_sat() {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:C))\nDeclaration(ObjectProperty(:r))\n\
+Declaration(NamedIndividual(:a))\nDeclaration(NamedIndividual(:b))\n\
+SubClassOf(:C ObjectHasValue(:r :a))\n\
+SubClassOf(:C ObjectHasValue(:r :b))\n\
+DifferentIndividuals(:a :b)\n)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let c = internal
+            .vocabulary
+            .class_id("http://rustdl.test/C")
+            .expect("interned");
+        let cache = HyperCache::build(&internal);
+        assert!(
+            !matches!(cache.classify_labels(c, None), LabelOracle::Unsat),
+            "DifferentIndividuals without a ≤n bound must not clash ⇒ C stays satisfiable"
         );
     }
 

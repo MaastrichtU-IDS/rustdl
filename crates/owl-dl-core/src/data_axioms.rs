@@ -46,6 +46,7 @@
 
 #![allow(clippy::doc_markdown)]
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use horned_owl::model::{
@@ -369,6 +370,306 @@ impl FloatRange {
         };
         min_ok && max_ok
     }
+}
+
+/// Phase D8 (2026-06-09): a totally-ordered range with EXPLICIT
+/// inclusive/exclusive bounds, generic over an exactly-comparable key
+/// `T: Ord`. Backs the `xsd:decimal`, `xsd:date`, and `xsd:dateTime`
+/// `DKey` buckets — three domains that are dense-or-discrete TOTAL orders
+/// once the soundness landmines are removed at parse time:
+///
+/// - **decimal** uses the exact [`Decimal`] lexical representation (NEVER
+///   `f64` — `1.1`-decimal ≠ `1.1`-binary, and rounding two distinct
+///   decimals to one `f64` would seed a spurious equality = FP).
+/// - **date/dateTime** use component tuples ([`DateKey`] / [`DateTimeKey`]);
+///   tuple order = chronological order with ZERO calendar arithmetic. The
+///   xsd partial-order across timezone-presence is sidestepped by DROPPING
+///   any value carrying a `Z`/offset at parse time (sound under-approx) —
+///   so every key that reaches here is timezone-free and totally ordered.
+///
+/// The subset algebra is identical to [`FloatRange`] (explicit-boundary,
+/// no ±1 normalization — valid for dense domains and harmless for the
+/// discrete ones). Each `T` lives in its OWN `DKey` bucket: keys are never
+/// compared across datatypes (see `seed_dkey_subsumptions`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrdRange<T> {
+    pub(crate) min: Option<T>,
+    pub(crate) min_incl: bool,
+    pub(crate) max: Option<T>,
+    pub(crate) max_incl: bool,
+}
+
+impl<T: Ord + Clone> OrdRange<T> {
+    pub(crate) const fn unbounded() -> Self {
+        Self {
+            min: None,
+            min_incl: false,
+            max: None,
+            max_incl: false,
+        }
+    }
+
+    /// A single point value `v`, i.e. the closed range `[v, v]`.
+    pub(crate) fn point(v: T) -> Self {
+        Self {
+            min: Some(v.clone()),
+            min_incl: true,
+            max: Some(v),
+            max_incl: true,
+        }
+    }
+
+    /// `self ⊆ other` over the (timezone-free, totally ordered) value
+    /// space. Identical structure to [`FloatRange::subset`] — the FP core.
+    /// The equal-endpoint clause (`other` excludes `o` but `self` includes
+    /// `o = s` ⟹ NOT a subset) is the subtle part; `Ord::cmp` gives exact
+    /// equality so there is no widening.
+    pub(crate) fn subset(&self, other: &Self) -> bool {
+        let min_ok = match (&self.min, &other.min) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(s), Some(o)) => *s > *o || (*s == *o && (other.min_incl || !self.min_incl)),
+        };
+        let max_ok = match (&self.max, &other.max) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some(s), Some(o)) => *s < *o || (*s == *o && (other.max_incl || !self.max_incl)),
+        };
+        min_ok && max_ok
+    }
+
+    /// Tighten the lower bound to the more restrictive of the existing
+    /// bound and `(val, incl)` (larger value tighter; at equality
+    /// exclusive beats inclusive). Symmetric to [`OrdRange::tighten_max`].
+    fn tighten_min(&mut self, val: T, incl: bool) {
+        let tighter = match &self.min {
+            None => true,
+            Some(e) => val > *e || (val == *e && !incl && self.min_incl),
+        };
+        if tighter {
+            self.min = Some(val);
+            self.min_incl = incl;
+        }
+    }
+
+    fn tighten_max(&mut self, val: T, incl: bool) {
+        let tighter = match &self.max {
+            None => true,
+            Some(e) => val < *e || (val == *e && !incl && self.max_incl),
+        };
+        if tighter {
+            self.max = Some(val);
+            self.max_incl = incl;
+        }
+    }
+}
+
+/// Phase D8: an exact `xsd:decimal` value, stored in NORMALIZED lexical
+/// form so structural equality == value equality and the manual [`Ord`]
+/// is exact. NEVER lossy — there is no `f64` anywhere on this path.
+///
+/// Normalization: `int` carries the integer digits with leading zeros
+/// stripped (`""` = zero integer part); `frac` carries the fractional
+/// digits with trailing zeros stripped (`""` = no fraction); `negative`
+/// is forced `false` for the zero value so `0`, `-0`, `0.00` collapse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Decimal {
+    pub(crate) negative: bool,
+    pub(crate) int: String,
+    pub(crate) frac: String,
+}
+
+impl Decimal {
+    /// Compare magnitudes (ignoring sign): integer part by length (no
+    /// leading zeros ⟹ longer = larger), then lexically; then fractional
+    /// part padded to equal length and compared lexically.
+    fn mag_cmp(&self, other: &Self) -> Ordering {
+        self.int
+            .len()
+            .cmp(&other.int.len())
+            .then_with(|| self.int.cmp(&other.int))
+            .then_with(|| cmp_frac(&self.frac, &other.frac))
+    }
+}
+
+/// Lexicographic comparison of two normalized fractional-digit strings,
+/// right-padding the shorter with `'0'` so e.g. `"5"` (0.5) > `"45"`
+/// (0.45) compares as `"50"` vs `"45"`.
+fn cmp_frac(a: &str, b: &str) -> Ordering {
+    let n = a.len().max(b.len());
+    let pad = |s: &str| {
+        let mut t = s.to_string();
+        t.push_str(&"0".repeat(n - s.len()));
+        t
+    };
+    pad(a).cmp(&pad(b))
+}
+
+impl Ord for Decimal {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.negative, other.negative) {
+            (false, true) => Ordering::Greater,
+            (true, false) => Ordering::Less,
+            (false, false) => self.mag_cmp(other),
+            // Both negative: larger magnitude ⟹ smaller value.
+            (true, true) => other.mag_cmp(self),
+        }
+    }
+}
+
+impl PartialOrd for Decimal {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Component key for `xsd:date`: `(year, month, day)`. Derived tuple order
+/// is chronological for timezone-free dates (the only kind we accept).
+pub(crate) type DateKey = (i64, u8, u8);
+/// Component key for `xsd:dateTime`: `(year, month, day, hour, min, sec)`.
+/// Integer-second, timezone-free only (fractional seconds / any `Z`/offset
+/// are dropped at parse — sound under-approx).
+pub(crate) type DateTimeKey = (i64, u8, u8, u8, u8, u8);
+
+/// Parse an `xsd:decimal` lexical literal into a normalized [`Decimal`].
+/// Conservative: returns `None` on any non-digit, an exponent (that is
+/// `xsd:double`, a DIFFERENT value space), or an empty mantissa. A dropped
+/// value contributes no constraint — never a wrong one.
+pub(crate) fn parse_decimal(s: &str) -> Option<Decimal> {
+    let (negative, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let (int_part, frac_part) = rest.split_once('.').unwrap_or((rest, ""));
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    let int = int_part.trim_start_matches('0').to_string();
+    let frac = frac_part.trim_end_matches('0').to_string();
+    // Collapse the zero value's sign so `-0` == `0`.
+    let negative = negative && !(int.is_empty() && frac.is_empty());
+    Some(Decimal {
+        negative,
+        int,
+        frac,
+    })
+}
+
+/// Parse an `xsd:date` lexical literal `(-?)YYYY-MM-DD` into a [`DateKey`].
+/// DROPS (returns `None`) anything carrying a timezone (`Z` or `±hh:mm`):
+/// the xsd value space is only PARTIALLY ordered across timezone-presence,
+/// so mixing zoned and unzoned would be unsound. Validates `month ∈ 1..=12`,
+/// `day ∈ 1..=31` (no leap-precision needed — tuple order is exact for any
+/// well-formed component triple).
+pub(crate) fn parse_date(s: &str) -> Option<DateKey> {
+    let (neg, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    // Exactly three '-'-separated integer fields and nothing else; a tz
+    // suffix (`Z`, `+hh:mm`, `-hh:mm`) leaves a non-numeric tail or an
+    // extra field, so it fails this parse → dropped.
+    let mut it = rest.split('-');
+    let y: i64 = it.next()?.parse().ok()?;
+    let mo: u8 = it.next()?.parse().ok()?;
+    let d: u8 = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((if neg { -y } else { y }, mo, d))
+}
+
+/// Parse an `xsd:dateTime` lexical literal `(-?)YYYY-MM-DDThh:mm:ss` into a
+/// [`DateTimeKey`]. DROPS anything with fractional seconds (a `'.'` in the
+/// time) or a timezone (`Z`/offset) — the sound first cut handles the
+/// integer-second, timezone-free form by tuple comparison.
+pub(crate) fn parse_datetime(s: &str) -> Option<DateTimeKey> {
+    let (date_s, time_s) = s.split_once('T')?;
+    let (y, mo, d) = parse_date(date_s)?;
+    // Reject fractional seconds and any tz suffix outright.
+    if time_s.bytes().any(|b| !(b.is_ascii_digit() || b == b':')) {
+        return None;
+    }
+    let mut it = time_s.split(':');
+    let h: u8 = it.next()?.parse().ok()?;
+    let mi: u8 = it.next()?.parse().ok()?;
+    let sec: u8 = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    if h > 23 || mi > 59 || sec > 59 {
+        return None;
+    }
+    Some((y, mo, d, h, mi, sec))
+}
+
+/// Generic facet folder for the [`OrdRange`] datatypes: intersect all
+/// Min/Max Inclusive/Exclusive facets into one range. Any unrecognized
+/// facet or any value `parse_val` rejects ⟹ `None` (drops the whole range,
+/// which drops the whole axiom — the load-bearing conservatism).
+fn parse_ord_facets<A: ForIRI, T: Ord + Clone>(
+    facets: &[FacetRestriction<A>],
+    parse_val: impl Fn(&str) -> Option<T>,
+) -> Option<OrdRange<T>> {
+    let mut range = OrdRange::unbounded();
+    for fr in facets {
+        let v = parse_val(fr.l.literal())?;
+        match fr.f {
+            Facet::MinInclusive => range.tighten_min(v, true),
+            Facet::MinExclusive => range.tighten_min(v, false),
+            Facet::MaxInclusive => range.tighten_max(v, true),
+            Facet::MaxExclusive => range.tighten_max(v, false),
+            _ => return None,
+        }
+    }
+    Some(range)
+}
+
+/// Generic `DataRange` → [`OrdRange<T>`] parser shared by decimal / date /
+/// dateTime. `matches_dt` selects the datatype IRI; a bare datatype is the
+/// unbounded range; a `DatatypeRestriction` folds its facets.
+fn parse_ord_range<A: ForIRI, T: Ord + Clone>(
+    dr: &DataRange<A>,
+    matches_dt: impl Fn(&str) -> bool,
+    parse_val: impl Fn(&str) -> Option<T>,
+) -> Option<OrdRange<T>> {
+    match dr {
+        DataRange::Datatype(dt) if matches_dt(dt.0.as_ref()) => Some(OrdRange::unbounded()),
+        DataRange::DatatypeRestriction(dt, facets) if matches_dt(dt.0.as_ref()) => {
+            parse_ord_facets(facets, parse_val)
+        }
+        _ => None,
+    }
+}
+
+const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
+const XSD_DATE: &str = "http://www.w3.org/2001/XMLSchema#date";
+const XSD_DATETIME: &str = "http://www.w3.org/2001/XMLSchema#dateTime";
+
+/// Phase D8: parse an `xsd:decimal` `DataRange` into an exact range.
+pub(crate) fn parse_decimal_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<Decimal>> {
+    parse_ord_range(dr, |iri| iri == XSD_DECIMAL, parse_decimal)
+}
+
+/// Phase D8: parse an `xsd:date` `DataRange` into a component-tuple range.
+pub(crate) fn parse_date_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<DateKey>> {
+    parse_ord_range(dr, |iri| iri == XSD_DATE, parse_date)
+}
+
+/// Phase D8: parse an `xsd:dateTime` `DataRange` into a component-tuple range.
+pub(crate) fn parse_datetime_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<DateTimeKey>> {
+    parse_ord_range(dr, |iri| iri == XSD_DATETIME, parse_datetime)
 }
 
 /// Internal: collected data-axiom facts. IRIs kept as `String` so we

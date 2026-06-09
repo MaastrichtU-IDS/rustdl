@@ -327,9 +327,46 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   incl. float exclusive-boundary, equal-endpoint incl/excl,
   cross-datatype int↔float, wrong-property, NaN-drop, bare-integer) +
   `IntegerRange::subset` / `FloatRange::subset` / NaN-reject /
-  no-±1-normalization unit tests in `data_axioms.rs`. **Remaining
-  under-approximation**: decimal/dateTime/string data ranges,
-  `DataAllValuesFrom`, and data cardinality still DROP.
+  no-±1-normalization unit tests in `data_axioms.rs`.
+
+  **Phase D8 (2026-06-09)** — extended the value-membership reduction
+  to three more totally-ordered datatype buckets: `xsd:decimal`,
+  `xsd:date`, `xsd:dateTime`. Two soundness landmines, each defused at
+  parse time:
+  - **decimal ≠ float** — distinct value space; NEVER `f64` (rounding
+    two distinct decimals to one `f64` = spurious equality = FP). New
+    exact `Decimal { negative, int, frac }` in NORMALIZED lexical form
+    (leading/trailing zeros stripped, signed-zero collapsed) with a
+    manual `Ord` (sign → int len-then-lex → frac pad-then-lex).
+    Exponent notation rejected (that is `xsd:double`).
+  - **date/dateTime are PARTIAL orders across timezone presence** —
+    compared by component TUPLE (`(i64,u8,u8)` / `(i64,u8,u8,u8,u8,u8)`),
+    tuple order = chronological with ZERO calendar arithmetic. Anything
+    carrying a `Z`/offset is DROPPED at parse (sidesteps the ±14h
+    partial-order); fractional-second dateTimes also drop. So every key
+    that reaches the comparison is timezone-free and totally ordered.
+
+    Shared machinery: generic `OrdRange<T: Ord>` (subset + facet-tighten
+    written once, same explicit-boundary algebra as `FloatRange`) and a
+    generic `seed_bucket` helper (5 near-identical O(k²) loops collapsed).
+    Three new datatype-tagged `DKey` namespaces — `dec:` / `date:` /
+    `dt:` (integer untagged, float `f:`) — with `.`-separated inner
+    components so the `:`-delimited envelope decode stays unambiguous.
+    The five `parse_*_dkey_iri` decoders are **pairwise mutually
+    exclusive** (pinned by the `parser_matrix_mutual_exclusivity`
+    canary — a single off-diagonal `Some` would seed a cross-datatype
+    edge = FP). All five buckets stay strictly disjoint (no
+    integer⊆decimal cross-seed even though XSD-sound — extra FP surface,
+    deferred). Completeness-neutral on the current corpus (no MISSED to
+    chase — `ore_ont_9054` already closed by D6/D7); the win is canaries
+    + FP=0/MISSED=0 UNCHANGED corpus-wide. **8 new negatives-first
+    canaries** (decimal exclusive-boundary, distinct-values-don't-
+    collide, date/dateTime boundary, decimal-vs-integer cross-datatype,
+    tz-bearing-date-dropped) + 4 unit tests (parser matrix, IRI
+    round-trip all buckets, exact decimal ordering, temporal tz/fraction
+    drop). **Remaining under-approximation**: `xsd:string` and other
+    non-ordered data ranges, `DataAllValuesFrom`, data cardinality
+    still DROP (sound).
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

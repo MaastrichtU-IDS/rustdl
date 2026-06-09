@@ -511,3 +511,119 @@ fn dkey_classes_not_reported() {
         "DKey synthetic classes leaked into unsatisfiable set"
     );
 }
+
+// ── Phase D8: decimal / date / dateTime value membership ─────────────────
+//
+// Same `∃R.(A ⊓ value/range)` shape as the integer/float canaries above,
+// extended to the three new totally-ordered datatype buckets. NEGATIVES
+// (boundary, cross-datatype, timezone-drop) carry the soundness weight.
+
+/// Build the `C ⊑ ∃R.(A ⊓ DataHasValue(h,val))`,
+/// `D ≡ ∃R.(A ⊓ DataSomeValuesFrom(h,range))` shape and classify.
+fn classify_value_range(val: &str, range: &str) -> owl_dl_reasoner::Classification {
+    classify(&format!(
+        r"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:h {val}))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h {range}))))
+"
+    ))
+}
+
+#[test]
+fn decimal_value_in_open_range_subsumes() {
+    // 0.5 ∈ (0.0, 1.0): C ⊑ D.
+    let c = classify_value_range(
+        r#""0.5"^^xsd:decimal"#,
+        r#"DatatypeRestriction(xsd:decimal xsd:minExclusive "0.0"^^xsd:decimal xsd:maxExclusive "1.0"^^xsd:decimal)"#,
+    );
+    assert!(c.is_subclass(C, D), "0.5 ∈ (0.0,1.0): C ⊑ D must hold");
+}
+
+#[test]
+fn decimal_value_at_exclusive_boundary_not_subsumed() {
+    // 1.0 ∉ (0.0, 1.0): excluded endpoint — the decimal FP hotspot.
+    let c = classify_value_range(
+        r#""1.0"^^xsd:decimal"#,
+        r#"DatatypeRestriction(xsd:decimal xsd:minExclusive "0.0"^^xsd:decimal xsd:maxExclusive "1.0"^^xsd:decimal)"#,
+    );
+    assert!(!c.is_subclass(C, D), "1.0 ∉ (0.0,1.0): C ⊑ D must NOT hold");
+}
+
+#[test]
+fn decimal_distinct_values_do_not_collide() {
+    // 0.45 ∉ [0.5, 1.0]: distinct decimals must not round-collide (would
+    // be the classic f64 unsoundness). 0.45 < 0.5, so outside.
+    let c = classify_value_range(
+        r#""0.45"^^xsd:decimal"#,
+        r#"DatatypeRestriction(xsd:decimal xsd:minInclusive "0.5"^^xsd:decimal xsd:maxInclusive "1.0"^^xsd:decimal)"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "0.45 ∉ [0.5,1.0]: C ⊑ D must NOT hold"
+    );
+}
+
+#[test]
+fn date_value_in_range_subsumes() {
+    // 2020-06-09 ∈ [2020-01-01, 2021-01-01).
+    let c = classify_value_range(
+        r#""2020-06-09"^^xsd:date"#,
+        r#"DatatypeRestriction(xsd:date xsd:minInclusive "2020-01-01"^^xsd:date xsd:maxExclusive "2021-01-01"^^xsd:date)"#,
+    );
+    assert!(c.is_subclass(C, D), "date in range: C ⊑ D must hold");
+}
+
+#[test]
+fn date_value_at_exclusive_boundary_not_subsumed() {
+    // 2021-01-01 ∉ [2020-01-01, 2021-01-01).
+    let c = classify_value_range(
+        r#""2021-01-01"^^xsd:date"#,
+        r#"DatatypeRestriction(xsd:date xsd:minInclusive "2020-01-01"^^xsd:date xsd:maxExclusive "2021-01-01"^^xsd:date)"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "2021-01-01 ∉ [.,2021-01-01): C ⊑ D must NOT hold"
+    );
+}
+
+#[test]
+fn datetime_value_in_range_subsumes() {
+    let c = classify_value_range(
+        r#""2020-06-09T12:00:00"^^xsd:dateTime"#,
+        r#"DatatypeRestriction(xsd:dateTime xsd:minInclusive "2020-06-09T00:00:00"^^xsd:dateTime xsd:maxInclusive "2020-06-09T23:59:59"^^xsd:dateTime)"#,
+    );
+    assert!(c.is_subclass(C, D), "dateTime in range: C ⊑ D must hold");
+}
+
+#[test]
+fn decimal_value_vs_integer_range_no_cross_subsumption() {
+    // 5.0-decimal numerically sits in the integer range [1,10], but the
+    // decimal and integer buckets are DISJOINT — no edge may be seeded.
+    let c = classify_value_range(
+        r#""5.0"^^xsd:decimal"#,
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "1"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "decimal value vs integer range: cross-datatype, C ⊑ D must NOT hold"
+    );
+}
+
+#[test]
+fn date_value_with_timezone_dropped_no_subsumption() {
+    // The value carries a `Z` timezone → parse drops it → the whole
+    // DataHasValue restriction drops → C ⊑ D must NOT hold even though
+    // the date would otherwise sit inside the range.
+    let c = classify_value_range(
+        r#""2020-06-09Z"^^xsd:date"#,
+        r#"DatatypeRestriction(xsd:date xsd:minInclusive "2020-01-01"^^xsd:date xsd:maxExclusive "2021-01-01"^^xsd:date)"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "tz-bearing date dropped: C ⊑ D must NOT hold"
+    );
+}

@@ -13,7 +13,10 @@ use thiserror::Error;
 
 use crate::ConceptPool;
 use crate::Vocabulary;
-use crate::data_axioms::{FloatRange, IntegerRange};
+use crate::data_axioms::{
+    DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, OrdRange, parse_date, parse_datetime,
+    parse_decimal,
+};
 use crate::ir::{ClassId, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 
@@ -127,6 +130,154 @@ pub(crate) fn parse_float_dkey_iri(iri: &str) -> Option<FloatRange> {
         max: bound(max_s).ok()?,
         max_incl: flag(max_f).ok()?,
     })
+}
+
+// ── Phase D8 (2026-06-09): decimal / date / dateTime DKey buckets ────────
+//
+// Three more datatype-tagged `DKey` namespaces, each DISJOINT from integer,
+// float, and each other — a soundness requirement (a decimal value space is
+// not a binary-float value space; mixing timezone-free temporals with
+// numerics is meaningless). The tags are mutually non-prefixing and
+// non-numeric so the five `parse_*_dkey_iri` decoders are pairwise
+// exclusive (verified by the `parser_matrix_*` canaries):
+//   integer   → untagged      `urn:rustdl-dkey:<i64|*>:<i64|*>`
+//   float     → `f:`          (existing)
+//   decimal   → `dec:`        exact lexical key (no `:`)
+//   date      → `date:`       `y.mo.d`  (no `:`)
+//   dateTime  → `dt:`         `y.mo.d.h.mi.s`  (no `:`)
+// Inner component separators are `.` (never `:`), so the four `:` in the
+// `{min}:{min_incl}:{max}:{max_incl}` envelope are the ONLY colons and the
+// `splitn(4, ':')` decode is unambiguous.
+const DKEY_DECIMAL_TAG: &str = "dec:";
+const DKEY_DATE_TAG: &str = "date:";
+const DKEY_DATETIME_TAG: &str = "dt:";
+
+/// Build a tagged `DKey` IRI for an [`OrdRange<T>`], encoding each bound via
+/// `key` (which MUST NOT emit a `:`) and inclusivity as `i`/`e`.
+fn ord_dkey_iri<T>(tag: &str, range: &OrdRange<T>, key: impl Fn(&T) -> String) -> String {
+    let bound = |b: &Option<T>| b.as_ref().map_or_else(|| "*".to_string(), &key);
+    let flag = |incl: bool| if incl { 'i' } else { 'e' };
+    format!(
+        "{DKEY_IRI_PREFIX}{tag}{}:{}:{}:{}",
+        bound(&range.min),
+        flag(range.min_incl),
+        bound(&range.max),
+        flag(range.max_incl),
+    )
+}
+
+/// Inverse of [`ord_dkey_iri`]. Returns `None` for any IRI not carrying
+/// EXACTLY this `tag` (so it rejects every other bucket's keys, including
+/// the untagged integer form), or any malformed bound/flag.
+fn parse_ord_dkey_iri<T: Ord + Clone>(
+    iri: &str,
+    tag: &str,
+    key: impl Fn(&str) -> Option<T>,
+) -> Option<OrdRange<T>> {
+    let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?.strip_prefix(tag)?;
+    let mut parts = rest.splitn(4, ':');
+    let min_s = parts.next()?;
+    let min_f = parts.next()?;
+    let max_s = parts.next()?;
+    let max_f = parts.next()?;
+    let bound = |s: &str| -> Result<Option<T>, ()> {
+        if s == "*" {
+            Ok(None)
+        } else {
+            key(s).map(Some).ok_or(())
+        }
+    };
+    let flag = |s: &str| -> Result<bool, ()> {
+        match s {
+            "i" => Ok(true),
+            "e" => Ok(false),
+            _ => Err(()),
+        }
+    };
+    Some(OrdRange {
+        min: bound(min_s).ok()?,
+        min_incl: flag(min_f).ok()?,
+        max: bound(max_s).ok()?,
+        max_incl: flag(max_f).ok()?,
+    })
+}
+
+/// Canonical `:`-free key for a [`Decimal`] bound (its own normalized
+/// lexical form: `[-]int[.frac]`, with a `0` integer part for sub-1 values).
+fn decimal_key(d: &Decimal) -> String {
+    let sign = if d.negative { "-" } else { "" };
+    let int = if d.int.is_empty() {
+        "0"
+    } else {
+        d.int.as_str()
+    };
+    if d.frac.is_empty() {
+        format!("{sign}{int}")
+    } else {
+        format!("{sign}{int}.{}", d.frac)
+    }
+}
+
+fn date_key(k: &DateKey) -> String {
+    format!("{}.{}.{}", k.0, k.1, k.2)
+}
+
+fn parse_date_key(s: &str) -> Option<DateKey> {
+    let mut it = s.split('.');
+    let y = it.next()?.parse().ok()?;
+    let mo = it.next()?.parse().ok()?;
+    let d = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((y, mo, d))
+}
+
+fn datetime_key(k: &DateTimeKey) -> String {
+    format!("{}.{}.{}.{}.{}.{}", k.0, k.1, k.2, k.3, k.4, k.5)
+}
+
+fn parse_datetime_key(s: &str) -> Option<DateTimeKey> {
+    let mut it = s.split('.');
+    let y = it.next()?.parse().ok()?;
+    let mo = it.next()?.parse().ok()?;
+    let d = it.next()?.parse().ok()?;
+    let h = it.next()?.parse().ok()?;
+    let mi = it.next()?.parse().ok()?;
+    let sec = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((y, mo, d, h, mi, sec))
+}
+
+fn parse_decimal_dkey_iri(iri: &str) -> Option<OrdRange<Decimal>> {
+    parse_ord_dkey_iri(iri, DKEY_DECIMAL_TAG, parse_decimal)
+}
+
+fn parse_date_dkey_iri(iri: &str) -> Option<OrdRange<DateKey>> {
+    parse_ord_dkey_iri(iri, DKEY_DATE_TAG, parse_date_key)
+}
+
+fn parse_datetime_dkey_iri(iri: &str) -> Option<OrdRange<DateTimeKey>> {
+    parse_ord_dkey_iri(iri, DKEY_DATETIME_TAG, parse_datetime_key)
+}
+
+/// Generic counterpart of [`lower_data_to_some`] for the [`OrdRange`]
+/// datatypes: intern the tagged `DKey(range)` filler and return
+/// `∃p.DKey(range)`.
+fn lower_ord_data_to_some<T: Ord + Clone>(
+    range: &OrdRange<T>,
+    tag: &str,
+    key: impl Fn(&T) -> String,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> ConceptId {
+    let role_id = vocab.intern_role(dp_iri);
+    let dkey_class = vocab.intern_class(&ord_dkey_iri(tag, range, key));
+    let filler = pool.atomic(dkey_class);
+    pool.some(Role::named(role_id), filler)
 }
 
 /// Intern the synthetic integer `DKey(range)` filler class and return the
@@ -314,6 +465,33 @@ pub fn convert_class_expression<A: ForIRI>(
                 Ok(lower_data_to_some(range, dp.0.as_ref(), vocab, pool))
             } else if let Some(frange) = crate::data_axioms::parse_float_range(dr) {
                 Ok(lower_float_data_to_some(frange, dp.0.as_ref(), vocab, pool))
+            } else if let Some(r) = crate::data_axioms::parse_decimal_range(dr) {
+                Ok(lower_ord_data_to_some(
+                    &r,
+                    DKEY_DECIMAL_TAG,
+                    decimal_key,
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(r) = crate::data_axioms::parse_date_range(dr) {
+                Ok(lower_ord_data_to_some(
+                    &r,
+                    DKEY_DATE_TAG,
+                    date_key,
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(r) = crate::data_axioms::parse_datetime_range(dr) {
+                Ok(lower_ord_data_to_some(
+                    &r,
+                    DKEY_DATETIME_TAG,
+                    datetime_key,
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
             } else {
                 Err(ConversionError::UnsupportedDataRange)
             }
@@ -329,6 +507,33 @@ pub fn convert_class_expression<A: ForIRI>(
             } else if let Some(v) = float_literal_value(l) {
                 Ok(lower_float_data_to_some(
                     FloatRange::point(v),
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(v) = decimal_literal_value(l) {
+                Ok(lower_ord_data_to_some(
+                    &OrdRange::point(v),
+                    DKEY_DECIMAL_TAG,
+                    decimal_key,
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(v) = date_literal_value(l) {
+                Ok(lower_ord_data_to_some(
+                    &OrdRange::point(v),
+                    DKEY_DATE_TAG,
+                    date_key,
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(v) = datetime_literal_value(l) {
+                Ok(lower_ord_data_to_some(
+                    &OrdRange::point(v),
+                    DKEY_DATETIME_TAG,
+                    datetime_key,
                     dp.0.as_ref(),
                     vocab,
                     pool,
@@ -376,6 +581,47 @@ fn float_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<f64> {
             || datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" =>
         {
             literal.parse::<f64>().ok().filter(|v| v.is_finite())
+        }
+        _ => None,
+    }
+}
+
+/// Phase D8: extract an `xsd:decimal`-typed literal as an exact [`Decimal`].
+fn decimal_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<Decimal> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#decimal" => {
+            parse_decimal(literal)
+        }
+        _ => None,
+    }
+}
+
+/// Phase D8: extract an `xsd:date`-typed literal as a [`DateKey`]. Timezone
+/// suffixes are dropped by `parse_date` (sound under-approx).
+fn date_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<DateKey> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#date" => {
+            parse_date(literal)
+        }
+        _ => None,
+    }
+}
+
+/// Phase D8: extract an `xsd:dateTime`-typed literal as a [`DateTimeKey`].
+/// Fractional seconds / timezones are dropped by `parse_datetime`.
+fn datetime_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<DateTimeKey> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#dateTime" => {
+            parse_datetime(literal)
         }
         _ => None,
     }
@@ -777,9 +1023,12 @@ pub fn convert_ontology<A: ForIRI>(
 /// by the count of distinct facet/value combinations in the ontology).
 fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // Bucket DKeys BY DATATYPE so edges are only ever seeded WITHIN a
-    // bucket — never integer↔float. Cross-datatype subsumption would be
-    // unsound (an int value space and a real value space are disjoint
-    // for our purposes; deliberate conservative under-approximation).
+    // bucket — never across datatypes. Cross-datatype subsumption would be
+    // unsound (integer / real / decimal / temporal value spaces are
+    // disjoint for our purposes; deliberate conservative under-approx).
+    // The five decoders are pairwise mutually exclusive on IRIs (the
+    // `parser_matrix_*` canaries pin this), so a given `DKey` IRI lands in
+    // exactly one bucket.
     let int_dkeys: Vec<(ClassId, IntegerRange)> = out
         .vocabulary
         .classes()
@@ -790,31 +1039,48 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_float_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
-    // Integer bucket: `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2`.
-    for &(sub_cid, sub_r) in &int_dkeys {
-        for &(sup_cid, sup_r) in &int_dkeys {
-            if sub_cid == sup_cid {
+    let dec_dkeys: Vec<(ClassId, OrdRange<Decimal>)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_decimal_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    let date_dkeys: Vec<(ClassId, OrdRange<DateKey>)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_date_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    let dt_dkeys: Vec<(ClassId, OrdRange<DateTimeKey>)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_datetime_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    // `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2` (distinct keys ⟹ strict subset,
+    // since equal ranges share one ClassId). Integer/float ranges are
+    // `Copy`; the ordered ranges compare by reference.
+    seed_bucket(out, &int_dkeys, |a, b| a.subset(*b));
+    seed_bucket(out, &float_dkeys, |a, b| a.subset(*b));
+    seed_bucket(out, &dec_dkeys, OrdRange::subset);
+    seed_bucket(out, &date_dkeys, OrdRange::subset);
+    seed_bucket(out, &dt_dkeys, OrdRange::subset);
+}
+
+/// Emit `SubClassOf(DKey(r_i), DKey(r_j))` for every ordered pair of
+/// distinct keys in one datatype bucket where `subset(r_i, r_j)` holds.
+/// O(k²) in the bucket size (small — bounded by the count of distinct
+/// facet/value combinations of that datatype in the ontology).
+fn seed_bucket<R>(
+    out: &mut InternalOntology,
+    keys: &[(ClassId, R)],
+    subset: impl Fn(&R, &R) -> bool,
+) {
+    for (i, (sub_cid, sub_r)) in keys.iter().enumerate() {
+        for (j, (sup_cid, sup_r)) in keys.iter().enumerate() {
+            if i == j {
                 continue;
             }
-            // r1 ⊆ r2 (proper containment or equal-range distinct keys
-            // can't occur — equal ranges share one ClassId — so this is
-            // strict subset between distinct synthetic classes).
-            if sub_r.subset(sup_r) {
-                let sub = out.concepts.atomic(sub_cid);
-                let sup = out.concepts.atomic(sup_cid);
-                out.axioms.push(Axiom::SubClassOf { sub, sup });
-            }
-        }
-    }
-    // Float/double bucket: same algebra with explicit-boundary subset.
-    for &(sub_cid, sub_r) in &float_dkeys {
-        for &(sup_cid, sup_r) in &float_dkeys {
-            if sub_cid == sup_cid {
-                continue;
-            }
-            if sub_r.subset(sup_r) {
-                let sub = out.concepts.atomic(sub_cid);
-                let sup = out.concepts.atomic(sup_cid);
+            if subset(sub_r, sup_r) {
+                let sub = out.concepts.atomic(*sub_cid);
+                let sup = out.concepts.atomic(*sup_cid);
                 out.axioms.push(Axiom::SubClassOf { sub, sup });
             }
         }
@@ -1411,5 +1677,150 @@ mod tests {
         )));
         let internal = InternalOntology::try_from(&o).unwrap();
         assert_eq!(internal.num_axioms(), 1);
+    }
+
+    // ── Phase D8: DKey codec + parser-matrix + ordering unit tests ───────
+
+    fn dec(s: &str) -> Decimal {
+        parse_decimal(s).unwrap_or_else(|| panic!("parse_decimal({s:?})"))
+    }
+
+    /// Sample IRI from each of the five `DKey` buckets (a bounded range so
+    /// the encoding is exercised, not just `*`).
+    fn sample_iris() -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "int",
+                dkey_iri(IntegerRange {
+                    min: Some(3),
+                    max: Some(9),
+                }),
+            ),
+            ("float", float_dkey_iri(FloatRange::point(1.5))),
+            (
+                "dec",
+                ord_dkey_iri(DKEY_DECIMAL_TAG, &OrdRange::point(dec("1.5")), decimal_key),
+            ),
+            (
+                "date",
+                ord_dkey_iri(DKEY_DATE_TAG, &OrdRange::point((2020, 1, 15)), date_key),
+            ),
+            (
+                "dt",
+                ord_dkey_iri(
+                    DKEY_DATETIME_TAG,
+                    &OrdRange::point((2020, 1, 15, 12, 30, 0)),
+                    datetime_key,
+                ),
+            ),
+        ]
+    }
+
+    /// THE matrix (advisor's #1 new test): each of the five decoders must
+    /// return `Some` for EXACTLY its own bucket's IRI and `None` for all
+    /// four others. A single off-diagonal `Some` = a cross-datatype edge
+    /// seeded with mismatched semantics = false positive.
+    #[test]
+    fn parser_matrix_mutual_exclusivity() {
+        let iris = sample_iris();
+        let probe = |bucket: &str, iri: &str| -> bool {
+            match bucket {
+                "int" => parse_dkey_iri(iri).is_some(),
+                "float" => parse_float_dkey_iri(iri).is_some(),
+                "dec" => parse_decimal_dkey_iri(iri).is_some(),
+                "date" => parse_date_dkey_iri(iri).is_some(),
+                "dt" => parse_datetime_dkey_iri(iri).is_some(),
+                _ => unreachable!(),
+            }
+        };
+        for (decoder, _) in &iris {
+            for (bucket, iri) in &iris {
+                let accepted = probe(decoder, iri);
+                assert_eq!(
+                    accepted,
+                    decoder == bucket,
+                    "decoder {decoder} on {bucket} IRI {iri:?}: expected {}",
+                    decoder == bucket
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dkey_iri_round_trips_all_buckets() {
+        // decimal: exact lexical round-trip (incl. negative + sub-1).
+        let dr = OrdRange {
+            min: Some(dec("-0.5")),
+            min_incl: false,
+            max: Some(dec("12.34")),
+            max_incl: true,
+        };
+        assert_eq!(
+            parse_decimal_dkey_iri(&ord_dkey_iri(DKEY_DECIMAL_TAG, &dr, decimal_key)),
+            Some(dr)
+        );
+        // date: bounded, with an unbounded upper end.
+        let dtr = OrdRange {
+            min: Some((1999, 12, 31)),
+            min_incl: true,
+            max: None,
+            max_incl: false,
+        };
+        assert_eq!(
+            parse_date_dkey_iri(&ord_dkey_iri(DKEY_DATE_TAG, &dtr, date_key)),
+            Some(dtr)
+        );
+        // dateTime: full six-component round-trip.
+        let dttr = OrdRange::point((2020, 6, 9, 8, 15, 45));
+        assert_eq!(
+            parse_datetime_dkey_iri(&ord_dkey_iri(DKEY_DATETIME_TAG, &dttr, datetime_key)),
+            Some(dttr)
+        );
+    }
+
+    #[test]
+    fn decimal_ordering_is_exact() {
+        // The FP trap: distinct decimals must never compare equal.
+        assert!(dec("0.1") < dec("0.2"));
+        assert!(dec("0.45") < dec("0.5")); // pad-to-equal-length, not lex-raw
+        assert!(dec("-0.5") < dec("0.5"));
+        assert!(dec("-2") < dec("-1")); // larger magnitude ⟹ smaller
+        assert_eq!(dec("1.0"), dec("1.00")); // trailing-zero normalization
+        assert_eq!(dec("-0"), dec("0")); // signed-zero collapse
+        assert_eq!(dec("007.50"), dec("7.5")); // leading + trailing zeros
+        assert!(dec("10") > dec("9")); // length-then-lex, not raw lex
+        // subset boundary semantics on the real-ish decimal line.
+        let open = OrdRange {
+            min: Some(dec("0")),
+            min_incl: false,
+            max: Some(dec("1")),
+            max_incl: false,
+        };
+        assert!(OrdRange::point(dec("0.5")).subset(&open));
+        assert!(!OrdRange::point(dec("0")).subset(&open)); // excluded endpoint
+        assert!(!OrdRange::point(dec("1")).subset(&open));
+    }
+
+    #[test]
+    fn temporal_parse_drops_timezone_and_fraction() {
+        // Unzoned forms parse.
+        assert_eq!(parse_date("2020-01-15"), Some((2020, 1, 15)));
+        assert_eq!(
+            parse_datetime("2020-01-15T08:30:00"),
+            Some((2020, 1, 15, 8, 30, 0))
+        );
+        // Any timezone or fractional second → dropped (None): the
+        // partial-order / precision soundness guards.
+        assert_eq!(parse_date("2020-01-15Z"), None);
+        assert_eq!(parse_date("2020-01-15+05:00"), None);
+        assert_eq!(parse_datetime("2020-01-15T08:30:00Z"), None);
+        assert_eq!(parse_datetime("2020-01-15T08:30:00.5"), None);
+        assert_eq!(parse_datetime("2020-01-15T08:30:00-05:00"), None);
+        // Out-of-range components → dropped.
+        assert_eq!(parse_date("2020-13-01"), None);
+        assert_eq!(parse_datetime("2020-01-15T25:00:00"), None);
+        // Chronological tuple order.
+        assert!(parse_date("2019-12-31") < parse_date("2020-01-01"));
+        assert!(parse_datetime("2020-01-15T08:00:00") < parse_datetime("2020-01-15T08:00:01"));
     }
 }

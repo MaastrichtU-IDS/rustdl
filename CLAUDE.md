@@ -364,9 +364,43 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     collide, date/dateTime boundary, decimal-vs-integer cross-datatype,
     tz-bearing-date-dropped) + 4 unit tests (parser matrix, IRI
     round-trip all buckets, exact decimal ordering, temporal tz/fraction
-    drop). **Remaining under-approximation**: `xsd:string` and other
-    non-ordered data ranges, `DataAllValuesFrom`, data cardinality
-    still DROP (sound).
+    drop).
+
+  **Phase D9 (2026-06-09)** — `xsd:string` value membership (the
+  EQUALITY-typed, non-ordered datatype; closes the string half of the
+  value-membership fragment). New `StrSet { Top, Set(BTreeSet<String>) }`
+  with set-containment subset (anything ⊆ `Top`; `Top` ⊄ a finite set);
+  own `str:` `DKey` bucket. Members are **hex-encoded** (UTF-8 bytes →
+  `[0-9a-f]*`) so arbitrary content — `:`, `.`, unicode — round-trips
+  through the `:`-delimited IRI; `*` (not valid hex) marks `Top`. Wired:
+  bare `xsd:string` → `Top`, `DataOneOf`-of-strings → `Set`, string
+  `DataHasValue` → singleton. **Soundness (the decimal-equality analog)**:
+  only EXACT lexical identity within `xsd:string` is set-equal —
+  language-tagged literals and any non-string datatype are rejected at
+  parse, dropping the whole value/enumeration (a `DataOneOf` with one
+  non-string member drops entirely; never a partial set, which would be
+  unsound in a sufficient-direction RHS). The `str:` decoder joins the
+  pairwise-exclusivity matrix (now 6 buckets). 8 new integration canaries
+  (∈/∉ enumeration, ⊆ bare-string-`Top`, set subset/superset, wrong
+  property, string-vs-integer cross-datatype, language-tagged-member-drops)
+  + a string round-trip/subset unit test. FP=0/MISSED=0 re-verified
+  corpus-wide (sio 8904, wine 653, ore-15672 142, ore-10908 6001,
+  shoiq-knowledge 449, sulo, ro, bibtex, galen, notgalen, pizza).
+
+  **Remaining datatype under-approximation (sound, all still DROP):**
+  - `DataAllValuesFrom` — would lower to `∀p.DKey(range)` + seeded
+    `DKey(r1) ⊓ DKey(r2) ⊑ ⊥` for disjoint ranges, but is **BLOCKED**: the
+    default Horn-shortcircuit dispatches Horn ontologies to the EL
+    saturator (EL-complete, NOT Horn-complete — no ∀-rule), so a
+    `∀`-driven clash is silently dropped and reported complete (proven by
+    `/tmp/forall-probe.ofn`; see
+    `horn-shortcircuit-el-saturator-unsound-completeness` in memory). Can't
+    ship ∀ until that routing is fixed.
+  - **data cardinality** — D4 already catches the unsat-clash patterns;
+    full range-size-aware counting (`≥3 p` over a 2-value range → ⊥) is a
+    concrete-domain cardinality reasoner with zero measured corpus reward.
+  - `xsd:decimal`/`date`/`dateTime` `DataOneOf` enumerations (only
+    `xsd:string` enums handled); other non-ordered datatypes.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

@@ -627,3 +627,126 @@ fn date_value_with_timezone_dropped_no_subsumption() {
         "tz-bearing date dropped: C ⊑ D must NOT hold"
     );
 }
+
+// ── Phase D9: xsd:string value membership (DataOneOf / bare string) ──────
+
+#[test]
+fn string_value_in_oneof_subsumes() {
+    // "FULL-TIME" ∈ {"FULL-TIME","PART-TIME"}: C ⊑ D.
+    let c = classify_value_range(
+        r#""FULL-TIME"^^xsd:string"#,
+        r#"DataOneOf("PART-TIME"^^xsd:string "FULL-TIME"^^xsd:string)"#,
+    );
+    assert!(c.is_subclass(C, D), "value ∈ enumeration: C ⊑ D must hold");
+}
+
+#[test]
+fn string_value_not_in_oneof_not_subsumed() {
+    // "CONTRACT" ∉ {"FULL-TIME","PART-TIME"}.
+    let c = classify_value_range(
+        r#""CONTRACT"^^xsd:string"#,
+        r#"DataOneOf("PART-TIME"^^xsd:string "FULL-TIME"^^xsd:string)"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "value ∉ enumeration: C ⊑ D must NOT hold"
+    );
+}
+
+#[test]
+fn string_value_subsumed_by_bare_string_top() {
+    // Any string ∈ xsd:string (Top).
+    let c = classify_value_range(r#""anything"^^xsd:string"#, "xsd:string");
+    assert!(
+        c.is_subclass(C, D),
+        "value ⊆ xsd:string Top: C ⊑ D must hold"
+    );
+}
+
+/// Range-vs-range variant: `DataSomeValuesFrom` on BOTH sides (the C side
+/// can't use `DataHasValue`, which takes a literal not a range).
+fn classify_range_range(sub: &str, sup: &str) -> owl_dl_reasoner::Classification {
+    classify(&format!(
+        r"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:h))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h {sub}))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:h {sup}))))
+"
+    ))
+}
+
+#[test]
+fn string_oneof_subset_subsumes() {
+    // {"a"} ⊆ {"a","b"}: enumeration subset.
+    let c = classify_range_range(
+        r#"DataOneOf("a"^^xsd:string)"#,
+        r#"DataOneOf("a"^^xsd:string "b"^^xsd:string)"#,
+    );
+    assert!(c.is_subclass(C, D), "{{a}} ⊆ {{a,b}}: C ⊑ D must hold");
+}
+
+#[test]
+fn string_oneof_superset_not_subsumed() {
+    // {"a","b"} ⊄ {"a"}.
+    let c = classify_range_range(
+        r#"DataOneOf("a"^^xsd:string "b"^^xsd:string)"#,
+        r#"DataOneOf("a"^^xsd:string)"#,
+    );
+    assert!(!c.is_subclass(C, D), "{{a,b}} ⊄ {{a}}: C ⊑ D must NOT hold");
+}
+
+#[test]
+fn string_wrong_property_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:p))
+    Declaration(DataProperty(:q))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:p "x"^^xsd:string))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:q DataOneOf("x"^^xsd:string)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "string on wrong property: C ⊑ D must NOT hold"
+    );
+}
+
+#[test]
+fn string_value_vs_integer_range_no_cross_subsumption() {
+    // A string value must never subsume into a numeric bucket.
+    let c = classify_value_range(
+        r#""5"^^xsd:string"#,
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "1"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "string \"5\" vs integer [1,10]: cross-datatype, C ⊑ D must NOT hold"
+    );
+}
+
+#[test]
+fn language_tagged_oneof_member_drops_enumeration() {
+    // A DataOneOf with a language-tagged member is NOT all-exact-string →
+    // the whole enumeration drops → no subsumption even for the plain
+    // member that would otherwise match.
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataHasValue(:p "hi"^^xsd:string))))
+    EquivalentClasses(:D ObjectSomeValuesFrom(:R ObjectIntersectionOf(:A DataSomeValuesFrom(:p DataOneOf("hi"^^xsd:string "bonjour"@fr)))))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "lang-tagged member drops enumeration: C ⊑ D must NOT hold"
+    );
+}

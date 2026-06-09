@@ -14,8 +14,8 @@ use thiserror::Error;
 use crate::ConceptPool;
 use crate::Vocabulary;
 use crate::data_axioms::{
-    DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, OrdRange, parse_date, parse_datetime,
-    parse_decimal,
+    DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, OrdRange, StrSet,
+    exact_string_literal, parse_date, parse_datetime, parse_decimal,
 };
 use crate::ir::{ClassId, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
@@ -280,6 +280,81 @@ fn lower_ord_data_to_some<T: Ord + Clone>(
     pool.some(Role::named(role_id), filler)
 }
 
+// ── Phase D9 (2026-06-09): xsd:string value-set DKey bucket ──────────────
+//
+// Strings are EQUALITY-typed (not ordered), so the key is a set, not an
+// interval. Own `str:` tag, strictly disjoint from the five numeric/temporal
+// buckets. Members are hex-encoded (UTF-8 bytes → `[0-9a-f]*`) so arbitrary
+// string content — including `:`, `.`, unicode — round-trips through the
+// `:`-delimited IRI unambiguously; `*` (not valid hex) marks `Top`.
+const DKEY_STRING_TAG: &str = "str:";
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+fn hex_decode(s: &str) -> Option<String> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    let b = s.as_bytes();
+    let mut bytes = Vec::with_capacity(s.len() / 2);
+    let mut i = 0;
+    while i < b.len() {
+        let hi = (b[i] as char).to_digit(16)?;
+        let lo = (b[i + 1] as char).to_digit(16)?;
+        // hi, lo ∈ 0..=15 ⟹ hi*16+lo ∈ 0..=255; try_from documents that.
+        bytes.push(u8::try_from(hi * 16 + lo).ok()?);
+        i += 2;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn str_dkey_iri(set: &StrSet) -> String {
+    match set {
+        StrSet::Top => format!("{DKEY_IRI_PREFIX}{DKEY_STRING_TAG}*"),
+        StrSet::Set(members) => {
+            let body = members
+                .iter()
+                .map(|m| hex_encode(m.as_bytes()))
+                .collect::<Vec<_>>()
+                .join(":");
+            format!("{DKEY_IRI_PREFIX}{DKEY_STRING_TAG}{body}")
+        }
+    }
+}
+
+fn parse_string_dkey_iri(iri: &str) -> Option<StrSet> {
+    let rest = iri
+        .strip_prefix(DKEY_IRI_PREFIX)?
+        .strip_prefix(DKEY_STRING_TAG)?;
+    if rest == "*" {
+        return Some(StrSet::Top);
+    }
+    let mut set = std::collections::BTreeSet::new();
+    for tok in rest.split(':') {
+        set.insert(hex_decode(tok)?);
+    }
+    Some(StrSet::Set(set))
+}
+
+fn lower_str_data_to_some(
+    set: &StrSet,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> ConceptId {
+    let role_id = vocab.intern_role(dp_iri);
+    let dkey_class = vocab.intern_class(&str_dkey_iri(set));
+    let filler = pool.atomic(dkey_class);
+    pool.some(Role::named(role_id), filler)
+}
+
 /// Intern the synthetic integer `DKey(range)` filler class and return the
 /// `∃p.DKey(range)` concept. `p` is the data property treated as a
 /// (forward) object-style role.
@@ -492,6 +567,8 @@ pub fn convert_class_expression<A: ForIRI>(
                     vocab,
                     pool,
                 ))
+            } else if let Some(set) = crate::data_axioms::parse_string_range(dr) {
+                Ok(lower_str_data_to_some(&set, dp.0.as_ref(), vocab, pool))
             } else {
                 Err(ConversionError::UnsupportedDataRange)
             }
@@ -534,6 +611,13 @@ pub fn convert_class_expression<A: ForIRI>(
                     &OrdRange::point(v),
                     DKEY_DATETIME_TAG,
                     datetime_key,
+                    dp.0.as_ref(),
+                    vocab,
+                    pool,
+                ))
+            } else if let Some(s) = exact_string_literal(l) {
+                Ok(lower_str_data_to_some(
+                    &StrSet::singleton(s),
                     dp.0.as_ref(),
                     vocab,
                     pool,
@@ -1054,6 +1138,11 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_datetime_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
+    let str_dkeys: Vec<(ClassId, StrSet)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_string_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
     // `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2` (distinct keys ⟹ strict subset,
     // since equal ranges share one ClassId). Integer/float ranges are
     // `Copy`; the ordered ranges compare by reference.
@@ -1062,6 +1151,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_bucket(out, &dec_dkeys, OrdRange::subset);
     seed_bucket(out, &date_dkeys, OrdRange::subset);
     seed_bucket(out, &dt_dkeys, OrdRange::subset);
+    seed_bucket(out, &str_dkeys, StrSet::subset);
 }
 
 /// Emit `SubClassOf(DKey(r_i), DKey(r_j))` for every ordered pair of
@@ -1713,6 +1803,14 @@ mod tests {
                     datetime_key,
                 ),
             ),
+            (
+                "str",
+                str_dkey_iri(&StrSet::Set(
+                    ["FULL-TIME".to_string(), "PART-TIME".to_string()]
+                        .into_iter()
+                        .collect(),
+                )),
+            ),
         ]
     }
 
@@ -1730,6 +1828,7 @@ mod tests {
                 "dec" => parse_decimal_dkey_iri(iri).is_some(),
                 "date" => parse_date_dkey_iri(iri).is_some(),
                 "dt" => parse_datetime_dkey_iri(iri).is_some(),
+                "str" => parse_string_dkey_iri(iri).is_some(),
                 _ => unreachable!(),
             }
         };
@@ -1822,5 +1921,35 @@ mod tests {
         // Chronological tuple order.
         assert!(parse_date("2019-12-31") < parse_date("2020-01-01"));
         assert!(parse_datetime("2020-01-15T08:00:00") < parse_datetime("2020-01-15T08:00:01"));
+    }
+
+    #[test]
+    fn string_dkey_round_trips_and_subsets() {
+        // Round-trip through hex encoding, including content that contains
+        // the IRI delimiters (`:`/`.`) and unicode — the reason for hex.
+        let s = StrSet::Set(
+            ["a:b".to_string(), "c.d".to_string(), "é".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(parse_string_dkey_iri(&str_dkey_iri(&s)), Some(s));
+        assert_eq!(
+            parse_string_dkey_iri(&str_dkey_iri(&StrSet::Top)),
+            Some(StrSet::Top)
+        );
+        // Set-containment semantics.
+        let pair = StrSet::Set(
+            ["FULL-TIME".to_string(), "PART-TIME".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        assert!(StrSet::singleton("FULL-TIME".to_string()).subset(&pair));
+        assert!(!StrSet::singleton("CONTRACT".to_string()).subset(&pair));
+        assert!(pair.subset(&StrSet::Top)); // anything ⊆ Top
+        assert!(!StrSet::Top.subset(&pair)); // Top ⊄ a finite set
+        // A `*`-marked Top can never be confused with a set member: hex is
+        // never "*", so a singleton {"*"} encodes distinctly.
+        let star = StrSet::singleton("*".to_string());
+        assert_eq!(parse_string_dkey_iri(&str_dkey_iri(&star)), Some(star));
     }
 }

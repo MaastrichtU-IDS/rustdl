@@ -50,7 +50,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use horned_owl::model::{
-    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI,
+    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI, Literal,
 };
 use horned_owl::ontology::set::SetOntology;
 use horned_owl::vocab::Facet;
@@ -670,6 +670,76 @@ pub(crate) fn parse_date_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<
 /// Phase D8: parse an `xsd:dateTime` `DataRange` into a component-tuple range.
 pub(crate) fn parse_datetime_range<A: ForIRI>(dr: &DataRange<A>) -> Option<OrdRange<DateTimeKey>> {
     parse_ord_range(dr, |iri| iri == XSD_DATETIME, parse_datetime)
+}
+
+const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+
+/// Phase D9 (2026-06-09): an `xsd:string` value set — the EQUALITY-typed
+/// (non-ordered) datatype. `Top` is the bare `xsd:string` (every string);
+/// `Set` is a finite enumeration from `DataOneOf`. Subset is set-containment
+/// (anything ⊆ `Top`; `Top` ⊄ a finite set). Completes the value-membership
+/// fragment for strings: `DataHasValue(p,"x") ⊑ DataSomeValuesFrom(p, oneOf)`
+/// iff `"x"` is a member, and `⊑ DataSomeValuesFrom(p, xsd:string)` always.
+///
+/// SOUNDNESS (the decimal-equality analog): only EXACT lexical identity
+/// within `xsd:string` is set-equal. Language-tagged literals and any other
+/// datatype are rejected at parse → the whole range/value drops (sound
+/// under-approx), so two members can never spuriously coincide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StrSet {
+    Top,
+    Set(BTreeSet<String>),
+}
+
+impl StrSet {
+    pub(crate) fn singleton(s: String) -> Self {
+        StrSet::Set([s].into_iter().collect())
+    }
+
+    /// `self ⊆ other`: anything ⊆ `Top`; `Top` is a subset only of `Top`;
+    /// two finite sets compare by ordinary set inclusion.
+    pub(crate) fn subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (_, StrSet::Top) => true,
+            (StrSet::Top, StrSet::Set(_)) => false,
+            (StrSet::Set(a), StrSet::Set(b)) => a.is_subset(b),
+        }
+    }
+}
+
+/// Extract an EXACT `xsd:string` value from a literal: `Simple` (untyped is
+/// `xsd:string` by OWL 2) or `Datatype` tagged exactly `xsd:string`. ALL
+/// other forms — language-tagged, or any non-string datatype — return
+/// `None`, so they drop rather than risk a cross-datatype / lexical-vs-typed
+/// coincidence.
+pub(crate) fn exact_string_literal<A: ForIRI>(l: &Literal<A>) -> Option<String> {
+    match l {
+        Literal::Simple { literal } => Some(literal.clone()),
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == XSD_STRING => Some(literal.clone()),
+        _ => None,
+    }
+}
+
+/// Phase D9: parse a string-valued `DataRange` — bare `xsd:string` (→ `Top`)
+/// or a `DataOneOf` whose members are ALL exact `xsd:string` literals
+/// (→ `Set`). A `DataOneOf` with any non-string / language-tagged member
+/// returns `None` (drops the whole enumeration — never a partial set, which
+/// would be unsound in a sufficient-direction RHS).
+pub(crate) fn parse_string_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet> {
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_STRING => Some(StrSet::Top),
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                set.insert(exact_string_literal(l)?);
+            }
+            Some(StrSet::Set(set))
+        }
+        _ => None,
+    }
 }
 
 /// Internal: collected data-axiom facts. IRIs kept as `String` so we

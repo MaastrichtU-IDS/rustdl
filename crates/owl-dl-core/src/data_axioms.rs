@@ -290,6 +290,23 @@ impl IntegerRange {
     fn is_empty(self) -> bool {
         matches!((self.min, self.max), (Some(a), Some(b)) if a > b)
     }
+
+    /// Phase D11b: `self ∩ other = ∅` over the integer value space — the
+    /// FP-critical predicate for the `∃p.DKey(v) ⊓ ∀p.DKey(r)` clash. MUST
+    /// be conservative: `true` only when provably no integer is shared.
+    /// Disjoint iff one range lies entirely below the other (inclusive
+    /// bounds ⟹ a shared endpoint means they OVERLAP, not disjoint:
+    /// `[0,5]`,`[5,10]` share `5`).
+    pub(crate) fn disjoint(self, other: Self) -> bool {
+        Self::strictly_below(self, other) || Self::strictly_below(other, self)
+    }
+
+    /// `a` ends before `b` starts (no shared integer): both ends finite and
+    /// `a.max < b.min`. Unbounded ends (`None`) ⟹ not below (the range
+    /// reaches ±∞), so the conservative `false`.
+    fn strictly_below(a: Self, b: Self) -> bool {
+        matches!((a.max, b.min), (Some(amax), Some(bmin)) if amax < bmin)
+    }
 }
 
 /// Phase D6 (Part B): real-number range with EXPLICIT inclusive/exclusive
@@ -370,6 +387,29 @@ impl FloatRange {
         };
         min_ok && max_ok
     }
+
+    /// Phase D11b: `self ∩ other = ∅` over the reals — conservative (`true`
+    /// only when provably disjoint). Disjoint iff one range ends before the
+    /// other begins; a SHARED endpoint counts as overlap ONLY when both
+    /// sides include it (so `[0,5]`,`[5,10]` overlap at 5, but `[0,5)`,`[5,…]`
+    /// or `[…,5]`,`(5,…]` are disjoint).
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact endpoint equality is intended — same datatype, bounds \
+                  round-tripped through the same to_bits key; epsilon would \
+                  WIDEN the disjoint region and cause a spurious ⊥ clash = FP"
+    )]
+    pub(crate) fn disjoint(self, other: Self) -> bool {
+        fn below(a: FloatRange, b: FloatRange) -> bool {
+            match (a.max, b.min) {
+                (Some(amax), Some(bmin)) => {
+                    amax < bmin || (amax == bmin && (!a.max_incl || !b.min_incl))
+                }
+                _ => false,
+            }
+        }
+        below(self, other) || below(other, self)
+    }
 }
 
 /// Phase D8 (2026-06-09): a totally-ordered range with EXPLICIT
@@ -436,6 +476,22 @@ impl<T: Ord + Clone> OrdRange<T> {
             (Some(s), Some(o)) => *s < *o || (*s == *o && (other.max_incl || !self.max_incl)),
         };
         min_ok && max_ok
+    }
+
+    /// Phase D11b: `self ∩ other = ∅` — conservative (`true` only when
+    /// provably disjoint). Same explicit-boundary algebra as
+    /// [`FloatRange::disjoint`] but exact via `Ord` (no float concerns): a
+    /// shared endpoint is overlap only when both sides include it.
+    pub(crate) fn disjoint(&self, other: &Self) -> bool {
+        fn below<T: Ord>(a: &OrdRange<T>, b: &OrdRange<T>) -> bool {
+            match (&a.max, &b.min) {
+                (Some(amax), Some(bmin)) => {
+                    *amax < *bmin || (*amax == *bmin && (!a.max_incl || !b.min_incl))
+                }
+                _ => false,
+            }
+        }
+        below(self, other) || below(other, self)
     }
 
     /// Tighten the lower bound to the more restrictive of the existing
@@ -703,6 +759,16 @@ impl StrSet {
             (_, StrSet::Top) => true,
             (StrSet::Top, StrSet::Set(_)) => false,
             (StrSet::Set(a), StrSet::Set(b)) => a.is_subset(b),
+        }
+    }
+
+    /// Phase D11b: `self ∩ other = ∅` — conservative. `Top` (= every string)
+    /// overlaps everything, so it is NEVER disjoint; two finite enumerations
+    /// are disjoint iff they share no member.
+    pub(crate) fn disjoint(&self, other: &Self) -> bool {
+        match (self, other) {
+            (StrSet::Top, _) | (_, StrSet::Top) => false,
+            (StrSet::Set(a), StrSet::Set(b)) => a.is_disjoint(b),
         }
     }
 }
@@ -1589,5 +1655,136 @@ Ontology(<http://t/x>
             found_unsat,
             "D4: HasTwoAges ⊑ Bot should be derived from Functional + DataMin"
         );
+    }
+
+    // ── Phase D11b: disjoint() — the FP surface of the ∀-membership clash.
+    // The corpus CANNOT exercise this (no ∃+∀ clash exists in it), so these
+    // unit tests are the entire safety net. OVERLAP must NEVER read as
+    // disjoint (that would seed a spurious ⊥ = false positive).
+
+    #[test]
+    fn integer_disjoint_boundaries() {
+        // Inclusive integer endpoints: a shared endpoint = OVERLAP.
+        assert!(!incl(0, 5).disjoint(incl(5, 10)), "[0,5],[5,10] share 5");
+        assert!(incl(0, 3).disjoint(incl(5, 8)), "[0,3],[5,8] gap");
+        assert!(incl(0, 4).disjoint(incl(5, 8)), "[0,4],[5,8] adjacent ints");
+        assert!(!incl(0, 10).disjoint(incl(3, 5)), "nested overlaps");
+        assert!(!incl(0, 5).disjoint(incl(3, 8)), "partial overlap");
+        assert!(!incl(0, 5).disjoint(incl(0, 5)), "identical overlaps");
+        // A bounded end facing the other range CAN be disjoint even with an
+        // unbounded opposite end: (-∞,3] vs [5,8] → max 3 < min 5 → disjoint.
+        assert!(
+            IntegerRange {
+                min: None,
+                max: Some(3)
+            }
+            .disjoint(incl(5, 8)),
+            "(-∞,3] and [5,8] are disjoint (3 < 5)"
+        );
+    }
+
+    #[test]
+    fn integer_disjoint_unbounded_is_conservative() {
+        // (-∞,+∞) shares values with everything.
+        assert!(!IntegerRange::unbounded().disjoint(incl(5, 8)));
+        // [5,+∞) vs [0,8] overlap at [5,8].
+        let lo = IntegerRange {
+            min: Some(5),
+            max: None,
+        };
+        assert!(!lo.disjoint(incl(0, 8)));
+        // [5,+∞) vs (-∞,3] — no shared int (max of second=3 < min of first=5).
+        let hi = IntegerRange {
+            min: None,
+            max: Some(3),
+        };
+        assert!(lo.disjoint(hi), "[5,+∞) and (-∞,3] are disjoint");
+    }
+
+    #[test]
+    fn float_disjoint_boundaries() {
+        // Shared endpoint, both inclusive → OVERLAP (point 5 is in both).
+        assert!(
+            !fc(0.0, 5.0).disjoint(fc(5.0, 10.0)),
+            "[0,5],[5,10] share 5.0"
+        );
+        // One side excludes the shared endpoint → disjoint.
+        assert!(
+            fr(Some(0.0), true, Some(5.0), false).disjoint(fc(5.0, 10.0)),
+            "[0,5) and [5,10] disjoint"
+        );
+        assert!(
+            fc(0.0, 5.0).disjoint(fr(Some(5.0), false, Some(10.0), true)),
+            "[0,5] and (5,10] disjoint"
+        );
+        // Both open at the meeting point → disjoint (5.0 in neither).
+        assert!(fo(0.0, 5.0).disjoint(fr(Some(5.0), false, Some(10.0), true)));
+        // Gap / nested / overlap.
+        assert!(fc(0.0, 3.0).disjoint(fc(5.0, 8.0)), "gap");
+        assert!(!fc(0.0, 10.0).disjoint(fc(3.0, 5.0)), "nested");
+        assert!(!fc(0.0, 5.0).disjoint(fc(3.0, 8.0)), "partial overlap");
+        // Unbounded never provably disjoint.
+        assert!(!FloatRange::unbounded().disjoint(fc(5.0, 8.0)));
+        assert!(
+            !fr(Some(5.0), true, None, false).disjoint(fc(0.0, 8.0)),
+            "[5,∞) vs [0,8]"
+        );
+    }
+
+    #[test]
+    fn ord_decimal_disjoint_boundaries() {
+        fn dr(min: &str, min_incl: bool, max: &str, max_incl: bool) -> OrdRange<Decimal> {
+            OrdRange {
+                min: parse_decimal(min),
+                min_incl,
+                max: parse_decimal(max),
+                max_incl,
+            }
+        }
+        // [0,0.5] and [0.5,1] share 0.5 (both inclusive) → NOT disjoint.
+        assert!(!dr("0", true, "0.5", true).disjoint(&dr("0.5", true, "1", true)));
+        // [0,0.5) and [0.5,1] → disjoint.
+        assert!(dr("0", true, "0.5", false).disjoint(&dr("0.5", true, "1", true)));
+        // distinct-but-close decimals: [0,0.45] and [0.5,1] gap → disjoint.
+        assert!(dr("0", true, "0.45", true).disjoint(&dr("0.5", true, "1", true)));
+        // overlap.
+        assert!(!dr("0", true, "0.6", true).disjoint(&dr("0.5", true, "1", true)));
+    }
+
+    #[test]
+    fn ord_date_disjoint() {
+        fn d(min: DateKey, max: DateKey, mi: bool, ma: bool) -> OrdRange<DateKey> {
+            OrdRange {
+                min: Some(min),
+                min_incl: mi,
+                max: Some(max),
+                max_incl: ma,
+            }
+        }
+        // [2020-01-01, 2020-06-01] and [2020-06-01, 2021-01-01] share the
+        // boundary (both inclusive) → NOT disjoint.
+        let a = d((2020, 1, 1), (2020, 6, 1), true, true);
+        let b = d((2020, 6, 1), (2021, 1, 1), true, true);
+        assert!(!a.disjoint(&b));
+        // exclude the shared boundary → disjoint.
+        let a2 = d((2020, 1, 1), (2020, 6, 1), true, false);
+        assert!(a2.disjoint(&b));
+        // clear gap.
+        let c = d((2019, 1, 1), (2019, 12, 31), true, true);
+        assert!(c.disjoint(&b));
+    }
+
+    #[test]
+    fn strset_disjoint() {
+        let set = |xs: &[&str]| StrSet::Set(xs.iter().map(|s| (*s).to_string()).collect());
+        // Top overlaps everything.
+        assert!(!StrSet::Top.disjoint(&set(&["a"])));
+        assert!(!set(&["a"]).disjoint(&StrSet::Top));
+        assert!(!StrSet::Top.disjoint(&StrSet::Top));
+        // Disjoint finite sets.
+        assert!(set(&["a"]).disjoint(&set(&["b", "c"])));
+        // Sharing a member → NOT disjoint.
+        assert!(!set(&["a"]).disjoint(&set(&["a", "b"])));
+        assert!(!set(&["a", "b"]).disjoint(&set(&["b", "c"])));
     }
 }

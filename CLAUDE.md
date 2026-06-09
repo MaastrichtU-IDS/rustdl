@@ -387,20 +387,40 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   corpus-wide (sio 8904, wine 653, ore-15672 142, ore-10908 6001,
   shoiq-knowledge 449, sulo, ro, bibtex, galen, notgalen, pizza).
 
+  **Phase D11 (2026-06-09)** — `DataAllValuesFrom` (unblocked by the D10
+  Horn-shortcircuit fix; data-`∀` now routes to the complete hybrid
+  tableau). Two halves:
+  - **D11a (lowering)**: `DataAllValuesFrom(p, range)` → `∀p.DKey(range)`
+    (object ∀-encoding). Sound — UNDER-approximate: a `DKey(range)` member
+    need not be a real in-range value, so object models are MORE permissive
+    ⟹ subsumption/unsat can only MISS, never FP. Gives ∀-monotonicity
+    (`∀p.DKey(r1) ⊑ ∀p.DKey(r2)` iff `r1 ⊆ r2`, via the told `DKey⊑DKey`
+    edges). Refactored `DataSomeValuesFrom`/`DataAllValuesFrom` onto a shared
+    `data_range_dkey` `(role, filler)` core.
+  - **D11b (disjointness, FP-critical)**: seed
+    `DisjointClasses(DKey(ra), DKey(rb))` (native axiom — the form the D10
+    ∀-clash probe proved the tableau handles) for every PROVABLY disjoint
+    pair within a bucket, enabling the `∃p.DKey(v) ⊓ ∀p.DKey(r)` membership
+    clash when `v ∉ r`. The entire FP surface is `definitely_disjoint`
+    (`disjoint()` on each range type): CONSERVATIVE — `true` only when no
+    value is shared; a shared INCLUSIVE endpoint is OVERLAP (`[0,5]`,`[5,10]`
+    not disjoint), excluded only if a boundary is exclusive. **The corpus
+    can't validate this (no `∃+∀` clash exists in it), so the boundary unit
+    tests (`{integer,float,ord_decimal,ord_date,strset}_disjoint*`) +
+    membership canaries are the entire safety net.** Verified end-to-end on
+    real data (`/tmp/data-forall-probe.ofn`): value 5 ∉ [0,3] ⟹ C unsat
+    (mode hybrid), value 2 ∈ [0,3] ⟹ satisfiable. FP=0/MISSED=0 unchanged
+    corpus-wide. Canaries: 10 new in `datatype_value_membership.rs`
+    (3 ∀-monotonicity + 7 membership-clash incl. inclusive-boundary,
+    float/string buckets, cross-datatype no-clash) + 6 `disjoint` unit tests.
+
   **Remaining datatype under-approximation (sound, all still DROP):**
-  - `DataAllValuesFrom` — would lower to `∀p.DKey(range)` + seeded
-    `DKey(r1) ⊓ DKey(r2) ⊑ ⊥` for disjoint ranges, but is **BLOCKED**: the
-    default Horn-shortcircuit dispatches Horn ontologies to the EL
-    saturator (EL-complete, NOT Horn-complete — no ∀-rule), so a
-    `∀`-driven clash is silently dropped and reported complete (proven by
-    `/tmp/forall-probe.ofn`; see
-    `horn-shortcircuit-el-saturator-unsound-completeness` in memory). Can't
-    ship ∀ until that routing is fixed.
   - **data cardinality** — D4 already catches the unsat-clash patterns;
     full range-size-aware counting (`≥3 p` over a 2-value range → ⊥) is a
     concrete-domain cardinality reasoner with zero measured corpus reward.
   - `xsd:decimal`/`date`/`dateTime` `DataOneOf` enumerations (only
-    `xsd:string` enums handled); other non-ordered datatypes.
+    `xsd:string` enums handled); other non-ordered datatypes;
+    `DataComplementOf` / `DataUnionOf` / `DataIntersectionOf` ranges.
 
   Synthetic test harness: `crates/owl-dl-reasoner/tests/datatype_completeness.rs`
   (6 fixtures under `tests/fixtures/datatype/`; all 6 pass post-D5).

@@ -750,3 +750,158 @@ fn language_tagged_oneof_member_drops_enumeration() {
         "lang-tagged member drops enumeration: C ⊑ D must NOT hold"
     );
 }
+
+// ── Phase D11: DataAllValuesFrom (∀p.DKey) ───────────────────────────────
+//
+// D11a — ∀-monotonicity: ∀p.range1 ⊑ ∀p.range2 iff range1 ⊆ range2 (via the
+// told DKey⊑DKey edge + the hybrid tableau's ∀-rule; the lowering yields
+// ConceptExpr::All ⟹ out of the saturator fragment ⟹ routes to hybrid).
+// NEGATIVES carry the weight (a wrong ∀-direction = unsound).
+
+/// `C ≡ ∀h.sub`, `D ≡ ∀h.sup` — classify and return the result.
+fn classify_forall(sub: &str, sup: &str) -> owl_dl_reasoner::Classification {
+    classify(&format!(
+        r"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataAllValuesFrom(:h {sub}))
+    EquivalentClasses(:D DataAllValuesFrom(:h {sup}))
+"
+    ))
+}
+
+#[test]
+fn forall_range_monotone_subsumes() {
+    // ∀h.[0,3] ⊑ ∀h.[0,10]  (since [0,3] ⊆ [0,10]).
+    let c = classify_forall(
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer)"#,
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#,
+    );
+    assert!(c.is_subclass(C, D), "∀h.[0,3] ⊑ ∀h.[0,10]: C ⊑ D must hold");
+}
+
+#[test]
+fn forall_range_antitone_not_subsumed() {
+    // ∀h.[0,10] ⊄ ∀h.[0,3]  (the wider filler is NOT subsumed by the narrower).
+    let c = classify_forall(
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer)"#,
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#,
+    );
+    assert!(
+        !c.is_subclass(D, C),
+        "∀h.[0,10] ⊄ ∀h.[0,3]: D ⊑ C must NOT hold"
+    );
+}
+
+#[test]
+fn forall_disjoint_filler_not_subsumed() {
+    // ∀h.[0,3] and ∀h.[5,8] are incomparable — neither subsumes the other.
+    let c = classify_forall(
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer)"#,
+        r#"DatatypeRestriction(xsd:integer xsd:minInclusive "5"^^xsd:integer xsd:maxInclusive "8"^^xsd:integer)"#,
+    );
+    assert!(!c.is_subclass(C, D), "∀h.[0,3] ⊄ ∀h.[5,8]");
+    assert!(!c.is_subclass(D, C), "∀h.[5,8] ⊄ ∀h.[0,3]");
+}
+
+// D11b — ∃p.DKey(v) ⊓ ∀p.DKey(r) membership clash (v ∉ r ⟹ unsat), via the
+// seeded DisjointClasses(DKey(v), DKey(r)). The corpus has NO such clash, so
+// these canaries are the ENTIRE safety net for `definitely_disjoint`.
+// NEGATIVES (overlap / shared-inclusive-boundary must NOT clash) carry it.
+
+/// `C ≡ DataHasValue(h,val) ⊓ DataAllValuesFrom(h,range)`. Returns whether C
+/// is unsatisfiable.
+fn forall_clash_unsat(val: &str, range: &str) -> bool {
+    let c = classify(&format!(
+        r"    Declaration(Class(:C))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C ObjectIntersectionOf(DataHasValue(:h {val}) DataAllValuesFrom(:h {range})))
+"
+    ));
+    c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C"))
+}
+
+#[test]
+fn forall_value_outside_range_clashes() {
+    // 5 ∉ [0,3]: ∃h.{5} ⊓ ∀h.[0,3] ⟹ C ⊑ ⊥.
+    assert!(
+        forall_clash_unsat(
+            r#""5"^^xsd:integer"#,
+            r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer)"#
+        ),
+        "5 ∉ [0,3] under ∀: C must be unsatisfiable"
+    );
+}
+
+#[test]
+fn forall_value_inside_range_satisfiable() {
+    // 2 ∈ [0,3]: NO clash — C satisfiable. (FP guard: overlap must not seed ⊥.)
+    assert!(
+        !forall_clash_unsat(
+            r#""2"^^xsd:integer"#,
+            r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer)"#
+        ),
+        "2 ∈ [0,3]: C must be satisfiable (no spurious clash)"
+    );
+}
+
+#[test]
+fn forall_value_on_inclusive_boundary_satisfiable() {
+    // 3 ∈ [0,3] (inclusive endpoint): NO clash. The shared-boundary FP trap.
+    assert!(
+        !forall_clash_unsat(
+            r#""3"^^xsd:integer"#,
+            r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "3"^^xsd:integer)"#
+        ),
+        "3 ∈ [0,3] inclusive: C must be satisfiable"
+    );
+}
+
+#[test]
+fn forall_float_value_outside_clashes() {
+    // 5.0 ∉ [0.0, 3.0]: float-bucket membership clash.
+    assert!(
+        forall_clash_unsat(
+            r#""5.0"^^xsd:double"#,
+            r#"DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "3.0"^^xsd:double)"#
+        ),
+        "5.0 ∉ [0.0,3.0] under ∀: C must be unsatisfiable"
+    );
+}
+
+#[test]
+fn forall_string_value_outside_enum_clashes() {
+    // "z" ∉ {"a","b"}: string-bucket membership clash (disjoint singletons).
+    assert!(
+        forall_clash_unsat(
+            r#""z"^^xsd:string"#,
+            r#"DataOneOf("a"^^xsd:string "b"^^xsd:string)"#
+        ),
+        r#""z" not-in {{a,b}} under forall: C must be unsatisfiable"#
+    );
+}
+
+#[test]
+fn forall_string_value_inside_enum_satisfiable() {
+    // "a" ∈ {"a","b"}: NO clash.
+    assert!(
+        !forall_clash_unsat(
+            r#""a"^^xsd:string"#,
+            r#"DataOneOf("a"^^xsd:string "b"^^xsd:string)"#
+        ),
+        r#""a" in {{a,b}}: C must be satisfiable"#
+    );
+}
+
+#[test]
+fn forall_cross_datatype_no_clash() {
+    // ∃h.{5-int} ⊓ ∀h.[0.0,3.0]-double — different buckets never seed
+    // disjointness, so NO clash (sound under-approx, not a wrong ⊥).
+    assert!(
+        !forall_clash_unsat(
+            r#""5"^^xsd:integer"#,
+            r#"DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "3.0"^^xsd:double)"#
+        ),
+        "int value vs double range: cross-datatype, no clash"
+    );
+}

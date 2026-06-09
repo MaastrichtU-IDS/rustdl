@@ -6,7 +6,9 @@
 //!   [`convert_ontology`]) — this file.
 //! - Day 12: reverse conversion + round-trip proptest (still to come).
 
-use horned_owl::model::{AnnotatedComponent, Class, Literal, SubObjectPropertyExpression};
+use horned_owl::model::{
+    AnnotatedComponent, Class, DataRange, Literal, SubObjectPropertyExpression,
+};
 use horned_owl::model::{ClassExpression, Component, ForIRI, Individual, ObjectPropertyExpression};
 use horned_owl::ontology::set::SetOntology;
 use thiserror::Error;
@@ -355,6 +357,40 @@ fn lower_str_data_to_some(
     pool.some(Role::named(role_id), filler)
 }
 
+/// Phase D11: the shared core of the data-restriction encodings — lower a
+/// recognized `DataRange` to `(role, DKey-filler)` where `role` is the data
+/// property treated as a forward object role and the filler is the opaque
+/// `DKey(range)` atomic class. `DataSomeValuesFrom` wraps this in `∃`,
+/// `DataAllValuesFrom` in `∀`; both then share the told `DKey ⊑ DKey`
+/// subsumption (and, for ∀, the `DisjointClasses` seeding). Returns `None`
+/// for any range the datatype machinery doesn't recognize, so the caller
+/// emits `UnsupportedDataRange` and the whole axiom drops (sound).
+fn data_range_dkey<A: ForIRI>(
+    dr: &DataRange<A>,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> Option<(Role, ConceptId)> {
+    let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
+        dkey_iri(r)
+    } else if let Some(r) = crate::data_axioms::parse_float_range(dr) {
+        float_dkey_iri(r)
+    } else if let Some(r) = crate::data_axioms::parse_decimal_range(dr) {
+        ord_dkey_iri(DKEY_DECIMAL_TAG, &r, decimal_key)
+    } else if let Some(r) = crate::data_axioms::parse_date_range(dr) {
+        ord_dkey_iri(DKEY_DATE_TAG, &r, date_key)
+    } else if let Some(r) = crate::data_axioms::parse_datetime_range(dr) {
+        ord_dkey_iri(DKEY_DATETIME_TAG, &r, datetime_key)
+    } else if let Some(s) = crate::data_axioms::parse_string_range(dr) {
+        str_dkey_iri(&s)
+    } else {
+        return None;
+    };
+    let role = Role::named(vocab.intern_role(dp_iri));
+    let dkey_class = vocab.intern_class(&iri);
+    Some((role, pool.atomic(dkey_class)))
+}
+
 /// Intern the synthetic integer `DKey(range)` filler class and return the
 /// `∃p.DKey(range)` concept. `p` is the data property treated as a
 /// (forward) object-style role.
@@ -532,45 +568,13 @@ pub fn convert_class_expression<A: ForIRI>(
         // would WEAKEN an equivalence RHS → false-positive subsumption
         // via the sufficient direction. Do not best-effort.
         ClassExpression::DataSomeValuesFrom { dp, dr } => {
-            // Try integer (facet OR bare xsd:integer → unbounded) first,
-            // then float/double facets. Distinct DKey datatype buckets
-            // keep the two from cross-subsuming. Any other data range
-            // still drops (UnsupportedDataRange).
-            if let Some(range) = crate::data_axioms::parse_integer_range(dr) {
-                Ok(lower_data_to_some(range, dp.0.as_ref(), vocab, pool))
-            } else if let Some(frange) = crate::data_axioms::parse_float_range(dr) {
-                Ok(lower_float_data_to_some(frange, dp.0.as_ref(), vocab, pool))
-            } else if let Some(r) = crate::data_axioms::parse_decimal_range(dr) {
-                Ok(lower_ord_data_to_some(
-                    &r,
-                    DKEY_DECIMAL_TAG,
-                    decimal_key,
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(r) = crate::data_axioms::parse_date_range(dr) {
-                Ok(lower_ord_data_to_some(
-                    &r,
-                    DKEY_DATE_TAG,
-                    date_key,
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(r) = crate::data_axioms::parse_datetime_range(dr) {
-                Ok(lower_ord_data_to_some(
-                    &r,
-                    DKEY_DATETIME_TAG,
-                    datetime_key,
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(set) = crate::data_axioms::parse_string_range(dr) {
-                Ok(lower_str_data_to_some(&set, dp.0.as_ref(), vocab, pool))
-            } else {
-                Err(ConversionError::UnsupportedDataRange)
+            // `∃p.DKey(range)` for any recognized datatype range (integer
+            // incl. bare xsd:integer, float/double, decimal, date, dateTime,
+            // string/oneOf). Distinct DKey datatype buckets never
+            // cross-subsume. Any other range drops (UnsupportedDataRange).
+            match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
+                Some((role, filler)) => Ok(pool.some(role, filler)),
+                None => Err(ConversionError::UnsupportedDataRange),
             }
         }
         ClassExpression::DataHasValue { dp, l } => {
@@ -626,8 +630,23 @@ pub fn convert_class_expression<A: ForIRI>(
                 Err(ConversionError::UnsupportedDataRange)
             }
         }
-        ClassExpression::DataAllValuesFrom { .. }
-        | ClassExpression::DataMinCardinality { .. }
+        // Phase D11: `∀p.DKey(range)` — the universal-restriction counterpart
+        // of DataSomeValuesFrom. Sound object-encoding (under-approximate:
+        // a `DKey(range)` member need not be a real in-range value, so object
+        // models are MORE permissive ⟹ subsumption/unsat can only MISS,
+        // never FP). The lowering yields a `ConceptExpr::All`, which is OUT of
+        // `saturator_complete_fragment` (the saturator has no ∀-rule), so any
+        // ontology bearing it routes to the complete hybrid tableau (Phase
+        // D10). There the told `DKey ⊑ DKey` edges give ∀-monotonicity and
+        // the seeded `DisjointClasses` (D11b) give the `∃p.DKey(v) ⊓
+        // ∀p.DKey(r)` membership clash when `v ∉ r`.
+        ClassExpression::DataAllValuesFrom { dp, dr } => {
+            match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
+                Some((role, filler)) => Ok(pool.all(role, filler)),
+                None => Err(ConversionError::UnsupportedDataRange),
+            }
+        }
+        ClassExpression::DataMinCardinality { .. }
         | ClassExpression::DataMaxCardinality { .. }
         | ClassExpression::DataExactCardinality { .. } => {
             Err(ConversionError::UnsupportedDataRange)
@@ -1152,6 +1171,40 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_bucket(out, &date_dkeys, OrdRange::subset);
     seed_bucket(out, &dt_dkeys, OrdRange::subset);
     seed_bucket(out, &str_dkeys, StrSet::subset);
+
+    // Phase D11b: `DisjointClasses(DKey(ra), DKey(rb))` for every PROVABLY
+    // disjoint pair within a bucket — the basis of the `∃p.DKey(v) ⊓
+    // ∀p.DKey(r)` membership clash (v ∉ r). `disjoint` is conservative
+    // (true only when no value is shared), so a wrong "disjoint" — which
+    // would spuriously make a class ⊥ = FP — cannot arise from overlapping
+    // ranges. Same datatype bucketing: int / float / decimal / date /
+    // dateTime / string never cross-seed.
+    seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b));
+    seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b));
+    seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint);
+    seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint);
+    seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint);
+    seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint);
+}
+
+/// Emit `DisjointClasses([DKey(r_i), DKey(r_j)])` for every UNORDERED pair
+/// of distinct keys in one bucket where `disjoint(r_i, r_j)` holds. Uses the
+/// native `DisjointClasses` axiom (the shape the D10 ∀-clash probe proved
+/// the tableau handles), not a synthetic `And ⊑ ⊥`. O(k²), k small.
+fn seed_disjoint_bucket<R>(
+    out: &mut InternalOntology,
+    keys: &[(ClassId, R)],
+    disjoint: impl Fn(&R, &R) -> bool,
+) {
+    for (i, (a_cid, a_r)) in keys.iter().enumerate() {
+        for (b_cid, b_r) in keys.iter().skip(i + 1) {
+            if disjoint(a_r, b_r) {
+                let a = out.concepts.atomic(*a_cid);
+                let b = out.concepts.atomic(*b_cid);
+                out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+            }
+        }
+    }
 }
 
 /// Emit `SubClassOf(DKey(r_i), DKey(r_j))` for every ordered pair of

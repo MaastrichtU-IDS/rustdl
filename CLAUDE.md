@@ -452,20 +452,39 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   the tuned corpus byte-identical at FP=0/MISSED=0. `RUSTDL_SNAPSHOT_LAZY`
   is moot while capture is off. See
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md`.
-- **New as of Phase 2b**: `RUSTDL_HORN_SHORTCIRCUIT` defaults ON.
-  For ontologies classified as `Horn` fragment (`analyze_fragment`
-  returns `Horn` — i.e., clausifier produces only Horn clauses with
-  no deferred axioms), classify dispatches to the saturation-only
-  fast path instead of the per-pair verification loop. Sound by
-  composition: the hyper Horn fixpoint is complete on Horn, so the
-  saturation closure IS the full classification. Set
-  `RUSTDL_HORN_SHORTCIRCUIT=0` to revert to the Phase 1c per-pair
-  loop for Horn fragments. Massive wall savings on Horn workloads:
-  GALEN 161.95 s → 0.40 s (~405×), notgalen 366.25 s → 0.69 s
-  (~531×), alehif 1.63 s → 0.09 s (~18×); out-of-EL fixtures
-  unchanged. See
+- **Phase 2b / Phase D10**: `RUSTDL_HORN_SHORTCIRCUIT` defaults ON.
+  classify dispatches ontologies in the **saturator's complete
+  fragment** to the saturation-only fast path instead of the per-pair
+  loop. **SOUNDNESS-OF-COMPLETENESS FIX (D10, 2026-06-09):** the gate
+  was originally `analyze_fragment == Horn` (clausal Horn). That is
+  UNSOUND — the EL saturator has no ∀-rule (nor qualified-cardinality /
+  general disjunction), so a clausal-Horn-but-not-EL ontology (`∀` +
+  disjointness) was silently mis-classified and reported complete
+  (`timed_out_pairs==0`); proven by `/tmp/forall-probe.ofn`
+  (`∃p.K3 ⊓ ∀p.K1020` + `K3⊓K1020⊑⊥`: C is unsat, the saturator missed
+  it). The "hyper Horn fixpoint is complete on Horn" justification was
+  false-as-implemented: the shortcircuit ran the **EL saturator**, not
+  the hyper fixpoint. The gate is now `saturator_complete_fragment`
+  (`classify.rs`): a STRICT allowlist anchored to the constructs the
+  saturator's rules actually process — EL concepts (`Top`/`Atomic`/`⊓`/
+  `∃` forward) + role hierarchy / length-≤2 chains / transitivity /
+  functional + inverse-functional witness-merge / domain / range.
+  Everything else (`∀`, `≤n`, `⊔`, nominals, inverse-role *use*,
+  `DisjointClasses` [excluded conservatively — disjoint×functional-merge
+  unproven], ABox, …) ⟹ fall back to the sound+complete hybrid path.
+  Real impact: alehif (ALC = has `∀`) + sulo now route to hybrid
+  (alehif 0.09 s → ~6.6 s wall) — the old fast path was a *lucky*
+  MISSED=0 on the ∀-incomplete saturator; GALEN/notgalen (EL +
+  functional, no ∀) keep the fast path (0.59 s / 1.06 s). Set
+  `RUSTDL_HORN_SHORTCIRCUIT=0` to disable the functional fast path
+  (pure-EL still fast via the `is_pure_el` arm). The D10 fix also
+  **unblocks `DataAllValuesFrom`**: data-`∀` now correctly routes to
+  the tableau, so the piece-#2 lowering (`∀p.DKey` + DKey-disjointness)
+  becomes safe to build. Canaries: `saturator_fragment_{accepts_el_
+  plus_functional,rejects_forall,rejects_max_cardinality,rejects_
+  disjoint_classes}`. See
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §5
-  + `docs/phase2a-recon.md` + `docs/phase2b-snapshot-results.md`.
+  + `docs/phase2a-recon.md`.
 
 - **New as of 2026-06-06**: `RUSTDL_PRECISE_CARD_DEPS` defaults ON.
   At the wedge's `≤n` cardinality-clash pre-check, reports a sound

@@ -498,16 +498,18 @@ pub(crate) fn classify_internal_with_timeout(
     // never need the tableau. This is the common case for partonomy
     // ontologies like Galen-EL or the SNOMED core fragment.
     //
-    // Phase 2b: also dispatch Horn-fragment ontologies (GALEN,
-    // notgalen, alehif) to the same saturation fast path. The hyper
-    // Horn fixpoint is complete by construction on Horn fragments,
-    // so the saturation closure IS the full classification — the
-    // per-pair verification loop below was redundant work on Horn
-    // inputs (1.86M wasted pair calls on GALEN per Phase 2a recon).
-    // Gated by RUSTDL_HORN_SHORTCIRCUIT (default ON) for A/B isolation.
+    // Phase 2b / Phase D10: also dispatch ontologies in the SATURATOR's
+    // complete fragment (EL + role-hierarchy/chains/transitivity +
+    // functional/inverse-functional merge — e.g. GALEN, notgalen) to the
+    // saturation fast path, skipping the redundant per-pair loop (1.86M
+    // wasted pair calls on GALEN per Phase 2a recon). NOTE: this is
+    // `saturator_complete_fragment`, NOT clausal-Horn — the saturator has no
+    // ∀-rule, so the old `analyze_fragment == Horn` gate silently mis-
+    // classified Horn-but-not-EL inputs (∀ + disjointness) and reported
+    // complete; see `saturator_complete_fragment`. Gated by
+    // RUSTDL_HORN_SHORTCIRCUIT (default ON) for A/B isolation.
     if is_pure_el(internal)
-        || (crate::horn_shortcircuit_enabled()
-            && matches!(analyze_fragment(internal), FragmentClassification::Horn))
+        || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
     {
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
     }
@@ -794,6 +796,92 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     }
 }
 
+/// The fragment on which the **EL saturator is COMPLETE** — the sound gate
+/// for the Horn-shortcircuit (Phase D10, 2026-06-09). A *clausal*-Horn
+/// ontology is NOT enough: the saturator is complete on EL plus the
+/// extensions its rules actually run (role hierarchy, length-≤2 chains,
+/// transitivity, functional / inverse-functional witness-merge, domain,
+/// range), but it has **no ∀-rule and no qualified-cardinality / general
+/// disjunction reasoning**. So `∀`, `≤n`, `⊔`, nominals, inverse-role *use*,
+/// etc. can make it silently MISS entailments while the closure reports
+/// "complete" — proven by `∃p.K3 ⊓ ∀p.K1020` + `K3 ⊓ K1020 ⊑ ⊥`, which is
+/// clausal-Horn yet the saturator reports C satisfiable. (Earlier the
+/// shortcircuit keyed on `analyze_fragment == Horn`, which is exactly this
+/// unsound clausal test.)
+///
+/// This is a STRICT allowlist anchored to the constructs the saturator's
+/// rules genuinely process (the D9 fragment map: COMPLETE = Atomic / ⊓ / ∃ /
+/// the listed role axioms); anything outside ⟹ `false` ⟹ the caller falls
+/// back to the sound+complete hybrid path. Deliberately conservative:
+/// `DisjointClasses` is EXCLUDED here even though [`is_pure_el`] permits it,
+/// because disjointness combined with the functional witness-merge is an
+/// unproven interaction — functional+disjoint ontologies fall back rather
+/// than risk a silent miss; pure-EL+disjoint still takes the separate
+/// `is_pure_el` arm. GALEN/notgalen (functional, no disjoint, no ∀, no
+/// chains>2, no inverse) stay on the fast path — verified by
+/// `galen_notgalen_in_saturator_fragment` + the corpus FP/MISSED gate.
+pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
+    internal
+        .axioms
+        .iter()
+        .all(|ax| is_saturator_axiom(ax, &internal.concepts))
+}
+
+fn is_saturator_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
+    match ax {
+        Axiom::SubClassOf { sub, sup } => {
+            is_saturator_concept(*sub, pool) && is_saturator_concept(*sup, pool)
+        }
+        Axiom::EquivalentClasses(members) => members.iter().all(|c| is_saturator_concept(*c, pool)),
+        Axiom::SubObjectPropertyOf { sub, sup } => {
+            !sup.is_inverse()
+                && match sub {
+                    SubRolePath::Role(r) => !r.is_inverse(),
+                    SubRolePath::Chain(parts) => {
+                        parts.len() == 2 && parts.iter().all(|r| !r.is_inverse())
+                    }
+                }
+        }
+        Axiom::EquivalentObjectProperties(roles) => roles.iter().all(|r| !r.is_inverse()),
+        // The saturator fully processes these role axioms: transitivity +
+        // length-2 chains (CR-chain), CR9 hierarchy, and the Phase-2
+        // functional / inverse-functional witness-merge.
+        Axiom::TransitiveRole(role)
+        | Axiom::FunctionalRole(role)
+        | Axiom::InverseFunctionalRole(role) => !role.is_inverse(),
+        Axiom::ObjectPropertyDomain { role, domain } => {
+            !role.is_inverse() && is_saturator_concept(*domain, pool)
+        }
+        Axiom::ObjectPropertyRange { role, range } => {
+            !role.is_inverse() && is_saturator_concept(*range, pool)
+        }
+        Axiom::DeclareClass(_)
+        | Axiom::DeclareObjectProperty(_)
+        | Axiom::DeclareNamedIndividual(_) => true,
+        // EXCLUDED ⟹ fall back to the hybrid path. DisjointClasses /
+        // DisjointUnion (disjoint×functional-merge unproven); all ABox
+        // assertions; InverseObjectProperties decls; Symmetric / Asymmetric
+        // / Reflexive / Irreflexive; DisjointObjectProperties;
+        // SameIndividual / DifferentIndividuals — none fully reasoned over
+        // by the saturator.
+        _ => false,
+    }
+}
+
+/// Concept fragment the saturator reasons over completely: EL
+/// (`Top` / `Atomic` / `⊓` / `∃` over forward roles). `Min(n≥1)` is a sound
+/// existential under-approximation for subsumption but is EXCLUDED here
+/// (conservative — `Min(≥2)` + functional is a cardinality interaction); and
+/// `All` / `Max` / `Or` / `Not` / `Nominal` / `Bot`-filler all ⟹ `false`.
+fn is_saturator_concept(c: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Top | ConceptExpr::Atomic(_) => true,
+        ConceptExpr::And(ops) => ops.iter().all(|op| is_saturator_concept(*op, pool)),
+        ConceptExpr::Some(role, body) => !role.is_inverse() && is_saturator_concept(*body, pool),
+        _ => false,
+    }
+}
+
 // ─── Top-down classification ─────────────────────────────────────
 //
 // The naive [`classify_internal_with_timeout`] tests `n²` ordered
@@ -889,12 +977,13 @@ pub(crate) fn classify_top_down_internal(
     // classifier's fast path. Top-down only earns its complexity on
     // hybrid inputs where the tableau actually runs.
     //
-    // Phase 2b: also dispatch Horn-fragment ontologies (GALEN,
-    // notgalen, alehif) to the same saturation fast path. See spec §5
-    // + docs/phase2a-recon.md. Gated by RUSTDL_HORN_SHORTCIRCUIT.
+    // Phase 2b / Phase D10: dispatch ontologies in the SATURATOR's complete
+    // fragment to the saturation fast path (see `saturator_complete_fragment`
+    // — NOT clausal-Horn; the latter silently mis-classified Horn-but-not-EL
+    // ∀ inputs). See spec §5 + docs/phase2a-recon.md. Gated by
+    // RUSTDL_HORN_SHORTCIRCUIT.
     if is_pure_el(internal)
-        || (crate::horn_shortcircuit_enabled()
-            && matches!(analyze_fragment(internal), FragmentClassification::Horn))
+        || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
     {
         // Skip the ABox check entirely on ABox-free inputs — building
         // PreparedOntology costs ~1.5 s on GALEN-sized TBoxes (NNF +
@@ -2523,6 +2612,87 @@ Ontology(<http://rustdl.test/test>\n\
             result,
             FragmentClassification::PureEl,
             "InverseObjectProperties is non-EL — must not classify as PureEl",
+        );
+    }
+
+    // ── Phase D10: saturator_complete_fragment gate (the sound
+    // Horn-shortcircuit trigger). NEGATIVES carry the soundness weight: a
+    // construct the saturator can't fully reason over must NOT pass, or the
+    // shortcircuit silently misses entailments and reports complete.
+
+    fn internal_of(body: &str) -> InternalOntology {
+        let onto = parse(&format!(
+            "{HEADER}Ontology(<http://rustdl.test/t>\n{body}\n)\n"
+        ));
+        owl_dl_core::convert::convert_ontology(&onto).expect("convert")
+    }
+
+    #[test]
+    fn saturator_fragment_accepts_el_plus_functional() {
+        // EL concepts (∃, ⊓) + a Functional role characteristic — the
+        // GALEN/notgalen shape. Must stay on the fast path.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    FunctionalObjectProperty(:r)\n\
+    TransitiveObjectProperty(:r)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :A)))\n",
+        );
+        assert!(
+            saturator_complete_fragment(&i),
+            "EL + functional/transitive must be in the saturator fragment"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_forall() {
+        // The proven silent-miss shape: ∀ + disjointness is clausal-Horn but
+        // the saturator has no ∀-rule. Must FALL BACK (predicate false).
+        let i = internal_of(
+            "    Declaration(Class(:C))\n\
+    Declaration(Class(:K3))\n\
+    Declaration(Class(:K1020))\n\
+    Declaration(ObjectProperty(:p))\n\
+    SubClassOf(:C ObjectIntersectionOf(ObjectSomeValuesFrom(:p :K3) ObjectAllValuesFrom(:p :K1020)))\n\
+    DisjointClasses(:K3 :K1020)\n",
+        );
+        assert!(
+            !saturator_complete_fragment(&i),
+            "∀ (ObjectAllValuesFrom) must drop out of the saturator fragment"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_max_cardinality() {
+        // ≤n is only handled in the narrow unqualified+functional path — not
+        // a general subsumption rule. Conservatively reject (the advisor's
+        // 'you suspect ≤n' — pinned).
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A ObjectMaxCardinality(1 :r :B))\n",
+        );
+        assert!(
+            !saturator_complete_fragment(&i),
+            "≤n cardinality must drop out of the saturator fragment"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_disjoint_classes() {
+        // Conservative exclusion: disjoint×functional-merge is an unproven
+        // interaction, so DisjointClasses falls back (pure-EL+disjoint still
+        // takes the separate is_pure_el arm).
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    DisjointClasses(:A :B)\n",
+        );
+        assert!(
+            !saturator_complete_fragment(&i),
+            "DisjointClasses is excluded from the saturator fragment (conservative)"
         );
     }
 

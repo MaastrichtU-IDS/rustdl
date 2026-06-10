@@ -60,3 +60,26 @@ This only affects the **out-of-EL hybrid-tableau path** (the SROIQ fragment).
 The embeddable EL/Horn niche (saturation path: bibtex 5 MB, GALEN 30 MB) is
 unaffected. So this is a SROIQ-performance/footprint item, orthogonal to the
 EL/Horn embeddability story.
+
+## ROOT CAUSE (2026-06-10, final): glibc malloc-arena retention
+
+The 1.47–1.6 GB is **allocator arena retention**, not a reasoner bug. Measured
+on alehif:
+- default (glibc, 32 threads): 1587 MB / 6.5 s
+- `MALLOC_ARENA_MAX=2`: 503 MB / 15 s ; `MALLOC_ARENA_MAX=1`: 233 MB / 29 s
+- mimalloc global allocator: **1873 MB** (WORSE — its own per-thread heaps
+  retain too, plus baseline overhead)
+
+`ARENA_MAX=1` (233 MB) ≈ the TRUE simultaneous-live peak across 32 threads; the
+extra ~1.35 GB at default is glibc holding freed memory in up to `8×ncores`
+per-thread arenas, churned by 16 k tiny per-probe alloc/free × 32 threads. The
+clause-index hoist couldn't help because the retention is independent of
+per-probe allocation *size*; swapping to mimalloc is worse. So there is **no
+free fix** — every mitigation trades wall for RSS:
+- `MALLOC_ARENA_MAX=2` (≈3× less RSS, ~2.3× wall) — env knob, zero code.
+- `RAYON_NUM_THREADS=8` (≈6× less RSS, ~3× wall) — env knob.
+The true working set (~233 MB) is itself modest; the headline 1.6 GB is an
+allocator artifact. Pinning the residual per-probe alloc/free churn that
+fragments the arenas needs a heap profiler (heaptrack/massif — not installed).
+**This is an out-of-EL-niche SROIQ-path concern; the EL/Horn embeddable niche
+is unaffected (GALEN 30 MB).**

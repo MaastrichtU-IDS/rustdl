@@ -640,6 +640,20 @@ pub fn hyper_double_block_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_DOUBLE_BLOCK").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Decide per-class (un)satisfiability in the top-down classifier's unsat-probe
+/// pass from the already-built Phase-7 label cache (the wedge) instead of a
+/// fresh MAIN-TABLEAU `decide` per class (`RUSTDL_UNSAT_VIA_LABELS`). Profiled
+/// as the dominant classify wall (~6 s alehif / ~22 s ore-10908 — the per-class
+/// main-tableau pass, redundant with the wedge verdict the label cache already
+/// holds). **Default ON.** Sound: `LabelOracle::Unsat` is a wedge `Unsat`
+/// (trusted direction, already trusted in the walk); `Sat` matches the
+/// established `trust_sat` model; `NoVerdict` falls through to the tableau. Set
+/// `RUSTDL_UNSAT_VIA_LABELS=0` for the pre-fix main-tableau pass (A/B).
+#[must_use]
+pub fn unsat_via_labels_enabled() -> bool {
+    std::env::var_os("RUSTDL_UNSAT_VIA_LABELS").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
 /// Precise (sound over-approx) `≤n`-cardinality clash deps
 /// (`RUSTDL_PRECISE_CARD_DEPS`). At the `forced_distinct_exceeds` pre-check site
 /// replaces the conservative `DepSet::ALL` with `parent.at_most_dep ∪ ⋃(birth ∪

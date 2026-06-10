@@ -1074,8 +1074,29 @@ pub(crate) fn classify_top_down_internal(
             let class_id =
                 owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
             if closure.is_unsatisfiable(class_id) {
-                Ok((i, false, true))
-            } else if let Some(timeout) = per_pair_timeout {
+                return Ok((i, false, true));
+            }
+            // Perf (unsat-probe de-redundancy, 2026-06-10): the Phase-7 label
+            // cache (the WEDGE) already decided satisfiability for most classes
+            // during its build — reuse that verdict instead of re-running the
+            // MAIN TABLEAU once per class (profiled as the dominant classify
+            // wall: ~6 s alehif / ~22 s ore-10908; see the global-model spec's
+            // TIER-WALK PROFILE). Soundness: `LabelOracle::Unsat` is a wedge
+            // `Unsat` — sound for any ontology (the trusted direction) and
+            // already trusted in `find_direct_parents_top_down`; `Sat` matches
+            // the trust_sat model the label cache + pruning already rely on.
+            // `NoVerdict`/absent (heuristic off, or build deadline) falls
+            // through to the main-tableau probe unchanged. Third tuple field is
+            // the "used_saturation" stat flag — `true` = "decided without a
+            // tableau call" (wedge), keeping `tableau_unsat_calls` honest.
+            if crate::unsat_via_labels_enabled() {
+                match label_cache.get(i) {
+                    Some(crate::LabelOracle::Unsat) => return Ok((i, false, true)),
+                    Some(crate::LabelOracle::Sat(_)) => return Ok((i, true, true)),
+                    Some(crate::LabelOracle::NoVerdict) | None => {}
+                }
+            }
+            if let Some(timeout) = per_pair_timeout {
                 let deadline = Instant::now() + timeout;
                 // Robustness: a `NoVerdict` (tableau internal cap, hit
                 // on large workloads like SIO) is treated as "possibly
@@ -2122,9 +2143,13 @@ Ontology(<http://rustdl.test/test>\n\
         // shortcircuit (default ON) bypasses for Horn-but-non-EL inputs.
         let _env = EnvGuard::set(&[("RUSTDL_HORN_SHORTCIRCUIT", "0")]);
         // The DisjointObjectProperties axiom is outside our EL
-        // saturation fragment — classify should NOT take the
-        // pure-EL fast path and should issue at least one tableau
-        // call (per-class unsat probes count).
+        // saturation fragment — classify should NOT take the pure-EL
+        // fast path; it takes the hybrid path and still produces the
+        // correct hierarchy. (Pre-2026-06-10 this asserted a tableau
+        // call count > 0; the unsat-probe-via-label-cache optimization
+        // now decides the trivially-satisfiable classes via the wedge
+        // without a main-tableau call, so the documented intent is the
+        // fragment routing + verdict correctness, not the call count.)
         let onto = parse(&format!(
             "{HEADER}\
 Ontology(<http://rustdl.test/test>\n\
@@ -2137,12 +2162,16 @@ Ontology(<http://rustdl.test/test>\n\
 )\n"
         ));
         let h = classify(&onto).expect("classification");
-        let stats = h.stats();
-        assert!(!stats.pure_el_mode);
         assert!(
-            stats.tableau_subsumption_calls + stats.tableau_unsat_calls > 0,
-            "expected the tableau to be invoked for the non-EL fragment"
+            !h.stats().pure_el_mode,
+            "non-EL fragment must not take the pure-EL path"
         );
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        assert!(
+            h.is_subclass(&iri("A"), &iri("B")),
+            "A ⊑ B in the hybrid path"
+        );
+        assert!(!h.is_subclass(&iri("B"), &iri("A")), "B ⋢ A");
     }
 
     #[test]

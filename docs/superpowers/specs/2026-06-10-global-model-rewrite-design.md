@@ -265,3 +265,41 @@ already handles GALEN-class. The win is wall + the parallel-alloc churn behind
 the memory artifact (fewer probes → less arena churn). To be *measured* in P0,
 not assumed — this session twice mis-predicted a perf cause; P0's residual count
 is the go/no-go signal for P1+.
+
+## TIER-WALK PROFILE (2026-06-10) — the real lever found: redundant unsat-probe
+
+Profiled `tier_walk` with env-gated phase checkpoints + region timers (perf
+unavailable; instrumentation since reverted). Phase breakdown:
+
+| ontology | saturate | prepare | label-cache | **gap → tier-walk-end** | walk loop | defined-sup |
+|---|---|---|---|---|---|---|
+| alehif | 1ms | +58 | +10 | **+6058ms** | 0ms | 215ms |
+| ore-10908 | 13ms | +94 | +152 | **+22027ms** | 2ms | 690ms |
+
+The 6.0s (alehif) / 22s (ore-10908) is **between label-cache and the tier walk**,
+and `find_direct_parents_top_down`'s candidate loop is ~0ms — so it is the
+**per-class unsat-probe pass** (classify.rs ~1078): `prepared.decide_with_deadline(class)`
+runs the **MAIN TABLEAU** satisfiability check once per class (~36 ms/class on
+alehif × 167 = 6 s). NOT the wedge probes (≈free), NOT the walk, NOT the
+sweeps. (pizza differs: ~3.2 s in walk probes + ~5 s unsat-probe — so the
+unsat-probe is broad, not alehif-specific.)
+
+**The lever (de-redundancy, independent of the rewrite): the unsat-probe is
+REDUNDANT with the label cache.** `classify_labels` (the wedge) already computes
+`LabelOracle::{Unsat, Sat, NoVerdict}` per class during the 10 ms label-cache
+build, and `LabelOracle::Unsat` is ALREADY trusted in `find_direct_parents_top_down`
+("C unsatisfiable ⟹ vacuously subsumes all"). Yet the separate unsat-probe
+re-derives the same Sat/Unsat via the slow main tableau. **Fix:** consult
+`label_cache[i]` for the unsat verdict — `Unsat→unsat`, `Sat→sat`,
+`NoVerdict→fall to the main-tableau probe` — eliminating the per-class main-
+tableau pass for the (vast majority) classes the wedge already decided. Expected
+to remove ~6 s (alehif) / ~22 s (ore-10908) of wall at zero new soundness
+surface beyond what the walk already trusts.
+
+**Soundness/verification:** this swaps unsat detection from the main tableau
+(complete) to the wedge/label-cache (trust_sat) — already the trust model used
+for `LabelOracle::Unsat` in the walk and for pruning. Must be gated + verified
+by the **differential equivalence** gate (identical hierarchy + unsat set vs
+current) + FP=0/MISSED=0 corpus gate. Small, contained, P1-style — and it is the
+ontology-independent lever P0 promised, now precisely located. **This, not the
+global-model rewrite, is the recommended next build.**

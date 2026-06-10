@@ -69,6 +69,44 @@ So the cost is **model size × duplication × parallelism**, not absent blocking
    the EL/Horn embeddable niche (which is already lean: GALEN 30 MB). For the
    current Resource-track positioning, SROIQ perf is not on the critical path.
 
+## L2 RESULT (2026-06-10) — the diagnosis flips again
+
+Ran the L2 diagnostic (env-gated `WEDGEPROBE` instrumentation on alehif,
+single-thread, since reverted). Findings:
+
+- **Wedge models are TINY**: across 16 048 `decide` probes, `node_count`
+  **max = 19, median = 2**. Not 30 MB graphs. The earlier "~30 MB per-pair
+  graph" estimate was wrong.
+- **Blocking is irrelevant**: 31 429 `is_blocked_calls`, 194 `blocks_fired`
+  (0.6 %) — because there is nothing to block (2-node models). So L3/L4 (global
+  model / tighter blocking) are NOT the levers.
+- **The real cost is per-probe ENGINE RECONSTRUCTION.** The classify walk issues
+  **16 048** wedge `decide` calls, and `HyperContext::decide` (lib.rs:986) does
+  `self.clauses.clone()` + `HyperEngine::new` every time, and `new`
+  (hyper.rs) runs `build_disjoint_pairs(clauses)` + `build_clause_indexes(clauses)`
+  — **both O(#clauses)** over the FULL clause DB. So each of 16 048 probes
+  re-clones and re-indexes the entire (probe-invariant) clause DB. Peak RSS =
+  `#cores × per-probe O(clauses) working set`; the 170 s single-thread wall =
+  `16 048 × O(clauses) setup` (the search itself is trivial — ≤19 nodes).
+
+### Revised lever (replaces L3 as the primary fix) — CONTAINED, not a rewrite
+**Hoist the clause-DB-derived structures out of the per-probe loop.** The base
+clauses + `disjoint_pairs` + `clause_indexes` are identical across all 16 048
+probes; only the 2 q-clauses (`q⊑sub`, `q∧sup→⊥`) vary. Build the base
+structures ONCE in `HyperContext` (at prepare time) and per-probe overlay just
+the 2 q-clauses (cheap), instead of `clauses.clone()` + full `HyperEngine::new`.
+This attacks **both** axes at once:
+- **memory**: per-probe working set drops from O(clauses) to O(1) → parallel
+  fan-out collapses (no more 32 × full-clause-DB).
+- **wall**: removes 16 048 × O(clauses) index rebuilds → should also crush the
+  170 s single-thread / 6.5 s parallel wall.
+
+Scope: an engine/`HyperContext` refactor (layered or reusable indexes that admit
+cheap add/retract of the 2 q-clauses), FP-sensitive but **far smaller than the
+global-model rewrite** (L3) and orthogonal to blocking (L4). This is now the
+recommended fix if SROIQ perf/footprint is pursued. (L1 RAYON cap remains the
+zero-effort mitigation; L3/L4 are no longer indicated by the evidence.)
+
 Verification for any change: env-flag gate (A/B) + the full FP=0/MISSED=0 corpus
 gate + alehif/ore-10908/ore-15672 closure parity + memory re-measure.
 

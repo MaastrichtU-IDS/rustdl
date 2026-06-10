@@ -303,3 +303,46 @@ by the **differential equivalence** gate (identical hierarchy + unsat set vs
 current) + FP=0/MISSED=0 corpus gate. Small, contained, P1-style — and it is the
 ontology-independent lever P0 promised, now precisely located. **This, not the
 global-model rewrite, is the recommended next build.**
+
+## P2 (pseudo-model merging) DE-RISK (2026-06-10) — NO-GO on the headline target
+
+Pursued P2's go/no-go before building (per the advisor; measure don't assume).
+
+**Cheap-mechanism idea (rejected):** reuse the snapshot cache's replay in a
+"refute-only" mode (`NotSubsumed` → not-subsumed, never `Subsumed`). **Not
+soundly refute-only.** Replay's non-clash means "no clash on THIS one cached
+model with ¬D injected" — if ¬D needed a DIFFERENT non-deterministic branch, a
+sound reasoner would backtrack and might find `C ⊓ ¬D` unsat (`C ⊑ D` really
+holds). So the "refute" can be a silent **MISSED** — the §4 false-refutation
+hazard riding the snapshot's single-model bias. Sound only under the same
+`BackPropRisk::Safe` gate that already failed (it excludes disjunction, not
+non-determinism generally).
+
+**Target mismatch (the measurement):** ore-15672's 109 timeout pairs are
+non-deterministic (SHOIN — ≤n/nominal merges), the exact single-model-bias
+regime. And they are **fundamentally hard, not budget-limited**: the timeout
+count is **dead-stable at 109 across 25 ms / 1000 ms / 2000 ms** (80× budget,
+zero additional pairs decided). The oracle calls them non-subsumed (gate
+MISSED=0), so they ARE refutable in principle — but only by a complete search
+that backtracks across the non-deterministic choices, which the single cached
+model does not capture.
+
+**Verdict — NO clean path for P2 on this target:**
+- The cheap snapshot-replay-refute mechanism is **unsound** here (single-model
+  bias on non-deterministic pairs → MISSED), AND wouldn't even decide them
+  faster (they're fundamentally hard, not slow-but-decidable).
+- The real Haarslev–Möller pseudo-model **merge** (per-node ∃/∀/≤/≥ summaries)
+  must handle exactly this non-determinism in its clash conditions (the
+  ≤n/inverse rules H–M themselves had to patch), and whether a clash-free
+  pseudo-merge can SOUNDLY refute these fundamentally-hard non-deterministic
+  pairs is **unproven** — a clash-free pseudo-merge on a non-deterministic
+  ontology is itself the MISSED hazard.
+
+**Recommendation:** do NOT build P2 for the SROIQ-timeout target on this
+evidence. If pursued, it is a research-grade, FP-AND-MISSED-critical build for a
+fresh focused session, and its payoff on the headline target (ore-15672's
+fundamentally-hard non-deterministic pairs) is unproven. The shipped wins this
+thread are the unsat-probe de-redundancy (v0.3.7, 21–22× where it applied) and
+the per-pair-timeout knob (30× on ore-15672 at identical hierarchy — a tuning
+lever, not a build). The walk-probe / undecidable-pair cost is best left to the
+timeout knob (or resource-based abort) rather than P2.

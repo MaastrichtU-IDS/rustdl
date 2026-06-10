@@ -213,6 +213,51 @@ risk. Recommended only if A's residual stays large after P2. Out of scope here.
   niche** (which is already global-model-complete via the saturator). Pursue
   only if SROIQ classification performance becomes a goal.
 
+## P0 RESULTS (2026-06-10) — MIXED; conditional go, not a clear win
+
+Ran P0 (wall-breakdown + wedge-cost histogram, which is more informative than
+the planned refute/confirm counters — it reveals WHERE the wall goes). The wall
+is `tier_walk`-dominated everywhere (`tier_walk = total − setup`, and it
+*includes* the probe calls), but the split between walk-overhead and probe-time
+is **ontology-dependent**:
+
+| fixture | wall | tier_walk | probes | probe-cost split | bound by |
+|---|---|---|---|---|---|
+| alehif | 6.5s | 6305 ms | 16 048 | 15 859 @ 0ms (≈free) | **walk-overhead** |
+| ore-10908 | 23s | 22 901 ms | 6 881 | **645 @ 20–49 ms ≈ 19 s** | **probe-time** |
+| ore-15672 | 140s | 139 253 ms | 1 969 | (likely probe-time: 1969/139s) | probe-time (inferred) |
+
+**The go/no-go is split:**
+- **alehif (the ontology that motivated this whole thread) is WALK-OVERHEAD-bound
+  — probes are ~free.** The global-model rewrite (reduce probe count) would NOT
+  have helped it. Its 6.1 s is the top-down traversal itself
+  (`find_direct_parents_top_down`: candidate enumeration, label-oracle lookups,
+  closure checks), and its 1.6 GB is glibc arena churn — neither is probes.
+- **ore-10908 IS probe-bound** — 645 medium-cost probes (~30 ms) drive ~19 s of
+  23 s. Reducing probe count would help **IFF those 645 are model-REFUTABLE**
+  (the label cache already pruned 26 140 cheaply; the 645 are the ones that
+  passed `D∈L(C)` and needed a full probe). Whether they refute-after-probe
+  (rewrite helps) or confirm as real subsumptions (rewrite can't help — they
+  still need the tableau) is **UNMEASURED** — that is the missing P0 datum.
+
+**Verdict: do NOT commit to the rewrite yet.** It is a *partial, conditional*
+win (helps probe-bound SROIQ like ore-10908 only if the expensive probes are
+model-refutable) and does nothing for the walk-overhead-bound headline case
+(alehif). Two cheaper, targeted measurements gate any build:
+1. **Refute/confirm split of ore-10908's 645 expensive probes** — instrument
+   their verdicts (Unsat=confirm vs Sat=refute). If most are Sat (refutable),
+   P2's pseudo-model merging is justified; if most are Unsat (real
+   subsumptions), the rewrite cannot help and the tableau is doing necessary
+   work.
+2. **Profile alehif's tier-walk overhead** (`find_direct_parents_top_down`) —
+   this is a *separate, possibly broader* lever (it's pure walk cost, present on
+   every hybrid ontology) and may beat the rewrite for less effort.
+
+Net: P0 reframes the target. The clear, ontology-independent lever is the
+**tier-walk traversal overhead**, not per-pair probing (which is free on alehif
+and only conditionally reducible on ore-10908). The rewrite stays specced but
+**parked pending measurement #1**.
+
 ## 8. Expected payoff
 
 alehif: 16 048 probes → a residual of (hopefully) hundreds; the EL-saturator

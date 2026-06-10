@@ -115,3 +115,28 @@ The prior `docs/tableau-memory-investigation-2026-06-10.md` named "anywhere
 blocking" as the fix; that was based on the main-tableau `is_blocked` and missed
 that the wedge (the actual per-pair engine) already implements it. Corrected
 there and in memory.
+
+## IMPLEMENTATION RESULT (2026-06-10) — hoist gives NO benefit; REVERTED
+
+The clause-index hoist was implemented (Cow base + per-probe 2-clause overlay;
+`HyperBase`, `HyperEngine::with_base`, `RUSTDL_WEDGE_HOIST` flag) and verified
+**verdict-IDENTICAL** to the clone-and-rebuild path (alehif hierarchy 51 lines
+byte-identical off vs on; full reasoner suite green under flag=0 vs =1; agent's
+87-fixture A/B = 0 mismatches). So the refactor is correct.
+
+**But it gave ZERO memory/wall benefit** on the target:
+alehif HOIST=0 → 1561 MB / 6.47 s; HOIST=1 → 1617 MB / 6.43 s (unchanged,
+marginally worse). **Therefore the per-probe engine reconstruction
+(clauses.clone() + build_clause_indexes + build_disjoint_pairs) was NOT the
+bottleneck** — my L2 inference (setup-dominates) was wrong. Reverted (no value,
+hot-path complexity). Preserved on branch `worktree-agent-a92e8f2fc7cea09ac`.
+
+**Memory source still unattributed** (it IS the wedge/hybrid path: saturation
+11 MB vs hybrid 1.6 GB; but label-heuristic-OFF=1576 MB unchanged, and the
+per-probe-index-hoist unchanged). Two inference attempts were wrong
+(anywhere-blocking, then per-probe-reconstruction). **STOP inferring — the
+correct next step is a heap profiler** (heaptrack/massif, NOT currently
+installed) on a single-thread alehif classify to attribute the ~42 MB/probe-ish
+peak directly. Until then the alehif memory is uncharacterized beyond
+"parallel fan-out of the wedge path"; L1 (`RAYON_NUM_THREADS` cap) remains the
+only validated mitigation.

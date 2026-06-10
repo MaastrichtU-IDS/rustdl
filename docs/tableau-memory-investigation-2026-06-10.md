@@ -40,13 +40,20 @@ classifies in rustdl at **6.5 s / 1.47–1.62 GB RSS** vs Konclude
   memory-constrained deployments; consider a memory-aware default cap for the
   tableau phase (a blanket cap would slow all hybrid classify, so leave it a
   knob unless a deployment needs the bound).
-- **Deeper fix (the real lever, scoped project):** **anywhere blocking** —
-  block `y` against ANY older matching node (with an ordering to prevent mutual
-  blocking), not just tree-ancestors. Standard in HermiT/Konclude; blocks far
-  earlier → much smaller graphs → fixes BOTH the memory and the SROIQ wall.
-  FP/completeness-sensitive (ordering + equality-pair condition for the `F`
-  fragment must be exact), so it needs its own scoped effort + the full FP=0
-  gate — not a quick patch.
+- **Deeper fix — CORRECTED 2026-06-10 (see
+  `anywhere-blocking-scoping-2026-06-10.md`):** the original "add anywhere
+  blocking" claim here was WRONG. alehif's 167 probes run through the hyper
+  **wedge**, whose `is_blocked` (hyper.rs:780) **already does anywhere
+  subset-pairwise blocking** with `double_blocking` ON by default. (The
+  ancestor-only blocking I cited is the *main tableau's* `is_blocked`
+  (lib.rs:726), which alehif does not use.) So anywhere blocking is already
+  shipped. The residual blowup is **per-pair model duplication** — 167
+  independent wedge models, each large on the inverse fragment because pair
+  blocking is inherently conservative — × 32 parallel workers. The real lever
+  is therefore **global model construction / sound sub-model reuse** (kill the
+  167× duplication; the Konclude/HermiT approach), which is the previously
+  identified "global model" rewrite — large and FP-critical. See the scoping
+  doc for the L1/L2/L3 breakdown.
 
 ## Scope note
 This only affects the **out-of-EL hybrid-tableau path** (the SROIQ fragment).

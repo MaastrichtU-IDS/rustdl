@@ -108,12 +108,17 @@ DKey successor, told `DKey⊑DKey` edges + `DisjointClasses(DKey,DKey)`
 wedge today (`sio` passes for this reason). They carry no counting demand,
 so `card_sat` adds nothing.
 
-**Construction (at `from_internal`):**
-1. Scan the post-absorb IR for named classes with a `Min`/`Max`
-   ConceptExpr whose filler ∈ `dkey_ranges.keys()` → the *direct* set.
-2. Close downward via the told-subsumer table (already built): if
-   `C ⊑* D` and `D` is direct, add `C` (inheritance — `C` is unsat by the
-   same clash, and classify verifies each class independently).
+**Construction:** built in two places.
+1. `build_data_counting_classes` (at `from_internal`, on the *un-mutated*
+   pre-absorb IR — absorb consumes these axioms, so the scan must precede
+   it) collects the *direct* set: named classes whose `SubClassOf`/
+   `EquivalentClasses` axiom carries a `Min`/`Max` ConceptExpr with a DKey
+   filler (`dkey_ranges.keys()`), via `concept_has_dkey_counting`.
+2. Downward closure is applied lazily at *probe time*: a class qualifies
+   for verify if it is in the direct set OR any of its saturation
+   subsumers (`closure.subsumers_of`) is — so a subclass of a
+   counting-constrained class inherits the verify (it is unsat by the same
+   clash, and classify decides each class independently).
 
 **Perf gating:** if `data_counting_classes` is empty (every corpus
 ontology except synthetic), the probe is byte-identical to today — zero

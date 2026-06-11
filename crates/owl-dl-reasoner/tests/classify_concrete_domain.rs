@@ -140,3 +140,30 @@ fn forall_exists_membership_clash_unsat_via_classify() {
          xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"3\"^^xsd:integer)))"
     ));
 }
+
+/// Inheritance + feasible: `D` carries `≥2 p.[0,1]` (exactly 2 ints — SAT),
+/// `C ⊑ D`. The override fires for both (D is counting-constrained, C
+/// inherits via subsumers) but the main-tableau verify finds both SAT —
+/// proving the inheritance trigger does not over-fire into an FP.
+#[test]
+fn inherited_feasible_counting_sat_via_classify() {
+    let src = format!(
+        "{PFX}Ontology(<http://t/o>\n  \
+         Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:p))\n  \
+         SubClassOf(:D DataMinCardinality(2 :p DatatypeRestriction(xsd:integer \
+         xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"1\"^^xsd:integer)))\n  \
+         SubClassOf(:C :D)\n)\n"
+    );
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse ofn");
+    let unsat = classify(&onto).expect("classify");
+    let unsat = unsat.unsatisfiable_classes();
+    assert!(
+        !unsat.contains(&"http://t/D"),
+        "D (≥2 over 2 ints) must be SAT; got {unsat:?}"
+    );
+    assert!(
+        !unsat.contains(&"http://t/C"),
+        "C (⊑ D) must be SAT; got {unsat:?}"
+    );
+}

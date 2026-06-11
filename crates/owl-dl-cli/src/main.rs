@@ -248,9 +248,73 @@ enum Command {
     },
 }
 
-/// Parse an ontology, picking the reader from the file extension:
-/// `.ofn` → OWL Functional, `.owx` → OWL/XML, `.owl`/`.rdf` → RDF/XML.
-/// Unknown extensions default to OFN (backward-compatible).
+/// The three ontology serializations the CLI can read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OntFormat {
+    /// OWL Functional Syntax (`.ofn`).
+    Ofn,
+    /// OWL/XML (`.owx`).
+    Owx,
+    /// RDF/XML (`.owl`, `.rdf`).
+    RdfXml,
+}
+
+/// Detect the ontology serialization from a content sniff, falling back
+/// to the file extension when the content is inconclusive.
+///
+/// **Content wins over extension** when it unambiguously identifies the
+/// format. This is deliberate: real-world corpora (e.g. the ORE 2015
+/// pool) ship OWL-functional-syntax files with a `.owl` extension, and
+/// the pure-extension router fed those to the RDF/XML reader, which
+/// **panics** (an `unwrap` on the oxrdf parse error deep inside
+/// horned-owl) instead of erroring. Sniffing routes such a file to the
+/// functional-syntax reader, which parses it correctly.
+fn detect_format(src: &str, ext: Option<&str>) -> OntFormat {
+    // First meaningful line: skip a leading BOM, blank lines, and
+    // OFN/Turtle-style `#` comments.
+    let first = src
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or("");
+
+    // OWL Functional Syntax begins with `Prefix(` or `Ontology(`.
+    if first.starts_with("Prefix(") || first.starts_with("Ontology(") {
+        return OntFormat::Ofn;
+    }
+
+    // XML family: distinguish OWL/XML (`<Ontology>` root) from RDF/XML
+    // (`<rdf:RDF>` root) by scanning a short prefix; fall back to the
+    // extension for ambiguous XML.
+    if first.starts_with('<') {
+        let head: String = src.chars().take(4096).collect();
+        if head.contains("<rdf:RDF") || head.contains("<RDF") {
+            return OntFormat::RdfXml;
+        }
+        if head.contains("<Ontology") {
+            return OntFormat::Owx;
+        }
+        return match ext {
+            Some("owx") => OntFormat::Owx,
+            _ => OntFormat::RdfXml,
+        };
+    }
+
+    // Inconclusive content: trust the extension, defaulting to OFN
+    // (backward-compatible with the historical behaviour).
+    match ext {
+        Some("owx") => OntFormat::Owx,
+        Some("owl" | "rdf") => OntFormat::RdfXml,
+        _ => OntFormat::Ofn,
+    }
+}
+
+/// Parse an ontology. The serialization is detected from a content sniff
+/// ([`detect_format`]), falling back to the file extension — so a file
+/// whose extension misrepresents its content (e.g. OWL-functional syntax
+/// in a `.owl` file) is still read by the correct reader rather than
+/// panicking in the RDF/XML reader.
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
     let src = std::fs::read_to_string(path)
         .with_context(|| format!("opening ontology file: {}", path.display()))?;
@@ -258,17 +322,17 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
         .extension()
         .and_then(|s| s.to_str())
         .map(str::to_ascii_lowercase);
+    let format = detect_format(&src, ext.as_deref());
     let mut reader = std::io::Cursor::new(src);
     let cfg = ParserConfiguration::default();
-    let ontology: SetOntology<RcStr> = match ext.as_deref() {
-        Some("owx") => read_owx(&mut reader, cfg)
+    let ontology: SetOntology<RcStr> = match format {
+        OntFormat::Owx => read_owx(&mut reader, cfg)
             .map(|(o, _)| o)
             .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display()))?,
-        Some("owl" | "rdf") => read_rdf(&mut reader, cfg)
+        OntFormat::RdfXml => read_rdf(&mut reader, cfg)
             .map(|(o, _)| o.into())
             .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display()))?,
-        // .ofn and everything else: OWL Functional syntax (the historical default).
-        _ => read_ofn(&mut reader, cfg)
+        OntFormat::Ofn => read_ofn(&mut reader, cfg)
             .map(|(o, _)| o)
             .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display()))?,
     };
@@ -884,5 +948,60 @@ fn print_realization(r: &Realization) {
             continue;
         }
         println!("{individual}\t{}", leaves.join("\t"));
+    }
+}
+
+#[cfg(test)]
+mod format_detect_tests {
+    use super::{OntFormat, detect_format};
+
+    #[test]
+    fn ofn_content_with_owl_extension_is_ofn() {
+        // The reported bug: ORE 2015 ships OWL-functional syntax with a
+        // `.owl` extension. Content must win → OFN, not RDF/XML (which
+        // panics on this input).
+        let src = "Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\nOntology(<urn:o>)";
+        assert_eq!(detect_format(src, Some("owl")), OntFormat::Ofn);
+    }
+
+    #[test]
+    fn ofn_content_after_comments_and_bom() {
+        let src = "\u{feff}# a comment\n\n  Ontology(<urn:o>)\n";
+        assert_eq!(detect_format(src, Some("owl")), OntFormat::Ofn);
+    }
+
+    #[test]
+    fn ofn_extension_still_ofn() {
+        let src = "Prefix(:=<urn:#>)\nOntology()";
+        assert_eq!(detect_format(src, Some("ofn")), OntFormat::Ofn);
+    }
+
+    #[test]
+    fn rdf_xml_content_is_rdfxml() {
+        let src = "<?xml version=\"1.0\"?>\n<rdf:RDF xmlns:rdf=\"...\">\n</rdf:RDF>";
+        assert_eq!(detect_format(src, Some("owl")), OntFormat::RdfXml);
+        // even with a misleading .ofn extension, the content wins
+        assert_eq!(detect_format(src, Some("ofn")), OntFormat::RdfXml);
+    }
+
+    #[test]
+    fn owl_xml_root_is_owx_even_with_owl_extension() {
+        let src = "<?xml version=\"1.0\"?>\n<Ontology xmlns=\"http://www.w3.org/2002/07/owl#\"/>";
+        assert_eq!(detect_format(src, Some("owl")), OntFormat::Owx);
+    }
+
+    #[test]
+    fn ambiguous_xml_falls_back_to_extension() {
+        let src = "<?xml version=\"1.0\"?>\n<something/>";
+        assert_eq!(detect_format(src, Some("owx")), OntFormat::Owx);
+        assert_eq!(detect_format(src, Some("owl")), OntFormat::RdfXml);
+    }
+
+    #[test]
+    fn inconclusive_content_trusts_extension() {
+        let src = "garbage that is neither";
+        assert_eq!(detect_format(src, Some("owx")), OntFormat::Owx);
+        assert_eq!(detect_format(src, Some("rdf")), OntFormat::RdfXml);
+        assert_eq!(detect_format(src, None), OntFormat::Ofn);
     }
 }

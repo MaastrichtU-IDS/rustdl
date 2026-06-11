@@ -1886,6 +1886,12 @@ pub(crate) struct PreparedOntology {
     /// (not yet armed). See `docs/superpowers/specs/2026-06-11-concrete-domain-solver-design.md`.
     pub(crate) dkey_ranges:
         std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+    /// Named classes carrying a counting `DKey` constraint (see
+    /// `build_data_counting_classes`). The classify unsat-probe
+    /// main-tableau-verifies these instead of trusting the wedge's `Sat`.
+    #[allow(dead_code)]
+    pub(crate) data_counting_classes:
+        std::collections::HashSet<owl_dl_core::ir::ClassId>,
 }
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
@@ -1910,6 +1916,81 @@ fn build_dkey_range_map(
     map
 }
 
+/// True if concept `c`'s expression contains (recursively) a `Min`/`Max`
+/// cardinality whose filler is a `DKey` datatype-range class. Such a class's
+/// satisfiability can hinge on a concrete-domain counting clash that the
+/// hypertableau wedge cannot evaluate (it has no `card_sat` and does not
+/// materialise `DKey` cardinality — see the wedge-hang fix).
+fn concept_has_dkey_counting(
+    pool: &ConceptPool,
+    c: ConceptId,
+    dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Min(_, _, inner) | ConceptExpr::Max(_, _, inner) => {
+            if matches!(
+                pool.get(*inner),
+                ConceptExpr::Atomic(cls) if dkey_ranges.contains_key(cls)
+            ) {
+                return true;
+            }
+            concept_has_dkey_counting(pool, *inner, dkey_ranges)
+        }
+        ConceptExpr::Not(inner) => concept_has_dkey_counting(pool, *inner, dkey_ranges),
+        ConceptExpr::Some(_, inner) | ConceptExpr::All(_, inner) => {
+            concept_has_dkey_counting(pool, *inner, dkey_ranges)
+        }
+        ConceptExpr::And(ops) | ConceptExpr::Or(ops) => {
+            ops.iter().any(|&o| concept_has_dkey_counting(pool, o, dkey_ranges))
+        }
+        _ => false,
+    }
+}
+
+/// Named classes that carry a *counting* `DKey` constraint
+/// (`DataMin/Max/ExactCardinality` over an integer range, lowered to
+/// `Min`/`Max` over a `DKey` filler). Scanned from the *un-mutated* IR
+/// (pre-absorb), where the raw `SubClassOf`/`EquivalentClasses` axioms
+/// still carry the lowered concept. The classify unsat-probe verifies
+/// these (and their saturation-subclasses) on the main tableau instead of
+/// trusting the wedge's `Sat`. Empty unless the ontology has integer data
+/// cardinality — keeps the fast wedge path for every value-membership-only
+/// ontology (e.g. `sio`).
+fn build_data_counting_classes(
+    internal: &InternalOntology,
+    dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+) -> std::collections::HashSet<owl_dl_core::ir::ClassId> {
+    let mut set = std::collections::HashSet::new();
+    if dkey_ranges.is_empty() {
+        return set;
+    }
+    let pool = &internal.concepts;
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                if let ConceptExpr::Atomic(c) = pool.get(*sub)
+                    && concept_has_dkey_counting(pool, *sup, dkey_ranges)
+                {
+                    set.insert(*c);
+                }
+            }
+            Axiom::EquivalentClasses(members)
+                if members
+                    .iter()
+                    .any(|&m| concept_has_dkey_counting(pool, m, dkey_ranges)) =>
+            {
+                for &m in members {
+                    if let ConceptExpr::Atomic(c) = pool.get(m) {
+                        set.insert(*c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    set
+}
+
 impl PreparedOntology {
     /// Run every preparation pass against `internal` so subsequent
     /// `decide` calls only have to allocate a fresh tableau and run
@@ -1927,6 +2008,7 @@ impl PreparedOntology {
         // classes into a ClassId → CardRange map while the vocabulary is
         // available. Pure; consumed by the (not-yet-armed) P3 clash rule.
         let dkey_ranges = build_dkey_range_map(&internal);
+        let data_counting_classes = build_data_counting_classes(&internal, &dkey_ranges);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
@@ -1994,6 +2076,7 @@ impl PreparedOntology {
             per_class_unsafe_count,
             abox_verdict: std::sync::OnceLock::new(),
             dkey_ranges,
+            data_counting_classes,
         })
     }
 
@@ -4084,6 +4167,49 @@ Ontology(<http://rustdl.test/test>\n\
         let err = is_subclass_of(&onto, "http://rustdl.test/A", "http://rustdl.test/Nope")
             .expect_err("unknown sup should error");
         assert!(matches!(err, ReasonError::UnknownClass(_)));
+    }
+
+    #[test]
+    fn builds_data_counting_classes_for_integer_cardinality() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(\nDeclaration(Class(:C))\nDeclaration(DataProperty(:p))\n\
+SubClassOf(:C DataMinCardinality(3 :p DatatypeRestriction(xsd:integer \
+xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"1\"^^xsd:integer)))\n)\n";
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+        let internal = convert_ontology(&onto).expect("convert");
+        let dkey = build_dkey_range_map(&internal);
+        let counting = build_data_counting_classes(&internal, &dkey);
+        // Resolve :C's ClassId by IRI (do NOT assume index 0 — owl:Thing may take it).
+        let c_id = internal
+            .vocabulary
+            .classes()
+            .find(|(_, iri)| *iri == "http://t/C")
+            .map(|(id, _)| id)
+            .expect("C declared");
+        assert!(
+            counting.contains(&c_id),
+            "C must be in data_counting_classes; got {counting:?}"
+        );
+    }
+
+    #[test]
+    fn no_data_counting_classes_for_value_membership_only() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        // DataSomeValuesFrom is value-membership (∃p.DKey), NOT counting.
+        let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(\nDeclaration(Class(:C))\nDeclaration(DataProperty(:p))\n\
+SubClassOf(:C DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer \
+xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n";
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+        let internal = convert_ontology(&onto).expect("convert");
+        let dkey = build_dkey_range_map(&internal);
+        let counting = build_data_counting_classes(&internal, &dkey);
+        assert!(counting.is_empty(), "value-membership must not be counting; got {counting:?}");
     }
 }
 

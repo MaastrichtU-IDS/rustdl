@@ -730,3 +730,80 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod fuzz {
+    //! Property-based soundness fuzz: `integer_sat` is REFUTE-ONLY, so its one
+    //! inviolable property is **no false `Unsat`** — whenever it reports
+    //! `Unsat`, NO satisfying set of distinct integers exists. We check that
+    //! against an independent brute-force oracle over a small universe `[0,U]`
+    //! (enumerate every subset; a constraint set is feasible iff some subset
+    //! satisfies all `≥`/`≤` bounds and lies within the universal filter).
+    use super::*;
+    use proptest::prelude::*;
+
+    const U: i64 = 10; // universe [0, U] → 2^(U+1) subsets per check
+
+    fn brute_feasible(
+        universal: Option<(i64, i64)>,
+        mins: &[(i64, i64, u32)],
+        maxs: &[(i64, i64, u32)],
+    ) -> bool {
+        let vals: Vec<i64> = (0..=U).collect();
+        for mask in 0u32..(1u32 << vals.len()) {
+            let v: Vec<i64> = vals
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| (mask >> i) & 1 == 1)
+                .map(|(_, &x)| x)
+                .collect();
+            if let Some((lo, hi)) = universal
+                && v.iter().any(|&x| x < lo || x > hi)
+            {
+                continue;
+            }
+            let count_in = |lo: i64, hi: i64| v.iter().filter(|&&x| x >= lo && x <= hi).count();
+            if mins
+                .iter()
+                .all(|&(lo, hi, k)| count_in(lo, hi) >= k as usize)
+                && maxs
+                    .iter()
+                    .all(|&(lo, hi, m)| count_in(lo, hi) <= m as usize)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn ivl() -> impl Strategy<Value = (i64, i64)> {
+        (0i64..=U, 0i64..=U).prop_map(|(a, b)| (a.min(b), a.max(b)))
+    }
+    fn card() -> impl Strategy<Value = (i64, i64, u32)> {
+        (ivl(), 0u32..4).prop_map(|((lo, hi), n)| (lo, hi, n))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn no_false_unsat(
+            universal in proptest::option::of(ivl()),
+            mins in proptest::collection::vec(card(), 0..4),
+            maxs in proptest::collection::vec(card(), 0..4),
+        ) {
+            let to_card = |v: &[(i64, i64, u32)]| -> Vec<Card<IntInterval>> {
+                v.iter().map(|&(lo, hi, n)| Card::new(IntInterval::closed(lo, hi), n)).collect()
+            };
+            let u = universal.map(|(lo, hi)| IntInterval::closed(lo, hi));
+            let verdict = integer_sat(u, &to_card(&mins), &to_card(&maxs));
+            if verdict == CardSat::Unsat {
+                // SOUNDNESS: a reported Unsat MUST be genuinely infeasible.
+                prop_assert!(
+                    !brute_feasible(universal, &mins, &maxs),
+                    "FALSE UNSAT: integer_sat said Unsat but a model exists. \
+                     u={universal:?} mins={mins:?} maxs={maxs:?}"
+                );
+            }
+        }
+    }
+}

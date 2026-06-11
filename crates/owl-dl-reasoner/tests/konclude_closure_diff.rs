@@ -36,6 +36,10 @@ use std::time::{Duration, Instant};
 const OWL_THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 const OWL_NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
+/// Shorthand for the (sub, sup) IRI-string pair sets used throughout the
+/// closure-diff helpers and the anytime sweep.
+type PairSet = BTreeSet<(String, String)>;
+
 /// Parsed Konclude verdict: direct subsumption edges (atomic-only)
 /// and the set of classes Konclude proved unsatisfiable (members of
 /// some `EquivalentClasses(owl:Nothing, ...)` group).
@@ -219,25 +223,26 @@ fn test_pair_ms() -> u64 {
         .unwrap_or(200)
 }
 
-/// Print and return (rustdl_closure, konclude_closure, fp, missed).
-fn diff_corpus_ontology(
-    label: &str,
-    input: &Path,
-    truth: &Path,
-    per_pair_ms: u64,
-) -> (usize, usize, usize, usize) {
-    let src = std::fs::read_to_string(input).expect("read input");
+/// Load an `.ofn` (OWL Functional Syntax) ontology from `path`.
+fn load_ofn_fixture(input: &Path) -> SetOntology<RcStr> {
+    let src = std::fs::read_to_string(input)
+        .unwrap_or_else(|e| panic!("read {}: {e}", input.display()));
     let mut reader = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
-        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse input");
-    let start = Instant::now();
-    let c = classify_top_down_with_timeout(&onto, Duration::from_millis(per_pair_ms))
-        .expect("classify");
-    let wall = start.elapsed();
-    let verdict = read_konclude_verdict(truth);
-    // Build the full exclude set up-front (unsat from both sides +
-    // Thing-equivalent classes Konclude omits by convention), then
-    // apply it symmetrically to both closures.
+        read_ofn(&mut reader, ParserConfiguration::default())
+            .unwrap_or_else(|e| panic!("parse {}: {e}", input.display()));
+    onto
+}
+
+/// Given a `Classification` result and the matching `KoncludeVerdict`, return
+/// `(rustdl_pairs, konclude_pairs)` with the same symmetric exclude-set applied
+/// to both sides: `exclude = verdict.unsat ∪ rustdl_unsat ∪ verdict.thing_equiv`.
+///
+/// This is the single canonical alignment definition shared by the closure-diff
+/// tests and the anytime sweep — keeping both callers on the same code path
+/// ensures FP=0 comparisons are valid (e.g. SIO's `EquivalentClasses(owl:Thing,
+/// SIO_000000)` causes spurious FPs without `thing_equiv` exclusion).
+fn aligned_closures(c: &Classification, verdict: &KoncludeVerdict) -> (PairSet, PairSet) {
     let rustdl_unsat: BTreeSet<String> = c
         .unsatisfiable_classes()
         .iter()
@@ -245,12 +250,30 @@ fn diff_corpus_ontology(
         .collect();
     let mut exclude: BTreeSet<String> = verdict.unsat.union(&rustdl_unsat).cloned().collect();
     exclude.extend(verdict.thing_equiv.iter().cloned());
-    let rustdl = closure_from_classification(&c, &exclude);
+    let rustdl = closure_from_classification(c, &exclude);
     let konclude_full = transitive_closure(&verdict.edges);
     let konclude: BTreeSet<(String, String)> = konclude_full
         .into_iter()
         .filter(|(s, t)| !exclude.contains(s) && !exclude.contains(t))
         .collect();
+    (rustdl, konclude)
+}
+
+/// Print and return (rustdl_closure, konclude_closure, fp, missed).
+fn diff_corpus_ontology(
+    label: &str,
+    input: &Path,
+    truth: &Path,
+    per_pair_ms: u64,
+) -> (usize, usize, usize, usize) {
+    let onto = load_ofn_fixture(input);
+    let start = Instant::now();
+    let c = classify_top_down_with_timeout(&onto, Duration::from_millis(per_pair_ms))
+        .expect("classify");
+    let wall = start.elapsed();
+    let verdict = read_konclude_verdict(truth);
+    let rustdl_unsat_count = c.unsatisfiable_classes().len();
+    let (rustdl, konclude) = aligned_closures(&c, &verdict);
     let fp: BTreeSet<_> = rustdl.difference(&konclude).cloned().collect();
     let missed: BTreeSet<_> = konclude.difference(&rustdl).cloned().collect();
     eprintln!(
@@ -260,7 +283,7 @@ fn diff_corpus_ontology(
         konclude.len(),
         fp.len(),
         missed.len(),
-        rustdl_unsat.len(),
+        rustdl_unsat_count,
         verdict.unsat.len(),
         verdict.thing_equiv.len(),
     );
@@ -578,4 +601,146 @@ fn family_stripped_inconsistency_detected() {
         !consistent,
         "family-stripped should be detected as inconsistent (stretch goal)"
     );
+}
+
+/// Map a fixture name string to `(input .ofn path, truth .owx path)`.
+///
+/// Paths are relative to the test binary working directory
+/// (`crates/owl-dl-reasoner`), which is two levels above the repo root, so
+/// all paths start with `../../`.
+fn fixture_paths(fx: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    match fx {
+        "galen" => (
+            "../../ontologies/external/galen.ofn".into(),
+            "../../ontologies/external/galen-classified.owx".into(),
+        ),
+        "alehif" => (
+            "../../ontologies/external/alehif-test.ofn".into(),
+            "../../ontologies/external/alehif-test-classified.owx".into(),
+        ),
+        "sio" => (
+            "../../ontologies/real/sio.ofn".into(),
+            "../../ontologies/real/konclude-input/sio-classified.owx".into(),
+        ),
+        "wine" => (
+            "../../ontologies/real/wine.ofn".into(),
+            "../../ontologies/real/konclude-input/wine-classified.owx".into(),
+        ),
+        "ore-10908" => (
+            "../../ontologies/external/ore-10908-sroiq.ofn".into(),
+            "../../ontologies/external/ore-10908-sroiq-classified.owx".into(),
+        ),
+        "ore-15672" => (
+            "../../ontologies/external/ore-15672-shoin.ofn".into(),
+            "../../ontologies/external/ore-15672-shoin-classified.owx".into(),
+        ),
+        other => panic!("unknown fixture key: {other}"),
+    }
+}
+
+/// Anytime per-pair sweep: for each fixture × per-pair deadline, record
+/// precision / recall / silent-miss / wall vs the oracle closure. Writes a
+/// CSV (env `RUSTDL_ANYTIME_CSV`, default `/tmp/anytime-per-pair.csv`).
+///
+/// Ignored; run explicitly:
+/// ```text
+/// RUSTDL_ANYTIME_CSV=docs/anytime-results-2026-06-11.csv \
+/// cargo test -p owl-dl-reasoner --release --test konclude_closure_diff \
+///   -- --ignored --nocapture anytime_per_pair_sweep
+/// ```
+///
+/// Output columns: fixture, phase, deadline_ms, recall, precision,
+/// silent_miss, wall_ms, undecided, true_pairs.
+///
+/// Soundness gate: asserts `fp == 0` at every (fixture, deadline) point.
+/// A timed-out pair is counted as "undecided" (not subsumed), so it NEVER
+/// appears in the rustdl closure — it is either a correctly-skipped miss
+/// (flagged undecided) or a genuine NOT-subsumed (no miss). The
+/// `silent_miss` column counts true-positive pairs that are neither
+/// reported as subsumed NOR flagged as undecided — these are the
+/// unreported, unacknowledged misses that violate the anytime contract.
+#[test]
+#[ignore = "long-running corpus sweep (all fixtures × 5 deadlines); run explicitly with RUSTDL_ANYTIME_CSV=<path>"]
+#[allow(clippy::cast_precision_loss)] // closure sizes ≤ 50k pairs, well within f64 mantissa
+fn anytime_per_pair_sweep() {
+    use std::fmt::Write as _;
+
+    let fixtures = ["galen", "alehif", "sio", "wine", "ore-10908", "ore-15672"];
+    let deadlines_ms: &[u64] = &[5, 25, 100, 250, 1000];
+    let csv_path = std::env::var("RUSTDL_ANYTIME_CSV")
+        .unwrap_or_else(|_| "/tmp/anytime-per-pair.csv".to_string());
+    let mut csv = String::from(
+        "fixture,phase,deadline_ms,recall,precision,silent_miss,wall_ms,undecided,true_pairs\n",
+    );
+
+    for &fx in &fixtures {
+        let (input_path, truth_path) = fixture_paths(fx);
+        if !input_path.exists() || !truth_path.exists() {
+            eprintln!("SKIP {fx}: fixture missing ({} or {})", input_path.display(), truth_path.display());
+            continue;
+        }
+
+        // Load oracle verdict once per fixture (deadline-independent).
+        let verdict = read_konclude_verdict(&truth_path);
+
+        // Load the ontology once per fixture (it's re-used across deadlines).
+        let onto = load_ofn_fixture(&input_path);
+
+        for &ms in deadlines_ms {
+            let t0 = Instant::now();
+            let h = owl_dl_reasoner::classify_with_timeout(&onto, Duration::from_millis(ms))
+                .expect("classify");
+            let wall_ms = t0.elapsed().as_millis();
+
+            // Use the same symmetric exclude-set alignment as the closure-diff
+            // tests — this is what makes the FP gate meaningful.
+            let (reported, true_pairs) = aligned_closures(&h, &verdict);
+
+            // Undecided pairs: timed-out probes flagged by the anytime contract.
+            let undecided: BTreeSet<(String, String)> = h
+                .undecided_pairs()
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect();
+
+            let tp = reported.intersection(&true_pairs).count();
+            let fp = reported.difference(&true_pairs).count();
+            let missed: BTreeSet<(String, String)> =
+                true_pairs.difference(&reported).cloned().collect();
+            let precision = if reported.is_empty() {
+                1.0_f64
+            } else {
+                tp as f64 / reported.len() as f64
+            };
+            let recall = if true_pairs.is_empty() {
+                1.0_f64
+            } else {
+                tp as f64 / true_pairs.len() as f64
+            };
+            // Silent misses: true pairs that are neither reported nor flagged.
+            let silent_miss = missed.difference(&undecided).count();
+
+            // SOUNDNESS GATE: a deadline must never produce an unsound subsumption.
+            assert_eq!(
+                fp, 0,
+                "FP at {fx}@{ms}ms = {fp}; precision={precision:.6}"
+            );
+
+            let _ = writeln!(
+                csv,
+                "{fx},per_pair,{ms},{recall:.6},{precision:.6},{silent_miss},{wall_ms},{},{}",
+                undecided.len(),
+                true_pairs.len()
+            );
+            println!(
+                "{fx} @ {ms}ms: recall={recall:.4} precision={precision:.4} \
+                 silent_miss={silent_miss} wall={wall_ms}ms undecided={} missed={}",
+                undecided.len(),
+                missed.len()
+            );
+        }
+    }
+
+    std::fs::write(&csv_path, csv).expect("write CSV");
+    println!("wrote {csv_path}");
 }

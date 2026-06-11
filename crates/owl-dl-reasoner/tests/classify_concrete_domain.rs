@@ -56,7 +56,11 @@ fn capacity_clash_unsat_via_classify() {
 /// Conflict: `≥3 p.[0,100]` with `≤2 p.[0,100]`. UNSAT via classify.
 #[test]
 fn min_max_conflict_unsat_via_classify() {
-    assert!(c_unsat(&format!("{}\n{}", min_int(3, 0, 100), max_int(2, 0, 100))));
+    assert!(c_unsat(&format!(
+        "{}\n{}",
+        min_int(3, 0, 100),
+        max_int(2, 0, 100)
+    )));
 }
 
 /// Inheritance: `D` carries `≥3 p.[0,1]`, `C ⊑ D`. Both unsat via classify
@@ -75,7 +79,10 @@ fn inherited_counting_clash_unsat_via_classify() {
     let unsat = classify(&onto).expect("classify");
     let unsat = unsat.unsatisfiable_classes();
     assert!(unsat.contains(&"http://t/D"), "D unsat; got {unsat:?}");
-    assert!(unsat.contains(&"http://t/C"), "C (⊑ D) unsat; got {unsat:?}");
+    assert!(
+        unsat.contains(&"http://t/C"),
+        "C (⊑ D) unsat; got {unsat:?}"
+    );
 }
 
 // ─── FP GATE: satisfiable data nodes MUST stay satisfiable via classify ───
@@ -98,7 +105,11 @@ fn exactly_enough_sat_via_classify() {
 /// `≥2 p.[0,10]` with `≤5 p.[0,10]` — room to spare. SAT.
 #[test]
 fn min_under_max_sat_via_classify() {
-    assert!(!c_unsat(&format!("{}\n{}", min_int(2, 0, 10), max_int(5, 0, 10))));
+    assert!(!c_unsat(&format!(
+        "{}\n{}",
+        min_int(2, 0, 10),
+        max_int(5, 0, 10)
+    )));
 }
 
 /// `≤1 p.[0,10]` alone — always feasible. SAT.
@@ -111,7 +122,9 @@ fn datamax_alone_sat_via_classify() {
 /// `≥3 p.{a,b}` (string oneOf) stays SAT.
 #[test]
 fn noninteger_cardinality_sat_via_classify() {
-    assert!(!c_unsat("  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"a\" \"b\")))"));
+    assert!(!c_unsat(
+        "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"a\" \"b\")))"
+    ));
 }
 
 /// D11b probe (spec test gate): `∃p.{5} ⊓ ∀p.[0,3]`, 5 ∉ [0,3] ⟹ C unsat.

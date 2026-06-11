@@ -19,6 +19,33 @@ main-tableau clash. The higher-coverage, higher-risk in-wedge clash
 is deferred until a real workload surfaces a case Phase 1 misses. See
 "Deferred: in-wedge clash" below.
 
+## Status (implemented 2026-06-11)
+
+**Implementation commits:**
+- Task 1 (`32495ae` + `c432516`): `data_counting_classes` builder + `PreparedOntology` field
+- Tasks 2–3 (`d3d5aeb` + `442f31d`): failing classify canary + wire override into unsat probe
+- Task 4 (`5c5b5d4`): remaining utility + FP-gate canaries
+- Task 5 (`3bcbcdc`): D11b `∀+∃` membership probe
+
+**D11b probe outcome:** PASSED on first run (wedge catches `∃p.DKey(v) ⊓ ∀p.DKey(r)` membership clashes in `classify`). The predicate stayed counting-only — no widening needed.
+
+**Step 2 — 1M-cardinality DoS probe:** elapsed=0.012s (well under 1 s); `:C` reported unsatisfiable (rc=0). Hang fix confirmed still in effect.
+
+**Step 3 — Corpus closure-diff (FP=0/MISSED=0 gate):**
+- bibtex: rustdl=16, konclude=16 — FP=0 MISSED=0
+- alehif: rustdl=247, konclude=247 — FP=0 MISSED=0
+- shoiq-knowledge: rustdl=449, konclude=449 — FP=0 MISSED=0
+- sio: rustdl=8904, konclude=8904 — FP=0 MISSED=0
+- wine: rustdl=653, konclude=653 — FP=0 MISSED=0
+
+All 5 fixtures passed; `test result: ok. 5 passed` in 106.55 s.
+
+**Step 4 — sio perf spot-check:** sio.ofn classify wall = 20.8 s (normal range; `data_counting_classes` is empty for sio → override never fires, no extra main-tableau runs).
+
+**Canaries:** 9 tests in `crates/owl-dl-reasoner/tests/classify_concrete_domain.rs` — 3 utility (capacity-unsat, min/max-conflict, inheritance), 5 FP-gate (satisfiable classes stay satisfiable), 1 D11b membership-in-classify probe — all passing.
+
+**fmt note:** `cargo fmt --all -- --check` failed (rc=1) on the implementation code (line-length rewraps in `lib.rs` + `tests/classify_concrete_domain.rs`). `cargo fmt --all` was run as part of this task and the formatted files included in the commit.
+
 ## Measurement caveat (unchanged from the P3 spec)
 
 Real-corpus utility of concrete-domain counting is ≈0 (the target

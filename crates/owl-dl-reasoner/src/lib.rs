@@ -1889,8 +1889,7 @@ pub(crate) struct PreparedOntology {
     /// Named classes carrying a counting `DKey` constraint (see
     /// `build_data_counting_classes`). The classify unsat-probe
     /// main-tableau-verifies these instead of trusting the wedge's `Sat`.
-    pub(crate) data_counting_classes:
-        std::collections::HashSet<owl_dl_core::ir::ClassId>,
+    pub(crate) data_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
 }
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
@@ -1944,9 +1943,9 @@ fn concept_has_dkey_counting(
         ConceptExpr::Some(_, inner) | ConceptExpr::All(_, inner) => {
             concept_has_dkey_counting(pool, *inner, dkey_ranges)
         }
-        ConceptExpr::And(ops) | ConceptExpr::Or(ops) => {
-            ops.iter().any(|&o| concept_has_dkey_counting(pool, o, dkey_ranges))
-        }
+        ConceptExpr::And(ops) | ConceptExpr::Or(ops) => ops
+            .iter()
+            .any(|&o| concept_has_dkey_counting(pool, o, dkey_ranges)),
         _ => false,
     }
 }
@@ -4220,7 +4219,10 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             .find(|(_, iri)| *iri == "http://t/C")
             .map(|(id, _)| id)
             .expect("C declared");
-        assert!(counting.contains(&c_id), "C (exact card) must be counting; got {counting:?}");
+        assert!(
+            counting.contains(&c_id),
+            "C (exact card) must be counting; got {counting:?}"
+        );
     }
 
     #[test]
@@ -4237,7 +4239,10 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         let internal = convert_ontology(&onto).expect("convert");
         let dkey = build_dkey_range_map(&internal);
         let counting = build_data_counting_classes(&internal, &dkey);
-        assert!(counting.is_empty(), "value-membership must not be counting; got {counting:?}");
+        assert!(
+            counting.is_empty(),
+            "value-membership must not be counting; got {counting:?}"
+        );
     }
 }
 

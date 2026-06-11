@@ -68,6 +68,67 @@ corpus won't exercise it.
 Each phase is independently shippable and gated FP=0. P0 has no tableau
 contact, so its only risk is its own correctness (caught by unit tests).
 
+### Status (2026-06-11)
+- **P0 ✅** (`f307498`) — integer satisfiability core.
+- **P1 ✅** (`6568d85`) — generalized to dense (`DenseInterval`) + finite-set
+  (`FiniteSet`) via the `ValueRange` trait; 27 unit tests, refute-only.
+- **P2/P3 — RESOLVED ARCHITECTURE, not yet built (see below).**
+
+### P2/P3 resolved integration architecture (the `ClassId → CardRange` side-map)
+Two facts discovered while mapping the tableau pinned the only viable shape:
+1. `TableauContext` (lib.rs:112) holds `pool`/`tbox`/`hierarchy` — **no
+   vocabulary**, so the tableau cannot map a `ClassId` → IRI; and DKeys are
+   interned as ordinary IRI-deduped classes (NOT a reserved range like
+   nominals' `nominal_base + i`). ⇒ the tableau cannot detect a DKey class by
+   itself.
+2. `owl-dl-datatypes` depends on `owl-dl-core` (not the reverse), so `card_sat`
+   can only be *called* from `owl-dl-tableau`/`owl-dl-reasoner`, never from
+   `owl-dl-core` preprocessing (this also rules out a `data_axioms`-style
+   class-level card_sat pass).
+
+**Design:** build a `HashMap<ClassId, CardRange>` for the DKey classes **once**,
+where the vocab exists (`PreparedOntology::from_internal` / reasoner), by
+decoding each DKey IRI; thread it into `TableauContext` as a new borrowed field
+(parallel to `tbox`/`hierarchy`). The clash rule consults the map — no IRI access
+in the tableau — to (a) recognise a `∃/∀/Min/Max` filler as a data range and
+(b) get its decoded `CardRange`. `CardRange` is a `owl-dl-datatypes` enum over
+`IntInterval`/`DenseInterval`/`FiniteSet` with a single `card_sat` dispatch.
+
+**P2 task breakdown (turn-key):**
+1. `owl-dl-datatypes`: `enum CardRange { Int(IntInterval), Float(DenseInterval<…>),
+   Dec/Date/Dt(DenseInterval<…>), Str(FiniteSet<String>) }` + a unified
+   `card_sat_ranges(universal, mins, maxs)` dispatching by bucket (ranges in one
+   call must share a bucket — cross-bucket never interacts, as in seeding).
+2. `owl-dl-core`: a single public DKey decode point — `pub fn decode_dkey(iri)
+   -> Option<DecodedDkey>` (move the `parse_*_dkey_iri` family behind it) — where
+   `DecodedDkey` carries primitive bounds (no leaking the internal range structs).
+3. `owl-dl-reasoner`: in `PreparedOntology::from_internal`, build the
+   `ClassId → CardRange` map (decode every class IRI that `is_dkey_iri`).
+4. `convert.rs`: stop dropping `DataMin/Max/ExactCardinality` whose qualifier is
+   a recognised datatype range; lower to `Min`/`Max` over the DKey filler.
+
+**P3 task breakdown (the FP-critical clash):**
+5. `owl-dl-tableau`: new `TableauContext` field `dkey_ranges:
+   Option<&HashMap<ClassId, CardRange>>`; `apply_concrete_domain_check(ctx,
+   node)` after `apply_max`. Collect, per data-property-role at the node, the
+   `∃`(`≥1`)/`Min`(`≥n`)/`Max`(`≤n`)/`∀`(filter) labels whose filler is in the
+   map; run `card_sat_ranges`; if `Unsat`, add `Bot` with `DepSet` = **union of
+   the deps of EVERY data label fed to the solver** (sound superset — see the
+   invariants; `card_sat` should report which it used so we union exactly
+   those-or-a-superset). Suppress object-expansion (`apply_min`/`apply_max`)
+   for map-recognised DKey fillers (avoids materialising `n` successors
+   corpus-wide — the advisor's Q4).
+6. **COMPLETENESS OBLIGATION + canaries** (the real P3 risk): the collector must
+   see *every* lowering path (`DataHasValue` → `∃p.DKey({v})`, sub-property
+   ranges, `∀` injected post-rule, absorbed GCIs). Synthetic per-lowering-path
+   SAT-node canaries that MUST stay SAT, plus the unsat capacity/conflict
+   canaries. Then arm the clash; gate FP=0 corpus-wide.
+
+P3 (5–6) is FP-critical and must not be rushed: its failure mode is a subtle,
+corpus-invisible incomplete-collection clash → false subsumption. Build the
+collector with the completeness obligation and per-path SAT canaries BEFORE
+arming the clash.
+
 ## P0 algorithm (integers)
 
 Constraints for one property at one node, all over `xsd:integer`(/subtypes):

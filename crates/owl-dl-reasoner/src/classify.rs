@@ -389,7 +389,7 @@ impl Classification {
 /// error — partial results are not surfaced.
 pub fn classify<A: ForIRI>(ontology: &SetOntology<A>) -> Result<Classification, ReasonError> {
     let internal = convert_ontology(ontology)?;
-    classify_top_down_internal(&internal, None)
+    classify_top_down_internal(&internal, None, None)
 }
 
 /// Like [`classify`] but each pairwise tableau query is bounded by
@@ -405,7 +405,28 @@ pub fn classify_with_timeout<A: ForIRI>(
     per_pair_timeout: std::time::Duration,
 ) -> Result<Classification, ReasonError> {
     let internal = convert_ontology(ontology)?;
-    classify_top_down_internal(&internal, Some(per_pair_timeout))
+    classify_top_down_internal(&internal, Some(per_pair_timeout), None)
+}
+
+/// Classify under a single GLOBAL wall-clock budget: the whole run shares
+/// one absolute deadline. Pairs not confirmed by the deadline are reported
+/// "not subsumed" and recorded in `undecided_pairs()` (sound
+/// under-approximation — nothing is asserted on timeout, only omitted).
+///
+/// The deadline is shared across all probes in the run. Every probe uses
+/// that absolute `Instant` as its `decide_with_deadline` target; a probe
+/// reached late has little/no budget → times out → undecided.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn classify_with_global_deadline<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    budget: std::time::Duration,
+) -> Result<Classification, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    let deadline = Instant::now() + budget;
+    classify_top_down_internal(&internal, None, Some(deadline))
 }
 
 /// Naive `n²` pair-sweep classifier. Kept for benchmarking and
@@ -944,7 +965,7 @@ pub fn classify_top_down<A: ForIRI>(
     ontology: &SetOntology<A>,
 ) -> Result<Classification, ReasonError> {
     let internal = convert_ontology(ontology)?;
-    classify_top_down_internal(&internal, None)
+    classify_top_down_internal(&internal, None, None)
 }
 
 /// Top-down classifier with an optional per-pair tableau timeout
@@ -958,7 +979,7 @@ pub fn classify_top_down_with_timeout<A: ForIRI>(
     per_pair_timeout: std::time::Duration,
 ) -> Result<Classification, ReasonError> {
     let internal = convert_ontology(ontology)?;
-    classify_top_down_internal(&internal, Some(per_pair_timeout))
+    classify_top_down_internal(&internal, Some(per_pair_timeout), None)
 }
 
 /// Returns true iff the ontology contains any `ABox` axiom. Cheap
@@ -983,10 +1004,34 @@ fn has_abox_axioms(internal: &owl_dl_core::ontology::InternalOntology) -> bool {
     })
 }
 
+/// Compute the effective deadline for a single probe from the two
+/// deadline sources. Either source may be absent:
+/// - If both are set, use the earlier (min) of `global` and
+///   `now() + per_pair`.
+/// - If only one is set, use it.
+/// - If neither is set, return `None` (unbounded).
+///
+/// The per-pair term is re-evaluated at call time (`Instant::now()`)
+/// so each probe gets a fresh budget even when called sequentially
+/// (matches the existing `Instant::now() + timeout` pattern).
+#[inline]
+fn effective_deadline(
+    global: Option<Instant>,
+    per_pair: Option<std::time::Duration>,
+) -> Option<Instant> {
+    match (global, per_pair) {
+        (Some(gd), Some(t)) => Some(gd.min(Instant::now() + t)),
+        (Some(gd), None) => Some(gd),
+        (None, Some(t)) => Some(Instant::now() + t),
+        (None, None) => None,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) fn classify_top_down_internal(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
+    global_deadline: Option<Instant>,
 ) -> Result<Classification, ReasonError> {
     // Phase 2a recon: top-level classify wall, used to derive
     // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
@@ -1143,8 +1188,9 @@ pub(crate) fn classify_top_down_internal(
                     Some(crate::LabelOracle::NoVerdict) | None => {}
                 }
             }
-            if let Some(timeout) = per_pair_timeout {
-                let deadline = Instant::now() + timeout;
+            // Use effective_deadline so that a global wall-clock budget
+            // bounds the unsat probe just as it bounds pair probes.
+            if let Some(deadline) = effective_deadline(global_deadline, per_pair_timeout) {
                 // Robustness: a `NoVerdict` (tableau internal cap, hit
                 // on large workloads like SIO) is treated as "possibly
                 // satisfiable" — the class survives the unsat probe,
@@ -1243,6 +1289,7 @@ pub(crate) fn classify_top_down_internal(
                     &direct_children,
                     &top_level,
                     per_pair_timeout,
+                    global_deadline,
                     &label_cache,
                     &mut local_stats,
                 )?;
@@ -1386,6 +1433,7 @@ pub(crate) fn classify_top_down_internal(
                     cand_id,
                     sup_id,
                     Some(sweep_budget),
+                    global_deadline,
                     true,
                     &mut local_stats,
                 )
@@ -1595,6 +1643,7 @@ fn find_direct_parents_top_down(
     direct_children: &[Vec<usize>],
     top_level: &[usize],
     per_pair_timeout: Option<std::time::Duration>,
+    global_deadline: Option<Instant>,
     label_cache: &[crate::LabelOracle],
     stats: &mut ClassificationStats,
 ) -> Result<Vec<usize>, ReasonError> {
@@ -1616,6 +1665,18 @@ fn find_direct_parents_top_down(
             continue;
         }
         visited[d] = true;
+        // Global deadline short-circuit: if the budget has expired, flag
+        // this candidate undecided rather than paying for a probe that would
+        // instant-timeout anyway. Mark visited first so duplicate entries in
+        // the frontier don't double-count.
+        if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+            stats.timed_out_pairs += 1;
+            stats.timed_out_pair_ids.push((
+                u32::try_from(c).expect("class index fits in u32"),
+                u32::try_from(d).expect("class index fits in u32"),
+            ));
+            continue;
+        }
         let d_id = owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
         let subsumed = if closure.contains(c_id, d_id) {
             stats.saturation_subsumption_hits += 1;
@@ -1629,8 +1690,16 @@ fn find_direct_parents_top_down(
                         // D ∈ C's labels: might be coincidence-of-model;
                         // verify via the existing per-pair path.
                         stats.label_cache_pass_through += 1;
-                        subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, true, stats)?
-                            .unwrap_or_default()
+                        subsumes_via_tableau(
+                            prepared,
+                            c_id,
+                            d_id,
+                            per_pair_timeout,
+                            global_deadline,
+                            true,
+                            stats,
+                        )?
+                        .unwrap_or_default()
                     } else {
                         // D ∉ C's labels: this completion graph is a
                         // counterexample model. Sound non-subsumption.
@@ -1645,8 +1714,16 @@ fn find_direct_parents_top_down(
                 Some(crate::LabelOracle::NoVerdict) | None => {
                     // Cache missing — fall through to per-pair.
                     stats.label_cache_misses += 1;
-                    subsumes_via_tableau(prepared, c_id, d_id, per_pair_timeout, true, stats)?
-                        .unwrap_or_default()
+                    subsumes_via_tableau(
+                        prepared,
+                        c_id,
+                        d_id,
+                        per_pair_timeout,
+                        global_deadline,
+                        true,
+                        stats,
+                    )?
+                    .unwrap_or_default()
                 }
             }
         };
@@ -1694,6 +1771,7 @@ fn subsumes_via_tableau(
     sub: owl_dl_core::ClassId,
     sup: owl_dl_core::ClassId,
     per_pair_timeout: Option<std::time::Duration>,
+    global_deadline: Option<Instant>,
     trust_sat: bool,
     stats: &mut ClassificationStats,
 ) -> Result<Option<bool>, ReasonError> {
@@ -1763,7 +1841,9 @@ fn subsumes_via_tableau(
     // classes (`EquivalentClasses(Name, ComplexExpr)`) exercise, so
     // its `NotSubsumed` would silently drop real entailments (109
     // MISSED on GALEN, 27 on notgalen all traced to this).
-    let hyper_deadline = per_pair_timeout.map(|t| Instant::now() + t);
+    // Compute effective deadline for the wedge: honours both the
+    // per-pair timeout and any global wall-clock deadline.
+    let hyper_deadline = effective_deadline(global_deadline, per_pair_timeout);
     let wedge_start = Instant::now();
     let verdict = prepared.hyper_decide(sub, sup, hyper_deadline);
     let wedge_elapsed_ms = u64::try_from(wedge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1812,7 +1892,9 @@ fn subsumes_via_tableau(
         let not_super = pool.not(super_concept);
         pool.and(vec![sub_concept, not_super])
     };
-    match per_pair_timeout {
+    // Use effective_deadline so that a global wall-clock budget bounds the
+    // tableau probe even when per_pair_timeout is None (global-only mode).
+    match effective_deadline(global_deadline, per_pair_timeout) {
         None => {
             let sat = prepared.decide(build)?;
             stats.tableau_subsumption_calls += 1;
@@ -1822,8 +1904,7 @@ fn subsumes_via_tableau(
             }
             Ok(Some(subsumed))
         }
-        Some(timeout) => {
-            let deadline = Instant::now() + timeout;
+        Some(deadline) => {
             // Robustness: a `ReasonError::NoVerdict` (tableau internal
             // cap, e.g. on large workloads like SIO) is treated as a
             // sound timeout — the pair defaults to "not subsumed"
@@ -2861,5 +2942,62 @@ Ontology(\n\
         // The set length must equal the count stat (consistency), regardless of
         // whether this tiny ontology actually times out.
         assert_eq!(h.undecided_pairs().len(), h.stats().timed_out_pairs);
+    }
+
+    /// Global wall-clock deadline is sound and bounded.
+    ///
+    /// Uses a tiny pure-EL ontology to check the told-subsumption path
+    /// (A ⊑ B survives any budget via saturation, never probed) plus an
+    /// out-of-EL ontology (∀+∃, falls through to the tableau path) to
+    /// confirm the deadline actually bounds the wall and that
+    /// `undecided_pairs().len() == stats().timed_out_pairs` (anytime
+    /// invariant).
+    #[test]
+    fn global_deadline_is_sound_and_bounded() {
+        use std::time::{Duration, Instant};
+
+        // Tiny pure-EL ontology: A ⊑ B is a told subsumption, decided by the
+        // saturation closure before any probe is issued. Survives even a near-zero budget.
+        let src_el = "Prefix(:=<http://t/>)\n\
+Ontology(\n  Declaration(Class(:A)) Declaration(Class(:B))\n  SubClassOf(:A :B)\n)\n";
+        let onto_el = parse(src_el);
+        let t0 = Instant::now();
+        let h_el = classify_with_global_deadline(&onto_el, Duration::from_millis(50))
+            .expect("classify pure-EL");
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "global deadline must bound the wall (pure-EL path)"
+        );
+        // A ⊑ B is told/saturator-decided (not probe-gated), so it survives a tiny budget.
+        assert!(
+            h_el.is_subclass("http://t/A", "http://t/B"),
+            "told subsumption A ⊑ B must survive global deadline"
+        );
+        // Anytime invariant holds even when nothing times out.
+        assert_eq!(h_el.undecided_pairs().len(), h_el.stats().timed_out_pairs);
+
+        // Out-of-EL ontology (∀ + ∃): forces the tableau path, exercising the
+        // actual deadline threading. A 1 ms global budget means most pairs will
+        // time out; that's fine — we only check the wall bound and the invariant.
+        let src_oe = "Prefix(:=<http://t/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(\n\
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(ObjectProperty(:r))\n\
+  SubClassOf(:A ObjectAllValuesFrom(:r :B))\n\
+  SubClassOf(:A ObjectSomeValuesFrom(:r owl:Thing))\n)\n";
+        let onto_oe = parse(src_oe);
+        let t1 = Instant::now();
+        let h_oe = classify_with_global_deadline(&onto_oe, Duration::from_millis(1))
+            .expect("classify out-of-EL");
+        assert!(
+            t1.elapsed() < Duration::from_secs(5),
+            "global deadline must bound the wall (out-of-EL path)"
+        );
+        // Anytime invariant: every timed-out pair is recorded in undecided_pairs().
+        assert_eq!(
+            h_oe.undecided_pairs().len(),
+            h_oe.stats().timed_out_pairs,
+            "undecided_pairs() must mirror timed_out_pairs count"
+        );
     }
 }

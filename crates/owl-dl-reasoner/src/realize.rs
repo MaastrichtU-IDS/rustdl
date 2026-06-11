@@ -505,7 +505,7 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
     // called (`classify_internal`) DNFs on real ontologies and
     // forced any realize call on SIO-scale inputs to time out
     // before per-individual probing ever started.
-    let hierarchy = classify_top_down_internal(internal, None)?;
+    let hierarchy = classify_top_down_internal(internal, None, None)?;
     let class_iris: Vec<String> = (0..internal.vocabulary.num_classes())
         .map(|i| {
             internal

@@ -49,7 +49,8 @@ mod union_find;
 pub use classify::{
     Classification, ClassificationStats, FragmentClassification, analyze_fragment, classify,
     classify_internal, classify_n2, classify_n2_with_timeout, classify_saturation_only,
-    classify_top_down, classify_top_down_with_timeout, classify_with_timeout,
+    classify_top_down, classify_top_down_with_timeout, classify_with_global_deadline,
+    classify_with_timeout,
 };
 pub use realize::{
     Realization, instances_of, instances_of_internal, instances_of_saturation_only,

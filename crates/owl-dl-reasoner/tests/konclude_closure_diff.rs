@@ -810,3 +810,141 @@ fn anytime_per_pair_sweep() {
         .unwrap_or_else(|e| panic!("write CSV to {}: {e}", csv_path.display()));
     println!("wrote {}", csv_path.display());
 }
+
+/// Anytime global-deadline sweep: for each fixture × global wall-clock deadline,
+/// record precision / recall / silent-miss / wall vs the oracle closure. Writes /
+/// appends a CSV (env `RUSTDL_ANYTIME_CSV`, default `/tmp/anytime-per-pair.csv`).
+///
+/// Ignored; run explicitly:
+/// ```text
+/// RUSTDL_ANYTIME_CSV=docs/anytime-results-2026-06-11.csv \
+/// cargo test -p owl-dl-reasoner --release --test konclude_closure_diff \
+///   -- --ignored --nocapture anytime_global_sweep
+/// ```
+///
+/// Output columns: fixture, phase, deadline_ms, recall, precision,
+/// silent_miss, wall_ms, undecided, true_pairs.
+///
+/// The `phase` column value is `"global"` (the per-pair test writes `"per_pair"`).
+///
+/// **Append semantics**: if `RUSTDL_ANYTIME_CSV` already exists (e.g. the
+/// per-pair sweep ran first), the global rows are appended WITHOUT
+/// re-writing the header.
+///
+/// Soundness gate: asserts `fp == 0` at every (fixture, deadline) point.
+#[test]
+#[ignore = "long-running corpus sweep (all fixtures × 4 global deadlines); run explicitly with RUSTDL_ANYTIME_CSV=<path>"]
+#[allow(clippy::cast_precision_loss)] // closure sizes ≤ 50k pairs, well within f64 mantissa
+fn anytime_global_sweep() {
+    use std::fmt::Write as _;
+
+    let fixtures = ["galen", "alehif", "sio", "wine", "ore-10908", "ore-15672"];
+    // Global wall-clock deadlines — the entire classify call (all pairs) must
+    // finish within this budget.
+    let deadlines_ms: &[u64] = &[100, 1_000, 10_000, 30_000];
+    // Resolve the CSV path the same way as the per-pair sweep.
+    let csv_arg = std::env::var("RUSTDL_ANYTIME_CSV")
+        .unwrap_or_else(|_| "/tmp/anytime-per-pair.csv".to_string());
+    let csv_path = {
+        let p = std::path::PathBuf::from(&csv_arg);
+        if p.is_absolute() {
+            p
+        } else {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(&csv_arg)
+        }
+    };
+
+    // Append semantics: keep existing contents (including header) when the
+    // file already exists; otherwise seed with the header.
+    let mut csv = if csv_path.exists() {
+        let mut prev = std::fs::read_to_string(&csv_path).unwrap_or_default();
+        // Guard against a file that doesn't end in a newline.
+        if !prev.ends_with('\n') {
+            prev.push('\n');
+        }
+        prev
+    } else {
+        String::from(
+            "fixture,phase,deadline_ms,recall,precision,silent_miss,wall_ms,undecided,true_pairs\n",
+        )
+    };
+
+    for &fx in &fixtures {
+        let (input_path, truth_path) = fixture_paths(fx);
+        if !input_path.exists() || !truth_path.exists() {
+            eprintln!(
+                "SKIP {fx}: fixture missing ({} or {})",
+                input_path.display(),
+                truth_path.display()
+            );
+            continue;
+        }
+
+        // Load oracle verdict once per fixture (deadline-independent).
+        let verdict = read_konclude_verdict(&truth_path);
+
+        // Load the ontology once per fixture (it's re-used across deadlines).
+        let onto = load_ofn_fixture(&input_path);
+
+        for &ms in deadlines_ms {
+            let t0 = Instant::now();
+            let h =
+                owl_dl_reasoner::classify_with_global_deadline(&onto, Duration::from_millis(ms))
+                    .expect("classify");
+            let wall_ms = t0.elapsed().as_millis();
+
+            // Use the same symmetric exclude-set alignment as the closure-diff
+            // tests — this is what makes the FP gate meaningful.
+            let (reported, true_pairs) = aligned_closures(&h, &verdict);
+
+            // Undecided pairs: timed-out probes flagged by the anytime contract.
+            let undecided: BTreeSet<(String, String)> = h
+                .undecided_pairs()
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect();
+
+            let tp = reported.intersection(&true_pairs).count();
+            let fp = reported.difference(&true_pairs).count();
+            let missed: BTreeSet<(String, String)> =
+                true_pairs.difference(&reported).cloned().collect();
+            let precision = if reported.is_empty() {
+                1.0_f64
+            } else {
+                tp as f64 / reported.len() as f64
+            };
+            let recall = if true_pairs.is_empty() {
+                1.0_f64
+            } else {
+                tp as f64 / true_pairs.len() as f64
+            };
+            // Silent misses: true pairs that are neither reported nor flagged.
+            let silent_miss = missed.difference(&undecided).count();
+
+            // SOUNDNESS GATE: a deadline must never produce an unsound subsumption.
+            assert_eq!(
+                fp, 0,
+                "FP at {fx}@{ms}ms global = {fp}; precision={precision:.6}"
+            );
+
+            let _ = writeln!(
+                csv,
+                "{fx},global,{ms},{recall:.6},{precision:.6},{silent_miss},{wall_ms},{},{}",
+                undecided.len(),
+                true_pairs.len()
+            );
+            println!(
+                "{fx} @ {ms}ms global: recall={recall:.4} precision={precision:.4} \
+                 silent_miss={silent_miss} wall={wall_ms}ms undecided={} missed={}",
+                undecided.len(),
+                missed.len()
+            );
+        }
+    }
+
+    std::fs::write(&csv_path, csv)
+        .unwrap_or_else(|e| panic!("write CSV to {}: {e}", csv_path.display()));
+    println!("wrote {}", csv_path.display());
+}

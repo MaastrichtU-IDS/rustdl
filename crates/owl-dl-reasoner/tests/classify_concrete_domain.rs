@@ -113,3 +113,17 @@ fn datamax_alone_sat_via_classify() {
 fn noninteger_cardinality_sat_via_classify() {
     assert!(!c_unsat("  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"a\" \"b\")))"));
 }
+
+/// D11b probe (spec test gate): `∃p.{5} ⊓ ∀p.[0,3]`, 5 ∉ [0,3] ⟹ C unsat.
+/// This is a *membership* clash (DKey disjointness), NOT counting — the
+/// spec predicts the WEDGE already catches it in classify, so
+/// `data_counting_classes` stays counting-only. If this FAILS, widen the
+/// predicate to include ∀-over-DKey classes (see the spec).
+#[test]
+fn forall_exists_membership_clash_unsat_via_classify() {
+    assert!(c_unsat(
+        "  SubClassOf(:C DataHasValue(:p \"5\"^^xsd:integer))\n  \
+         SubClassOf(:C DataAllValuesFrom(:p DatatypeRestriction(xsd:integer \
+         xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"3\"^^xsd:integer)))"
+    ));
+}

@@ -285,8 +285,29 @@ property, ∉-enum inconsistent, super-dp propagation). shoiq/wine FP=0/MISSED=0
 re-verified.
 
 **Status: ORE inconsistency gap now 5 (A1) + 4 (DP-1/DP-1b: 2749, 6446, 8941,
-13219) detected; 1 remains (12174 = data-cardinality → DP-2); 15993 is a sound
-DL-safe-rule drop.**
+13219) detected; 1 remains (12174); 15993 is a sound DL-safe-rule drop.**
+
+### 12174 (NASA QUDT) — residual, DEFERRED (deep multi-axiom; DP-2/3)
+Full category ablation: the clash needs **ClassAssertion + DataPropertyAssertion
++ SubClassOf + SubDataPropertyOf together** (removing any one ⇒ consistent). The
+trigger is a TBox data constraint on a *class* — both `C ⊑ DataExactCardinality(1,
+dp)` and `C ⊑ DataAllValuesFrom(dp, R)` (e.g. `QuantityValue ⊑ =1 numericValue`,
+`QuantityValue ⊑ ∀numericValue.xsd:double`) — fired via `ClassAssertion(a, C)`
+with `a`'s values routed through `SubDataPropertyOf`. Detecting it is a deep
+multi-axiom ABox concrete-domain step (individual typing + told-closure + TBox
+cardinality/∀ extraction + sub-property value routing + count/range check) — far
+heavier than DP-1/DP-1b's direct assertion-vs-range, for a SINGLE ontology.
+**Deferred** (the "don't balloon a pre-check into an engine project" line). If
+pursued, DP-3 = the `DataAllValuesFrom`-through-typing analog of DP-1 (value family
+∉ R ⇒ unsat) + DP-2 = data-cardinality (`≤n`/`=n` dp on C + individual with `>n`
+provably-distinct values).
+
+**Net result of this thread:** the ORE "11 inconsistent onts rustdl misses" is now
+**fully characterized and 9/10 detected** (5 A1 + 4 DP-1/DP-1b; 15993 is a sound
+DL-safe drop, never a real miss). The one remaining (12174) is a documented deep
+concrete-domain case, and rustdl's "consistent" on it stays a *sound*
+under-approximation (dropped data fragment) — zero unsound inconsistency misses
+throughout.
 
 ## Soundness posture
 

@@ -89,6 +89,29 @@ contact, so its only risk is its own correctness (caught by unit tests).
   *wedge* doesn't run it — so utility is on the `is_*`/consistency paths, not the
   classify pair-loop). Float/decimal/temporal/string buckets + wedge integration
   are future extensions.
+- **P3 wedge-hang fix (`c4c61c2`, local/unpushed).** The adversarial challenge
+  campaign found `classify` of `C ⊑ ≥10⁶ p.[0,2]` hung (rc=124) while `sat`
+  returned `unsat` in 0.01 s. Root cause: the un-drop lowers data cardinality to
+  object `Min`/`Max` over a DKey filler; the main tableau suppresses these
+  (`apply_min`/`apply_max` skip DKey + `concrete_domain_clash` counts via
+  `card_sat`), but the hypertableau **wedge** materialises `n` successors in
+  `generate_at_least` (the line-1457 "AtLeast not enforced" comment is stale —
+  generation lives at `hyper.rs:2007`). Fix at the clausifier (clauses are
+  wedge/hyper-only): `clausify_with_stats` builds the DKey filler-class set from
+  the vocabulary and the `Clausifier` drops the `AtLeast`/`AtMost` head for them.
+  **Sound — refute-only:** dropping a head only removes a wedge constraint (the
+  wedge can never gain a false clash from a missing constraint); concrete-domain
+  counting stays on `sat`/consistency. No classify verdict changes (classify
+  never ran the clash). Guard: `dkey_data_cardinality_emits_no_cardinality_head`
+  (clause.rs); object cardinality still emits its head. Closure-diff FP=0/MISSED=0
+  unchanged. **Note:** genuine *object* cardinality `≥(huge) r.RealClass` remains
+  a theoretical wedge DoS (pre-existing, not P3-introduced; absent from real
+  corpora) — left untouched to avoid altering object-cardinality completeness.
+  **Future-work breadcrumb:** this fix removes DKey cardinality from the wedge
+  *entirely at clausify*. The planned "wedge integration" of the concrete-domain
+  solver must instead suppress the successor *generation* while keeping the
+  constraint *visible* to `card_sat` (so the wedge can detect data clashes too) —
+  do NOT model it on this pre-wedge drop.
 
 ### P2/P3 resolved integration architecture (the `ClassId → CardRange` side-map)
 Two facts discovered while mapping the tableau pinned the only viable shape:

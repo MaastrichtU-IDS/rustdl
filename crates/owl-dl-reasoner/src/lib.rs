@@ -1928,6 +1928,11 @@ fn concept_has_dkey_counting(
 ) -> bool {
     match pool.get(c) {
         ConceptExpr::Min(_, _, inner) | ConceptExpr::Max(_, _, inner) => {
+            // The filler is usually atomic (`Min`/`Max` over a DKey class).
+            // `Atomic` isn't matched by the recursion below (it hits
+            // `_ => false`), so this direct check is REQUIRED, not an
+            // optimisation; the recursive call only catches a DKey nested
+            // inside a compound filler.
             if matches!(
                 pool.get(*inner),
                 ConceptExpr::Atomic(cls) if dkey_ranges.contains_key(cls)
@@ -4193,6 +4198,30 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"1\"^^xsd:integer)))\n)\n"
             counting.contains(&c_id),
             "C must be in data_counting_classes; got {counting:?}"
         );
+    }
+
+    #[test]
+    fn builds_data_counting_classes_for_exact_cardinality() {
+        // DataExactCardinality lowers to And(Min, Max) over DKey — exercises
+        // the And-arm recursion in concept_has_dkey_counting.
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(\nDeclaration(Class(:C))\nDeclaration(DataProperty(:p))\n\
+SubClassOf(:C DataExactCardinality(2 :p DatatypeRestriction(xsd:integer \
+xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n";
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+        let internal = convert_ontology(&onto).expect("convert");
+        let dkey = build_dkey_range_map(&internal);
+        let counting = build_data_counting_classes(&internal, &dkey);
+        let c_id = internal
+            .vocabulary
+            .classes()
+            .find(|(_, iri)| *iri == "http://t/C")
+            .map(|(id, _)| id)
+            .expect("C declared");
+        assert!(counting.contains(&c_id), "C (exact card) must be counting; got {counting:?}");
     }
 
     #[test]

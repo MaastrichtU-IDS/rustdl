@@ -160,6 +160,12 @@ pub struct ClassificationStats {
     /// entailment matrix — sound (never reports a false positive),
     /// but may under-report subsumption.
     pub timed_out_pairs: usize,
+    /// The `(sub, sup)` class-index pairs whose subsumption probe timed out
+    /// (defaulted to "not subsumed"). Parallel to `timed_out_pairs` (the
+    /// count); this is the *set*, used to verify the anytime calibration
+    /// claim (every miss is a flagged-undecided pair). Populated at the same
+    /// sites that bump `timed_out_pairs`.
+    pub timed_out_pair_ids: Vec<(u32, u32)>,
     /// Subsumptions recovered by the defined-SUB sweep: a union-defined
     /// `C ≡ D₁ ⊔ … ⊔ Dₙ` ⊑ a primitive sup `X` where every `Dᵢ ⊑ X` holds
     /// in the EL closure (sound by construction). Added directly, no tableau.
@@ -343,6 +349,19 @@ impl Classification {
             .collect();
         out.sort_unstable();
         out
+    }
+
+    /// The `(sub, sup)` IRI pairs whose subsumption probe timed out at the
+    /// configured deadline — the flagged-undecided set. A timed-out pair is
+    /// reported "not subsumed" but recorded here, so a consumer knows
+    /// exactly which subsumptions are unverified (the anytime contract).
+    #[must_use]
+    pub fn undecided_pairs(&self) -> Vec<(&str, &str)> {
+        self.stats
+            .timed_out_pair_ids
+            .iter()
+            .map(|&(i, j)| (self.classes[i as usize].as_str(), self.classes[j as usize].as_str()))
+            .collect()
     }
 }
 
@@ -632,6 +651,10 @@ pub(crate) fn classify_internal_with_timeout(
     for (i, j, is_entailed, used_saturation, timed_out) in pair_results? {
         if timed_out {
             stats.timed_out_pairs += 1;
+            stats.timed_out_pair_ids.push((
+                u32::try_from(i).expect("class index fits in u32"),
+                u32::try_from(j).expect("class index fits in u32"),
+            ));
             // Sound under-approximation: default to "not subsumed".
             // Do not credit either engine — neither produced a verdict.
             continue;
@@ -1227,6 +1250,7 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.timed_out_pairs += sd.timed_out_pairs;
+            stats.timed_out_pair_ids.extend(sd.timed_out_pair_ids.iter().copied());
             stats.hyper_proven_pairs += sd.hyper_proven_pairs;
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
@@ -1368,6 +1392,7 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.timed_out_pairs += sd.timed_out_pairs;
+            stats.timed_out_pair_ids.extend(sd.timed_out_pair_ids.iter().copied());
             stats.hyper_proven_pairs += sd.hyper_proven_pairs;
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
@@ -1807,6 +1832,9 @@ fn subsumes_via_tableau(
                 }
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
+                    stats
+                        .timed_out_pair_ids
+                        .push((sub.index(), sup.index()));
                     Ok(None)
                 }
                 Err(other) => Err(other),
@@ -2804,5 +2832,27 @@ Ontology(<http://rustdl.test/test>\n\
             analyze_fragment(&internal),
             FragmentClassification::OutOfFragment,
         );
+    }
+
+    /// The `undecided_pairs()` set length must equal `timed_out_pairs`
+    /// count — consistency invariant for the anytime calibration contract.
+    /// Uses a tiny out-of-EL ontology (`∀`-axiom + existential) that
+    /// falls through to the per-pair tableau path, with a 1 ms deadline
+    /// so at least some pairs may time out in CI; even if none do, the
+    /// invariant `len == count` must hold.
+    #[test]
+    fn undecided_pairs_reports_timed_out_subsumptions() {
+        let src = "Prefix(:=<http://t/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(\n\
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(ObjectProperty(:r))\n\
+  SubClassOf(:A ObjectAllValuesFrom(:r :B))\n\
+  SubClassOf(:A ObjectSomeValuesFrom(:r owl:Thing))\n)\n";
+        let onto = parse(src);
+        let h = classify_with_timeout(&onto, std::time::Duration::from_millis(1))
+            .expect("classify");
+        // The set length must equal the count stat (consistency), regardless of
+        // whether this tiny ontology actually times out.
+        assert_eq!(h.undecided_pairs().len(), h.stats().timed_out_pairs);
     }
 }

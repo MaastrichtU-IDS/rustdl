@@ -159,3 +159,58 @@ fn string_value_violates_superproperty_numeric_range() {
     DataPropertyAssertion(:p :a "text"^^xsd:string)"#
     ));
 }
+
+// ─── DP-1b: string DataOneOf enumeration membership ──────────────────
+
+/// NEGATIVE: asserted value IS a member of the enumeration ⇒ consistent.
+#[test]
+fn value_in_string_oneof_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DataOneOf("all" "driver"))
+    DataPropertyAssertion(:p :a "driver")"#
+    ));
+}
+
+/// NEGATIVE: a non-string value against a string enumeration is NOT handled
+/// (DP-1b is string-only) ⇒ must NOT flag (under-approximation, sound).
+#[test]
+fn nonstring_value_on_string_oneof_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DataOneOf("all" "driver"))
+    DataPropertyAssertion(:p :a "5"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: enumeration on an unrelated property doesn't constrain p.
+#[test]
+fn string_oneof_on_unrelated_property_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:q DataOneOf("all" "driver"))
+    DataPropertyAssertion(:p :a "anything")"#
+    ));
+}
+
+/// POSITIVE (13219 pattern): asserted string NOT in the enumeration ⇒
+/// inconsistent. The empty string is the real ore_ont_13219 culprit.
+#[test]
+fn value_not_in_string_oneof_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DataOneOf("all" "driver" "driver and front passenger"))
+    DataPropertyAssertion(:p :a "")"#
+    ));
+}
+
+/// POSITIVE: enumeration on the SUPER-property constrains the SUB's values.
+#[test]
+fn value_violates_superproperty_string_oneof() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q)) Declaration(NamedIndividual(:a))
+    SubDataPropertyOf(:p :q)
+    DataPropertyRange(:q DataOneOf("yes" "no"))
+    DataPropertyAssertion(:p :a "maybe")"#
+    ));
+}

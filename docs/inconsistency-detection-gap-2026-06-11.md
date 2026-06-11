@@ -272,8 +272,21 @@ incl. the `int ⊆ decimal` trap, union-range, unknown-datatype, wrong-property,
 wrong-subproperty-direction gates + 4 positives. core (184) + datatype (50) green;
 clippy/fmt clean.
 
-**Status: ORE inconsistency gap now 5 (A1) + 3 (DP-1) detected; 2 remain (13219
-DP-1b, 12174 DP-2); 15993 is a sound DL-safe drop.**
+### DP-1b (same session) — string `DataOneOf` membership
+Pinned 13219: 21 violations of the shape `""` (or any string) asserted on a
+property whose range is a string enumeration (`hasHeatedtSeats ∈
+{"all","driver",…}`). `emit_data_oneof_violations` reuses `parse_string_range`
+(→ `StrSet::Set`) + `exact_string_literal`: an asserted string ∉ the enumerated
+set (on `p` or a super-dp) ⇒ `Top ⊑ Bot`. **Closes 13219** (91/91 unsat, matches
+Konclude). Sound: `DataOneOf` *range* = value must be a member; exact string
+membership; string-only (mixed/typed enums skipped). 5 more canaries (in-enum
+consistent, non-string-value consistent [string-only under-approx], unrelated-
+property, ∉-enum inconsistent, super-dp propagation). shoiq/wine FP=0/MISSED=0
+re-verified.
+
+**Status: ORE inconsistency gap now 5 (A1) + 4 (DP-1/DP-1b: 2749, 6446, 8941,
+13219) detected; 1 remains (12174 = data-cardinality → DP-2); 15993 is a sound
+DL-safe-rule drop.**
 
 ## Soundness posture
 

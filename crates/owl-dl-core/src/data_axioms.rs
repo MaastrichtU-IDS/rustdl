@@ -87,7 +87,52 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_domain_inferences(&facts, vocab, &atomic_id, &mut out);
     emit_subdataprop_transitivity(&facts, vocab, &atomic_id, &mut out);
     emit_data_range_violations(&facts, top_id, bot_id, &mut out);
+    emit_data_oneof_violations(&facts, top_id, bot_id, &mut out);
     out
+}
+
+/// DP-1b: a string-`DataOneOf` membership VIOLATION ⇒ global inconsistency.
+/// `DataPropertyAssertion(p, a, "v")` with `DataPropertyRange(q, DataOneOf(S))`
+/// for a (reflexive) super-data-property `q` of `p` forces `"v" ∈ S`. When the
+/// asserted string `"v"` is not an element of the enumerated set `S`, the value
+/// is disallowed ⇒ no model ⇒ emit `Top ⊑ Bot`. Closes the `ore_ont_13219`
+/// cluster (e.g. `""` asserted on a `{"all","driver",…}` enumeration).
+///
+/// **Sound by construction:** `DataOneOf(S)` as a *range* means every value of
+/// the property must be a member of `S`; exact-string membership is decidable
+/// and exact (`exact_string_literal` + `BTreeSet`). Only string enumerations
+/// are handled (`parse_string_range` returns `Some(Set)` only when every member
+/// is an `xsd:string` literal); mixed / typed-numeric `DataOneOf` ⇒ skipped.
+/// Super-property direction only (matches DP-1).
+fn emit_data_oneof_violations(
+    f: &Facts,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    if f.data_string_assertions.is_empty() || f.dp_string_enums.is_empty() {
+        return;
+    }
+    let closure = closure_sub_dp(&f.sub_data_property);
+    for (p, value) in &f.data_string_assertions {
+        // Enumerations on p, plus on every strict super-dp of p.
+        let mut enums: Vec<&BTreeSet<String>> =
+            f.dp_string_enums.get(p).into_iter().flatten().collect();
+        if let Some(supers) = closure.get(p) {
+            for q in supers {
+                if q != p {
+                    enums.extend(f.dp_string_enums.get(q).into_iter().flatten());
+                }
+            }
+        }
+        if enums.iter().any(|s| !s.contains(value)) {
+            out.push(Axiom::SubClassOf {
+                sub: top_id,
+                sup: bot_id,
+            });
+            return;
+        }
+    }
 }
 
 /// DP-1: a data-property-range VIOLATION ⇒ **global inconsistency**.
@@ -961,6 +1006,14 @@ struct Facts {
     /// individual is irrelevant to the check (one violating value makes
     /// the whole ontology inconsistent), so we don't record it.
     data_assertions: Vec<(String, DtFamily)>,
+    /// DP-1b: `DataPropertyRange(p, DataOneOf(strings))` → `p_iri →
+    /// [enum-set …]` (the allowed string values). Only string enumerations
+    /// (every member an `xsd:string` literal); mixed/non-string `DataOneOf`
+    /// is skipped (`parse_string_range` returns `None`).
+    dp_string_enums: BTreeMap<String, Vec<BTreeSet<String>>>,
+    /// DP-1b: `DataPropertyAssertion(p, a, "v")` → `(p_iri, v)` for every
+    /// `xsd:string`-typed asserted value.
+    data_string_assertions: Vec<(String, String)>,
 }
 
 fn extract_facts<A: ForIRI>(src: &SetOntology<A>) -> Facts {
@@ -1018,11 +1071,22 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
                     .or_default()
                     .push(fam);
             }
+            // DP-1b: record a string `DataOneOf` enumeration's allowed set.
+            if let Some(StrSet::Set(s)) = parse_string_range(&ax.dr) {
+                f.dp_string_enums
+                    .entry(dpe_iri(&ax.dp))
+                    .or_default()
+                    .push(s);
+            }
         }
         C::DataPropertyAssertion(ax) => {
             // DP-1: record the asserted literal's value-space family.
             if let Some(fam) = literal_family(&ax.to) {
                 f.data_assertions.push((dpe_iri(&ax.dp), fam));
+            }
+            // DP-1b: record the asserted string value (for enum membership).
+            if let Some(v) = exact_string_literal(&ax.to) {
+                f.data_string_assertions.push((dpe_iri(&ax.dp), v));
             }
         }
         C::SubClassOf(ax) => {

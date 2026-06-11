@@ -664,11 +664,53 @@ pub fn convert_class_expression<A: ForIRI>(
                 None => Err(ConversionError::UnsupportedDataRange),
             }
         }
-        ClassExpression::DataMinCardinality { .. }
-        | ClassExpression::DataMaxCardinality { .. }
-        | ClassExpression::DataExactCardinality { .. } => {
-            Err(ConversionError::UnsupportedDataRange)
+        // Concrete-domain solver (P3): lower INTEGER-qualified data
+        // cardinality to object `Min`/`Max` over the integer DKey filler so the
+        // tableau's concrete-domain clash can count it (capacity / conflict).
+        // Non-integer-bucket and unqualified (`rdfs:Literal`) cardinality keep
+        // dropping — a sound under-approximation, integer-first. The tableau
+        // SUPPRESSES object-cardinality expansion for these DKey fillers, so
+        // this never materialises successors (it would otherwise blow up on a
+        // large `≥n` over a tiny range).
+        ClassExpression::DataMinCardinality { n, dp, dr } => {
+            lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, false)
         }
+        ClassExpression::DataMaxCardinality { n, dp, dr } => {
+            lower_int_data_cardinality(*n, dp, dr, vocab, pool, false, true)
+        }
+        ClassExpression::DataExactCardinality { n, dp, dr } => {
+            lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, true)
+        }
+    }
+}
+
+/// Lower an integer-qualified data cardinality restriction to object
+/// `Min`/`Max` (or their `And` for `Exact`) over the integer `DKey` filler.
+/// Returns `UnsupportedDataRange` (⇒ the whole axiom drops, soundly) for any
+/// non-integer-bucket or unqualified qualifier — integer-first scoping.
+fn lower_int_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_integer_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
     }
 }
 
@@ -1805,30 +1847,54 @@ mod tests {
         );
     }
 
-    /// Phase D1: a `SubClassOf` where the SUP contains a data-range
-    /// constructor (e.g., `DataMaxCardinality`) is silently dropped —
-    /// the `ce_or_skip!` macro maps `UnsupportedDataRange` to `Ok(None)`
-    /// for the enclosing axiom. Sound under-approximation: we lose the
-    /// constraint, never invent a wrong one.
+    /// Phase D1 / P3: a `SubClassOf` whose SUP is data cardinality.
+    /// INTEGER-qualified cardinality now LOWERS (P3) to an object `Max`/`Min`
+    /// over the integer `DKey` filler so the tableau's concrete-domain check
+    /// can count it; a NON-integer (e.g. string-`DataOneOf`) qualifier still
+    /// drops (`UnsupportedDataRange` → `Ok(None)`) — a sound under-approximation.
     #[test]
-    fn subclass_with_data_range_silently_dropped() {
-        use horned_owl::model::DataProperty;
+    fn subclass_with_data_cardinality_lowering() {
+        use horned_owl::model::{DataProperty, DataRange, Datatype, Literal};
+        // (a) integer-qualified ≤1 → lowers to a `Max` concept.
         let dp = DataProperty::<RcStr>(b().iri("http://t/dp"));
-        let c = Component::<RcStr>::SubClassOf(ho::SubClassOf {
+        let int_card = Component::<RcStr>::SubClassOf(ho::SubClassOf {
             sub: ce_class("A"),
             sup: ClassExpression::DataMaxCardinality {
                 n: 1,
-                dp,
-                dr: horned_owl::model::DataRange::Datatype(horned_owl::model::Datatype(
+                dp: dp.clone(),
+                dr: DataRange::Datatype(Datatype(
                     b().iri("http://www.w3.org/2001/XMLSchema#integer"),
                 )),
             },
         });
         let mut o = InternalOntology::new();
-        let result = convert_component(&c, &mut o.vocabulary, &mut o.concepts).unwrap();
+        let result = convert_component(&int_card, &mut o.vocabulary, &mut o.concepts).unwrap();
+        let axiom = result.expect("P3: integer data cardinality lowers (not dropped)");
+        let crate::ontology::Axiom::SubClassOf { sup, .. } = axiom else {
+            panic!("expected SubClassOf");
+        };
         assert!(
-            result.is_none(),
-            "Phase D1: SubClassOf containing a data-range SUP drops silently"
+            matches!(o.concepts.get(sup), ConceptExpr::Max(1, _, _)),
+            "expected the SUP to lower to Max(1, dp, DKey(int))"
+        );
+
+        // (b) non-integer (string DataOneOf) cardinality still drops.
+        let str_card = Component::<RcStr>::SubClassOf(ho::SubClassOf {
+            sub: ce_class("A"),
+            sup: ClassExpression::DataMaxCardinality {
+                n: 1,
+                dp,
+                dr: DataRange::DataOneOf(vec![Literal::Simple {
+                    literal: "x".to_string(),
+                }]),
+            },
+        });
+        let mut o2 = InternalOntology::new();
+        assert!(
+            convert_component(&str_card, &mut o2.vocabulary, &mut o2.concepts)
+                .unwrap()
+                .is_none(),
+            "non-integer data cardinality still drops (sound under-approximation)"
         );
     }
 

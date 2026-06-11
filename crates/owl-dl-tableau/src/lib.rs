@@ -92,8 +92,8 @@ use std::collections::HashMap;
 
 use hashbrown::HashSet;
 use owl_dl_core::{
-    AbsorbedTBox, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleHierarchy, RoleId,
-    is_nnf,
+    AbsorbedTBox, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleHierarchy,
+    RoleId, is_nnf,
 };
 
 /// Coordinator owning the completion graph and trail for one tableau
@@ -202,6 +202,15 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// `next_branch_id`; never shrinks (decisions are run-scoped
     /// facts, like `learned_nogoods`).
     decision_labels: Vec<Option<(NodeId, ConceptId)>>,
+    /// Concrete-domain solver (P3): `ClassId → CardRange` for the synthetic
+    /// `DKey` filler classes, supplied by the reasoner (which has the
+    /// vocabulary the tableau lacks). Empty ⇒ the concrete-domain clash is
+    /// inert. Read by `concrete_domain_clash` (an additive, refute-only clash
+    /// over a node's data `∃/∀/≥n/≤n` labels) and by the `apply_min`/`apply_max`
+    /// suppression guard (object-cardinality expansion is skipped for these
+    /// fillers — the counting is done by `card_sat`, and expanding a large
+    /// `≥n` over a `DKey` would not terminate).
+    dkey_ranges: HashMap<ClassId, owl_dl_datatypes::CardRange>,
     /// Per-rule call counters, populated under `cfg(feature =
     /// "counters")`. Dumped to stderr in `Drop` when
     /// `RUSTDL_COUNTERS=1`. Zero cost in non-counter builds (field
@@ -234,6 +243,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
+            dkey_ranges: HashMap::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -263,6 +273,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
+            dkey_ranges: HashMap::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -297,8 +308,36 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             next_branch_id: 0,
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
+            dkey_ranges: HashMap::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
+        }
+    }
+
+    /// Supply the concrete-domain solver's `ClassId → CardRange` side-map
+    /// (built by the reasoner where the vocabulary is available). Enables the
+    /// additive `concrete_domain_clash` check + the `apply_min`/`apply_max`
+    /// suppression guard for `DKey` fillers. Empty (the default) ⇒ inert.
+    pub fn set_dkey_ranges(
+        &mut self,
+        ranges: HashMap<ClassId, owl_dl_datatypes::CardRange>,
+    ) -> &mut Self {
+        self.dkey_ranges = ranges;
+        self
+    }
+
+    /// The decoded range of a filler concept iff it is a synthetic `DKey`
+    /// class in the side-map (i.e. an atomic class whose `ClassId` was
+    /// registered as a data range). `None` for ordinary concepts — used to
+    /// distinguish data restrictions from object restrictions in the tableau,
+    /// which has no IRIs.
+    pub(crate) fn dkey_range_of(&self, filler: ConceptId) -> Option<&owl_dl_datatypes::CardRange> {
+        if self.dkey_ranges.is_empty() {
+            return None;
+        }
+        match self.pool.get(filler) {
+            ConceptExpr::Atomic(c) => self.dkey_ranges.get(c),
+            _ => None,
         }
     }
 
@@ -1243,6 +1282,77 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     }
                 }
                 _ => {}
+            }
+        }
+        // Concrete-domain solver (P3): an additive, refute-only clash from a
+        // node's data constraints (integer bucket). Reads only the node's own
+        // labels (no role-hierarchy propagation), so the constraint set is a
+        // SUBSET of the truth — and `card_sat` is monotone, so an `Unsat` on a
+        // subset is `Unsat` on the full set ⇒ sound (under-collection only
+        // misses clashes, never false-clashes).
+        self.concrete_domain_clash(node)
+    }
+
+    /// Refute-only concrete-domain clash for `node`'s integer data
+    /// constraints. For each data-property role, collects the `∃p.DKey(R)`
+    /// (`≥1`), `Min(n,p,DKey(R))` (`≥n`), `Max(n,p,DKey(S))` (`≤n`) and
+    /// `∀p.DKey(U)` (universal filter) labels whose filler is a registered
+    /// integer `DKey`, and runs [`owl_dl_datatypes::integer_sat`]. Returns the
+    /// union of the contributing labels' `DepSet`s (a sound superset for
+    /// backjumping) when the constraints are unsatisfiable, else `None`.
+    /// Empty `dkey_ranges` ⇒ instant `None`.
+    fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
+        use owl_dl_datatypes::{Card, CardRange, CardSat, IntInterval, ValueRange, integer_sat};
+        if self.dkey_ranges.is_empty() {
+            return None;
+        }
+        struct Acc {
+            mins: Vec<Card<IntInterval>>,
+            maxs: Vec<Card<IntInterval>>,
+            universal: Option<IntInterval>,
+            deps: crate::graph::DepSet,
+        }
+        let n = self.graph.node(node);
+        let labels = n.labels();
+        let mut by_role: HashMap<RoleId, Acc> = HashMap::new();
+        for (pos, &c) in labels.iter().enumerate() {
+            // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n)
+            let (role, filler, kind, count): (&Role, ConceptId, u8, u32) = match self.pool.get(c) {
+                ConceptExpr::Some(r, f) => (r, *f, 0, 1),
+                ConceptExpr::All(r, f) => (r, *f, 1, 0),
+                ConceptExpr::Min(k, r, f) => (r, *f, 2, *k),
+                ConceptExpr::Max(k, r, f) => (r, *f, 3, *k),
+                _ => continue,
+            };
+            // Data-property roles are never inverse; skip inverse roles.
+            let rid = match role {
+                Role::Named(rid) => *rid,
+                Role::Inverse(_) => continue,
+            };
+            let Some(CardRange::Int(iv)) = self.dkey_range_of(filler) else {
+                continue;
+            };
+            let iv = *iv;
+            let entry = by_role.entry(rid).or_insert_with(|| Acc {
+                mins: Vec::new(),
+                maxs: Vec::new(),
+                universal: None,
+                deps: crate::graph::DepSet::new(),
+            });
+            match kind {
+                0 => entry.mins.push(Card::new(iv, 1)),
+                2 => entry.mins.push(Card::new(iv, count)),
+                3 => entry.maxs.push(Card::new(iv, count)),
+                1 => {
+                    entry.universal = Some(entry.universal.map_or(iv, |u| u.intersect(&iv)));
+                }
+                _ => unreachable!(),
+            }
+            entry.deps = crate::deps::union(&entry.deps, &n.label_deps[pos]);
+        }
+        for acc in by_role.into_values() {
+            if integer_sat(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
+                return Some(acc.deps);
             }
         }
         None

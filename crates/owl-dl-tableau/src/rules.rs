@@ -802,6 +802,14 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             })
             .collect()
     };
+    // Concrete-domain solver (P3): suppress object-cardinality EXPANSION for
+    // `DKey` data fillers — the counting is done by `concrete_domain_clash`
+    // (`card_sat`), and materialising a large `≥n` over a tiny integer range
+    // here would not terminate. Borrows above are released, so `ctx` is free.
+    let mins: Vec<_> = mins
+        .into_iter()
+        .filter(|(_, _, body, _)| ctx.dkey_range_of(*body).is_none())
+        .collect();
     if mins.is_empty() {
         return RuleOutcome::NoChange;
     }
@@ -898,6 +906,14 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
             })
             .collect()
     };
+    // Concrete-domain solver (P3): suppress object-cardinality reasoning for
+    // `DKey` data fillers — `≤n` over a data range is enforced by
+    // `concrete_domain_clash` (`card_sat`), not by merging abstract DKey
+    // successors. (Symmetric to the `apply_min` suppression.)
+    let maxes: Vec<_> = maxes
+        .into_iter()
+        .filter(|(_, _, body, _)| ctx.dkey_range_of(*body).is_none())
+        .collect();
     if maxes.is_empty() {
         return RuleOutcome::NoChange;
     }

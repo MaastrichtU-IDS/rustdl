@@ -1884,7 +1884,6 @@ pub(crate) struct PreparedOntology {
     /// recognise a data-range filler and recover its range via a cheap map
     /// lookup. Consumed by the P3 `apply_concrete_domain_check` clash rule
     /// (not yet armed). See `docs/superpowers/specs/2026-06-11-concrete-domain-solver-design.md`.
-    #[allow(dead_code)]
     pub(crate) dkey_ranges:
         std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
 }
@@ -2117,6 +2116,7 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             &self.abox,
+            &self.dkey_ranges,
             None,
             build_test_concept,
         )
@@ -2144,6 +2144,7 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             &self.abox,
+            &self.dkey_ranges,
             Some(deadline),
             build_test_concept,
         )
@@ -2601,6 +2602,7 @@ fn decide<F>(
     disjoint_role_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
+    dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
     deadline: Option<std::time::Instant>,
     build_test_concept: F,
 ) -> Result<Option<bool>, ReasonError>
@@ -2610,6 +2612,11 @@ where
     let mut pool = pool.clone();
     let test_concept: ConceptId = build_test_concept(&mut pool);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
+    // Concrete-domain solver (P3): supply the DKey range side-map so the
+    // additive concrete-domain clash + the cardinality-suppression guard fire.
+    if !dkey_ranges.is_empty() {
+        ctx.set_dkey_ranges(dkey_ranges.clone());
+    }
     if let Some(d) = deadline {
         ctx.set_deadline(d);
     }
@@ -2737,7 +2744,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         let ranges: Vec<_> = prepared
             .dkey_ranges
             .values()
-            .filter_map(|r| r.as_int())
+            .filter_map(owl_dl_datatypes::CardRange::as_int)
             .collect();
         assert!(
             ranges

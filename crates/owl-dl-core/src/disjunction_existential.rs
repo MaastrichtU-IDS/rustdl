@@ -35,15 +35,18 @@ use crate::told::{ToldTables, build_told_tables};
 /// the disjuncts. See the module docs for soundness.
 pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
     let told = build_told_tables(onto);
-    // Phase 1 (immutable borrow): collect (sub, role, common-class).
+    // Phase 1 (immutable borrow): collect (sub, role, common-class) for
+    // `∃R.(union)` supers, and (sub, common-class) for **bare** `(union)`
+    // supers (e.g. the disjunctive-data-property-domain GCI).
     let mut triples: Vec<(ConceptId, Role, ClassId)> = Vec::new();
+    let mut bare: Vec<(ConceptId, ClassId)> = Vec::new();
     for ax in &onto.axioms {
         let Axiom::SubClassOf { sub, sup } = ax else {
             continue;
         };
-        collect_from_sup(*sub, *sup, &onto.concepts, &told, &mut triples);
+        collect_from_sup(*sub, *sup, &onto.concepts, &told, &mut triples, &mut bare);
     }
-    if triples.is_empty() {
+    if triples.is_empty() && bare.is_empty() {
         return;
     }
     // Phase 2 (mutable borrow): intern the derived existentials + push.
@@ -55,16 +58,28 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
         }
         onto.axioms.push(Axiom::SubClassOf { sub, sup });
     }
+    // Bare common-subsumer subsumptions `X ⊑ E` (E atomic). Feeds the
+    // saturator directly — no ∃ wrapper, no tableau case-split needed.
+    for (sub, c) in bare {
+        let sup = onto.concepts.atomic(c);
+        if sub == sup {
+            continue;
+        }
+        onto.axioms.push(Axiom::SubClassOf { sub, sup });
+    }
 }
 
-/// Handle a single `SubClassOf` super-concept: a direct `∃R.(union)` or
-/// each `∃R.(union)` conjunct of a top-level `And`.
+/// Handle a single `SubClassOf` super-concept: a direct `∃R.(union)`, a
+/// bare `(union)`, or each such conjunct of a top-level `And`.
+/// `∃R.(union)` supers append `(sub, R, C)` to `out`; bare `(union)`
+/// supers append `(sub, C)` to `bare` (C the common told-subsumer).
 fn collect_from_sup(
     sub: ConceptId,
     sup: ConceptId,
     pool: &ConceptPool,
     told: &ToldTables,
     out: &mut Vec<(ConceptId, Role, ClassId)>,
+    bare: &mut Vec<(ConceptId, ClassId)>,
 ) {
     match pool.get(sup) {
         ConceptExpr::Some(role, body) => {
@@ -72,12 +87,28 @@ fn collect_from_sup(
                 out.push((sub, *role, c));
             }
         }
+        // Bare disjunctive super `X ⊑ (D₁ ⊔ … ⊔ Dₙ)`: `(⊔Dᵢ) ⊑ C` for
+        // every common told-subsumer C, hence `X ⊑ C`. `sup` itself is
+        // the `Or` body that `minimal_common_subsumers` expects.
+        ConceptExpr::Or(_) => {
+            for c in minimal_common_subsumers(sup, pool, told) {
+                bare.push((sub, c));
+            }
+        }
         ConceptExpr::And(operands) => {
             for &op in operands {
-                if let ConceptExpr::Some(role, body) = pool.get(op) {
-                    for c in minimal_common_subsumers(*body, pool, told) {
-                        out.push((sub, *role, c));
+                match pool.get(op) {
+                    ConceptExpr::Some(role, body) => {
+                        for c in minimal_common_subsumers(*body, pool, told) {
+                            out.push((sub, *role, c));
+                        }
                     }
+                    ConceptExpr::Or(_) => {
+                        for c in minimal_common_subsumers(op, pool, told) {
+                            bare.push((sub, c));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -136,7 +167,7 @@ fn minimal_common_subsumers(
 
 #[cfg(test)]
 mod tests {
-    use crate::ir::{ConceptExpr, Role};
+    use crate::ir::{ClassId, ConceptExpr, Role};
     use horned_owl::io::ParserConfiguration;
     use horned_owl::io::ofn::reader::read;
     use horned_owl::model::RcStr;
@@ -215,5 +246,101 @@ Ontology(
                         ConceptExpr::Some(_, body) if matches!(onto.concepts.get(*body), ConceptExpr::Atomic(_))))
         });
         assert!(!derived, "no common subsumer ⇒ nothing derived");
+    }
+
+    /// Whether `onto` has the bare atomic subsumption `sub ⊑ sup`.
+    fn has_atomic_sub(
+        onto: &crate::ontology::InternalOntology,
+        sub: ClassId,
+        sup: ClassId,
+    ) -> bool {
+        onto.axioms.iter().any(|ax| {
+            matches!(ax, crate::ontology::Axiom::SubClassOf { sub: s, sup: p }
+                if matches!(onto.concepts.get(*s), ConceptExpr::Atomic(c) if *c == sub)
+                    && matches!(onto.concepts.get(*p), ConceptExpr::Atomic(c) if *c == sup))
+        })
+    }
+
+    /// The SAO/BFO pattern end-to-end: `C ⊑ DataHasValue(p, "v")` +
+    /// `DataPropertyDomain(p, D1 ⊔ D2)` with `D1,D2 ⊑ E` must yield the
+    /// bare subsumption `C ⊑ E` (common told-subsumer of the disjunctive
+    /// domain), via `data_axioms` → the convert-time union GCI → this
+    /// pass. Mirrors `sao1785599611 ⊑ snap#Continuant`.
+    #[test]
+    fn disjunctive_data_domain_yields_common_subsumer() {
+        let src = "\
+Prefix(:=<http://t.org/#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(
+  Declaration(Class(:C)) Declaration(Class(:D1)) Declaration(Class(:D2)) Declaration(Class(:E))
+  Declaration(DataProperty(:p))
+  SubClassOf(:C DataHasValue(:p \"v\"^^xsd:string))
+  DataPropertyDomain(:p ObjectUnionOf(:D1 :D2))
+  SubClassOf(:D1 :E) SubClassOf(:D2 :E)
+)
+";
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut Cursor::new(src), ParserConfiguration::default()).expect("parses");
+        let onto = crate::convert::convert_ontology(&set_onto).expect("converts");
+        let cid = |iri: &str| onto.vocabulary.class_id(iri).expect("declared");
+        assert!(
+            has_atomic_sub(&onto, cid("http://t.org/#C"), cid("http://t.org/#E")),
+            "expected C ⊑ E from the disjunctive data-property domain"
+        );
+    }
+
+    /// Negative: a disjunctive domain whose members share NO common told-
+    /// subsumer must emit no bare subsumption — soundness floor (no FP).
+    #[test]
+    fn disjunctive_data_domain_no_common_subsumer_is_silent() {
+        let src = "\
+Prefix(:=<http://t.org/#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(
+  Declaration(Class(:C)) Declaration(Class(:D1)) Declaration(Class(:D2))
+  Declaration(DataProperty(:p))
+  SubClassOf(:C DataHasValue(:p \"v\"^^xsd:string))
+  DataPropertyDomain(:p ObjectUnionOf(:D1 :D2))
+)
+";
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut Cursor::new(src), ParserConfiguration::default()).expect("parses");
+        let onto = crate::convert::convert_ontology(&set_onto).expect("converts");
+        let cid = |iri: &str| onto.vocabulary.class_id(iri).expect("declared");
+        let c = cid("http://t.org/#C");
+        // C must not gain a spurious atomic super (D1/D2 share none).
+        assert!(
+            !has_atomic_sub(&onto, c, cid("http://t.org/#D1"))
+                && !has_atomic_sub(&onto, c, cid("http://t.org/#D2")),
+            "no common subsumer ⇒ no bare subsumption"
+        );
+    }
+
+    /// Soundness gate: a domain union with a NON-atomic member must be
+    /// rejected wholesale — the told tables can't see the non-atomic
+    /// member, so a common-subsumer over the atomic subset would be
+    /// unsound. Here `C ⊑ E` would NOT actually be entailed (the third
+    /// domain disjunct `∃R.⊤` is not `⊑ E`), so we must emit nothing.
+    #[test]
+    fn disjunctive_data_domain_with_nonatomic_member_emits_nothing() {
+        let src = "\
+Prefix(:=<http://t.org/#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(
+  Declaration(Class(:C)) Declaration(Class(:D1)) Declaration(Class(:D2)) Declaration(Class(:E)) Declaration(Class(:Z))
+  Declaration(DataProperty(:p)) Declaration(ObjectProperty(:R))
+  SubClassOf(:C DataHasValue(:p \"v\"^^xsd:string))
+  DataPropertyDomain(:p ObjectUnionOf(:D1 :D2 ObjectSomeValuesFrom(:R :Z)))
+  SubClassOf(:D1 :E) SubClassOf(:D2 :E)
+)
+";
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut Cursor::new(src), ParserConfiguration::default()).expect("parses");
+        let onto = crate::convert::convert_ontology(&set_onto).expect("converts");
+        let cid = |iri: &str| onto.vocabulary.class_id(iri).expect("declared");
+        assert!(
+            !has_atomic_sub(&onto, cid("http://t.org/#C"), cid("http://t.org/#E")),
+            "non-atomic domain disjunct ⇒ no inference (unsound otherwise)"
+        );
     }
 }

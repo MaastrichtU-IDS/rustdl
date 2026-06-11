@@ -88,6 +88,52 @@ pub fn derive_data_axioms<A: ForIRI>(
     out
 }
 
+/// Disjunctive-data-property-domain inference (closes the SAO/BFO cross-
+/// ontology cluster, `docs/sao-bfo-chain-2026-06-10.md`).
+///
+/// For `DataPropertyDomain(dp, D₁ ⊔ … ⊔ Dₙ)` (all atomic) and every
+/// class `C` that *uses* `dp` (a `DataHasValue` / `DataSomeValuesFrom` /
+/// `DataMin≥1` / `DataExact≥1` super — i.e. `C` is in `class_some`,
+/// which only captures mandatory-filler restrictions), the OWL domain
+/// semantics give `C ⊑ ∃dp.⊤ ⊑ (D₁ ⊔ … ⊔ Dₙ)`. This returns the
+/// `(C, [D₁ … Dₙ])` pairs (as `ClassId`s); the caller builds the bare
+/// disjunctive GCI `SubClassOf(C, ObjectUnionOf(D₁ … Dₙ))` in the IR
+/// (it owns the `ConceptPool`, which we don't here), after which
+/// `disjunction_existential::derive_disjunction_existentials` reduces it
+/// to `C ⊑ E` for each minimal common told-subsumer `E`.
+///
+/// **Sound**: every disjunct is atomic (the scan rejects non-atomic
+/// unions), so the told tables see all of them; `Dᵢ ⊑ E ∀i ⟹
+/// (⊔Dᵢ) ⊑ E ⟹ C ⊑ E`. Emits nothing when a referenced IRI is not
+/// interned or when `C` is itself a disjunct (trivial).
+pub fn derive_data_domain_unions<A: ForIRI>(
+    src: &SetOntology<A>,
+    vocab: &Vocabulary,
+) -> Vec<(ClassId, Vec<ClassId>)> {
+    let facts = extract_facts(src);
+    let mut out = Vec::new();
+    for (dp, disjunct_iris) in &facts.union_domains {
+        // Resolve all disjunct IRIs once; skip the whole domain if any
+        // is uninterned (keeps the common-subsumer set complete).
+        let Some(disjunct_ids) = disjunct_iris
+            .iter()
+            .map(|iri| vocab.class_id(iri))
+            .collect::<Option<Vec<ClassId>>>()
+        else {
+            continue;
+        };
+        for (class_iri, c_dp) in &facts.class_some {
+            if c_dp != dp || disjunct_iris.contains(class_iri) {
+                continue;
+            }
+            if let Some(c_id) = vocab.class_id(class_iri) {
+                out.push((c_id, disjunct_ids.clone()));
+            }
+        }
+    }
+    out
+}
+
 /// Phase D4: for every `EquivalentClasses(C, ObjectIntersectionOf(M1, M2, ...))`
 /// (or its decomposition into mutual SubClassOf), if any atomic Mi
 /// has cardinality bounds on a data property dp, propagate those
@@ -830,6 +876,16 @@ struct Facts {
     /// observed domain class separately at emit time, which preserves
     /// soundness even with multiple domains.
     domains: Vec<(String, String)>,
+    /// `DataPropertyDomain(dp, ObjectUnionOf(D₁ … Dₙ))` with **all**
+    /// disjuncts atomic → `dp_iri → [D₁_iri … Dₙ_iri]`. A disjunctive
+    /// domain is a sound `∃dp.⊤ ⊑ (D₁ ⊔ … ⊔ Dₙ)`; combined with a class
+    /// `C` that uses `dp` (in `class_some`) it yields the bare
+    /// disjunctive GCI `C ⊑ (D₁ ⊔ … ⊔ Dₙ)`, which the common-told-
+    /// subsumer fold (`disjunction_existential`) reduces to `C ⊑ E`.
+    /// Recorded only when every member is atomic — a non-atomic member
+    /// is invisible to the told tables, so the common-subsumer step
+    /// would be unsound (see `derive_data_domain_unions`).
+    union_domains: Vec<(String, Vec<String>)>,
     /// `SubDataPropertyOf(specific, general)` edges. Hierarchy is
     /// transitively closed at emit time.
     sub_data_property: Vec<(String, String)>,
@@ -883,6 +939,15 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
             let dp = dpe_iri(&ax.dp);
             if let Some(d) = class_iri(&ax.ce) {
                 f.domains.push((dp, d));
+            } else if let ClassExpression::ObjectUnionOf(members) = &ax.ce {
+                // Disjunctive domain. Record ONLY when every member is an
+                // atomic class — a non-atomic member is invisible to the
+                // told tables, so the downstream common-subsumer fold must
+                // not run over a partial set (advisor soundness gate).
+                let atoms: Option<Vec<String>> = members.iter().map(class_iri).collect();
+                if let Some(atoms) = atoms.filter(|a| a.len() >= 2) {
+                    f.union_domains.push((dp, atoms));
+                }
             }
         }
         C::SubClassOf(ax) => {

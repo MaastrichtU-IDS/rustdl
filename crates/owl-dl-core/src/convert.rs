@@ -1111,6 +1111,27 @@ pub fn convert_ontology<A: ForIRI>(
     // `DKEY_IRI_PREFIX` in the reasoner), so these edges add no output
     // noise — they only relay through the existential machinery.
     seed_dkey_subsumptions(&mut out);
+    // Disjunctive data-property domains: for `DataPropertyDomain(dp,
+    // D₁ ⊔ … ⊔ Dₙ)` (all atomic) and each class `C` using `dp`, emit the
+    // bare disjunctive GCI `C ⊑ (D₁ ⊔ … ⊔ Dₙ)`. Sound (`C ⊑ ∃dp.⊤ ⊑ ⊔Dᵢ`).
+    // We build the union here because the `ConceptPool` lives on `out`;
+    // `data_axioms` only returns the resolved class ids. The bare GCI is
+    // then folded to `C ⊑ E` by `derive_disjunction_existentials` below
+    // (common told-subsumer) and also case-split natively by the tableau.
+    // Closes the SAO/BFO cross-ontology cluster — see
+    // `docs/sao-bfo-chain-2026-06-10.md`.
+    for (c_id, disjunct_ids) in crate::data_axioms::derive_data_domain_unions(src, &out.vocabulary)
+    {
+        let sub = out.concepts.atomic(c_id);
+        let members: Vec<_> = disjunct_ids
+            .into_iter()
+            .map(|d| out.concepts.atomic(d))
+            .collect();
+        let sup = out.concepts.or(members);
+        if sub != sup {
+            out.axioms.push(Axiom::SubClassOf { sub, sup });
+        }
+    }
     // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully

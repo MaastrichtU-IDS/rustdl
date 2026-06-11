@@ -225,12 +225,11 @@ fn test_pair_ms() -> u64 {
 
 /// Load an `.ofn` (OWL Functional Syntax) ontology from `path`.
 fn load_ofn_fixture(input: &Path) -> SetOntology<RcStr> {
-    let src = std::fs::read_to_string(input)
-        .unwrap_or_else(|e| panic!("read {}: {e}", input.display()));
+    let src =
+        std::fs::read_to_string(input).unwrap_or_else(|e| panic!("read {}: {e}", input.display()));
     let mut reader = Cursor::new(src);
-    let (onto, _): (SetOntology<RcStr>, _) =
-        read_ofn(&mut reader, ParserConfiguration::default())
-            .unwrap_or_else(|e| panic!("parse {}: {e}", input.display()));
+    let (onto, _): (SetOntology<RcStr>, _) = read_ofn(&mut reader, ParserConfiguration::default())
+        .unwrap_or_else(|e| panic!("parse {}: {e}", input.display()));
     onto
 }
 
@@ -676,7 +675,11 @@ fn anytime_per_pair_sweep() {
     for &fx in &fixtures {
         let (input_path, truth_path) = fixture_paths(fx);
         if !input_path.exists() || !truth_path.exists() {
-            eprintln!("SKIP {fx}: fixture missing ({} or {})", input_path.display(), truth_path.display());
+            eprintln!(
+                "SKIP {fx}: fixture missing ({} or {})",
+                input_path.display(),
+                truth_path.display()
+            );
             continue;
         }
 
@@ -721,10 +724,7 @@ fn anytime_per_pair_sweep() {
             let silent_miss = missed.difference(&undecided).count();
 
             // SOUNDNESS GATE: a deadline must never produce an unsound subsumption.
-            assert_eq!(
-                fp, 0,
-                "FP at {fx}@{ms}ms = {fp}; precision={precision:.6}"
-            );
+            assert_eq!(fp, 0, "FP at {fx}@{ms}ms = {fp}; precision={precision:.6}");
 
             let _ = writeln!(
                 csv,

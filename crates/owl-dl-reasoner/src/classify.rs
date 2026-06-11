@@ -360,7 +360,12 @@ impl Classification {
         self.stats
             .timed_out_pair_ids
             .iter()
-            .map(|&(i, j)| (self.classes[i as usize].as_str(), self.classes[j as usize].as_str()))
+            .map(|&(i, j)| {
+                (
+                    self.classes[i as usize].as_str(),
+                    self.classes[j as usize].as_str(),
+                )
+            })
             .collect()
     }
 }
@@ -1250,7 +1255,9 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.timed_out_pairs += sd.timed_out_pairs;
-            stats.timed_out_pair_ids.extend(sd.timed_out_pair_ids.iter().copied());
+            stats
+                .timed_out_pair_ids
+                .extend(sd.timed_out_pair_ids.iter().copied());
             stats.hyper_proven_pairs += sd.hyper_proven_pairs;
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
@@ -1392,7 +1399,9 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.timed_out_pairs += sd.timed_out_pairs;
-            stats.timed_out_pair_ids.extend(sd.timed_out_pair_ids.iter().copied());
+            stats
+                .timed_out_pair_ids
+                .extend(sd.timed_out_pair_ids.iter().copied());
             stats.hyper_proven_pairs += sd.hyper_proven_pairs;
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
@@ -1832,9 +1841,7 @@ fn subsumes_via_tableau(
                 }
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
-                    stats
-                        .timed_out_pair_ids
-                        .push((sub.index(), sup.index()));
+                    stats.timed_out_pair_ids.push((sub.index(), sup.index()));
                     Ok(None)
                 }
                 Err(other) => Err(other),
@@ -2849,8 +2856,8 @@ Ontology(\n\
   SubClassOf(:A ObjectAllValuesFrom(:r :B))\n\
   SubClassOf(:A ObjectSomeValuesFrom(:r owl:Thing))\n)\n";
         let onto = parse(src);
-        let h = classify_with_timeout(&onto, std::time::Duration::from_millis(1))
-            .expect("classify");
+        let h =
+            classify_with_timeout(&onto, std::time::Duration::from_millis(1)).expect("classify");
         // The set length must equal the count stat (consistency), regardless of
         // whether this tiny ontology actually times out.
         assert_eq!(h.undecided_pairs().len(), h.stats().timed_out_pairs);

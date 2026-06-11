@@ -27,7 +27,8 @@ pub mod vocab;
 pub use absorb::{AbsorbedTBox, ConceptRule, NominalRule, RoleRule, absorb, absorb_roles};
 pub use convert::{
     ConversionError, DKEY_IRI_PREFIX, convert_class_expression, convert_component,
-    convert_individual, convert_object_property, convert_ontology,
+    convert_individual, convert_object_property, convert_ontology, decode_integer_dkey,
+    is_dkey_iri,
 };
 pub use convert_back::{axiom_to_component, concept_to_class_expression, convert_back};
 pub use definitions::{Definitions, extract_definitions};

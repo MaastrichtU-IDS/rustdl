@@ -79,6 +79,24 @@ fn float_dkey_iri(range: FloatRange) -> String {
     )
 }
 
+/// Whether `iri` is a synthetic `DKey` class IRI (any datatype bucket).
+/// The tableau has no vocabulary, so the reasoner uses this (+ the
+/// `decode_*_dkey` family) to build a `ClassId → range` side-map for the
+/// concrete-domain check. See the P2/P3 design spec.
+#[must_use]
+pub fn is_dkey_iri(iri: &str) -> bool {
+    iri.starts_with(DKEY_IRI_PREFIX)
+}
+
+/// Public single-point decode of an INTEGER `DKey` IRI into its inclusive
+/// `(min, max)` bounds (`None` = unbounded on that side). Returns `None`
+/// for any non-integer-bucket or malformed `DKey` IRI. Primitive bounds
+/// are returned so the internal `IntegerRange` type need not be exposed.
+#[must_use]
+pub fn decode_integer_dkey(iri: &str) -> Option<(Option<i64>, Option<i64>)> {
+    parse_dkey_iri(iri).map(|r| (r.min, r.max))
+}
+
 /// Parse a `DKey` IRI back into its INTEGER range. Returns `None` for
 /// any IRI that is not a well-formed integer `DKey` IRI (including all
 /// float-tagged keys — the `f:` tag's `"f"` token fails the i64 parse).
@@ -1950,6 +1968,37 @@ mod tests {
             parse_datetime_dkey_iri(&ord_dkey_iri(DKEY_DATETIME_TAG, &dttr, datetime_key)),
             Some(dttr)
         );
+    }
+
+    /// The public concrete-domain-solver decode (`is_dkey_iri` +
+    /// `decode_integer_dkey`): integer `DKey`s round-trip to primitive bounds;
+    /// non-integer-bucket and non-`DKey` IRIs decode to `None`.
+    #[test]
+    fn public_integer_dkey_decode() {
+        let iri = dkey_iri(IntegerRange {
+            min: Some(0),
+            max: Some(10),
+        });
+        assert!(is_dkey_iri(&iri));
+        assert_eq!(decode_integer_dkey(&iri), Some((Some(0), Some(10))));
+        // unbounded-below integer DKey.
+        let iri2 = dkey_iri(IntegerRange {
+            min: None,
+            max: Some(5),
+        });
+        assert_eq!(decode_integer_dkey(&iri2), Some((None, Some(5))));
+        // a float-bucket DKey is NOT an integer DKey (tag fails i64 parse).
+        let f = float_dkey_iri(FloatRange {
+            min: Some(0.0),
+            min_incl: true,
+            max: None,
+            max_incl: false,
+        });
+        assert!(is_dkey_iri(&f));
+        assert_eq!(decode_integer_dkey(&f), None);
+        // a plain class IRI is not a DKey at all.
+        assert!(!is_dkey_iri("http://example.org/C"));
+        assert_eq!(decode_integer_dkey("http://example.org/C"), None);
     }
 
     #[test]

@@ -35,6 +35,31 @@ pub enum CardSat {
     Unsat,
 }
 
+/// A decoded datatype range, tagged by its value-space **bucket**. This is the
+/// value type of the `ClassId → CardRange` side-map the tableau consults to
+/// recognise a `DKey` filler and recover its range without IRI access (see the
+/// P2/P3 design spec). Two ranges interact in [`card_sat`] only within the same
+/// bucket; the tableau groups a node's data constraints by `(property, bucket)`
+/// before deciding. Extended one bucket at a time as the integration is wired
+/// (integer-first).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CardRange {
+    /// `xsd:integer` and its subtypes (discrete).
+    Int(IntInterval),
+    // Float / Decimal / Date / DateTime (dense) and Str (finite-set) are added
+    // as each bucket's decode + tableau dispatch is wired.
+}
+
+impl CardRange {
+    /// The range as an [`IntInterval`] if this is the integer bucket.
+    #[must_use]
+    pub fn as_int(&self) -> Option<IntInterval> {
+        match self {
+            CardRange::Int(i) => Some(*i),
+        }
+    }
+}
+
 /// A range of values in some datatype's value space. Implementors supply the
 /// boolean algebra and the **capacity** (number of distinct values; `None` =
 /// infinite) — the only thing that differs across discrete / dense / finite-set

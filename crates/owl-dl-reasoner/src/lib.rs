@@ -1878,6 +1878,37 @@ pub(crate) struct PreparedOntology {
     /// call to [`Self::abox_verdict`]. `None` until then (lazy).
     /// Honours [`crate::abox_check_enabled`]. See [`abox_check`].
     abox_verdict: std::sync::OnceLock<abox_check::AboxVerdict>,
+    /// Concrete-domain solver (P2): `ClassId → CardRange` for the synthetic
+    /// `DKey` filler classes, decoded once here (where the vocabulary maps
+    /// `ClassId → IRI`) so the tableau — which has no vocabulary — can
+    /// recognise a data-range filler and recover its range via a cheap map
+    /// lookup. Consumed by the P3 `apply_concrete_domain_check` clash rule
+    /// (not yet armed). See `docs/superpowers/specs/2026-06-11-concrete-domain-solver-design.md`.
+    #[allow(dead_code)]
+    pub(crate) dkey_ranges:
+        std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+}
+
+/// Build the concrete-domain solver's `ClassId → CardRange` side-map by
+/// decoding every synthetic `DKey` filler class's IRI. Done where the
+/// vocabulary is available so the tableau need not carry IRIs. Integer-only
+/// for now (other datatype buckets added as the integration is wired).
+fn build_dkey_range_map(
+    internal: &InternalOntology,
+) -> std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange> {
+    let mut map = std::collections::HashMap::new();
+    for (class_id, iri) in internal.vocabulary.classes() {
+        if !owl_dl_core::is_dkey_iri(iri) {
+            continue;
+        }
+        if let Some((min, max)) = owl_dl_core::decode_integer_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::Int(owl_dl_datatypes::IntInterval { min, max }),
+            );
+        }
+    }
+    map
 }
 
 impl PreparedOntology {
@@ -1893,6 +1924,10 @@ impl PreparedOntology {
         let closure = owl_dl_saturation::saturate(&internal);
         let told = owl_dl_core::told::build_told_tables(&internal);
         let axioms = internal.axioms.clone();
+        // Concrete-domain solver (P2): decode the synthetic DKey filler
+        // classes into a ClassId → CardRange map while the vocabulary is
+        // available. Pure; consumed by the (not-yet-armed) P3 clash rule.
+        let dkey_ranges = build_dkey_range_map(&internal);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
@@ -1959,6 +1994,7 @@ impl PreparedOntology {
             per_class_safe_count,
             per_class_unsafe_count,
             abox_verdict: std::sync::OnceLock::new(),
+            dkey_ranges,
         })
     }
 
@@ -2682,6 +2718,34 @@ mod tests {
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// P2 plumbing: `PreparedOntology` builds the `ClassId → CardRange` side-map
+    /// by decoding the synthetic integer `DKey` filler classes. An ontology with
+    /// an `xsd:integer`-facet `DataSomeValuesFrom` lowers to `∃p.DKey([37,100])`,
+    /// so the map must hold the matching `CardRange::Int`. (The map is consumed
+    /// by the not-yet-armed P3 clash; here we only verify it populates.)
+    #[test]
+    fn prepared_builds_integer_dkey_range_map() {
+        let src = format!(
+            "{HEADER}Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nOntology(\n\
+             Declaration(Class(:C)) Declaration(DataProperty(:p))\n\
+             SubClassOf(:C DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer \
+             xsd:minInclusive \"37\"^^xsd:integer xsd:maxInclusive \"100\"^^xsd:integer)))\n)\n"
+        );
+        let internal = convert_ontology(&parse(&src)).expect("converts");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        let ranges: Vec<_> = prepared
+            .dkey_ranges
+            .values()
+            .filter_map(|r| r.as_int())
+            .collect();
+        assert!(
+            ranges
+                .iter()
+                .any(|i| i.min == Some(37) && i.max == Some(100)),
+            "expected CardRange::Int([37,100]) in the side-map, got {ranges:?}"
+        );
+    }
 
     /// Perf probe (wine wall, 2026-06-07): split the per-pair wedge cost into
     /// `clauses.clone()` + `HyperEngine::new` (construction, un-preemptable by a

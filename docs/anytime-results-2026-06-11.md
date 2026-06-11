@@ -198,8 +198,9 @@ complete where rustdl (out-of-EL) is not.
 
 What the experiment *does* establish, unconditionally and corpus-wide, is the
 **guarantee**: at any deadline rustdl's reported hierarchy is sound (precision
-1.0, 24+24 measured points, FP gate enforced) and calibrated (silent_miss 0 — every
-miss flagged), with recall degrading gracefully under a tight global budget. That
+1.0 across all 42 measured points — 18 per-pair + 24 global, FP gate enforced) and
+calibrated (silent_miss 0 — every miss flagged), with recall degrading gracefully
+under a tight global budget. That
 guarantee is real; its *value* simply does not show against a state-of-the-art
 reasoner on benchmarks this reasoner finishes in milliseconds.
 

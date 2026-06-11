@@ -72,7 +72,23 @@ contact, so its only risk is its own correctness (caught by unit tests).
 - **P0 ✅** (`f307498`) — integer satisfiability core.
 - **P1 ✅** (`6568d85`) — generalized to dense (`DenseInterval`) + finite-set
   (`FiniteSet`) via the `ValueRange` trait; 27 unit tests, refute-only.
-- **P2/P3 — RESOLVED ARCHITECTURE, not yet built (see below).**
+- **P2 ✅** (`77bb44d`) — DKey decode + `ClassId→CardRange` side-map.
+- **P3 ✅** (`b9f8143`, local/unpushed) — integer cardinality un-drop +
+  `concrete_domain_clash` (additive, refute-only) in `clash_deps_at` +
+  `apply_min`/`apply_max` suppression for DKey fillers.
+  **Metrics (the push gate):** FP=0/MISSED=0 corpus-wide (shoiq 449=449 with P3
+  ACTIVE on its `=1 xsd:int` axiom; sio/ore-10908/ore-15672/wine/alehif
+  unchanged); perf-neutral (ore-10908 solo 1.16 s = baseline; empty
+  `dkey_ranges` → instant early-out; suppression prevents blowup). 10
+  negatives-first canaries (`concrete_domain_clash.rs`): 3 capacity/conflict
+  clashes fire, 7 per-lowering-path satisfiable nodes stay SAT.
+  **Utility caveat:** real-corpus utility ≈0 (only shoiq's single satisfiable
+  axiom activates) — as the pre-build measurement predicted; the win is on
+  synthetic integer-cardinality constructs.
+  **Scope:** integer bucket only; the clash is in the MAIN tableau (the classify
+  *wedge* doesn't run it — so utility is on the `is_*`/consistency paths, not the
+  classify pair-loop). Float/decimal/temporal/string buckets + wedge integration
+  are future extensions.
 
 ### P2/P3 resolved integration architecture (the `ClassId → CardRange` side-map)
 Two facts discovered while mapping the tableau pinned the only viable shape:

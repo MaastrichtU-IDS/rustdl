@@ -130,6 +130,16 @@ struct Clausifier {
     /// engine's polarity-aware (flip) matching — an `S`-edge then counts
     /// as an `R⁻`-edge. Keyed by the rewritten role's id.
     inverse_canon: HashMap<RoleId, Role>,
+    /// `DKey` (datatype-range synthetic) filler classes. Cardinality
+    /// heads (`AtLeast`/`AtMost`) over these are **not** emitted: the
+    /// hypertableau wedge's `generate_at_least` would materialise `n`
+    /// fresh successors, so a large data cardinality (`≥10⁶ p.[0,2]`)
+    /// would hang the wedge. The concrete-domain count is done instead by
+    /// the main tableau's `concrete_domain_clash` (`card_sat`). Dropping
+    /// the head only *removes* a wedge constraint, so it is sound
+    /// (refute-only — the wedge can never gain a false clash from a
+    /// missing constraint).
+    dkey_classes: std::collections::HashSet<ClassId>,
 }
 
 impl Clausifier {
@@ -138,6 +148,7 @@ impl Clausifier {
         first_fresh: u32,
         nominal_base: u32,
         inverse_canon: HashMap<RoleId, Role>,
+        dkey_classes: std::collections::HashSet<ClassId>,
     ) -> Self {
         Self {
             pool,
@@ -148,6 +159,7 @@ impl Clausifier {
             deferred: 0,
             deferred_kinds: std::collections::BTreeMap::new(),
             inverse_canon,
+            dkey_classes,
         }
     }
 
@@ -576,6 +588,12 @@ impl Clausifier {
                     return; // ≥0: trivially satisfied.
                 }
                 let qual = self.cardinality_qualifier(inner);
+                // DKey (datatype) filler: don't emit the wedge cardinality
+                // head — the main tableau counts it via `card_sat`. See
+                // `dkey_classes`. Sound (refute-only): drops a constraint.
+                if matches!(qual, Some(c) if self.dkey_classes.contains(&c)) {
+                    return;
+                }
                 self.clauses.push(DlClause {
                     body,
                     head: vec![Atom::AtLeast(role, qual, n, var)],
@@ -584,6 +602,9 @@ impl Clausifier {
             ConceptExpr::Max(n, role, inner) => {
                 let (n, role, inner) = (*n, self.canon_role(*role), *inner);
                 let qual = self.cardinality_qualifier(inner);
+                if matches!(qual, Some(c) if self.dkey_classes.contains(&c)) {
+                    return; // DKey filler — see the `Min` arm.
+                }
                 self.clauses.push(DlClause {
                     body,
                     head: vec![Atom::AtMost(role, qual, n, var)],
@@ -722,7 +743,19 @@ pub fn clausify_with_stats(internal: &InternalOntology) -> (Vec<DlClause>, Claus
         .checked_add(num_individuals)
         .expect("class+individual count fits in u32");
     let inverse_canon = build_inverse_canon(&normalized);
-    let mut c = Clausifier::new(internal.concepts, first_fresh, nominal_base, inverse_canon);
+    let dkey_classes: std::collections::HashSet<ClassId> = internal
+        .vocabulary
+        .classes()
+        .filter(|(_, iri)| crate::is_dkey_iri(iri))
+        .map(|(id, _)| id)
+        .collect();
+    let mut c = Clausifier::new(
+        internal.concepts,
+        first_fresh,
+        nominal_base,
+        inverse_canon,
+        dkey_classes,
+    );
     for ax in &normalized {
         c.clausify_axiom(ax);
     }
@@ -745,7 +778,15 @@ pub fn deferred_census(internal: &InternalOntology) -> Vec<(&'static str, usize)
         .checked_add(num_individuals)
         .expect("class+individual count fits in u32");
     let inverse_canon = build_inverse_canon(&normalized);
-    let mut c = Clausifier::new(internal.concepts, first_fresh, num_classes, inverse_canon);
+    // Census is a coverage count, not a wedge run — `dkey_classes`
+    // (cardinality-head suppression) is irrelevant here.
+    let mut c = Clausifier::new(
+        internal.concepts,
+        first_fresh,
+        num_classes,
+        inverse_canon,
+        std::collections::HashSet::new(),
+    );
     for ax in &normalized {
         c.clausify_axiom(ax);
     }
@@ -999,6 +1040,31 @@ SubClassOf(:C ObjectHasSelf(:r))\n)\n"
                 .iter()
                 .any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
             "expected a self-loop Role(x,x) head"
+        );
+    }
+
+    /// REGRESSION (wedge-hang): a `DataMin/MaxCardinality` over a
+    /// `DKey` (datatype-range synthetic) filler must NOT emit a
+    /// cardinality head. The wedge's `generate_at_least` would otherwise
+    /// materialise `n` fresh successors — a large data cardinality
+    /// (`≥10⁶ p.[0,2]`) hung `classify` (the main tableau already
+    /// suppresses it and counts via `card_sat`). Sound: dropping the
+    /// head only removes a wedge constraint (refute-only).
+    #[test]
+    fn dkey_data_cardinality_emits_no_cardinality_head() {
+        let src = "Prefix(:=<http://x/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(\nDeclaration(Class(:C))\nDeclaration(DataProperty(:p))\n\
+SubClassOf(:C DataMinCardinality(1000000 :p DatatypeRestriction(xsd:integer \
+xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"2\"^^xsd:integer)))\n)\n";
+        let (clauses, _stats) = clausify_ofn(src);
+        assert!(
+            !clauses.iter().any(|c| c
+                .head
+                .iter()
+                .any(|a| matches!(a, Atom::AtLeast(..) | Atom::AtMost(..)))),
+            "DKey data cardinality must emit no AtLeast/AtMost head (wedge-hang guard); \
+             clauses={clauses:?}"
         );
     }
 

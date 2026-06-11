@@ -673,8 +673,22 @@ fn anytime_per_pair_sweep() {
     // Phase-2 global wall-clock deadline; it is reported qualitatively (e.g.
     // wine @ 100 ms ≈ 205 s) rather than swept to 1000 ms.
     let deadlines_ms: &[u64] = &[5, 25, 100];
-    let csv_path = std::env::var("RUSTDL_ANYTIME_CSV")
+    // `cargo test` runs with CWD = the package dir (crates/owl-dl-reasoner),
+    // so a relative `docs/...` path would land under the package, not the
+    // repo root. Resolve relative paths against the workspace root
+    // (CARGO_MANIFEST_DIR/../..); absolute paths are used as-is.
+    let csv_arg = std::env::var("RUSTDL_ANYTIME_CSV")
         .unwrap_or_else(|_| "/tmp/anytime-per-pair.csv".to_string());
+    let csv_path = {
+        let p = std::path::PathBuf::from(&csv_arg);
+        if p.is_absolute() {
+            p
+        } else {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(&csv_arg)
+        }
+    };
     let mut csv = String::from(
         "fixture,phase,deadline_ms,recall,precision,silent_miss,wall_ms,undecided,true_pairs\n",
     );
@@ -748,6 +762,7 @@ fn anytime_per_pair_sweep() {
         }
     }
 
-    std::fs::write(&csv_path, csv).expect("write CSV");
-    println!("wrote {csv_path}");
+    std::fs::write(&csv_path, csv)
+        .unwrap_or_else(|e| panic!("write CSV to {}: {e}", csv_path.display()));
+    println!("wrote {}", csv_path.display());
 }

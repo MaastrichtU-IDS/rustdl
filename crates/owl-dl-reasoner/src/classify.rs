@@ -1121,17 +1121,35 @@ pub(crate) fn classify_top_down_internal(
         // cutting them off at NoVerdict bloats the tier walk's cache-miss
         // bucket. See `docs/phase8-recon.md`. Default 5000 ms; set
         // `RUSTDL_LABEL_CACHE_TIMEOUT_MS=0` for unbounded.
+        //
+        // Global-deadline cap: if a global wall-clock budget is active, each
+        // per-class label deadline is capped at `global_deadline` via
+        // `effective_deadline`. This ensures `classify_with_global_deadline`
+        // actually returns near its promised deadline even when many label
+        // classes stall (e.g. wine). The per-pair budget is still deliberately
+        // NOT used here — the Phase-8 independence is preserved.
         let cache_ms = crate::label_cache_timeout_ms();
+        let per_class_cache_dur = if cache_ms == 0 {
+            None
+        } else {
+            Some(std::time::Duration::from_millis(cache_ms))
+        };
         (0..n)
             .into_par_iter()
             .map(|i| {
+                // Skip entirely once the global deadline has passed: there is no
+                // point paying for a per-class wedge call that will instant-timeout
+                // anyway. `NoVerdict` is sound — it makes the unsat-probe and
+                // tier-walk fall through to the already-gd-bounded probe path.
+                if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+                    return crate::LabelOracle::NoVerdict;
+                }
                 let class_id =
                     owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-                let deadline = if cache_ms == 0 {
-                    None
-                } else {
-                    Some(Instant::now() + std::time::Duration::from_millis(cache_ms))
-                };
+                // Effective deadline: earlier of the global deadline and the
+                // per-class cache budget. When global_deadline is None, this
+                // reproduces the pre-fix behaviour exactly.
+                let deadline = effective_deadline(global_deadline, per_class_cache_dur);
                 prepared.classify_labels(class_id, deadline)
             })
             .collect()
@@ -2998,6 +3016,37 @@ Ontology(\n\
             h_oe.undecided_pairs().len(),
             h_oe.stats().timed_out_pairs,
             "undecided_pairs() must mirror timed_out_pairs count"
+        );
+    }
+
+    /// Global deadline must bound the label-cache build phase, not just
+    /// the per-pair probe phase. Without the fix, each label-build call
+    /// uses a fresh 5000 ms per-class budget regardless of the global
+    /// deadline — on a stalling ontology (∃R.B ⊓ ∀R.C with B⊓C⊑⊥) the
+    /// label-cache build alone could run for many seconds. With the fix the
+    /// per-class deadline is capped at the global deadline, so the whole
+    /// classify call returns well within the budget.
+    #[test]
+    fn global_deadline_bounds_label_cache_build() {
+        use std::time::{Duration, Instant};
+        // Out-of-EL input that forces the hybrid path and exercises the
+        // label-cache build (∃R + ∀R + disjointness clash → ¬pure-EL).
+        // The `owl:Nothing` sink makes A unsatisfiable so the label build
+        // must run the wedge per class.
+        let src = "Prefix(:=<http://t/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(\n  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n  \
+Declaration(ObjectProperty(:r))\n  \
+SubClassOf(:A ObjectSomeValuesFrom(:r :B)) SubClassOf(:A ObjectAllValuesFrom(:r :C))\n  \
+SubClassOf(ObjectIntersectionOf(:B :C) owl:Nothing)\n)\n";
+        let onto = parse(src);
+        let t0 = Instant::now();
+        let _h = classify_with_global_deadline(&onto, Duration::from_millis(100))
+            .expect("classify with global deadline");
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "global deadline must bound label-cache build: {:?}",
+            t0.elapsed()
         );
     }
 }

@@ -43,9 +43,18 @@ fn family_classifies_in_hybrid_mode() {
         !stats.pure_el_mode,
         "family uses union + inverse roles, should be hybrid"
     );
+    // The non-EL fragment is exercised beyond told-subsumption, confirmed by
+    // a representative entailment that needs it. We deliberately do NOT
+    // assert `tableau_subsumption_calls + tableau_unsat_calls > 0`: that
+    // counter tracks MAIN-tableau calls only, and the default-ON hypertableau
+    // wedge + per-class label heuristic now resolve family's entailments
+    // within the hybrid path without a main-tableau call (it drops to 0 under
+    // `RUSTDL_LABEL_HEURISTIC` default-on — same optimization-drift class as
+    // the reasoner's flag-pinned stale tests). The wedge IS part of the
+    // hybrid engine, so a 0 main-tableau count is correct, not a regression.
     assert!(
-        stats.tableau_subsumption_calls + stats.tableau_unsat_calls > 0,
-        "expected tableau to be invoked on the non-EL fragment",
+        h.is_subclass(&iri("Man"), &iri("Person")),
+        "hybrid reasoning must still confirm the non-EL entailment Man ⊑ Person",
     );
 }
 

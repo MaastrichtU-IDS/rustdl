@@ -1092,7 +1092,26 @@ pub(crate) fn classify_top_down_internal(
             if crate::unsat_via_labels_enabled() {
                 match label_cache.get(i) {
                     Some(crate::LabelOracle::Unsat) => return Ok((i, false, true)),
-                    Some(crate::LabelOracle::Sat(_)) => return Ok((i, true, true)),
+                    Some(crate::LabelOracle::Sat(_)) => {
+                        // Concrete-domain verify: the wedge has no `card_sat`
+                        // and does not materialise DKey cardinality, so it
+                        // reports a counting-clash class `Sat`. For a class
+                        // carrying a `Min`/`Max`-over-DKey constraint (or a
+                        // saturation-subclass of one), don't trust that `Sat`
+                        // — fall through to the main tableau (which runs
+                        // `concrete_domain_clash`). Sound: only swaps a wedge
+                        // `Sat` for the complete path. Empty set ⇒ no overhead.
+                        let needs_verify = !prepared.data_counting_classes.is_empty()
+                            && (prepared.data_counting_classes.contains(&class_id)
+                                || closure
+                                    .subsumers_of(class_id)
+                                    .iter()
+                                    .any(|s| prepared.data_counting_classes.contains(s)));
+                        if !needs_verify {
+                            return Ok((i, true, true));
+                        }
+                        // else: fall through to the main-tableau probe below.
+                    }
                     Some(crate::LabelOracle::NoVerdict) | None => {}
                 }
             }

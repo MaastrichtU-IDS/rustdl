@@ -1889,7 +1889,6 @@ pub(crate) struct PreparedOntology {
     /// Named classes carrying a counting `DKey` constraint (see
     /// `build_data_counting_classes`). The classify unsat-probe
     /// main-tableau-verifies these instead of trusting the wedge's `Sat`.
-    #[allow(dead_code)]
     pub(crate) data_counting_classes:
         std::collections::HashSet<owl_dl_core::ir::ClassId>,
 }

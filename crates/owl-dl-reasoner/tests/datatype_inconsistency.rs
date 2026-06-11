@@ -214,3 +214,82 @@ fn value_violates_superproperty_string_oneof() {
     DataPropertyAssertion(:p :a "maybe")"#
     ));
 }
+
+// ─── DP-2: data-cardinality (≤n dp) with >n distinct string values ───
+
+/// POSITIVE (12174 pattern): `C ⊑ ≤1 p` (unqualified) + an individual with two
+/// distinct string values ("L" and "L ") ⇒ inconsistent.
+#[test]
+fn two_distinct_strings_on_max1_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    ClassAssertion(:C :a)
+    SubClassOf(:C DataMaxCardinality(1 :p))
+    DataPropertyAssertion(:p :a "L")
+    DataPropertyAssertion(:p :a "L ")"#
+    ));
+}
+
+/// POSITIVE: typing via told-subclass + filler via sub-property both route in.
+#[test]
+fn cardinality_via_subclass_and_subproperty_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(Class(:D))
+    Declaration(DataProperty(:p)) Declaration(DataProperty(:q)) Declaration(NamedIndividual(:a))
+    SubClassOf(:D :C)
+    SubClassOf(:C DataMaxCardinality(1 :p))
+    SubDataPropertyOf(:q :p)
+    ClassAssertion(:D :a)
+    DataPropertyAssertion(:p :a "x")
+    DataPropertyAssertion(:q :a "y")"#
+    ));
+}
+
+/// THE QUALIFIED-CARDINALITY GATE: `≤1 p xsd:integer` bounds only INTEGER
+/// fillers; two distinct STRING values don't count ⇒ must stay consistent.
+/// Guards the false-Inconsistent from counting strings against a numeric bound.
+#[test]
+fn two_strings_on_integer_qualified_max1_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    ClassAssertion(:C :a)
+    SubClassOf(:C DataMaxCardinality(1 :p xsd:integer))
+    DataPropertyAssertion(:p :a "x")
+    DataPropertyAssertion(:p :a "y")"#
+    ));
+}
+
+/// NEGATIVE: count not exceeded (2 distinct strings, ≤2) ⇒ consistent.
+#[test]
+fn distinct_count_within_bound_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    ClassAssertion(:C :a)
+    SubClassOf(:C DataMaxCardinality(2 :p))
+    DataPropertyAssertion(:p :a "x")
+    DataPropertyAssertion(:p :a "y")"#
+    ));
+}
+
+/// NEGATIVE: the SAME string asserted twice is ONE distinct value ⇒ consistent.
+#[test]
+fn duplicate_string_on_max1_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    ClassAssertion(:C :a)
+    SubClassOf(:C DataMaxCardinality(1 :p))
+    DataPropertyAssertion(:p :a "same")
+    DataPropertyAssertion(:p :a "same")"#
+    ));
+}
+
+/// NEGATIVE: individual is NOT (told) typed the constrained class ⇒ consistent.
+#[test]
+fn cardinality_untyped_individual_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p))
+    DataPropertyAssertion(:p :a "x")
+    DataPropertyAssertion(:p :a "y")"#
+    ));
+}

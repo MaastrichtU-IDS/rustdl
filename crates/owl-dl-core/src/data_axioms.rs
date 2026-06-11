@@ -50,7 +50,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use horned_owl::model::{
-    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI, Literal,
+    ClassExpression, Component, DataProperty, DataRange, FacetRestriction, ForIRI, Individual,
+    Literal,
 };
 use horned_owl::ontology::set::SetOntology;
 use horned_owl::vocab::Facet;
@@ -88,7 +89,100 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_subdataprop_transitivity(&facts, vocab, &atomic_id, &mut out);
     emit_data_range_violations(&facts, top_id, bot_id, &mut out);
     emit_data_oneof_violations(&facts, top_id, bot_id, &mut out);
+    emit_data_cardinality_violations(&facts, top_id, bot_id, &mut out);
     out
+}
+
+/// DP-2: a data-CARDINALITY violation ⇒ global inconsistency.
+/// `ClassAssertion(C₀, a)` with `C₀ ⊑* C` and `C ⊑ ≤n dp` (a `DataMax`/
+/// `DataExact` constraint, captured in `class_max`) forces `a` to have at most
+/// `n` distinct `dp`-fillers. When `a` is asserted **more than `n` distinct
+/// `xsd:string` values** for `dp` (directly or via a sub-data-property
+/// `dp' ⊑ dp`), the ABox has no model ⇒ emit `Top ⊑ Bot`. Closes
+/// `ore_ont_12174` (`EnumerationElement ⊑ =1 literal`, an element with both
+/// `"L"` and `"L "`).
+///
+/// **Sound by construction (the false-`Inconsistent` gate):**
+/// - distinctness is **exact `xsd:string` lexical inequality only** — no numeric
+///   normalization (so the `int`/`decimal`/`float` equality landmines never
+///   apply); non-string values are ignored, an under-count (safe direction).
+/// - data literals with distinct values are inherently distinct fillers (no
+///   merge, unlike object successors), so `>n` distinct ⇒ a genuine `≤n` clash.
+/// - typing via the reflexive-transitive **told** atomic-`SubClassOf` closure;
+///   `≤n` only from `DataMax`/`DataExact` (never `DataMin`); fillers routed via
+///   the sub→super data-property direction (`dp' ⊑ dp` ⇒ `dp'`-values are
+///   `dp`-values).
+fn emit_data_cardinality_violations(
+    f: &Facts,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    if f.class_assertions.is_empty()
+        || f.class_max_string.is_empty()
+        || f.ind_string_values.is_empty()
+    {
+        return;
+    }
+    let class_closure = closure_sub_dp(&f.subclass_atomic); // class → {self ∪ supers}
+    let dp_closure = closure_sub_dp(&f.sub_data_property); // dp → {self ∪ supers}
+    // Individual → all (told) types.
+    let mut ind_types: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (ind, c) in &f.class_assertions {
+        let entry = ind_types.entry(ind.as_str()).or_default();
+        match class_closure.get(c) {
+            Some(supers) => entry.extend(supers.iter().map(String::as_str)),
+            None => {
+                entry.insert(c.as_str());
+            }
+        }
+    }
+    // Individual → dp → distinct string values (owned view for routing).
+    let mut ind_dp_vals: BTreeMap<&str, BTreeMap<&str, &BTreeSet<String>>> = BTreeMap::new();
+    for ((ind, dp), vals) in &f.ind_string_values {
+        ind_dp_vals
+            .entry(ind.as_str())
+            .or_default()
+            .insert(dp.as_str(), vals);
+    }
+    for ((class, dp), &n) in &f.class_max_string {
+        for (ind, types) in &ind_types {
+            if !types.contains(class.as_str()) {
+                continue;
+            }
+            let Some(dp_map) = ind_dp_vals.get(ind) else {
+                continue;
+            };
+            // Collect distinct string fillers across dp and every sub-dp of dp.
+            let mut distinct: BTreeSet<&str> = BTreeSet::new();
+            for (dpp, vals) in dp_map {
+                // `dpp ⊑ dp` iff `dp` is in `dpp`'s super-closure; a dp with no
+                // hierarchy edges isn't in the closure map, so match it directly.
+                let is_sub = dp_closure
+                    .get(*dpp)
+                    .map_or(*dpp == dp.as_str(), |s| s.contains(dp));
+                if is_sub {
+                    distinct.extend(vals.iter().map(String::as_str));
+                }
+            }
+            if distinct.len() > n as usize {
+                out.push(Axiom::SubClassOf {
+                    sub: top_id,
+                    sup: bot_id,
+                });
+                return;
+            }
+        }
+    }
+}
+
+/// The IRI of a named individual (anonymous individuals → `None`; they can't be
+/// referenced by the per-individual data-cardinality bookkeeping).
+fn individual_iri<A: ForIRI>(i: &Individual<A>) -> Option<String> {
+    match i {
+        Individual::Named(ni) => Some(ni.0.to_string()),
+        Individual::Anonymous(_) => None,
+    }
 }
 
 /// DP-1b: a string-`DataOneOf` membership VIOLATION ⇒ global inconsistency.
@@ -1014,6 +1108,22 @@ struct Facts {
     /// DP-1b: `DataPropertyAssertion(p, a, "v")` → `(p_iri, v)` for every
     /// `xsd:string`-typed asserted value.
     data_string_assertions: Vec<(String, String)>,
+    /// DP-2: `ClassAssertion(C, a)` with `C` atomic → `(ind_iri, class_iri)`.
+    class_assertions: Vec<(String, String)>,
+    /// DP-2: atomic `SubClassOf(sub, super)` edges (for the told-subsumer
+    /// closure used to resolve an individual's types).
+    subclass_atomic: Vec<(String, String)>,
+    /// DP-2: per-individual `xsd:string`-typed data values, keyed
+    /// `(ind_iri, dp_iri) → {value …}` (for data-cardinality counting).
+    ind_string_values: BTreeMap<(String, String), BTreeSet<String>>,
+    /// DP-2: `C ⊑ ≤n dp` (`DataMax`/`DataExact` Max-half) keyed
+    /// `(class_iri, dp_iri) → min-n`, **only when the cardinality's data-range
+    /// qualifier admits string values** (`rdfs:Literal`/unqualified or a
+    /// string datatype). A numeric/other qualifier is excluded — its `≤n`
+    /// bounds non-string fillers, so counting string values against it would
+    /// be unsound (false `Inconsistent`). Separate from `class_max` (which is
+    /// qualifier-agnostic and feeds the D4 single-class clash patterns).
+    class_max_string: BTreeMap<(String, String), u32>,
 }
 
 fn extract_facts<A: ForIRI>(src: &SetOntology<A>) -> Facts {
@@ -1086,7 +1196,20 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
             }
             // DP-1b: record the asserted string value (for enum membership).
             if let Some(v) = exact_string_literal(&ax.to) {
-                f.data_string_assertions.push((dpe_iri(&ax.dp), v));
+                f.data_string_assertions.push((dpe_iri(&ax.dp), v.clone()));
+                // DP-2: also record per-individual (for data-cardinality).
+                if let Some(ind) = individual_iri(&ax.from) {
+                    f.ind_string_values
+                        .entry((ind, dpe_iri(&ax.dp)))
+                        .or_default()
+                        .insert(v);
+                }
+            }
+        }
+        C::ClassAssertion(ax) => {
+            // DP-2: atomic class membership for the type-resolution closure.
+            if let (Some(c), Some(ind)) = (class_iri(&ax.ce), individual_iri(&ax.i)) {
+                f.class_assertions.push((ind, c));
             }
         }
         C::SubClassOf(ax) => {
@@ -1119,6 +1242,10 @@ fn scan_subclass_axiom<A: ForIRI>(
     // sup side may be a data-cardinality or existential under which we
     // infer bounds / data-some for the sub class.
     if let Some(sub_iri) = class_iri(sub) {
+        // DP-2: atomic SubClassOf edge for the told-subsumer closure.
+        if let Some(sup_iri) = class_iri(sup) {
+            f.subclass_atomic.push((sub_iri.clone(), sup_iri));
+        }
         scan_class_for_bounds(&sub_iri, sup, f);
         scan_class_for_existentials(&sub_iri, sup, f);
     }
@@ -1139,17 +1266,25 @@ fn scan_class_for_bounds<A: ForIRI>(class_iri: &str, ce: &ClassExpression<A>, f:
             let entry = f.class_min.entry(key).or_insert(0);
             *entry = (*entry).max(*n);
         }
-        ClassExpression::DataMaxCardinality { n, dp, .. } => {
+        ClassExpression::DataMaxCardinality { n, dp, dr } => {
             let key = (class_iri.to_string(), dpe_iri(dp));
-            let entry = f.class_max.entry(key).or_insert(u32::MAX);
+            let entry = f.class_max.entry(key.clone()).or_insert(u32::MAX);
             *entry = (*entry).min(*n);
+            if dr_admits_strings(dr) {
+                let e = f.class_max_string.entry(key).or_insert(u32::MAX);
+                *e = (*e).min(*n);
+            }
         }
-        ClassExpression::DataExactCardinality { n, dp, .. } => {
+        ClassExpression::DataExactCardinality { n, dp, dr } => {
             let key = (class_iri.to_string(), dpe_iri(dp));
             let min_entry = f.class_min.entry(key.clone()).or_insert(0);
             *min_entry = (*min_entry).max(*n);
-            let max_entry = f.class_max.entry(key).or_insert(u32::MAX);
+            let max_entry = f.class_max.entry(key.clone()).or_insert(u32::MAX);
             *max_entry = (*max_entry).min(*n);
+            if dr_admits_strings(dr) {
+                let e = f.class_max_string.entry(key).or_insert(u32::MAX);
+                *e = (*e).min(*n);
+            }
         }
         ClassExpression::ObjectIntersectionOf(parts) => {
             for p in parts {
@@ -1601,6 +1736,22 @@ fn data_range_family<A: ForIRI>(dr: &DataRange<A>) -> Option<DtFamily> {
         DataRange::Datatype(dt) | DataRange::DatatypeRestriction(dt, _) => dt_family(dt.0.as_ref()),
         _ => None,
     }
+}
+
+/// Whether a data-cardinality qualifier `dr` admits `xsd:string` fillers —
+/// i.e. counting an individual's string values against a `≤n dp dr` bound is
+/// sound. True for the unqualified case (`rdfs:Literal`, where every value
+/// counts) and for a string-family datatype; false for numeric/temporal/etc.
+/// qualifiers (strings are not in `dr`, so must not be counted) and for
+/// unions/unknown (uncertain → excluded). Gates DP-2.
+fn dr_admits_strings<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    const RDFS_LITERAL: &str = "http://www.w3.org/2000/01/rdf-schema#Literal";
+    if let DataRange::Datatype(dt) = dr
+        && dt.0.as_ref() == RDFS_LITERAL
+    {
+        return true;
+    }
+    data_range_family(dr) == Some(DtFamily::TextPlain)
 }
 
 // ─────────────────────────────────────────────────────────────────────

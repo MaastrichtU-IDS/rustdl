@@ -287,7 +287,32 @@ re-verified.
 **Status: ORE inconsistency gap now 5 (A1) + 4 (DP-1/DP-1b: 2749, 6446, 8941,
 13219) detected; 1 remains (12174); 15993 is a sound DL-safe-rule drop.**
 
-### 12174 (NASA QUDT) — residual, DEFERRED (deep multi-axiom; DP-2/3)
+### DP-2 (NASA QUDT 12174) — data-cardinality, SHIPPED
+Pinned by within-SubClassOf ablation: the clash is **data cardinality**, not ∀
+(removing the `DataExact/MaxCardinality` SubClassOf axioms → consistent; removing
+`DataAllValuesFrom` → still inconsistent). Mechanism: `EnumerationElement ⊑ =1
+literal` (unqualified) + an element with **two distinct string values** `"L"`
+(via `literal`) and `"L "` (via a sub-data-property) → >1 distinct filler for a
+`≤1` ⇒ inconsistent. `emit_data_cardinality_violations`: for each individual
+(told-subclass-closure typed `C`) with `C ⊑ ≤n dp` admitting strings, count
+distinct **string** fillers across `dp` and its sub-data-properties; `>n` ⇒
+`Top ⊑ Bot`. **Closes 12174** (classify 246/246 unsat, matches Konclude).
+
+**Soundness (false-Inconsistent gate):** (a) distinctness = exact `xsd:string`
+lexical inequality ONLY — no numeric normalization, so the `int`/`decimal`/`float`
+equality landmines never apply; non-string values ignored (under-count, safe).
+(b) data literals with distinct values are inherently distinct fillers (no merge,
+unlike object successors). (c) **qualified-cardinality gate** (`class_max_string`):
+a `≤n dp D` bound counts string values ONLY when `D` admits strings (`rdfs:Literal`
+/unqualified or a string datatype); a numeric/temporal qualifier is excluded
+(`dr_admits_strings`) — else counting strings against `≤n dp xsd:integer` would
+false-fire. (d) typing via reflexive-transitive told atomic-`SubClassOf` closure;
+`≤n` from `DataMax`/`DataExact` only (never `DataMin`); fillers routed sub→super.
+6 new canaries incl. the integer-qualified-bound gate, count-within-bound,
+duplicate-value, untyped-individual. shoiq/wine FP=0/MISSED=0 re-verified (shoiq
+has 11 data-cardinality + 526 class-assertions; no false-fire).
+
+#### (historical note) 12174 was first deferred as "deep multi-axiom" —
 Full category ablation: the clash needs **ClassAssertion + DataPropertyAssertion
 + SubClassOf + SubDataPropertyOf together** (removing any one ⇒ consistent). The
 trigger is a TBox data constraint on a *class* — both `C ⊑ DataExactCardinality(1,
@@ -303,11 +328,13 @@ pursued, DP-3 = the `DataAllValuesFrom`-through-typing analog of DP-1 (value fam
 provably-distinct values).
 
 **Net result of this thread:** the ORE "11 inconsistent onts rustdl misses" is now
-**fully characterized and 9/10 detected** (5 A1 + 4 DP-1/DP-1b; 15993 is a sound
-DL-safe drop, never a real miss). The one remaining (12174) is a documented deep
-concrete-domain case, and rustdl's "consistent" on it stays a *sound*
-under-approximation (dropped data fragment) — zero unsound inconsistency misses
-throughout.
+**10 of 11 DETECTED** — 5 by A1 + **5 by DP-1/DP-1b/DP-2** (2749, 6446, 8941
+range-family; 13219 string-enum; 12174 data-cardinality). The one remaining,
+**15993**, is inconsistent only via dropped DL-safe (SWRL) rules, so rustdl's
+"consistent" is *sound by design*, not a miss. **Zero unsound inconsistency misses
+throughout** — every step held FP=0/MISSED=0 on the corpus (shoiq/wine the only
+triggers) with negatives-first canaries (22 total in
+`tests/datatype_inconsistency.rs`).
 
 ## Soundness posture
 

@@ -1,13 +1,12 @@
 name: CI
 
 on:
-  # push trigger disabled 2026-05-29 until the org Actions billing is
-  # restored — every recent push has failed with "the job was not
-  # started because recent account payments have failed or your
-  # spending limit needs to be increased." PRs and manual dispatch
-  # still trigger CI normally.
-  # push:
-  #   branches: [main]
+  # Push trigger re-enabled 2026-06-11: the repo is now public, so GitHub
+  # Actions runs on free public-repo minutes (the 2026-05-29 disable was a
+  # private-repo billing failure, since resolved). PRs and manual dispatch
+  # also trigger CI.
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

@@ -1087,6 +1087,7 @@ pub fn convert_ontology<A: ForIRI>(
     // crates/owl-dl-reasoner/tests/datatype_completeness.rs for the
     // TDD harness.
     let bot_id = out.concepts.bot();
+    let top_id = out.concepts.top();
     // We intern atomic concept lookups inside the closure so the pool
     // gets all referenced atomic classes (some may not have been
     // referenced by any axiom that survived ce_or_skip!).
@@ -1094,7 +1095,7 @@ pub fn convert_ontology<A: ForIRI>(
     // out.axioms.extend (which doesn't need it but reads cleaner).
     let derived = {
         let concepts_cell = std::cell::RefCell::new(&mut out.concepts);
-        crate::data_axioms::derive_data_axioms(src, &out.vocabulary, bot_id, |cid| {
+        crate::data_axioms::derive_data_axioms(src, &out.vocabulary, top_id, bot_id, |cid| {
             concepts_cell.borrow_mut().atomic(cid)
         })
     };

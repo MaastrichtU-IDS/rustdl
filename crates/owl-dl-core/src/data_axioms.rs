@@ -71,6 +71,7 @@ use crate::ontology::Axiom;
 pub fn derive_data_axioms<A: ForIRI>(
     src: &SetOntology<A>,
     vocab: &Vocabulary,
+    top_id: ConceptId,
     bot_id: ConceptId,
     atomic_id: impl Fn(ClassId) -> ConceptId,
 ) -> Vec<Axiom> {
@@ -85,7 +86,57 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_clashes(&facts, vocab, bot_id, &atomic_id, &mut out);
     emit_domain_inferences(&facts, vocab, &atomic_id, &mut out);
     emit_subdataprop_transitivity(&facts, vocab, &atomic_id, &mut out);
+    emit_data_range_violations(&facts, top_id, bot_id, &mut out);
     out
+}
+
+/// DP-1: a data-property-range VIOLATION ⇒ **global inconsistency**.
+/// `DataPropertyAssertion(p, a, lit)` together with `DataPropertyRange(q, R)`
+/// for any (reflexive) super-data-property `q` of `p` forces `lit ∈ R`. When
+/// `family(lit)` is value-space-disjoint from `family(R)` the value cannot
+/// lie in the range, so the ontology has no model — emit `Top ⊑ Bot` once
+/// (the pipeline reads that as inconsistent: every class becomes unsat,
+/// mirroring Konclude). rustdl otherwise DROPS ABox data-property reasoning,
+/// so this is a sound completeness gain, not a behaviour change on
+/// data-clean inputs.
+///
+/// **Sound by construction (the false-`Inconsistent` gate):** only fires when
+/// both families are classified ([`dt_family`] returns `None` on any
+/// uncertainty) and *different* (every [`DtFamily`] variant is a distinct,
+/// pairwise-disjoint value space; all numerics are merged so `int`/`decimal`/
+/// `float` never cross-flag). Union/oneOf/complement ranges classify to
+/// `None` ([`data_range_family`]) and are never flagged. Super-property
+/// direction only (range of a *super*-dp constrains the *sub*-dp's values).
+fn emit_data_range_violations(
+    f: &Facts,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    if f.data_assertions.is_empty() || f.dp_range_families.is_empty() {
+        return;
+    }
+    // Reflexive-transitive super-dp closure (dp → {dp} ∪ supers).
+    let closure = closure_sub_dp(&f.sub_data_property);
+    for (p, lit_fam) in &f.data_assertions {
+        // Ranges directly on p …
+        let mut applicable: Vec<DtFamily> = f.dp_range_families.get(p).cloned().unwrap_or_default();
+        // … plus ranges on every strict super-dp of p.
+        if let Some(supers) = closure.get(p) {
+            for q in supers {
+                if q != p {
+                    applicable.extend(f.dp_range_families.get(q).into_iter().flatten().copied());
+                }
+            }
+        }
+        if applicable.iter().any(|rf| *rf != *lit_fam) {
+            out.push(Axiom::SubClassOf {
+                sub: top_id,
+                sup: bot_id,
+            });
+            return;
+        }
+    }
 }
 
 /// Disjunctive-data-property-domain inference (closes the SAO/BFO cross-
@@ -901,6 +952,15 @@ struct Facts {
     /// accumulate; emit-time intersects them. Empty intersection on
     /// a Functional dp ⇒ C unsat.
     class_int_ranges: BTreeMap<(String, String), Vec<IntegerRange>>,
+    /// DP-1: `DataPropertyRange(p, R)` → `p_iri → [family(R) …]` for every
+    /// range `R` whose value-space family we can classify (bare datatype
+    /// or `DatatypeRestriction`; union/oneOf/complement are skipped).
+    dp_range_families: BTreeMap<String, Vec<DtFamily>>,
+    /// DP-1: `DataPropertyAssertion(p, a, lit)` → `(p_iri, family(lit))`
+    /// for every assertion whose literal family we can classify. The
+    /// individual is irrelevant to the check (one violating value makes
+    /// the whole ontology inconsistent), so we don't record it.
+    data_assertions: Vec<(String, DtFamily)>,
 }
 
 fn extract_facts<A: ForIRI>(src: &SetOntology<A>) -> Facts {
@@ -948,6 +1008,21 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
                 if let Some(atoms) = atoms.filter(|a| a.len() >= 2) {
                     f.union_domains.push((dp, atoms));
                 }
+            }
+        }
+        C::DataPropertyRange(ax) => {
+            // DP-1: record the range's value-space family (if classifiable).
+            if let Some(fam) = data_range_family(&ax.dr) {
+                f.dp_range_families
+                    .entry(dpe_iri(&ax.dp))
+                    .or_default()
+                    .push(fam);
+            }
+        }
+        C::DataPropertyAssertion(ax) => {
+            // DP-1: record the asserted literal's value-space family.
+            if let Some(fam) = literal_family(&ax.to) {
+                f.data_assertions.push((dpe_iri(&ax.dp), fam));
             }
         }
         C::SubClassOf(ax) => {
@@ -1380,6 +1455,87 @@ fn emit_subdataprop_transitivity(
                 }
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DP-1: datatype value-space families (data-range-violation detection)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Coarse XSD value-space *macro-families*. Each variant is a single
+/// value space; **distinct variants are pairwise value-space-disjoint**
+/// (no value of one is a value of another). Deliberately conservative:
+/// all numerics (decimal / integer subtypes / float / double) collapse
+/// into one `Numeric` family so we NEVER flag a numeric-vs-numeric pair
+/// (sidesteps both the `int ⊆ decimal` containment trap and the
+/// float-vs-decimal value-space subtlety — at the cost of missing those
+/// violations, which is the safe direction). A datatype we are not
+/// certain about classifies to `None` ⇒ never flagged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DtFamily {
+    /// `xsd:string` and its lexical restrictions (token, Name, …).
+    TextPlain,
+    /// `rdf:langString` — language-tagged; **disjoint** from `xsd:string`.
+    LangString,
+    /// `xsd:decimal`, every integer subtype, `xsd:float`, `xsd:double`.
+    Numeric,
+    /// `xsd:boolean`.
+    Boolean,
+    /// `xsd:dateTime` / `date` / `time` / `g*` / `duration`.
+    Temporal,
+    /// `xsd:hexBinary` / `xsd:base64Binary`.
+    Binary,
+}
+
+/// Classify a datatype IRI into a value-space family, or `None` when we
+/// are not certain it is value-space-disjoint from the others (e.g.
+/// `xsd:anyURI`, `rdfs:Literal`, custom datatypes) — `None` is never
+/// flagged, keeping DP-1 a sound under-approximation.
+fn dt_family(iri: &str) -> Option<DtFamily> {
+    const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+    const RDF_LANGSTRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
+    if iri == RDF_LANGSTRING {
+        return Some(DtFamily::LangString);
+    }
+    let local = iri.strip_prefix(XSD)?;
+    Some(match local {
+        "string" | "normalizedString" | "token" | "language" | "Name" | "NCName" | "NMTOKEN" => {
+            DtFamily::TextPlain
+        }
+        "decimal" | "integer" | "int" | "long" | "short" | "byte" | "nonNegativeInteger"
+        | "positiveInteger" | "negativeInteger" | "nonPositiveInteger" | "unsignedInt"
+        | "unsignedLong" | "unsignedShort" | "unsignedByte" | "float" | "double" => {
+            DtFamily::Numeric
+        }
+        "boolean" => DtFamily::Boolean,
+        "dateTime" | "dateTimeStamp" | "date" | "time" | "gYear" | "gYearMonth" | "gMonth"
+        | "gDay" | "gMonthDay" | "duration" => DtFamily::Temporal,
+        "hexBinary" | "base64Binary" => DtFamily::Binary,
+        // anyURI, rdfs:Literal restrictions, unknown → not certain → skip.
+        _ => return None,
+    })
+}
+
+/// The value-space family of a literal: `Simple` ⇒ `xsd:string`,
+/// `Language` ⇒ `rdf:langString`, `Datatype` ⇒ the datatype's family.
+fn literal_family<A: ForIRI>(l: &Literal<A>) -> Option<DtFamily> {
+    match l {
+        Literal::Simple { .. } => Some(DtFamily::TextPlain),
+        Literal::Language { .. } => Some(DtFamily::LangString),
+        Literal::Datatype { datatype_iri, .. } => dt_family(datatype_iri.as_ref()),
+    }
+}
+
+/// The value-space family of a data range, but **only** for a bare
+/// `Datatype` or a `DatatypeRestriction` over one (facets don't change
+/// the family). `DataOneOf` / `DataUnionOf` / `DataIntersectionOf` /
+/// `DataComplementOf` ⇒ `None`: a union/complement/enumeration is NOT a
+/// single value space, so a family mismatch with one part proves nothing
+/// (the catastrophic false-`Inconsistent` case — gated hard here).
+fn data_range_family<A: ForIRI>(dr: &DataRange<A>) -> Option<DtFamily> {
+    match dr {
+        DataRange::Datatype(dt) | DataRange::DatatypeRestriction(dt, _) => dt_family(dt.0.as_ref()),
+        _ => None,
     }
 }
 

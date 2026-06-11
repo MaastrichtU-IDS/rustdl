@@ -637,6 +637,50 @@ fn fixture_paths(fx: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     }
 }
 
+/// Differential gate: at a generous global deadline, the global-deadline
+/// classifier must produce the SAME hierarchy as the untimed classifier —
+/// the deadline mechanism must not spuriously drop confirmable subsumptions.
+///
+/// Run:
+/// ```text
+/// cargo test -p owl-dl-reasoner --release --test konclude_closure_diff \
+///   -- --ignored --nocapture global_deadline_differential
+/// ```
+#[test]
+#[ignore = "long-running (classifies galen + alehif twice each); verifies the global-deadline mechanism is transparent at a generous budget"]
+fn global_deadline_differential() {
+    for fx in ["galen", "alehif"] {
+        let (ofn, _owx) = fixture_paths(fx);
+        if !ofn.exists() {
+            eprintln!("SKIP {fx}: fixture missing ({})", ofn.display());
+            continue;
+        }
+        let onto = load_ofn_fixture(&ofn);
+        let untimed = owl_dl_reasoner::classify(&onto).expect("classify");
+        let timed = owl_dl_reasoner::classify_with_global_deadline(
+            &onto,
+            std::time::Duration::from_secs(30),
+        )
+        .expect("classify_with_global_deadline");
+        let exclude = std::collections::BTreeSet::new();
+        let u = closure_from_classification(&untimed, &exclude);
+        let t = closure_from_classification(&timed, &exclude);
+        eprintln!(
+            "{fx}: untimed_closure={} timed_closure={}",
+            u.len(),
+            t.len()
+        );
+        assert_eq!(
+            t,
+            u,
+            "{fx}: 30 s global deadline must equal untimed hierarchy \
+             (dropped={} gained={})",
+            u.difference(&t).count(),
+            t.difference(&u).count(),
+        );
+    }
+}
+
 /// Anytime per-pair sweep: for each fixture × per-pair deadline, record
 /// precision / recall / silent-miss / wall vs the oracle closure. Writes a
 /// CSV (env `RUSTDL_ANYTIME_CSV`, default `/tmp/anytime-per-pair.csv`).

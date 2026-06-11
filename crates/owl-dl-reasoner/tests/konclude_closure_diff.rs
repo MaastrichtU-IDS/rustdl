@@ -665,7 +665,14 @@ fn anytime_per_pair_sweep() {
     use std::fmt::Write as _;
 
     let fixtures = ["galen", "alehif", "sio", "wine", "ore-10908", "ore-15672"];
-    let deadlines_ms: &[u64] = &[5, 25, 100, 250, 1000];
+    // Per-pair budgets. Capped at 100 ms: on hard SROIQ (wine, ore-15672) the
+    // per-pair timeout does NOT bound total wall (each of thousands of pairs
+    // may burn the full budget), so 250/1000 ms run for tens of minutes per
+    // fixture while recall is already saturated by ~25-100 ms. That
+    // unbounded-total-wall behaviour is precisely the motivation for the
+    // Phase-2 global wall-clock deadline; it is reported qualitatively (e.g.
+    // wine @ 100 ms ≈ 205 s) rather than swept to 1000 ms.
+    let deadlines_ms: &[u64] = &[5, 25, 100];
     let csv_path = std::env::var("RUSTDL_ANYTIME_CSV")
         .unwrap_or_else(|_| "/tmp/anytime-per-pair.csv".to_string());
     let mut csv = String::from(

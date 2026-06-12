@@ -181,3 +181,97 @@ fn find_one_unsat() {
     let j = find_one_justification(&o, &q).unwrap().expect("A unsat");
     assert_eq!(j.axioms.len(), 2, "got {:?}", dbgset(&j));
 }
+
+#[test]
+fn find_one_equivalent() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :A)",
+    );
+    let q = Entailment::EquivalentClasses {
+        a: "http://t/A".into(),
+        b: "http://t/B".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("A≡B");
+    assert_eq!(
+        j.axioms.len(),
+        2,
+        "both SubClassOf needed; got {:?}",
+        dbgset(&j)
+    );
+}
+
+#[test]
+fn find_one_disjoint() {
+    // DisjointClasses(A,B) entailment justification = {DisjointClasses(A,B)};
+    // the C⊑A,C⊑B noise must be excluded.
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+                  DisjointClasses(:A :B) SubClassOf(:C :A) SubClassOf(:C :B)",
+    );
+    let q = Entailment::DisjointClasses {
+        a: "http://t/A".into(),
+        b: "http://t/B".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("A,B disjoint");
+    assert_eq!(
+        j.axioms.len(),
+        1,
+        "only DisjointClasses(A,B); got {:?}",
+        dbgset(&j)
+    );
+}
+
+#[test]
+fn find_one_instance_of() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(NamedIndividual(:x))\n\
+                  SubClassOf(:A :B) ClassAssertion(:A :x)",
+    );
+    let q = Entailment::InstanceOf {
+        individual: "http://t/x".into(),
+        class: "http://t/B".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("x:B");
+    assert_eq!(
+        j.axioms.len(),
+        2,
+        "ClassAssertion(A,x) + A⊑B; got {:?}",
+        dbgset(&j)
+    );
+}
+
+#[test]
+fn find_one_inconsistent() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(NamedIndividual(:x))\n\
+                  SubClassOf(:A <http://www.w3.org/2002/07/owl#Nothing>) ClassAssertion(:A :x)",
+    );
+    let q = Entailment::Inconsistent;
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("inconsistent");
+    assert_eq!(j.axioms.len(), 2, "A⊑⊥ + A(x); got {:?}", dbgset(&j));
+}
+
+#[test]
+fn sroiq_flags_minimality_not_guaranteed() {
+    // Disjunction ⇒ out of EL/Horn ⇒ minimal_guaranteed = false.
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+                  SubClassOf(:A ObjectUnionOf(:B :C)) SubClassOf(:B :C) SubClassOf(:C :B)",
+    );
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/B".into(),
+    };
+    if let Some(j) = find_one_justification(&o, &q).unwrap() {
+        assert!(
+            !j.minimal_guaranteed,
+            "disjunction ⇒ out-of-fragment ⇒ minimality not guaranteed (fragment={:?})",
+            j.fragment
+        );
+    }
+}

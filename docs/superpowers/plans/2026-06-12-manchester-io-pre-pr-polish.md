@@ -578,6 +578,8 @@ fn reads_entity_and_ontology_annotations_round_trip() {
     let mut oid = OntologyID::default();
     oid.iri = Some(b.iri("http://ex/o"));
     o.insert(oid);
+    // an import too — validates the conformant header hosts iri+import+annotations together
+    o.insert(Import(b.iri("http://ex/imported")));
     o.insert(OntologyAnnotation(Annotation {
         ap: b.annotation_property("http://www.w3.org/2000/01/rdf-schema#comment"),
         av: AnnotationValue::Literal(Literal::Simple { literal: "an ontology".to_string() }),
@@ -641,9 +643,35 @@ In `src/io/omn/writer/mod.rs`:
   ```
   Confirm `ComponentKind::AnnotationAssertion` is the correct kind name (grep model.rs). The orphan case (entity annotation on an IRI that heads no frame) goes to misc and is documented in Task 7. The Step-1 test declares `ex:A`, so its annotations attach to the `Class: ex:A` frame and round-trip.
   Also ensure `AnnotationAssertion` is in the main loop's `if kind == … { continue; }` skip guard (alongside `OntologyID`/`DocIRI`/`Import`) so it is NOT also emitted to misc by the generic `_ => misc` arm.
-- `OntologyAnnotation`: collect these (also skip in the main loop's guard) and emit `    Annotations: <rendered>` lines indented under the `Ontology:` header, ONLY when a header line is already being written (i.e. `OntologyID.iri.is_some()`). This keeps the reader's `header_present` gate consistent (the header is present iff its IRI is). If `OntologyAnnotation`s exist with NO ontology IRI (rare), route them to misc rather than emitting a bare `Ontology:` line just for them (a bare header would make the reader insert a spurious default `OntologyID`). Document this orphan case in Task 7. The Task-5 test sets `oid.iri = Some(...)`, so its ontology annotation attaches under the header and round-trips.
+- **Conformant ontology-frame header block (RELOCATES Task 3's imports).** W3C Manchester puts imports AND ontology annotations inside the ontology frame, after the `Ontology:` line. REMOVE the standalone pre-header `Import:` loop added in Task 3. Replace the existing `Ontology:`-header block with one that emits the header whenever there is an ontology IRI, OR any `Import`, OR any `OntologyAnnotation`, then nests imports and annotations under it:
+  ```rust
+  // collect first
+  let header_iri: Option<&IRI<A>> = /* OntologyID.iri, as today */;
+  let imports: Vec<&IRI<A>> = ont.i().component_for_kind(ComponentKind::Import)
+      .filter_map(|ac| if let Component::Import(i) = &ac.component { Some(&i.0) } else { None })
+      .collect();
+  let ont_anns: Vec<&Annotation<A>> = ont.i().component_for_kind(ComponentKind::OntologyAnnotation)
+      .filter_map(|ac| if let Component::OntologyAnnotation(oa) = &ac.component { Some(&oa.0) } else { None })
+      .collect();
+  if header_iri.is_some() || !imports.is_empty() || !ont_anns.is_empty() {
+      writeln!(write)?;
+      match header_iri {
+          Some(iri) => writeln!(write, "Ontology: {}", iri.as_manchester_with_prefixes(mapping))?,
+          None => writeln!(write, "Ontology:")?, // bare frame to host imports/anns
+      }
+      for imp in &imports {
+          writeln!(write, "    Import: {}", imp.as_manchester_with_prefixes(mapping))?;
+      }
+      for ann in &ont_anns {
+          writeln!(write, "    Annotations: {}", annotation_to_manchester(ann, mapping))?;
+      }
+  }
+  ```
+  Add `ComponentKind::Import` and `ComponentKind::OntologyAnnotation` to the main loop's `continue` skip-guard (Import already added in Task 3; add OntologyAnnotation) so neither leaks to misc. Confirm `ComponentKind::OntologyAnnotation` / `Component::OntologyAnnotation` names against model.rs. Note the bare `Ontology:` line (no IRI) is now CORRECT and round-trip-safe because the reader's gate (Step 5) inserts `OntologyID` only when an IRI/version was actually present.
 
 Render multiple annotations on one entity as one `Annotations:` clause with comma-separated entries, or one clause per assertion — either round-trips (the reader emits one `AnnotationAssertion` per entry). Prefer one entry per clause line for simplicity.
+
+**Stale-comment cleanup (do this in this task):** update `src/io/omn/writer/mod.rs`'s `pub fn write` docstring (around line 57-62) and the inline misc comment so the "components with no native Manchester form" list no longer names `Import` or `HasKey` (both now native) — the accurate residual is `OntologyAnnotation` (now also native — drop it too), leaving SWRL `Rule`, axiom annotations (until Task 6), general anonymous-subject axioms. After this task only genuinely-inexpressible components remain in that note.
 
 - [ ] **Step 4: Grammar — `Annotations` rule + hooks**
 
@@ -655,8 +683,14 @@ AnnotationTarget = { Literal | IRI }
 // add `Annotations` as a clause arm in EACH frame's clause rule (entity annotation):
 //   ClassClause = { Annotations | ^"SubClassOf:" ~ ... | ... }
 //   ObjectPropertyClause = { Annotations | ... }  (and Data/Annotation/Individual frames)
-// add an optional Annotations to the OntologyHeader:
-OntologyHeader = { ^"Ontology:" ~ IRI? ~ Annotations* }
+
+// CONFORMANCE RELOCATION (also part of this task): W3C Manchester puts imports
+// AND ontology annotations INSIDE the ontology frame, after the `Ontology:`
+// line. Task 3 placed `ImportDeclaration*` at TOP LEVEL (before the header) —
+// that is non-conformant (the OWL API rejects it). Move imports into the header
+// and REMOVE `ImportDeclaration*` from `ManchesterDocument`:
+ManchesterDocument = { SOI ~ PrefixDeclaration* ~ OntologyHeader? ~ Frame* ~ EOI }
+OntologyHeader     = { ^"Ontology:" ~ IRI? ~ ImportDeclaration* ~ Annotations* }
 ```
 
 (`Annotations:` is colon-suffixed → self-delimiting. Put the `Annotations` arm FIRST in each clause rule so it is tried before the keyworded clauses; since its keyword is distinct, order does not actually matter, but first is clearest.)
@@ -695,23 +729,50 @@ fn parse_annotations<A: ForIRI>(clause: Pair<Rule>, ctx: &Context<'_, A>) -> Res
 }
 ```
 
-In EACH `insert_*_frame`, handle the `Annotations` clause (it arrives as a clause whose rule is `Rule::Annotations`, not via `clause_keyword` — match on `clause.as_rule()` BEFORE the keyword dispatch):
+The `Annotations` rule is an alternative INSIDE each `*Clause` rule (e.g. `ClassClause = { Annotations | ^"SubClassOf:" ~ DescriptionList | … }`), so a standalone entity-annotation clause arrives as a normal `*Clause` pair whose `clause_keyword(&clause)` is `"annotations"` and whose single inner pair is the `Annotations` rule. Handle it as a new `"annotations"` arm in EACH `insert_*_frame`'s existing `match kw.as_str()` dispatch (do NOT special-case `clause.as_rule()`):
 ```rust
-    for clause in clauses {
-        if clause.as_rule() == Rule::Annotations {
-            for ann in parse_annotations(clause, ctx)? {
-                ont.insert(AnnotationAssertion {
-                    subject: AnnotationSubject::IRI(subject.clone()),
-                    ann,
-                });
+            "annotations" => {
+                // `body` is the inner `Annotations` pair (= clause.into_inner().next()).
+                for ann in parse_annotations(body, ctx)? {
+                    ont.insert(AnnotationAssertion {
+                        subject: AnnotationSubject::IRI(subject.clone()),
+                        ann,
+                    });
+                }
             }
-            continue;
-        }
-        // ... existing clause_keyword dispatch ...
-    }
 ```
+(`subject` is the frame-subject `IRI` already bound by `frame_subject_and_clauses`. `parse_annotations` here receives the `Annotations` pair and iterates its `AnnotationEntry` children.)
 
-In `reader/mod.rs`'s `OntologyHeader` handling, after the optional IRI, iterate any `Annotations` children and insert `OntologyAnnotation(ann)` for each.
+**Reader header — imports + annotations + gate refinement (the conformance relocation):**
+
+In `reader/mod.rs`, the `OntologyHeader` is now `^"Ontology:" ~ IRI? ~ ImportDeclaration* ~ Annotations*`. REMOVE the top-level `Rule::ImportDeclaration` arm added in Task 3 (imports are no longer top-level). Rewrite the `Rule::OntologyHeader` arm to iterate the header's children:
+```rust
+            Rule::OntologyHeader => {
+                let mut oid = crate::model::OntologyID::default();
+                let mut has_id = false;
+                for h in child.into_inner() {
+                    match h.as_rule() {
+                        Rule::IRI => { oid.iri = Some(crate::model::IRI::from_pair(h, &ctx)?); has_id = true; }
+                        Rule::ImportDeclaration => {
+                            let iri_pair = h.into_inner().next().unwrap();
+                            ontology.insert(crate::model::Import(crate::model::IRI::from_pair(iri_pair, &ctx)?));
+                        }
+                        Rule::Annotations => {
+                            for ann in from_pair::parse_annotations(h, &ctx)? {
+                                ontology.insert(crate::model::OntologyAnnotation(ann));
+                            }
+                        }
+                        rule => unreachable!("unexpected ontology-header child: {:?}", rule),
+                    }
+                }
+                // GATE: insert OntologyID only if an IRI/version was present —
+                // NOT merely because the `Ontology:` keyword appeared. A bare
+                // `Ontology:` (emitted only to host imports/annotations) must
+                // not inject a spurious `OntologyID(None,None)`.
+                if has_id { ontology.insert(oid); }
+            }
+```
+This SUPERSEDES the P3 `header_present` bool gate — delete the `header_present` variable and its post-loop `if header_present { ontology.insert(ontology_id); }`. The per-header `has_id` gate is the new, correct gate. Make `parse_annotations` `pub(crate)` so `reader/mod.rs` can call it.
 
 - [ ] **Step 6: Run → PASS; verify; commit**
 

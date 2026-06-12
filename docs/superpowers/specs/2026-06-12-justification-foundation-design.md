@@ -98,7 +98,7 @@ fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool, Rea
 | `EquivalentClasses{a,b}` | `is_subclass_of(a,b) && is_subclass_of(b,a)` |
 | `DisjointClasses{a,b}` | add probe `Declaration(X) + EquivalentClasses(X, ObjectIntersectionOf(a,b))`, then `!is_class_satisfiable(onto', X)` |
 | `Unsatisfiable{class}` | `!is_class_satisfiable(onto, class)` |
-| `InstanceOf{individual,class}` | `is_instance_of(onto, individual, class)` |
+| `InstanceOf{individual,class}` | `is_instance_of(onto, class, individual)` (class-arg first — matches the signature) |
 | `Inconsistent` | `!is_consistent(onto)` |
 
 The `DisjointClasses` probe (`X` a fresh IRI `urn:rustdl-justify-probe`) is

@@ -42,6 +42,7 @@
 
 mod abox_check;
 mod classify;
+pub mod justify;
 mod model_cache;
 mod realize;
 mod union_find;

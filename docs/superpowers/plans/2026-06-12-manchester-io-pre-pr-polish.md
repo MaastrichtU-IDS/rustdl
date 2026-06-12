@@ -482,20 +482,28 @@ In `src/io/omn/writer/mod.rs`:
 // add to ClassClause alternatives:
     | ^"HasKey:" ~ PropertyExprList
 
-PropertyChain    = { ope ~ ( ^"o" ~ !SPARQL_PnChars ~ ope )+ }
+// The `o` chain-composition operator is a BARE-WORD keyword. Per Task 1's
+// finding, an inline `^"o" ~ !SPARQL_PnChars` in a normal `{}` rule is BROKEN
+// (pest consumes WHITESPACE before the lookahead, firing the boundary at the
+// operand's first char). Use the same `${}` (compound-atomic) keyword-rule
+// idiom Task 1 established for bare-word keywords, reusing `NameBoundary`:
+OKw              = ${ ^"o" ~ NameBoundary }
+PropertyChain    = { ope ~ ( OKw ~ ope )+ }
 PropertyExprList = { ope ~ ( "," ~ ope )* }
 ```
 
-Note: `^"o"` (the chain composition operator) is a bare word → guard with `!SPARQL_PnChars`. `HasKey`'s property list uses `ope` for every member (both object and data properties lex as `ope`'s `ObjectPropertyIRI`); the object-vs-data split is decided at read time (Task: there's no lexical distinction — see Step 5).
+Note: because `OKw` is a `${}` rule it EMITS a pair (like Task 1's `*Kw` rules), so the reader's `PropertyChain` handler must FILTER to the `ope` children and skip the `OKw` pairs (see Step 5). `HasKey`'s property list uses `ope` for every member (both object and data properties lex as `ope`'s `ObjectPropertyIRI`); the object-vs-data split is decided at read time (there's no lexical distinction — see Step 5).
 
 - [ ] **Step 5: Reader — chain + HasKey handlers**
 
 In `insert_object_property_frame` (`from_pair.rs`), add a clause arm:
 ```rust
             "subpropertychain" => {
-                // body is a PropertyChain: a sequence of `ope`
+                // body is a PropertyChain: `ope (OKw ope)+`. Filter OUT the
+                // emitted `OKw` keyword pairs; keep only the `ope` operands.
                 let chain: Vec<ObjectPropertyExpression<A>> = body
                     .into_inner()
+                    .filter(|p| p.as_rule() == Rule::ope)
                     .map(|p| ObjectPropertyExpression::from_pair(p, ctx))
                     .collect::<Result<_>>()?;
                 ont.insert(SubObjectPropertyOf {

@@ -64,11 +64,22 @@ fn keyword_curie_collisions_do_not_misparse() {
     pm.add_prefix("andro", "http://ex/andro#").unwrap();
     pm.add_prefix("somers", "http://ex/somers#").unwrap();
 
-    // `notation:Foo` must parse as the atomic class, NOT `not` + `ation:Foo`.
+    // prefix `not` literally registered, so `not:Foo` is a valid CURIE.
+    pm.add_prefix("not", "http://ex/not#").unwrap();
+
+    // `notation:Foo` must parse as the atomic class, NOT `not` + `ation:Foo`
+    // (keyword-prefix-of-name collision, closed by the `!SPARQL_PnChars` guard).
     let ce = parse_class_expression("notation:Foo", &pm, &b).unwrap();
     assert!(
         matches!(ce, crate::model::ClassExpression::Class(_)),
         "notation:Foo must be an atomic class, got {ce:?}"
+    );
+    // `not:Foo` must parse as the atomic class, NOT `not` + `:Foo`
+    // (keyword-EQUALS-prefix collision, closed by also guarding `:`).
+    let ce = parse_class_expression("not:Foo", &pm, &b).unwrap();
+    assert!(
+        matches!(ce, crate::model::ClassExpression::Class(_)),
+        "not:Foo must be an atomic class, got {ce:?}"
     );
     // `andro:X and somers:Y` must be a 2-way intersection of two atomic classes.
     let ce = parse_class_expression("andro:X and somers:Y", &pm, &b).unwrap();
@@ -86,68 +97,70 @@ Expected: FAIL — `notation:Foo` currently parses as `ObjectComplementOf(Class(
 
 - [ ] **Step 3: Anchor the bare-word keywords in the grammar**
 
-Edit `src/grammars/omn.pest`. Apply `~ !SPARQL_PnChars` immediately after each bare-word keyword literal. The exact replacements:
+Edit `src/grammars/omn.pest`. First define a DRY zero-width boundary helper, then apply `~ NameBoundary` immediately after each bare-word keyword literal. The boundary rejects BOTH a name-continuation char (`SPARQL_PnChars`, closing `notation:Foo`) AND a `:` (closing `not:Foo`, where the CURIE prefix equals the keyword — `:` is NOT in `SPARQL_PnChars`). This is safe for the writer's own output: a restriction/operator keyword is always followed by whitespace or `(`, never an abutting name char or `:`.
 
 ```pest
-Description = { Conjunction ~ ( ^"or" ~ !SPARQL_PnChars ~ Conjunction )* }
+// Zero-width SILENT name-boundary: a bare-word keyword matches only when it is
+// NOT immediately followed by a name-continuation char or `:`. Maximal munch —
+// so `notation:Foo` is not mis-split into `not`+`ation:Foo`, and `not:Foo`
+// (prefix == keyword) is not mis-split into `not`+`:Foo`. Being a silent
+// zero-width lookahead it adds no parse-tree pair, so the reader's
+// keyword-detection code (span-gap `not`, raw-text `inverse`, `clause_keyword`,
+// `Characteristic::as_str`) is unaffected.
+NameBoundary = _{ !( SPARQL_PnChars | ":" ) }
 
-Conjunction = { Primary ~ ( ^"and" ~ !SPARQL_PnChars ~ Primary )* }
+Description = { Conjunction ~ ( ^"or" ~ NameBoundary ~ Conjunction )* }
 
-Primary = { (^"not" ~ !SPARQL_PnChars)? ~ ( Restriction | Atomic ) }
+Conjunction = { Primary ~ ( ^"and" ~ NameBoundary ~ Primary )* }
+
+Primary = { (^"not" ~ NameBoundary)? ~ ( Restriction | Atomic ) }
 
 Restriction = {
-      ope ~ ^"some"    ~ !SPARQL_PnChars ~ Primary
-    | ope ~ ^"only"    ~ !SPARQL_PnChars ~ Primary
-    | ope ~ ^"value"   ~ !SPARQL_PnChars ~ Individual
-    | ope ~ ^"Self"    ~ !SPARQL_PnChars
-    | ope ~ ^"min"     ~ !SPARQL_PnChars ~ Cardinality ~ Primary?
-    | ope ~ ^"max"     ~ !SPARQL_PnChars ~ Cardinality ~ Primary?
-    | ope ~ ^"exactly" ~ !SPARQL_PnChars ~ Cardinality ~ Primary?
-    | DataPropertyIRI ~ ^"some"    ~ !SPARQL_PnChars ~ DataRange
-    | DataPropertyIRI ~ ^"only"    ~ !SPARQL_PnChars ~ DataRange
-    | DataPropertyIRI ~ ^"value"   ~ !SPARQL_PnChars ~ Literal
-    | DataPropertyIRI ~ ^"min"     ~ !SPARQL_PnChars ~ Cardinality ~ DataRange?
-    | DataPropertyIRI ~ ^"max"     ~ !SPARQL_PnChars ~ Cardinality ~ DataRange?
-    | DataPropertyIRI ~ ^"exactly" ~ !SPARQL_PnChars ~ Cardinality ~ DataRange?
+      ope ~ ^"some"    ~ NameBoundary ~ Primary
+    | ope ~ ^"only"    ~ NameBoundary ~ Primary
+    | ope ~ ^"value"   ~ NameBoundary ~ Individual
+    | ope ~ ^"Self"    ~ NameBoundary
+    | ope ~ ^"min"     ~ NameBoundary ~ Cardinality ~ Primary?
+    | ope ~ ^"max"     ~ NameBoundary ~ Cardinality ~ Primary?
+    | ope ~ ^"exactly" ~ NameBoundary ~ Cardinality ~ Primary?
+    | DataPropertyIRI ~ ^"some"    ~ NameBoundary ~ DataRange
+    | DataPropertyIRI ~ ^"only"    ~ NameBoundary ~ DataRange
+    | DataPropertyIRI ~ ^"value"   ~ NameBoundary ~ Literal
+    | DataPropertyIRI ~ ^"min"     ~ NameBoundary ~ Cardinality ~ DataRange?
+    | DataPropertyIRI ~ ^"max"     ~ NameBoundary ~ Cardinality ~ DataRange?
+    | DataPropertyIRI ~ ^"exactly" ~ NameBoundary ~ Cardinality ~ DataRange?
 }
 
-ope = { ( ^"inverse" ~ !SPARQL_PnChars ~ "(" ~ ObjectPropertyIRI ~ ")" ) | ObjectPropertyIRI }
+ope = { ( ^"inverse" ~ NameBoundary ~ "(" ~ ObjectPropertyIRI ~ ")" ) | ObjectPropertyIRI }
 
 FacetSymbol = {
       ">="
     | "<="
     | ">"
     | "<"
-    | ^"length"         ~ !SPARQL_PnChars
-    | ^"minLength"      ~ !SPARQL_PnChars
-    | ^"maxLength"      ~ !SPARQL_PnChars
-    | ^"pattern"        ~ !SPARQL_PnChars
-    | ^"langRange"      ~ !SPARQL_PnChars
-    | ^"totalDigits"    ~ !SPARQL_PnChars
-    | ^"fractionDigits" ~ !SPARQL_PnChars
+    | ^"length"         ~ NameBoundary
+    | ^"minLength"      ~ NameBoundary
+    | ^"maxLength"      ~ NameBoundary
+    | ^"pattern"        ~ NameBoundary
+    | ^"langRange"      ~ NameBoundary
+    | ^"totalDigits"    ~ NameBoundary
+    | ^"fractionDigits" ~ NameBoundary
 }
 
 Characteristic = {
-      ^"Functional"        ~ !SPARQL_PnChars
-    | ^"InverseFunctional" ~ !SPARQL_PnChars
-    | ^"Reflexive"         ~ !SPARQL_PnChars
-    | ^"Irreflexive"       ~ !SPARQL_PnChars
-    | ^"Symmetric"         ~ !SPARQL_PnChars
-    | ^"Asymmetric"        ~ !SPARQL_PnChars
-    | ^"Transitive"        ~ !SPARQL_PnChars
+      ^"Functional"        ~ NameBoundary
+    | ^"InverseFunctional" ~ NameBoundary
+    | ^"Reflexive"         ~ NameBoundary
+    | ^"Irreflexive"       ~ NameBoundary
+    | ^"Symmetric"         ~ NameBoundary
+    | ^"Asymmetric"        ~ NameBoundary
+    | ^"Transitive"        ~ NameBoundary
 }
 
-Fact = { (^"not" ~ !SPARQL_PnChars)? ~ ope ~ ( Literal | Individual ) }
+Fact = { (^"not" ~ NameBoundary)? ~ ope ~ ( Literal | Individual ) }
 ```
 
-Add a one-line grammar comment above `Description`:
-```pest
-// Bare-word keywords carry a `~ !SPARQL_PnChars` name-boundary guard (maximal
-// munch): a keyword matches only when NOT immediately followed by a name char,
-// so a CURIE like `notation:Foo` is not mis-split into `not` + `ation:Foo`.
-// The guard is a zero-width SILENT lookahead — it adds no parse-tree pair, so
-// the reader's keyword-detection code is unaffected.
-```
+Note: a legitimate default-prefix CURIE after a keyword (e.g. `not :Foo` with a space → complement of `:Foo`) still parses — `NameBoundary` is checked at the char immediately after the keyword, which is the space, so the guard passes and whitespace-then-`:Foo` follows. Only an ABUTTING `:` (no space, i.e. `not:Foo`) is treated as a CURIE.
 
 Note on `Characteristic` being non-silent: it still produces a `Characteristic` pair whose `.as_str()` is `"Functional"` etc. (the zero-width lookahead does not extend the span), so `insert_object_characteristic` is unaffected.
 
@@ -596,10 +609,31 @@ fn reads_entity_and_ontology_annotations_round_trip() {
 In `src/io/omn/writer/as_manchester.rs`, add a helper to render one annotation as `ap value` (value = literal or IRI). Mirror how the file renders `Literal`/`IRI`. Add a `pub(crate) fn annotation_to_manchester<A>(ann: &Annotation<A>, pm: &PrefixMapping) -> String` (or an `AsManchester` impl for `Annotation`) producing e.g. `rdfs:label "the A class"` or `ex:seeAlso ex:B`. Use the existing IRI/Literal rendering for the value per `AnnotationValue` variant; for `AnonymousIndividual` fall back to the existing anon rendering or push to misc (anon annotation values are out of scope — see Task 7).
 
 In `src/io/omn/writer/mod.rs`:
-- Add a Component arm for `AnnotationAssertion`: if `subject` is `AnnotationSubject::IRI(iri)`, push an `Annotations: <rendered>` clause into the frame of that IRI. **Frame-kind problem:** the subject IRI's frame kind (Class/ObjectProperty/…) is not known from the assertion alone. Resolution: group entity annotations into whatever frame already exists for that IRI; if none exists, default to a `Class:` frame is WRONG. Instead, introduce a 7th `FrameKind::Annotated`? No — simpler and round-trip-safe: emit entity annotations as their OWN dedicated frame-less construct is not valid Manchester. **Chosen approach:** add the `Annotations:` clause to the frame keyed by `(kind, iri)` for EVERY kind that already has a frame for that IRI; if the IRI has no existing frame, create a `Class:` frame? That risks a spurious declaration.
-  - **Decision (round-trip-safe):** key entity-annotation clauses to the EXISTING frame for the IRI when one exists; when the IRI heads no other frame, emit the assertion in a generic `Annotations(...)`-free way is impossible — so emit those orphan entity-annotations to the misc block (functional syntax) and let Task 7's skip-and-warn handle them. The Step-1 test declares `ex:A` (so a `Class: ex:A` frame exists) → its annotations attach there and round-trip. Document the orphan case (entity annotation on an undeclared IRI) as a limitation in Task 7.
-  - Concretely: when handling `AnnotationAssertion` with `subject=IRI(i)`, look up whether any `frames` entry has `subject_iri == i`; if yes, push the `Annotations:` clause to that frame; if no, push to misc. (Since the per-kind loop order means declarations are processed alongside, do the annotation routing in a SECOND pass after the main loop, when all declaration frames already exist.)
-- Add a Component arm for `OntologyAnnotation`: collect these and emit `    Annotations: <rendered>` lines indented under the `Ontology:` header.
+
+- **`AnnotationAssertion` routing is a STRICT POST-PASS — never a main-loop arm.** Do NOT add an `AnnotationAssertion` arm to the `for kind in ComponentKind::all_kinds()` loop: if that kind is visited before the subject's `DeclareClass`/`Declare*`, the subject's frame would not yet exist and the annotation would leak to misc → get skipped on read → silent round-trip break. Instead, AFTER the main loop fully populates `frames`, run a dedicated second pass over the `AnnotationAssertion` components:
+  ```rust
+  // POST-PASS: entity annotations. Runs after the main loop so every
+  // declaration/axiom frame already exists in `frames`.
+  for ac in ont.i().component_for_kind(ComponentKind::AnnotationAssertion) {
+      if let Component::AnnotationAssertion(aa) = &ac.component {
+          if let AnnotationSubject::IRI(i) = &aa.subject {
+              let clause = format!("Annotations: {}", annotation_to_manchester(&aa.ann, mapping));
+              // attach to the EXISTING frame whose subject_iri == i (any kind).
+              if let Some(frame) = frames.values_mut().find(|fr| fr.subject_iri == i.as_ref()) {
+                  frame.clauses.push(clause);
+              } else {
+                  // orphan: no frame heads this IRI -> not Manchester-expressible here.
+                  misc.push(ac.component.as_manchester_with_prefixes(mapping).to_string());
+              }
+          } else {
+              misc.push(ac.component.as_manchester_with_prefixes(mapping).to_string());
+          }
+      }
+  }
+  ```
+  Confirm `ComponentKind::AnnotationAssertion` is the correct kind name (grep model.rs). The orphan case (entity annotation on an IRI that heads no frame) goes to misc and is documented in Task 7. The Step-1 test declares `ex:A`, so its annotations attach to the `Class: ex:A` frame and round-trip.
+  Also ensure `AnnotationAssertion` is in the main loop's `if kind == … { continue; }` skip guard (alongside `OntologyID`/`DocIRI`/`Import`) so it is NOT also emitted to misc by the generic `_ => misc` arm.
+- `OntologyAnnotation`: collect these (also skip in the main loop's guard) and emit `    Annotations: <rendered>` lines indented under the `Ontology:` header, ONLY when a header line is already being written (i.e. `OntologyID.iri.is_some()`). This keeps the reader's `header_present` gate consistent (the header is present iff its IRI is). If `OntologyAnnotation`s exist with NO ontology IRI (rare), route them to misc rather than emitting a bare `Ontology:` line just for them (a bare header would make the reader insert a spurious default `OntologyID`). Document this orphan case in Task 7. The Task-5 test sets `oid.iri = Some(...)`, so its ontology annotation attaches under the header and round-trips.
 
 Render multiple annotations on one entity as one `Annotations:` clause with comma-separated entries, or one clause per assertion — either round-trips (the reader emits one `AnnotationAssertion` per entry). Prefer one entry per clause line for simplicity.
 

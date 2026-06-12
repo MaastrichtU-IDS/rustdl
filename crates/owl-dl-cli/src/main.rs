@@ -15,8 +15,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use horned_owl::curie::PrefixMapping;
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
+use horned_owl::io::omn::AsManchester;
 use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::io::rdf::reader::read as read_rdf;
 use horned_owl::model::RcStr;
@@ -354,6 +356,31 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
     Ok(ontology)
 }
 
+/// Like [`parse_ofn`] but also returns the [`PrefixMapping`] collected by the
+/// reader (so the caller can produce abbreviated IRIs in Manchester output).
+/// The OFN and OWX readers expose a full `PrefixMapping`; the RDF/XML reader
+/// does not, so that path returns a default (empty) mapping.
+fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)> {
+    let src = std::fs::read_to_string(path)
+        .with_context(|| format!("opening ontology file: {}", path.display()))?;
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase);
+    let format = detect_format(&src, ext.as_deref());
+    let mut reader = std::io::Cursor::new(src);
+    let cfg = ParserConfiguration::default();
+    match format {
+        OntFormat::Owx => read_owx(&mut reader, cfg)
+            .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display())),
+        OntFormat::RdfXml => read_rdf(&mut reader, cfg)
+            .map(|(o, _incomplete)| (o.into(), PrefixMapping::default()))
+            .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display())),
+        OntFormat::Ofn => read_ofn(&mut reader, cfg)
+            .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display())),
+    }
+}
+
 fn print_classification(h: &Classification) {
     let stdout = std::io::stdout();
     let mut out = BufWriter::with_capacity(1 << 16, stdout.lock());
@@ -683,7 +710,7 @@ fn main() -> Result<()> {
             all,
             max,
         } => {
-            let onto = parse_ofn(&file)?;
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
             let q = parse_justify_query(&query)?;
             let render = |j: &owl_dl_reasoner::justify::Justification<RcStr>| {
                 let note = if j.minimal_guaranteed {
@@ -693,7 +720,7 @@ fn main() -> Result<()> {
                 };
                 println!("# justification ({} axioms) — {note}", j.axioms.len());
                 for ax in &j.axioms {
-                    println!("  {ax:?}");
+                    println!("  {}", ax.as_manchester_with_prefixes(&pm));
                 }
             };
             if all {

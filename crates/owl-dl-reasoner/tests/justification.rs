@@ -336,6 +336,34 @@ fn find_all_not_entailed_is_empty() {
     assert!(find_all_justifications(&o, &q, 10).unwrap().is_empty());
 }
 
+#[test]
+fn justification_renders_manchester() {
+    use horned_owl::io::omn::AsManchester;
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C)",
+    );
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("entailed");
+    let rendered: Vec<String> = j
+        .axioms
+        .iter()
+        .map(|c| c.as_manchester().to_string())
+        .collect();
+    // Readable Manchester, not Debug.
+    assert!(
+        rendered.iter().any(|s| s.contains("SubClassOf")),
+        "got {rendered:?}"
+    );
+    assert!(
+        !rendered.iter().any(|s| s.contains("SubClassOf { sub")),
+        "must not be Debug output: {rendered:?}"
+    );
+}
+
 /// On a real fixture, a known entailment's justification must be a subset of
 /// the ontology that re-entails the query. Corpus-dependent → ignored.
 #[test]

@@ -209,6 +209,21 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
+    /// Explain WHY an entailment holds: print a minimal responsible-axiom set.
+    Justify {
+        /// Path to the ontology (.ofn).
+        file: PathBuf,
+        /// Query: `subclass S T` | `unsat C` | `instance I C` |
+        /// `equivalent A B` | `disjoint A B` | `inconsistent` (full IRIs).
+        #[arg(num_args = 1..)]
+        query: Vec<String>,
+        /// Print ALL minimal justifications (capped by --max), not just one.
+        #[arg(long)]
+        all: bool,
+        /// Cap on the number of justifications printed with --all.
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+    },
     /// Hypertableau Phase H2b wall probe: run the hyperresolution
     /// engine's concept-satisfiability decision once per named class
     /// and report timing + branching. NOTE: a *performance probe*,
@@ -487,6 +502,36 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     Ok(())
 }
 
+fn parse_justify_query(parts: &[String]) -> Result<owl_dl_reasoner::justify::Entailment> {
+    use owl_dl_reasoner::justify::Entailment;
+    let kind = parts.first().map_or("", String::as_str);
+    Ok(match (kind, parts.len()) {
+        ("subclass", 3) => Entailment::SubClassOf {
+            sub: parts[1].clone(),
+            sup: parts[2].clone(),
+        },
+        ("equivalent", 3) => Entailment::EquivalentClasses {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("disjoint", 3) => Entailment::DisjointClasses {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("unsat", 2) => Entailment::Unsatisfiable {
+            class: parts[1].clone(),
+        },
+        ("instance", 3) => Entailment::InstanceOf {
+            individual: parts[1].clone(),
+            class: parts[2].clone(),
+        },
+        ("inconsistent", 1) => Entailment::Inconsistent,
+        _ => anyhow::bail!(
+            "usage: justify <file> (subclass S T | equivalent A B | disjoint A B | unsat C | instance I C | inconsistent)"
+        ),
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -631,6 +676,45 @@ fn main() -> Result<()> {
                 "{sub} ⊑ {sup} : {answer} — answered by {answered_by}{completeness}",
                 answer = if verdict { "yes" } else { "no" },
             );
+        }
+        Command::Justify {
+            file,
+            query,
+            all,
+            max,
+        } => {
+            let onto = parse_ofn(&file)?;
+            let q = parse_justify_query(&query)?;
+            let render = |j: &owl_dl_reasoner::justify::Justification<RcStr>| {
+                let note = if j.minimal_guaranteed {
+                    format!("minimal ({})", j.fragment)
+                } else {
+                    format!("entailing; minimality NOT guaranteed ({})", j.fragment)
+                };
+                println!("# justification ({} axioms) — {note}", j.axioms.len());
+                for ax in &j.axioms {
+                    println!("  {ax:?}");
+                }
+            };
+            if all {
+                let js = owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
+                    .context("find_all_justifications")?;
+                if js.is_empty() {
+                    println!("not entailed (no justification)");
+                } else {
+                    println!("# {} justification(s)", js.len());
+                    for j in &js {
+                        render(j);
+                    }
+                }
+            } else {
+                match owl_dl_reasoner::justify::find_one_justification(&onto, &q)
+                    .context("find_one_justification")?
+                {
+                    Some(j) => render(&j),
+                    None => println!("not entailed (no justification)"),
+                }
+            }
         }
         Command::TboxStats { file } => {
             let onto = parse_ofn(&file)?;

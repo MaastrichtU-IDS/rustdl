@@ -1,5 +1,33 @@
 # Justification (explanation) — foundation design (2026-06-12)
 
+## Status (implemented 2026-06-12)
+
+Implementation complete across Tasks J-T1 through J-T6.
+
+**Commits (main branch):**
+- J-T1/T2: `Entailment` enum, `entails` oracle, `logical_axioms`, `ontology_from`
+  in `crates/owl-dl-reasoner/src/justify.rs`.
+- J-T3/T4: `find_one_justification` (QuickXplain), per-query canaries, SROIQ
+  `minimal_guaranteed` flag.
+- J-T5: `find_all_justifications` (Reiter HST with `max` cap).
+- J-T6 (this commit): `rustdl justify` CLI subcommand + corpus smoke test +
+  spec marked implemented.
+
+**What works:**
+- 6 query types: `subclass S T`, `equivalent A B`, `disjoint A B`, `unsat C`,
+  `instance I C`, `inconsistent`.
+- `find_one_justification` (QuickXplain, O(|J|·log(|C|/|J|)) oracle calls).
+- `find_all_justifications` (Reiter HST, capped at `max`).
+- `rustdl justify <file> <QUERY> [--all] [--max N]` CLI subcommand.
+- `minimal_guaranteed = true` on EL/Horn (complete), `false` on SROIQ (sound
+  but not proven minimal).
+
+**Tests:** 14 canaries in `crates/owl-dl-reasoner/tests/justification.rs` (all
+pass); 1 corpus smoke test (`corpus_justification_invariants`) is `#[ignore]`d —
+run with `cargo test ... -- --ignored`; requires `ontologies/real/sio.ofn`.
+
+---
+
 ## Goal
 
 Give rustdl **justifications**: for an entailment it reports, return a *minimal

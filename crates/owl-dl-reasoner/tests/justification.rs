@@ -335,3 +335,67 @@ fn find_all_not_entailed_is_empty() {
     };
     assert!(find_all_justifications(&o, &q, 10).unwrap().is_empty());
 }
+
+/// On a real fixture, a known entailment's justification must be a subset of
+/// the ontology that re-entails the query. Corpus-dependent → ignored.
+#[test]
+#[ignore = "needs the fetched corpus (ontologies/real/sio.ofn)"]
+fn corpus_justification_invariants() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ontologies/real/sio.ofn");
+    if !path.exists() {
+        eprintln!("SKIP: {} absent", path.display());
+        return;
+    }
+    let file = std::fs::File::open(&path).unwrap();
+    let (o, _): (SetOntology<RcStr>, _) = read_ofn(
+        &mut std::io::BufReader::new(file),
+        ParserConfiguration::default(),
+    )
+    .unwrap();
+    // Find a real entailed atomic subsumption via classify, then justify it.
+    let c = owl_dl_reasoner::classify(&o).unwrap();
+    let classes = c.classes().to_vec();
+    let mut found_pair: Option<(String, String)> = None;
+    'find: for s in &classes {
+        for t in &classes {
+            if s != t && c.is_subclass(s, t) {
+                found_pair = Some((s.clone(), t.clone()));
+                break 'find;
+            }
+        }
+    }
+    let Some((sub, sup)) = found_pair else {
+        eprintln!("SKIP: no non-reflexive subsumption");
+        return;
+    };
+    let q = Entailment::SubClassOf {
+        sub: sub.clone(),
+        sup: sup.clone(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("entailed pair must have a justification");
+    let (fixed, candidates) = owl_dl_reasoner::justify::logical_axioms(&o);
+    // (a) every justification axiom is a candidate axiom of the ontology
+    for ax in &j.axioms {
+        assert!(
+            candidates.contains(ax),
+            "justification axiom not in ontology"
+        );
+    }
+    // (b) the justification re-entails the query
+    assert!(
+        entails(
+            &owl_dl_reasoner::justify::ontology_from(&fixed, &j.axioms),
+            &q
+        )
+        .unwrap(),
+        "justification must re-entail the query"
+    );
+    eprintln!(
+        "PASS: {sub} ⊑ {sup} — justification has {} axioms (minimal_guaranteed={})",
+        j.axioms.len(),
+        j.minimal_guaranteed
+    );
+}

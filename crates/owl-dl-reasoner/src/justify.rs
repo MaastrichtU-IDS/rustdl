@@ -2,6 +2,8 @@
 //! found by re-checking subsets of the ontology's axioms via the public
 //! reasoner API. No engine internals.
 
+use std::collections::BTreeSet;
+
 use horned_owl::model::{
     Build, ClassExpression, Component, EquivalentClasses, ForIRI, MutableOntology,
 };
@@ -162,6 +164,72 @@ pub(crate) fn quickxplain<A: ForIRI>(
         return Ok(candidates.to_vec());
     }
     qx(fixed, true, candidates, q)
+}
+
+/// Find up to `max` minimal justifications for `q` via a Reiter Hitting-Set
+/// Tree over [`quickxplain`] (`QuickXplain`). Returns `[]` if `q` is not entailed.
+///
+/// # Errors
+/// Propagates [`ReasonError`].
+pub fn find_all_justifications<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+    max: usize,
+) -> Result<Vec<Justification<A>>, ReasonError> {
+    let (fixed, candidates) = logical_axioms(onto);
+    let mut found: Vec<Vec<Component<A>>> = Vec::new();
+    // HST worklist: each node is a set of candidate-INDICES removed on the path.
+    let mut worklist: Vec<BTreeSet<usize>> = vec![BTreeSet::new()];
+    let mut explored: BTreeSet<BTreeSet<usize>> = BTreeSet::new();
+    while let Some(removed) = worklist.pop() {
+        if found.len() >= max {
+            break;
+        }
+        if !explored.insert(removed.clone()) {
+            continue;
+        }
+        let subset: Vec<Component<A>> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !removed.contains(i))
+            .map(|(_, c)| c.clone())
+            .collect();
+        if !entails(&ontology_from(&fixed, &subset), q)? {
+            continue; // this branch cannot yield a justification
+        }
+        let j = quickxplain(&fixed, &subset, q)?;
+        // Record if new (by axiom identity).
+        let key = axiom_key(&j);
+        if !found.iter().any(|f| axiom_key(f) == key) {
+            found.push(j.clone());
+        }
+        // Branch: remove each justification axiom (by its candidate index).
+        for c in &j {
+            if let Some(idx) = candidates.iter().position(|x| x == c) {
+                let mut next = removed.clone();
+                next.insert(idx);
+                worklist.push(next);
+            }
+        }
+    }
+    let fragment = fragment_of(onto);
+    let minimal_guaranteed = matches!(
+        fragment,
+        FragmentClassification::PureEl | FragmentClassification::Horn
+    );
+    Ok(found
+        .into_iter()
+        .map(|axioms| Justification {
+            axioms,
+            fragment,
+            minimal_guaranteed,
+        })
+        .collect())
+}
+
+/// Order-independent identity key for a set of axioms (deduplication).
+fn axiom_key<A: ForIRI>(axioms: &[Component<A>]) -> BTreeSet<String> {
+    axioms.iter().map(|c| format!("{c:?}")).collect()
 }
 
 /// `delta_nonempty`: whether the most recent addition to `fixed` was non-empty

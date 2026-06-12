@@ -6,7 +6,8 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::justify::{
-    Entailment, Justification, entails, find_one_justification, logical_axioms, ontology_from,
+    Entailment, Justification, entails, find_all_justifications, find_one_justification,
+    logical_axioms, ontology_from,
 };
 use std::io::Cursor;
 
@@ -274,4 +275,63 @@ fn sroiq_flags_minimality_not_guaranteed() {
             j.fragment
         );
     }
+}
+
+#[test]
+fn find_all_two_independent_derivations() {
+    // A⊑C via A⊑B,B⊑C AND via A⊑D,D⊑C → two minimal justifications.
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:A :D) SubClassOf(:D :C)",
+    );
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+    let all = find_all_justifications(&o, &q, 10).unwrap();
+    assert_eq!(
+        all.len(),
+        2,
+        "two independent minimal justifications; got {}",
+        all.len()
+    );
+    let (fixed, _) = owl_dl_reasoner::justify::logical_axioms(&o);
+    for j in &all {
+        assert_eq!(j.axioms.len(), 2, "each justification is 2 axioms");
+        assert!(
+            entails(
+                &owl_dl_reasoner::justify::ontology_from(&fixed, &j.axioms),
+                &q
+            )
+            .unwrap(),
+            "each justification re-entails"
+        );
+    }
+}
+
+#[test]
+fn find_all_respects_cap() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:A :D) SubClassOf(:D :C)",
+    );
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+    assert_eq!(
+        find_all_justifications(&o, &q, 1).unwrap().len(),
+        1,
+        "cap=1"
+    );
+}
+
+#[test]
+fn find_all_not_entailed_is_empty() {
+    let o = onto("Declaration(Class(:A)) Declaration(Class(:B))");
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/B".into(),
+    };
+    assert!(find_all_justifications(&o, &q, 10).unwrap().is_empty());
 }

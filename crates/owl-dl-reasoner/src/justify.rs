@@ -169,6 +169,10 @@ pub(crate) fn quickxplain<A: ForIRI>(
 /// Find up to `max` minimal justifications for `q` via a Reiter Hitting-Set
 /// Tree over [`quickxplain`] (`QuickXplain`). Returns `[]` if `q` is not entailed.
 ///
+/// When capped, the returned justifications are the first `max` found in the
+/// HST's DFS traversal order — no particular preference (e.g. smallest) among
+/// them is guaranteed.
+///
 /// # Errors
 /// Propagates [`ReasonError`].
 pub fn find_all_justifications<A: ForIRI>(
@@ -178,6 +182,8 @@ pub fn find_all_justifications<A: ForIRI>(
 ) -> Result<Vec<Justification<A>>, ReasonError> {
     let (fixed, candidates) = logical_axioms(onto);
     let mut found: Vec<Vec<Component<A>>> = Vec::new();
+    let mut seen: std::collections::HashSet<BTreeSet<Component<A>>> =
+        std::collections::HashSet::new();
     // HST worklist: each node is a set of candidate-INDICES removed on the path.
     let mut worklist: Vec<BTreeSet<usize>> = vec![BTreeSet::new()];
     let mut explored: BTreeSet<BTreeSet<usize>> = BTreeSet::new();
@@ -198,9 +204,9 @@ pub fn find_all_justifications<A: ForIRI>(
             continue; // this branch cannot yield a justification
         }
         let j = quickxplain(&fixed, &subset, q)?;
-        // Record if new (by axiom identity).
-        let key = axiom_key(&j);
-        if !found.iter().any(|f| axiom_key(f) == key) {
+        // Record if this justification (as an axiom SET) is new.
+        let key: BTreeSet<Component<A>> = j.iter().cloned().collect();
+        if seen.insert(key) {
             found.push(j.clone());
         }
         // Branch: remove each justification axiom (by its candidate index).
@@ -225,11 +231,6 @@ pub fn find_all_justifications<A: ForIRI>(
             minimal_guaranteed,
         })
         .collect())
-}
-
-/// Order-independent identity key for a set of axioms (deduplication).
-fn axiom_key<A: ForIRI>(axioms: &[Component<A>]) -> BTreeSet<String> {
-    axioms.iter().map(|c| format!("{c:?}")).collect()
 }
 
 /// `delta_nonempty`: whether the most recent addition to `fixed` was non-empty

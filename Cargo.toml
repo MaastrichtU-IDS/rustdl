@@ -102,4 +102,8 @@ inherits = "release"
 debug = "line-tables-only"
 
 [patch.crates-io]
-horned-owl = { path = "../horned-owl-omn" }
+# Manchester Syntax io/omn writer (not yet in upstream horned-owl). Pinned to a
+# rev on the `manchester-io` branch of the fork so this builds reproducibly
+# anywhere (the eventual upstream PR will drop this patch). See
+# docs/superpowers/specs/2026-06-12-horned-owl-manchester-io-design.md.
+horned-owl = { git = "https://github.com/micheldumontier/horned-owl", rev = "dc894159c7191eb6115967b4378ca21d527837ec" }

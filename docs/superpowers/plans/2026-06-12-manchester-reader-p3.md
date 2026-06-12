@@ -1444,6 +1444,20 @@ At the top of `src/io/omn/reader/mod.rs` (module doc), add:
 //!   when a default `""` prefix is registered) is not lexable; use `<full>` or
 //!   `prefix:local`. Round-tripping requires a non-default prefix.
 //! - `Annotations:` clauses are not parsed (the writer does not emit them).
+//! - **Keyword / CURIE-prefix collision (correctness gap, MUST FIX BEFORE the
+//!   upstream PR).** Manchester keywords (`not`, `and`, `or`, `some`, `only`,
+//!   `value`, `min`, `max`, `exactly`, `Self`, `inverse`, and the facet words)
+//!   are matched without a name-boundary, so an *abbreviated* CURIE whose
+//!   prefix begins with a keyword is silently mis-parsed — e.g. `notation:foo`
+//!   lexes as `not` + `ation:foo`, and `andx:bar` as `and` + `x:bar`. Full
+//!   `<...>` IRIs are immune (they start with `<`). This reader round-trips the
+//!   **writer's own output** completely (the writer never emits such CURIEs),
+//!   but it is therefore NOT yet a general hand-written-Manchester parser. The
+//!   fix is maximal-munch boundary anchoring on every keyword token —
+//!   `@{ ^"not" ~ !PnChar }` rather than a trailing-whitespace guard (which
+//!   would break `not(C and D)`) — applied across BOTH the P2 class-expression
+//!   rules and the P3 frame rules, with a per-keyword negative test and the
+//!   full P2 round-trip suite as regression. See the pre-upstream-PR list.
 ```
 
 - [ ] **Step 5: Full omn suite + build + lint**
@@ -1467,6 +1481,18 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Pre-upstream-PR follow-ups (out of P3 scope, documented for the PR)
 
+- **Keyword boundary anchoring (correctness gap — must fix before PR).** Make
+  every Manchester keyword token maximal-munch so it never eats a CURIE-prefix
+  prefix: replace each `^"keyword"` with `@{ ^"keyword" ~ !PnChar }` (a
+  name-boundary negative lookahead — handles `not `, `not(`, `not<`, rejects
+  `notation`; do NOT use `~ WHITESPACE+`, which breaks `not(C and D)`). Apply to
+  ALL keywords in BOTH the P2 class-expression rules (`not`/`and`/`or`/`some`/
+  `only`/`value`/`min`/`max`/`exactly`/`Self`/`inverse`) and the P3 frame/clause
+  rules. Add a per-keyword negative test (`notation:foo`, `andx:bar`, …) and run
+  the full P2 17-case round-trip suite as regression — P2's `not` detection
+  (`child.start() > pair.start()`) is load-bearing and must not be disturbed
+  without that guard. (Surfaced by the Task 5 review; deferred as a dedicated
+  unit per the advisor — not half-fixed in `Fact` alone.)
 - Native `read` integration into `src/io/mod.rs` (`ResourceType::OMN`, a `ParserOutput::OMNParser` variant) so callers dispatch on extension — touches the shared `ParserOutput` enum; defer to the PR-prep pass alongside the writer's `Import:`/`Annotations:` follow-ups.
 - Parse the `# General axioms` block (or, better, make the writer emit native Manchester for those variants so the block disappears) to close the round-trip on imports/keys/annotations/chains.
 - Accept bare local names against a default prefix (resolve keyword-vs-IRI ambiguity) to round-trip default-prefix documents.

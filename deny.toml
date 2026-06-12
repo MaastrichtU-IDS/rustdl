@@ -31,4 +31,7 @@ ignore = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# Temporary: the horned-owl [patch] points at our fork carrying the Manchester
+# io/omn writer (not yet upstream). Remove once the upstream PR lands and the
+# [patch] in Cargo.toml is dropped. See the manchester-io spec.
+allow-git = ["https://github.com/micheldumontier/horned-owl"]

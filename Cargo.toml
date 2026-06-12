@@ -100,3 +100,6 @@ inherits = "release"
 
 [profile.dev]
 debug = "line-tables-only"
+
+[patch.crates-io]
+horned-owl = { path = "../horned-owl-omn" }

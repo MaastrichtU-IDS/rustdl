@@ -5,7 +5,9 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::justify::{Entailment, entails, logical_axioms, ontology_from};
+use owl_dl_reasoner::justify::{
+    Entailment, Justification, entails, find_one_justification, logical_axioms, ontology_from,
+};
 use std::io::Cursor;
 
 fn onto(body: &str) -> SetOntology<RcStr> {
@@ -104,4 +106,68 @@ fn partition_and_rebuild() {
         )
         .unwrap()
     );
+}
+
+fn dbgset(j: &Justification<RcStr>) -> std::collections::BTreeSet<String> {
+    j.axioms.iter().map(|c| format!("{c:?}")).collect()
+}
+
+#[test]
+fn find_one_subclassof_exact() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:Z))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:Z :C)",
+    );
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("entailed");
+    assert_eq!(
+        j.axioms.len(),
+        2,
+        "minimal = {{A⊑B, B⊑C}}; got {:?}",
+        dbgset(&j)
+    );
+    assert!(j.minimal_guaranteed, "EL ⇒ minimality guaranteed");
+    let (fixed, _) = owl_dl_reasoner::justify::logical_axioms(&o);
+    assert!(
+        entails(
+            &owl_dl_reasoner::justify::ontology_from(&fixed, &j.axioms),
+            &q
+        )
+        .unwrap(),
+        "justification must re-entail"
+    );
+    assert!(
+        !entails(
+            &owl_dl_reasoner::justify::ontology_from(&fixed, &j.axioms[..1]),
+            &q
+        )
+        .unwrap(),
+        "removing an axiom must break entailment (minimal)"
+    );
+}
+
+#[test]
+fn find_one_not_entailed_is_none() {
+    let o = onto("Declaration(Class(:A)) Declaration(Class(:B))");
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/B".into(),
+    };
+    assert!(find_one_justification(&o, &q).unwrap().is_none());
+}
+
+#[test]
+fn find_one_unsat() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B))\n\
+                  DisjointClasses(:A :B) SubClassOf(:A :B)",
+    );
+    let q = Entailment::Unsatisfiable {
+        class: "http://t/A".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("A unsat");
+    assert_eq!(j.axioms.len(), 2, "got {:?}", dbgset(&j));
 }

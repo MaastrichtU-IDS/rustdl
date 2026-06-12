@@ -54,3 +54,53 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
         Entailment::Inconsistent => Ok(!crate::is_consistent(onto)?),
     }
 }
+
+/// Split `onto` into (`fixed`, `candidates`): `fixed` = non-logical axioms
+/// (declarations / annotations / metadata) retained in every tested ontology;
+/// `candidates` = logical axioms, the only possible justification members.
+#[must_use]
+pub fn logical_axioms<A: ForIRI>(onto: &SetOntology<A>) -> (Vec<Component<A>>, Vec<Component<A>>) {
+    let mut fixed = Vec::new();
+    let mut candidates = Vec::new();
+    for ac in onto {
+        let c = ac.component.clone();
+        if is_logical(&c) {
+            candidates.push(c);
+        } else {
+            fixed.push(c);
+        }
+    }
+    (fixed, candidates)
+}
+
+/// A logical axiom can affect entailment and may appear in a justification;
+/// declarations / annotations / ontology metadata cannot.
+fn is_logical<A: ForIRI>(c: &Component<A>) -> bool {
+    !matches!(
+        c,
+        Component::OntologyID(_)
+            | Component::DocIRI(_)
+            | Component::Import(_)
+            | Component::OntologyAnnotation(_)
+            | Component::DeclareClass(_)
+            | Component::DeclareObjectProperty(_)
+            | Component::DeclareAnnotationProperty(_)
+            | Component::DeclareDataProperty(_)
+            | Component::DeclareNamedIndividual(_)
+            | Component::DeclareDatatype(_)
+            | Component::AnnotationAssertion(_)
+            | Component::SubAnnotationPropertyOf(_)
+            | Component::AnnotationPropertyDomain(_)
+            | Component::AnnotationPropertyRange(_)
+    )
+}
+
+/// Build a `SetOntology` from `fixed` + the candidate `subset`.
+#[must_use]
+pub fn ontology_from<A: ForIRI>(fixed: &[Component<A>], subset: &[Component<A>]) -> SetOntology<A> {
+    let mut o = SetOntology::new();
+    for c in fixed.iter().chain(subset.iter()) {
+        o.insert(c.clone());
+    }
+    o
+}

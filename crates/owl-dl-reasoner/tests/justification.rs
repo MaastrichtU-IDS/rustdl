@@ -5,7 +5,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::justify::{Entailment, entails};
+use owl_dl_reasoner::justify::{Entailment, entails, logical_axioms, ontology_from};
 use std::io::Cursor;
 
 fn onto(body: &str) -> SetOntology<RcStr> {
@@ -63,6 +63,43 @@ fn entails_disjoint_via_probe() {
             &Entailment::DisjointClasses {
                 a: "http://t/B".into(),
                 b: "http://t/C".into()
+            }
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn partition_and_rebuild() {
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C)",
+    );
+    let (fixed, candidates) = logical_axioms(&o);
+    assert_eq!(candidates.len(), 2, "two SubClassOf axioms are candidates");
+    assert!(
+        fixed.len() >= 3,
+        "declarations are fixed; got {}",
+        fixed.len()
+    );
+    let rebuilt = ontology_from(&fixed, &candidates);
+    assert!(
+        entails(
+            &rebuilt,
+            &Entailment::SubClassOf {
+                sub: "http://t/A".into(),
+                sup: "http://t/C".into()
+            }
+        )
+        .unwrap()
+    );
+    let rebuilt1 = ontology_from(&fixed, &candidates[..1]);
+    assert!(
+        !entails(
+            &rebuilt1,
+            &Entailment::SubClassOf {
+                sub: "http://t/A".into(),
+                sup: "http://t/C".into()
             }
         )
         .unwrap()

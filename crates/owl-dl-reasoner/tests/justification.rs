@@ -139,14 +139,24 @@ fn find_one_subclassof_exact() {
         .unwrap(),
         "justification must re-entail"
     );
-    assert!(
-        !entails(
-            &owl_dl_reasoner::justify::ontology_from(&fixed, &j.axioms[..1]),
-            &q
-        )
-        .unwrap(),
-        "removing an axiom must break entailment (minimal)"
-    );
+    // Minimal: removing ANY single axiom must break entailment.
+    for i in 0..j.axioms.len() {
+        let reduced: Vec<_> = j
+            .axioms
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != i)
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(
+            !entails(
+                &owl_dl_reasoner::justify::ontology_from(&fixed, &reduced),
+                &q
+            )
+            .unwrap(),
+            "removing axiom {i} must break entailment (genuine minimality)"
+        );
+    }
 }
 
 #[test]

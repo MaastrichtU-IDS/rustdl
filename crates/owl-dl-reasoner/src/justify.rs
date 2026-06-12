@@ -166,7 +166,6 @@ pub(crate) fn quickxplain<A: ForIRI>(
 
 /// `delta_nonempty`: whether the most recent addition to `fixed` was non-empty
 /// (if empty, skip the redundant entailment check at this node).
-#[allow(clippy::too_many_arguments)] // algorithm requires exactly these parameters
 fn qx<A: ForIRI>(
     fixed: &[Component<A>],
     delta_nonempty: bool,

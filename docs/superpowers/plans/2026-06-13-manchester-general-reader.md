@@ -507,6 +507,52 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
+## Task 5b: Annotation-on-annotation (nested `Annotations:`) — parse-and-drop
+
+**Discovered by the oracle:** `ro.owlapi.omn:1231` and `gb.owlapi.omn:492` fail on a nested `Annotations:` *inside* an `Annotations:` clause — §2.5's `annotationAnnotatedList ::= [annotations] annotation { ',' [annotations] annotation }` (each annotation entry may itself be annotated). horned-owl's model has NO nested-annotation slot (`Annotation { ap, av }`), and the `io/ofn` reader handles this by **parsing the nested annotations and discarding them** (`from_pair.rs` ofn: the `_annotations` binding). Match that: accept the syntax, drop the un-storable nesting. This is the last real blocker to ro/gb parsing.
+
+**Files:** `src/grammars/omn.pest`, `src/io/omn/reader/from_pair.rs`, test in `from_pair.rs`.
+
+- [ ] **Step 1: Failing test** — a document with a nested annotation, parsed via `read_with_build`, asserting the outer annotation is recovered (and the document parses; the inner nested annotation is dropped):
+```rust
+#[test]
+fn parses_and_drops_nested_annotation() {
+    use crate::io::omn::read_with_build;
+    use crate::ontology::set::SetOntology;
+    use std::io::BufReader;
+    let b = Build::new_rc();
+    // `Annotations: Annotations: ex:meta "m" ex:label "L"` — the inner annotates the outer.
+    let doc = "Prefix: ex: <http://ex/>\nOntology: <http://ex/o>\nClass: ex:A\n    Annotations: Annotations: ex:meta \"m\" ex:label \"L\"\n";
+    let (parsed, _): (SetOntology<_>, PrefixMapping) =
+        read_with_build(BufReader::new(doc.as_bytes()), &b).unwrap();
+    // parses without error; the outer ex:label "L" annotation on ex:A is recovered.
+    assert!(parsed.iter().any(|ac| matches!(&ac.component, Component::AnnotationAssertion(_))),
+        "expected the outer annotation to survive (nested dropped)");
+}
+```
+
+- [ ] **Step 2: Run → FAIL** — the grammar rejects the nested `Annotations:`.
+
+- [ ] **Step 3: Grammar — allow a nested `Annotations?` on each annotation entry.** Change:
+```pest
+AnnotationEntry = { Annotations? ~ IRI ~ AnnotationTarget }
+```
+(`Annotations` already = `^"Annotations:" ~ AnnotationEntry ~ ( "," ~ AnnotationEntry )*`; adding the optional prefix makes it recursive, which pest handles. A nested `Annotations:` before the property/value is now accepted.)
+
+- [ ] **Step 4: Reader — parse-and-drop the nested annotations.** In `Annotation::from_pair` (RULE `AnnotationEntry`), the first inner pair may now be `Rule::Annotations` (the nested, un-storable annotations). Skip it (parse-and-drop, matching ofn): if `first.as_rule() == Rule::Annotations`, advance past it (optionally call `parse_annotations` to validate it parses, then discard), then read the `IRI` (property) and `AnnotationTarget` (value) as before. Behavior is unchanged when there is no nested prefix.
+
+- [ ] **Step 5: Run → PASS; oracle re-check.** Rebuild `omnread`; run on `ro.owlapi.omn` and `gb.owlapi.omn` — they should now get PAST the nested-annotation blocker (ro:1231 / gb:492) and either parse fully or fail at the NEXT construct. Report the new state. pizza still OK 828.
+
+- [ ] **Step 6: fmt/clippy; commit.**
+```bash
+git add src/grammars/omn.pest src/io/omn/reader/from_pair.rs
+git commit -m "feat(omn/reader): accept nested annotation-on-annotation (parse-and-drop, matching ofn)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## Task 6: Semantic-conformance gate (OWL-API oracle) + Protégé input + docs
 
 Validate the general reader against externally-produced Manchester, with OWL-API as the oracle.

@@ -65,8 +65,17 @@ form" — only ~8% of it genuinely lacks one:
 | content | lines | genuinely no Manchester form? |
 |---|---|---|
 | `AnnotationAssertion` on undeclared/imported IRIs (mostly IAO) | ~310 | **No** — writer limitation |
-| `DLSafeRule` (SWRL) | 25 | **Yes** (Manchester has no rule syntax) |
-| general class axioms, complex LHS (`(R some C) SubClassOf …`) | 3 | **Yes** (frames need a named subject) |
+| `DLSafeRule` (SWRL) | 25 | **Yes** (no `Rule:` production in the spec) |
+| general class axiom, complex LHS (`(R some C) SubClassOf …`) | 1 | **Yes** (`misc` has no `SubClassOf`; `classFrame` head is a named class) |
+
+Verified against W3C OWL 2 Manchester Syntax §2.5: the `misc` production has only
+`EquivalentClasses:`/`DisjointClasses:`/`Equivalent|DisjointProperties:`/
+`SameIndividual:`/`DifferentIndividuals:` (no general `SubClassOf`), `classFrame`
+heads are named classes, there is no SWRL/`Rule:` production, and `classFrame`
+admits `Annotations:` — so the ~310 orphan annotations are expressible (writer
+limitation) while the 25 SWRL rules + 1 complex-LHS inclusion are not. (§2.5 also
+confirms `SubPropertyChain:` is a standard `objectPropertyFrame` keyword, so the
+omny issue is a spec violation.)
 
 - The ~310 annotations are **orphan entity annotations**: their subject is an
   IRI ro references but never declares (e.g. `obo:IAO_0000027`), so it heads no

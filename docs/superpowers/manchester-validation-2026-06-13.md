@@ -200,3 +200,86 @@ emits these, so no round-trip impact): version IRI in the header, top-level misc
 axioms (`DisjointClasses:`/`EquivalentClasses:`/`SameIndividual:`/
 `DifferentIndividuals:`), and `Datatype: … EquivalentTo:` definitions. Closing
 these is a separate general-reader effort, deliberately out of P3 scope.
+
+---
+
+## General §2.5 reader (2026-06-13)
+
+The above section validated the **writer**. A follow-up effort closed the
+remaining gaps so the fork's `io::omn` is now a *general* OWL 2 Manchester
+Syntax **reader** — able to consume any valid §2.5 document, not just our own
+writer's output. Implemented task-by-task per
+`docs/superpowers/plans/2026-06-13-manchester-general-reader.md` (Tasks 1–6).
+
+### Constructs added (Tasks 1–5c)
+
+- **Version IRI** in the `Ontology:` header (`Ontology: <oiri> <viri>`) — T1.
+- **Full data ranges** in the reader+grammar: `and` / `or` / `not` /
+  `{ oneOf }` / parenthesised / facet `[ … ]` (was bare datatype + single
+  facet only) — T2.
+- **Datatype definitions** (`Datatype: D EquivalentTo: <dataRange>`) — T3.
+- Top-level **misc axiom section** — `EquivalentClasses:` / `DisjointClasses:` /
+  `EquivalentProperties:` / `DisjointProperties:` / `SameIndividual:` /
+  `DifferentIndividuals:` over arbitrary (complex) expressions — T4.
+- Full per-item `annotatedList` annotations (each comma-list element may carry
+  its own leading `Annotations:`) — T5.
+- **Nested annotation-on-annotation** — parsed and the nesting **dropped**
+  (the model has no nested-annotation slot, matching the OFN reader) — T5b.
+- **Anonymous (blank-node) individuals** `_:id` as frame subjects, `Facts:`
+  targets, list members, and annotation values — T5c.
+- Bare local names as frame subjects / IRIs (prior P3 work).
+
+### OWL-API-oracle corpus results (Task 6)
+
+The reliable signal is re-parsing **OWL-API-emitted** Manchester (synthetic
+tests pass while real files fail). For each ontology in
+`/data/dumontier/rustdl/ontologies/real`: `robot convert --input X.ofn --output
+X.owlapi.omn` (`obolibrary/robot:v1.9.6`), then parse with the fork's reader via
+the `omnread` harness (`/tmp/omn-render`, `cargo build --release --bin omnread`).
+
+| ontology | OWL-API `.omn` → fork reader |
+|---|---|
+| pizza | **OK** — 828 components |
+| family | **OK** — 2885 components |
+| sio-fp-module | **OK** — 271 components |
+| go-basic (56 MB) | **OK** — 535349 components |
+| ro | **FAIL** — SWRL `Rule:` at line 16170 (inherent: no §2.5 rule syntax) |
+| bibtex | **OK** — 199 components |
+| anch-module | **OK** — 86 components |
+| asp-module | **OK** — 130 components |
+| np-module | **OK** — 248 components |
+| sio-450-module | **OK** — 128 components |
+
+**9/10 parse fully.** The sole failure (`ro`) blocks on an OWL-API SWRL `Rule:`
+extension — Manchester §2.5 defines no rule syntax, so this is inherent and
+cannot pass regardless of reader completeness. `ro` parses all of its §2.5
+content (16169 lines, all entity frames + misc + the
+`DifferentIndividuals:` block) before reaching the first rule.
+
+No Protégé `.omn` export was available; the OWL-API oracle (which Protégé's
+Manchester parser shares) is the reference (plan Task 6 Step 3).
+
+### Residual constructs (all inherent / model limit / writer follow-up)
+
+- **SWRL `Rule:`** — no §2.5 form (OWL-API extension). Inherent.
+- **Complex-LHS general class axioms** — no §2.5 frame form; emitted to the
+  writer's `# General axioms` functional-syntax block, skipped-with-warning on
+  read. Inherent.
+- **Nested annotations** — parsed but dropped (no model slot). Model limit.
+- **Writer follow-ups (round-trip only):** anonymous-subject assertions still
+  go to the misc block on write; a leading per-item annotation on a comma-list
+  is applied clause-wide on emission. The *reader* accepts both forms.
+- Carried-over reader limitations remain accurate: `HasKey:` object-vs-data key
+  conflation, and data-property restrictions parsing as object restrictions
+  (`dp some xsd:integer` → `ObjectSomeValuesFrom`).
+
+### Conformance gate
+
+The capability is locked by the fork integration test
+`parses_general_manchester_document` (`src/io/omn/reader/from_pair.rs` tests): a
+hand-written §2.5 document exercising the version IRI, a top-level
+`DisjointClasses:` over complex expressions, a `Datatype: … EquivalentTo:`
+facet range, a compound data range (`xsd:integer and not {…}`) on both a
+`DataProperty Range:` and a `SubClassOf: p some (…)`, an anonymous-individual
+`Facts:` target, and a nested annotation — parsed via `read_with_build` with
+`matches!` spot-checks (13 components).

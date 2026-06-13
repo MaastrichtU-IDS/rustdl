@@ -161,3 +161,36 @@ ROBOT exit-0 means "loaded + wrote", not value-identity. The PASS rows confirm
 *parse conformance*; a stronger semantic-equality check (compare the reloaded
 ontology's axioms to the original) was not done — parse-conformance is the
 honest, achievable signal here.
+
+---
+
+## Reader validation (2026-06-13, follow-up)
+
+The above validated the *writer* (render → OWL-API/omny). The *reader* was then
+tested on real input via a harness (`/tmp/omn-render` `omnread`, the fork's own
+`io::omn::read`):
+
+- **Control — our reader on our own writer output:** `pizza`/`sio-fp` OK, but
+  **`family` FAILED** on `Class: Ancestor` — a bare default-prefix local name.
+  family's terms live in its default namespace, so the writer emits bare names
+  and the reader couldn't lex them. A real **round-trip gap** (not just interop):
+  any ontology whose terms are in the default namespace.
+- **External — our reader on OWL-API's `.omn`:** all FAILED immediately on the
+  **version IRI** in the header (`Ontology: <iri> <versionIRI>` — our header
+  grammar accepts only one IRI).
+
+**Fix applied (reader-side, complete):** added a `SimpleIRI = @{ SPARQL_PnLocal
+~ !":" }` production (bare local name, resolved against the default prefix;
+atomic + colon-guard so it never eats a keyword/CURIE-prefix token). `family`
+now round-trips fully (2847 components, no misc block, typed literals preserved).
+Regression test `reads_bare_default_prefix_names_round_trip`; all 38 omn tests
+green; the writer is unchanged (its bare output now round-trips). Known residual:
+a class named *exactly* a keyword (`not`) stays ambiguous — `and and and` now
+lexes as a bare-class intersection (documented in the lexer test).
+
+**Reader is round-trip-scoped, not a general Manchester parser.** Remaining
+gaps for consuming arbitrary external Manchester (interop only — our writer never
+emits these, so no round-trip impact): version IRI in the header, top-level misc
+axioms (`DisjointClasses:`/`EquivalentClasses:`/`SameIndividual:`/
+`DifferentIndividuals:`), and `Datatype: … EquivalentTo:` definitions. Closing
+these is a separate general-reader effort, deliberately out of P3 scope.

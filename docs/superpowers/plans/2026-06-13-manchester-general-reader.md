@@ -10,6 +10,8 @@
 
 **Working directory:** `/data/dumontier/horned-owl-omn` (branch `master`). Toolchain: prepend `PATH` with `/home/dumontier/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin`. After every task: `cargo test --lib io::omn 2>&1 | tail -3`, `cargo fmt -- --check` (rc 0; ignore benign `array_width` note), `cargo clippy --lib 2>&1 | grep -i omn` (no omn warnings).
 
+**CONTINUOUS OWL-API ORACLE (the session's hardest-won lesson — do NOT bank it in Task 6):** synthetic minimal tests pass while real files fail; the only reliable signal is re-parsing real OWL-API-emitted Manchester. Real inputs exist (regenerate if missing): `robot convert --input <ont>.ofn --output <ont>.owlapi.omn` in a dir mounted into `obolibrary/robot:v1.9.6`, for `pizza`/`ro`/`go-basic` (sources in `/data/dumontier/rustdl/ontologies/real`). They currently die at the **version IRI**. A reader-test harness exists: build `/tmp/omn-render` (`cargo build --release --bin omnread`) and run `omnread <file.omn>` (prints `OK <n> components` or the parse error+line). **At the end of EVERY reader task (1–5), re-run `omnread` on `pizza.owlapi.omn` / `ro.owlapi.omn` / `go-basic.owlapi.omn` and record how far each now gets.** The error should advance to the next real construct after each fix — that, not the synthetic test passing, tells you the task worked and which construct to prioritize next.
+
 ---
 
 ## Reference: §2.5 productions + model + current state
@@ -85,9 +87,36 @@ fn reads_version_iri_round_trip() {
     let got: std::collections::BTreeSet<_> = parsed.iter().map(|ac| ac.component.clone()).collect();
     assert_eq!(orig, got, "version IRI did not round-trip\n{s}");
 }
+
+#[test]
+fn ontology_iri_then_import_no_version_iri() {
+    // Guard: the optional VersionIRI must NOT greedily grab a following Import.
+    // `Ontology: ex:o` (no version) then `Import: ex:i` must round-trip the Import.
+    use crate::io::omn::{read_with_build, write};
+    use crate::ontology::component_mapped::ComponentMappedOntology;
+    use crate::ontology::set::SetOntology;
+    use std::io::BufReader;
+    let b = Build::new_rc();
+    let mut pm = PrefixMapping::default();
+    pm.add_prefix("ex", "http://ex/").unwrap();
+    let mut o = SetOntology::new_rc();
+    let mut oid = OntologyID::default();
+    oid.iri = Some(b.iri("http://ex/o"));
+    o.insert(oid);
+    o.insert(Import(b.iri("http://ex/i")));
+    o.insert(DeclareClass(b.class("http://ex/A")));
+    type TestOnt = ComponentMappedOntology<std::rc::Rc<str>, std::rc::Rc<AnnotatedComponent<std::rc::Rc<str>>>>;
+    let amo: TestOnt = o.clone().into();
+    let mut buf = Vec::<u8>::new();
+    write(&mut buf, &amo, Some(&pm)).unwrap();
+    let (parsed, _): (SetOntology<_>, PrefixMapping) = read_with_build(BufReader::new(&buf[..]), &b).unwrap();
+    let orig: std::collections::BTreeSet<_> = o.iter().map(|ac| ac.component.clone()).collect();
+    let got: std::collections::BTreeSet<_> = parsed.iter().map(|ac| ac.component.clone()).collect();
+    assert_eq!(orig, got, "import after version-less ontology IRI did not round-trip\n{}", String::from_utf8_lossy(&buf));
+}
 ```
 
-- [ ] **Step 2: Run → FAIL** (`cargo test --lib io::omn::reader::from_pair::tests::reads_version_iri_round_trip 2>&1 | tail`): the writer emits no version IRI and/or the grammar can't parse a second header IRI.
+- [ ] **Step 2: Run → FAIL** (`cargo test --lib io::omn::reader::from_pair::tests::reads_version_iri_round_trip 2>&1 | tail`): the writer emits no version IRI and/or the grammar can't parse a second header IRI. (The `ontology_iri_then_import_no_version_iri` guard should already pass today and must keep passing after the grammar change — `VersionIRI?` must not consume the `Import:` line; the `Import:` keyword is colon-suffixed and `Import` is not a valid bare IRI here because `SimpleIRI`'s `!":"` guard rejects a name immediately followed by `:`.)
 
 - [ ] **Step 3: Grammar — add the optional version IRI.** In `omn.pest`, change:
 ```pest
@@ -390,7 +419,8 @@ pub(crate) fn insert_misc<A: ForIRI, O: MutableOntology<A>>(
 ```
 Add a `parse_individual_list` helper if absent (mirror `parse_ope_list`: `list.into_inner().map(|p| Individual::from_pair(p, ctx)).collect()`). Confirm the `Component::*` and axiom wrapper names against model.rs (`EquivalentClasses(Vec<…>)` etc.).
 
-- [ ] **Step 5: Writer — emit `misc` for non-frameable n-ary axioms.** In `mod.rs`, the arms for `EquivalentClasses`/`DisjointClasses`/`EquivalentObjectProperties`/`DisjointObjectProperties`/`SameIndividual`/`DifferentIndividuals` currently `misc.push(functional)` when the first member is not a named class/property/individual. Replace those `misc.push(...)` branches with pushing a *Manchester* misc line into a new `misc_axioms: Vec<String>` collected separately, e.g. `format!("DisjointClasses: {}", members.iter().map(render).collect::<Vec<_>>().join(", "))`. Emit these lines (each on its own, top-level, after the frames) — they are valid Manchester `Misc`. Keep the functional-syntax `# General axioms` fallback ONLY for the genuinely-inexpressible remainder (SWRL rules, complex-LHS `SubClassOf`, anon-subject assertions). Confirm the reader's `GeneralAxiomBlock` still only triggers on the `# General axioms` marker (the misc lines have no marker and parse as `Misc`).
+- [ ] **Step 5: Writer — emit `misc` for non-frameable n-ary axioms, in the right ORDER.** In `mod.rs`, the arms for `EquivalentClasses`/`DisjointClasses`/`EquivalentObjectProperties`/`DisjointObjectProperties`/`SameIndividual`/`DifferentIndividuals` currently `misc.push(functional)` when the first member is not a named class/property/individual. Replace those `misc.push(...)` branches with pushing a *Manchester* misc line into a new `misc_axioms: Vec<String>` collected separately, e.g. `format!("DisjointClasses: {}", members.iter().map(render).collect::<Vec<_>>().join(", "))`.
+  **CRITICAL emission order (this is an ordering-bug class that has bitten repeatedly):** the document body is `( Frame | Misc )* ~ GeneralAxiomBlock?`, and `GeneralAxiomBlock = { "# General axioms" ~ ANY* }` swallows everything to EOF. So emit in EXACTLY this order: (1) frames, (2) the native `misc_axioms` lines (top-level, each on its own line, NO marker — they parse as `Misc`), (3) the `# General axioms` functional-syntax fallback block LAST. A `Misc` line emitted *after* the `# General axioms` marker would be silently eaten on read. Keep the fallback block ONLY for the genuinely-inexpressible remainder (SWRL rules, complex-LHS `SubClassOf`, anon-subject assertions). Verify by re-parsing the writer's own output (round-trip) AND by `grep -n` on a real rendered file that every `DisjointClasses:`/`EquivalentClasses:`/… line precedes the `# General axioms` line.
 
 - [ ] **Step 6: Run → PASS; confirm prior tests green (esp. the frame-routed n-ary cases still go to frames); fmt/clippy; commit.**
 ```bash
@@ -402,13 +432,22 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 5: Full per-item `annotatedList` annotations
+## Task 5: Per-item `annotatedList` annotations — **investigate first, scope to the real gap**
 
-§2.5 allows `[Annotations:] item` per element of a clause's list (`descriptionAnnotatedList`). We currently support a single leading `Annotations?` (axiom annotation on the whole clause). Generalize so each list item can carry its own annotations, threaded into per-item `AnnotatedComponent`s.
+§2.5 allows `[Annotations:] item` per element of a clause's list (`descriptionAnnotatedList`). We already support a single leading `Annotations?` (axiom annotation on the whole clause), and the writer emits one clause per per-item axiom — so the *common* case already round-trips. Per-item annotations *inside* a comma-list are rare in real ontologies. **Do NOT do the broad rewrite on spec — investigate first** (this avoids churning every list helper + every clause handler for a case that may not occur).
 
 **Files:** `src/grammars/omn.pest`, `src/io/omn/reader/from_pair.rs`, `src/io/omn/writer/mod.rs`, test in `from_pair.rs`.
 
-- [ ] **Step 1: Write the failing round-trip test** — two `SubClassOf`s on one class, one annotated, expressed as an annotatedList `SubClassOf: B, Annotations: ex:p "x" C`:
+- [ ] **Step 0: Decide whether there's a real gap (gate the rest of the task).**
+  1. Does OWL-API emit per-item annotatedLists in the corpus? Grep the OWL-API outputs for a comma-list item preceded by `Annotations:` — e.g. `grep -nE ',[[:space:]]*Annotations:' /tmp/omn-out/*.owlapi.omn`. (OWL-API tends to render axiom annotations one-clause-per-axiom, not as mid-list annotations.)
+  2. Does the reader already accept a mid-list `Annotations:`? Hand-write `Class: :A\n SubClassOf: :B, Annotations: ex:p "x" :C` and run it through `omnread`; see if it parses (it likely errors — the current list rules have no per-item `Annotations?`).
+  **Branch:**
+  - **If OWL-API/Protégé never emit per-item lists AND the corpus is clean** → the only value is *accepting* external per-item lists. Scope Task 5 to the **reader-accept-only** path: add the per-item `Annotations?` to the list grammar (Step 3) and have the reader fold per-item annotations into the axiom's `ann` (Step 4), but **skip the writer change** (our writer never emits this form). Use the hand-written-input test below.
+  - **If nothing exercises it at all** → DEFER Task 5: document "per-item annotatedList annotations are not emitted and not yet parsed (axiom annotations use one-clause-per-axiom)" in the reader module doc, skip to Task 6. Record the decision in the commit/PR notes.
+  - **If the corpus *does* contain per-item lists** → do the full reader+writer path (Steps 3–5).
+  **Cross-task coupling (call out):** Task 5 mutates the SHARED list rules (`DescriptionList`/`OpeList`/`IriList`/`IndividualList`), which Task 4's `insert_misc` also consumes. If you generalize the list-parsing helpers to return `(annotations, item)` pairs, you MUST update `insert_misc` (Task 4) to use the new helper shape too, or it won't compile.
+
+- [ ] **Step 1: Write the failing test** — for the reader-accept path, a hand-written document with a mid-list annotation, parsed via `read_with_build`, asserting both `SubClassOf` axioms with the right `ann`. (For the full path, the round-trip test below.) Two `SubClassOf`s on one class, one annotated, as `SubClassOf: B, Annotations: ex:p "x" C`:
 ```rust
 #[test]
 fn reads_per_item_annotated_list_round_trip() {

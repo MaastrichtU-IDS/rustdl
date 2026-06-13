@@ -64,7 +64,7 @@ form" — only ~8% of it genuinely lacks one:
 
 | content | lines | genuinely no Manchester form? |
 |---|---|---|
-| `AnnotationAssertion` on undeclared/imported IRIs (mostly IAO) | ~310 | **No** — writer limitation |
+| `AnnotationAssertion` on undeclared/untyped IRIs (mostly IAO) | ~310 | **Effectively yes** — can't frame an untyped IRI without inventing a typed declaration; OWL-API drops these too (see below) |
 | `DLSafeRule` (SWRL) | 25 | **Yes** (no `Rule:` production in the spec) |
 | general class axiom, complex LHS (`(R some C) SubClassOf …`) | 1 | **Yes** (`misc` has no `SubClassOf`; `classFrame` head is a named class) |
 
@@ -79,11 +79,17 @@ omny issue is a spec violation.)
 
 - The ~310 annotations are **orphan entity annotations**: their subject is an
   IRI ro references but never declares (e.g. `obo:IAO_0000027`), so it heads no
-  frame and the writer's annotation pass drops it to misc. These *do* have a
-  Manchester form — OWL-API auto-declares referenced entities and emits
-  `Class: … / Annotations: …`. A writer fix (declare-and-frame referenced
-  annotation subjects) would shrink ro's misc block to ~28 lines and round-trip
-  these.
+  frame and the writer routes it to the functional-syntax misc fallback.
+  **Correction (verified 2026-06-13):** these are NOT cleanly fixable. To frame
+  an annotation you need a typed frame header (`Class:`/`Individual:`/…); an
+  untyped orphan IRI would require *inventing* a declaration with a *guessed*
+  type — adding `Declaration` axioms absent from the source and possibly
+  mistyping the entity. OWL-API faced this and **drops** such annotations (its
+  own ro→omn rendering contains `IAO_0000027` zero times; it kept far fewer
+  annotations than the source has). So this is the *same* inherent Manchester
+  limitation as GCIs/SWRL — **you cannot annotate an untyped IRI in Manchester**.
+  Our functional-syntax fallback actually *preserves* them in the file (more
+  faithful than OWL-API's drop), though our own reader skip-and-warns past it.
 - The 25 SWRL rules + 3 complex-subject class axioms genuinely have no Manchester
   frame form.
 - Separately, `SubPropertyOf: owl:topObjectProperty` — OWL-API rejects the

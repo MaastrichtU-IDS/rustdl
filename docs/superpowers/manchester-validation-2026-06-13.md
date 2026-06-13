@@ -57,17 +57,31 @@ Each fix matches OWL-API's *own* Manchester renderer (verified by round-tripping
 
 ## Remaining (`ro`)
 
-`ro` cannot fully round-trip through OWL-API for two reasons, neither a clean
-writer bug:
-- its 367-line `# General axioms` misc block holds constructs with no Manchester
-  form (the documented skip-and-warn region — our reader skips it, OWL-API and
-  omny cannot);
-- `SubPropertyOf: owl:topObjectProperty` — OWL-API rejects the universal top
-  object property as a named super-property (an OWL-API parser quirk).
+`ro` cannot fully round-trip through OWL-API. Its 367-line `# General axioms`
+misc block is the writer's functional-syntax fallback (skip-and-warn region);
+breaking it down corrects an earlier overstatement that it "has no Manchester
+form" — only ~8% of it genuinely lacks one:
 
-The punning-induced annotation-value failures (which previously affected both
-go-basic and ro) are resolved by fix #4; ro's residual is the misc block + the
-`owl:topObjectProperty` edge.
+| content | lines | genuinely no Manchester form? |
+|---|---|---|
+| `AnnotationAssertion` on undeclared/imported IRIs (mostly IAO) | ~310 | **No** — writer limitation |
+| `DLSafeRule` (SWRL) | 25 | **Yes** (Manchester has no rule syntax) |
+| general class axioms, complex LHS (`(R some C) SubClassOf …`) | 3 | **Yes** (frames need a named subject) |
+
+- The ~310 annotations are **orphan entity annotations**: their subject is an
+  IRI ro references but never declares (e.g. `obo:IAO_0000027`), so it heads no
+  frame and the writer's annotation pass drops it to misc. These *do* have a
+  Manchester form — OWL-API auto-declares referenced entities and emits
+  `Class: … / Annotations: …`. A writer fix (declare-and-frame referenced
+  annotation subjects) would shrink ro's misc block to ~28 lines and round-trip
+  these.
+- The 25 SWRL rules + 3 complex-subject class axioms genuinely have no Manchester
+  frame form.
+- Separately, `SubPropertyOf: owl:topObjectProperty` — OWL-API rejects the
+  universal top object property as a named super-property (an OWL-API quirk).
+
+The punning-induced annotation-VALUE failures (which previously affected both
+go-basic and ro) are resolved by fix #4.
 
 ## Three-way partition of failures
 

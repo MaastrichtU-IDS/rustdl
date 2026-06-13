@@ -90,13 +90,19 @@ omny issue is a spec violation.)
   limitation as GCIs/SWRL — **you cannot annotate an untyped IRI in Manchester**.
   Our functional-syntax fallback actually *preserves* them in the file (more
   faithful than OWL-API's drop), though our own reader skip-and-warns past it.
-- The 25 SWRL rules + 3 complex-subject class axioms genuinely have no Manchester
+- The 25 SWRL rules + 1 complex-subject class axiom genuinely have no Manchester
   frame form.
 - Separately, `SubPropertyOf: owl:topObjectProperty` — OWL-API rejects the
   universal top object property as a named super-property (an OWL-API quirk).
 
 The punning-induced annotation-VALUE failures (which previously affected both
 go-basic and ro) are resolved by fix #4.
+
+> **Note:** the sections below (three-way partition, residual issues, recommended
+> fix sequence) are the original investigation log written *before* the fixes
+> were applied. The final state is the **Results / Fixes applied / Remaining /
+> Reader validation** sections above — all four writer fixes and the reader
+> bare-name fix have since landed.
 
 ## Three-way partition of failures
 

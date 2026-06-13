@@ -553,6 +553,74 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
+## Task 5c: Anonymous (blank-node) individuals `_:id`
+
+**Oracle-discovered:** after Task 5b, `ro.owlapi.omn` parses to **line 16161**, failing on `Individual: _:genid2147483648` — an anonymous individual frame subject. §2.5 `individual ::= individualIRI | nodeID`; our `Individual = { IRI }` rejects blank nodes. They also appear as Facts targets, `SameAs:`/`DifferentFrom:` members, `ObjectHasValue`/`ObjectOneOf` members, and annotation values. The model has `Individual::Anonymous(AnonymousIndividual(A))`, `AnonymousIndividual(pub A)`, `b.anon(s)`, and `From<AnonymousIndividual> for Individual`.
+
+**Files:** `src/grammars/omn.pest`, `src/io/omn/reader/from_pair.rs`, `src/io/omn/writer/{mod.rs,as_manchester.rs}`, test in `from_pair.rs`.
+
+- [ ] **Step 1: Failing round-trip test** — an anon individual as a Facts target + as an annotation value:
+```rust
+#[test]
+fn reads_anonymous_individuals_round_trip() {
+    use crate::io::omn::{read_with_build, write};
+    use crate::ontology::component_mapped::ComponentMappedOntology;
+    use crate::ontology::set::SetOntology;
+    use std::io::BufReader;
+    let b = Build::new_rc();
+    let mut pm = PrefixMapping::default();
+    pm.add_prefix("ex", "http://ex/").unwrap();
+    let mut o = SetOntology::new_rc();
+    o.insert(DeclareNamedIndividual(b.named_individual("http://ex/a")));
+    o.insert(DeclareObjectProperty(b.object_property("http://ex/r")));
+    o.insert(ObjectPropertyAssertion {
+        ope: ObjectPropertyExpression::ObjectProperty(b.object_property("http://ex/r")),
+        from: Individual::Named(b.named_individual("http://ex/a")),
+        to: Individual::Anonymous(b.anon("genid1")),
+    });
+    type TestOnt = ComponentMappedOntology<std::rc::Rc<str>, std::rc::Rc<AnnotatedComponent<std::rc::Rc<str>>>>;
+    let amo: TestOnt = o.clone().into();
+    let mut buf = Vec::<u8>::new();
+    write(&mut buf, &amo, Some(&pm)).unwrap();
+    let s = String::from_utf8(buf.clone()).unwrap();
+    assert!(s.contains("_:genid1"), "expected blank-node rendering, got:\n{s}");
+    let (parsed, _): (SetOntology<_>, PrefixMapping) = read_with_build(BufReader::new(&buf[..]), &b).unwrap();
+    let orig: std::collections::BTreeSet<_> = o.iter().map(|ac| ac.component.clone()).collect();
+    let got: std::collections::BTreeSet<_> = parsed.iter().map(|ac| ac.component.clone()).collect();
+    assert_eq!(orig, got, "anonymous individual did not round-trip\n{s}");
+}
+```
+
+- [ ] **Step 2: Run → FAIL** — the reader can't lex `_:genid1`.
+
+- [ ] **Step 3: Grammar — accept blank nodes.**
+```pest
+AnonymousIndividual = { SPARQL_BlankNodeLabel }
+Individual          = { IRI | AnonymousIndividual }
+AnnotationTarget    = { Literal | IRI | AnonymousIndividual }
+IndividualFrame     = { ^"Individual:" ~ Individual ~ IndividualClause* }
+```
+(`IndividualFrame`'s subject changes from `FrameSubject` (IRI-only) to `Individual` so an anonymous individual can head a frame. `SPARQL_BlankNodeLabel = ${ "_:" ~ SPARQL_PnLocal }` already exists in `sparql.pest`. The `AnonymousIndividual` rule's `.as_str()` is `_:label`; strip the `_:` to get the label.)
+
+- [ ] **Step 4: Reader.**
+  - `Individual::from_pair`: the inner is now `IRI` or `AnonymousIndividual`. For `Rule::AnonymousIndividual` → `Individual::Anonymous(ctx.build.anon(&label.strip_prefix("_:").unwrap_or(label)))` (the inner `SPARQL_BlankNodeLabel`'s `as_str()` is `_:label`; strip `_:`). Confirm `ctx.build.anon(...)` exists (it does, `model.rs:314`).
+  - `AnnotationValue::from_pair`: add a `Rule::AnonymousIndividual` arm → `AnnotationValue::AnonymousIndividual(...)`.
+  - `insert_individual_frame`: the subject may now be anonymous. Use a subject extraction that returns an `Individual` (named or anon) instead of an IRI. For a NAMED subject keep the `DeclareNamedIndividual` + clauses (unchanged). For an ANON subject: do NOT emit a declaration (anonymous individuals aren't declared), and the clauses (`Types:`/`Facts:`/`SameAs:`/`DifferentFrom:`/`Annotations:`) use the anon individual as subject. (Refactor `frame_subject_and_clauses` or add an individual-specific variant; the other 5 frames keep the IRI-subject path.)
+
+- [ ] **Step 5: Writer — round-trip anon individuals.**
+  - `annotation_to_manchester` (`as_manchester.rs`): the `AnnotationValue::AnonymousIndividual` arm is currently `unreachable!()` (anon values were routed to misc). Now render `_:{label}` (the `AnonymousIndividual` Display already produces `_:id`). REMOVE the writer guards that routed anon-valued `AnnotationAssertion`/`OntologyAnnotation` to misc (search `mod.rs` for `AnonymousIndividual` matches) so anon-valued annotations render natively.
+  - Anon-subject `AnnotationAssertion` / assertions: the entity-annotation post-pass and assertion arms route a non-named (`AnnotationSubject::AnonymousIndividual`) subject to misc. To round-trip, emit an `Individual: _:label` frame for anon subjects (key the `FrameKind::Individual` frame by the `_:label` string; the frame header renders `_:label`). The Facts/Types/SameAs assertion arms already key the individual frame by the subject — extend them to accept an anon subject (key by `_:label`). (If this proves large, scope Step 5 to the annotation-VALUE round-trip — the clear win — and leave anon-SUBJECT assertions in misc as a documented follow-up; the READER accepts them either way, which is the general-parser goal.)
+
+- [ ] **Step 6: Run → PASS; oracle re-check (ro should advance/parse fully).** Rebuild `omnread`; run on `ro.owlapi.omn` (was line 16161) — it should get past the anon-individual blocker. Report ro's new state — if it now parses fully (like pizza/go-basic), the corpus is clean; if it hits a NEW construct, report it for assessment. pizza/go-basic still OK. fmt/clippy; commit.
+```bash
+git add src/grammars/omn.pest src/io/omn/reader/from_pair.rs src/io/omn/writer/mod.rs src/io/omn/writer/as_manchester.rs
+git commit -m "feat(omn): anonymous (blank-node) individuals _:id (reader + round-trip)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## Task 6: Semantic-conformance gate (OWL-API oracle) + Protégé input + docs
 
 Validate the general reader against externally-produced Manchester, with OWL-API as the oracle.

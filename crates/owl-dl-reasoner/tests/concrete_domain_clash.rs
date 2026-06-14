@@ -432,7 +432,7 @@ fn float_oneof_datasome_is_sat() {
 
 /// FP GUARD (signed-zero dedup): `≥2 p.DataOneOf(-0.0 +0.0)` must be UNSAT
 /// because -0.0 == +0.0 in IEEE-754 → capacity 1, not 2.
-/// Without OrdF64Wrapper::new's signed-zero normalization this would
+/// Without OrdF64::new's signed-zero normalization this would
 /// be wrongly SAT (two distinct bit patterns → capacity 2 → no clash → FP).
 #[test]
 fn float_oneof_signed_zero_dedup_unsat() {

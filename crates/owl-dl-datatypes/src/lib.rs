@@ -29,61 +29,7 @@ use std::collections::BTreeSet;
 // Re-export the key types from owl-dl-core that parameterize DenseInterval
 // for the dense datatype buckets. These are part of the public API of this
 // crate (they appear in CardRange variants).
-pub use owl_dl_core::{DateKey, DateTimeKey, Decimal, OrdF64Wrapper};
-
-/// A totally-ordered wrapper around `f64` using [`f64::total_cmp`]. NaN is
-/// placed after all finite values and ±∞, which is arbitrary but consistent
-/// — we never actually store NaN here (it is rejected at parse time in
-/// `owl-dl-core`). The only semantic property we need is: two equal-bits
-/// values compare `Equal`, which is guaranteed by `total_cmp`. Eq is
-/// derived from the total-order (consistent by construction).
-///
-/// SOUNDNESS NOTE: `PartialEq` is implemented via `total_cmp` (same as
-/// `Ord`) so the two agree — `DenseInterval::capacity()`'s `lo == hi`
-/// point check and the `is_empty`/`disjoint` `lo > hi` checks all rely on
-/// this consistency.
-///
-/// SIGNED-ZERO LANDMINE: `f64::total_cmp` orders `-0.0 < +0.0` (it does
-/// NOT collapse them), whereas IEEE-754 equality treats `-0.0 == +0.0` as
-/// the SAME value. If a raw `-0.0` bound reached the interval algebra, the
-/// disjoint-packing rule could see `[a,-0.0]` and `[+0.0,b]` as disjoint
-/// (their intersection `[+0.0,-0.0]` is `lo > hi` under `total_cmp` ⇒
-/// "empty") and fire a SPURIOUS counting clash = false unsat = FP. The
-/// only finite value where `total_cmp` disagrees with IEEE equality is
-/// signed zero (NaN is parse-rejected), so [`OrdF64::new`] normalizes
-/// `-0.0 → +0.0` at construction, restoring agreement. Construct `OrdF64`
-/// bounds ONLY via [`OrdF64::new`], never the tuple constructor.
-#[derive(Clone, Copy, Debug)]
-pub struct OrdF64(pub f64);
-
-impl OrdF64 {
-    /// Construct, normalizing signed zero so `total_cmp`-equality agrees
-    /// with IEEE-754 equality on the only finite value where they diverge.
-    /// FP-critical — see the type-level signed-zero note.
-    #[must_use]
-    pub fn new(v: f64) -> Self {
-        // `v == 0.0` is true for both `-0.0` and `+0.0`; `+ 0.0` canonicalizes
-        // `-0.0` to `+0.0` (and is a no-op for `+0.0`).
-        Self(if v == 0.0 { 0.0 } else { v })
-    }
-}
-
-impl PartialEq for OrdF64 {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.total_cmp(&other.0) == std::cmp::Ordering::Equal
-    }
-}
-impl Eq for OrdF64 {}
-impl PartialOrd for OrdF64 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for OrdF64 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
-    }
-}
+pub use owl_dl_core::{DateKey, DateTimeKey, Decimal, OrdF64};
 
 /// Result of a concrete-domain satisfiability check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,8 +67,8 @@ pub enum CardRange {
     /// `DataOneOf`-of-`xsd:integer` values (finite set; capacity = |distinct values|).
     IntSet(FiniteSet<i64>),
     /// `DataOneOf`-of-`xsd:float`/`xsd:double` values (finite set; signed-zero
-    /// normalized via [`OrdF64Wrapper`]).
-    FloatSet(FiniteSet<OrdF64Wrapper>),
+    /// normalized via [`OrdF64`]).
+    FloatSet(FiniteSet<OrdF64>),
     /// `DataOneOf`-of-`xsd:decimal` values (finite set; exact lexical equality).
     DecimalSet(FiniteSet<Decimal>),
     /// `DataOneOf`-of-`xsd:date` values (finite set; timezone-free component tuple).
@@ -249,9 +195,9 @@ impl CardRange {
         }
     }
 
-    /// The range as a [`FiniteSet<OrdF64Wrapper>`] if this is the float-oneof bucket.
+    /// The range as a [`FiniteSet<OrdF64>`] if this is the float-oneof bucket.
     #[must_use]
-    pub fn as_float_set(&self) -> Option<FiniteSet<OrdF64Wrapper>> {
+    pub fn as_float_set(&self) -> Option<FiniteSet<OrdF64>> {
         match self {
             CardRange::FloatSet(s) => Some(s.clone()),
             _ => None,

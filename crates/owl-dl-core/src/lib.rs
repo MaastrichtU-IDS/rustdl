@@ -33,7 +33,7 @@ pub use convert::{
     decode_integer_dkey, decode_string_dkey, is_dkey_iri,
 };
 pub use convert_back::{axiom_to_component, concept_to_class_expression, convert_back};
-pub use data_axioms::{DateKey, DateTimeKey, Decimal, OrdF64Wrapper, StrSet};
+pub use data_axioms::{DateKey, DateTimeKey, Decimal, OrdF64, StrSet};
 pub use definitions::{Definitions, extract_definitions};
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
 pub use normalize::{is_nnf, nnf_axioms, nnf_complement, to_nnf};

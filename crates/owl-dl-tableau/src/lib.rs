@@ -1306,7 +1306,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
         use owl_dl_datatypes::{
             Card, CardRange, CardSat, DateKey, DateTimeKey, Decimal, DenseInterval, FiniteSet,
-            IntInterval, OrdF64, OrdF64Wrapper, ValueRange, card_sat, integer_sat,
+            IntInterval, OrdF64, ValueRange, card_sat, integer_sat,
         };
         if self.dkey_ranges.is_empty() {
             return None;
@@ -1359,9 +1359,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             deps: crate::graph::DepSet,
         }
         struct FloatSetAcc {
-            mins: Vec<Card<FiniteSet<OrdF64Wrapper>>>,
-            maxs: Vec<Card<FiniteSet<OrdF64Wrapper>>>,
-            universal: Option<FiniteSet<OrdF64Wrapper>>,
+            mins: Vec<Card<FiniteSet<OrdF64>>>,
+            maxs: Vec<Card<FiniteSet<OrdF64>>>,
+            universal: Option<FiniteSet<OrdF64>>,
             deps: crate::graph::DepSet,
         }
         struct DecimalSetAcc {
@@ -1722,10 +1722,9 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 return Some(acc.deps);
             }
         }
-        // Check float-oneof bucket (FiniteSet<OrdF64Wrapper>).
+        // Check float-oneof bucket (FiniteSet<OrdF64>).
         for acc in float_set_by_role.into_values() {
-            if card_sat::<FiniteSet<OrdF64Wrapper>>(acc.universal, &acc.mins, &acc.maxs)
-                == CardSat::Unsat
+            if card_sat::<FiniteSet<OrdF64>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
             {
                 return Some(acc.deps);
             }

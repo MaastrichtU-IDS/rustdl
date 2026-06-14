@@ -1083,48 +1083,79 @@ pub(crate) fn parse_integer_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeS
     }
 }
 
-/// An exact ordered wrapper for `f64` values found in numeric `DataOneOf`
-/// enumerations. Normalizes signed zero (`-0.0 → +0.0`) — FP-critical: under
-/// `f64::total_cmp`, `-0.0 < +0.0`, so without normalization `{-0.0,+0.0}`
-/// would count as 2 distinct values (capacity 2), while IEEE-754 equality
-/// treats them as the same (capacity 1). Under-counting = spurious clash = FP.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OrdF64Wrapper(pub u64); // bit-representation of the normalized f64
+/// A totally-ordered, signed-zero-normalizing wrapper for `f64` values.
+///
+/// Serves two roles:
+/// - **Dense-interval bounds** (`DenseInterval<OrdF64>` for `xsd:float`/`double`):
+///   `total_cmp` gives the magnitude order; the signed-zero normalization below
+///   ensures `-0.0` and `+0.0` collapse to the same bound, preventing a spurious
+///   "empty intersection" (see the SIGNED-ZERO LANDMINE note).
+/// - **Finite-set members** (`FiniteSet<OrdF64>` for `DataOneOf` of floats):
+///   `total_cmp` gives a total order for `BTreeSet` storage; the same
+///   normalization ensures `-0.0` and `+0.0` dedup to the same element
+///   (capacity 1, not 2 — the FP hazard in the set bucket).
+///
+/// Both uses require the SAME invariants, so this single type serves both.
+///
+/// SOUNDNESS NOTE: `PartialEq` is implemented via `total_cmp` (same as `Ord`)
+/// so the two agree — `DenseInterval::capacity()`'s `lo == hi` point check and
+/// the `is_empty`/`disjoint` `lo > hi` checks all rely on this consistency.
+///
+/// SIGNED-ZERO LANDMINE: `f64::total_cmp` orders `-0.0 < +0.0` (it does NOT
+/// collapse them), whereas IEEE-754 equality treats `-0.0 == +0.0` as the SAME
+/// value. If a raw `-0.0` reached the interval algebra, the disjoint-packing
+/// rule could see `[a,-0.0]` and `[+0.0,b]` as disjoint (their intersection
+/// `[+0.0,-0.0]` is `lo > hi` under `total_cmp` ⇒ "empty") and fire a SPURIOUS
+/// counting clash = false unsat = FP. For the set bucket, `-0.0` and `+0.0`
+/// would appear as two distinct elements (capacity 2) even though they are the
+/// same IEEE value (capacity 1) — also FP. The only finite value where
+/// `total_cmp` disagrees with IEEE equality is signed zero (NaN is
+/// parse-rejected), so [`OrdF64::new`] normalizes `-0.0 → +0.0` at
+/// construction, restoring agreement. Construct `OrdF64` bounds ONLY via
+/// [`OrdF64::new`], never the tuple constructor.
+#[derive(Clone, Copy, Debug)]
+pub struct OrdF64(pub f64);
 
-impl OrdF64Wrapper {
-    /// Construct from a finite `f64`, normalizing `-0.0 → +0.0`.
+impl OrdF64 {
+    /// Construct, normalizing signed zero so `total_cmp`-equality agrees
+    /// with IEEE-754 equality on the only finite value where they diverge.
+    /// FP-critical — see the type-level signed-zero note.
     #[must_use]
     pub fn new(v: f64) -> Self {
-        // `v == 0.0` is true for both -0.0 and +0.0; `+ 0.0` collapses to +0.0.
-        let v = if v == 0.0 { 0.0_f64 } else { v };
-        Self(v.to_bits())
+        // `v == 0.0` is true for both `-0.0` and `+0.0`; `+ 0.0` canonicalizes
+        // `-0.0` to `+0.0` (and is a no-op for `+0.0`).
+        Self(if v == 0.0 { 0.0 } else { v })
     }
+
     /// Recover the wrapped `f64`.
     #[must_use]
     pub fn to_f64(self) -> f64 {
-        f64::from_bits(self.0)
+        self.0
     }
 }
 
-impl PartialOrd for OrdF64Wrapper {
+impl PartialEq for OrdF64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.total_cmp(&other.0) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for OrdF64 {}
+impl PartialOrd for OrdF64 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-
-impl Ord for OrdF64Wrapper {
+impl Ord for OrdF64 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Both are normalized (no -0.0), so we can use total_cmp on the
-        // reconstructed f64. This agrees with bit order for finite values.
-        self.to_f64().total_cmp(&other.to_f64())
+        self.0.total_cmp(&other.0)
     }
 }
 
 /// Parse a `DataOneOf` whose members are ALL `xsd:float`/`xsd:double`-typed
-/// literals into a `BTreeSet<OrdF64Wrapper>` (capacity = |distinct values|).
+/// literals into a `BTreeSet<OrdF64>` (capacity = |distinct values|).
 /// NaN / ±∞ → `None` (sound under-approx). Signed-zero dedup via
-/// `OrdF64Wrapper::new` is FP-critical (see type doc above).
-pub(crate) fn parse_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<OrdF64Wrapper>> {
+/// `OrdF64::new` is FP-critical (see type doc above).
+pub(crate) fn parse_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<OrdF64>> {
     match dr {
         DataRange::DataOneOf(lits) if !lits.is_empty() => {
             let mut set = BTreeSet::new();
@@ -1137,7 +1168,7 @@ pub(crate) fn parse_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet
                         || datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" =>
                     {
                         let fv: f64 = literal.parse().ok().filter(|v: &f64| v.is_finite())?;
-                        OrdF64Wrapper::new(fv)
+                        OrdF64::new(fv)
                     }
                     _ => return None,
                 };

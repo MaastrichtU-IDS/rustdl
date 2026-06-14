@@ -495,17 +495,18 @@ pub fn decode_int_oneof_dkey(iri: &str) -> Option<std::collections::BTreeSet<i64
     clippy::trivially_copy_pass_by_ref,
     reason = "must match Fn(&T)->String bound in numeric_oneof_iri"
 )]
-fn float_oneof_member_key(w: &crate::data_axioms::OrdF64Wrapper) -> String {
-    w.0.to_string()
+fn float_oneof_member_key(w: &crate::data_axioms::OrdF64) -> String {
+    // Encode as u64 bit-representation (exact round-trip, same format as before).
+    w.to_f64().to_bits().to_string()
 }
 
-fn float_oneof_iri(set: &std::collections::BTreeSet<crate::data_axioms::OrdF64Wrapper>) -> String {
+fn float_oneof_iri(set: &std::collections::BTreeSet<crate::data_axioms::OrdF64>) -> String {
     numeric_oneof_iri(DKEY_FLOAT_ONEOF_TAG, set, float_oneof_member_key)
 }
 
 fn parse_float_oneof_iri(
     iri: &str,
-) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64Wrapper>> {
+) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
     parse_numeric_oneof_iri(iri, DKEY_FLOAT_ONEOF_TAG, |s| {
         let bits: u64 = s.parse().ok()?;
         let v = f64::from_bits(bits);
@@ -514,7 +515,7 @@ fn parse_float_oneof_iri(
         if !v.is_finite() {
             return None;
         }
-        Some(crate::data_axioms::OrdF64Wrapper::new(v))
+        Some(crate::data_axioms::OrdF64::new(v))
     })
 }
 
@@ -522,7 +523,7 @@ fn parse_float_oneof_iri(
 #[must_use]
 pub fn decode_float_oneof_dkey(
     iri: &str,
-) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64Wrapper>> {
+) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
     parse_float_oneof_iri(iri)
 }
 
@@ -2613,8 +2614,8 @@ mod tests {
                 "fo",
                 float_oneof_iri(
                     &[
-                        crate::data_axioms::OrdF64Wrapper::new(1.5),
-                        crate::data_axioms::OrdF64Wrapper::new(2.5),
+                        crate::data_axioms::OrdF64::new(1.5),
+                        crate::data_axioms::OrdF64::new(2.5),
                     ]
                     .into_iter()
                     .collect(),

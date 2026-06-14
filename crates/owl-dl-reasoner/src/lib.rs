@@ -1923,12 +1923,16 @@ fn build_dkey_range_map(
         } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_float_dkey(iri) {
             // Bridge FloatRange → DenseInterval<OrdF64>: wrap each f64 bound
             // in OrdF64. Inclusivity flags copied 1:1 — no normalization.
+            // `OrdF64::new` canonicalizes signed zero (-0.0 → +0.0); using the
+            // bare tuple constructor here would be UNSOUND (see the OrdF64
+            // signed-zero note — a raw -0.0 bound can fire a false counting
+            // clash via the disjoint-packing rule).
             map.insert(
                 class_id,
                 owl_dl_datatypes::CardRange::Float(DenseInterval {
-                    min: min.map(OrdF64),
+                    min: min.map(OrdF64::new),
                     min_incl,
-                    max: max.map(OrdF64),
+                    max: max.map(OrdF64::new),
                     max_incl,
                 }),
             );

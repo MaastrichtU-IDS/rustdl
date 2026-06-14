@@ -38,14 +38,35 @@ pub use owl_dl_core::{DateKey, DateTimeKey, Decimal};
 /// values compare `Equal`, which is guaranteed by `total_cmp`. Eq is
 /// derived from the total-order (consistent by construction).
 ///
-/// SOUNDNESS NOTE: `PartialEq` must be consistent with `Ord` for
-/// `DenseInterval::capacity()`'s `lo == hi` check to be correct. We
-/// implement `PartialEq` via `total_cmp` (same as `Ord`) so the two
-/// agree — in particular `-0.0` and `+0.0` compare `Equal` under
-/// `total_cmp`, collapsing to one point, which is the desired
-/// (sound, conservative) behaviour.
+/// SOUNDNESS NOTE: `PartialEq` is implemented via `total_cmp` (same as
+/// `Ord`) so the two agree — `DenseInterval::capacity()`'s `lo == hi`
+/// point check and the `is_empty`/`disjoint` `lo > hi` checks all rely on
+/// this consistency.
+///
+/// SIGNED-ZERO LANDMINE: `f64::total_cmp` orders `-0.0 < +0.0` (it does
+/// NOT collapse them), whereas IEEE-754 equality treats `-0.0 == +0.0` as
+/// the SAME value. If a raw `-0.0` bound reached the interval algebra, the
+/// disjoint-packing rule could see `[a,-0.0]` and `[+0.0,b]` as disjoint
+/// (their intersection `[+0.0,-0.0]` is `lo > hi` under `total_cmp` ⇒
+/// "empty") and fire a SPURIOUS counting clash = false unsat = FP. The
+/// only finite value where `total_cmp` disagrees with IEEE equality is
+/// signed zero (NaN is parse-rejected), so [`OrdF64::new`] normalizes
+/// `-0.0 → +0.0` at construction, restoring agreement. Construct `OrdF64`
+/// bounds ONLY via [`OrdF64::new`], never the tuple constructor.
 #[derive(Clone, Copy, Debug)]
 pub struct OrdF64(pub f64);
+
+impl OrdF64 {
+    /// Construct, normalizing signed zero so `total_cmp`-equality agrees
+    /// with IEEE-754 equality on the only finite value where they diverge.
+    /// FP-critical — see the type-level signed-zero note.
+    #[must_use]
+    pub fn new(v: f64) -> Self {
+        // `v == 0.0` is true for both `-0.0` and `+0.0`; `+ 0.0` canonicalizes
+        // `-0.0` to `+0.0` (and is a no-op for `+0.0`).
+        Self(if v == 0.0 { 0.0 } else { v })
+    }
+}
 
 impl PartialEq for OrdF64 {
     fn eq(&self, other: &Self) -> bool {
@@ -863,6 +884,49 @@ mod tests {
             card_sat::<DenseInterval<OrdF64>>(None, &[Card::new(pt, 1)], &[]),
             CardSat::Sat,
             "point capacity=1 >= 1 => SAT"
+        );
+    }
+
+    /// FP GUARD (signed-zero landmine): two `≥1` demands `[-1,-0.0]` and
+    /// `[+0.0,1]` under a `≤1` limit `[-1,1]`. They share the value `0.0`
+    /// (`-0.0 == +0.0` in IEEE), so ONE filler satisfies both ⟹ SAT. Without
+    /// signed-zero normalization, `total_cmp` orders `-0.0 < +0.0`, the
+    /// disjoint-packing rule sees them as disjoint (intersection `[+0.0,-0.0]`
+    /// is `lo > hi` ⇒ "empty"), and `1+1=2 > 1` fires a SPURIOUS clash = FP.
+    /// `OrdF64::new` canonicalizes `-0.0 → +0.0`, restoring overlap.
+    #[test]
+    fn ordf64_signed_zero_not_falsely_disjoint() {
+        let limit = DenseInterval {
+            min: Some(OrdF64::new(-1.0)),
+            min_incl: true,
+            max: Some(OrdF64::new(1.0)),
+            max_incl: true,
+        };
+        let lo_half = DenseInterval {
+            min: Some(OrdF64::new(-1.0)),
+            min_incl: true,
+            max: Some(OrdF64::new(-0.0)),
+            max_incl: true,
+        };
+        let hi_half = DenseInterval {
+            min: Some(OrdF64::new(0.0)),
+            min_incl: true,
+            max: Some(OrdF64::new(1.0)),
+            max_incl: true,
+        };
+        // The two halves must NOT be considered disjoint (they share 0.0).
+        assert!(
+            !lo_half.disjoint(&hi_half),
+            "[-1,-0.0] and [+0.0,1] share 0.0 — must overlap, not be disjoint"
+        );
+        assert_eq!(
+            card_sat::<DenseInterval<OrdF64>>(
+                None,
+                &[Card::new(lo_half, 1), Card::new(hi_half, 1)],
+                &[Card::new(limit, 1)],
+            ),
+            CardSat::Sat,
+            "one filler 0.0 satisfies both demands under the ≤1 limit — must be SAT"
         );
     }
 

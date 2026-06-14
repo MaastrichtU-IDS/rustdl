@@ -233,6 +233,25 @@ fn float_exclusive_bounds_large_demand_is_sat() {
          xsd:maxExclusive \"1.0\"^^xsd:float)))"));
 }
 
+/// FP GUARD (signed-zero landmine): `≤1 p.[-1,1]` + `≥1 p.[-1,-0.0]` +
+/// `≥1 p.[0.0,1]`. The two demands share `0.0` (`-0.0 == +0.0` in IEEE),
+/// so a single filler satisfies both under the `≤1` limit ⟹ SAT. Without
+/// `OrdF64::new`'s signed-zero normalization, `total_cmp` orders
+/// `-0.0 < +0.0`, the demands look disjoint, and `1+1 > 1` fires a spurious
+/// false-unsat = FP. End-to-end regression for that exact bug.
+#[test]
+fn float_signed_zero_split_demands_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMaxCardinality(1 :p \
+           DatatypeRestriction(xsd:float xsd:minInclusive \"-1.0\"^^xsd:float \
+           xsd:maxInclusive \"1.0\"^^xsd:float)))\n\
+         SubClassOf(:C DataMinCardinality(1 :p \
+           DatatypeRestriction(xsd:float xsd:minInclusive \"-1.0\"^^xsd:float \
+           xsd:maxInclusive \"-0.0\"^^xsd:float)))\n\
+         SubClassOf(:C DataMinCardinality(1 :p \
+           DatatypeRestriction(xsd:float xsd:minInclusive \"0.0\"^^xsd:float \
+           xsd:maxInclusive \"1.0\"^^xsd:float)))"));
+}
+
 // ── DECIMAL ───────────────────────────────────────────────────────────
 
 /// CLASH: `≥2 p.{1.5}` decimal point. UNSAT.

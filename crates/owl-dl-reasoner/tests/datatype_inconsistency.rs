@@ -475,3 +475,220 @@ fn unparseable_integer_literal_stays_consistent() {
     DataPropertyAssertion(:p :a "not-an-int"^^xsd:integer)"#
     ));
 }
+
+// ─── DP-2: FunctionalDataProperty ABox cardinality violation ──────────
+//
+// `FunctionalDataProperty(f)` means individual a has AT MOST ONE f-value.
+// Two provably-distinct values (different literals mapping to different
+// DistinctVal keys) → inconsistent. Negatives (MUST stay consistent) are
+// the catastrophic-FP guard: over-counting = false Top⊑Bot.
+
+// ── POSITIVE (INCONSISTENT) cases ────────────────────────────────────
+
+/// Two distinct xsd:integer values on a functional property ⇒ inconsistent.
+#[test]
+fn dp2_functional_two_integers_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "2"^^xsd:integer)"#
+    ));
+}
+
+/// Two distinct xsd:double values on a functional property ⇒ inconsistent.
+#[test]
+fn dp2_functional_two_doubles_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:double)
+    DataPropertyAssertion(:p :a "2.0"^^xsd:double)"#
+    ));
+}
+
+/// `1^^xsd:integer` and `1.0^^xsd:double` are in DISJOINT OWL value spaces
+/// (xsd:double's value space is disjoint from xsd:decimal/integer), so on a
+/// functional property they are two distinct values ⇒ inconsistent. Locks the
+/// cross-bucket distinctness decision (Num(Decimal) vs Double are NOT folded).
+#[test]
+fn dp2_functional_integer_and_double_distinct_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:double)"#
+    ));
+}
+
+/// Two distinct xsd:string values (plain literals) ⇒ inconsistent.
+#[test]
+fn dp2_functional_two_strings_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "hello")
+    DataPropertyAssertion(:p :a "world")"#
+    ));
+}
+
+/// CROSS-BUCKET: one xsd:integer and one xsd:string value — disjoint
+/// value spaces ⇒ provably distinct ⇒ inconsistent.
+#[test]
+fn dp2_functional_cross_bucket_integer_string_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "x")"#
+    ));
+}
+
+/// CORRECT SUB-PROPERTY DIRECTION: functional SUPER + assertion on SUB
+/// ⇒ sub-values count toward the super's ≤1 budget ⇒ inconsistent.
+#[test]
+fn dp2_functional_super_assertions_on_sub_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:f)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:f)
+    SubDataPropertyOf(:q :f)
+    DataPropertyAssertion(:q :a "1"^^xsd:integer)
+    DataPropertyAssertion(:q :a "2"^^xsd:integer)"#
+    ));
+}
+
+/// Mixed: one value on the functional property itself and another via its
+/// sub-property; still two distinct values ⇒ inconsistent.
+#[test]
+fn dp2_functional_mixed_direct_and_sub_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:f)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:f)
+    SubDataPropertyOf(:q :f)
+    DataPropertyAssertion(:f :a "1"^^xsd:integer)
+    DataPropertyAssertion(:q :a "2"^^xsd:integer)"#
+    ));
+}
+
+// ── NEGATIVE (CONSISTENT, the catastrophic-FP guard) ─────────────────
+
+/// VALUE-DEDUP: "1"^^xsd:integer asserted twice is ONE distinct value ⇒
+/// consistent. The core dedup guard: same value, two assertions.
+#[test]
+fn dp2_functional_same_integer_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)"#
+    ));
+}
+
+/// LITERAL NORMALISATION: "1"^^xsd:integer and "01"^^xsd:integer denote the
+/// SAME integer value (01 normalises to 1) ⇒ consistent. Proves the parser
+/// deduplicates same-value-different-literal pairs (over-counting would
+/// false-fire).
+#[test]
+fn dp2_functional_integer_normalisation_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "01"^^xsd:integer)"#
+    ));
+}
+
+/// INTEGER/DECIMAL FOLD: "1"^^xsd:integer and "1"^^xsd:decimal denote the
+/// SAME value (xsd:integer ⊆ xsd:decimal value space) ⇒ consistent. Proves
+/// the two datatypes fold into one Num(Decimal) bucket — separate buckets
+/// would count them as 2 distinct and false-fire.
+#[test]
+fn dp2_integer_and_decimal_same_value_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "1"^^xsd:decimal)"#
+    ));
+}
+
+/// SINGLE VALUE: only one value asserted ⇒ consistent (≤1 is satisfied).
+#[test]
+fn dp2_functional_single_value_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "42"^^xsd:integer)"#
+    ));
+}
+
+/// NOT FUNCTIONAL: two distinct values, but the property is NOT declared
+/// functional ⇒ no ≤1 constraint ⇒ consistent.
+#[test]
+fn dp2_not_functional_two_values_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "2"^^xsd:integer)"#
+    ));
+}
+
+/// xsd:float EXCLUSION: two xsd:float literals that share the same f32
+/// value (but differ as f64) MUST NOT false-fire. xsd:float is excluded
+/// from distinctness counting (the DP-1 f32/f64 lesson). The values
+/// "0.1000000014" and "0.1000000015" denote the same f32 `0x3DCCCCCD`.
+#[test]
+fn dp2_functional_xsd_float_excluded_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "0.1000000014"^^xsd:float)
+    DataPropertyAssertion(:p :a "0.1000000015"^^xsd:float)"#
+    ));
+}
+
+/// WRONG CLOSURE DIRECTION: functional SUB-property `q` + assertions only
+/// on the SUPER-property `f` ⇒ must NOT fire. The super-property's values
+/// don't count toward a sub-property's ≤1. This pinpoints the unsound
+/// direction (closure[super] ∌ q).
+#[test]
+fn dp2_functional_sub_assertions_on_super_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:f)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:q)
+    SubDataPropertyOf(:q :f)
+    DataPropertyAssertion(:f :a "1"^^xsd:integer)
+    DataPropertyAssertion(:f :a "2"^^xsd:integer)"#
+    ));
+}
+
+/// UNRELATED PROPERTY: functional p but assertions on unrelated q ⇒
+/// consistent.
+#[test]
+fn dp2_functional_unrelated_property_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:q :a "1"^^xsd:integer)
+    DataPropertyAssertion(:q :a "2"^^xsd:integer)"#
+    ));
+}
+
+/// DP-1 COEXISTENCE: a plain DP-1-consistent ontology (integer value in a
+/// numeric range) stays consistent alongside a DP-2-safe assertion (single
+/// value on a functional property). Verifies neither check interferes.
+#[test]
+fn dp2_dp1_coexistence_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DataPropertyRange(:q xsd:integer)
+    DataPropertyAssertion(:q :a "5"^^xsd:integer)
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "hello")"#
+    ));
+}

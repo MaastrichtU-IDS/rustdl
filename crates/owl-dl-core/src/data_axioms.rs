@@ -91,6 +91,7 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_data_oneof_violations(&facts, top_id, bot_id, &mut out);
     emit_data_cardinality_violations(&facts, top_id, bot_id, &mut out);
     emit_data_range_value_violations(src, top_id, bot_id, &mut out);
+    emit_functional_dp_cardinality_violations(src, top_id, bot_id, &mut out);
     out
 }
 
@@ -2255,6 +2256,234 @@ fn emit_data_range_value_violations<A: ForIRI>(
                 sup: bot_id,
             });
             return;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DP-2: FunctionalDataProperty ABox cardinality violation
+// ─────────────────────────────────────────────────────────────────────
+
+/// Canonical literal value used for DP-2 distinctness counting.
+///
+/// Two literals are **provably distinct** iff they differ within the same
+/// bucket OR fall in different buckets (disjoint value spaces). A literal
+/// that does not parse to any bucket is excluded (sound under-count).
+///
+/// SOUNDNESS CRITICAL — bucket design:
+/// - `Num(Decimal)`: `xsd:integer` AND `xsd:decimal` literals, both parsed
+///   via `parse_decimal`. These share the decimal value space
+///   (`xsd:integer ⊆ xsd:decimal`), so `"1"^^xsd:integer` and
+///   `"1"^^xsd:decimal` denote the SAME value and must NOT be counted as
+///   distinct (they collapse to the same `Decimal`). Folding them into one
+///   bucket with a shared normalising parser prevents this false-fire.
+/// - `Double(OrdF64)`: `xsd:double` ONLY. `xsd:float` is EXCLUDED — two
+///   different f64 parses of an xsd:float literal can denote the SAME f32
+///   value (the DP-1 f32/f64 mismatch lesson); counting them as distinct
+///   would be a false-fire. `OrdF64::new` normalises signed zero so that
+///   `-0.0` and `+0.0` (IEEE-equal) hash to the same key.
+/// - `Date` / `DateTime`: timezone-bearing values are dropped at parse
+///   (see `parse_date`/`parse_datetime`) — sound under-count.
+/// - `Str(String)`: exact lexical `xsd:string` identity.
+///
+/// Cross-bucket pairs are provably distinct (disjoint value spaces) and
+/// will naturally cause `BTreeSet<DistinctVal>` to grow beyond 1.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum DistinctVal {
+    Num(Decimal),
+    Double(OrdF64),
+    Date(DateKey),
+    DateTime(DateTimeKey),
+    Str(String),
+}
+
+/// Parse a literal to its canonical [`DistinctVal`], or `None` if the
+/// datatype is excluded or unrecognised. A `None` contributes nothing to
+/// the count — the sound under-approximation.
+fn literal_to_distinct_val<A: ForIRI>(l: &Literal<A>) -> Option<DistinctVal> {
+    match l {
+        // ── Num bucket: xsd:integer and xsd:decimal both normalise via
+        // `parse_decimal`. An integer literal "01" and decimal "1" must
+        // map to the SAME Decimal (normalisation strips leading zeros).
+        // `integer_literal_value_pub` gives i64 but can't normalise across
+        // the two types; `parse_decimal` does: "1" → Decimal{int:"1",…}.
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+            // Parse via decimal so "1" and "01" share the same normalised key,
+            // and so the value is deduped against any xsd:decimal "1" assertion.
+            parse_decimal(literal).map(DistinctVal::Num)
+        }
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#decimal" => {
+            parse_decimal(literal).map(DistinctVal::Num)
+        }
+        // ── Double bucket: xsd:double ONLY (xsd:float excluded).
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" => {
+            let v: f64 = literal.parse().ok().filter(|v: &f64| v.is_finite())?;
+            Some(DistinctVal::Double(OrdF64::new(v)))
+        }
+        // ── Date bucket.
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#date" => {
+            parse_date(literal).map(DistinctVal::Date)
+        }
+        // ── DateTime bucket.
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#dateTime" => {
+            parse_datetime(literal).map(DistinctVal::DateTime)
+        }
+        // ── String bucket: bare (xsd:string) or typed xsd:string.
+        // Language-tagged literals (Literal::Language) are EXCLUDED —
+        // they are rdf:langString, a DIFFERENT datatype than xsd:string.
+        Literal::Simple { literal } => Some(DistinctVal::Str(literal.clone())),
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#string" => {
+            Some(DistinctVal::Str(literal.clone()))
+        }
+        // ── Everything else (xsd:float, rdf:langString, xsd:boolean, …)
+        // is excluded (sound under-count — contributes nothing).
+        _ => None,
+    }
+}
+
+/// DP-2: **Functional data property ABox cardinality violation** ⇒ global
+/// inconsistency.
+///
+/// `FunctionalDataProperty(f)` declares that every individual has AT MOST ONE
+/// `f`-value. If an individual `a` has ≥ 2 **provably-distinct** `f`-values
+/// (directly or via a sub-data-property `q ⊑ f`), the ABox has no model ⇒
+/// emit `Top ⊑ Bot`.
+///
+/// **Soundness guarantees (the false-`Inconsistent` gate):**
+///
+/// 1. *Distinctness by value, not syntax*: literals are parsed to canonical
+///    [`DistinctVal`] keys (integer and decimal folded; `parse_decimal`
+///    normalises `"01"` and `"1"` to the same key). Two literals map to the
+///    same key iff they denote the same value → no over-counting.
+///
+/// 2. *xsd:float excluded*: `xsd:float` (32-bit) is dropped — two different
+///    f64 parses can denote the same f32 (the DP-1 f32/f64 lesson). Only
+///    `xsd:double` is accepted.
+///
+/// 3. *Sub-property closure in the SOUND direction*: `FunctionalDataProperty(f)` +
+///    `SubDataPropertyOf(q, f)` means `q(a,v) ⟹ f(a,v)`, so `q`'s values count
+///    toward `f`'s ≤1 budget. We gather values from `f` AND all transitive
+///    sub-properties of `f`. The **wrong** direction (gathering super-properties'
+///    values for a functional sub-property) would be unsound (false-fire); the
+///    correct direction is sub→super reachability (`f ∈ closure[q]?`), which
+///    `closure_sub_dp` answers.
+///
+/// 4. *Scope is FunctionalDataProperty only* — the ≤1 case. General
+///    `DataMaxCardinality`/`SubClassOf(C, ≤n p)` with n>1 requires class
+///    membership and is deferred to DP-2b.
+///
+/// 5. *Anonymous individuals are ignored* (no stable IRI to key on).
+fn emit_functional_dp_cardinality_violations<A: ForIRI>(
+    src: &SetOntology<A>,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    use Component as C;
+
+    // Collect FunctionalDataProperty declarations.
+    let mut functional_dps: BTreeSet<String> = BTreeSet::new();
+    // Sub-data-property edges for the closure (same shape as in
+    // `emit_data_range_value_violations`).
+    let mut sub_dp: Vec<(String, String)> = Vec::new();
+    // Per-individual, per-property: all parsed literal values.
+    // Keys: (ind_iri, prop_iri); values: BTreeSet<DistinctVal>.
+    let mut ind_dp_vals: BTreeMap<(String, String), BTreeSet<DistinctVal>> = BTreeMap::new();
+
+    for ac in src {
+        match &ac.component {
+            C::FunctionalDataProperty(ax) => {
+                functional_dps.insert(dp_iri(&ax.0));
+            }
+            C::SubDataPropertyOf(ax) => {
+                let sub = dpe_iri(&ax.sub);
+                let sup = dpe_iri(&ax.sup);
+                if !sub.is_empty() && !sup.is_empty() {
+                    sub_dp.push((sub, sup));
+                }
+            }
+            C::EquivalentDataProperties(ax) => {
+                let iris: Vec<String> = ax.0.iter().map(dpe_iri).collect();
+                for i in 0..iris.len() {
+                    for j in 0..iris.len() {
+                        if i != j {
+                            sub_dp.push((iris[i].clone(), iris[j].clone()));
+                        }
+                    }
+                }
+            }
+            C::DataPropertyAssertion(ax) => {
+                // Only named individuals (anonymous have no stable IRI key).
+                let Some(ind) = individual_iri(&ax.from) else {
+                    continue;
+                };
+                let prop = dpe_iri(&ax.dp);
+                if let Some(v) = literal_to_distinct_val(&ax.to) {
+                    ind_dp_vals.entry((ind, prop)).or_default().insert(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if functional_dps.is_empty() || ind_dp_vals.is_empty() {
+        return;
+    }
+
+    // Build sub-property super-closure: dp → {dp} ∪ all transitive super-dps.
+    // `is_sub_of(q, f)` iff `f ∈ closure[q]` (or `q == f` reflexively).
+    let closure = closure_sub_dp(&sub_dp);
+
+    // Collect all distinct individuals.
+    let mut all_inds: BTreeSet<&str> = BTreeSet::new();
+    for (ind, _) in ind_dp_vals.keys() {
+        all_inds.insert(ind.as_str());
+    }
+
+    for f in &functional_dps {
+        for ind in &all_inds {
+            // Collect all distinct values for `f` on this individual,
+            // including values on sub-properties of `f`.
+            let mut distinct: BTreeSet<DistinctVal> = BTreeSet::new();
+            for ((i, q), vals) in &ind_dp_vals {
+                if i.as_str() != *ind {
+                    continue;
+                }
+                // `q ⊑ f` iff `f` is in `q`'s super-closure.
+                // If `q` has no hierarchy entries it isn't in the closure map;
+                // the reflexive fallback (`q == f`) handles that case.
+                let is_sub = closure
+                    .get(q.as_str())
+                    .map_or(q == f, |supers| supers.contains(f));
+                if is_sub {
+                    distinct.extend(vals.iter().cloned());
+                }
+            }
+            if distinct.len() >= 2 {
+                out.push(Axiom::SubClassOf {
+                    sub: top_id,
+                    sup: bot_id,
+                });
+                return;
+            }
         }
     }
 }

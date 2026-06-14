@@ -168,6 +168,39 @@ re-deriving the analysis below. Format mirrors `model-caching-plan.md` /
 > this is "not built," NOT "proven impossible." The reuse-trap half (approach (A))
 > also remains open and independent.
 
+## KONCLUDE-OBSERVATION RESULT 2026-06-14 — escalation RUN, close STANDS (confounded; not the per-test metric)
+
+The close named one re-open path: "observe Konclude directly — does it branch
+few/none on the wine residual?" RUN via the native docker binary
+(`konclude/konclude:latest` v0.7.0-1138, single-threaded `-w 1`): **Konclude
+classifies the entire wine ontology (SHOIN) in 114 ms** (preprocess 9 ms +
+precompute 50 ms + classify 114 ms), complete (334-subsumption output, no error),
+vs rustdl's ~405–412 s wall. ~3500× single-threaded (so not Konclude's 32-way
+parallelism).
+
+**This does NOT re-open the thread (advisor-reconciled).** The 114 ms bounds the
+*product* `(#hard tests) × (branches per test)`, NOT the per-test branching the
+close's no-go measured (bjgap≈1, ~100% genuinely-open disjunctions, 27–45%
+un-backjumpable cardinality). The speed is **equally explained by "Konclude
+issues far fewer tests"** (global model construction instead of per-pair probing)
+**as by "fewer branches per test."** The aggregate proxy cannot distinguish them,
+so it does not contradict the per-test no-go. And it is **not new**: the "What is
+already known" section below already records "HermiT returns on wine in seconds …
+kills the O(n²) per-pair redundancy." This is a crisper single-threaded Konclude
+restatement of a known fact.
+
+What it *does* confirm: the win is **architectural/orchestration** (don't probe
+per-pair) = the B / reuse-trap axis. But that axis's blocker was never search — it
+was **soundness** (A1 sentinel reuse → FP=100 with zero back-prop events; B-perf
+told-bracket 0%). This result gives **no new idea for the soundness trap**, so
+nothing is newly buildable. **The "accept the wall" close stands.**
+
+The ONLY measurement that would move the needle is the discriminator the proxy
+can't give: **# of hard sat-tests Konclude issues on wine** (does its 50 ms
+precompute resolve them upstream?) **vs branches-per-test** — via Konclude's
+config-driven statistics (`-c`), with the caveat that Konclude "branches" may not
+map to rustdl wedge units. Judged **low-value, not pursued** (advisor concurred).
+
 ## The thesis: two threads are one problem
 
 Two long-standing levers turn out to share a single prerequisite:

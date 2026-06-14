@@ -1,5 +1,5 @@
-//! Canaries for the P3 concrete-domain tableau clash (integer bucket): a node
-//! whose integer data constraints (`∃p.R` / `≥n p.R` / `≤m p.S` / `∀p.U`) are
+//! Canaries for the P3 concrete-domain tableau clash (integer + string buckets):
+//! a node whose data constraints (`∃p.R` / `≥n p.R` / `≤m p.S` / `∀p.U`) are
 //! jointly unsatisfiable by `card_sat` becomes a clash, making the class
 //! unsatisfiable.
 //!
@@ -8,7 +8,7 @@
 //! genuinely-satisfiable data node (one per lowering path: DataSome, qualified
 //! DataMin/DataMax/DataExact, ∀+∃) that MUST stay SAT. The `assert!(!sat(...))`
 //! cases verify the clash actually fires (utility): capacity (more distinct
-//! integers demanded than exist) and ≥n-vs-≤m conflict.
+//! values demanded than exist) and ≥n-vs-≤m conflict.
 //!
 //! `is_class_satisfiable` runs the main tableau (not the classify wedge), so the
 //! clash is exercised directly. Run:
@@ -127,11 +127,56 @@ fn forall_compatible_with_exists_is_sat() {
     ));
 }
 
-/// Non-integer-bucket cardinality is NOT handled (dropped) — must NOT clash
-/// (sound under-approximation). `≥3 p.{a,b}` (string oneOf) stays SAT.
+// ─── STRING BUCKET: capacity clash ────────────────────────────────────
+
+/// String capacity: `≥3 p.{"a","b"}` demands 3 distinct strings but only 2
+/// exist in the enumeration. UNSAT. (Previously this was a "not-yet-handled"
+/// SAT canary; strings are now wired into the concrete-domain solver.)
 #[test]
-fn noninteger_cardinality_not_clashed() {
-    assert!(sat(
+fn string_capacity_clash_unsat() {
+    assert!(!sat(
         "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"a\" \"b\")))"
     ));
+}
+
+/// Exactly enough strings: `≥2 p.{"a","b"}` — 2 demanded, 2 available. SAT.
+/// FP GUARD: must NOT clash.
+#[test]
+fn string_exactly_enough_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"a\" \"b\")))"
+    ));
+}
+
+/// String `∃p.{"a","b"}` (DataSomeValuesFrom, ≥1). No cardinality constraint. SAT.
+/// FP GUARD: must NOT clash.
+#[test]
+fn string_datasome_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataSomeValuesFrom(:p DataOneOf(\"a\" \"b\")))"
+    ));
+}
+
+/// `≥1000 p.xsd:string` — bare string = Top = ∞ capacity. SAT.
+/// FP GUARD: must NOT clash even with a very large demand.
+#[test]
+fn string_top_large_demand_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(1000 :p xsd:string))"
+    ));
+}
+
+/// `≥2 p.{"a","b"}` with `≤1 p.{"a","b"}` — min/max conflict on same set. UNSAT.
+#[test]
+fn string_min_max_conflict_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"a\" \"b\")))\n\
+         \x20 SubClassOf(:C DataMaxCardinality(1 :p DataOneOf(\"a\" \"b\")))"
+    ));
+}
+
+/// Plain class (no data cardinality). SAT. FP GUARD.
+#[test]
+fn no_data_cardinality_is_sat() {
+    assert!(sat(""));
 }

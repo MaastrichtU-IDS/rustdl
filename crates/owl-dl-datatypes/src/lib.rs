@@ -41,13 +41,14 @@ pub enum CardSat {
 /// P2/P3 design spec). Two ranges interact in [`card_sat`] only within the same
 /// bucket; the tableau groups a node's data constraints by `(property, bucket)`
 /// before deciding. Extended one bucket at a time as the integration is wired
-/// (integer-first).
+/// (integer-first, then string).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardRange {
     /// `xsd:integer` and its subtypes (discrete).
     Int(IntInterval),
-    // Float / Decimal / Date / DateTime (dense) and Str (finite-set) are added
-    // as each bucket's decode + tableau dispatch is wired.
+    /// `xsd:string` / `DataOneOf`-of-strings (finite-set; equality-typed, no ordering).
+    Str(FiniteSet<String>),
+    // Float / Decimal / Date / DateTime (dense) added as needed.
 }
 
 impl CardRange {
@@ -56,6 +57,16 @@ impl CardRange {
     pub fn as_int(&self) -> Option<IntInterval> {
         match self {
             CardRange::Int(i) => Some(*i),
+            CardRange::Str(_) => None,
+        }
+    }
+
+    /// The range as a [`FiniteSet<String>`] if this is the string bucket.
+    #[must_use]
+    pub fn as_str(&self) -> Option<FiniteSet<String>> {
+        match self {
+            CardRange::Str(s) => Some(s.clone()),
+            CardRange::Int(_) => None,
         }
     }
 }

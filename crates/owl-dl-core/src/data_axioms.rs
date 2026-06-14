@@ -978,19 +978,19 @@ const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 /// datatype are rejected at parse → the whole range/value drops (sound
 /// under-approx), so two members can never spuriously coincide.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum StrSet {
+pub enum StrSet {
     Top,
     Set(BTreeSet<String>),
 }
 
 impl StrSet {
-    pub(crate) fn singleton(s: String) -> Self {
+    pub fn singleton(s: String) -> Self {
         StrSet::Set([s].into_iter().collect())
     }
 
     /// `self ⊆ other`: anything ⊆ `Top`; `Top` is a subset only of `Top`;
     /// two finite sets compare by ordinary set inclusion.
-    pub(crate) fn subset(&self, other: &Self) -> bool {
+    pub fn subset(&self, other: &Self) -> bool {
         match (self, other) {
             (_, StrSet::Top) => true,
             (StrSet::Top, StrSet::Set(_)) => false,
@@ -1001,7 +1001,7 @@ impl StrSet {
     /// Phase D11b: `self ∩ other = ∅` — conservative. `Top` (= every string)
     /// overlaps everything, so it is NEVER disjoint; two finite enumerations
     /// are disjoint iff they share no member.
-    pub(crate) fn disjoint(&self, other: &Self) -> bool {
+    pub fn disjoint(&self, other: &Self) -> bool {
         match (self, other) {
             (StrSet::Top, _) | (_, StrSet::Top) => false,
             (StrSet::Set(a), StrSet::Set(b)) => a.is_disjoint(b),

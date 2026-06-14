@@ -1293,28 +1293,39 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.concrete_domain_clash(node)
     }
 
-    /// Refute-only concrete-domain clash for `node`'s integer data
-    /// constraints. For each data-property role, collects the `∃p.DKey(R)`
-    /// (`≥1`), `Min(n,p,DKey(R))` (`≥n`), `Max(n,p,DKey(S))` (`≤n`) and
+    /// Refute-only concrete-domain clash for `node`'s data constraints.
+    /// For each data-property role, collects the `∃p.DKey(R)` (`≥1`),
+    /// `Min(n,p,DKey(R))` (`≥n`), `Max(n,p,DKey(S))` (`≤n`) and
     /// `∀p.DKey(U)` (universal filter) labels whose filler is a registered
-    /// integer `DKey`, and runs [`owl_dl_datatypes::integer_sat`]. Returns the
+    /// `DKey` (integer or string bucket), and runs the matching `card_sat`.
+    /// Integer and string constraints are bucketed separately (the type system
+    /// enforces this — each `card_sat` call is monomorphic). Returns the
     /// union of the contributing labels' `DepSet`s (a sound superset for
     /// backjumping) when the constraints are unsatisfiable, else `None`.
     /// Empty `dkey_ranges` ⇒ instant `None`.
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
-        use owl_dl_datatypes::{Card, CardRange, CardSat, IntInterval, ValueRange, integer_sat};
+        use owl_dl_datatypes::{
+            Card, CardRange, CardSat, FiniteSet, IntInterval, ValueRange, card_sat, integer_sat,
+        };
         if self.dkey_ranges.is_empty() {
             return None;
         }
-        struct Acc {
+        struct IntAcc {
             mins: Vec<Card<IntInterval>>,
             maxs: Vec<Card<IntInterval>>,
             universal: Option<IntInterval>,
             deps: crate::graph::DepSet,
         }
+        struct StrAcc {
+            mins: Vec<Card<FiniteSet<String>>>,
+            maxs: Vec<Card<FiniteSet<String>>>,
+            universal: Option<FiniteSet<String>>,
+            deps: crate::graph::DepSet,
+        }
         let n = self.graph.node(node);
         let labels = n.labels();
-        let mut by_role: HashMap<RoleId, Acc> = HashMap::new();
+        let mut int_by_role: HashMap<RoleId, IntAcc> = HashMap::new();
+        let mut str_by_role: HashMap<RoleId, StrAcc> = HashMap::new();
         for (pos, &c) in labels.iter().enumerate() {
             // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n)
             let (role, filler, kind, count): (&Role, ConceptId, u8, u32) = match self.pool.get(c) {
@@ -1329,29 +1340,65 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 Role::Named(rid) => *rid,
                 Role::Inverse(_) => continue,
             };
-            let Some(CardRange::Int(iv)) = self.dkey_range_of(filler) else {
-                continue;
-            };
-            let iv = *iv;
-            let entry = by_role.entry(rid).or_insert_with(|| Acc {
-                mins: Vec::new(),
-                maxs: Vec::new(),
-                universal: None,
-                deps: crate::graph::DepSet::new(),
-            });
-            match kind {
-                0 => entry.mins.push(Card::new(iv, 1)),
-                2 => entry.mins.push(Card::new(iv, count)),
-                3 => entry.maxs.push(Card::new(iv, count)),
-                1 => {
-                    entry.universal = Some(entry.universal.map_or(iv, |u| u.intersect(&iv)));
+            let dep_label = &n.label_deps[pos];
+            match self.dkey_range_of(filler) {
+                Some(CardRange::Int(iv)) => {
+                    let iv = *iv;
+                    let entry = int_by_role.entry(rid).or_insert_with(|| IntAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(iv, 1)),
+                        2 => entry.mins.push(Card::new(iv, count)),
+                        3 => entry.maxs.push(Card::new(iv, count)),
+                        1 => {
+                            entry.universal =
+                                Some(entry.universal.map_or(iv, |u| u.intersect(&iv)));
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
                 }
-                _ => unreachable!(),
+                Some(CardRange::Str(fs)) => {
+                    let fs = fs.clone();
+                    let entry = str_by_role.entry(rid).or_insert_with(|| StrAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(fs, 1)),
+                        2 => entry.mins.push(Card::new(fs, count)),
+                        3 => entry.maxs.push(Card::new(fs, count)),
+                        1 => {
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| fs.clone(), |u| u.intersect(&fs)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                None => {}
             }
-            entry.deps = crate::deps::union(&entry.deps, &n.label_deps[pos]);
         }
-        for acc in by_role.into_values() {
+        // Check integer bucket first (keeps the fast path byte-identical).
+        for acc in int_by_role.into_values() {
             if integer_sat(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
+                return Some(acc.deps);
+            }
+        }
+        // Check string bucket.
+        for acc in str_by_role.into_values() {
+            if card_sat::<FiniteSet<String>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
+            {
                 return Some(acc.deps);
             }
         }

@@ -1896,8 +1896,8 @@ pub(crate) struct PreparedOntology {
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
 /// decoding every synthetic `DKey` filler class's IRI. Done where the
-/// vocabulary is available so the tableau need not carry IRIs. Integer-only
-/// for now (other datatype buckets added as the integration is wired).
+/// vocabulary is available so the tableau need not carry IRIs. Integer and
+/// string buckets are wired; other buckets added as the integration grows.
 fn build_dkey_range_map(
     internal: &InternalOntology,
 ) -> std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange> {
@@ -1911,6 +1911,12 @@ fn build_dkey_range_map(
                 class_id,
                 owl_dl_datatypes::CardRange::Int(owl_dl_datatypes::IntInterval { min, max }),
             );
+        } else if let Some(ss) = owl_dl_core::decode_string_dkey(iri) {
+            let fs = match ss {
+                owl_dl_core::StrSet::Top => owl_dl_datatypes::FiniteSet::Top,
+                owl_dl_core::StrSet::Set(s) => owl_dl_datatypes::FiniteSet::Set(s),
+            };
+            map.insert(class_id, owl_dl_datatypes::CardRange::Str(fs));
         }
     }
     map

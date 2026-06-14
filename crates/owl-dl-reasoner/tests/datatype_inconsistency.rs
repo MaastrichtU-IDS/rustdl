@@ -293,3 +293,185 @@ fn cardinality_untyped_individual_is_consistent() {
     DataPropertyAssertion(:p :a "y")"#
     ));
 }
+
+// ─── DP-1 value-level: same-bucket range violations ───────────────────
+//
+// These canaries cover the new `emit_data_range_value_violations` path.
+// The spec calls them "DP-1 value-level": `DataPropertyRange(p, R)` +
+// `DataPropertyAssertion(p, a, lit)` where `lit` and `R` share a
+// datatype bucket but the value falls outside the bounds.
+//
+// Negatives (soundness guard): in-range, no range, exclusive boundary
+// equals, and sub/super-property direction tests MUST stay consistent.
+
+// ── integer value-level ──────────────────────────────────────────────
+
+/// NEGATIVE: value 5 ∈ [0,10] ⇒ consistent.
+#[test]
+fn integer_value_in_range_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer))
+    DataPropertyAssertion(:p :a "5"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: boundary inclusive — value 0 ∈ [>=0] ⇒ consistent.
+#[test]
+fn integer_value_at_inclusive_lower_bound_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer))
+    DataPropertyAssertion(:p :a "0"^^xsd:integer)"#
+    ));
+}
+
+/// POSITIVE: value -5 ∉ [>=0] ⇒ inconsistent.
+#[test]
+fn integer_value_below_min_inclusive_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer))
+    DataPropertyAssertion(:p :a "-5"^^xsd:integer)"#
+    ));
+}
+
+/// POSITIVE: boundary exclusive — value 0 ∉ [>0] ⇒ inconsistent.
+#[test]
+fn integer_value_at_exclusive_lower_bound_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:integer xsd:minExclusive "0"^^xsd:integer))
+    DataPropertyAssertion(:p :a "0"^^xsd:integer)"#
+    ));
+}
+
+/// POSITIVE: value 15 ∉ [0,10] ⇒ inconsistent.
+#[test]
+fn integer_value_above_max_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer))
+    DataPropertyAssertion(:p :a "15"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: no range declared for p — free assertion, consistent.
+#[test]
+fn integer_value_with_no_range_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyAssertion(:p :a "-99"^^xsd:integer)"#
+    ));
+}
+
+// ── double value-level (xsd:double is f64-exact; xsd:float is DROPPED) ──
+
+/// NEGATIVE: value 0.5 ∈ [0.0, 1.0] ⇒ consistent.
+#[test]
+fn double_value_in_range_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "1.0"^^xsd:double))
+    DataPropertyAssertion(:p :a "0.5"^^xsd:double)"#
+    ));
+}
+
+/// POSITIVE: value 2.0 ∉ [0.0, 1.0] ⇒ inconsistent. (xsd:double, f64-exact.)
+#[test]
+fn double_value_outside_range_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "1.0"^^xsd:double))
+    DataPropertyAssertion(:p :a "2.0"^^xsd:double)"#
+    ));
+}
+
+/// CATASTROPHIC-FALSE-FIRE REGRESSION GUARD (xsd:float f32/f64 mismatch).
+///
+/// Bound `0.1000000014` and value `0.1000000015` denote the SAME f32 value
+/// (`0x3DCCCCCD`), so the value IS in range `[.., 0.1000000014]` in the
+/// xsd:float value space ⇒ the ontology is CONSISTENT. A naive f64
+/// comparison (value > bound) would falsely fire `Top ⊑ Bot` and mark every
+/// class unsatisfiable. DP-1 DROPS xsd:float (sound under-approximation), so
+/// this MUST stay consistent. Do not "optimize" by re-accepting xsd:float in
+/// the f64 path — that re-introduces the catastrophic false-inconsistent.
+#[test]
+fn float_boundary_f32_f64_mismatch_stays_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:float xsd:maxInclusive "0.1000000014"^^xsd:float))
+    DataPropertyAssertion(:p :a "0.1000000015"^^xsd:float)"#
+    ));
+}
+
+/// xsd:float is DROPPED entirely (under-approximation): even a CLEARLY
+/// out-of-range float value does not fire ⇒ stays consistent (a MISS, the
+/// sound direction — never a false-inconsistent).
+#[test]
+fn float_clearly_outside_range_is_dropped_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:float xsd:minInclusive "0.0"^^xsd:float xsd:maxInclusive "1.0"^^xsd:float))
+    DataPropertyAssertion(:p :a "2.0"^^xsd:float)"#
+    ));
+}
+
+// ── string DataOneOf (DP-1b, value-level string) ──────────────────────
+
+/// NEGATIVE: value "a" ∈ {"a","b"} ⇒ consistent.
+#[test]
+fn string_value_in_oneof_range_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DataOneOf("a" "b"))
+    DataPropertyAssertion(:p :a "a")"#
+    ));
+}
+
+/// POSITIVE: value "c" ∉ {"a","b"} ⇒ inconsistent.
+#[test]
+fn string_value_outside_oneof_range_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DataOneOf("a" "b"))
+    DataPropertyAssertion(:p :a "c")"#
+    ));
+}
+
+// ── super-property propagation ────────────────────────────────────────
+
+/// POSITIVE: range on the SUPER-property q, violation via sub-property p.
+#[test]
+fn integer_value_violates_superproperty_range() {
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q)) Declaration(NamedIndividual(:a))
+    SubDataPropertyOf(:p :q)
+    DataPropertyRange(:q DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer))
+    DataPropertyAssertion(:p :a "-1"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: range on the SUB-property q does NOT constrain super p ⇒ consistent.
+#[test]
+fn integer_value_range_on_subproperty_does_not_constrain_super() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q)) Declaration(NamedIndividual(:a))
+    SubDataPropertyOf(:q :p)
+    DataPropertyRange(:q DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer))
+    DataPropertyAssertion(:p :a "-1"^^xsd:integer)"#
+    ));
+}
+
+// ── unparseable literal ───────────────────────────────────────────────
+
+/// NEGATIVE: unparseable literal for the range's type ⇒ don't fire (sound
+/// under-approximation), stays consistent.
+#[test]
+fn unparseable_integer_literal_stays_consistent() {
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer))
+    DataPropertyAssertion(:p :a "not-an-int"^^xsd:integer)"#
+    ));
+}

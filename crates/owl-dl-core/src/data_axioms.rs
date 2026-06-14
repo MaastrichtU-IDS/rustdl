@@ -90,6 +90,7 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_data_range_violations(&facts, top_id, bot_id, &mut out);
     emit_data_oneof_violations(&facts, top_id, bot_id, &mut out);
     emit_data_cardinality_violations(&facts, top_id, bot_id, &mut out);
+    emit_data_range_value_violations(src, top_id, bot_id, &mut out);
     out
 }
 
@@ -2004,6 +2005,260 @@ fn data_some_property<A: ForIRI>(ce: &ClassExpression<A>) -> Option<String> {
 #[allow(dead_code)]
 fn _unused_datarange<A: ForIRI>(_: &DataRange<A>) {}
 
+/// DP-1 value-level: test whether `lit` is **provably outside** `range`.
+///
+/// Returns `true` ONLY when BOTH conditions hold:
+/// 1. The range and literal belong to the **same datatype bucket** (integer /
+///    float / decimal / date / dateTime / string).
+/// 2. The literal's value is outside the range's bounds.
+///
+/// Returns `false` on any uncertainty: different buckets, parse failure,
+/// unrecognised range — sound under-approximation (miss ⇒ incomplete,
+/// never an FP). Cross-datatype mismatch is already handled by the
+/// family-level `emit_data_range_violations`; this function is strictly
+/// same-bucket value checking.
+///
+/// **Membership via `subset`**: `v ∈ range` ⟺ `point(v).subset(range)`.
+/// Delegates to the audited boundary logic in each range type's
+/// `subset` method — no new comparison arithmetic is introduced here.
+///
+/// **Soundness for floats**: NaN/±∞ are rejected by `float_literal_value`
+/// (returns `None`), so they can never falsely fire.
+pub fn literal_provably_outside_range<A: ForIRI>(range: &DataRange<A>, lit: &Literal<A>) -> bool {
+    // Integer bucket: both must parse to i64 in the xsd:integer value space.
+    if let Some(r) = parse_integer_range(range) {
+        // Only fire when the literal is also xsd:integer-typed.
+        let Some(v) = integer_literal_value_pub(lit) else {
+            return false;
+        };
+        // v ∈ r  ⟺  point(v).subset(r). NOT in range ⟺ NOT subset.
+        return !IntegerRange::point(v).subset(r);
+    }
+    // Float bucket: **xsd:double ONLY** (NOT xsd:float).
+    //
+    // SOUNDNESS LANDMINE: `FloatRange::subset` is only sound when its two
+    // operands are bit-identical for equal values — its own `float_cmp`
+    // allow is justified by "both operands round-tripped through the same
+    // `to_bits` key" (the D6 DKey subsumption path). DP-1 BREAKS that
+    // precondition: the ABox value literal and the facet bound are
+    // INDEPENDENTLY-AUTHORED lexicals. For 32-bit `xsd:float`, a value
+    // genuinely in range whose decimal isn't exactly f32-representable can
+    // parse (as f64) just past the bound's f64 → `!subset` → a FALSE
+    // `Top ⊑ Bot` (catastrophic false-inconsistent — e.g. bound
+    // `0.1000000014` and value `0.1000000015` denote the SAME f32 yet differ
+    // as f64). `xsd:double`'s value space IS f64, so the f64 comparison is
+    // exact and sound there. `xsd:float` is therefore DROPPED (returns
+    // `false` — sound under-approximation; a MISS, never an FP).
+    if let Some(r) = parse_double_range(range) {
+        let Some(v) = double_literal_value_pub(lit) else {
+            return false;
+        };
+        return !FloatRange::point(v).subset(r);
+    }
+    // Decimal bucket: xsd:decimal (NEVER f64 — exact value comparison).
+    if let Some(r) = parse_decimal_range(range) {
+        let Some(v) = decimal_literal_value_pub(lit) else {
+            return false;
+        };
+        return !OrdRange::point(v).subset(&r);
+    }
+    // Date bucket: xsd:date.
+    if let Some(r) = parse_date_range(range) {
+        let Some(v) = date_literal_value_pub(lit) else {
+            return false;
+        };
+        return !OrdRange::point(v).subset(&r);
+    }
+    // DateTime bucket: xsd:dateTime.
+    if let Some(r) = parse_datetime_range(range) {
+        let Some(v) = datetime_literal_value_pub(lit) else {
+            return false;
+        };
+        return !OrdRange::point(v).subset(&r);
+    }
+    // String bucket: xsd:string or DataOneOf.
+    // For StrSet::Top every string is in range (never outside).
+    // For StrSet::Set check membership.
+    if let Some(r) = parse_string_range(range) {
+        let Some(s) = exact_string_literal(lit) else {
+            return false;
+        };
+        return match &r {
+            StrSet::Top => false,
+            StrSet::Set(members) => !members.contains(&s),
+        };
+    }
+    // Unrecognised range: don't fire.
+    false
+}
+
+// DP-1 value-level public accessors — these are the `convert.rs`-private
+// literal parsers re-exposed so `literal_provably_outside_range` can call
+// them without duplicating logic. Named `*_pub` to avoid colliding with the
+// private helpers that also live in `convert.rs`.
+
+fn integer_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+            literal.parse::<i64>().ok()
+        }
+        _ => None,
+    }
+}
+
+/// xsd:double value literal → exact f64. `xsd:float` is intentionally NOT
+/// accepted (see the soundness note in `literal_provably_outside_range`):
+/// only `xsd:double`'s value space coincides with f64, so the f64 comparison
+/// is exact. NaN / ±∞ are rejected (sound — they drop the check).
+fn double_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<f64> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" => {
+            literal.parse::<f64>().ok().filter(|v| v.is_finite())
+        }
+        _ => None,
+    }
+}
+
+/// Parse an **xsd:double-only** `DataRange` into a [`FloatRange`]. Unlike
+/// `parse_float_range` (which also accepts `xsd:float`), this restricts to
+/// `xsd:double` so DP-1's value-membership comparison stays exact in f64 —
+/// `xsd:float` is dropped at the value-literal side, but a range whose facet
+/// datatype is `xsd:float` must ALSO not match here (a float-typed bound
+/// against a double value would re-introduce the f32/f64 mismatch). The
+/// returned bounds are f64-exact for `xsd:double` facets.
+fn parse_double_range<A: ForIRI>(range: &DataRange<A>) -> Option<FloatRange> {
+    const XSD_DOUBLE: &str = "http://www.w3.org/2001/XMLSchema#double";
+    match range {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_DOUBLE => Some(FloatRange::unbounded()),
+        DataRange::DatatypeRestriction(dt, facets) if dt.0.as_ref() == XSD_DOUBLE => {
+            parse_float_facets(facets)
+        }
+        _ => None,
+    }
+}
+
+fn decimal_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<Decimal> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#decimal" => {
+            parse_decimal(literal)
+        }
+        _ => None,
+    }
+}
+
+fn date_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<DateKey> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#date" => {
+            parse_date(literal)
+        }
+        _ => None,
+    }
+}
+
+fn datetime_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<DateTimeKey> {
+    match l {
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#dateTime" => {
+            parse_datetime(literal)
+        }
+        _ => None,
+    }
+}
+
+/// DP-1 value-level violation check. For each `DataPropertyAssertion(p, a, lit)`
+/// and each `DataPropertyRange(q, R)` where `q` is a (reflexive) super-property
+/// of `p`: if `literal_provably_outside_range(R, lit)` ⇒ emit `Top ⊑ Bot`.
+///
+/// **Soundness**: fires ONLY on a same-bucket provable out-of-range value (see
+/// `literal_provably_outside_range`). Cross-type violations are already caught by
+/// the family-level `emit_data_range_violations`; this function closes the
+/// same-bucket value-level gap (e.g. `-5` against `xsd:integer[>=0]`).
+fn emit_data_range_value_violations<A: ForIRI>(
+    src: &SetOntology<A>,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    use Component as C;
+    // Collect raw DataPropertyRange: p_iri → Vec<DataRange>.
+    let mut dp_ranges: BTreeMap<String, Vec<DataRange<A>>> = BTreeMap::new();
+    // Sub-data-property edges for super-dp closure.
+    let mut sub_dp: Vec<(String, String)> = Vec::new();
+    // DataPropertyAssertions: (p_iri, Literal).
+    let mut dp_assertions: Vec<(String, Literal<A>)> = Vec::new();
+    for ac in src {
+        match &ac.component {
+            C::DataPropertyRange(ax) => {
+                dp_ranges
+                    .entry(dpe_iri(&ax.dp))
+                    .or_default()
+                    .push(ax.dr.clone());
+            }
+            C::SubDataPropertyOf(ax) => {
+                let sub = dpe_iri(&ax.sub);
+                let sup = dpe_iri(&ax.sup);
+                if !sub.is_empty() && !sup.is_empty() {
+                    sub_dp.push((sub, sup));
+                }
+            }
+            C::EquivalentDataProperties(ax) => {
+                let iris: Vec<String> = ax.0.iter().map(dpe_iri).collect();
+                for i in 0..iris.len() {
+                    for j in 0..iris.len() {
+                        if i != j {
+                            sub_dp.push((iris[i].clone(), iris[j].clone()));
+                        }
+                    }
+                }
+            }
+            C::DataPropertyAssertion(ax) => {
+                dp_assertions.push((dpe_iri(&ax.dp), ax.to.clone()));
+            }
+            _ => {}
+        }
+    }
+    if dp_ranges.is_empty() || dp_assertions.is_empty() {
+        return;
+    }
+    // Build reflexive-transitive super-dp closure (reuse the existing helper).
+    let closure = closure_sub_dp(&sub_dp);
+    for (p, lit) in &dp_assertions {
+        // Gather all ranges on p and its super-dps.
+        let mut ranges: Vec<&DataRange<A>> = dp_ranges.get(p).into_iter().flatten().collect();
+        if let Some(supers) = closure.get(p) {
+            for q in supers {
+                if q != p {
+                    ranges.extend(dp_ranges.get(q).into_iter().flatten());
+                }
+            }
+        }
+        if ranges
+            .iter()
+            .any(|r| literal_provably_outside_range(r, lit))
+        {
+            out.push(Axiom::SubClassOf {
+                sub: top_id,
+                sup: bot_id,
+            });
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2433,5 +2688,112 @@ Ontology(<http://t/x>
         // Sharing a member → NOT disjoint.
         assert!(!set(&["a"]).disjoint(&set(&["a", "b"])));
         assert!(!set(&["a", "b"]).disjoint(&set(&["b", "c"])));
+    }
+
+    // ── `literal_provably_outside_range` unit tests ────────────────────
+    // Per-bucket: in-range → false, out-of-range → true,
+    // cross-bucket → false, unparseable → false.
+
+    fn make_int_range(min: i64, max: i64) -> DataRange<RcStr> {
+        use horned_owl::model::{Build, Datatype};
+        let b: Build<RcStr> = Build::new_rc();
+        DataRange::DatatypeRestriction(
+            Datatype(b.iri("http://www.w3.org/2001/XMLSchema#integer")),
+            vec![
+                FacetRestriction {
+                    f: Facet::MinInclusive,
+                    l: horned_owl::model::Literal::Datatype {
+                        literal: min.to_string(),
+                        datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+                    },
+                },
+                FacetRestriction {
+                    f: Facet::MaxInclusive,
+                    l: horned_owl::model::Literal::Datatype {
+                        literal: max.to_string(),
+                        datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+                    },
+                },
+            ],
+        )
+    }
+
+    fn int_lit(v: i64) -> horned_owl::model::Literal<RcStr> {
+        use horned_owl::model::Build;
+        let b: Build<RcStr> = Build::new_rc();
+        horned_owl::model::Literal::Datatype {
+            literal: v.to_string(),
+            datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+        }
+    }
+
+    fn str_lit(s: &str) -> horned_owl::model::Literal<RcStr> {
+        horned_owl::model::Literal::Simple {
+            literal: s.to_string(),
+        }
+    }
+
+    #[test]
+    fn literal_provably_outside_range_integer_in_range() {
+        let r = make_int_range(0, 10);
+        // 5 ∈ [0,10] → false (NOT outside)
+        assert!(!literal_provably_outside_range(&r, &int_lit(5)));
+        // 0 ∈ [0,10] → false
+        assert!(!literal_provably_outside_range(&r, &int_lit(0)));
+        // 10 ∈ [0,10] → false
+        assert!(!literal_provably_outside_range(&r, &int_lit(10)));
+    }
+
+    #[test]
+    fn literal_provably_outside_range_integer_outside() {
+        let r = make_int_range(0, 10);
+        // -1 ∉ [0,10] → true
+        assert!(literal_provably_outside_range(&r, &int_lit(-1)));
+        // 11 ∉ [0,10] → true
+        assert!(literal_provably_outside_range(&r, &int_lit(11)));
+    }
+
+    #[test]
+    fn literal_provably_outside_range_cross_bucket_false() {
+        let r = make_int_range(0, 10);
+        // string literal against integer range → false (don't fire cross-bucket)
+        assert!(!literal_provably_outside_range(&r, &str_lit("hello")));
+    }
+
+    #[test]
+    fn literal_provably_outside_range_unparseable_false() {
+        let r = make_int_range(0, 10);
+        use horned_owl::model::Build;
+        let b: Build<RcStr> = Build::new_rc();
+        let bad_lit = horned_owl::model::Literal::Datatype {
+            literal: "not-an-integer".to_string(),
+            datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+        };
+        // Unparseable integer literal → false (under-approximation)
+        assert!(!literal_provably_outside_range(&r, &bad_lit));
+    }
+
+    #[test]
+    fn literal_provably_outside_range_string_oneof() {
+        use horned_owl::model::Build;
+        let b: Build<RcStr> = Build::new_rc();
+        let range = DataRange::DataOneOf(vec![
+            horned_owl::model::Literal::Simple {
+                literal: "yes".to_string(),
+            },
+            horned_owl::model::Literal::Simple {
+                literal: "no".to_string(),
+            },
+        ]);
+        // "yes" ∈ {"yes","no"} → false
+        assert!(!literal_provably_outside_range(&range, &str_lit("yes")));
+        // "maybe" ∉ {"yes","no"} → true
+        assert!(literal_provably_outside_range(&range, &str_lit("maybe")));
+        // integer literal against string oneof → false (cross-bucket)
+        let int = horned_owl::model::Literal::Datatype {
+            literal: "5".to_string(),
+            datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+        };
+        assert!(!literal_provably_outside_range(&range, &int));
     }
 }

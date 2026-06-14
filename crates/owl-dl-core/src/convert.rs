@@ -418,6 +418,166 @@ fn lower_str_data_to_some(
     pool.some(Role::named(role_id), filler)
 }
 
+// ── Numeric DataOneOf DKey buckets (Phase D-numeric-oneof) ───────────────
+//
+// Five new ONEOF tags, each strictly disjoint from each other and from all
+// interval tags. Using `io:`, `fo:`, `deo:`, `dao:`, `dto:` avoids any
+// collision with the existing tags (`f:`, `dec:`, `date:`, `dt:`, `str:`,
+// untagged integer). The inner separator is `;` (not `:` or `.`) so the
+// `:`-delimited four-field envelope decode stays unambiguous.
+//
+// Each IRI encodes the SET of distinct values, semicolon-separated:
+//   io:<v1>;<v2>;…       integer oneof  (decimal i64 strings)
+//   fo:<bits1>;<bits2>;… float oneof    (f64::to_bits decimal, normalized)
+//   deo:<k1>;<k2>;…      decimal oneof  (decimal_key encoding, no `:`)
+//   dao:<k1>;<k2>;…      date oneof     (date_key  encoding, no `:`)
+//   dto:<k1>;<k2>;…      dateTime oneof (datetime_key encoding, no `:`)
+//
+// Soundness: pairwise mutual exclusivity is enforced by the unique prefix;
+// a float-oneof IRI (`fo:...`) will return `None` from all non-float-oneof
+// parsers because none of their prefixes match `fo:`. Verified by the
+// `numeric_oneof_parser_matrix_exclusivity` canary below.
+
+const DKEY_INT_ONEOF_TAG: &str = "io:";
+const DKEY_FLOAT_ONEOF_TAG: &str = "fo:";
+const DKEY_DECIMAL_ONEOF_TAG: &str = "deo:";
+const DKEY_DATE_ONEOF_TAG: &str = "dao:";
+const DKEY_DATETIME_ONEOF_TAG: &str = "dto:";
+
+/// Encode a numeric-oneof set using a per-item encoding function.
+/// Items are joined by `;` (inner separator; `key` MUST NOT emit `;` or `:`).
+fn numeric_oneof_iri<T>(
+    tag: &str,
+    set: &std::collections::BTreeSet<T>,
+    key: impl Fn(&T) -> String,
+) -> String {
+    let body = set.iter().map(key).collect::<Vec<_>>().join(";");
+    format!("{DKEY_IRI_PREFIX}{tag}{body}")
+}
+
+/// Decode a numeric-oneof `DKey` IRI back into its set, parsing each
+/// `;`-separated token via `parse_key`. Returns `None` for any non-matching
+/// tag or malformed token.
+fn parse_numeric_oneof_iri<T: Ord>(
+    iri: &str,
+    tag: &str,
+    parse_key: impl Fn(&str) -> Option<T>,
+) -> Option<std::collections::BTreeSet<T>> {
+    let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?.strip_prefix(tag)?;
+    let mut set = std::collections::BTreeSet::new();
+    for tok in rest.split(';') {
+        set.insert(parse_key(tok)?);
+    }
+    Some(set)
+}
+
+// ── INTEGER ONEOF ──────────────────────────────────────────────────────
+
+fn int_oneof_iri(set: &std::collections::BTreeSet<i64>) -> String {
+    numeric_oneof_iri(DKEY_INT_ONEOF_TAG, set, std::string::ToString::to_string)
+}
+
+fn parse_int_oneof_iri(iri: &str) -> Option<std::collections::BTreeSet<i64>> {
+    parse_numeric_oneof_iri(iri, DKEY_INT_ONEOF_TAG, |s| s.parse().ok())
+}
+
+/// Public decoder for an INTEGER-ONEOF `DKey` IRI. Returns `None` for any
+/// non-integer-oneof or malformed IRI.
+#[must_use]
+pub fn decode_int_oneof_dkey(iri: &str) -> Option<std::collections::BTreeSet<i64>> {
+    parse_int_oneof_iri(iri)
+}
+
+// ── FLOAT ONEOF ────────────────────────────────────────────────────────
+
+/// Key for a float oneof member: `f64::to_bits()` decimal (exact round-trip).
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "must match Fn(&T)->String bound in numeric_oneof_iri"
+)]
+fn float_oneof_member_key(w: &crate::data_axioms::OrdF64Wrapper) -> String {
+    w.0.to_string()
+}
+
+fn float_oneof_iri(set: &std::collections::BTreeSet<crate::data_axioms::OrdF64Wrapper>) -> String {
+    numeric_oneof_iri(DKEY_FLOAT_ONEOF_TAG, set, float_oneof_member_key)
+}
+
+fn parse_float_oneof_iri(
+    iri: &str,
+) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64Wrapper>> {
+    parse_numeric_oneof_iri(iri, DKEY_FLOAT_ONEOF_TAG, |s| {
+        let bits: u64 = s.parse().ok()?;
+        let v = f64::from_bits(bits);
+        // Reject NaN / ±∞ defensively (shouldn't appear: they were rejected at
+        // parse time, but if someone hand-crafts an IRI, don't propagate).
+        if !v.is_finite() {
+            return None;
+        }
+        Some(crate::data_axioms::OrdF64Wrapper::new(v))
+    })
+}
+
+/// Public decoder for a FLOAT-ONEOF `DKey` IRI.
+#[must_use]
+pub fn decode_float_oneof_dkey(
+    iri: &str,
+) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64Wrapper>> {
+    parse_float_oneof_iri(iri)
+}
+
+// ── DECIMAL ONEOF ──────────────────────────────────────────────────────
+
+fn decimal_oneof_iri(set: &std::collections::BTreeSet<Decimal>) -> String {
+    numeric_oneof_iri(DKEY_DECIMAL_ONEOF_TAG, set, decimal_key)
+}
+
+fn parse_decimal_key_from_str(s: &str) -> Option<Decimal> {
+    crate::data_axioms::parse_decimal(s)
+}
+
+fn parse_decimal_oneof_iri(iri: &str) -> Option<std::collections::BTreeSet<Decimal>> {
+    parse_numeric_oneof_iri(iri, DKEY_DECIMAL_ONEOF_TAG, parse_decimal_key_from_str)
+}
+
+/// Public decoder for a DECIMAL-ONEOF `DKey` IRI.
+#[must_use]
+pub fn decode_decimal_oneof_dkey(iri: &str) -> Option<std::collections::BTreeSet<Decimal>> {
+    parse_decimal_oneof_iri(iri)
+}
+
+// ── DATE ONEOF ─────────────────────────────────────────────────────────
+
+fn date_oneof_iri(set: &std::collections::BTreeSet<DateKey>) -> String {
+    numeric_oneof_iri(DKEY_DATE_ONEOF_TAG, set, date_key)
+}
+
+fn parse_date_oneof_iri(iri: &str) -> Option<std::collections::BTreeSet<DateKey>> {
+    parse_numeric_oneof_iri(iri, DKEY_DATE_ONEOF_TAG, parse_date_key)
+}
+
+/// Public decoder for a DATE-ONEOF `DKey` IRI.
+#[must_use]
+pub fn decode_date_oneof_dkey(iri: &str) -> Option<std::collections::BTreeSet<DateKey>> {
+    parse_date_oneof_iri(iri)
+}
+
+// ── DATETIME ONEOF ─────────────────────────────────────────────────────
+
+fn datetime_oneof_iri(set: &std::collections::BTreeSet<DateTimeKey>) -> String {
+    numeric_oneof_iri(DKEY_DATETIME_ONEOF_TAG, set, datetime_key)
+}
+
+fn parse_datetime_oneof_iri(iri: &str) -> Option<std::collections::BTreeSet<DateTimeKey>> {
+    parse_numeric_oneof_iri(iri, DKEY_DATETIME_ONEOF_TAG, parse_datetime_key)
+}
+
+/// Public decoder for a DATETIME-ONEOF `DKey` IRI.
+#[must_use]
+pub fn decode_datetime_oneof_dkey(iri: &str) -> Option<std::collections::BTreeSet<DateTimeKey>> {
+    parse_datetime_oneof_iri(iri)
+}
+
 /// Phase D11: the shared core of the data-restriction encodings — lower a
 /// recognized `DataRange` to `(role, DKey-filler)` where `role` is the data
 /// property treated as a forward object role and the filler is the opaque
@@ -444,6 +604,16 @@ fn data_range_dkey<A: ForIRI>(
         ord_dkey_iri(DKEY_DATETIME_TAG, &r, datetime_key)
     } else if let Some(s) = crate::data_axioms::parse_string_range(dr) {
         str_dkey_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_integer_oneof(dr) {
+        int_oneof_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_float_oneof(dr) {
+        float_oneof_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_decimal_oneof(dr) {
+        decimal_oneof_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_date_oneof(dr) {
+        date_oneof_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_datetime_oneof(dr) {
+        datetime_oneof_iri(&s)
     } else {
         return None;
     };
@@ -723,6 +893,19 @@ pub fn convert_class_expression<A: ForIRI>(
                 .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, true, false))
                 .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, true, false))
                 .or_else(|_| lower_datetime_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_int_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| {
+                    lower_float_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, false)
+                })
+                .or_else(|_| {
+                    lower_decimal_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, false)
+                })
+                .or_else(|_| {
+                    lower_date_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, false)
+                })
+                .or_else(|_| {
+                    lower_datetime_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, false)
+                })
         }
         ClassExpression::DataMaxCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, false, true)
@@ -731,6 +914,19 @@ pub fn convert_class_expression<A: ForIRI>(
                 .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, false, true))
                 .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, false, true))
                 .or_else(|_| lower_datetime_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_int_oneof_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| {
+                    lower_float_oneof_data_cardinality(*n, dp, dr, vocab, pool, false, true)
+                })
+                .or_else(|_| {
+                    lower_decimal_oneof_data_cardinality(*n, dp, dr, vocab, pool, false, true)
+                })
+                .or_else(|_| {
+                    lower_date_oneof_data_cardinality(*n, dp, dr, vocab, pool, false, true)
+                })
+                .or_else(|_| {
+                    lower_datetime_oneof_data_cardinality(*n, dp, dr, vocab, pool, false, true)
+                })
         }
         ClassExpression::DataExactCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, true)
@@ -739,6 +935,17 @@ pub fn convert_class_expression<A: ForIRI>(
                 .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| lower_datetime_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_int_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| {
+                    lower_float_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true)
+                })
+                .or_else(|_| {
+                    lower_decimal_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true)
+                })
+                .or_else(|_| lower_date_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| {
+                    lower_datetime_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true)
+                })
         }
     }
 }
@@ -904,6 +1111,161 @@ fn lower_datetime_data_cardinality<A: ForIRI>(
     want_max: bool,
 ) -> Result<ConceptId, ConversionError> {
     if crate::data_axioms::parse_datetime_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+// ── Numeric-oneof data cardinality lowering ────────────────────────────────
+//
+// Five new `lower_*_oneof_data_cardinality` functions, one per numeric type.
+// Each is the "oneof" counterpart of its interval sibling:
+//   `lower_int_data_cardinality`    → `lower_int_oneof_data_cardinality`
+//   …etc.
+// All use the same pattern: check their respective `parse_*_oneof` gate
+// (returns `Err(UnsupportedDataRange)` if wrong type), then call
+// `data_range_dkey` (which by this point can produce an oneof IRI) and
+// wrap in `Min`/`Max`/`And` as requested.
+//
+// They are added to the `DataMinCardinality`/`DataMaxCardinality`/
+// `DataExactCardinality` dispatch chain in `convert_class_expression`.
+
+/// Lower an INTEGER-ONEOF qualified data cardinality to `Min`/`Max` over the
+/// integer-oneof `DKey` filler. Returns `UnsupportedDataRange` for any
+/// non-`DataOneOf`-of-integers qualifier.
+fn lower_int_oneof_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_integer_oneof(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a FLOAT-ONEOF qualified data cardinality. Returns `UnsupportedDataRange`
+/// for any non-`DataOneOf`-of-floats qualifier.
+fn lower_float_oneof_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_float_oneof(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a DECIMAL-ONEOF qualified data cardinality. Returns `UnsupportedDataRange`
+/// for any non-`DataOneOf`-of-decimals qualifier.
+fn lower_decimal_oneof_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_decimal_oneof(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a DATE-ONEOF qualified data cardinality. Returns `UnsupportedDataRange`
+/// for any non-`DataOneOf`-of-dates qualifier.
+fn lower_date_oneof_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_date_oneof(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a DATETIME-ONEOF qualified data cardinality. Returns `UnsupportedDataRange`
+/// for any non-`DataOneOf`-of-dateTimes qualifier.
+fn lower_datetime_oneof_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_datetime_oneof(dr).is_none() {
         return Err(ConversionError::UnsupportedDataRange);
     }
     let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)

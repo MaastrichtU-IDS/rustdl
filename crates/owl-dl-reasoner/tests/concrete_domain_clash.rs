@@ -352,3 +352,190 @@ fn datetime_interval_large_demand_is_sat() {
 fn datetime_datasome_is_sat() {
     assert!(sat("  SubClassOf(:C DataSomeValuesFrom(:p xsd:dateTime))"));
 }
+
+// ─── NUMERIC DATEONEOF BUCKETS ────────────────────────────────────────
+//
+// For each of int/float/decimal/date/dateTime DataOneOf:
+//   CLASH:   `≥3 p.DataOneOf(v1 v2)` (capacity 2 < 3). UNSAT.
+//   SAT:     `≥2 p.DataOneOf(v1 v2)` (exactly enough). SAT. (FP GUARD)
+//   SAT:     `∃p.DataOneOf(v1 v2)` (DataSome, no count). SAT. (FP GUARD)
+//   FP GUARD: special dedup probes (signed-zero, decimal normalization, etc.)
+//   CROSS-DATATYPE DROP: mixed-type DataOneOf → drops, SAT. (FP GUARD)
+
+// ── INTEGER ONEOF ─────────────────────────────────────────────────────
+
+/// CLASH: `≥3 p.DataOneOf(1 2)` — capacity 2 < 3. UNSAT.
+#[test]
+fn int_oneof_capacity_clash_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"1\"^^xsd:integer \"2\"^^xsd:integer)))"
+    ));
+}
+
+/// FP GUARD: `≥2 p.DataOneOf(1 2)` — exactly enough (capacity 2 ≥ 2). SAT.
+#[test]
+fn int_oneof_exactly_enough_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"1\"^^xsd:integer \"2\"^^xsd:integer)))"
+    ));
+}
+
+/// FP GUARD: `∃p.DataOneOf(1 2)` (DataSome). No cardinality count. SAT.
+#[test]
+fn int_oneof_datasome_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataSomeValuesFrom(:p DataOneOf(\"1\"^^xsd:integer \"2\"^^xsd:integer)))"
+    ));
+}
+
+/// FP GUARD: `≥1000 p.DataOneOf(1 2)` should be FAST UNSAT (capacity 2 < 1M).
+#[test]
+fn int_oneof_large_demand_fast_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(1000000 :p DataOneOf(\"1\"^^xsd:integer \"2\"^^xsd:integer)))"
+    ));
+}
+
+/// FP GUARD: two DISTINCT integer values give capacity 2 (no over-conflation). SAT.
+#[test]
+fn int_oneof_distinct_values_no_overconflation_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"42\"^^xsd:integer \"43\"^^xsd:integer)))"
+    ));
+}
+
+// ── FLOAT ONEOF ───────────────────────────────────────────────────────
+
+/// CLASH: `≥3 p.DataOneOf(1.5 2.5)` — capacity 2 < 3. UNSAT.
+#[test]
+fn float_oneof_capacity_clash_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"1.5\"^^xsd:float \"2.5\"^^xsd:float)))"
+    ));
+}
+
+/// FP GUARD: `≥2 p.DataOneOf(1.5 2.5)` — exactly enough. SAT.
+#[test]
+fn float_oneof_exactly_enough_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"1.5\"^^xsd:float \"2.5\"^^xsd:float)))"
+    ));
+}
+
+/// FP GUARD: `∃p.DataOneOf(1.5 2.5)` (DataSome). No count. SAT.
+#[test]
+fn float_oneof_datasome_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataSomeValuesFrom(:p DataOneOf(\"1.5\"^^xsd:float \"2.5\"^^xsd:float)))"
+    ));
+}
+
+/// FP GUARD (signed-zero dedup): `≥2 p.DataOneOf(-0.0 +0.0)` must be UNSAT
+/// because -0.0 == +0.0 in IEEE-754 → capacity 1, not 2.
+/// Without OrdF64Wrapper::new's signed-zero normalization this would
+/// be wrongly SAT (two distinct bit patterns → capacity 2 → no clash → FP).
+#[test]
+fn float_oneof_signed_zero_dedup_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"-0.0\"^^xsd:float \"0.0\"^^xsd:float)))"
+    ));
+}
+
+// ── DECIMAL ONEOF ─────────────────────────────────────────────────────
+
+/// CLASH: `≥3 p.DataOneOf(1.5 2.5)` decimal — capacity 2 < 3. UNSAT.
+#[test]
+fn decimal_oneof_capacity_clash_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"1.5\"^^xsd:decimal \"2.5\"^^xsd:decimal)))"
+    ));
+}
+
+/// FP GUARD: `≥2 p.DataOneOf(1.5 2.5)` decimal — exactly enough. SAT.
+#[test]
+fn decimal_oneof_exactly_enough_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"1.5\"^^xsd:decimal \"2.5\"^^xsd:decimal)))"
+    ));
+}
+
+/// FP GUARD (decimal normalization): `≥2 p.DataOneOf(1.5 1.50)` must be UNSAT
+/// because "1.5" and "1.50" are the same decimal value → capacity 1, not 2.
+#[test]
+fn decimal_oneof_normalized_dedup_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"1.5\"^^xsd:decimal \"1.50\"^^xsd:decimal)))"
+    ));
+}
+
+/// FP GUARD: two truly distinct decimal values give capacity 2 (no over-conflation). SAT.
+#[test]
+fn decimal_oneof_distinct_values_no_overconflation_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"1.5\"^^xsd:decimal \"1.6\"^^xsd:decimal)))"
+    ));
+}
+
+// ── DATE ONEOF ────────────────────────────────────────────────────────
+
+/// CLASH: `≥3 p.DataOneOf(2020-01-01 2020-01-02)` — capacity 2 < 3. UNSAT.
+#[test]
+fn date_oneof_capacity_clash_unsat() {
+    assert!(!sat(
+        "  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\"2020-01-01\"^^xsd:date \"2020-01-02\"^^xsd:date)))"
+    ));
+}
+
+/// FP GUARD: `≥2 p.DataOneOf(2020-01-01 2020-01-02)` — exactly enough. SAT.
+#[test]
+fn date_oneof_exactly_enough_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\"2020-01-01\"^^xsd:date \"2020-01-02\"^^xsd:date)))"
+    ));
+}
+
+/// FP GUARD: `∃p.DataOneOf(2020-01-01 2020-01-02)` (DataSome). No count. SAT.
+#[test]
+fn date_oneof_datasome_is_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataSomeValuesFrom(:p DataOneOf(\"2020-01-01\"^^xsd:date \"2020-01-02\"^^xsd:date)))"
+    ));
+}
+
+// ── DATETIME ONEOF ────────────────────────────────────────────────────
+
+/// CLASH: `≥3 p.DataOneOf(2020-01-01T00:00:00 2020-01-01T01:00:00)` — capacity 2 < 3.
+#[test]
+fn datetime_oneof_capacity_clash_unsat() {
+    assert!(!sat("  SubClassOf(:C DataMinCardinality(3 :p DataOneOf(\
+         \"2020-01-01T00:00:00\"^^xsd:dateTime \
+         \"2020-01-01T01:00:00\"^^xsd:dateTime)))"));
+}
+
+/// FP GUARD: `≥2 p.DataOneOf(2020-01-01T00:00:00 2020-01-01T01:00:00)` — exactly enough.
+#[test]
+fn datetime_oneof_exactly_enough_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(2 :p DataOneOf(\
+         \"2020-01-01T00:00:00\"^^xsd:dateTime \
+         \"2020-01-01T01:00:00\"^^xsd:dateTime)))"));
+}
+
+/// FP GUARD: `∃p.DataOneOf(...)` dateTime (DataSome). No count. SAT.
+#[test]
+fn datetime_oneof_datasome_is_sat() {
+    assert!(sat("  SubClassOf(:C DataSomeValuesFrom(:p DataOneOf(\
+         \"2020-01-01T00:00:00\"^^xsd:dateTime \
+         \"2020-01-01T01:00:00\"^^xsd:dateTime)))"));
+}
+
+// ── CROSS-DATATYPE DROP ────────────────────────────────────────────────
+
+/// FP GUARD: mixed-type DataOneOf (integer + float) → DROPS entire range → SAT.
+/// A `≥5` demand over a 2-member mixed set should NOT clash (range dropped,
+/// so no counting constraint at all).
+#[test]
+fn cross_datatype_oneof_drops_sat() {
+    assert!(sat(
+        "  SubClassOf(:C DataMinCardinality(5 :p DataOneOf(\"1\"^^xsd:integer \"2.5\"^^xsd:float)))"
+    ));
+}

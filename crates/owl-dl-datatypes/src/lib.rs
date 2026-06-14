@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 // Re-export the key types from owl-dl-core that parameterize DenseInterval
 // for the dense datatype buckets. These are part of the public API of this
 // crate (they appear in CardRange variants).
-pub use owl_dl_core::{DateKey, DateTimeKey, Decimal};
+pub use owl_dl_core::{DateKey, DateTimeKey, Decimal, OrdF64Wrapper};
 
 /// A totally-ordered wrapper around `f64` using [`f64::total_cmp`]. NaN is
 /// placed after all finite values and ±∞, which is arbitrary but consistent
@@ -101,10 +101,11 @@ pub enum CardSat {
 /// bucket; the tableau groups a node's data constraints by `(property, bucket)`
 /// before deciding. Integer and string buckets are discrete/finite-set;
 /// float/decimal/date/dateTime are dense intervals (infinite capacity except
-/// for a single inclusive point).
+/// for a single inclusive point). The five `*Set` variants are finite enumerations
+/// of numeric values (from `DataOneOf`); capacity = |distinct values|.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardRange {
-    /// `xsd:integer` and its subtypes (discrete).
+    /// `xsd:integer` and its subtypes (discrete interval).
     Int(IntInterval),
     /// `xsd:string` / `DataOneOf`-of-strings (finite-set; equality-typed, no ordering).
     Str(FiniteSet<String>),
@@ -117,6 +118,17 @@ pub enum CardRange {
     Date(DenseInterval<DateKey>),
     /// `xsd:dateTime` (dense; timezone-free, integer-second component tuple).
     DateTime(DenseInterval<DateTimeKey>),
+    /// `DataOneOf`-of-`xsd:integer` values (finite set; capacity = |distinct values|).
+    IntSet(FiniteSet<i64>),
+    /// `DataOneOf`-of-`xsd:float`/`xsd:double` values (finite set; signed-zero
+    /// normalized via [`OrdF64Wrapper`]).
+    FloatSet(FiniteSet<OrdF64Wrapper>),
+    /// `DataOneOf`-of-`xsd:decimal` values (finite set; exact lexical equality).
+    DecimalSet(FiniteSet<Decimal>),
+    /// `DataOneOf`-of-`xsd:date` values (finite set; timezone-free component tuple).
+    DateSet(FiniteSet<DateKey>),
+    /// `DataOneOf`-of-`xsd:dateTime` values (finite set; timezone-free, integer-second).
+    DateTimeSet(FiniteSet<DateTimeKey>),
 }
 
 impl CardRange {
@@ -129,7 +141,12 @@ impl CardRange {
             | CardRange::Float(_)
             | CardRange::Decimal(_)
             | CardRange::Date(_)
-            | CardRange::DateTime(_) => None,
+            | CardRange::DateTime(_)
+            | CardRange::IntSet(_)
+            | CardRange::FloatSet(_)
+            | CardRange::DecimalSet(_)
+            | CardRange::DateSet(_)
+            | CardRange::DateTimeSet(_) => None,
         }
     }
 
@@ -142,7 +159,12 @@ impl CardRange {
             | CardRange::Float(_)
             | CardRange::Decimal(_)
             | CardRange::Date(_)
-            | CardRange::DateTime(_) => None,
+            | CardRange::DateTime(_)
+            | CardRange::IntSet(_)
+            | CardRange::FloatSet(_)
+            | CardRange::DecimalSet(_)
+            | CardRange::DateSet(_)
+            | CardRange::DateTimeSet(_) => None,
         }
     }
 
@@ -155,7 +177,12 @@ impl CardRange {
             | CardRange::Str(_)
             | CardRange::Decimal(_)
             | CardRange::Date(_)
-            | CardRange::DateTime(_) => None,
+            | CardRange::DateTime(_)
+            | CardRange::IntSet(_)
+            | CardRange::FloatSet(_)
+            | CardRange::DecimalSet(_)
+            | CardRange::DateSet(_)
+            | CardRange::DateTimeSet(_) => None,
         }
     }
 
@@ -168,7 +195,12 @@ impl CardRange {
             | CardRange::Str(_)
             | CardRange::Float(_)
             | CardRange::Date(_)
-            | CardRange::DateTime(_) => None,
+            | CardRange::DateTime(_)
+            | CardRange::IntSet(_)
+            | CardRange::FloatSet(_)
+            | CardRange::DecimalSet(_)
+            | CardRange::DateSet(_)
+            | CardRange::DateTimeSet(_) => None,
         }
     }
 
@@ -181,7 +213,12 @@ impl CardRange {
             | CardRange::Str(_)
             | CardRange::Float(_)
             | CardRange::Decimal(_)
-            | CardRange::DateTime(_) => None,
+            | CardRange::DateTime(_)
+            | CardRange::IntSet(_)
+            | CardRange::FloatSet(_)
+            | CardRange::DecimalSet(_)
+            | CardRange::DateSet(_)
+            | CardRange::DateTimeSet(_) => None,
         }
     }
 
@@ -194,7 +231,57 @@ impl CardRange {
             | CardRange::Str(_)
             | CardRange::Float(_)
             | CardRange::Decimal(_)
-            | CardRange::Date(_) => None,
+            | CardRange::Date(_)
+            | CardRange::IntSet(_)
+            | CardRange::FloatSet(_)
+            | CardRange::DecimalSet(_)
+            | CardRange::DateSet(_)
+            | CardRange::DateTimeSet(_) => None,
+        }
+    }
+
+    /// The range as a [`FiniteSet<i64>`] if this is the integer-oneof bucket.
+    #[must_use]
+    pub fn as_int_set(&self) -> Option<FiniteSet<i64>> {
+        match self {
+            CardRange::IntSet(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// The range as a [`FiniteSet<OrdF64Wrapper>`] if this is the float-oneof bucket.
+    #[must_use]
+    pub fn as_float_set(&self) -> Option<FiniteSet<OrdF64Wrapper>> {
+        match self {
+            CardRange::FloatSet(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// The range as a [`FiniteSet<Decimal>`] if this is the decimal-oneof bucket.
+    #[must_use]
+    pub fn as_decimal_set(&self) -> Option<FiniteSet<Decimal>> {
+        match self {
+            CardRange::DecimalSet(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// The range as a [`FiniteSet<DateKey>`] if this is the date-oneof bucket.
+    #[must_use]
+    pub fn as_date_set(&self) -> Option<FiniteSet<DateKey>> {
+        match self {
+            CardRange::DateSet(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// The range as a [`FiniteSet<DateTimeKey>`] if this is the datetime-oneof bucket.
+    #[must_use]
+    pub fn as_datetime_set(&self) -> Option<FiniteSet<DateTimeKey>> {
+        match self {
+            CardRange::DateTimeSet(s) => Some(s.clone()),
+            _ => None,
         }
     }
 }

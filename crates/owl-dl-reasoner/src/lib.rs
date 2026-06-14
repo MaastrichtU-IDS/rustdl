@@ -1968,6 +1968,34 @@ fn build_dkey_range_map(
                     max_incl,
                 }),
             );
+        } else if let Some(set) = owl_dl_core::decode_int_oneof_dkey(iri) {
+            // Integer-oneof: each decoded i64 maps directly to a FiniteSet<i64>.
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::IntSet(owl_dl_datatypes::FiniteSet::Set(set)),
+            );
+        } else if let Some(set) = owl_dl_core::decode_float_oneof_dkey(iri) {
+            // Float-oneof: OrdF64Wrapper is already normalized (signed zero).
+            // Bridge to FiniteSet<OrdF64Wrapper> used by the tableau's FloatSet bucket.
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),
+            );
+        } else if let Some(set) = owl_dl_core::decode_decimal_oneof_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::DecimalSet(owl_dl_datatypes::FiniteSet::Set(set)),
+            );
+        } else if let Some(set) = owl_dl_core::decode_date_oneof_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::DateSet(owl_dl_datatypes::FiniteSet::Set(set)),
+            );
+        } else if let Some(set) = owl_dl_core::decode_datetime_oneof_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::DateTimeSet(owl_dl_datatypes::FiniteSet::Set(set)),
+            );
         }
     }
     map

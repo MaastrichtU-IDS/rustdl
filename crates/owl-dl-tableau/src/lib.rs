@@ -1306,7 +1306,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
         use owl_dl_datatypes::{
             Card, CardRange, CardSat, DateKey, DateTimeKey, Decimal, DenseInterval, FiniteSet,
-            IntInterval, OrdF64, ValueRange, card_sat, integer_sat,
+            IntInterval, OrdF64, OrdF64Wrapper, ValueRange, card_sat, integer_sat,
         };
         if self.dkey_ranges.is_empty() {
             return None;
@@ -1347,6 +1347,41 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             universal: Option<DenseInterval<DateTimeKey>>,
             deps: crate::graph::DepSet,
         }
+        // Numeric-oneof buckets: each uses FiniteSet<T> (capacity = |set|).
+        // No `∀` (universal filter) for DataOneOf — a DataAllValuesFrom over a
+        // DataOneOf produces a dense-bucket key, not an oneof key — so `universal`
+        // is always `None` for these accumulators. The field is retained for
+        // structural uniformity so `card_sat` can be called uniformly.
+        struct IntSetAcc {
+            mins: Vec<Card<FiniteSet<i64>>>,
+            maxs: Vec<Card<FiniteSet<i64>>>,
+            universal: Option<FiniteSet<i64>>,
+            deps: crate::graph::DepSet,
+        }
+        struct FloatSetAcc {
+            mins: Vec<Card<FiniteSet<OrdF64Wrapper>>>,
+            maxs: Vec<Card<FiniteSet<OrdF64Wrapper>>>,
+            universal: Option<FiniteSet<OrdF64Wrapper>>,
+            deps: crate::graph::DepSet,
+        }
+        struct DecimalSetAcc {
+            mins: Vec<Card<FiniteSet<Decimal>>>,
+            maxs: Vec<Card<FiniteSet<Decimal>>>,
+            universal: Option<FiniteSet<Decimal>>,
+            deps: crate::graph::DepSet,
+        }
+        struct DateSetAcc {
+            mins: Vec<Card<FiniteSet<DateKey>>>,
+            maxs: Vec<Card<FiniteSet<DateKey>>>,
+            universal: Option<FiniteSet<DateKey>>,
+            deps: crate::graph::DepSet,
+        }
+        struct DateTimeSetAcc {
+            mins: Vec<Card<FiniteSet<DateTimeKey>>>,
+            maxs: Vec<Card<FiniteSet<DateTimeKey>>>,
+            universal: Option<FiniteSet<DateTimeKey>>,
+            deps: crate::graph::DepSet,
+        }
         let n = self.graph.node(node);
         let labels = n.labels();
         let mut int_by_role: HashMap<RoleId, IntAcc> = HashMap::new();
@@ -1355,6 +1390,11 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let mut decimal_by_role: HashMap<RoleId, DecimalAcc> = HashMap::new();
         let mut date_by_role: HashMap<RoleId, DateAcc> = HashMap::new();
         let mut datetime_by_role: HashMap<RoleId, DateTimeAcc> = HashMap::new();
+        let mut int_set_by_role: HashMap<RoleId, IntSetAcc> = HashMap::new();
+        let mut float_set_by_role: HashMap<RoleId, FloatSetAcc> = HashMap::new();
+        let mut decimal_set_by_role: HashMap<RoleId, DecimalSetAcc> = HashMap::new();
+        let mut date_set_by_role: HashMap<RoleId, DateSetAcc> = HashMap::new();
+        let mut datetime_set_by_role: HashMap<RoleId, DateTimeSetAcc> = HashMap::new();
         for (pos, &c) in labels.iter().enumerate() {
             // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n)
             let (role, filler, kind, count): (&Role, ConceptId, u8, u32) = match self.pool.get(c) {
@@ -1503,6 +1543,131 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     }
                     entry.deps = crate::deps::union(&entry.deps, dep_label);
                 }
+                Some(CardRange::IntSet(fs)) => {
+                    let fs = fs.clone();
+                    let entry = int_set_by_role.entry(rid).or_insert_with(|| IntSetAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(fs, 1)),
+                        2 => entry.mins.push(Card::new(fs, count)),
+                        3 => entry.maxs.push(Card::new(fs, count)),
+                        1 => {
+                            // ∀ over a finite-set oneof: intersect (set intersection).
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| fs.clone(), |u| u.intersect(&fs)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::FloatSet(fs)) => {
+                    let fs = fs.clone();
+                    let entry = float_set_by_role.entry(rid).or_insert_with(|| FloatSetAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(fs, 1)),
+                        2 => entry.mins.push(Card::new(fs, count)),
+                        3 => entry.maxs.push(Card::new(fs, count)),
+                        1 => {
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| fs.clone(), |u| u.intersect(&fs)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::DecimalSet(fs)) => {
+                    let fs = fs.clone();
+                    let entry = decimal_set_by_role
+                        .entry(rid)
+                        .or_insert_with(|| DecimalSetAcc {
+                            mins: Vec::new(),
+                            maxs: Vec::new(),
+                            universal: None,
+                            deps: crate::graph::DepSet::new(),
+                        });
+                    match kind {
+                        0 => entry.mins.push(Card::new(fs, 1)),
+                        2 => entry.mins.push(Card::new(fs, count)),
+                        3 => entry.maxs.push(Card::new(fs, count)),
+                        1 => {
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| fs.clone(), |u| u.intersect(&fs)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::DateSet(fs)) => {
+                    let fs = fs.clone();
+                    let entry = date_set_by_role.entry(rid).or_insert_with(|| DateSetAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(fs, 1)),
+                        2 => entry.mins.push(Card::new(fs, count)),
+                        3 => entry.maxs.push(Card::new(fs, count)),
+                        1 => {
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| fs.clone(), |u| u.intersect(&fs)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::DateTimeSet(fs)) => {
+                    let fs = fs.clone();
+                    let entry = datetime_set_by_role
+                        .entry(rid)
+                        .or_insert_with(|| DateTimeSetAcc {
+                            mins: Vec::new(),
+                            maxs: Vec::new(),
+                            universal: None,
+                            deps: crate::graph::DepSet::new(),
+                        });
+                    match kind {
+                        0 => entry.mins.push(Card::new(fs, 1)),
+                        2 => entry.mins.push(Card::new(fs, count)),
+                        3 => entry.maxs.push(Card::new(fs, count)),
+                        1 => {
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| fs.clone(), |u| u.intersect(&fs)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
                 None => {}
             }
         }
@@ -1546,6 +1711,42 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         // Check dateTime bucket (dense).
         for acc in datetime_by_role.into_values() {
             if card_sat::<DenseInterval<DateTimeKey>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check integer-oneof bucket (FiniteSet<i64>).
+        for acc in int_set_by_role.into_values() {
+            if card_sat::<FiniteSet<i64>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat {
+                return Some(acc.deps);
+            }
+        }
+        // Check float-oneof bucket (FiniteSet<OrdF64Wrapper>).
+        for acc in float_set_by_role.into_values() {
+            if card_sat::<FiniteSet<OrdF64Wrapper>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check decimal-oneof bucket (FiniteSet<Decimal>).
+        for acc in decimal_set_by_role.into_values() {
+            if card_sat::<FiniteSet<Decimal>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check date-oneof bucket (FiniteSet<DateKey>).
+        for acc in date_set_by_role.into_values() {
+            if card_sat::<FiniteSet<DateKey>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check dateTime-oneof bucket (FiniteSet<DateTimeKey>).
+        for acc in datetime_set_by_role.into_values() {
+            if card_sat::<FiniteSet<DateTimeKey>>(acc.universal, &acc.mins, &acc.maxs)
                 == CardSat::Unsat
             {
                 return Some(acc.deps);

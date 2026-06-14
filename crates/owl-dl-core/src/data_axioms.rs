@@ -1044,6 +1044,186 @@ pub(crate) fn parse_string_range<A: ForIRI>(dr: &DataRange<A>) -> Option<StrSet>
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Numeric DataOneOf parsers (Phase D-numeric-oneof)
+//
+// Each parser recognizes a `DataOneOf(l1 l2 …)` where EVERY member is
+// the correct numeric type, deduplicates by VALUE (BTreeSet), and returns
+// the set. ANY member that fails its value-parser (wrong datatype, NaN,
+// timezone, mixed type) → `None` (drops the whole range — sound
+// under-approximation). Capacity = |distinct values|.
+//
+// FP-critical invariant: under-counting capacity (too few distinct values)
+// → spurious clash → false subsumption. So dedup MUST be by value.
+// Over-counting (treating the same value as two) is the safe direction.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Parse a `DataOneOf` whose members are ALL `xsd:integer`-typed literals
+/// into a `BTreeSet<i64>` (capacity = |distinct values|). Returns `None`
+/// for any non-`DataOneOf`, empty set, or member with a non-integer literal.
+pub(crate) fn parse_integer_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<i64>> {
+    match dr {
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                let v = match l {
+                    Literal::Datatype {
+                        literal,
+                        datatype_iri,
+                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+                        literal.parse::<i64>().ok()?
+                    }
+                    _ => return None,
+                };
+                set.insert(v);
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
+/// An exact ordered wrapper for `f64` values found in numeric `DataOneOf`
+/// enumerations. Normalizes signed zero (`-0.0 → +0.0`) — FP-critical: under
+/// `f64::total_cmp`, `-0.0 < +0.0`, so without normalization `{-0.0,+0.0}`
+/// would count as 2 distinct values (capacity 2), while IEEE-754 equality
+/// treats them as the same (capacity 1). Under-counting = spurious clash = FP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrdF64Wrapper(pub u64); // bit-representation of the normalized f64
+
+impl OrdF64Wrapper {
+    /// Construct from a finite `f64`, normalizing `-0.0 → +0.0`.
+    #[must_use]
+    pub fn new(v: f64) -> Self {
+        // `v == 0.0` is true for both -0.0 and +0.0; `+ 0.0` collapses to +0.0.
+        let v = if v == 0.0 { 0.0_f64 } else { v };
+        Self(v.to_bits())
+    }
+    /// Recover the wrapped `f64`.
+    #[must_use]
+    pub fn to_f64(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+impl PartialOrd for OrdF64Wrapper {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrdF64Wrapper {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Both are normalized (no -0.0), so we can use total_cmp on the
+        // reconstructed f64. This agrees with bit order for finite values.
+        self.to_f64().total_cmp(&other.to_f64())
+    }
+}
+
+/// Parse a `DataOneOf` whose members are ALL `xsd:float`/`xsd:double`-typed
+/// literals into a `BTreeSet<OrdF64Wrapper>` (capacity = |distinct values|).
+/// NaN / ±∞ → `None` (sound under-approx). Signed-zero dedup via
+/// `OrdF64Wrapper::new` is FP-critical (see type doc above).
+pub(crate) fn parse_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<OrdF64Wrapper>> {
+    match dr {
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                let v = match l {
+                    Literal::Datatype {
+                        literal,
+                        datatype_iri,
+                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float"
+                        || datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" =>
+                    {
+                        let fv: f64 = literal.parse().ok().filter(|v: &f64| v.is_finite())?;
+                        OrdF64Wrapper::new(fv)
+                    }
+                    _ => return None,
+                };
+                set.insert(v);
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `DataOneOf` whose members are ALL `xsd:decimal`-typed literals
+/// into a `BTreeSet<Decimal>` (capacity = |distinct values|).
+/// Normalized lexical form ensures e.g. `"1.5"` and `"1.50"` dedup to one
+/// element. Any member that fails `parse_decimal` → `None`.
+pub(crate) fn parse_decimal_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<Decimal>> {
+    match dr {
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                let v = match l {
+                    Literal::Datatype {
+                        literal,
+                        datatype_iri,
+                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#decimal" => {
+                        parse_decimal(literal)?
+                    }
+                    _ => return None,
+                };
+                set.insert(v);
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `DataOneOf` whose members are ALL `xsd:date`-typed literals into
+/// a `BTreeSet<DateKey>` (capacity = |distinct values|). Timezone-bearing
+/// dates → `None` (sound under-approx via `parse_date`).
+pub(crate) fn parse_date_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<DateKey>> {
+    match dr {
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                let v = match l {
+                    Literal::Datatype {
+                        literal,
+                        datatype_iri,
+                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#date" => {
+                        parse_date(literal)?
+                    }
+                    _ => return None,
+                };
+                set.insert(v);
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `DataOneOf` whose members are ALL `xsd:dateTime`-typed literals
+/// into a `BTreeSet<DateTimeKey>`. Fractional seconds / timezone → `None`.
+pub(crate) fn parse_datetime_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<DateTimeKey>> {
+    match dr {
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                let v = match l {
+                    Literal::Datatype {
+                        literal,
+                        datatype_iri,
+                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#dateTime" => {
+                        parse_datetime(literal)?
+                    }
+                    _ => return None,
+                };
+                set.insert(v);
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
 /// Internal: collected data-axiom facts. IRIs kept as `String` so we
 /// can look them up in the vocabulary once at emission time.
 #[derive(Default, Debug)]

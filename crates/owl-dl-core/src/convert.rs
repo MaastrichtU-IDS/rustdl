@@ -2596,6 +2596,81 @@ mod tests {
         }
     }
 
+    /// Companion matrix for the five numeric-`DataOneOf` buckets (`io:` / `fo:` /
+    /// `deo:` / `dao:` / `dto:`). Each oneof decoder must return `Some` for
+    /// EXACTLY its own oneof IRI and `None` for every other oneof IRI AND for
+    /// every interval/string IRI — and, conversely, every interval/string decoder
+    /// (including the untagged integer-interval `parse_dkey_iri`, the riskiest
+    /// because it does no tag check) must REJECT every oneof IRI. A single
+    /// off-diagonal `Some` = a cross-bucket decode → wrong `CardRange` → wrong
+    /// capacity → potential false-positive subsumption (FP-critical).
+    #[test]
+    fn numeric_oneof_parser_matrix_exclusivity() {
+        // Bounded oneof IRIs (one per bucket) built via the real encoders.
+        let oneof: Vec<(&str, String)> = vec![
+            ("io", int_oneof_iri(&[1_i64, 2].into_iter().collect())),
+            (
+                "fo",
+                float_oneof_iri(
+                    &[
+                        crate::data_axioms::OrdF64Wrapper::new(1.5),
+                        crate::data_axioms::OrdF64Wrapper::new(2.5),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            ),
+            (
+                "deo",
+                decimal_oneof_iri(&[dec("1.5"), dec("2.5")].into_iter().collect()),
+            ),
+            (
+                "dao",
+                date_oneof_iri(&[(2020, 1, 1), (2020, 1, 2)].into_iter().collect()),
+            ),
+            (
+                "dto",
+                datetime_oneof_iri(
+                    &[(2020, 1, 1, 0, 0, 0), (2020, 1, 1, 1, 0, 0)]
+                        .into_iter()
+                        .collect(),
+                ),
+            ),
+        ];
+        // Every IRI in the system: the 6 interval/string samples + the 5 oneof.
+        let mut all = sample_iris();
+        all.extend(oneof.iter().cloned());
+
+        // Decoders for ALL eleven buckets.
+        let probe = |bucket: &str, iri: &str| -> bool {
+            match bucket {
+                "int" => parse_dkey_iri(iri).is_some(),
+                "float" => parse_float_dkey_iri(iri).is_some(),
+                "dec" => parse_decimal_dkey_iri(iri).is_some(),
+                "date" => parse_date_dkey_iri(iri).is_some(),
+                "dt" => parse_datetime_dkey_iri(iri).is_some(),
+                "str" => parse_string_dkey_iri(iri).is_some(),
+                "io" => parse_int_oneof_iri(iri).is_some(),
+                "fo" => parse_float_oneof_iri(iri).is_some(),
+                "deo" => parse_decimal_oneof_iri(iri).is_some(),
+                "dao" => parse_date_oneof_iri(iri).is_some(),
+                "dto" => parse_datetime_oneof_iri(iri).is_some(),
+                _ => unreachable!(),
+            }
+        };
+        for (decoder, _) in &all {
+            for (bucket, iri) in &all {
+                let accepted = probe(decoder, iri);
+                assert_eq!(
+                    accepted,
+                    decoder == bucket,
+                    "decoder {decoder} on {bucket} IRI {iri:?}: expected {}",
+                    decoder == bucket
+                );
+            }
+        }
+    }
+
     #[test]
     fn dkey_iri_round_trips_all_buckets() {
         // decimal: exact lexical round-trip (incl. negative + sub-1).

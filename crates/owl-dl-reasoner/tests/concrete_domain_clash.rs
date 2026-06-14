@@ -1,7 +1,7 @@
-//! Canaries for the P3 concrete-domain tableau clash (integer + string buckets):
-//! a node whose data constraints (`∃p.R` / `≥n p.R` / `≤m p.S` / `∀p.U`) are
-//! jointly unsatisfiable by `card_sat` becomes a clash, making the class
-//! unsatisfiable.
+//! Canaries for the P3 concrete-domain tableau clash (integer, string, float,
+//! decimal, date, dateTime buckets): a node whose data constraints (`∃p.R` /
+//! `≥n p.R` / `≤m p.S` / `∀p.U`) are jointly unsatisfiable by `card_sat`
+//! becomes a clash, making the class unsatisfiable.
 //!
 //! NEGATIVES-FIRST: the FP-critical direction is a false clash on a SATISFIABLE
 //! node → a spurious subsumption. Every `assert!(sat(...))` below is a
@@ -179,4 +179,157 @@ fn string_min_max_conflict_unsat() {
 #[test]
 fn no_data_cardinality_is_sat() {
     assert!(sat(""));
+}
+
+// ─── DENSE BUCKET CANARIES ────────────────────────────────────────────
+//
+// For each dense type (float, decimal, date, dateTime):
+//   CLASH: `≥2 p.[v,v]` (single inclusive point, capacity 1 < 2). UNSAT.
+//   SAT guards:
+//     - `≥1 p.[v,v]` (1 fits in capacity 1). SAT.
+//     - `≥1000 p.[0,100]` (real interval, ∞ capacity). SAT.
+//     - `∃p.range` (DataSome, no cardinality). SAT.
+//     - `≥2 p.(lo,hi)` (exclusive bounds, capacity ∞). SAT.
+
+// ── FLOAT ─────────────────────────────────────────────────────────────
+
+/// CLASH: `≥2 p.{1.5}` (single inclusive point, capacity 1). UNSAT.
+#[test]
+fn float_point_capacity_clash_unsat() {
+    assert!(!sat("  SubClassOf(:C DataMinCardinality(2 :p \
+         DatatypeRestriction(xsd:float xsd:minInclusive \"1.5\"^^xsd:float \
+         xsd:maxInclusive \"1.5\"^^xsd:float)))"));
+}
+
+/// FP GUARD: `≥1 p.{1.5}` — 1 value fits in a point. SAT.
+#[test]
+fn float_point_ge1_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1 :p \
+         DatatypeRestriction(xsd:float xsd:minInclusive \"1.5\"^^xsd:float \
+         xsd:maxInclusive \"1.5\"^^xsd:float)))"));
+}
+
+/// FP GUARD: `≥1000 p.[0.0,100.0]` — dense interval, ∞ capacity. SAT.
+#[test]
+fn float_interval_large_demand_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1000 :p \
+         DatatypeRestriction(xsd:float xsd:minInclusive \"0.0\"^^xsd:float \
+         xsd:maxInclusive \"100.0\"^^xsd:float)))"));
+}
+
+/// FP GUARD: `∃p.[0.0,1.0]` (DataSome). No cardinality count. SAT.
+#[test]
+fn float_datasome_is_sat() {
+    assert!(sat("  SubClassOf(:C DataSomeValuesFrom(:p \
+         DatatypeRestriction(xsd:float xsd:minInclusive \"0.0\"^^xsd:float \
+         xsd:maxInclusive \"1.0\"^^xsd:float)))"));
+}
+
+/// FP GUARD: `≥2 p.(0.0,1.0)` — exclusive bounds, capacity ∞. SAT.
+#[test]
+fn float_exclusive_bounds_large_demand_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(2 :p \
+         DatatypeRestriction(xsd:float xsd:minExclusive \"0.0\"^^xsd:float \
+         xsd:maxExclusive \"1.0\"^^xsd:float)))"));
+}
+
+// ── DECIMAL ───────────────────────────────────────────────────────────
+
+/// CLASH: `≥2 p.{1.5}` decimal point. UNSAT.
+#[test]
+fn decimal_point_capacity_clash_unsat() {
+    assert!(!sat("  SubClassOf(:C DataMinCardinality(2 :p \
+         DatatypeRestriction(xsd:decimal xsd:minInclusive \"1.5\"^^xsd:decimal \
+         xsd:maxInclusive \"1.5\"^^xsd:decimal)))"));
+}
+
+/// FP GUARD: `≥1 p.{1.5}` decimal — 1 value fits. SAT.
+#[test]
+fn decimal_point_ge1_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1 :p \
+         DatatypeRestriction(xsd:decimal xsd:minInclusive \"1.5\"^^xsd:decimal \
+         xsd:maxInclusive \"1.5\"^^xsd:decimal)))"));
+}
+
+/// FP GUARD: `≥1000 p.[0,100]` decimal — dense interval, ∞ capacity. SAT.
+#[test]
+fn decimal_interval_large_demand_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1000 :p \
+         DatatypeRestriction(xsd:decimal xsd:minInclusive \"0\"^^xsd:decimal \
+         xsd:maxInclusive \"100\"^^xsd:decimal)))"));
+}
+
+/// FP GUARD: `≥2 p.(0,1)` decimal exclusive bounds, capacity ∞. SAT.
+#[test]
+fn decimal_exclusive_bounds_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(2 :p \
+         DatatypeRestriction(xsd:decimal xsd:minExclusive \"0\"^^xsd:decimal \
+         xsd:maxExclusive \"1\"^^xsd:decimal)))"));
+}
+
+// ── DATE ──────────────────────────────────────────────────────────────
+
+/// CLASH: `≥2 p.{2020-01-01}` single date point. UNSAT.
+#[test]
+fn date_point_capacity_clash_unsat() {
+    assert!(!sat("  SubClassOf(:C DataMinCardinality(2 :p \
+         DatatypeRestriction(xsd:date xsd:minInclusive \"2020-01-01\"^^xsd:date \
+         xsd:maxInclusive \"2020-01-01\"^^xsd:date)))"));
+}
+
+/// FP GUARD: `≥1 p.{2020-01-01}` — 1 value fits. SAT.
+#[test]
+fn date_point_ge1_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1 :p \
+         DatatypeRestriction(xsd:date xsd:minInclusive \"2020-01-01\"^^xsd:date \
+         xsd:maxInclusive \"2020-01-01\"^^xsd:date)))"));
+}
+
+/// FP GUARD: `≥1000 p.[2020-01-01,2021-12-31]` — dense range, ∞ capacity. SAT.
+#[test]
+fn date_interval_large_demand_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1000 :p \
+         DatatypeRestriction(xsd:date xsd:minInclusive \"2020-01-01\"^^xsd:date \
+         xsd:maxInclusive \"2021-12-31\"^^xsd:date)))"));
+}
+
+/// FP GUARD: `∃p.xsd:date` (DataSome bare date). No count. SAT.
+#[test]
+fn date_datasome_is_sat() {
+    assert!(sat("  SubClassOf(:C DataSomeValuesFrom(:p xsd:date))"));
+}
+
+// ── DATETIME ──────────────────────────────────────────────────────────
+
+/// CLASH: `≥2 p.{2020-01-01T00:00:00}` single datetime point. UNSAT.
+#[test]
+fn datetime_point_capacity_clash_unsat() {
+    assert!(!sat("  SubClassOf(:C DataMinCardinality(2 :p \
+         DatatypeRestriction(xsd:dateTime xsd:minInclusive \
+         \"2020-01-01T00:00:00\"^^xsd:dateTime \
+         xsd:maxInclusive \"2020-01-01T00:00:00\"^^xsd:dateTime)))"));
+}
+
+/// FP GUARD: `≥1 p.{2020-01-01T00:00:00}` — 1 value fits. SAT.
+#[test]
+fn datetime_point_ge1_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1 :p \
+         DatatypeRestriction(xsd:dateTime xsd:minInclusive \
+         \"2020-01-01T00:00:00\"^^xsd:dateTime \
+         xsd:maxInclusive \"2020-01-01T00:00:00\"^^xsd:dateTime)))"));
+}
+
+/// FP GUARD: `≥1000 p.[2020-01-01T00:00:00,2021-01-01T00:00:00]` — dense range, ∞. SAT.
+#[test]
+fn datetime_interval_large_demand_is_sat() {
+    assert!(sat("  SubClassOf(:C DataMinCardinality(1000 :p \
+         DatatypeRestriction(xsd:dateTime xsd:minInclusive \
+         \"2020-01-01T00:00:00\"^^xsd:dateTime \
+         xsd:maxInclusive \"2021-01-01T00:00:00\"^^xsd:dateTime)))"));
+}
+
+/// FP GUARD: `∃p.xsd:dateTime` (DataSome bare dateTime). No count. SAT.
+#[test]
+fn datetime_datasome_is_sat() {
+    assert!(sat("  SubClassOf(:C DataSomeValuesFrom(:p xsd:dateTime))"));
 }

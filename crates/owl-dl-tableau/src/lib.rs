@@ -1297,15 +1297,16 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// For each data-property role, collects the `∃p.DKey(R)` (`≥1`),
     /// `Min(n,p,DKey(R))` (`≥n`), `Max(n,p,DKey(S))` (`≤n`) and
     /// `∀p.DKey(U)` (universal filter) labels whose filler is a registered
-    /// `DKey` (integer or string bucket), and runs the matching `card_sat`.
-    /// Integer and string constraints are bucketed separately (the type system
-    /// enforces this — each `card_sat` call is monomorphic). Returns the
-    /// union of the contributing labels' `DepSet`s (a sound superset for
-    /// backjumping) when the constraints are unsatisfiable, else `None`.
-    /// Empty `dkey_ranges` ⇒ instant `None`.
+    /// `DKey` (integer, string, float, decimal, date, or dateTime bucket),
+    /// and runs the matching `card_sat`. Each bucket is checked independently
+    /// (the type system enforces no cross-bucket interaction — each `card_sat`
+    /// call is monomorphic). Returns the union of the contributing labels'
+    /// `DepSet`s (a sound superset for backjumping) when the constraints are
+    /// unsatisfiable, else `None`. Empty `dkey_ranges` ⇒ instant `None`.
     fn concrete_domain_clash(&self, node: NodeId) -> Option<crate::graph::DepSet> {
         use owl_dl_datatypes::{
-            Card, CardRange, CardSat, FiniteSet, IntInterval, ValueRange, card_sat, integer_sat,
+            Card, CardRange, CardSat, DateKey, DateTimeKey, Decimal, DenseInterval, FiniteSet,
+            IntInterval, OrdF64, ValueRange, card_sat, integer_sat,
         };
         if self.dkey_ranges.is_empty() {
             return None;
@@ -1322,10 +1323,38 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             universal: Option<FiniteSet<String>>,
             deps: crate::graph::DepSet,
         }
+        struct FloatAcc {
+            mins: Vec<Card<DenseInterval<OrdF64>>>,
+            maxs: Vec<Card<DenseInterval<OrdF64>>>,
+            universal: Option<DenseInterval<OrdF64>>,
+            deps: crate::graph::DepSet,
+        }
+        struct DecimalAcc {
+            mins: Vec<Card<DenseInterval<Decimal>>>,
+            maxs: Vec<Card<DenseInterval<Decimal>>>,
+            universal: Option<DenseInterval<Decimal>>,
+            deps: crate::graph::DepSet,
+        }
+        struct DateAcc {
+            mins: Vec<Card<DenseInterval<DateKey>>>,
+            maxs: Vec<Card<DenseInterval<DateKey>>>,
+            universal: Option<DenseInterval<DateKey>>,
+            deps: crate::graph::DepSet,
+        }
+        struct DateTimeAcc {
+            mins: Vec<Card<DenseInterval<DateTimeKey>>>,
+            maxs: Vec<Card<DenseInterval<DateTimeKey>>>,
+            universal: Option<DenseInterval<DateTimeKey>>,
+            deps: crate::graph::DepSet,
+        }
         let n = self.graph.node(node);
         let labels = n.labels();
         let mut int_by_role: HashMap<RoleId, IntAcc> = HashMap::new();
         let mut str_by_role: HashMap<RoleId, StrAcc> = HashMap::new();
+        let mut float_by_role: HashMap<RoleId, FloatAcc> = HashMap::new();
+        let mut decimal_by_role: HashMap<RoleId, DecimalAcc> = HashMap::new();
+        let mut date_by_role: HashMap<RoleId, DateAcc> = HashMap::new();
+        let mut datetime_by_role: HashMap<RoleId, DateTimeAcc> = HashMap::new();
         for (pos, &c) in labels.iter().enumerate() {
             // (role, filler, kind 0=∃ 1=∀ 2=≥ 3=≤, n)
             let (role, filler, kind, count): (&Role, ConceptId, u8, u32) = match self.pool.get(c) {
@@ -1386,6 +1415,94 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     }
                     entry.deps = crate::deps::union(&entry.deps, dep_label);
                 }
+                Some(CardRange::Float(di)) => {
+                    // DenseInterval<OrdF64> is Copy — dereference, no clone.
+                    let di = *di;
+                    let entry = float_by_role.entry(rid).or_insert_with(|| FloatAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(di, 1)),
+                        2 => entry.mins.push(Card::new(di, count)),
+                        3 => entry.maxs.push(Card::new(di, count)),
+                        1 => {
+                            entry.universal =
+                                Some(entry.universal.map_or(di, |u| u.intersect(&di)));
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::Decimal(di)) => {
+                    // DenseInterval<Decimal> is NOT Copy (Decimal has String) — clone.
+                    let di = di.clone();
+                    let entry = decimal_by_role.entry(rid).or_insert_with(|| DecimalAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(di, 1)),
+                        2 => entry.mins.push(Card::new(di, count)),
+                        3 => entry.maxs.push(Card::new(di, count)),
+                        1 => {
+                            entry.universal = Some(
+                                entry
+                                    .universal
+                                    .take()
+                                    .map_or_else(|| di.clone(), |u| u.intersect(&di)),
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::Date(di)) => {
+                    // DenseInterval<DateKey> is Copy — dereference, no clone.
+                    let di = *di;
+                    let entry = date_by_role.entry(rid).or_insert_with(|| DateAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(di, 1)),
+                        2 => entry.mins.push(Card::new(di, count)),
+                        3 => entry.maxs.push(Card::new(di, count)),
+                        1 => {
+                            entry.universal =
+                                Some(entry.universal.map_or(di, |u| u.intersect(&di)));
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
+                Some(CardRange::DateTime(di)) => {
+                    // DenseInterval<DateTimeKey> is Copy — dereference, no clone.
+                    let di = *di;
+                    let entry = datetime_by_role.entry(rid).or_insert_with(|| DateTimeAcc {
+                        mins: Vec::new(),
+                        maxs: Vec::new(),
+                        universal: None,
+                        deps: crate::graph::DepSet::new(),
+                    });
+                    match kind {
+                        0 => entry.mins.push(Card::new(di, 1)),
+                        2 => entry.mins.push(Card::new(di, count)),
+                        3 => entry.maxs.push(Card::new(di, count)),
+                        1 => {
+                            entry.universal =
+                                Some(entry.universal.map_or(di, |u| u.intersect(&di)));
+                        }
+                        _ => unreachable!(),
+                    }
+                    entry.deps = crate::deps::union(&entry.deps, dep_label);
+                }
                 None => {}
             }
         }
@@ -1398,6 +1515,38 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         // Check string bucket.
         for acc in str_by_role.into_values() {
             if card_sat::<FiniteSet<String>>(acc.universal, &acc.mins, &acc.maxs) == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check float bucket (dense).
+        for acc in float_by_role.into_values() {
+            if card_sat::<DenseInterval<OrdF64>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check decimal bucket (dense).
+        for acc in decimal_by_role.into_values() {
+            if card_sat::<DenseInterval<Decimal>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check date bucket (dense).
+        for acc in date_by_role.into_values() {
+            if card_sat::<DenseInterval<DateKey>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
+            {
+                return Some(acc.deps);
+            }
+        }
+        // Check dateTime bucket (dense).
+        for acc in datetime_by_role.into_values() {
+            if card_sat::<DenseInterval<DateTimeKey>>(acc.universal, &acc.mins, &acc.maxs)
+                == CardSat::Unsat
             {
                 return Some(acc.deps);
             }

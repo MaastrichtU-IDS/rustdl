@@ -26,6 +26,44 @@
 
 use std::collections::BTreeSet;
 
+// Re-export the key types from owl-dl-core that parameterize DenseInterval
+// for the dense datatype buckets. These are part of the public API of this
+// crate (they appear in CardRange variants).
+pub use owl_dl_core::{DateKey, DateTimeKey, Decimal};
+
+/// A totally-ordered wrapper around `f64` using [`f64::total_cmp`]. NaN is
+/// placed after all finite values and ±∞, which is arbitrary but consistent
+/// — we never actually store NaN here (it is rejected at parse time in
+/// `owl-dl-core`). The only semantic property we need is: two equal-bits
+/// values compare `Equal`, which is guaranteed by `total_cmp`. Eq is
+/// derived from the total-order (consistent by construction).
+///
+/// SOUNDNESS NOTE: `PartialEq` must be consistent with `Ord` for
+/// `DenseInterval::capacity()`'s `lo == hi` check to be correct. We
+/// implement `PartialEq` via `total_cmp` (same as `Ord`) so the two
+/// agree — in particular `-0.0` and `+0.0` compare `Equal` under
+/// `total_cmp`, collapsing to one point, which is the desired
+/// (sound, conservative) behaviour.
+#[derive(Clone, Copy, Debug)]
+pub struct OrdF64(pub f64);
+
+impl PartialEq for OrdF64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.total_cmp(&other.0) == std::cmp::Ordering::Equal
+    }
+}
+impl Eq for OrdF64 {}
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrdF64 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
 /// Result of a concrete-domain satisfiability check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardSat {
@@ -40,15 +78,24 @@ pub enum CardSat {
 /// recognise a `DKey` filler and recover its range without IRI access (see the
 /// P2/P3 design spec). Two ranges interact in [`card_sat`] only within the same
 /// bucket; the tableau groups a node's data constraints by `(property, bucket)`
-/// before deciding. Extended one bucket at a time as the integration is wired
-/// (integer-first, then string).
+/// before deciding. Integer and string buckets are discrete/finite-set;
+/// float/decimal/date/dateTime are dense intervals (infinite capacity except
+/// for a single inclusive point).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardRange {
     /// `xsd:integer` and its subtypes (discrete).
     Int(IntInterval),
     /// `xsd:string` / `DataOneOf`-of-strings (finite-set; equality-typed, no ordering).
     Str(FiniteSet<String>),
-    // Float / Decimal / Date / DateTime (dense) added as needed.
+    /// `xsd:float` / `xsd:double` (dense; infinite capacity except a single
+    /// inclusive point). Uses [`OrdF64`] so the bound has a total order.
+    Float(DenseInterval<OrdF64>),
+    /// `xsd:decimal` (dense; exact lexical representation, never `f64`).
+    Decimal(DenseInterval<Decimal>),
+    /// `xsd:date` (dense; timezone-free component tuple).
+    Date(DenseInterval<DateKey>),
+    /// `xsd:dateTime` (dense; timezone-free, integer-second component tuple).
+    DateTime(DenseInterval<DateTimeKey>),
 }
 
 impl CardRange {
@@ -57,7 +104,11 @@ impl CardRange {
     pub fn as_int(&self) -> Option<IntInterval> {
         match self {
             CardRange::Int(i) => Some(*i),
-            CardRange::Str(_) => None,
+            CardRange::Str(_)
+            | CardRange::Float(_)
+            | CardRange::Decimal(_)
+            | CardRange::Date(_)
+            | CardRange::DateTime(_) => None,
         }
     }
 
@@ -66,7 +117,63 @@ impl CardRange {
     pub fn as_str(&self) -> Option<FiniteSet<String>> {
         match self {
             CardRange::Str(s) => Some(s.clone()),
-            CardRange::Int(_) => None,
+            CardRange::Int(_)
+            | CardRange::Float(_)
+            | CardRange::Decimal(_)
+            | CardRange::Date(_)
+            | CardRange::DateTime(_) => None,
+        }
+    }
+
+    /// The range as a [`DenseInterval<OrdF64>`] if this is the float bucket.
+    #[must_use]
+    pub fn as_float(&self) -> Option<DenseInterval<OrdF64>> {
+        match self {
+            CardRange::Float(d) => Some(*d),
+            CardRange::Int(_)
+            | CardRange::Str(_)
+            | CardRange::Decimal(_)
+            | CardRange::Date(_)
+            | CardRange::DateTime(_) => None,
+        }
+    }
+
+    /// The range as a [`DenseInterval<Decimal>`] if this is the decimal bucket.
+    #[must_use]
+    pub fn as_decimal(&self) -> Option<DenseInterval<Decimal>> {
+        match self {
+            CardRange::Decimal(d) => Some(d.clone()),
+            CardRange::Int(_)
+            | CardRange::Str(_)
+            | CardRange::Float(_)
+            | CardRange::Date(_)
+            | CardRange::DateTime(_) => None,
+        }
+    }
+
+    /// The range as a [`DenseInterval<DateKey>`] if this is the date bucket.
+    #[must_use]
+    pub fn as_date(&self) -> Option<DenseInterval<DateKey>> {
+        match self {
+            CardRange::Date(d) => Some(*d),
+            CardRange::Int(_)
+            | CardRange::Str(_)
+            | CardRange::Float(_)
+            | CardRange::Decimal(_)
+            | CardRange::DateTime(_) => None,
+        }
+    }
+
+    /// The range as a [`DenseInterval<DateTimeKey>`] if this is the datetime bucket.
+    #[must_use]
+    pub fn as_datetime(&self) -> Option<DenseInterval<DateTimeKey>> {
+        match self {
+            CardRange::DateTime(d) => Some(*d),
+            CardRange::Int(_)
+            | CardRange::Str(_)
+            | CardRange::Float(_)
+            | CardRange::Decimal(_)
+            | CardRange::Date(_) => None,
         }
     }
 }
@@ -737,6 +844,176 @@ mod tests {
                 &[Card::new(set(&["a", "b"]), 2)],
                 &[Card::new(set(&["x", "y"]), 1)]
             ),
+            CardSat::Sat
+        );
+    }
+
+    // ── CONCRETE T CAPACITY CANARIES: OrdF64, Decimal, DateKey, DateTimeKey ─
+
+    /// `OrdF64` point: `≥2 p.{1.5}` UNSAT (capacity 1); `≥1 p.{1.5}` SAT.
+    #[test]
+    fn ordf64_point_capacity() {
+        let pt = DenseInterval::point(OrdF64(1.5_f64));
+        assert_eq!(
+            card_sat::<DenseInterval<OrdF64>>(None, &[Card::new(pt, 2)], &[]),
+            CardSat::Unsat,
+            "point capacity=1 < 2 => UNSAT"
+        );
+        assert_eq!(
+            card_sat::<DenseInterval<OrdF64>>(None, &[Card::new(pt, 1)], &[]),
+            CardSat::Sat,
+            "point capacity=1 >= 1 => SAT"
+        );
+    }
+
+    /// `OrdF64` interval `[0.0,1.0]`: `≥1000` SAT (infinite capacity).
+    #[test]
+    fn ordf64_interval_infinite_capacity() {
+        let iv = DenseInterval {
+            min: Some(OrdF64(0.0)),
+            min_incl: true,
+            max: Some(OrdF64(1.0)),
+            max_incl: true,
+        };
+        assert_eq!(
+            card_sat::<DenseInterval<OrdF64>>(None, &[Card::new(iv, 1000)], &[]),
+            CardSat::Sat
+        );
+    }
+
+    /// `OrdF64` exclusive point `(0.0,0.0)`: empty ⟹ `≥1` UNSAT.
+    #[test]
+    fn ordf64_exclusive_point_empty() {
+        let empty = DenseInterval {
+            min: Some(OrdF64(0.0)),
+            min_incl: false,
+            max: Some(OrdF64(0.0)),
+            max_incl: false,
+        };
+        assert_eq!(
+            card_sat::<DenseInterval<OrdF64>>(None, &[Card::new(empty, 1)], &[]),
+            CardSat::Unsat
+        );
+    }
+
+    /// `OrdF64` exclusive bounds `≥2` over `(0.0, 1.0)`: capacity ∞ ⟹ SAT.
+    #[test]
+    fn ordf64_exclusive_bounds_infinite() {
+        let iv = DenseInterval {
+            min: Some(OrdF64(0.0)),
+            min_incl: false,
+            max: Some(OrdF64(1.0)),
+            max_incl: false,
+        };
+        assert_eq!(
+            card_sat::<DenseInterval<OrdF64>>(None, &[Card::new(iv, 2)], &[]),
+            CardSat::Sat
+        );
+    }
+
+    /// Decimal point: `≥2 p.{1.5}` UNSAT; `≥1` SAT.
+    #[test]
+    fn decimal_point_capacity() {
+        // "1.5" decimal
+        let dec = Decimal {
+            negative: false,
+            int: "1".to_string(),
+            frac: "5".to_string(),
+        };
+        let pt = DenseInterval::point(dec);
+        assert_eq!(
+            card_sat::<DenseInterval<Decimal>>(None, &[Card::new(pt.clone(), 2)], &[]),
+            CardSat::Unsat,
+            "decimal point capacity=1 < 2 => UNSAT"
+        );
+        assert_eq!(
+            card_sat::<DenseInterval<Decimal>>(None, &[Card::new(pt, 1)], &[]),
+            CardSat::Sat,
+            "decimal point capacity=1 >= 1 => SAT"
+        );
+    }
+
+    /// Decimal interval `[0, 100]`: `≥1000` SAT (infinite capacity).
+    #[test]
+    fn decimal_interval_infinite_capacity() {
+        let zero = Decimal {
+            negative: false,
+            int: String::new(),
+            frac: String::new(),
+        };
+        let hundred = Decimal {
+            negative: false,
+            int: "100".to_string(),
+            frac: String::new(),
+        };
+        let iv = DenseInterval {
+            min: Some(zero),
+            min_incl: true,
+            max: Some(hundred),
+            max_incl: true,
+        };
+        assert_eq!(
+            card_sat::<DenseInterval<Decimal>>(None, &[Card::new(iv, 1000)], &[]),
+            CardSat::Sat
+        );
+    }
+
+    /// `DateKey` point: `≥2 p.{2020-01-01}` UNSAT; `≥1` SAT.
+    #[test]
+    fn datekey_point_capacity() {
+        let pt = DenseInterval::point((2020_i64, 1_u8, 1_u8));
+        assert_eq!(
+            card_sat::<DenseInterval<DateKey>>(None, &[Card::new(pt, 2)], &[]),
+            CardSat::Unsat,
+            "date point capacity=1 < 2 => UNSAT"
+        );
+        assert_eq!(
+            card_sat::<DenseInterval<DateKey>>(None, &[Card::new(pt, 1)], &[]),
+            CardSat::Sat
+        );
+    }
+
+    /// `DateKey` range `[2020-01-01, 2021-12-31]`: `≥1000` SAT (infinite).
+    #[test]
+    fn datekey_interval_infinite_capacity() {
+        let iv = DenseInterval {
+            min: Some((2020_i64, 1_u8, 1_u8)),
+            min_incl: true,
+            max: Some((2021_i64, 12_u8, 31_u8)),
+            max_incl: true,
+        };
+        assert_eq!(
+            card_sat::<DenseInterval<DateKey>>(None, &[Card::new(iv, 1000)], &[]),
+            CardSat::Sat
+        );
+    }
+
+    /// `DateTimeKey` point: `≥2 p.{2020-01-01T00:00:00}` UNSAT; `≥1` SAT.
+    #[test]
+    fn datetimekey_point_capacity() {
+        let pt = DenseInterval::point((2020_i64, 1_u8, 1_u8, 0_u8, 0_u8, 0_u8));
+        assert_eq!(
+            card_sat::<DenseInterval<DateTimeKey>>(None, &[Card::new(pt, 2)], &[]),
+            CardSat::Unsat,
+            "datetime point capacity=1 < 2 => UNSAT"
+        );
+        assert_eq!(
+            card_sat::<DenseInterval<DateTimeKey>>(None, &[Card::new(pt, 1)], &[]),
+            CardSat::Sat
+        );
+    }
+
+    /// `DateTimeKey` range: `≥1000` SAT (infinite).
+    #[test]
+    fn datetimekey_interval_infinite_capacity() {
+        let iv = DenseInterval {
+            min: Some((2020_i64, 1_u8, 1_u8, 0_u8, 0_u8, 0_u8)),
+            min_incl: true,
+            max: Some((2021_i64, 1_u8, 1_u8, 0_u8, 0_u8, 0_u8)),
+            max_incl: true,
+        };
+        assert_eq!(
+            card_sat::<DenseInterval<DateTimeKey>>(None, &[Card::new(iv, 1000)], &[]),
             CardSat::Sat
         );
     }

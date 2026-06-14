@@ -271,16 +271,51 @@ fn parse_datetime_key(s: &str) -> Option<DateTimeKey> {
     Some((y, mo, d, h, mi, sec))
 }
 
-fn parse_decimal_dkey_iri(iri: &str) -> Option<OrdRange<Decimal>> {
+pub(crate) fn parse_decimal_dkey_iri(iri: &str) -> Option<OrdRange<Decimal>> {
     parse_ord_dkey_iri(iri, DKEY_DECIMAL_TAG, parse_decimal)
 }
 
-fn parse_date_dkey_iri(iri: &str) -> Option<OrdRange<DateKey>> {
+pub(crate) fn parse_date_dkey_iri(iri: &str) -> Option<OrdRange<DateKey>> {
     parse_ord_dkey_iri(iri, DKEY_DATE_TAG, parse_date_key)
 }
 
-fn parse_datetime_dkey_iri(iri: &str) -> Option<OrdRange<DateTimeKey>> {
+pub(crate) fn parse_datetime_dkey_iri(iri: &str) -> Option<OrdRange<DateTimeKey>> {
     parse_ord_dkey_iri(iri, DKEY_DATETIME_TAG, parse_datetime_key)
+}
+
+/// Public single-point decode of a FLOAT `DKey` IRI into its bound components
+/// `(min, min_incl, max, max_incl)`. Returns `None` for any non-float-bucket
+/// or malformed `DKey` IRI. Mirrors [`decode_integer_dkey`] — returns
+/// decomposed components so the internal `FloatRange` type need not be exposed.
+#[must_use]
+pub fn decode_float_dkey(iri: &str) -> Option<(Option<f64>, bool, Option<f64>, bool)> {
+    parse_float_dkey_iri(iri).map(|r| (r.min, r.min_incl, r.max, r.max_incl))
+}
+
+/// Public single-point decode of a DECIMAL `DKey` IRI into its bound components
+/// `(min, min_incl, max, max_incl)`. Returns `None` for any non-decimal-bucket
+/// or malformed `DKey` IRI.
+#[must_use]
+pub fn decode_decimal_dkey(iri: &str) -> Option<(Option<Decimal>, bool, Option<Decimal>, bool)> {
+    parse_decimal_dkey_iri(iri).map(|r| (r.min, r.min_incl, r.max, r.max_incl))
+}
+
+/// Public single-point decode of a DATE `DKey` IRI into its bound components
+/// `(min, min_incl, max, max_incl)`. Returns `None` for any non-date-bucket
+/// or malformed `DKey` IRI.
+#[must_use]
+pub fn decode_date_dkey(iri: &str) -> Option<(Option<DateKey>, bool, Option<DateKey>, bool)> {
+    parse_date_dkey_iri(iri).map(|r| (r.min, r.min_incl, r.max, r.max_incl))
+}
+
+/// Public single-point decode of a DATETIME `DKey` IRI into its bound components
+/// `(min, min_incl, max, max_incl)`. Returns `None` for any non-datetime-bucket
+/// or malformed `DKey` IRI.
+#[must_use]
+pub fn decode_datetime_dkey(
+    iri: &str,
+) -> Option<(Option<DateTimeKey>, bool, Option<DateTimeKey>, bool)> {
+    parse_datetime_dkey_iri(iri).map(|r| (r.min, r.min_incl, r.max, r.max_incl))
 }
 
 /// Generic counterpart of [`lower_data_to_some`] for the [`OrdRange`]
@@ -672,26 +707,38 @@ pub fn convert_class_expression<A: ForIRI>(
                 None => Err(ConversionError::UnsupportedDataRange),
             }
         }
-        // Concrete-domain solver (P3): lower INTEGER- or STRING-qualified data
-        // cardinality to object `Min`/`Max` over the DKey filler so the
-        // tableau's concrete-domain clash can count it (capacity / conflict).
-        // Try integer first, then string — parse_integer_range returns None for
-        // string ranges and vice-versa, so the dispatch is clean. Other buckets
-        // and unqualified (`rdfs:Literal`) cardinality still drop — a sound
-        // under-approximation. The tableau SUPPRESSES object-cardinality
-        // expansion for DKey fillers, so this never materialises successors
-        // (it would otherwise blow up on a large `≥n` over a tiny range).
+        // Concrete-domain solver (P3): lower qualified data cardinality to
+        // object `Min`/`Max` over the DKey filler so the tableau's
+        // concrete-domain clash can count it (capacity / conflict). Try each
+        // bucket in turn; parsers are mutually exclusive by datatype IRI so
+        // only one branch matches. Unqualified or unrecognized cardinality
+        // still drops (UnsupportedDataRange → whole axiom drops, soundly).
+        // The tableau SUPPRESSES object-cardinality expansion for DKey fillers,
+        // so this never materialises successors (it would otherwise blow up on
+        // a large `≥n` over a tiny range).
         ClassExpression::DataMinCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, false)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, true, false))
+                .or_else(|_| lower_datetime_data_cardinality(*n, dp, dr, vocab, pool, true, false))
         }
         ClassExpression::DataMaxCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, false, true)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, false, true))
+                .or_else(|_| lower_datetime_data_cardinality(*n, dp, dr, vocab, pool, false, true))
         }
         ClassExpression::DataExactCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, true)
                 .or_else(|_| lower_str_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_float_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_decimal_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_date_data_cardinality(*n, dp, dr, vocab, pool, true, true))
+                .or_else(|_| lower_datetime_data_cardinality(*n, dp, dr, vocab, pool, true, true))
         }
     }
 }
@@ -740,6 +787,123 @@ fn lower_str_data_cardinality<A: ForIRI>(
     want_max: bool,
 ) -> Result<ConceptId, ConversionError> {
     if crate::data_axioms::parse_string_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a FLOAT-qualified data cardinality restriction to object `Min`/`Max`
+/// (or their `And` for `Exact`) over the float `DKey` filler. Returns
+/// `UnsupportedDataRange` (⇒ the whole axiom drops, soundly) for any
+/// non-float-bucket qualifier — mirrors [`lower_int_data_cardinality`].
+fn lower_float_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_float_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a DECIMAL-qualified data cardinality restriction to object `Min`/`Max`
+/// (or their `And` for `Exact`) over the decimal `DKey` filler. Returns
+/// `UnsupportedDataRange` for any non-decimal-bucket qualifier.
+fn lower_decimal_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_decimal_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a DATE-qualified data cardinality restriction to object `Min`/`Max`
+/// (or their `And` for `Exact`) over the date `DKey` filler. Returns
+/// `UnsupportedDataRange` for any non-date-bucket qualifier.
+fn lower_date_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_date_range(dr).is_none() {
+        return Err(ConversionError::UnsupportedDataRange);
+    }
+    let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
+        .ok_or(ConversionError::UnsupportedDataRange)?;
+    match (want_min, want_max) {
+        (true, false) => Ok(pool.min(n, role, filler)),
+        (false, true) => Ok(pool.max(n, role, filler)),
+        (true, true) => {
+            let lo = pool.min(n, role, filler);
+            let hi = pool.max(n, role, filler);
+            Ok(pool.and([lo, hi]))
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    }
+}
+
+/// Lower a DATETIME-qualified data cardinality restriction to object `Min`/`Max`
+/// (or their `And` for `Exact`) over the datetime `DKey` filler. Returns
+/// `UnsupportedDataRange` for any non-datetime-bucket qualifier.
+fn lower_datetime_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Result<ConceptId, ConversionError> {
+    if crate::data_axioms::parse_datetime_range(dr).is_none() {
         return Err(ConversionError::UnsupportedDataRange);
     }
     let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)

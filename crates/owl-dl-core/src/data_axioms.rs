@@ -765,10 +765,10 @@ impl<T: Ord + Clone> OrdRange<T> {
 /// digits with trailing zeros stripped (`""` = no fraction); `negative`
 /// is forced `false` for the zero value so `0`, `-0`, `0.00` collapse.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Decimal {
-    pub(crate) negative: bool,
-    pub(crate) int: String,
-    pub(crate) frac: String,
+pub struct Decimal {
+    pub negative: bool,
+    pub int: String,
+    pub frac: String,
 }
 
 impl Decimal {
@@ -817,11 +817,11 @@ impl PartialOrd for Decimal {
 
 /// Component key for `xsd:date`: `(year, month, day)`. Derived tuple order
 /// is chronological for timezone-free dates (the only kind we accept).
-pub(crate) type DateKey = (i64, u8, u8);
+pub type DateKey = (i64, u8, u8);
 /// Component key for `xsd:dateTime`: `(year, month, day, hour, min, sec)`.
 /// Integer-second, timezone-free only (fractional seconds / any `Z`/offset
 /// are dropped at parse — sound under-approx).
-pub(crate) type DateTimeKey = (i64, u8, u8, u8, u8, u8);
+pub type DateTimeKey = (i64, u8, u8, u8, u8, u8);
 
 /// Parse an `xsd:decimal` lexical literal into a normalized [`Decimal`].
 /// Conservative: returns `None` on any non-digit, an exponent (that is

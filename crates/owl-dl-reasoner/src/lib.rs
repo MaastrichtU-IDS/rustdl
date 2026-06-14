@@ -1896,11 +1896,14 @@ pub(crate) struct PreparedOntology {
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
 /// decoding every synthetic `DKey` filler class's IRI. Done where the
-/// vocabulary is available so the tableau need not carry IRIs. Integer and
-/// string buckets are wired; other buckets added as the integration grows.
+/// vocabulary is available so the tableau need not carry IRIs. All six
+/// datatype buckets (integer, string, float, decimal, date, dateTime) are
+/// decoded; the `DenseInterval` for dense types preserves inclusivity exactly
+/// (field-for-field copy, zero normalization) — a soundness requirement.
 fn build_dkey_range_map(
     internal: &InternalOntology,
 ) -> std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange> {
+    use owl_dl_datatypes::{DenseInterval, OrdF64};
     let mut map = std::collections::HashMap::new();
     for (class_id, iri) in internal.vocabulary.classes() {
         if !owl_dl_core::is_dkey_iri(iri) {
@@ -1917,6 +1920,50 @@ fn build_dkey_range_map(
                 owl_dl_core::StrSet::Set(s) => owl_dl_datatypes::FiniteSet::Set(s),
             };
             map.insert(class_id, owl_dl_datatypes::CardRange::Str(fs));
+        } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_float_dkey(iri) {
+            // Bridge FloatRange → DenseInterval<OrdF64>: wrap each f64 bound
+            // in OrdF64. Inclusivity flags copied 1:1 — no normalization.
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::Float(DenseInterval {
+                    min: min.map(OrdF64),
+                    min_incl,
+                    max: max.map(OrdF64),
+                    max_incl,
+                }),
+            );
+        } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_decimal_dkey(iri) {
+            // Bridge OrdRange<Decimal> → DenseInterval<Decimal>: same shape.
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::Decimal(DenseInterval {
+                    min,
+                    min_incl,
+                    max,
+                    max_incl,
+                }),
+            );
+        } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_date_dkey(iri) {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::Date(DenseInterval {
+                    min,
+                    min_incl,
+                    max,
+                    max_incl,
+                }),
+            );
+        } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_datetime_dkey(iri)
+        {
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::DateTime(DenseInterval {
+                    min,
+                    min_incl,
+                    max,
+                    max_incl,
+                }),
+            );
         }
     }
     map

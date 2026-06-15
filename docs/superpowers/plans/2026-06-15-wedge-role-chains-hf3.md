@@ -125,16 +125,41 @@ fmt clean, clippy `-D warnings` clean, full workspace tests green.
 ### family / family-stripped: STILL `consistent` (sound MISS — NOT closed)
 The chain machinery is correct and works over ABox individuals + generated
 successors (proved by `mech2`: chain → Bad → disjoint clash → wedge Unsat).
-But the family inconsistency additionally needs a **functional-role merge
-over a generated ∃-successor on an ABox-seeded node** (`∃hasSex.Female ⊓
-∃hasSex.Male` under `Functional(hasSex)` → `Female⊓Male` clash). That merge
-is NOT detected by the wedge — and a minimal test WITHOUT any chain
-(`mech3`: `Start⊑∃hasSex.Female`, `Start⊑∃hasSex.Male`, functional, disjoint,
-`a:Start`) ALSO returns Sat. So this is a **pre-existing, separate
-functional-merge gap on ABox-seeded nodes**, independent of HF3 (mech3 has
-zero chains). Closing it is out of scope for this feature and was NOT
-attempted (would risk the gate / touch the merge+blocking interaction).
-The two `family*_inconsistency_detected` tests remain `#[ignore]`d and
-were NOT un-ignored or weakened. family stays a sound MISS (reported
-`consistent`; the safe direction). Do NOT raise the global `FIXPOINT_ITERS`
-(would risk MISSED-via-timeout on chain-heavy classify pairs).
+Closing family needs TWO orthogonal things, BOTH beyond role-chains:
+
+**Blocker (1) — scale/stall (what real family-stripped actually hits).**
+RUSTDL_TRACE on the real ontology: `wedge Stalled → bounded tableau
+fall-through → timed out (10s) → consistent`. The wedge hits the 100k
+`FIXPOINT_ITERS` cap: transitive-role closure (~nodes²×#transitive-roles)
+over the ~1341-individual ABox explodes the event count. Per the
+`derive_role_edge` dedup + finite-nodes argument this is finite-but-too-
+large — **scale, not a termination bug** (no phantom loop to hunt).
+
+**Blocker (2) — functional-merge on an ABox-seeded node.** Even chain-free
+AND stall-free, the wedge misses the `∃hasSex.Female ⊓ ∃hasSex.Male` merge
+under `Functional(hasSex)` → `Female⊓Male` clash. Minimal `mech3` (zero
+chains: `Start⊑∃hasSex.Female`, `Start⊑∃hasSex.Male`, functional, disjoint,
+`a:Start`) returns Sat. **Pre-existing, separate, independent of HF3** —
+provable by code-path gating: all four HF3 changes fire only on constructs
+mech3 lacks (chain/transitive axioms, `Atom::Role` heads, non-first-leg
+role bodies, >2 chains). Matches the brief's own A1 note ("clash needs
+functional-role-merge of ∃hasSex.Female ⊓ ∃hasSex.Male").
+
+A budget bump ALONE is insufficient (blocker 2 remains), which is why we
+correctly did NOT touch the global `FIXPOINT_ITERS` (also: a higher classify
+cap would risk MISSED-via-timeout on chain-heavy pairs). Closing family =
+(1) consistency-scoped budget/blocking + (2) ABox-node functional merge —
+both out of scope here. The two `family*_inconsistency_detected` tests
+remain `#[ignore]`d and were NOT un-ignored or weakened. family stays a
+sound MISS (reported `consistent`; the safe direction).
+
+### Self-review nuances on record (no FP hole found)
+- **Dedup-before-deps-fold is sound.** If the same edge would be re-derived
+  under different deps D2, the dedup skips the fold — but the first
+  derivation's D1 already justifies the edge's existence within the branch,
+  so attributing D1 is a correct (conservative) dep, not an under-report.
+- **Derived edges stored at exact role; super-role consumers still fire**
+  via `role_matches`/`enumerate_matches` sub-role lookup at match time
+  (intended — no need to materialize super-role edges). Dedup is exact-only
+  (role_id+polarity+endpoints), so a sub/super-role edge is never wrongly
+  skipped.

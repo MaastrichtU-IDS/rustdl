@@ -4260,6 +4260,112 @@ mod tests {
         );
     }
 
+    /// T4 — SOUNDNESS centerpiece for the chain-derived-edge backjump
+    /// deps. A chain-derived edge feeds a clash that is INDEPENDENT of a
+    /// disjunction decision. The edge-dep fold (into both endpoints'
+    /// `birth_deps`) must let backjumping behave correctly:
+    ///   - the verdict must be `Unsat` (the chain clash holds in every
+    ///     branch), AND
+    ///   - it must NOT depend on whether the irrelevant disjunction is
+    ///     present — i.e. adding a decision the clash doesn't touch must
+    ///     not flip the verdict (a wrong dep would either backjump PAST
+    ///     the real clash → false `Sat`, or fail to → still `Unsat` but
+    ///     for the wrong reason). We assert the verdict is `Unsat` both
+    ///     with and without the disjunction.
+    /// This is the analog of `precise_card_deps_preserves_unsat_verdict`
+    /// for role-chain edge derivation (the `nn_merge_edge_copy_residual_c`
+    /// failure class the brief warns about).
+    #[test]
+    fn hf3_chain_edge_clash_backjump_preserves_verdict() {
+        let (a, b, c, d1, d2) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
+        // Decision-INDEPENDENT chain clash: A→∃R1.B, B→∃R2.C,
+        // R1∘R2⊑R3, {A(X),R3(X,z),C(z)}→⊥.
+        let core = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Exists(r2, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
+                head: vec![Atom::Role(r3, X, 2)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r3, X, 1), Atom::Class(c, 1)],
+                head: vec![],
+            },
+        ];
+        // Without the disjunction.
+        let mut e_no = HyperEngine::new(&core, a);
+        assert_eq!(
+            e_no.decide(64),
+            HyperResult::Unsat,
+            "chain clash alone must be Unsat"
+        );
+        // With an irrelevant disjunction decision A → D1 ∨ D2.
+        let mut with = core.clone();
+        with.push(DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+        });
+        let mut e_yes = HyperEngine::new(&with, a);
+        assert_eq!(
+            e_yes.decide(64),
+            HyperResult::Unsat,
+            "adding a decision the chain clash is independent of must not flip the verdict"
+        );
+    }
+
+    /// T4b — the FP-direction guard: a chain clash that fires only under
+    /// ONE disjunct. The OTHER disjunct is satisfiable, so the ontology is
+    /// SAT. If the chain-derived edge under-reported its deps (omitting
+    /// the branch decision that built its R1 leg), backjumping could
+    /// wrongly discard the satisfiable sibling and report a false `Unsat`.
+    /// Asserts `Sat` — the edge-dep fold must keep the decision in scope.
+    #[test]
+    fn hf3_chain_edge_under_one_disjunct_stays_sat() {
+        let (a, p, q, b, c) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
+        let clauses = vec![
+            // A → P ∨ Q   (the decision)
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(p, X), Atom::Class(q, X)],
+            },
+            // Only the P branch builds the chain that clashes:
+            // P → ∃R1.B, B → ∃R2.C, R1∘R2⊑R3, {R3(X,z),C(z)}→⊥.
+            DlClause {
+                body: vec![Atom::Class(p, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Exists(r2, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
+                head: vec![Atom::Role(r3, X, 2)],
+            },
+            DlClause {
+                body: vec![Atom::Class(p, X), Atom::Role(r3, X, 1), Atom::Class(c, 1)],
+                head: vec![],
+            },
+        ];
+        // Q branch is clash-free ⇒ overall Sat. A false Unsat here would
+        // mean the chain-derived edge's deps wrongly excluded the P
+        // decision, letting backjumping prune the Q sibling.
+        let mut e = HyperEngine::new(&clauses, a);
+        assert_eq!(
+            e.decide(64),
+            HyperResult::Sat,
+            "Q branch is satisfiable — chain clash under P must not force a false Unsat"
+        );
+    }
+
     #[test]
     fn hf3_three_leg_via_two_two_leg_clauses() {
         // Mimics decomposition output: R1∘R2⊑AUX, AUX∘R3⊑S, then the

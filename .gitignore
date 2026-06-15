@@ -3,6 +3,7 @@
 Cargo.lock.bak
 
 # Ontology corpus (fetched by xtask, not vendored)
+/ontologies
 /ontologies/
 
 # IDE / editor

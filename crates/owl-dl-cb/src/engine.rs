@@ -471,7 +471,7 @@ impl<'a> Engine<'a> {
 /// (core resolution, ordered `⊔` resolution, `∃`-Succ, `∀`-Pred, `⊥`) to a
 /// fixpoint.
 #[must_use]
-pub fn saturate(norm: &Normalized) -> ContextGraph {
+pub(crate) fn saturate(norm: &Normalized) -> ContextGraph {
     let mut eng = Engine::new(norm);
     eng.run();
     eng.graph

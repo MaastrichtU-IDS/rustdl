@@ -8,11 +8,6 @@
 //!
 //! Spec: `docs/superpowers/specs/2026-06-15-cb-engine-b1-alch-design.md`.
 
-// Staged-build allowance: the frozen interface (Task 0) carries fields/items
-// that are not read until the engine + normalizer land (Tasks A/B). Removed at
-// integration (Task E) once everything is wired and exercised.
-#![allow(dead_code, unreachable_pub)]
-
 mod classify;
 mod engine;
 mod model;

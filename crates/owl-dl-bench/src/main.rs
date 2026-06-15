@@ -727,11 +727,9 @@ mod cb_diff_tests {
     /// Build a tiny ALC ontology from OFN source and run `cb_diff`.
     ///
     /// This test encodes the contract: on `A⊑B, B⊑C` both engines must agree
-    /// (A⊑B, A⊑C, B⊑C). It is **`#[ignore]`** because the CB engine is a
-    /// `todo!()` stub until Task B lands — the test will panic at runtime until
-    /// integration. The build still compiles and verifies the harness API.
+    /// (A⊑B, A⊑C, B⊑C). Un-ignored at Task E integration — the CB engine is
+    /// now wired (no longer a `todo!()` stub).
     #[test]
-    #[ignore = "red pending Task B owl-dl-cb integration (engine is todo!() stub)"]
     fn cb_diff_simple_chain_is_identical() {
         let src = "Prefix(:=<http://test.example/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\

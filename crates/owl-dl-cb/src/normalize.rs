@@ -4,26 +4,31 @@
 //!
 //! ALCH axioms are translated into **flat clausal form** `⊓ᵢ Aᵢ ⊑ ⊔ⱼ Lⱼ` where:
 //! - Premise atoms `Aᵢ` are **positive** atomic concepts (`Atomic(ClassId)` or `⊤`)
-//! - Head literals `Lⱼ` are: atomic `B`, `¬B` (i.e. `Not(Atomic(B))`), `∃R.L`,
-//!   or `∀R.L` where `L` is an atomic literal (including negated atoms)
+//! - Head literals `Lⱼ` are: atomic `B`, `∃R.B`, or `∀R.B` where `B` is a
+//!   **positive** atom (`Atomic`/`⊤`/`⊥`). **No raw `Not` literal survives** —
+//!   every `¬C` is replaced by a positive **complement atom** `X` (`X ⊑ ¬C`)
+//!   defined by the disjointness clause `{C, X} ⊑ ⊥`.
 //!
 //! Nested/compound sub-concepts are eliminated via a **structural transformation**:
 //! a fresh definitional atom `X_φ` is introduced for each non-literal sub-concept
 //! `φ`, and equivalence clauses `X_φ ≡ φ` are emitted (both directions). The cache
 //! deduplicates by `ConceptId` so each sub-concept gets at most one fresh atom.
 //!
-//! # Polarity handling (critical for ALCH completeness)
+//! # Polarity handling (the A↔B convention — option (b))
 //!
-//! Because premise atoms must be **positive**, the LHS of a GCI is processed with
-//! polarity awareness:
+//! Because both premise atoms AND head literals must be **positive** (the
+//! standard SKH clausal form the engine consumes), negation is eliminated at
+//! normalization time via complement atoms (see [`Normalizer::complement_atom`]):
 //!
 //! - `¬A ⊑ D`          → `⊤ ⊑ A ⊔ D`  (A moves to the head as a positive literal)
-//! - `∃R.C ⊑ D`        → `⊤ ⊑ ∀R.¬C ⊔ D`  (`¬(∃R.C) = ∀R.¬C` in NNF)
-//! - `∀R.C ⊑ D`        → `⊤ ⊑ ∃R.¬C ⊔ D`  (`¬(∀R.C) = ∃R.¬C` in NNF)
+//! - `∃R.C ⊑ D`        → `⊤ ⊑ ∀R.X ⊔ D`  with `X ⊑ ¬C`, `{C, X} ⊑ ⊥`
+//! - `∀R.C ⊑ D`        → `⊤ ⊑ ∃R.X ⊔ D`  with `X ⊑ ¬C`, `{C, X} ⊑ ⊥`
+//! - `A ⊑ ¬C`          → `A ⊑ X`  with `X ⊑ ¬C`, `{C, X} ⊑ ⊥`
 //! - `(A ⊓ ¬B ⊓ ...) ⊑ D` → premise `[A]`, head `[B, D_literals...]`
 //!
 //! The input is put through `nnf_axioms` before processing so that `Not` only
-//! appears directly on atomic concepts.
+//! appears directly on atomic concepts; the complement-atom reduction then
+//! removes those `Not(Atomic)` literals entirely.
 //!
 //! # Fragment gate
 //!
@@ -43,14 +48,14 @@ use owl_dl_core::ontology::{Axiom, InternalOntology, SubRolePath};
 /// A normalized ALCH ontology: clausal axioms + the reportable atomic-class
 /// vocabulary + the role hierarchy (for `∀`-propagation) + the (possibly
 /// extended) concept pool.
-pub struct Normalized {
-    pub clauses: Vec<OntClause>,
+pub(crate) struct Normalized {
+    pub(crate) clauses: Vec<OntClause>,
     /// Reportable atomic classes (excludes definitional/synthetic atoms).
-    pub classes: Vec<ClassId>,
+    pub(crate) classes: Vec<ClassId>,
     /// `R ⊑ S` edges (used by the engine's `∀`-propagation).
-    pub role_hierarchy: Vec<(Role, Role)>,
+    pub(crate) role_hierarchy: Vec<(Role, Role)>,
     /// Owned pool; may gain definitional atoms from the structural transform.
-    pub pool: ConceptPool,
+    pub(crate) pool: ConceptPool,
 }
 
 // ── Normalization state ──────────────────────────────────────────────────────
@@ -58,6 +63,8 @@ pub struct Normalized {
 /// Tracks fresh definitional atoms allocated during normalization.
 struct DefAtoms {
     by_concept: HashMap<ConceptId, ClassId>,
+    /// Complement atoms: `comp[c] = X` with `X ≡ ¬c` (`c` a positive atom).
+    comp: HashMap<ConceptId, ClassId>,
     next_id: u32,
 }
 
@@ -65,6 +72,7 @@ impl DefAtoms {
     fn new(next_id: u32) -> Self {
         Self {
             by_concept: HashMap::new(),
+            comp: HashMap::new(),
             next_id,
         }
     }
@@ -138,18 +146,6 @@ impl Normalizer {
 
     // ── Structural transformation helpers ────────────────────────────────────
 
-    /// Return whether `cid` is a "simple literal" that can be used directly as
-    /// a head literal or as the filler of `∃R.`/`∀R.` without further naming.
-    ///
-    /// A simple literal is: `Atomic(_)`, `Not(Atomic(_))`, `Bot`, `Top`.
-    fn is_literal(cid: ConceptId, pool: &ConceptPool) -> bool {
-        match pool.get(cid) {
-            ConceptExpr::Atomic(_) | ConceptExpr::Bot | ConceptExpr::Top => true,
-            ConceptExpr::Not(inner) => matches!(pool.get(*inner), ConceptExpr::Atomic(_)),
-            _ => false,
-        }
-    }
-
     /// Allocate (or reuse) a fresh definitional atom `X` for sub-concept `cid`,
     /// and emit equivalence clauses `X ≡ cid` in both directions.
     ///
@@ -177,15 +173,84 @@ impl Normalizer {
         owl_dl_core::normalize::nnf_complement(cid, &mut self.pool)
     }
 
-    /// Flatten `filler` to a literal form for use inside `∃R.` / `∀R.`:
-    /// if already a simple literal, return as-is; otherwise introduce a def atom.
-    fn flatten_to_literal(&mut self, filler: ConceptId) -> ConceptId {
-        if Self::is_literal(filler, &self.pool) {
-            filler
-        } else {
-            let cls = self.def_atom_for(filler);
-            self.pool.atomic(cls)
+    /// Allocate (or reuse) a positive **complement atom** `X` for the positive
+    /// literal `c_lit` (`X ⊑ ¬c_lit`), and emit the disjointness clause that
+    /// defines it:
+    ///   - `{c_lit, X} ⊑ ⊥`   (they cannot co-occur — `X` excludes `c_lit`)
+    ///
+    /// Returns the `Atomic(X)` concept id (always a **positive** literal — no
+    /// raw `Not` ever survives into a clause). `⊤`/`⊥` are handled directly
+    /// (`¬⊤ = ⊥`, `¬⊥ = ⊤`). A compound `c_lit` is first reduced to a def atom.
+    ///
+    /// This is the A↔B convention reconciliation (Task E, option (b)): the
+    /// engine consumes only positive-atom literals + disjointness clauses (the
+    /// standard SKH clausal form), so `normalize` eliminates every `Not(Atomic)`
+    /// filler/head literal in favour of such a complement atom.
+    ///
+    /// **Why only the disjointness direction (no totality `⊤ ⊑ c_lit ⊔ X`).**
+    /// The CB read-off reports an *atomic subsumption* `H ⊑ A` only for genuine
+    /// classes `A`; the synthetic `X` is never read off, so the excluded-middle
+    /// `c_lit ⊔ X` is never needed to witness a real subsumption — every
+    /// positive consequence of a left-`∃`/`∀` flows through disjointness +
+    /// `∀`-propagation + `⊥`-back-prop (cf. the engine's `pure_el_left_existential`
+    /// / `disjunctive_back_propagation` unit tests, which also omit totality and
+    /// pass). The empty-premise totality clause would fire in *every* context,
+    /// injecting a 2-literal disjunction per complement atom — a blow-up risk on
+    /// `¬`-heavy ALC inputs — for zero completeness gain. Dropping it biases any
+    /// residual uncertainty toward a MISS (`only_in_current`), never an FP
+    /// (`only_in_cb`), per the soundness discipline. The differential gate on
+    /// alehif (`identical: true`) is the empirical confirmation.
+    fn complement_atom(&mut self, c_lit: ConceptId) -> ConceptId {
+        match self.pool.get(c_lit) {
+            ConceptExpr::Top => return self.pool.bot(),
+            ConceptExpr::Bot => return self.pool.top(),
+            _ => {}
         }
+        // Ensure we complement a genuine atom (def-atom any compound first).
+        let atom = if matches!(self.pool.get(c_lit), ConceptExpr::Atomic(_)) {
+            c_lit
+        } else {
+            let cls = self.def_atom_for(c_lit);
+            self.pool.atomic(cls)
+        };
+        if let Some(&cls) = self.def.comp.get(&atom) {
+            return self.pool.atomic(cls);
+        }
+        let cls = ClassId::new(self.def.next_id);
+        self.def.next_id += 1;
+        self.def.comp.insert(atom, cls);
+        let x_cid = self.pool.atomic(cls);
+        // {atom, X} ⊑ ⊥
+        self.clauses.push(OntClause {
+            premise: vec![atom, x_cid],
+            head: vec![],
+        });
+        x_cid
+    }
+
+    /// Reduce a literal to an equivalent **positive** literal (`Atomic`/`⊤`/`⊥`):
+    /// a `Not(Atomic)` becomes its complement atom; a compound becomes a def
+    /// atom; positive literals pass through. Used wherever a literal would
+    /// otherwise be emitted as a raw `Not` (head literals, `∃`/`∀` fillers).
+    fn positive_literal(&mut self, lit: ConceptId) -> ConceptId {
+        match self.pool.get(lit).clone() {
+            ConceptExpr::Atomic(_) | ConceptExpr::Top | ConceptExpr::Bot => lit,
+            ConceptExpr::Not(inner) => {
+                // NNF guarantees `inner` is atomic.
+                self.complement_atom(inner)
+            }
+            _ => {
+                let cls = self.def_atom_for(lit);
+                self.pool.atomic(cls)
+            }
+        }
+    }
+
+    /// Flatten `filler` to a **positive** literal for use inside `∃R.` / `∀R.`:
+    /// atomic/`⊤`/`⊥` pass through; `Not(Atomic)` becomes its complement atom;
+    /// a compound is named via a def atom. No raw `Not` survives (option (b)).
+    fn flatten_to_literal(&mut self, filler: ConceptId) -> ConceptId {
+        self.positive_literal(filler)
     }
 
     // ── Core normalization: SubClassOf(sub, sup) ──────────────────────────────
@@ -261,8 +326,9 @@ impl Normalizer {
     /// - `Atomic(a)` → premise atom `a`
     /// - `¬Atomic(a)` → extra head literal `Atomic(a)` (flip: ¬A on LHS → A on head)
     /// - `And(cs)` → recurse on each conjunct, collect all atoms and extras
-    /// - `∃R.C` → extra head `∀R.¬C` (the NNF complement)
-    /// - `∀R.C` → extra head `∃R.¬C`
+    /// - `∃R.C` → extra head `∀R.X` with `X ⊑ ¬C` (positive complement atom — the
+    ///   NNF complement `¬C` reduced to a positive literal, option (b))
+    /// - `∀R.C` → extra head `∃R.X` with `X ⊑ ¬C`
     /// - Other compound (def-atom introduction): treat as new atomic premise
     ///
     /// Note: `Or` and `Bot` are handled at the `normalize_subclassof` level.
@@ -353,8 +419,13 @@ impl Normalizer {
             | ConceptExpr::Max(_, _, _) => {
                 let _ = out;
             }
-            ConceptExpr::Atomic(_) | ConceptExpr::Not(_) => {
+            ConceptExpr::Atomic(_) => {
                 out.push(cid);
+            }
+            ConceptExpr::Not(_) => {
+                // `¬B` head literal → positive complement atom (option (b)).
+                let pos = self.positive_literal(cid);
+                out.push(pos);
             }
             ConceptExpr::And(_) => {
                 // And appearing as a disjunct within Or on the RHS:
@@ -528,7 +599,7 @@ impl Normalizer {
 ///
 /// Applies `nnf_axioms` internally (NNF is required for correct polarity handling
 /// of negation in premise and head positions).
-pub fn normalize(internal: &InternalOntology) -> Result<Normalized, &'static str> {
+pub(crate) fn normalize(internal: &InternalOntology) -> Result<Normalized, &'static str> {
     // Clone and apply NNF (pushes Not to atomic positions).
     let mut onto = internal.clone();
     let axioms = nnf_axioms(&mut onto);
@@ -561,6 +632,15 @@ pub fn normalize(internal: &InternalOntology) -> Result<Normalized, &'static str
         })
         .collect();
 
+    // Ensure every reportable class atom is interned in the pool — a
+    // declared-but-unused class (no axiom references it) would otherwise have
+    // no `Atomic(_)` ConceptId, panicking the engine's `atom_of_class` seed and
+    // silently vanishing from the read-off. Interning is harmless (it adds an
+    // isolated atom with no clauses → its root context derives only itself).
+    for &cls in &classes {
+        let _ = n.pool.atomic(cls);
+    }
+
     Ok(Normalized {
         clauses: n.clauses,
         classes,
@@ -579,6 +659,7 @@ mod tests {
     use horned_owl::model::RcStr;
     use horned_owl::ontology::set::SetOntology;
     use owl_dl_core::convert::convert_ontology;
+    use std::collections::BTreeSet;
     use std::io::Cursor;
 
     fn parse(src: &str) -> InternalOntology {
@@ -633,6 +714,32 @@ Ontology(<http://rustdl.test/test>\n\
                     |(&cid, &cls)| matches!(pool.get(cid), ConceptExpr::Atomic(c) if *c == cls),
                 );
             prem_match && head_match
+        })
+    }
+
+    /// Like [`has_atomic_clause`] but order-insensitive: the clause's premise
+    /// atoms equal `premise_classes` as a set, and its head atoms equal
+    /// `head_classes` as a set (all `Atomic`, no `Not`/role literals).
+    fn has_unordered_clause(
+        norm: &Normalized,
+        premise_classes: &[ClassId],
+        head_classes: &[ClassId],
+    ) -> bool {
+        let as_classes = |lits: &[ConceptId]| -> Option<BTreeSet<ClassId>> {
+            lits.iter()
+                .map(|&cid| match norm.pool.get(cid) {
+                    ConceptExpr::Atomic(id) => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        };
+        let want_prem: BTreeSet<ClassId> = premise_classes.iter().copied().collect();
+        let want_head: BTreeSet<ClassId> = head_classes.iter().copied().collect();
+        norm.clauses.iter().any(|cl| {
+            cl.premise.len() == premise_classes.len()
+                && cl.head.len() == head_classes.len()
+                && as_classes(&cl.premise).is_some_and(|p| p == want_prem)
+                && as_classes(&cl.head).is_some_and(|h| h == want_head)
         })
     }
 
@@ -921,9 +1028,9 @@ Ontology(<http://rustdl.test/test>\n\
     // Polarity / negative-position tests (the critical cases the advisor flagged)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// `A ⊑ ¬B` → `{A, B} ⊑ {}` (empty head: A and B together is unsat).
-    ///
-    /// Because: `A ⊑ ¬B` ≡ `A ⊓ B ⊑ ⊥`, and `¬B` in head = B moved to premise.
+    /// `A ⊑ ¬B` → option (b) positive-complement encoding: `{A} ⊑ {X}` where
+    /// `X ⊑ ¬B`, defined by the disjointness clause `{B, X} ⊑ ⊥`. No raw `Not`
+    /// survives.
     #[test]
     fn sub_neg_right_moves_to_premise() {
         let internal = parse(&onto(
@@ -934,28 +1041,43 @@ Ontology(<http://rustdl.test/test>\n\
         let norm = normalize(&internal).expect("ALCH");
         let a = class_id(&internal, "A");
         let b = class_id(&internal, "B");
-        // A ⊑ ¬B → after NNF, sup = Not(Atomic(B))
-        // The clause should have {A} ⊑ {¬B} where ¬B = Not(Atomic(B)) is the head literal.
-        // OR equivalently: {A, B} ⊑ {} via some other encoding.
-        // Our implementation: ¬B in head = a valid head literal Not(Atomic(B)).
-        let found = norm.clauses.iter().any(|cl| {
-            let prem_ok = cl.premise.len() == 1
-                && matches!(norm.pool.get(cl.premise[0]), ConceptExpr::Atomic(id) if *id == a);
-            let head_ok = cl.head.len() == 1
-                && matches!(norm.pool.get(cl.head[0]), ConceptExpr::Not(inner)
-                    if matches!(norm.pool.get(*inner), ConceptExpr::Atomic(id) if *id == b));
-            prem_ok && head_ok
-        });
+        // No clause head may contain a raw Not(Atomic) literal (option (b)).
         assert!(
-            found,
-            "expected {{A}} ⊑ {{¬B}} clause; clauses: {:?}",
+            !norm.clauses.iter().any(|cl| cl
+                .head
+                .iter()
+                .any(|&l| matches!(norm.pool.get(l), ConceptExpr::Not(_)))),
+            "no raw Not head literal should survive; clauses: {:?}",
+            norm.clauses
+        );
+        // Find {A} ⊑ {X} with X a positive atom (the complement atom, X ≢ B).
+        let x: ClassId = norm
+            .clauses
+            .iter()
+            .find_map(|cl| {
+                if cl.premise.len() == 1
+                    && matches!(norm.pool.get(cl.premise[0]), ConceptExpr::Atomic(id) if *id == a)
+                    && cl.head.len() == 1
+                    && let ConceptExpr::Atomic(id) = norm.pool.get(cl.head[0])
+                    && *id != b
+                {
+                    return Some(*id);
+                }
+                None
+            })
+            .unwrap_or_else(|| {
+                panic!("expected {{A}} ⊑ {{X}} clause; clauses: {:?}", norm.clauses)
+            });
+        // X is defined by the disjointness clause {B, X} ⊑ ⊥.
+        assert!(
+            has_unordered_clause(&norm, &[b, x], &[]),
+            "expected {{B, X}} ⊑ ⊥ disjointness clause (X={x:?}); clauses: {:?}",
             norm.clauses
         );
     }
 
-    /// `∃R.B ⊑ D` → `⊤ ⊑ ∀R.¬B ⊔ D` → `{} ⊑ {∀R.¬B, D}`.
-    ///
-    /// This is the `ObjectPropertyDomain` pattern: `∃R.⊤ ⊑ domain`.
+    /// `∃R.B ⊑ D` → option (b): `{} ⊑ {∀R.X, D}` with `X ⊑ ¬B` (positive
+    /// complement atom), defined by the disjointness clause `{B, X} ⊑ ⊥`.
     #[test]
     fn existential_on_lhs_converts_to_forall_neg_on_rhs() {
         let internal = parse(&onto(
@@ -970,23 +1092,41 @@ Ontology(<http://rustdl.test/test>\n\
         let r_id = role_id_for(&internal, "R");
         let role = Role::named(r_id);
 
-        // Expected clause: {} ⊑ {∀R.¬B, D}
-        let found = norm.clauses.iter().any(|cl| {
-            let prem_ok = cl.premise.is_empty();
-            let has_d = cl.head.iter().any(|&cid| {
-                matches!(norm.pool.get(cid), ConceptExpr::Atomic(id) if *id == d)
-            });
-            let has_forall_neg_b = cl.head.iter().any(|&cid| {
-                matches!(norm.pool.get(cid), ConceptExpr::All(r, filler)
-                    if *r == role
-                        && matches!(norm.pool.get(*filler), ConceptExpr::Not(inner)
-                            if matches!(norm.pool.get(*inner), ConceptExpr::Atomic(id) if *id == b)))
-            });
-            prem_ok && has_d && has_forall_neg_b
-        });
+        // Expected clause: {} ⊑ {∀R.X, D} with X a positive atom (X ≢ B).
+        let x: ClassId =
+            norm.clauses
+                .iter()
+                .find_map(|cl| {
+                    if !cl.premise.is_empty() {
+                        return None;
+                    }
+                    let has_d = cl.head.iter().any(
+                        |&cid| matches!(norm.pool.get(cid), ConceptExpr::Atomic(id) if *id == d),
+                    );
+                    if !has_d {
+                        return None;
+                    }
+                    cl.head.iter().find_map(|&cid| {
+                        if let ConceptExpr::All(r, filler) = norm.pool.get(cid)
+                            && *r == role
+                            && let ConceptExpr::Atomic(id) = norm.pool.get(*filler)
+                            && *id != b
+                        {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected {{}} ⊑ {{∀R.X, D}} clause; clauses: {:?}",
+                        norm.clauses
+                    )
+                });
         assert!(
-            found,
-            "expected {{}} ⊑ {{∀R.¬B, D}} clause; clauses: {:?}",
+            has_unordered_clause(&norm, &[b, x], &[]),
+            "expected {{B, X}} ⊑ ⊥ defining X; clauses: {:?}",
             norm.clauses
         );
     }
@@ -1027,7 +1167,8 @@ Ontology(<http://rustdl.test/test>\n\
         );
     }
 
-    /// `A ⊓ ∃R.B ⊑ C` → `{A} ⊑ {∀R.¬B, C}` (A in premise, ∃R.B → ∀R.¬B on head).
+    /// `A ⊓ ∃R.B ⊑ C` → option (b): `{A} ⊑ {∀R.X, C}` with `X ⊑ ¬B` (positive
+    /// complement atom), defined by the disjointness clause `{B, X} ⊑ ⊥`.
     #[test]
     fn and_lhs_with_existential() {
         let internal = parse(&onto(
@@ -1043,22 +1184,37 @@ Ontology(<http://rustdl.test/test>\n\
         let c = class_id(&internal, "C");
         let r_id = role_id_for(&internal, "R");
         let role = Role::named(r_id);
-        // Expected: {A} ⊑ {∀R.¬B, C}
-        let found = norm.clauses.iter().any(|cl| {
-            let prem_a = cl.premise.len() == 1
-                && matches!(norm.pool.get(cl.premise[0]), ConceptExpr::Atomic(id) if *id == a);
-            let has_c = cl.head.iter().any(|&cid| {
-                matches!(norm.pool.get(cid), ConceptExpr::Atomic(id) if *id == c)
-            });
-            let has_forall_neg_b = cl.head.iter().any(|&cid| {
-                matches!(norm.pool.get(cid), ConceptExpr::All(r, filler)
-                    if *r == role
-                        && matches!(norm.pool.get(*filler), ConceptExpr::Not(inner)
-                            if matches!(norm.pool.get(*inner), ConceptExpr::Atomic(id) if *id == b)))
-            });
-            prem_a && has_c && has_forall_neg_b
-        });
-        assert!(found, "expected {{A}} ⊑ {{∀R.¬B, C}}");
+        // Expected: {A} ⊑ {∀R.X, C} with X positive (X ≢ B).
+        let x: ClassId = norm
+            .clauses
+            .iter()
+            .find_map(|cl| {
+                let prem_a = cl.premise.len() == 1
+                    && matches!(norm.pool.get(cl.premise[0]), ConceptExpr::Atomic(id) if *id == a);
+                let has_c = cl
+                    .head
+                    .iter()
+                    .any(|&cid| matches!(norm.pool.get(cid), ConceptExpr::Atomic(id) if *id == c));
+                if !(prem_a && has_c) {
+                    return None;
+                }
+                cl.head.iter().find_map(|&cid| {
+                    if let ConceptExpr::All(r, filler) = norm.pool.get(cid)
+                        && *r == role
+                        && let ConceptExpr::Atomic(id) = norm.pool.get(*filler)
+                        && *id != b
+                    {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_else(|| panic!("expected {{A}} ⊑ {{∀R.X, C}}; clauses: {:?}", norm.clauses));
+        assert!(
+            has_unordered_clause(&norm, &[b, x], &[]),
+            "expected {{B, X}} ⊑ ⊥"
+        );
     }
 
     /// Def atom X for `B ⊔ C` gets backward clauses `B ⊑ X` and `C ⊑ X`.

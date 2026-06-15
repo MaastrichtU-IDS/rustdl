@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Read the (transitively closed) atomic-class subsumption relation + the
 /// unsatisfiable set from the saturated graph.
 #[must_use]
-pub fn read_hierarchy(norm: &Normalized, graph: &ContextGraph) -> CbHierarchy {
+pub(crate) fn read_hierarchy(norm: &Normalized, graph: &ContextGraph) -> CbHierarchy {
     let mut out = CbHierarchy::default();
 
     // Map each reportable class to its `Atomic` ConceptId.

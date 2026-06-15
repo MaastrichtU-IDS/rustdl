@@ -193,13 +193,23 @@ fn reasoning_by_cases_unsat() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 4. Role-hierarchy ∀-propagation
+// 4. Role-hierarchy ∀-propagation → unsat (the SOUND observable of ∀ over R⊑S)
 //
-//   A ⊑ ∀S.B,  A ⊑ ∃R.C,  SubObjectPropertyOf(R, S)  ⟹  C ⊑ B
-//   (every R-successor is also an S-successor, so ∀S.B forces B on it)
+//   A ⊑ ∀S.B,  A ⊑ ∃R.C,  SubObjectPropertyOf(R, S),  DisjointClasses(B, C)
+//   ⟹  A ⊑ ⊥
 //
-//   The propagation path: ∀S.B on A + R⊑S means ∀R.B holds too; the ∃R.C
-//   successor's context derives B, so C ⊑ B in the hierarchy.
+//   A's R-successor is also an S-successor (R⊑S), so ∀S.B forces it to be B;
+//   it is already C (from ∃R.C); B and C are disjoint ⟹ the successor — hence A
+//   — is unsatisfiable. This is the *entailed* consequence of role-hierarchy
+//   ∀-propagation.
+//
+//   NOTE (Task E): the original canary asserted `C ⊑ B`, which is NOT entailed.
+//   ∀S.B constrains only A's R/S-successors, not every C: a standalone C that is
+//   nobody's S-successor need not be B. Countermodel: {x:A, y:C⊓B, z:C} with
+//   x —R,S→ y; ∀S.B holds (x's only S-succ y is B), yet z:C is not B ⟹ C ⋢ B.
+//   The sound+complete hybrid agrees (`cb-diff identical: true`, 0 subsumptions).
+//   Rewritten to a true-positive unsat test of the SAME machinery (R⊑S + ∀S.B +
+//   ∃R.C + disjointness) so ∀-over-role-hierarchy coverage is preserved.
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -212,10 +222,14 @@ fn role_hierarchy_forall_propagation() {
     Declaration(ObjectProperty(:S))
     SubClassOf(:A ObjectAllValuesFrom(:S :B))
     SubClassOf(:A ObjectSomeValuesFrom(:R :C))
-    SubObjectPropertyOf(:R :S)",
+    SubObjectPropertyOf(:R :S)
+    DisjointClasses(:B :C)",
     );
-    // The R-successor of A is constrained by ∀S.B (via R⊑S), so C ⊑ B.
-    assert_subsumes(&c, "http://t/C", "http://t/B");
+    // A's R-successor must be B (∀S.B via R⊑S) AND C (∃R.C), but B⊓C⊑⊥ ⟹ A ⊑ ⊥.
+    assert_unsat(&c, "http://t/A");
+    // B and C individually stay satisfiable.
+    assert_sat(&c, "http://t/B");
+    assert_sat(&c, "http://t/C");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -287,18 +301,26 @@ fn no_spurious_subsumption_fp_guard() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 8. ∀-transitivity with role hierarchy and ⊥ clash
+// 8. ∀ does NOT propagate transitively (FP / over-derivation guard)
 //
 //   A ⊑ ∃R.C,  C ⊑ ∃S.E,  SubObjectPropertyOf(R,T), SubObjectPropertyOf(S,T),
-//   A ⊑ ∀T.B,  DisjointClasses(E, B)  ⟹  A ⊑ ⊥
+//   A ⊑ ∀T.B,  DisjointClasses(E, B)  ⟹  A is SATISFIABLE.
 //
-//   Tests multi-hop ∀-propagation: the ∀T.B constraint on A must propagate
-//   down through the R-successor (C) and S-successor (E), showing E ⊑ B
-//   (from ∀T.B via T-edges), which contradicts Disjoint(E,B).
+//   ∀T.B on A constrains only A's *direct* T-successors. A's R-successor c (R⊑T)
+//   is forced to B — fine, c is C⊓B, no clash. But c's S-successor e (type E) is
+//   a T-successor of *c*, NOT of A; T is not transitive in ALCH, so ∀T.B never
+//   reaches e. Disjoint(E,B) is never triggered. Countermodel: {a:A, c:C⊓B, e:E}
+//   with a —R,T→ c, c —S,T→ e — every axiom holds, A is inhabited.
+//
+//   NOTE (Task E): the original canary asserted A unsat via "multi-hop"
+//   ∀-propagation. That is NOT entailed (∀ is one-step; T not transitive). The
+//   sound+complete hybrid agrees A is satisfiable (`cb-diff identical: true`).
+//   Rewritten to the FP guard it should be: deriving A ⊑ ⊥ here would be
+//   UNSOUND over-derivation.
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn forall_propagation_multi_hop_clash_unsat() {
+fn forall_propagation_multi_hop_no_clash_sat() {
     let c = classify_alch_with_internal(
         r"    Declaration(Class(:A))
     Declaration(Class(:B))
@@ -314,8 +336,8 @@ fn forall_propagation_multi_hop_clash_unsat() {
     SubClassOf(:A ObjectAllValuesFrom(:T :B))
     DisjointClasses(:E :B)",
     );
-    // A is unsatisfiable: E must also be B (via ∀T.B + S⊑T) but Disjoint(E,B)
-    assert_unsat(&c, "http://t/A");
+    // A must stay satisfiable — ∀T.B is one-step; e (E) is not A's T-successor.
+    assert_sat(&c, "http://t/A");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -23,6 +23,7 @@ use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::io::rdf::reader::read as read_rdf;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_cb::CbOutcome;
 use owl_dl_reasoner::{
     Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
     classify_saturation_only, classify_with_timeout, instances_of, instances_of_saturation_only,
@@ -126,6 +127,18 @@ enum Command {
         /// `set_var` under the crate's `unsafe_code` deny.)
         #[arg(long)]
         saturation_only: bool,
+        /// Use the consequence-based ALCH engine (CB) instead of the
+        /// default per-pair hybrid. The CB engine is sound and complete
+        /// for ALCH (ALC + role hierarchy). If the ontology uses a
+        /// construct outside ALCH (`≤n`/`≥n`, inverse roles, nominals,
+        /// datatypes, role chains, transitivity) this exits with a
+        /// non-zero status and prints the offending construct.
+        ///
+        /// NOTE: the CB engine is currently a stub (`todo!()` — Task B
+        /// not yet integrated). Passing this flag will panic until the
+        /// engine implementation lands.
+        #[arg(long)]
+        cb: bool,
     },
     /// Decide whether INDIVIDUAL is provably an instance of CLASS.
     Instance {
@@ -618,8 +631,49 @@ fn main() -> Result<()> {
             top_down: _,
             n2_classify,
             saturation_only,
+            cb,
         } => {
             let onto = parse_ofn(&file)?;
+
+            // --cb: route through the consequence-based ALCH engine.
+            if cb {
+                let internal = owl_dl_core::convert::convert_ontology(&onto)
+                    .context("convert_ontology for --cb")?;
+                match owl_dl_cb::classify(&internal) {
+                    CbOutcome::OutOfFragment(reason) => {
+                        anyhow::bail!(
+                            "--cb: ontology is outside ALCH — {reason}; \
+                             re-run without --cb to use the full hybrid engine"
+                        );
+                    }
+                    CbOutcome::Classified(hier) => {
+                        // Print a minimal hierarchy in the same format as the
+                        // normal classify output (no stats — CB doesn't have them).
+                        let stdout = std::io::stdout();
+                        let mut out = BufWriter::with_capacity(1 << 16, stdout.lock());
+                        let vocab = &internal.vocabulary;
+                        let _ = writeln!(out, "# engine: CB (consequence-based ALCH)");
+                        let _ = writeln!(out, "# subsumptions: {}", hier.subsumptions.len());
+                        if !hier.unsat.is_empty() {
+                            let _ = writeln!(out, "# unsatisfiable: {}", hier.unsat.len());
+                            for id in &hier.unsat {
+                                let _ = writeln!(out, "unsat\t{}", vocab.class_iri(*id));
+                            }
+                        }
+                        for (sub_id, sup_id) in &hier.subsumptions {
+                            let _ = writeln!(
+                                out,
+                                "direct\t{}\t{}",
+                                vocab.class_iri(*sub_id),
+                                vocab.class_iri(*sup_id)
+                            );
+                        }
+                        let _ = out.flush();
+                    }
+                }
+                return Ok(());
+            }
+
             // 0 = unbounded; any positive value bounds each pair.
             let timeout =
                 (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));

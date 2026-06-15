@@ -2363,7 +2363,6 @@ fn literal_to_distinct_val<A: ForIRI>(l: &Literal<A>) -> Option<DistinctVal> {
 /// a non-empty fraction (`1.5` is not an `xsd:integer` value) or a magnitude
 /// outside `i64`. `None` => the value is not counted against an integer range
 /// (a sound under-count — never a false-fire).
-#[allow(dead_code)] // used by value_in_range in Task 2
 fn decimal_as_i64(d: &Decimal) -> Option<i64> {
     if !d.frac.is_empty() {
         return None;
@@ -2375,6 +2374,47 @@ fn decimal_as_i64(d: &Decimal) -> Option<i64> {
     };
     let signed: i128 = if d.negative { -mag } else { mag };
     i64::try_from(signed).ok()
+}
+
+/// `true` iff `v` is **provably** a value of `dr`. Reuses each range type's
+/// reviewed `subset` via its singleton constructor — `{v} ⊆ dr` is exactly
+/// `v ∈ dr`, with no new boundary algebra. The parsers are pairwise mutually
+/// exclusive by datatype, so a value is tested only when its family matches
+/// `dr`; any parser returning `None` => not provably in `dr` => `false` (sound
+/// under-count). Subtleties:
+/// - A `Num` (integer/decimal) is checked against `xsd:integer` first via
+///   `decimal_as_i64`; if that returns `None` (non-integer decimal like `1.5`)
+///   the integer range rejects it, and the decimal range is tried next.
+/// - `Double` (`xsd:double` only) uses `parse_double_range` — not
+///   `parse_float_range` — to avoid the f32/f64 soundness landmine documented
+///   in `literal_provably_outside_range` (an `xsd:float`-typed bound with f64
+///   arithmetic can mis-compare; xsd:double is exactly f64).
+/// - Cross-family values never match (the matching parser returns `None`).
+///
+/// **FP-critical**: a false `true` would over-count distinct in-range values
+/// and emit a spurious `Top ⊑ Bot`. When uncertain, MUST return `false`.
+#[allow(dead_code)] // used by emit_data_cardinality_violations_typed in Task 3
+fn value_in_range<A: ForIRI>(v: &DistinctVal, dr: &DataRange<A>) -> bool {
+    match v {
+        DistinctVal::Num(dec) => {
+            if let Some(ir) = parse_integer_range(dr) {
+                return decimal_as_i64(dec).is_some_and(|i| IntegerRange::point(i).subset(ir));
+            }
+            parse_decimal_range(dr).is_some_and(|r| OrdRange::point(dec.clone()).subset(&r))
+        }
+        DistinctVal::Double(f) => {
+            parse_double_range(dr).is_some_and(|r| FloatRange::point(f.0).subset(r))
+        }
+        DistinctVal::Date(d) => {
+            parse_date_range(dr).is_some_and(|r| OrdRange::point(*d).subset(&r))
+        }
+        DistinctVal::DateTime(d) => {
+            parse_datetime_range(dr).is_some_and(|r| OrdRange::point(*d).subset(&r))
+        }
+        DistinctVal::Str(s) => {
+            parse_string_range(dr).is_some_and(|r| StrSet::singleton(s.clone()).subset(&r))
+        }
+    }
 }
 
 /// DP-2: **Functional data property ABox cardinality violation** ⇒ global
@@ -3062,5 +3102,101 @@ Ontology(<http://t/x>
             decimal_as_i64(&parse_decimal("99999999999999999999").unwrap()),
             None
         );
+    }
+
+    // ── value_in_range test helpers ────────────────────────────────────────
+
+    fn vir_dt(local: &str) -> horned_owl::model::Datatype<RcStr> {
+        use horned_owl::model::Build;
+        Build::new_rc().datatype(format!("http://www.w3.org/2001/XMLSchema#{local}"))
+    }
+
+    fn vir_dt_lit(value: &str, local: &str) -> horned_owl::model::Literal<RcStr> {
+        horned_owl::model::Literal::Datatype {
+            literal: value.to_string(),
+            datatype_iri: vir_dt(local).0,
+        }
+    }
+
+    fn vir_restriction(local: &str, facets: &[(&str, &str, &str)]) -> DataRange<RcStr> {
+        let frs = facets
+            .iter()
+            .map(|(f, v, vlocal)| FacetRestriction {
+                f: match *f {
+                    "minInclusive" => Facet::MinInclusive,
+                    "maxInclusive" => Facet::MaxInclusive,
+                    "minExclusive" => Facet::MinExclusive,
+                    "maxExclusive" => Facet::MaxExclusive,
+                    other => panic!("unhandled facet {other}"),
+                },
+                l: vir_dt_lit(v, vlocal),
+            })
+            .collect();
+        DataRange::DatatypeRestriction(vir_dt(local), frs)
+    }
+
+    fn vir_data_one_of(members: &[&str]) -> DataRange<RcStr> {
+        DataRange::DataOneOf(
+            members
+                .iter()
+                .map(|m| horned_owl::model::Literal::Simple {
+                    literal: (*m).to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    // ── value_in_range unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn value_in_range_integer_and_decimal() {
+        let int5 = literal_to_distinct_val(&vir_dt_lit("5", "integer"))
+            .expect("5^^xsd:integer parses");
+        let dec_1_5 = literal_to_distinct_val(&vir_dt_lit("1.5", "decimal"))
+            .expect("1.5^^xsd:decimal parses");
+
+        // Bare xsd:integer admits any integer.
+        let r_int = DataRange::Datatype(vir_dt("integer"));
+        assert!(value_in_range(&int5, &r_int), "5 ∈ xsd:integer");
+        // 1.5 is not an xsd:integer value (non-integer decimal).
+        assert!(!value_in_range(&dec_1_5, &r_int), "1.5 ∉ xsd:integer");
+
+        // Bounded integer range [0,3]: 5 is outside.
+        let r_int_0_3 = vir_restriction(
+            "integer",
+            &[
+                ("minInclusive", "0", "integer"),
+                ("maxInclusive", "3", "integer"),
+            ],
+        );
+        assert!(!value_in_range(&int5, &r_int_0_3), "5 ∉ [0,3]");
+
+        // Bare xsd:decimal admits both integers and decimals.
+        let r_dec = DataRange::Datatype(vir_dt("decimal"));
+        assert!(value_in_range(&int5, &r_dec), "int 5 ∈ xsd:decimal");
+        assert!(value_in_range(&dec_1_5, &r_dec), "1.5 ∈ xsd:decimal");
+    }
+
+    #[test]
+    fn value_in_range_cross_datatype_and_string() {
+        // xsd:double value 5.0 against integer range → false (cross-family).
+        let dbl = literal_to_distinct_val(&vir_dt_lit("5.0", "double"))
+            .expect("5.0^^xsd:double parses");
+        assert!(
+            !value_in_range(&dbl, &DataRange::Datatype(vir_dt("integer"))),
+            "double 5.0 ∉ xsd:integer (cross-family)"
+        );
+        // xsd:double 5.0 against bare xsd:double → true.
+        assert!(
+            value_in_range(&dbl, &DataRange::Datatype(vir_dt("double"))),
+            "double 5.0 ∈ xsd:double"
+        );
+
+        // String membership in DataOneOf.
+        let sa = DistinctVal::Str("a".into());
+        let sz = DistinctVal::Str("z".into());
+        let enum_ab = vir_data_one_of(&["a", "b"]);
+        assert!(value_in_range(&sa, &enum_ab), "\"a\" ∈ {{\"a\",\"b\"}}");
+        assert!(!value_in_range(&sz, &enum_ab), "\"z\" ∉ {{\"a\",\"b\"}}");
     }
 }

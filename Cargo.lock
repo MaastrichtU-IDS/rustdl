@@ -1023,6 +1023,8 @@ dependencies = [
  "anyhow",
  "clap",
  "horned-owl",
+ "owl-dl-cb",
+ "owl-dl-core",
  "owl-dl-reasoner",
  "pprof",
  "serde",
@@ -1034,12 +1036,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "owl-dl-cb"
+version = "0.3.8"
+dependencies = [
+ "hashbrown 0.15.5",
+ "horned-owl",
+ "owl-dl-core",
+]
+
+[[package]]
 name = "owl-dl-cli"
 version = "0.3.8"
 dependencies = [
  "anyhow",
  "clap",
  "horned-owl",
+ "owl-dl-cb",
+ "owl-dl-core",
  "owl-dl-reasoner",
  "tracing",
  "tracing-subscriber",

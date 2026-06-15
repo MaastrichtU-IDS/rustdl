@@ -1,6 +1,6 @@
 //! Benchmark harness for rustdl.
 //!
-//! Two modes:
+//! Modes:
 //!
 //! - `bench classify FILE`: parse `FILE` as an OWL functional-syntax
 //!   ontology, run `classify`, print the orchestrator stats plus
@@ -10,7 +10,12 @@
 //!   transitive `partOf` chain of depth `D`, run `classify`, print
 //!   stats + timing. Useful as a baseline for the saturation
 //!   engine without leaning on any external corpus.
+//! - `bench cb-diff FILE`: run the consequence-based (CB) engine and the
+//!   current hybrid engine side-by-side, diff the hierarchies, and print
+//!   timing + agreement summary. If the ontology is out of ALCH the CB
+//!   engine reports `OutOfFragment` and the diff is skipped.
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -73,6 +78,8 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_cb::CbOutcome;
+use owl_dl_core::InternalOntology;
 use owl_dl_reasoner::classify;
 
 #[derive(Parser, Debug)]
@@ -158,6 +165,21 @@ enum Command {
         /// and dropped).
         #[arg(long, default_value = "5")]
         iters: usize,
+    },
+    /// Run the CB (consequence-based ALCH) engine and the current hybrid
+    /// side-by-side on the same ontology, diff the hierarchies, and print
+    /// a timing + agreement summary.
+    ///
+    /// If the input is outside ALCH (uses `≤n`/`≥n`, inverse roles,
+    /// nominals, datatypes, role chains, transitivity) the CB engine
+    /// reports `OutOfFragment` and the diff is skipped.
+    ///
+    /// NOTE: the CB engine is currently a stub (`todo!()` — Task B not yet
+    /// integrated). The command compiles and runs the harness; the engine
+    /// call will panic until Task B lands.
+    CbDiff {
+        /// Path to the OWL functional-syntax ontology.
+        file: PathBuf,
     },
 }
 
@@ -332,6 +354,13 @@ fn run(cli: Cli) -> Result<()> {
         } => run_corpus(&dir, quiet, repeats)?,
         #[cfg(feature = "whelk-compare")]
         Command::CompareWhelk { file, iters } => run_compare_whelk(&file, iters)?,
+        Command::CbDiff { file } => {
+            let onto = parse_ofn(&file)?;
+            let internal = owl_dl_core::convert::convert_ontology(&onto)
+                .context("convert_ontology for cb-diff")?;
+            let report = cb_diff(&internal).context("cb_diff")?;
+            print_diff_report(&report);
+        }
     }
     Ok(())
 }
@@ -524,4 +553,207 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CB-diff harness
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Side-by-side comparison result from [`cb_diff`].
+#[derive(Debug)]
+pub struct DiffReport {
+    /// Human-readable summary of the CB engine outcome:
+    /// `"Classified(N subsumptions)"` or `"OutOfFragment(<reason>)"`.
+    pub cb_outcome: String,
+    /// `true` iff both engines produced the same set of (sub, sup) IRI pairs
+    /// (after normalizing both to: transitive closure, reflexive-free,
+    /// no owl:Thing/owl:Nothing on either side). Always `false` when CB
+    /// reports `OutOfFragment`.
+    pub identical: bool,
+    /// Pairs in the CB hierarchy **not** in the current engine's hierarchy
+    /// (CB over-derivations / potential FPs if this is non-empty).
+    pub only_in_cb: Vec<(String, String)>,
+    /// Pairs in the current engine's hierarchy **not** in the CB hierarchy
+    /// (CB misses / incompleteness if this is non-empty).
+    pub only_in_current: Vec<(String, String)>,
+    /// Wall-clock time for the CB engine in milliseconds.
+    pub cb_wall_ms: u128,
+    /// Wall-clock time for the current (hybrid) engine in milliseconds.
+    pub cur_wall_ms: u128,
+}
+
+/// Run the CB engine and the current hybrid side-by-side on `internal`, diff
+/// their atomic-subsumption relations, and return a [`DiffReport`].
+///
+/// Normalisation applied to both sides before diffing:
+/// 1. Full transitive closure (CB already provides this; the current engine's
+///    `is_subclass` matrix is already transitively closed).
+/// 2. Reflexive pairs (`A ⊑ A`) excluded.
+/// 3. Pairs where either side is `owl:Thing` or `owl:Nothing` excluded
+///    (the current engine emits `(X, owl:Thing)` for every class; CB omits these).
+/// 4. Equivalences: the current engine encodes `A ≡ B` as `entailed[A][B] &&
+///    entailed[B][A]`; we include both `(A,B)` and `(B,A)` when both hold
+///    (non-reflexive).
+///
+/// # Errors
+/// Returns an error if the current hybrid engine fails.
+pub fn cb_diff(internal: &InternalOntology) -> Result<DiffReport> {
+    // ── Run the CB engine ────────────────────────────────────────────────────
+    let cb_start = Instant::now();
+    let cb_result = owl_dl_cb::classify(internal);
+    let cb_wall_ms = cb_start.elapsed().as_millis();
+
+    // ── Run the current (hybrid) engine ─────────────────────────────────────
+    let cur_start = Instant::now();
+    let cur_h = owl_dl_reasoner::classify_internal(internal).context("classify_internal")?;
+    let cur_wall_ms = cur_start.elapsed().as_millis();
+
+    // ── Extract the CB hierarchy as (IRI, IRI) pairs ─────────────────────────
+    let cb_pairs: Option<BTreeSet<(String, String)>> = match &cb_result {
+        CbOutcome::OutOfFragment(_) => None,
+        CbOutcome::Classified(hier) => {
+            let vocab = &internal.vocabulary;
+            let pairs: BTreeSet<(String, String)> = hier
+                .subsumptions
+                .iter()
+                .map(|(sub, sup)| {
+                    (
+                        vocab.class_iri(*sub).to_owned(),
+                        vocab.class_iri(*sup).to_owned(),
+                    )
+                })
+                .filter(|(sub, sup)| sub != sup) // no reflexive
+                .filter(|(sub, sup)| !is_thing_or_nothing(sub) && !is_thing_or_nothing(sup))
+                .collect();
+            Some(pairs)
+        }
+    };
+
+    // ── Extract the current engine's hierarchy as (IRI, IRI) pairs ───────────
+    let cur_pairs: BTreeSet<(String, String)> = {
+        let classes = cur_h.classes();
+        let mut pairs = BTreeSet::new();
+        for sub in classes {
+            if is_thing_or_nothing(sub) {
+                continue;
+            }
+            for sup in classes {
+                if is_thing_or_nothing(sup) {
+                    continue;
+                }
+                if sub == sup {
+                    continue;
+                }
+                if cur_h.is_subclass(sub, sup) {
+                    pairs.insert((sub.to_owned(), sup.to_owned()));
+                }
+            }
+        }
+        pairs
+    };
+
+    // ── Build the report ─────────────────────────────────────────────────────
+    let cb_outcome = match &cb_result {
+        CbOutcome::OutOfFragment(reason) => format!("OutOfFragment({reason})"),
+        CbOutcome::Classified(hier) => {
+            format!("Classified({} subsumptions)", hier.subsumptions.len())
+        }
+    };
+
+    let Some(cb_pairs) = cb_pairs else {
+        return Ok(DiffReport {
+            cb_outcome,
+            identical: false,
+            only_in_cb: Vec::new(),
+            only_in_current: cur_pairs.into_iter().collect(),
+            cb_wall_ms,
+            cur_wall_ms,
+        });
+    };
+
+    let only_in_cb: Vec<(String, String)> = cb_pairs.difference(&cur_pairs).cloned().collect();
+    let only_in_current: Vec<(String, String)> = cur_pairs.difference(&cb_pairs).cloned().collect();
+    let identical = only_in_cb.is_empty() && only_in_current.is_empty();
+
+    Ok(DiffReport {
+        cb_outcome,
+        identical,
+        only_in_cb,
+        only_in_current,
+        cb_wall_ms,
+        cur_wall_ms,
+    })
+}
+
+/// Returns `true` for the two OWL built-ins that the diff normalisation excludes.
+fn is_thing_or_nothing(iri: &str) -> bool {
+    iri == "http://www.w3.org/2002/07/owl#Thing" || iri == "http://www.w3.org/2002/07/owl#Nothing"
+}
+
+/// Print a [`DiffReport`] to stdout in a human-readable format.
+pub fn print_diff_report(r: &DiffReport) {
+    println!("# cb-diff report");
+    println!("cb_outcome:   {}", r.cb_outcome);
+    println!("cb_wall_ms:   {}", r.cb_wall_ms);
+    println!("cur_wall_ms:  {}", r.cur_wall_ms);
+    println!("identical:    {}", r.identical);
+    println!("only_in_cb:   {} pair(s)", r.only_in_cb.len());
+    println!("only_in_cur:  {} pair(s)", r.only_in_current.len());
+    if !r.only_in_cb.is_empty() {
+        println!("# --- only in CB (potential FP) ---");
+        for (sub, sup) in &r.only_in_cb {
+            println!("  CB+ {sub} ⊑ {sup}");
+        }
+    }
+    if !r.only_in_current.is_empty() {
+        println!("# --- only in current engine (CB miss) ---");
+        for (sub, sup) in &r.only_in_current {
+            println!("  CUR+ {sub} ⊑ {sup}");
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cb_diff_tests {
+    use super::cb_diff;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use owl_dl_core::convert::convert_ontology;
+
+    /// Build a tiny ALC ontology from OFN source and run `cb_diff`.
+    ///
+    /// This test encodes the contract: on `A⊑B, B⊑C` both engines must agree
+    /// (A⊑B, A⊑C, B⊑C). It is **`#[ignore]`** because the CB engine is a
+    /// `todo!()` stub until Task B lands — the test will panic at runtime until
+    /// integration. The build still compiles and verifies the harness API.
+    #[test]
+    #[ignore = "red pending Task B owl-dl-cb integration (engine is todo!() stub)"]
+    fn cb_diff_simple_chain_is_identical() {
+        let src = "Prefix(:=<http://test.example/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(<http://test.example/chain>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n";
+        let mut cursor = std::io::Cursor::new(src);
+        let (onto, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = read(&mut cursor, ParserConfiguration::default()).expect("test ontology parses");
+        let internal = convert_ontology(&onto).expect("convert_ontology");
+        let report = cb_diff(&internal).expect("cb_diff");
+        assert!(
+            report.identical,
+            "CB and current engine must agree on a simple A⊑B,B⊑C chain; \
+             only_in_cb={:?} only_in_current={:?}",
+            report.only_in_cb, report.only_in_current,
+        );
+    }
 }

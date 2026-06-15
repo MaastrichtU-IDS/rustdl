@@ -1294,6 +1294,27 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    // Phase 2: classes whose subsumption pairs must be counting-verified —
+    // a data-counting class, or one with a counting subsumer. Empty (the
+    // whole corpus) ⇒ the guard in `subsumes_via_tableau` never fires.
+    let counting_relevant: std::collections::HashSet<owl_dl_core::ClassId> =
+        if !crate::counting_pair_verify_enabled() || prepared.data_counting_classes.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            (0..n)
+                .map(|i| {
+                    owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"))
+                })
+                .filter(|&c| {
+                    prepared.data_counting_classes.contains(&c)
+                        || closure
+                            .subsumers_of(c)
+                            .iter()
+                            .any(|s| prepared.data_counting_classes.contains(s))
+                })
+                .collect()
+        };
+
     for tier in &tiers {
         // Each tier member walks the snapshot of `direct_children`
         // + `top_level` as of tier entry and returns its
@@ -1313,6 +1334,7 @@ pub(crate) fn classify_top_down_internal(
                     per_pair_timeout,
                     global_deadline,
                     &label_cache,
+                    &counting_relevant,
                     &mut local_stats,
                 )?;
                 Ok((c, parents, local_stats))
@@ -1331,6 +1353,7 @@ pub(crate) fn classify_top_down_internal(
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
             stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
+            stats.counting_verified_pairs += sd.counting_verified_pairs;
             stats.label_cache_pruned += sd.label_cache_pruned;
             stats.label_cache_pass_through += sd.label_cache_pass_through;
             stats.label_cache_misses += sd.label_cache_misses;
@@ -1457,6 +1480,7 @@ pub(crate) fn classify_top_down_internal(
                     Some(sweep_budget),
                     global_deadline,
                     true,
+                    &counting_relevant,
                     &mut local_stats,
                 )
                 .ok()
@@ -1476,6 +1500,7 @@ pub(crate) fn classify_top_down_internal(
             stats.hyper_refuted_pairs += sd.hyper_refuted_pairs;
             stats.hyper_refuted_fast_pairs += sd.hyper_refuted_fast_pairs;
             stats.hyper_refuted_fast_flipped_pairs += sd.hyper_refuted_fast_flipped_pairs;
+            stats.counting_verified_pairs += sd.counting_verified_pairs;
             stats.snapshot_replay_used += sd.snapshot_replay_used;
             stats.snapshot_replay_subsumed += sd.snapshot_replay_subsumed;
             stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
@@ -1667,6 +1692,7 @@ fn find_direct_parents_top_down(
     per_pair_timeout: Option<std::time::Duration>,
     global_deadline: Option<Instant>,
     label_cache: &[crate::LabelOracle],
+    counting_relevant: &std::collections::HashSet<owl_dl_core::ClassId>,
     stats: &mut ClassificationStats,
 ) -> Result<Vec<usize>, ReasonError> {
     let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
@@ -1719,6 +1745,7 @@ fn find_direct_parents_top_down(
                             per_pair_timeout,
                             global_deadline,
                             true,
+                            counting_relevant,
                             stats,
                         )?
                         .unwrap_or_default()
@@ -1743,6 +1770,7 @@ fn find_direct_parents_top_down(
                         per_pair_timeout,
                         global_deadline,
                         true,
+                        counting_relevant,
                         stats,
                     )?
                     .unwrap_or_default()
@@ -1788,6 +1816,7 @@ fn find_direct_parents_top_down(
 /// - `Ok(Some(true))` — subsumption holds
 /// - `Ok(Some(false))` — refuted (sat verdict on `sub ⊓ ¬sup`)
 /// - `Ok(None)` — timed out (counted as `timed_out_pairs`)
+#[allow(clippy::too_many_arguments)]
 fn subsumes_via_tableau(
     prepared: &PreparedOntology,
     sub: owl_dl_core::ClassId,
@@ -1795,6 +1824,7 @@ fn subsumes_via_tableau(
     per_pair_timeout: Option<std::time::Duration>,
     global_deadline: Option<Instant>,
     trust_sat: bool,
+    counting_relevant: &std::collections::HashSet<owl_dl_core::ClassId>,
     stats: &mut ClassificationStats,
 ) -> Result<Option<bool>, ReasonError> {
     // Phase 1b snapshot-replay shortcut. When RUSTDL_SNAPSHOT_CAPTURE
@@ -1883,28 +1913,39 @@ fn subsumes_via_tableau(
     };
     stats.wedge_cost_histogram_ms[bucket] += 1;
     let mut was_fast_refuted = false;
+    let mut counting_verified = false;
     match verdict {
         crate::HyperVerdict::Subsumed => {
             stats.hyper_proven_pairs += 1;
             return Ok(Some(true));
         }
         crate::HyperVerdict::NotSubsumed if trust_sat && crate::hyper_trust_sat_enabled() => {
-            // Phase 1 selective verification: a wedge `NotSubsumed`
-            // returned in < `RUSTDL_HYPER_TRUST_SAT_MIN_MS` is more
-            // likely "didn't try hard enough" than a genuine satisfying
-            // model. Fall through to the tableau in that case; trust
-            // the verdict only when the wedge took at least the
-            // threshold. Setting the env var to 0 restores pre-Phase-1
-            // behaviour (trust every NotSubsumed verdict).
-            let threshold = crate::hyper_trust_sat_min_ms();
-            if threshold == 0 || wedge_elapsed_ms >= threshold {
-                stats.hyper_refuted_pairs += 1;
-                return Ok(Some(false));
+            // Phase 2: counting-pair verification. If either side is
+            // data-counting-relevant, the wedge `NotSubsumed` is untrusted
+            // (the wedge has no `card_sat`); fall through to the main
+            // tableau, which runs `concrete_domain_clash`. Sound: only
+            // swaps a trusted wedge `Sat` for the complete path.
+            if counting_relevant.contains(&sub) || counting_relevant.contains(&sup) {
+                counting_verified = true;
+                // fall through to the tableau probe (no early return).
+            } else {
+                // Phase 1 selective verification: a wedge `NotSubsumed`
+                // returned in < `RUSTDL_HYPER_TRUST_SAT_MIN_MS` is more
+                // likely "didn't try hard enough" than a genuine satisfying
+                // model. Fall through to the tableau in that case; trust
+                // the verdict only when the wedge took at least the
+                // threshold. Setting the env var to 0 restores pre-Phase-1
+                // behaviour (trust every NotSubsumed verdict).
+                let threshold = crate::hyper_trust_sat_min_ms();
+                if threshold == 0 || wedge_elapsed_ms >= threshold {
+                    stats.hyper_refuted_pairs += 1;
+                    return Ok(Some(false));
+                }
+                stats.hyper_refuted_fast_pairs += 1;
+                was_fast_refuted = true;
+                // fall through to the tableau probe below; if the tableau
+                // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
             }
-            stats.hyper_refuted_fast_pairs += 1;
-            was_fast_refuted = true;
-            // fall through to the tableau probe below; if the tableau
-            // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
         }
         _ => {}
     }
@@ -1924,6 +1965,9 @@ fn subsumes_via_tableau(
             if was_fast_refuted && subsumed {
                 stats.hyper_refuted_fast_flipped_pairs += 1;
             }
+            if counting_verified && subsumed {
+                stats.counting_verified_pairs += 1;
+            }
             Ok(Some(subsumed))
         }
         Some(deadline) => {
@@ -1939,6 +1983,9 @@ fn subsumes_via_tableau(
                     let subsumed = !sat;
                     if was_fast_refuted && subsumed {
                         stats.hyper_refuted_fast_flipped_pairs += 1;
+                    }
+                    if counting_verified && subsumed {
+                        stats.counting_verified_pairs += 1;
                     }
                     Ok(Some(subsumed))
                 }

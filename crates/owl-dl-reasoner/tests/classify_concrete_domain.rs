@@ -323,3 +323,31 @@ fn datetime_interval_large_demand_sat_via_classify() {
          xsd:maxInclusive \"2021-01-01T00:00:00\"^^xsd:dateTime)))"
     ));
 }
+
+// ─── PHASE 2: COUNTING-PAIR SUBSUMPTION (is_subclass) ─────────────────────
+
+fn parse(src: &str) -> SetOntology<RcStr> {
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse ofn");
+    onto
+}
+
+/// Phase 2 headline: `C ⊑ ≥5 p.int` entails `C ⊑ D` where `D ≡ ≥3 p.int`
+/// (cardinality monotonicity `≥5 ⟹ ≥3`). The default classifier trusted the
+/// wedge `NotSubsumed` and missed this; counting-pair verification routes it
+/// to the main tableau's `concrete_domain_clash`.
+#[test]
+fn phase2_cardinality_monotonicity_subsumption_is_found() {
+    let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(<http://t/x>\n\
+  Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:p))\n\
+  SubClassOf(:C DataMinCardinality(5 :p xsd:integer))\n\
+  EquivalentClasses(:D DataMinCardinality(3 :p xsd:integer))\n\
+)\n";
+    let result = classify(&parse(src)).expect("classify");
+    assert!(
+        result.is_subclass("http://t/C", "http://t/D"),
+        "C ⊑ D must be found via counting-pair verification (≥5 ⟹ ≥3)"
+    );
+}

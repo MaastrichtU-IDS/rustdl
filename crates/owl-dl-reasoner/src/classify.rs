@@ -878,17 +878,24 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
     // The set of roles for which conversion emitted a derived `∃R.⊤ ⊑ ≤1 R`
     // GCI: `FunctionalRole(r) → r` (FORWARD only — `derive_functional_max_
-    // cardinality` does not emit for inverse-functional). The saturator
-    // enforces functionality via its FunctionalRole BITSET (Phase-2e
-    // witness-merge — accepted at the role-axiom arm below); it DROPS the
-    // derived `Max` GCI entirely, so `closure(O ∪ {derived}) == closure(O)`.
-    // Recognizing the EXACT derived shape (only when backed by a matching
-    // `FunctionalRole` axiom) therefore keeps the fragment verdict identical
-    // to the pre-derivation ontology — without it, the `Max` would spuriously
-    // kick EL+functional ontologies (GALEN/notgalen) off the fast path. A
-    // user-written `≤1 R` with NO functional declaration is NOT in this set ⇒
-    // still rejected (it would be a silently-dropped real `≤1` = unsound
-    // completeness, the D10 bug class).
+    // cardinality` does not emit for inverse-functional).
+    //
+    // WHY THIS IS SOUND-COMPLETE on the fast path: the saturator is complete on
+    // EL+functional via its FunctionalRole BITSET (the D10 allowlist + the
+    // role-axiom arm below) — functionality is enforced by the bitset, NOT by
+    // this derived GCI, so the GCI is REDUNDANT on the fast path. Recognizing
+    // the EXACT derived shape (only when backed by a matching `FunctionalRole`
+    // axiom) keeps the fragment verdict identical to the pre-derivation
+    // ontology; without it, the `Max` would spuriously kick EL+functional
+    // ontologies (GALEN/notgalen) off the fast path. Empirically confirmed:
+    // GALEN classifies on the fast path with the GCI present (closure 27997 =
+    // Konclude, FP=0/MISSED=0, ~0.5 s) — see the corpus closure-diff gate.
+    //
+    // FP-CRITICAL: a user-written `≤1 R` with NO functional declaration is NOT
+    // in this set ⇒ still rejected (no bitset enforces it; accepting it would
+    // be a silently-dropped real `≤1` = unsound completeness, the D10 bug
+    // class). Pinned by `saturator_fragment_rejects_user_unqualified_max_
+    // without_functional`.
     let functional_roles: HashSet<Role> = internal
         .axioms
         .iter()

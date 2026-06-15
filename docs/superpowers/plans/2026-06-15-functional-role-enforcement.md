@@ -61,9 +61,38 @@ Run: the *-fires tests fail (engine says consistent), the control passes.
 ### Step 3 — gates: closure-diff FP=0/MISSED=0 all fixtures; saturator workspace test green; perf walls galen/ro/wine; family check (informational).
 ### Step 4 — fmt + clippy -D warnings; commit per step.
 
-## Inverse-functional contingency
-If the inverse `≤1 R⁻` does NOT fire predecessor-merge in the engine: ship
-forward-only, document IF as a sound MISS, report the deeper gap. Forward not
-blocked on inverse.
+## Inverse-functional contingency — TRIGGERED (forward-only shipped)
+The inverse-functional discriminator did NOT fire, and isolation proved the
+blocker is a PRE-EXISTING engine gap, not the IR translation: an EXPLICIT
+`ObjectMaxCardinality(1, ObjectInverseOf(r))` predecessor-merge over named
+individuals ALSO reports `consistent` (`/tmp/inv-explicit.ofn`). The engine
+does not perform `≤1 R⁻` predecessor merge. Forward `≤1 R` (explicit and
+derived) DOES fire. So:
+- Emit FORWARD-only (`FunctionalRole` → `∃R.⊤ ⊑ ≤1 R`). Inverse-functional NOT
+  emitted (would be a silent no-op).
+- Gate set in `saturator_complete_fragment` is forward-only too (matches emit).
+- Inverse-functional documented as a sound MISS; two `#[ignore]`d sentinels in
+  `functional_enforcement.rs` (`inverse_functional_predecessor_merge_inconsistent`,
+  `inverse_max_cardinality_explicit_is_a_known_sound_miss`) trip when the engine
+  learns inverse-role predecessor merging.
+
+## RESULTS
+- Discriminators: forward fires (consistent→inconsistent); 3 controls stay
+  consistent; user-unqualified-Max-without-functional rejects; derived-Max-GCI
+  accepted; EL+functional stays in fragment. Inverse fires-tests `#[ignore]`d.
+- Gate 2 closure-diff (single-thread, clean): galen 27997 / notgalen 32739 /
+  sio 8904 / wine 653 / ore-10908 6001 / ore-15672 142 / alehif 247 / bibtex 16
+  / ro 158 / sulo 51 — ALL FP=0 MISSED=0, NO verdict moved.
+- Gate 3 walls (from the closure run): galen 0.49 s, ro 0.03 s — fast path
+  preserved (sub-second; the fragment-gate fix held). wine see report.
+- Gate 4: full `cargo test --workspace` green.
+- Gate 5 (family, informational): family.ofn still `consistent` (capped) — the
+  separate scale gap, as the spec predicted; monotonicity (we only ADD axioms)
+  means we cannot have flipped it from inconsistent.
+- Gate 6 (FP self-review): the derived `Max(1,R,⊤)` flows through the SAME
+  `apply_max`/`card_clash_deps` path as user `≤1`; no new dep path. Adding
+  `≤1` constraints only shrinks the model set ⇒ can only turn SAT→UNSAT ⇒ only
+  ADD genuine subsumptions, never spurious ones. Corpus verdict-neutrality
+  (closure-diff) is the empirical confirmation.
 
 ## STOP at the soundness gate; report. No merge, no push.

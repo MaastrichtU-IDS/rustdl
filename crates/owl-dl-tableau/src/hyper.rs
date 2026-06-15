@@ -531,6 +531,17 @@ struct ClauseIndexes {
     succ_trigger: Vec<Vec<usize>>,
     /// By role index: clauses with a body role atom on that role.
     role_trigger: Vec<Vec<usize>>,
+    /// By role index: clauses with a body role atom `(r,u,v)` whose
+    /// source `u != X` — i.e. a NON-FIRST leg of a multi-role body (HF3
+    /// chains: the `R₂(y,z)` leg). When such an edge is added between
+    /// `y` and `z`, the clause must fire at `y`'s PREDECESSORS (the
+    /// chain root `x` with `R₁(x,y)`), not at `y` itself — `Event::Edge`
+    /// only fires `role_trigger` at the edge source `y`, missing the
+    /// X-rooted match. This back-trigger closes that second-leg gap.
+    /// `match_body` re-verifies the whole body, so firing at a
+    /// predecessor that turns out not to be the chain root is a cheap
+    /// no-op (perf only, never soundness).
+    role_back_trigger: Vec<Vec<usize>>,
     /// Clauses with an empty body (`⊤ → …`) — fire at every node.
     empty_body: Vec<usize>,
 }
@@ -565,7 +576,14 @@ fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
             match atom {
                 Atom::Class(c, v) if *v == X => push(&mut ix.x_trigger, c.index() as usize, ci),
                 Atom::Class(c, _) => push(&mut ix.succ_trigger, c.index() as usize, ci),
-                Atom::Role(r, _, _) => push(&mut ix.role_trigger, role_id_index(*r), ci),
+                Atom::Role(r, u, _) => {
+                    push(&mut ix.role_trigger, role_id_index(*r), ci);
+                    // Non-first leg (`R₂(y,z)`, `u != X`): also index for
+                    // predecessor back-triggering (HF3 chain second-leg).
+                    if *u != X {
+                        push(&mut ix.role_back_trigger, role_id_index(*r), ci);
+                    }
+                }
                 // Head-only atoms never appear in a (Horn) body.
                 Atom::Exists(..) | Atom::AtMost(..) | Atom::AtLeast(..) | Atom::Equal(..) => {}
             }
@@ -1067,6 +1085,28 @@ impl<'c> HyperEngine<'c> {
                     let ci = self.indexes.role_trigger[key][i];
                     if matches!(self.fire_clause(ci, src), FireOutcome::Clash) {
                         return FireOutcome::Clash;
+                    }
+                }
+                // HF3 second-leg back-trigger: this edge `R(src,tgt)` may
+                // be the NON-FIRST leg of a multi-role clause body (e.g.
+                // `R₁(x,src) ∧ R₂(src,tgt) → …`). Such clauses are rooted
+                // at the chain root `x` = a predecessor of `src`, so fire
+                // them at `src`'s predecessors. `match_body` re-verifies,
+                // so firing at a non-root predecessor is a no-op.
+                let n_b = self.indexes.role_back_trigger.get(key).map_or(0, Vec::len);
+                if n_b > 0 {
+                    let preds: Vec<HNode> = self.nodes[src.index()]
+                        .preds
+                        .iter()
+                        .map(|&(_, p)| p)
+                        .collect();
+                    for p in preds {
+                        for i in 0..n_b {
+                            let ci = self.indexes.role_back_trigger[key][i];
+                            if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
+                                return FireOutcome::Clash;
+                            }
+                        }
                     }
                 }
             }
@@ -2204,11 +2244,104 @@ impl<'c> HyperEngine<'c> {
                 };
                 self.generate_at_least(target, role, qual, n, deps)
             }
-            // TODO(HF3): self-loop `Role(x,x)` heads and `≈` equality
-            // not yet realised — no-op (sound for `Unsat`: an
-            // unenforced head only weakens the theory).
-            Atom::Equal(_, _) | Atom::Role(..) => FireOutcome::NoChange,
+            // HF3 role-chain head `R(u,v)`: derive the role edge between
+            // the two bound nodes (the consequence of a chain / transitivity
+            // clause `R₁(X,y) ∧ R₂(y,z) → R₃(X,z)`).
+            Atom::Role(role, u, v) => {
+                let (Some(src0), Some(tgt0)) =
+                    (resolve_var(u, xnode, binding), resolve_var(v, xnode, binding))
+                else {
+                    return FireOutcome::NoChange;
+                };
+                self.derive_role_edge(role, src0, tgt0, deps)
+            }
+            // TODO(HF3): `≈` equality heads not yet realised — no-op
+            // (sound for `Unsat`: an unenforced head only weakens the
+            // theory).
+            Atom::Equal(_, _) => FireOutcome::NoChange,
         }
+    }
+
+    /// Add a derived role edge `role(src, tgt)` between two existing
+    /// nodes (the head of a chain / transitivity clause). Mirrors the
+    /// edge bookkeeping of [`Self::fire_exists`] but adds NO new node.
+    ///
+    /// SOUNDNESS:
+    /// - **Polarity normalisation.** Clause roles are already
+    ///   `canon_role`'d, so `role` is canonical. The engine's edges are
+    ///   always stored *forward* (`Named`), with inverse satisfied via
+    ///   `preds` at match time. So an inverse head `R⁻(src,tgt)` is the
+    ///   forward edge `R(tgt,src)` — store it flipped.
+    /// - **Backjump deps (the centerpiece).** A chain-derived edge runs
+    ///   between two *pre-existing* nodes, neither born to carry the
+    ///   clause body's dep-set. `clause_body_deps` reconstructs deps from
+    ///   bound nodes' `birth_deps`; an edge carries none. So fold `deps`
+    ///   into the edge *target*'s `birth_deps`. The edge is only ever
+    ///   traversed with the target as a bound node (forward: target is the
+    ///   role-atom's bound successor; inverse-via-preds: the stored
+    ///   target — original `src` — is the source-side, also bound), so
+    ///   `clause_body_deps` then always includes `deps`. Widening
+    ///   `birth_deps` only *reduces* backjumping ⇒ sound (the same
+    ///   argument `merge_with_cause` relies on), and never causes a MISS.
+    /// - **Termination.** Each `(role, src, tgt)` edge is added at most
+    ///   once (dedup below). Finite nodes ⇒ finite edges. Blocking is
+    ///   untouched (no node is created).
+    ///
+    /// KNOWN under-approximation (sound — a MISS, never an FP): when the
+    /// super-role canonicalizes to an INVERSE `R⁻`, the edge is stored
+    /// forward as `R(tgt,src)` and re-queued as `Event::Edge(tgt, R, src)`,
+    /// which fires `role_trigger`/`role_back_trigger` at `tgt`/`tgt`'s
+    /// preds. A clause that consumes the inverse edge via a body atom
+    /// `R⁻(x,·)` is rooted at the *target* `src` (an inverse walk follows
+    /// preds), which this event does not wake. So an inverse-SUPER-ROLE
+    /// chain may not propagate downstream — a missed clash (`Sat` instead
+    /// of `Unsat`), the safe direction. family's critical chain
+    /// (`isMalePartnerIn∘hasFemalePartner ⊑ hasWife`) is forward-headed,
+    /// so the target is unaffected; the corpus gate (MISSED=0) arbitrates
+    /// whether the inverse-super-role gap matters in practice. INVERSE
+    /// LEGS in the body are fully handled (matched via `preds` in
+    /// `enumerate_matches`).
+    fn derive_role_edge(
+        &mut self,
+        role: Role,
+        src: HNode,
+        tgt: HNode,
+        deps: DepSet,
+    ) -> FireOutcome {
+        // Store the edge forward: an inverse head `R⁻(src,tgt)` is the
+        // forward edge `R(tgt,src)`.
+        let (rstore, from, to) = if role.is_inverse() {
+            (role.flip(), tgt, src)
+        } else {
+            (role, src, tgt)
+        };
+        let from = self.resolve(from);
+        let to = self.resolve(to);
+        // Dedup: skip if an identical forward edge already exists (exact
+        // role id + endpoints). Conservative — we only skip the exact
+        // edge, never a merely sub/super-role one, so no derivation is
+        // lost.
+        if self.nodes[from.index()]
+            .edges
+            .iter()
+            .any(|(er, t)| *t == to && er.is_inverse() == rstore.is_inverse() && er.role_id() == rstore.role_id())
+        {
+            return FireOutcome::NoChange;
+        }
+        self.nodes[from.index()].edges.push((rstore, to));
+        self.nodes[to.index()].preds.push((rstore, from));
+        // Edge-dep fold (backjump soundness centerpiece — see fn docs).
+        // Fold into BOTH endpoints' `birth_deps`: the edge can be matched
+        // forward (target `to` bound) OR via `preds` (source `from`
+        // bound), so whichever endpoint a later clause binds, its
+        // `birth_deps` then carries `deps`. Widening only reduces
+        // backjumping ⇒ sound; can never cause a MISS.
+        let bf = self.nodes[from.index()].birth_deps.union(deps);
+        self.nodes[from.index()].birth_deps = bf;
+        let bt = self.nodes[to.index()].birth_deps.union(deps);
+        self.nodes[to.index()].birth_deps = bt;
+        self.worklist.push(Event::Edge(from, rstore, to));
+        FireOutcome::Changed
     }
 
     /// `∃role.cls` at `src`: reuse an existing role-successor that
@@ -3949,6 +4082,305 @@ mod tests {
         assert!(
             !eng.snapshot_backprop_aborted(),
             "back-prop into a non-snapshot node must NOT fire the sentinel"
+        );
+    }
+
+    // ============================================================
+    // HF3: role-chain edge derivation
+    // ============================================================
+
+    fn nrole(i: u32) -> Role {
+        Role::Named(RoleId::new(i))
+    }
+
+    /// Common chain scenario as DL-clauses. Root carries `A=cls(0)`.
+    /// `A → ∃R1.B`, `B → ∃R2.C` build a path root —R1→ n1 —R2→ n2 with
+    /// `n1:B`, `n2:C`. `{R3(X,z), C(z)} → ⊥` is the downstream clash that
+    /// only fires once `R3(root, n2)` is derived. `with_chain` toggles the
+    /// chain clause `R1∘R2 ⊑ R3`.
+    fn chain_scenario(with_chain: bool, chain: DlClause) -> Vec<DlClause> {
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+        let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
+        let mut clauses = vec![
+            // A(X) → ∃R1.B
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            // B(X) → ∃R2.C
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Exists(r2, c, X)],
+            },
+            // R3(X,z) ∧ C(z) → ⊥
+            DlClause {
+                body: vec![Atom::Role(r3, X, 1), Atom::Class(c, 1)],
+                head: vec![],
+            },
+        ];
+        if with_chain {
+            clauses.push(chain);
+        }
+        clauses
+    }
+
+    #[test]
+    fn hf3_two_leg_chain_derives_edge_and_clashes() {
+        let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
+        // R1∘R2 ⊑ R3
+        let chain = DlClause {
+            body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
+            head: vec![Atom::Role(r3, X, 2)],
+        };
+        // Without the chain clause: no R3 edge ⇒ no clash ⇒ Sat.
+        let no_chain = chain_scenario(false, chain.clone());
+        let mut e0 = HyperEngine::new(&no_chain, cls(0));
+        assert_eq!(
+            e0.run(4096),
+            HyperResult::Sat,
+            "baseline (no chain) must be Sat"
+        );
+        // With the chain clause: R3(root,n2) derived ⇒ clash ⇒ Unsat.
+        let with_chain = chain_scenario(true, chain);
+        let mut e1 = HyperEngine::new(&with_chain, cls(0));
+        assert_eq!(
+            e1.run(4096),
+            HyperResult::Unsat,
+            "chain-derived R3 edge must enable the clash"
+        );
+    }
+
+    #[test]
+    fn hf3_transitivity_derives_edge_and_clashes() {
+        // Path root —R—> n1 —R—> n2, transitivity R∘R⊑R derives R(root,n2),
+        // {R(X,z), C(z)} → ⊥ clashes.
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+        let r = nrole(10);
+        let trans = DlClause {
+            body: vec![Atom::Role(r, X, 1), Atom::Role(r, 1, 2)],
+            head: vec![Atom::Role(r, X, 2)],
+        };
+        let base = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Exists(r, c, X)],
+            },
+            // Clash gated on A (root only): {A(X), R(X,z), C(z)} → ⊥.
+            // Without transitivity root reaches only n1:B via R, so no
+            // clash; the n1—R→n2 edge is at n1 (not A) so it can't fire.
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r, X, 1), Atom::Class(c, 1)],
+                head: vec![],
+            },
+        ];
+        // Without transitivity: root has only R(root,n1), n1:B (not C) ⇒ Sat.
+        let mut e0 = HyperEngine::new(&base, cls(0));
+        assert_eq!(e0.run(4096), HyperResult::Sat, "baseline must be Sat");
+        let mut with = base.clone();
+        with.push(trans);
+        let mut e1 = HyperEngine::new(&with, cls(0));
+        assert_eq!(
+            e1.run(4096),
+            HyperResult::Unsat,
+            "transitivity must derive R(root,n2) and clash"
+        );
+    }
+
+    #[test]
+    fn hf3_second_leg_back_trigger_index_populated() {
+        // T3 structural pin: a 2-leg chain body `R1(X,y) ∧ R2(y,z)` must
+        // register R2 (the non-first leg) in `role_back_trigger`, so that
+        // when an R2 edge is added mid-fixpoint the clause fires at the
+        // R2-source's predecessors (the X-root). R1 (first leg, u=X) must
+        // NOT be in `role_back_trigger`.
+        let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
+            head: vec![Atom::Role(r3, X, 2)],
+        }];
+        let ix = build_clause_indexes(&clauses);
+        let k1 = role_id_index(r1);
+        let k2 = role_id_index(r2);
+        assert!(
+            ix.role_back_trigger.get(k2).is_some_and(|v| v.contains(&0)),
+            "R2 (non-first leg) must be in role_back_trigger"
+        );
+        assert!(
+            ix.role_back_trigger.get(k1).is_none_or(|v| !v.contains(&0)),
+            "R1 (first leg, u=X) must NOT be in role_back_trigger"
+        );
+    }
+
+    #[test]
+    fn hf3_second_leg_added_last_still_clashes() {
+        // T3 end-to-end: force the second leg's edge to be added LAST.
+        // root:A; A→∃R1.B (root—R1→n1). A separate trigger D→∃R2.C is
+        // fired on n1 only after n1 gets B AND a D label that arrives
+        // late. We simulate "late" by making the R2 edge depend on a
+        // 2-hop label chain so it is added after the R1 edge + chain
+        // clause have already been considered. The back-trigger must
+        // re-fire the chain at n1's predecessor (root) when R2 appears.
+        let (a, b, c, d) = (cls(0), cls(1), cls(2), cls(3));
+        let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            // B → D (label chain to delay R2)
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Class(d, X)],
+            },
+            // D → ∃R2.C  (adds the second-leg edge, after B→D)
+            DlClause {
+                body: vec![Atom::Class(d, X)],
+                head: vec![Atom::Exists(r2, c, X)],
+            },
+            // R1∘R2 ⊑ R3
+            DlClause {
+                body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
+                head: vec![Atom::Role(r3, X, 2)],
+            },
+            // {A(X), R3(X,z), C(z)} → ⊥
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r3, X, 1), Atom::Class(c, 1)],
+                head: vec![],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(
+            e.run(4096),
+            HyperResult::Unsat,
+            "late second-leg edge must still trigger the chain via back-trigger"
+        );
+    }
+
+    #[test]
+    fn hf3_three_leg_via_two_two_leg_clauses() {
+        // Mimics decomposition output: R1∘R2⊑AUX, AUX∘R3⊑S, then the
+        // path root—R1→n1—R2→n2—R3→n3 with n3:D, and {S(X,z),D(z)}→⊥.
+        let (a, b, c, d) = (cls(0), cls(1), cls(2), cls(3));
+        let (r1, r2, r3, aux, s) = (nrole(10), nrole(11), nrole(12), nrole(13), nrole(14));
+        let base = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Exists(r2, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(c, X)],
+                head: vec![Atom::Exists(r3, d, X)],
+            },
+            DlClause {
+                body: vec![Atom::Role(s, X, 1), Atom::Class(d, 1)],
+                head: vec![],
+            },
+        ];
+        let two_leg = vec![
+            // R1∘R2 ⊑ AUX
+            DlClause {
+                body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
+                head: vec![Atom::Role(aux, X, 2)],
+            },
+            // AUX∘R3 ⊑ S
+            DlClause {
+                body: vec![Atom::Role(aux, X, 1), Atom::Role(r3, 1, 2)],
+                head: vec![Atom::Role(s, X, 2)],
+            },
+        ];
+        let mut e0 = HyperEngine::new(&base, cls(0));
+        assert_eq!(e0.run(4096), HyperResult::Sat, "baseline must be Sat");
+        let mut with = base.clone();
+        with.extend(two_leg);
+        let mut e1 = HyperEngine::new(&with, cls(0));
+        assert_eq!(
+            e1.run(4096),
+            HyperResult::Unsat,
+            "3-leg (2×2-leg) chain must derive S(root,n3) and clash"
+        );
+    }
+
+    #[test]
+    fn hf3_inverse_leg_chain_derives_edge() {
+        // Chain with an INVERSE first leg in the body: R1⁻ ∘ R2 ⊑ R3.
+        // Body: R1⁻(X,y) ∧ R2(y,z) → R3(X,z). The R1⁻(X,y) leg is
+        // satisfied by an R1-edge INTO X from y (a predecessor walk).
+        //
+        // Graph: build n0 —R1→ root (so root has an R1-predecessor n0),
+        // and root —R2→ n2 with n2:C. Then R1⁻(root,y) binds y=n0... no,
+        // we need the path X=root, R1⁻(root,y) ⇒ y is an R1-predecessor
+        // of root, then R2(y,z). So put R2 on the PREDECESSOR.
+        //
+        // Concretely: root has class A. A → ∃R2.dummy gives root an R2
+        // edge — not what we want. Instead seed the structure directly:
+        //   n_pred —R1→ root, n_pred —R2→ n_c (n_c:C).
+        //   Chain R1⁻∘R2⊑R3 at X=root: R1⁻(root,n_pred) [via the R1 edge
+        //   into root], R2(n_pred,n_c) ⇒ derive R3(root,n_c).
+        //   Clash {A(X),R3(X,z),C(z)}→⊥ at root.
+        // We build the graph via ∃ heads rooted appropriately:
+        //   A(X) → ∃R1.M  gives root —R1→ m1.  Then m1's R1⁻ leg sees
+        // root as its... this is getting tangled. Simplest: assert the
+        // INVERSE-LEG match works by constructing the predecessor edge
+        // through a forward ∃ on a helper and an explicit role body.
+        //
+        // Use: root:A. A→∃R1.B (root—R1→n1, n1:B). B→∃R2.C (n1—R2→n2,
+        // n2:C). Chain on the INVERSE of R1 as a leg rooted at n1:
+        //   R1⁻(X,y) ∧ ... at X=n1: R1⁻(n1,y) binds y=root (n1's R1-pred).
+        // To make a useful clash, chain R1⁻∘(R1) ⊑ R3 deriving R3(n1,n1)?
+        // Cleaner: chain  R1⁻ ∘ R2  is not co-rooted. Keep it simple and
+        // faithful: R2 ∘ R1⁻ ⊑ R3 rooted at n1:
+        //   R2(n1,n2) ∧ R1⁻(n2,?) — n2 has no R1 pred. Not it either.
+        //
+        // Faithful minimal inverse-leg chain (matches family idiom
+        // hasFather⁻ = isFatherOf): X has R1-successor y (forward leg),
+        // y has R2-successor z (forward leg) — but we want one leg to be
+        // matched by an INVERSE edge. Build root—R1→n1, then a chain
+        // R1 ∘ R1⁻ ⊑ R3: at X=root, R1(root,n1) ∧ R1⁻(n1,z) ⇒ z is an
+        // R1-predecessor of n1, i.e. z=root ⇒ derive R3(root,root). A
+        // self-loop R3 then clashes via {A(X),R3(X,X)}-style... but our
+        // clash body needs two vars. Use {A(X),R3(X,z),A(z)}→⊥ with
+        // z=root (root:A) ⇒ clash. Baseline (no chain) Sat.
+        let a = cls(0);
+        let b = cls(1);
+        let (r1, r3) = (nrole(10), nrole(12));
+        let r1_inv = Role::Inverse(RoleId::new(10));
+        let chain = DlClause {
+            // R1(X,y) ∧ R1⁻(y,z) → R3(X,z)   [inverse leg in the body]
+            body: vec![Atom::Role(r1, X, 1), Atom::Role(r1_inv, 1, 2)],
+            head: vec![Atom::Role(r3, X, 2)],
+        };
+        let mut clauses = vec![
+            // A(X) → ∃R1.B
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            // {A(X), R3(X,z), A(z)} → ⊥  (z must be an A-node reached by R3)
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r3, X, 1), Atom::Class(a, 1)],
+                head: vec![],
+            },
+        ];
+        let mut e0 = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(
+            e0.run(4096),
+            HyperResult::Sat,
+            "baseline (no inverse-leg chain) must be Sat"
+        );
+        clauses.push(chain);
+        let mut e1 = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(
+            e1.run(4096),
+            HyperResult::Unsat,
+            "inverse-leg chain R1∘R1⁻⊑R3 must derive R3(root,root) and clash"
         );
     }
 }

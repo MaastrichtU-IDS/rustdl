@@ -211,6 +211,13 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// fillers — the counting is done by `card_sat`, and expanding a large
     /// `≥n` over a `DKey` would not terminate).
     dkey_ranges: HashMap<ClassId, owl_dl_datatypes::CardRange>,
+    /// Anywhere (pairwise) blocking toggle. When `true`, [`Self::is_blocked`]
+    /// scopes the pair-blocking candidate `x'` to ANY earlier-created
+    /// non-excluded node instead of only tree-ancestors of `y`. Cached once at
+    /// construction from `RUSTDL_ANYWHERE_BLOCKING` (default `false`) so the
+    /// hot `is_blocked` path pays no per-call env read. See
+    /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`.
+    anywhere_blocking: bool,
     /// Per-rule call counters, populated under `cfg(feature =
     /// "counters")`. Dumped to stderr in `Drop` when
     /// `RUSTDL_COUNTERS=1`. Zero cost in non-counter builds (field
@@ -244,6 +251,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
+            anywhere_blocking: anywhere_blocking_enabled(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -274,6 +282,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
+            anywhere_blocking: anywhere_blocking_enabled(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -309,6 +318,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             learned_nogoods: Vec::new(),
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
+            anywhere_blocking: anywhere_blocking_enabled(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -349,6 +359,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     pub fn set_deadline(&mut self, deadline: std::time::Instant) -> &mut Self {
         self.deadline = Some(deadline);
         self
+    }
+
+    /// Force the anywhere-blocking toggle, overriding the
+    /// `RUSTDL_ANYWHERE_BLOCKING`-derived default cached at construction. Lets
+    /// callers/tests select the blocking strategy explicitly without depending
+    /// on process-global environment (which is racy under parallel tests).
+    pub fn set_anywhere_blocking(&mut self, on: bool) -> &mut Self {
+        self.anywhere_blocking = on;
+        self
+    }
+
+    /// Whether anywhere (pairwise) blocking is active for this context.
+    #[must_use]
+    pub fn anywhere_blocking(&self) -> bool {
+        self.anywhere_blocking
     }
 
     /// True iff a previously-set deadline was observed elapsed during
@@ -760,9 +785,29 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// inverse roles enter the picture, because an existential at
     /// `y` may demand a label at `parent(y)` that subset-blocking
     /// can't see. Pair blocking restores soundness for `ALCHI`.
+    ///
+    /// Dispatch: by default the candidate `x'` ranges over `y`'s strict
+    /// tree-ancestors ([`Self::is_blocked_ancestor`]). When
+    /// `RUSTDL_ANYWHERE_BLOCKING=1` (cached in `anywhere_blocking` at
+    /// construction) the candidate ranges over ANY earlier-created
+    /// non-excluded node ([`Self::is_blocked_anywhere`]) — the standard
+    /// Motik/Shearer/Horrocks anywhere-blocking optimisation that keeps the
+    /// completion small on large generative `ABox`es.
+    #[must_use]
+    pub fn is_blocked(&self, y: NodeId) -> bool {
+        if self.anywhere_blocking {
+            self.is_blocked_anywhere(y)
+        } else {
+            self.is_blocked_ancestor(y)
+        }
+    }
+
+    /// Ancestor-scoped pair blocking — the historical default. `x'` ranges
+    /// over `y`'s strict tree-ancestors only. See [`Self::is_blocked`] for the
+    /// pairwise conditions (1)–(4).
     #[must_use]
     #[allow(clippy::similar_names)]
-    pub fn is_blocked(&self, y: NodeId) -> bool {
+    fn is_blocked_ancestor(&self, y: NodeId) -> bool {
         crate::bump_counter!(self, is_blocked_calls);
         let yb = self.graph.blocking(y);
         let (Some(yp_id), Some(yr)) = (yb.parent, yb.parent_role) else {
@@ -830,6 +875,105 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     x_prime_id = next;
                 }
                 None => return false,
+            }
+        }
+        false
+    }
+
+    /// True iff any label of `node` is a [`ConceptExpr::Nominal`] — i.e. the
+    /// node is pinned to a specific individual `{a}`. Such nodes are excluded
+    /// from anywhere blocking on BOTH sides (a nominal node is an unsound
+    /// blocker, and a nominal node must not itself be blocked) because the
+    /// loop-back model trick that justifies pair blocking does not hold for a
+    /// node whose extension is forced to a single named individual.
+    #[must_use]
+    fn node_is_nominal(&self, node: NodeId) -> bool {
+        self.graph
+            .node(node)
+            .labels
+            .iter()
+            .any(|&c| matches!(self.pool.get(c), owl_dl_core::ConceptExpr::Nominal(_)))
+    }
+
+    /// Anywhere-scoped pair blocking (Motik/Shearer/Horrocks). `y` is blocked
+    /// by ANY node `x'` *created strictly before* `y` (i.e. `x'.index() <
+    /// y.index()`, which is exactly creation order — see graph.rs
+    /// `push_node_with_parent`) satisfying the SAME pairwise conditions (1)–(4)
+    /// as [`Self::is_blocked`], MINUS the following candidate exclusions:
+    ///
+    /// - roots/orphans (`parent == None`) — condition (1);
+    /// - redirected nodes (`merged_into.is_some()`) — stale, state moved to the
+    ///   representative;
+    /// - nominal-labelled nodes ([`Self::node_is_nominal`]) — unsound blocker.
+    ///
+    /// A nominal `y` is never blocked (same reason). The strict
+    /// `x'.index() < y.index()` order makes the blocking relation acyclic, so a
+    /// terminating completion is guaranteed.
+    ///
+    /// SOUNDNESS NOTE: this is sound *here specifically* because the main
+    /// tableau gates GENERATION only on direct `is_blocked(node)` and never
+    /// suspends a node when an ancestor becomes blocked. Hence every
+    /// non-directly-blocked node is fully expanded, so any candidate `x'` that
+    /// passes (1)–(4) has a complete label set and is a valid blocker. The
+    /// classic anywhere-blocking bug (blocking against a node with stale labels
+    /// because an ancestor is blocked) cannot arise. See the plan doc.
+    #[must_use]
+    #[allow(clippy::similar_names)]
+    fn is_blocked_anywhere(&self, y: NodeId) -> bool {
+        crate::bump_counter!(self, is_blocked_calls);
+        let yb = self.graph.blocking(y);
+        let (Some(yp_id), Some(yr)) = (yb.parent, yb.parent_role) else {
+            return false;
+        };
+        // A nominal `y` denotes a fixed individual and must not be blocked.
+        if self.node_is_nominal(y) {
+            return false;
+        }
+        let yl_sig = yb.label_sig;
+        let yp_sig = self.graph.blocking(yp_id).label_sig;
+
+        // Phase A: O(N) scan of all strictly-earlier nodes. Strict
+        // `cand < y.index()` is the termination/acyclicity guard AND a hard
+        // arena bound. Condition (2) parent_role match is the inverse-role
+        // soundness guard; conditions (3)/(4) are the subset checks; the
+        // `label_sig` prefilter is identical to the ancestor path.
+        for cand_idx in 0..y.index() {
+            let x_prime_id = NodeId::new(cand_idx);
+            let xb = self.graph.blocking(x_prime_id);
+            // (1) candidate must be a non-root with its own creator;
+            // (2) creating-edge role + polarity must match.
+            let (Some(xp_id), Some(xr)) = (xb.parent, xb.parent_role) else {
+                continue;
+            };
+            if xr != yr {
+                continue;
+            }
+            // Exclude redirected (merged-away) candidates: their live state
+            // lives on the representative, so their own label set is stale.
+            if self.graph.node(x_prime_id).is_redirected() {
+                continue;
+            }
+            // `label_sig` subset prefilter (necessary condition for (3)/(4)).
+            if (yl_sig & !xb.label_sig) != 0
+                || (yp_sig & !self.graph.blocking(xp_id).label_sig) != 0
+            {
+                crate::bump_counter!(self, is_blocked_prefilter_rejects);
+                continue;
+            }
+            // Exclude nominal-labelled candidates (unsound blockers).
+            if self.node_is_nominal(x_prime_id) {
+                continue;
+            }
+            crate::bump_counter!(self, is_blocked_subset_scans);
+            let y_labels = &self.graph.node(y).labels;
+            let x_labels = &self.graph.node(x_prime_id).labels;
+            if is_subset_sorted(y_labels, x_labels) {
+                let yp_labels = &self.graph.node(yp_id).labels;
+                let xp_labels = &self.graph.node(xp_id).labels;
+                if is_subset_sorted(yp_labels, xp_labels) {
+                    crate::bump_counter!(self, is_blocked_true);
+                    return true;
+                }
             }
         }
         false
@@ -1807,6 +1951,19 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
         }
     }
     i == small.len()
+}
+
+/// Whether anywhere (pairwise) blocking is enabled for the main tableau.
+///
+/// Opt-IN: returns `true` only when `RUSTDL_ANYWHERE_BLOCKING=1`. Default
+/// (unset / any other value) is `false` — the historical ancestor-scoped
+/// pair blocking. Read ONCE per [`TableauContext`] at construction and cached
+/// in the `anywhere_blocking` field; the hot `is_blocked` path never re-reads
+/// the environment. The reasoner crate carries a mirror `*_enabled()` for
+/// discoverability alongside the other gate fns.
+#[must_use]
+pub fn anywhere_blocking_enabled() -> bool {
+    std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
 }
 
 #[cfg(test)]
@@ -2851,9 +3008,13 @@ mod tests {
 // stays clean.
 
 #[cfg(test)]
+#[allow(clippy::many_single_char_names)]
 mod phase3b_canaries {
     use super::*;
-    use owl_dl_core::{ClassId, ConceptPool, Role, RoleId};
+    use owl_dl_core::{
+        AbsorbedTBox, ClassId, ConceptPool, ConceptRule, IndividualId, Role, RoleHierarchyBuilder,
+        RoleId,
+    };
 
     // ── Synthetic inverse-heavy fixture ─────────────────────────────────────
     //
@@ -3019,6 +3180,284 @@ mod phase3b_canaries {
             hits > 0,
             "inverse-pair fast-path counter never bumped; \
              are_declared_inverses isn't consulting the new hashset. hits = {hits}"
+        );
+    }
+
+    // ----- Anywhere (pairwise) blocking -------------------------------------
+
+    #[test]
+    fn anywhere_gate_defaults_off() {
+        // With RUSTDL_ANYWHERE_BLOCKING unset (the test default) a fresh
+        // context must report ancestor-only blocking. We don't poke the
+        // environment (racy under parallel tests); we only assert the cached
+        // field's *default* matches the opt-in helper's view. The helper is
+        // false unless the env is exactly "1".
+        assert!(
+            !anywhere_blocking_enabled() || std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some()
+        );
+        let pool = ConceptPool::new();
+        let ctx = TableauContext::new(&pool);
+        assert_eq!(ctx.anywhere_blocking(), anywhere_blocking_enabled());
+    }
+
+    /// Build: roots p1, p2; then a `Named(r)`-successor of p2 (call it `xprime`,
+    /// created FIRST so it has the smaller index), then a `Named(r)`-successor
+    /// of p1 (call it `y`). `y` is NOT a tree-ancestor of `xprime` and vice
+    /// versa — they are in disjoint subtrees. Labels are set so the pairwise
+    /// conditions (3) `L(y) ⊆ L(xprime)` and (4) `L(p1) ⊆ L(p2)` hold.
+    /// Returns `(ctx, y, xprime)` so individual tests can perturb labels.
+    fn anywhere_disjoint_subtrees(
+        pool: &ConceptPool,
+        a: ConceptId,
+        b: ConceptId,
+    ) -> (TableauContext<'_, 'static, 'static>, NodeId, NodeId) {
+        let r = RoleId::new(0);
+        let mut ctx = TableauContext::new(pool);
+        ctx.set_anywhere_blocking(true);
+        let p1 = ctx.new_node();
+        let p2 = ctx.new_node();
+        // xprime created before y (smaller index → valid earlier blocker).
+        let xprime = ctx.new_successor(p2, r);
+        let y = ctx.new_successor(p1, r);
+        // (4): L(p1) ⊆ L(p2). Put `a` on both parents.
+        ctx.add_label(p1, a);
+        ctx.add_label(p2, a);
+        ctx.add_label(p2, b);
+        // (3): L(y) ⊆ L(xprime). Put `a` on y, {a,b} on xprime.
+        ctx.add_label(y, a);
+        ctx.add_label(xprime, a);
+        ctx.add_label(xprime, b);
+        (ctx, y, xprime)
+    }
+
+    #[test]
+    fn anywhere_blocks_non_ancestor_earlier_node() {
+        // (a) anywhere blocking fires where ancestor-only would not.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let (mut ctx, y, xprime) = anywhere_disjoint_subtrees(&pool, a, b);
+        assert!(
+            y.index() > xprime.index(),
+            "xprime must be the earlier node"
+        );
+        // Under anywhere blocking: blocked by the disjoint-subtree earlier node.
+        assert!(ctx.is_blocked(y), "anywhere should block y by xprime");
+        // Under ancestor-only: NOT blocked (xprime is not an ancestor of y).
+        ctx.set_anywhere_blocking(false);
+        assert!(
+            !ctx.is_blocked(y),
+            "ancestor-only must NOT block across disjoint subtrees"
+        );
+    }
+
+    #[test]
+    fn anywhere_does_not_block_when_parent_condition_fails() {
+        // (b) inverse-role soundness guard: condition (4) L(p1) ⊆ L(p2) fails.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let extra = pool.atomic(ClassId::new(2));
+        let (mut ctx, y, _xprime) = anywhere_disjoint_subtrees(&pool, a, b);
+        // Add `extra` to L(p1) only — now L(p1) ⊄ L(p2), breaking (4).
+        let p1 = ctx.graph().node(y).parent().expect("y has a parent");
+        ctx.add_label(p1, extra);
+        assert!(
+            !ctx.is_blocked(y),
+            "must not block when parent-label subset (cond 4) fails"
+        );
+    }
+
+    #[test]
+    fn anywhere_does_not_block_on_parent_role_mismatch() {
+        // (b2) condition (2): parent_role must match.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let r = RoleId::new(0);
+        let s = RoleId::new(1);
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_anywhere_blocking(true);
+        let p1 = ctx.new_node();
+        let p2 = ctx.new_node();
+        let _xprime = ctx.new_successor(p2, s); // role s
+        let y = ctx.new_successor(p1, r); // role r ≠ s
+        ctx.add_label(p1, a);
+        ctx.add_label(p2, a);
+        ctx.add_label(p2, b);
+        ctx.add_label(y, a);
+        let xprime = NodeId::new(2);
+        ctx.add_label(xprime, a);
+        ctx.add_label(xprime, b);
+        assert!(
+            !ctx.is_blocked(y),
+            "must not block when parent_role (cond 2) differs"
+        );
+    }
+
+    #[test]
+    fn anywhere_excludes_nominal_candidate() {
+        // (b3) a candidate carrying a Nominal label is never a blocker.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let nom = pool.nominal(IndividualId::new(0));
+        let (mut ctx, y, xprime) = anywhere_disjoint_subtrees(&pool, a, b);
+        // Mark the candidate as nominal. (3) still holds: L(y)={a} ⊆ {a,b,nom}.
+        ctx.add_label(xprime, nom);
+        assert!(
+            !ctx.is_blocked(y),
+            "nominal candidate must be excluded as a blocker"
+        );
+    }
+
+    #[test]
+    fn anywhere_does_not_block_nominal_y() {
+        // A nominal `y` (fixed individual) must not itself be blocked.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let nom = pool.nominal(IndividualId::new(0));
+        let (mut ctx, y, _xprime) = anywhere_disjoint_subtrees(&pool, a, b);
+        ctx.add_label(y, nom);
+        assert!(!ctx.is_blocked(y), "a nominal node must never be blocked");
+    }
+
+    #[test]
+    fn anywhere_excludes_merged_candidate() {
+        // (b4) a redirected (merged-away) candidate is skipped.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let b = pool.atomic(ClassId::new(1));
+        let (mut ctx, y, xprime) = anywhere_disjoint_subtrees(&pool, a, b);
+        // Merge xprime into some other node so it becomes a redirect. Create a
+        // fresh sink target (after y, so it is not itself a blocker for y).
+        let sink = ctx.new_node();
+        ctx.merge_into(xprime, sink);
+        assert!(
+            ctx.graph().node(xprime).is_redirected(),
+            "xprime should be redirected after merge"
+        );
+        assert!(
+            !ctx.is_blocked(y),
+            "redirected candidate must be excluded as a blocker"
+        );
+    }
+
+    #[test]
+    fn anywhere_terminates_on_cyclic_existential() {
+        // (c) A ⊑ ∃r.A — the canonical cyclic TBox. Under ancestor-only the
+        // child blocks on its grandparent-chain ancestor; under anywhere the
+        // SAME loop is caught (the repeated label set {A} on a same-role
+        // successor of a same-label parent). Build the spine by hand and assert
+        // the third generation is blocked under anywhere — termination follows
+        // from blocking firing.
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let a = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_anywhere_blocking(true);
+        let n0 = ctx.new_node(); // root
+        ctx.add_label(n0, a);
+        let n1 = ctx.new_successor(n0, r);
+        ctx.add_label(n1, a);
+        let n2 = ctx.new_successor(n1, r);
+        ctx.add_label(n2, a);
+        // n2: parent n1 {A}, L(n2)={A}. Candidate n1: parent n0 {A}, L(n1)={A}.
+        // (2) both Named(r); (3) {A}⊆{A}; (4) {A}⊆{A}. Blocked.
+        assert!(
+            ctx.is_blocked(n2),
+            "cyclic existential must block under anywhere"
+        );
+    }
+
+    #[test]
+    fn anywhere_real_clash_stays_unsat() {
+        // (d) Blocking must not hide a genuine clash. A ⊑ ∃r.(B ⊓ ¬B): the
+        // generated r-successor carries {B, ¬B} → clash. The verdict must be
+        // Unsat under BOTH ancestor-only and anywhere blocking (blocking only
+        // suppresses GENERATION; the first witness is generated and clashes).
+        let build = |anywhere: bool| -> search::SearchVerdict {
+            let mut pool = ConceptPool::new();
+            let a_cls = ClassId::new(0);
+            let a = pool.atomic(a_cls);
+            let b = pool.atomic(ClassId::new(1));
+            let not_b = pool.not(b);
+            let bad = pool.and([b, not_b]);
+            let r = RoleId::new(0);
+            let some_r_bad = pool.some(Role::named(r), bad);
+            let mut tbox = AbsorbedTBox {
+                concept_rules: vec![ConceptRule {
+                    trigger: a_cls,
+                    conclusion: some_r_bad,
+                }],
+                ..AbsorbedTBox::default()
+            };
+            tbox.finalize();
+            let hierarchy = RoleHierarchyBuilder::with_roles(1).build();
+            let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+            ctx.set_anywhere_blocking(anywhere);
+            let x = ctx.new_node();
+            ctx.add_label(x, a);
+            search::search(&mut ctx, 64)
+        };
+        assert!(
+            matches!(build(false), search::SearchVerdict::Unsat(_)),
+            "ancestor-only must find the clash"
+        );
+        assert!(
+            matches!(build(true), search::SearchVerdict::Unsat(_)),
+            "anywhere must still find the clash"
+        );
+    }
+
+    #[test]
+    fn anywhere_sat_verdict_matches_ancestor() {
+        // A satisfiable cyclic existential (A ⊑ ∃r.A) must be Sat under both
+        // modes — anywhere must not over-block into a spurious Unsat, nor
+        // under-block into non-termination. (Same verdict is the invariant.)
+        let build = |anywhere: bool| -> search::SearchVerdict {
+            let mut pool = ConceptPool::new();
+            let a_cls = ClassId::new(0);
+            let a = pool.atomic(a_cls);
+            let r = RoleId::new(0);
+            let some_r_a = pool.some(Role::named(r), a);
+            let mut tbox = AbsorbedTBox {
+                concept_rules: vec![ConceptRule {
+                    trigger: a_cls,
+                    conclusion: some_r_a,
+                }],
+                ..AbsorbedTBox::default()
+            };
+            tbox.finalize();
+            let hierarchy = RoleHierarchyBuilder::with_roles(1).build();
+            let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+            ctx.set_anywhere_blocking(anywhere);
+            let x = ctx.new_node();
+            ctx.add_label(x, a);
+            search::search(&mut ctx, 256)
+        };
+        assert_eq!(build(false), search::SearchVerdict::Sat);
+        assert_eq!(build(true), search::SearchVerdict::Sat);
+    }
+
+    #[test]
+    fn anywhere_does_not_block_root_or_when_strictly_earlier_absent() {
+        // The earliest non-root successor cannot be blocked (no earlier
+        // qualifying candidate exists). Roots are never blocked.
+        let mut pool = ConceptPool::new();
+        let r = RoleId::new(0);
+        let a = pool.atomic(ClassId::new(0));
+        let mut ctx = TableauContext::new(&pool);
+        ctx.set_anywhere_blocking(true);
+        let root = ctx.new_node();
+        ctx.add_label(root, a);
+        let first = ctx.new_successor(root, r);
+        ctx.add_label(first, a);
+        assert!(!ctx.is_blocked(root), "root is never blocked");
+        assert!(
+            !ctx.is_blocked(first),
+            "the earliest successor has no earlier qualifying candidate"
         );
     }
 }

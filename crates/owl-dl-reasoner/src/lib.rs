@@ -712,6 +712,21 @@ pub fn counting_pair_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_COUNTING_PAIR_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
+/// (`RUSTDL_ANYWHERE_BLOCKING`). Opt-IN, default OFF: returns `true` only when
+/// the variable is exactly `"1"`. When ON, `TableauContext::is_blocked` scopes
+/// the pair-blocking candidate to ANY earlier-created node (Motik/Shearer/
+/// Horrocks anywhere blocking) instead of only tree-ancestors, keeping the
+/// completion small on large generative `ABox`es. The actual decision is read
+/// once per `TableauContext` at construction (see
+/// `owl_dl_tableau::anywhere_blocking_enabled`); this mirror exists for
+/// discoverability alongside the other gate fns. Default OFF until the
+/// soundness gate validates it corpus-wide.
+#[must_use]
+pub fn anywhere_blocking_enabled() -> bool {
+    std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
+}
+
 /// Project flag for the Konclude snapshot cache. When ON,
 /// `subsumes_via_tableau` consults a per-class snapshot-replay
 /// cache ahead of the wedge.

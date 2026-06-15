@@ -191,6 +191,18 @@ struct HyperNode {
     /// node. `None` for the root. Set once at creation. Used by the
     /// double-blocking condition to require equal incoming-edge labels.
     parent_role: Option<Role>,
+    /// Backjumping: set when an `HF4a` NN-rule merge redirected another
+    /// node's labels onto this one. Like `at_most_tainted` (the merge
+    /// half of Hole C), the NN-merge *causation* dep (why the two nodes
+    /// coincide — the branch decision that placed the shared nominal) is
+    /// not folded into the copied labels' deps, so a downstream
+    /// disjointness clash on a merge-inherited label can under-report
+    /// its dep-set and trigger an UNSOUND backjump past the deciding
+    /// disjunct (false `Unsat`). When this is set, the `body→⊥` clash
+    /// site reports `DepSet::ALL` (chronological backtracking — always
+    /// sound) instead of the precise `body_deps`. Captured by
+    /// save/restore (whole-node clone).
+    nn_tainted: bool,
 }
 
 impl HyperNode {
@@ -277,6 +289,47 @@ struct LazyReplayState {
     new_trigger_atoms: std::collections::HashSet<u32>,
 }
 
+/// Pre-resolved `ABox` seed for [`HyperEngine::new_seeded`] — the
+/// multi-node graph an `ABox`-consistency check starts from.
+///
+/// **Soundness contract** (this is the false-`Unsat` surface): every
+/// field must hold only what the `ABox` genuinely *asserts* / entails.
+/// Over-seeding (a spurious label, a wrong merge, a phantom edge) can
+/// fire a disjointness / cardinality clause that no model violates,
+/// yielding a false `Unsat` = false-inconsistent = catastrophic. The
+/// caller (`owl_dl_reasoner`) populates this from asserted `ABox`
+/// axioms only:
+/// - `num_individuals` — one node per individual is created, node `i`
+///   for individual index `i`. Each is seeded with its nominal class
+///   `nominal_base + i` (so the NN-rule + `DifferentIndividuals`
+///   disjointness clauses fire on it). `nominal_base` is the engine's
+///   nominal range start (= `num_classes`), so the labels coincide
+///   with the clause set's nominal ids by construction.
+/// - `property_assertions` — asserted `ObjectPropertyAssertion` edges,
+///   role-polarity already normalised to forward by the caller.
+/// - `same_pairs` — asserted `SameIndividual` pairs (merged). NEVER
+///   inferred equivalence.
+///
+/// `ClassAssertion`s are **not** seeded here: the caller encodes each
+/// as a `{a} ⊑ C` GCI in the clause set (exact equivalence), so the
+/// class assertion fires via the seeded nominal label. Likewise
+/// `DifferentIndividuals` lives in the clause set as `{a}⊓{b}⊑⊥`
+/// disjointness — never as engine `neq` (double-seed hazard).
+#[derive(Debug, Clone, Default)]
+pub struct AboxSeed {
+    /// Number of individuals — one graph node is created per index
+    /// `0..num_individuals`.
+    pub num_individuals: u32,
+    /// Nominal class range start (the clausifier's `nominal_base`,
+    /// equal to `num_classes`). Node `i` is labelled
+    /// `ClassId::new(nominal_base + i)`.
+    pub nominal_base: u32,
+    /// Asserted `(from_index, role, to_index)` object-property edges.
+    pub property_assertions: Vec<(u32, Role, u32)>,
+    /// Asserted `(a_index, b_index)` `SameIndividual` merges.
+    pub same_pairs: Vec<(u32, u32)>,
+}
+
 /// Outcome of a Horn hyperresolution run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HyperResult {
@@ -337,6 +390,11 @@ pub struct SearchStats {
 
 /// The hyperresolution engine. Holds the completion graph and the
 /// clause set (borrowed), plus per-run search instrumentation.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
+              nn_taint_disabled) — orthogonal toggles, not a state enum"
+)]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
     /// Pairwise class disjointness `(a, b)` (`a.index() < b.index()`),
@@ -399,6 +457,16 @@ pub struct HyperEngine<'c> {
     /// O(bucket-size). `None` unless double-blocking is enabled (no
     /// overhead on the default anywhere-blocking path).
     block_index: Option<std::collections::HashMap<Role, Vec<HNode>>>,
+    /// Test-only: when `true`, BOTH NN-merge backjump-dep fixes are
+    /// disabled — the merge-causation dep is dropped in
+    /// [`Self::merge_with_cause`] (the source fix for residuals A+B) AND
+    /// the `nn_tainted` clash-dep widening is skipped — reproducing the
+    /// pre-fix backjump-dep hole. Set ONLY by the test helper
+    /// [`Self::with_nn_taint_disabled`]; always `false` in production, so
+    /// it has zero effect on any real query. Exists so the false-`Unsat`-
+    /// direction regression tests can assert "Unsat without the fix, Sat
+    /// with it" — the safety net for a fix the corpus can't validate.
+    nn_taint_disabled: bool,
     /// `HF4a` nominal class range `[start, start + count)`. A class id in
     /// this range names a singleton `{a}`, so any two distinct nodes
     /// carrying it must be the *same* individual — the NN-rule merges
@@ -557,6 +625,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             block_index: None,
+            nn_taint_disabled: false,
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
@@ -580,6 +649,19 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_precise_card_deps(mut self) -> Self {
         self.precise_card_deps = true;
+        self
+    }
+
+    /// Test-only: disable BOTH NN-merge backjump-dep fixes (the
+    /// merge-causation-dep folding in `merge_with_cause` and the
+    /// `nn_tainted` clash widening), reproducing the pre-fix backjump-dep
+    /// hole. Used by the false-`Unsat`-direction regression tests to prove
+    /// the fix is load-bearing (Unsat without it, Sat with it). Never
+    /// called in production.
+    #[cfg(test)]
+    #[must_use]
+    fn with_nn_taint_disabled(mut self) -> Self {
+        self.nn_taint_disabled = true;
         self
     }
 
@@ -696,6 +778,20 @@ impl<'c> HyperEngine<'c> {
             true
         } else {
             false
+        }
+    }
+
+    /// Widen an EXISTING label `c`'s dep-set at node `n` by unioning in
+    /// `extra` (no-op if `c` is absent). Overrides [`HyperNode::add`]'s
+    /// keep-first rule for the one place it must be widened: folding the
+    /// merge-causation dep into a merge-copied label that was already
+    /// present (see [`Self::merge_with_cause`]). Sound — widening a
+    /// label's dep only reduces backjumping, never the reverse. Does NOT
+    /// re-enqueue the label (its clauses already fired on first add).
+    fn fold_label_dep(&mut self, n: HNode, c: ClassId, extra: DepSet) {
+        let node = &mut self.nodes[n.index()];
+        if let Ok(pos) = node.labels.binary_search_by_key(&c.index(), |l| l.index()) {
+            node.label_deps[pos] = node.label_deps[pos].union(extra);
         }
     }
 
@@ -1265,6 +1361,111 @@ impl<'c> HyperEngine<'c> {
         engine
     }
 
+    /// Build an engine seeded with a pre-resolved `ABox` ([`AboxSeed`]) —
+    /// the multi-node graph an `ABox`-consistency check runs over. Mirrors
+    /// the main-tableau `ABox` seeding order:
+    /// 1. one nominal node per individual (labelled `{a}`),
+    /// 2. `ObjectPropertyAssertion` edges (both `edges` + reverse
+    ///    `preds`, like [`Self::from_snapshot`]),
+    /// 3. `SameIndividual` merges (via the engine's [`Self::merge`], so
+    ///    union-find / label / edge redirection stay consistent).
+    ///
+    /// `DifferentIndividuals` distinctness and `ClassAssertion`s are
+    /// **not** seeded here — they are encoded in `clauses` (disjointness
+    /// `{a}⊓{b}⊑⊥` and `{a}⊑C` GCIs respectively) and fire through the
+    /// normal Horn fixpoint once the nominal labels are present. This
+    /// keeps the seeding to exactly the asserted-and-only-asserted `ABox`
+    /// state (the false-`Unsat` contract on [`AboxSeed`]).
+    ///
+    /// The engine is left in a valid pre-`decide` state: `nodes`,
+    /// `representative`, `snapshot_origin` stay length-consistent;
+    /// `horn_fixpoint` re-seeds every node's labels/edges from the
+    /// graph on the first `solve` pass. Apply the `with_*` configurators
+    /// (nominals / sub-roles / blocking) to the returned engine exactly
+    /// as the classify wedge does, then call [`Self::decide_with_deadline`].
+    ///
+    /// Soundness note: `merge` here only ever runs on `same_pairs`
+    /// (asserted `SameIndividual`); since distinctness is clause-only
+    /// (no engine `neq`), `merge` cannot observe a `≠` and always
+    /// succeeds — a `Different(a,b)+Same(a,b)` clash is caught by the
+    /// `{a}⊓{b}⊑⊥` clause firing on the merged representative during
+    /// `decide`, not by `merge`'s return.
+    #[must_use]
+    pub fn new_seeded(clauses: &'c [DlClause], seed: &AboxSeed) -> Self {
+        let n = seed.num_individuals as usize;
+        if n == 0 {
+            // Degenerate: no individuals. Fall back to a single root so
+            // empty-body (`⊤ → …`) clauses still get a node to fire at.
+            return Self::new(clauses, ClassId::new(0));
+        }
+        // Build N empty nodes (node i ↔ individual index i), each
+        // labelled with its nominal class `nominal_base + i`.
+        let mut nodes: Vec<HyperNode> = Vec::with_capacity(n);
+        for i in 0..n {
+            let order = u32::try_from(i).expect("individual count fits u32");
+            let mut hn = HyperNode {
+                order,
+                ..HyperNode::default()
+            };
+            let nominal = ClassId::new(seed.nominal_base + order);
+            hn.add(nominal, DepSet::EMPTY);
+            nodes.push(hn);
+        }
+        let representative: Vec<HNode> = (0..n)
+            .map(|i| HNode(u32::try_from(i).expect("fits u32")))
+            .collect();
+        let mut engine = Self {
+            clauses,
+            disjoint_pairs: build_disjoint_pairs(clauses),
+            nodes,
+            stats: SearchStats::default(),
+            init_depth: 0,
+            deadline: None,
+            indexes: build_clause_indexes(clauses),
+            worklist: Vec::new(),
+            representative,
+            sub_roles: None,
+            neq: Vec::new(),
+            nominals: None,
+            clash_deps: DepSet::EMPTY,
+            double_blocking: false,
+            precise_card_deps: false,
+            block_index: None,
+            nn_taint_disabled: false,
+            snapshot_origin: vec![false; n],
+            snapshot_backprop_aborted: false,
+            lazy_replay_state: None,
+        };
+        // Asserted ObjectPropertyAssertion edges: mirror as edge +
+        // reverse pred (matches `from_snapshot` bookkeeping). Indices
+        // out of range (defensive) are skipped — a missing edge only
+        // under-detects (sound).
+        for &(from, role, to) in &seed.property_assertions {
+            let (fi, ti) = (from as usize, to as usize);
+            if fi >= n || ti >= n {
+                continue;
+            }
+            let (src, tgt) = (HNode(from), HNode(to));
+            engine.nodes[fi].edges.push((role, tgt));
+            engine.nodes[ti].preds.push((role, src));
+        }
+        // Asserted SameIndividual merges. `merge` resolves through the
+        // union-find, redirects edges/labels, and (in this design) never
+        // clashes since distinctness is clause-only. Out-of-range indices
+        // are skipped (sound under-seed).
+        for &(a, b) in &seed.same_pairs {
+            if (a as usize) >= n || (b as usize) >= n {
+                continue;
+            }
+            // `merge` returns `true` only on a `≠` violation, which cannot
+            // happen here (no engine `neq`); the boolean is ignored on
+            // purpose — a real `Same+Different` clash surfaces via the
+            // disjointness clause during `decide`.
+            let _ = engine.merge(HNode(a), HNode(b));
+        }
+        engine
+    }
+
     fn solve(&mut self, depth: usize) -> HyperResult {
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
@@ -1650,6 +1851,33 @@ impl<'c> HyperEngine<'c> {
     /// (already linked to `s_i`), so predecessor redirection is
     /// unnecessary.
     fn merge(&mut self, s_i: HNode, s_j: HNode) -> bool {
+        self.merge_with_cause(s_i, s_j, DepSet::EMPTY)
+    }
+
+    /// As [`Self::merge`], but folds `cause_deps` (the **merge-causation**
+    /// dep — why the two nodes coincide) into every label copied from
+    /// `s_j` onto the survivor `s_i`. For an NN-merge the causation is the
+    /// dep-set of the triggering nominal on both nodes (it carries the
+    /// branch decision that placed the shared nominal); without folding
+    /// it in, a merge-copied label keeps its original (possibly `EMPTY`)
+    /// dep, and a downstream clause that PROPAGATES that label onto
+    /// another node (`R(x,y) ∧ L(y) → M(x)`) under-reports its dep ⟹
+    /// unsound backjump past the deciding disjunct ⟹ false `Unsat`
+    /// (residual (B) — closes it at the source, subsuming the
+    /// `nn_tainted` taint which only covered clashes *directly on* the
+    /// merged node). Sound: widening deps only ever reduces backjumping.
+    /// The `≤n` caller passes `EMPTY` (its clash deps are handled
+    /// separately via `card_clash_deps` / `DepSet::ALL`), so classify is
+    /// unaffected.
+    fn merge_with_cause(&mut self, s_i: HNode, s_j: HNode, cause_deps: DepSet) -> bool {
+        // Test-only: `nn_taint_disabled` reproduces the pre-fix engine by
+        // dropping the merge-causation dep entirely (so the white-box
+        // regression tests can assert the false-`Unsat` the fix prevents).
+        let cause_deps = if self.nn_taint_disabled {
+            DepSet::EMPTY
+        } else {
+            cause_deps
+        };
         let (s_i, s_j) = (self.resolve(s_i), self.resolve(s_j));
         if s_i == s_j {
             return false;
@@ -1670,7 +1898,14 @@ impl<'c> HyperEngine<'c> {
                 .collect()
         };
         for (c, c_deps) in s_j_labels {
-            self.add_label(s_i, c, c_deps);
+            let merged_deps = c_deps.union(cause_deps);
+            if !self.add_label(s_i, c, merged_deps) && cause_deps != DepSet::EMPTY {
+                // Label already present on `s_i` with a (kept-first,
+                // possibly narrower) dep. Fold the causation in anyway —
+                // otherwise the propagate-then-clash hole reopens. Sound:
+                // widening a label's dep only reduces backjumping.
+                self.fold_label_dep(s_i, c, cause_deps);
+            }
         }
         for (r, t) in self.nodes[s_j.index()].edges.clone() {
             self.nodes[s_i.index()].edges.push((r, t));
@@ -1689,6 +1924,20 @@ impl<'c> HyperEngine<'c> {
             let ni = &mut self.nodes[s_i.index()];
             ni.at_most_tainted = true;
             ni.at_most_dep = ni.at_most_dep.union(sj_dep);
+        }
+        // Propagate the NN-merge taint: if either node carried an
+        // under-dep'd NN-merge-inherited label, the survivor does too
+        // (this `≤n`/NN merge folds `s_j`'s labels — with their possibly
+        // `EMPTY` deps — onto `s_i`). Without this, a `≤n` merge in
+        // `solve_at_most` folding a tainted node into an untainted
+        // survivor would lose the taint and reopen the backjump hole on a
+        // later clash on `s_i`. Over-taint is sound (only widens the
+        // clash dep-set to `DepSet::ALL` = chronological backtracking).
+        // Propagates the EXISTING bit only — never set on the classify
+        // path (no nominals ⇒ NN-rule never fires), so classify is
+        // unaffected.
+        if self.nodes[s_j.index()].nn_tainted {
+            self.nodes[s_i.index()].nn_tainted = true;
         }
         for c in self.nodes[s_j.index()].at_least_done.clone() {
             if !self.nodes[s_i.index()].at_least_done.contains(&c) {
@@ -1867,8 +2116,17 @@ impl<'c> HyperEngine<'c> {
         let clause = &self.clauses[ci];
         if clause.head.is_empty() {
             // body → ⊥ : the body matched, so this is a clash. Record
-            // the dep-set so `solve` can backjump.
-            self.clash_deps = body_deps;
+            // the dep-set so `solve` can backjump. If the clashing node
+            // inherited labels via an NN-merge (`nn_tainted`), the
+            // merge-causation dep is untracked, so report `DepSet::ALL`
+            // (chronological backtracking — sound) to avoid an unsound
+            // backjump past the disjunct that forced the merge.
+            let xn = self.resolve(xnode);
+            self.clash_deps = if self.nodes[xn.index()].nn_tainted && !self.nn_taint_disabled {
+                DepSet::ALL
+            } else {
+                body_deps
+            };
             return FireOutcome::Clash;
         }
         // Horn: exactly one head atom (caller gated on is_horn).
@@ -2096,9 +2354,28 @@ impl<'c> HyperEngine<'c> {
             .find(|&m| self.resolve(m) == m && m != rn && self.nodes[m.index()].has(c));
         match other {
             Some(m) => {
-                if self.merge(rn, m) {
+                // Merge-causation dep: the two nodes coincide *because*
+                // both carry the singleton `{c}`, so the merge depends on
+                // every decision that placed `{c}` on either node — the
+                // union of `c`'s dep-set at both. Folding this into the
+                // copied labels (via `merge_with_cause`) makes a later
+                // clause that propagates a copied label carry the
+                // deciding-disjunct dep, so backjumping stops at the
+                // disjunct (closes residuals A + B at the source).
+                let cause = self.nodes[rn.index()]
+                    .deps_of(c)
+                    .union(self.nodes[m.index()].deps_of(c));
+                if self.merge_with_cause(rn, m, cause) {
                     FireOutcome::Clash
                 } else {
+                    // Belt-and-suspenders: also taint the survivor so a
+                    // clash *directly on* the merged node falls back to
+                    // chronological backtracking even if some label's
+                    // causation was not captured above. (The source fix
+                    // in `merge_with_cause` is the primary guard;
+                    // `nn_tainted` covers the direct-clash case.)
+                    let surv = self.resolve(rn);
+                    self.nodes[surv.index()].nn_tainted = true;
                     FireOutcome::Changed
                 }
             }
@@ -2340,6 +2617,277 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    // ── new_seeded (ABox-consistency) constructor ─────────────────────
+
+    /// 2 individuals, `nominal_base` = 2 (classes 0,1 ordinary; nominals
+    /// `{0}`=cls(2), `{1}`=cls(3)). DifferentIndividuals(0,1) as a
+    /// `{0}⊓{1}⊑⊥` disjointness clause + SameIndividual(0,1) merge: the
+    /// merge brings both nominals onto one node ⟹ Unsat (inconsistent).
+    #[test]
+    fn new_seeded_different_then_same_is_unsat() {
+        let (n0, n1) = (cls(2), cls(3));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(n0, X), Atom::Class(n1, X)],
+            head: vec![],
+        }];
+        let seed = AboxSeed {
+            num_individuals: 2,
+            nominal_base: 2,
+            property_assertions: vec![],
+            same_pairs: vec![(0, 1)],
+        };
+        let r = HyperEngine::new_seeded(&clauses, &seed)
+            .with_nominals(2, 2)
+            .decide(64);
+        assert_eq!(
+            r,
+            HyperResult::Unsat,
+            "Different(a,b)+Same(a,b) seeded ABox should be Unsat"
+        );
+    }
+
+    /// Same disjointness clause but NO `SameIndividual` merge: the two
+    /// nominal nodes stay distinct ⟹ Sat (consistent). Guards against an
+    /// over-eager clash on the seeded nominal topology.
+    #[test]
+    fn new_seeded_distinct_individuals_is_sat() {
+        let (n0, n1) = (cls(2), cls(3));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(n0, X), Atom::Class(n1, X)],
+            head: vec![],
+        }];
+        let seed = AboxSeed {
+            num_individuals: 2,
+            nominal_base: 2,
+            property_assertions: vec![],
+            same_pairs: vec![],
+        };
+        let r = HyperEngine::new_seeded(&clauses, &seed)
+            .with_nominals(2, 2)
+            .decide(64);
+        assert_eq!(
+            r,
+            HyperResult::Sat,
+            "two distinct seeded individuals (no merge) should be Sat"
+        );
+    }
+
+    /// **False-`Unsat`-direction regression** (the catastrophic guard the
+    /// corpus can't validate — wine is the only black-box witness, so
+    /// this is the white-box safety net). A CONSISTENT clause set where a
+    /// disjunctive decision `D` (`q → {0} ⊔ Q`) places nominal `{0}` on
+    /// the root in branch 1, the NN-rule merges the root into the seeded
+    /// `{0}` node copying that node's `EMPTY`-dep label `k`, and a
+    /// `k ⊓ m → ⊥` clause then clashes with `body_deps` that OMIT `D`
+    /// (both `k` and `m` are `EMPTY`-dep). Naive backjumping prunes past
+    /// `D` and never tries branch 2 (`Q`, which is clash-free) ⟹ false
+    /// `Unsat`. The `nn_tainted` fix forces the clash to report
+    /// `DepSet::ALL` ⇒ chronological backtracking ⇒ branch 2 ⇒ `Sat`.
+    /// Asserts BOTH: Unsat with the taint disabled (bug reproduced), Sat
+    /// with it on (bug fixed).
+    #[test]
+    fn nn_merge_backjump_hole_false_unsat_is_fixed() {
+        // nominal_base = 4: ordinary k=cls(0), q=cls(1)=Q-disjunct,
+        // m=cls(2), p=cls(3); nominals {0}=cls(4), {1}=cls(5).
+        let (k, q, m, p) = (cls(0), cls(1), cls(2), cls(3));
+        let (nom0, nom1) = (cls(4), cls(5));
+        let clauses = vec![
+            // Seeded `{0}` node carries `k` (EMPTY-dep, pre-branch):
+            DlClause {
+                body: vec![Atom::Class(nom0, X)],
+                head: vec![Atom::Class(k, X)],
+            },
+            // Root q always carries `m` (EMPTY-dep, Horn):
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(m, X)],
+            },
+            // The disjunctive decision D: q → {0} ⊔ p. Branch 1 = {0}
+            // (forces the NN-merge); branch 2 = p (clash-free ⇒ Sat).
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(nom0, X), Atom::Class(p, X)],
+            },
+            // The clash: k ⊓ m → ⊥. In branch 1, `k` arrives on the root
+            // via the NN-merge with EMPTY dep, `m` is EMPTY-dep, so the
+            // naive clash dep-set omits D.
+            DlClause {
+                body: vec![Atom::Class(k, X), Atom::Class(m, X)],
+                head: vec![],
+            },
+        ];
+        // Seed two individuals so node 0 = {0}, node 1 = {1}.
+        let seed = AboxSeed {
+            num_individuals: 2,
+            nominal_base: 4,
+            property_assertions: vec![],
+            same_pairs: vec![],
+        };
+        // Root carries q (the decision driver). Seed it by also asserting
+        // q on individual node 1 (≠ the {0} node, so no premature merge).
+        // Simpler: run from a fresh root labelled q via `new`, but we need
+        // the seeded {0} node present — so build via new_seeded and add q
+        // to node 1's slot through a Horn clause keyed on {1}.
+        let mut clauses_with_q = clauses.clone();
+        clauses_with_q.push(DlClause {
+            body: vec![Atom::Class(nom1, X)],
+            head: vec![Atom::Class(q, X)],
+        });
+        // Bug reproduced (taint disabled) ⇒ false Unsat:
+        let buggy = HyperEngine::new_seeded(&clauses_with_q, &seed)
+            .with_nominals(4, 2)
+            .with_nn_taint_disabled()
+            .decide(64);
+        // Fixed (taint on) ⇒ Sat:
+        let fixed = HyperEngine::new_seeded(&clauses_with_q, &seed)
+            .with_nominals(4, 2)
+            .decide(64);
+        assert_eq!(
+            buggy,
+            HyperResult::Unsat,
+            "without the nn_tainted fix the consistent graph should false-Unsat \
+             (if this is Sat, the test no longer reproduces the hole)"
+        );
+        assert_eq!(
+            fixed,
+            HyperResult::Sat,
+            "with the nn_tainted fix the consistent graph must be Sat — \
+             a false-Unsat here is catastrophic (false-inconsistent)"
+        );
+    }
+
+    /// **Residual (B) probe — propagate-then-clash.** Adjudicates whether
+    /// the taint-the-merged-node fix is SUFFICIENT or whether the clash
+    /// can escape it onto a *different* (untainted) node via a back-prop
+    /// clause `R(x,y) ∧ L(y) → M(x)`: G (tainted, carrying the merge-
+    /// copied under-dep `L`) is the successor `y`; `M` lands on the
+    /// predecessor `H` (untainted); a `M ⊓ … → ⊥` clash then fires on `H`
+    /// and reads `H.nn_tainted == false`. If this graph false-`Unsat`s
+    /// even WITH the taint on, (B) is a real residual and the
+    /// merge-causation-dep source fix is needed. This test pins the
+    /// current behaviour so a future regression / fix is visible.
+    #[test]
+    fn nn_merge_propagate_then_clash_residual_b() {
+        // ordinary: g_drv=cls(0) (drives G's existence + branch),
+        // q=cls(1), mm=cls(2) (back-prop head), ll=cls(3) (seeded label),
+        // p=cls(4) (clash-free disjunct), guard=cls(5) (always on H).
+        // nominal_base = 6: {0}=cls(6), {1}=cls(7).
+        let (g_drv, q, mm, ll, p, guard) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5));
+        let nom0 = cls(6);
+        let role = Role::Named(RoleId::new(0));
+        let clauses = vec![
+            // Seeded {0} node carries `ll` (EMPTY-dep, pre-branch):
+            DlClause {
+                body: vec![Atom::Class(nom0, X)],
+                head: vec![Atom::Class(ll, X)],
+            },
+            // H (root, labelled q) always carries `guard` (EMPTY):
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(guard, X)],
+            },
+            // H creates an R-successor G seeded with `g_drv`:
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Exists(role, g_drv, X)],
+            },
+            // Decision D at G: g_drv → {0} ⊔ p. Branch 1 forces nominal
+            // {0} on G (⇒ NN-merge with the seeded {0} node, copying
+            // `ll`); branch 2 (`p`) is clash-free.
+            DlClause {
+                body: vec![Atom::Class(g_drv, X)],
+                head: vec![Atom::Class(nom0, X), Atom::Class(p, X)],
+            },
+            // Back-prop: R(x,y) ∧ ll(y) → mm(x). Lands `mm` on H (the
+            // predecessor, NOT a merge survivor ⇒ untainted).
+            DlClause {
+                body: vec![Atom::Role(role, X, 1), Atom::Class(ll, 1)],
+                head: vec![Atom::Class(mm, X)],
+            },
+            // Clash on H: guard ⊓ mm → ⊥ (both EMPTY-dep at H ⇒ naive
+            // body_deps omits D).
+            DlClause {
+                body: vec![Atom::Class(guard, X), Atom::Class(mm, X)],
+                head: vec![],
+            },
+        ];
+        let seed = AboxSeed {
+            num_individuals: 2,
+            nominal_base: 6,
+            property_assertions: vec![],
+            same_pairs: vec![],
+        };
+        // Seed q (the H driver) onto a node so H exists carrying q. Use
+        // the root from `new` is not available via new_seeded; instead key
+        // q on {1} so individual node 1 plays H.
+        let mut cl = clauses.clone();
+        cl.push(DlClause {
+            body: vec![Atom::Class(cls(7), X)],
+            head: vec![Atom::Class(q, X)],
+        });
+        // Bug reproduced (both NN-merge dep fixes disabled) ⇒ false Unsat:
+        let buggy = HyperEngine::new_seeded(&cl, &seed)
+            .with_nominals(6, 2)
+            .with_nn_taint_disabled()
+            .decide(64);
+        // Fixed (merge-causation-dep source fix on) ⇒ Sat:
+        let fixed = HyperEngine::new_seeded(&cl, &seed)
+            .with_nominals(6, 2)
+            .decide(64);
+        assert_eq!(
+            buggy,
+            HyperResult::Unsat,
+            "without the fix the propagate-then-clash graph should false-Unsat \
+             (taint-the-node alone does NOT cover this — residual B)"
+        );
+        // The whole graph is CONSISTENT (branch 2 = `p` is clash-free).
+        // A false-`Unsat` here = residual (B) escaping the fix.
+        assert_eq!(
+            fixed,
+            HyperResult::Sat,
+            "propagate-then-clash must be Sat with the merge-causation-dep \
+             source fix; an Unsat = catastrophic false-inconsistent"
+        );
+    }
+
+    /// `nn_tainted` backjump-soundness pin: an NN-merge that forces two
+    /// genuinely-disjoint nominals onto one node must STILL be Unsat (the
+    /// taint only widens the clash dep-set to `DepSet::ALL`; it must
+    /// never lose a real refutation). Class `a`(cls 0) implies
+    /// `∃R.{0}` and `∃R.{1}`, `≤1 R`, and `{0}⊓{1}⊑⊥` — the two
+    /// nominal successors are merged by `≤1`, the NN-rule then tries to
+    /// coincide them with the seeded nominal nodes, and the disjointness
+    /// clashes. Real Unsat, preserved with and without the taint path.
+    #[test]
+    fn nn_merge_real_clash_stays_unsat() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, n0, n1) = (cls(0), cls(2), cls(3));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, n0, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, n1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(n0, X), Atom::Class(n1, X)],
+                head: vec![],
+            },
+        ];
+        let r = HyperEngine::new(&clauses, a).with_nominals(2, 2).decide(64);
+        assert_eq!(
+            r,
+            HyperResult::Unsat,
+            "≤1 R merging two disjoint nominal successors must stay Unsat"
+        );
     }
 
     #[test]

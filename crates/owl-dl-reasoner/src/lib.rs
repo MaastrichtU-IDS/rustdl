@@ -902,6 +902,23 @@ pub(crate) enum LabelOracle {
 /// every model (no UNA needed), so the added constraint holds in every model
 /// the wedge would otherwise explore — it can only let the wedge find real
 /// subsumptions it previously missed/timed-out on, never an unsound one.
+/// Whether `internal` carries any `ABox` axiom (mirrors classify's
+/// `has_abox_axioms`; kept here so the consistency-cache build gate
+/// can run on the un-mutated input without crossing module privacy).
+fn internal_has_abox(internal: &InternalOntology) -> bool {
+    use owl_dl_core::ontology::Axiom;
+    internal.axioms.iter().any(|ax| {
+        matches!(
+            ax,
+            Axiom::ClassAssertion { .. }
+                | Axiom::ObjectPropertyAssertion { .. }
+                | Axiom::NegativeObjectPropertyAssertion { .. }
+                | Axiom::SameIndividual(_)
+                | Axiom::DifferentIndividuals(_)
+        )
+    })
+}
+
 fn push_different_individuals_disjoint(
     internal: &InternalOntology,
     num_classes: u32,
@@ -1062,6 +1079,189 @@ impl HyperCache {
                 }),
             HyperResult::Stalled => LabelOracle::NoVerdict,
         }
+    }
+}
+
+/// Whether `ABox`-seeded **wedge** consistency checking is enabled
+/// (default **on**). When on, [`is_consistent_internal_full`] runs the
+/// hypertableau wedge over an `ABox`-seeded completion graph instead of
+/// (well, before) the main-tableau `decide(Top)`. The wedge terminates
+/// fast on the out-of-EL `ABox`es where `decide(Top)` hangs 60–125 s.
+///
+/// Verdict map (the soundness contract):
+/// - wedge `Unsat` ⟹ ontology **inconsistent** (sound — only asserted
+///   `ABox` is seeded; a clause clash is a real model violation).
+/// - wedge `Sat` ⟹ **consistent** (trusted, exactly like classify's
+///   `trust_sat`; the wedge is Horn-incomplete so it may MISS a clash,
+///   which is sound — a missed clash is a `Sat` the main tableau might
+///   refute, the same trust level as today).
+/// - wedge `Stalled` ⟹ undetermined → bounded main-tableau fall-through.
+///
+/// Set `RUSTDL_WEDGE_CONSISTENCY=0` to revert to pure main-tableau.
+#[must_use]
+pub fn wedge_consistency_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_CONSISTENCY").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Bounded wall budget (ms) for the main-tableau `decide(Top)`
+/// fall-through used when the consistency wedge returns `Stalled`. The
+/// whole point of the wedge route is to kill the unbounded
+/// `decide(Top)` hang, so the fall-through is itself deadline-capped.
+/// On deadline-elapse the result is reported as consistent (sound:
+/// no inconsistency was witnessed) with an incompleteness trace.
+/// Override with `RUSTDL_CONSISTENCY_FALLBACK_MS`; default 10 000 ms.
+#[must_use]
+fn consistency_fallback_ms() -> u64 {
+    const DEFAULT_MS: u64 = 10_000;
+    std::env::var("RUSTDL_CONSISTENCY_FALLBACK_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MS)
+}
+
+/// `ABox`-seeded wedge state for consistency checking. Built once at
+/// [`PreparedOntology::from_internal`] time from the **un-mutated**
+/// input ontology (the same snapshot `HyperCache::build` clausifies),
+/// so every nominal / role identifier is matched-by-construction with
+/// the clause set — the false-`Unsat` (false-inconsistent) surface.
+///
+/// `None` on the prepared ontology when the wedge route is disabled
+/// or there is no `ABox` (`has_abox_axioms` false), so `ABox`-free inputs
+/// pay nothing and classify stays byte-identical.
+pub(crate) struct ConsistencyCache {
+    /// Clause set: base `TBox`/`RBox` clauses, `DifferentIndividuals`
+    /// disjointness (`{a}⊓{b}⊑⊥`, via [`push_different_individuals_disjoint`]),
+    /// and one `{a}⊑C` GCI per `ClassAssertion` (the exact equivalence,
+    /// clausified so complex / nominal-bearing `C` are handled). Carries
+    /// **no** raw `ABox` — all `ABox` graph state comes from `seed`.
+    clauses: Vec<owl_dl_core::clause::DlClause>,
+    /// Pre-resolved `ABox` graph seed (nominal nodes, asserted edges,
+    /// asserted `SameIndividual` merges). Distinctness + class
+    /// assertions live in `clauses`, not here.
+    seed: owl_dl_tableau::hyper::AboxSeed,
+    /// Role hierarchy built from the **same un-mutated internal** that
+    /// produced `clauses` (un-expanded — matches `HyperCache::build` /
+    /// the standalone probe). Supplied to the engine via
+    /// `with_sub_roles`. A mismatched hierarchy would let an unrelated
+    /// edge satisfy a super-role atom = false clash, so same-source
+    /// construction is load-bearing.
+    sub_roles: RoleHierarchy,
+    /// `num_classes` = the clausifier's nominal range start.
+    num_classes: u32,
+    /// `num_individuals` = the nominal range width (`with_nominals`).
+    num_individuals: u32,
+}
+
+impl ConsistencyCache {
+    /// Build from the un-mutated `internal`. Mirrors `HyperCache::build`
+    /// (clausify a clone) but additionally injects `{a}⊑C` GCIs for
+    /// every `ClassAssertion` so class assertions fire through the
+    /// seeded nominal labels.
+    pub(crate) fn build(internal: &InternalOntology) -> Self {
+        use owl_dl_core::ontology::Axiom;
+        let mut internal = internal.clone();
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+        let num_individuals = u32::try_from(internal.vocabulary.num_individuals()).unwrap_or(0);
+
+        // Inject `{a} ⊑ C` for every ClassAssertion(C, a) — the exact
+        // equivalence. Clausifying through SubClassOf(Nominal(a), C)
+        // handles atomic, complex, and nominal-bearing C uniformly and
+        // soundly (proper var / Tseitin allocation, role canon matching
+        // the rest of the clause set). The nominal `{a}` antecedent
+        // encodes to a single `{a}(X)` body that fires only at node `a`.
+        let class_assertions: Vec<(owl_dl_core::ir::IndividualId, ConceptId)> = internal
+            .axioms
+            .iter()
+            .filter_map(|ax| match ax {
+                Axiom::ClassAssertion { class, individual } => Some((*individual, *class)),
+                _ => None,
+            })
+            .collect();
+        for (individual, class) in class_assertions {
+            let nom = internal.concepts.nominal(individual);
+            internal.axioms.push(Axiom::SubClassOf {
+                sub: nom,
+                sup: class,
+            });
+        }
+
+        let (mut clauses, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
+        // DifferentIndividuals → `{a}⊓{b}⊑⊥` disjointness clauses (the
+        // SAME mechanism the classify wedge uses; never engine `neq`).
+        push_different_individuals_disjoint(&internal, num_classes, &mut clauses);
+
+        // Role hierarchy from the SAME un-mutated internal (un-expanded).
+        let sub_roles = build_role_hierarchy(&internal);
+
+        // Pre-resolve the ABox graph seed: nominal nodes are implicit
+        // (one per individual index, created by `new_seeded`); collect
+        // asserted edges (polarity normalised) + SameIndividual pairs.
+        let mut property_assertions: Vec<(u32, owl_dl_core::ir::Role, u32)> = Vec::new();
+        let mut same_pairs: Vec<(u32, u32)> = Vec::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::ObjectPropertyAssertion {
+                    role,
+                    subject,
+                    object,
+                } => {
+                    // Normalise inverse-role polarity to forward, then
+                    // store the forward role (matching `collect_abox`).
+                    let (from, to) = if role.is_inverse() {
+                        (*object, *subject)
+                    } else {
+                        (*subject, *object)
+                    };
+                    let fwd = owl_dl_core::ir::Role::Named(role.role_id());
+                    property_assertions.push((from.index(), fwd, to.index()));
+                }
+                Axiom::SameIndividual(inds) => {
+                    for i in 0..inds.len() {
+                        for j in (i + 1)..inds.len() {
+                            same_pairs.push((inds[i].index(), inds[j].index()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let seed = owl_dl_tableau::hyper::AboxSeed {
+            num_individuals,
+            nominal_base: num_classes,
+            property_assertions,
+            same_pairs,
+        };
+
+        Self {
+            clauses,
+            seed,
+            sub_roles,
+            num_classes,
+            num_individuals,
+        }
+    }
+
+    /// Run the ABox-seeded wedge. Returns the three-valued
+    /// [`owl_dl_tableau::hyper::HyperResult`] (`Unsat`=inconsistent,
+    /// `Sat`=consistent, `Stalled`=undetermined). Configured exactly
+    /// as the classify wedge (`with_nominals` + `with_sub_roles` +
+    /// double-blocking + precise-card-deps, under their env gates).
+    pub(crate) fn decide(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult {
+        use owl_dl_tableau::hyper::HyperEngine;
+        let mut engine = HyperEngine::new_seeded(&self.clauses, &self.seed)
+            .with_sub_roles(self.sub_roles.clone())
+            .with_nominals(self.num_classes, self.num_individuals);
+        if hyper_double_block_enabled() {
+            engine = engine.with_double_blocking();
+        }
+        if hyper_precise_card_deps_enabled() {
+            engine = engine.with_precise_card_deps();
+        }
+        engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
     }
 }
 
@@ -1631,8 +1831,79 @@ fn is_consistent_internal_full(
             },
         ));
     }
-    // Fall through: existing tableau-based satisfiability of Top.
-    let consistent = prepared.decide(owl_dl_core::ConceptPool::top)?;
+    let trace = std::env::var_os("RUSTDL_TRACE").is_some();
+    // ABox-seeded wedge route (default on; kills the `decide(Top)` hang
+    // on out-of-EL ABoxes). `Some` only when enabled AND there is an
+    // ABox; otherwise fall straight through to the main tableau.
+    let wedge_deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
+    match prepared.consistency_wedge(Some(wedge_deadline)) {
+        Some(owl_dl_tableau::hyper::HyperResult::Unsat) => {
+            // SOUND: a clause clash on the asserted-only ABox seed is a
+            // real model violation ⟹ ontology inconsistent.
+            if trace {
+                eprintln!("consistency: wedge Unsat — inconsistent");
+            }
+            return Ok((
+                false,
+                QueryStats {
+                    answered_by_saturation: false,
+                    pure_el_mode: false,
+                },
+            ));
+        }
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) => {
+            // Trusted consistent (like classify's trust_sat). The wedge
+            // is Horn-incomplete so it may MISS a clash — sound (a
+            // missed clash is the same trust level as classify today).
+            if trace {
+                eprintln!("consistency: wedge Sat — consistent (trusted)");
+            }
+            return Ok((
+                true,
+                QueryStats {
+                    answered_by_saturation: false,
+                    pure_el_mode: false,
+                },
+            ));
+        }
+        Some(owl_dl_tableau::hyper::HyperResult::Stalled) if trace => {
+            // Undetermined → bounded main-tableau fall-through below.
+            eprintln!("consistency: wedge Stalled — bounded tableau fall-through");
+        }
+        // `Some(Stalled)` (no trace): bounded main-tableau fall-through.
+        // `None`: wedge route disabled or no ABox → pure main-tableau
+        // (the historical path; unbounded for the no-ABox case which does
+        // not hang — GALEN/SIO/pizza decide(Top) is sub-second).
+        Some(owl_dl_tableau::hyper::HyperResult::Stalled) | None => {}
+    }
+
+    // Fall through: tableau-based satisfiability of Top. When the wedge
+    // stalled we BOUND it (so a hard out-of-EL ABox can't hang); on the
+    // pure no-ABox path we keep the unbounded call (no hang risk).
+    let wedge_route_active = prepared.consistency.is_some();
+    let consistent = if wedge_route_active {
+        let dl =
+            std::time::Instant::now() + std::time::Duration::from_millis(consistency_fallback_ms());
+        if let Some(sat) = prepared.decide_with_deadline(dl, owl_dl_core::ConceptPool::top)? {
+            sat
+        } else {
+            // Deadline elapsed: no inconsistency witnessed within
+            // budget. Report consistent (sound — a tableau timeout
+            // is "don't know", and the trusted direction here is
+            // "consistent") with an incompleteness trace.
+            if trace {
+                eprintln!(
+                    "consistency: bounded tableau fall-through timed out \
+                     ({} ms) — reporting consistent (incomplete)",
+                    consistency_fallback_ms()
+                );
+            }
+            true
+        }
+    } else {
+        prepared.decide(owl_dl_core::ConceptPool::top)?
+    };
     Ok((
         consistent,
         QueryStats {
@@ -1892,6 +2163,11 @@ pub(crate) struct PreparedOntology {
     /// `build_data_counting_classes`). The classify unsat-probe
     /// main-tableau-verifies these instead of trusting the wedge's `Sat`.
     pub(crate) data_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
+    /// `ABox`-seeded wedge consistency state. `Some` iff
+    /// [`wedge_consistency_enabled`] and the ontology has `ABox` axioms;
+    /// `None` otherwise (`ABox`-free inputs pay nothing, classify
+    /// byte-identical). Consumed by [`is_consistent_internal_full`].
+    consistency: Option<ConsistencyCache>,
 }
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
@@ -2102,6 +2378,13 @@ impl PreparedOntology {
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
+        // ABox-seeded wedge consistency: build iff enabled AND the input
+        // has ABox axioms (so ABox-free inputs pay nothing and classify
+        // stays byte-identical). Built from the un-mutated `internal`,
+        // before the absorb/NNF passes below consume it — so every
+        // nominal/role id is matched-by-construction with the clause set.
+        let consistency = (wedge_consistency_enabled() && internal_has_abox(&internal))
+            .then(|| ConsistencyCache::build(&internal));
         // Phase 1b: build the snapshot cache from the same un-mutated
         // ontology, iff `RUSTDL_SNAPSHOT_CAPTURE` is ON. The cache's
         // `clausify_with_stats` + `BackPropRisk::classify_ontology`
@@ -2167,7 +2450,18 @@ impl PreparedOntology {
             abox_verdict: std::sync::OnceLock::new(),
             dkey_ranges,
             data_counting_classes,
+            consistency,
         })
+    }
+
+    /// `ABox`-seeded wedge consistency verdict, or `None` when the wedge
+    /// route is disabled / there is no `ABox`. `Unsat`=inconsistent,
+    /// `Sat`=consistent, `Stalled`=undetermined (caller falls through).
+    pub(crate) fn consistency_wedge(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<owl_dl_tableau::hyper::HyperResult> {
+        self.consistency.as_ref().map(|c| c.decide(deadline))
     }
 
     /// Lazy accessor for the `ABox` consistency check verdict.

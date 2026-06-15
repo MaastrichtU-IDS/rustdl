@@ -44,22 +44,47 @@ pairs — produces **zero** clashes and **zero** individuals typed both `Man` an
 The ablation explains why: the contradiction depends on the *generated* Marriage
 female-partner successor, which named-individual datalog never materialises.
 
-## Consequence for the engine design
+## Root cause in rustdl — VERIFIED (two-engine gap, not a missing calculus)
 
-Detecting family soundly requires a **deterministic materialization engine** with:
-∃-successor generation (at least for the participating existentials), role-chain
-application over generated nodes, functional-role merge, and blocking for termination.
-That is essentially a deterministic (non-branching) tableau. It is *not* the cheap
-ABox datalog the "deterministic saturation" option implied, and it faces the same
-graph-scale challenge that makes the full tableau's `decide(Top)` hang on this 1848-
-individual ABox (the non-branching property avoids disjunctive blow-up, but not the
-graph-size blow-up; termination hinges on good — e.g. anywhere — blocking).
+This is NOT "rustdl needs a new materialization engine" — rustdl already HAS a
+complete materialization tableau (it generates ∃-successors, applies role chains,
+does functional merge). The gap is that family falls between rustdl's two engines,
+each missing one of the two things Konclude has (chains AND efficient blocking):
+
+| engine | role chains (RIAs) | blocking | behaviour on family |
+|---|---|---|---|
+| **Wedge** (the consistency path, `hyper.rs`) | **DROPPED** at clausify (`clause.rs:317-321`, `_ => {}`, deferred "HF3") | **anywhere** | terminates ~20 s but returns **consistent** (misses the chain-dependent clash) — a sound under-approximation |
+| **Main tableau** (`lib.rs:765 is_blocked`) | 2-leg via `apply_role_chains` (rules.rs:1142) | **ancestor-only** | would detect, but **hangs** (graph blow-up on the 1848-individual generative ABox) |
+| **Konclude** | yes | anywhere/pairwise | **~1 s, correct** |
+
+The wedge can't catch it because it never sees `isMalePartnerIn∘hasFemalePartner⊑hasWife`
+(RIA dropped). The main tableau could catch it but doesn't terminate, because
+ancestor-only blocking lets the ∃-generation explode the completion graph
+(`tableau-memory-fanout`: ancestor-only → huge graphs).
+
+## The two real levers (both core-engine projects, broad payoff, real FP risk)
+
+1. **Role-chains in the wedge (deferred "HF3").** The wedge already has
+   anywhere-blocking + ∃-generation + functional merge; it only lacks RIA support.
+   Hard part: the hyperresolution engine must **derive role EDGES** via clauses
+   (`R₁(x,y)∧R₂(y,z) → R₃(x,z)` — a role-atom HEAD, a clause shape the clausifier
+   does not currently emit). Sound (additive role facts); broadly useful (chains
+   are ubiquitous). Would let the fast engine detect family.
+2. **Anywhere/pairwise blocking in the main tableau.** Soundness-DELICATE with
+   inverse roles + qualified cardinality — which is exactly why rustdl uses the
+   conservative ancestor-only blocking (anywhere blocking is not unconditionally
+   sound in SROIQ). Touches the hot loop. Larger, higher-risk.
+
+Either would close family; neither is a pre-check. Their real justification is
+GENERAL performance/completeness (every chain-heavy or large-ABox workload), not
+these 2 fixtures.
 
 ## Disposition
 
 family / family-stripped remain a **sound MISS** (rustdl returns `consistent`;
 HermiT/Konclude inconsistent). This is the SAFE direction (false-*consistent*, never
 false-*inconsistent*); classification stays FP=0/MISSED=0. Closing it is a major
-engine investment for 2 fixtures — deferred unless a broader workload justifies a
-deterministic-materialization / better-blocking engine. The 4-assertion core above is
-the validation target if/when that work is taken on.
+core-engine investment (lever 1 = role-chains-in-the-wedge / "HF3", or lever 2 =
+anywhere/pairwise blocking in the main tableau) whose real justification is general
+performance/completeness, not these 2 fixtures — **deferred**. The 4-assertion core
+above is the validation target if/when either lever is taken on.

@@ -3086,22 +3086,21 @@ Ontology(<http://t/x>
 
     #[test]
     fn decimal_as_i64_integer_values() {
-        assert_eq!(decimal_as_i64(&parse_decimal("5").unwrap()), Some(5));
-        assert_eq!(decimal_as_i64(&parse_decimal("-7").unwrap()), Some(-7));
-        assert_eq!(decimal_as_i64(&parse_decimal("0").unwrap()), Some(0));
+        let d = |s| parse_decimal(s).expect("test decimal parses");
+        assert_eq!(decimal_as_i64(&d("5")), Some(5));
+        assert_eq!(decimal_as_i64(&d("-7")), Some(-7));
+        assert_eq!(decimal_as_i64(&d("0")), Some(0));
         // Leading-zero normalisation: "007" is the integer 7.
-        assert_eq!(decimal_as_i64(&parse_decimal("007").unwrap()), Some(7));
+        assert_eq!(decimal_as_i64(&d("007")), Some(7));
     }
 
     #[test]
     fn decimal_as_i64_rejects_non_integer_and_overflow() {
+        let d = |s| parse_decimal(s).expect("test decimal parses");
         // Non-empty fraction => not an xsd:integer value.
-        assert_eq!(decimal_as_i64(&parse_decimal("1.5").unwrap()), None);
+        assert_eq!(decimal_as_i64(&d("1.5")), None);
         // Beyond i64::MAX => unrepresentable here => None (sound under-count).
-        assert_eq!(
-            decimal_as_i64(&parse_decimal("99999999999999999999").unwrap()),
-            None
-        );
+        assert_eq!(decimal_as_i64(&d("99999999999999999999")), None);
     }
 
     // ── value_in_range test helpers ────────────────────────────────────────

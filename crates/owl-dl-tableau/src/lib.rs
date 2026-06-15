@@ -242,7 +242,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
-            graph: CompletionGraph::new(),
+            graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
@@ -273,7 +273,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
-            graph: CompletionGraph::new(),
+            graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
@@ -309,7 +309,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             chains: Vec::new(),
             asymmetric_roles: Vec::new(),
             disjoint_role_pairs: Vec::new(),
-            graph: CompletionGraph::new(),
+            graph: CompletionGraph::with_block_index(anywhere_blocking_enabled()),
             trail: TableauTrail::new(),
             deadline: None,
             deadline_hit: false,
@@ -367,6 +367,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     /// on process-global environment (which is racy under parallel tests).
     pub fn set_anywhere_blocking(&mut self, on: bool) -> &mut Self {
         self.anywhere_blocking = on;
+        // Keep the graph's index-maintenance flag in lockstep and (re)build the
+        // index from the current arena so a flip after node creation is still
+        // correct — used by tests that toggle the mode on a populated context.
+        self.graph.set_block_index_enabled(on);
         self
     }
 
@@ -932,22 +936,28 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let yl_sig = yb.label_sig;
         let yp_sig = self.graph.blocking(yp_id).label_sig;
 
-        // Phase A: O(N) scan of all strictly-earlier nodes. Strict
-        // `cand < y.index()` is the termination/acyclicity guard AND a hard
-        // arena bound. Condition (2) parent_role match is the inverse-role
-        // soundness guard; conditions (3)/(4) are the subset checks; the
+        // Phase B: iterate ONLY the candidate bucket for `y`'s parent_role
+        // (condition (2) holds by construction — every node in the bucket was
+        // created with role `yr`), so this is O(bucket) not O(N). The bucket is
+        // ascending (creation order); the strict `cand.index() < y.index()`
+        // guard is the termination/acyclicity bound AND skips `y` itself and
+        // any later node. Conditions (3)/(4) are the subset checks; the
         // `label_sig` prefilter is identical to the ancestor path.
-        for cand_idx in 0..y.index() {
-            let x_prime_id = NodeId::new(cand_idx);
+        //
+        // `block_candidates` returns an empty slice when the index is disabled,
+        // so this loop is correct only with the index maintained — which
+        // `set_anywhere_blocking` / `with_block_index(true)` guarantee whenever
+        // `anywhere_blocking` is on.
+        for &x_prime_id in self.graph.block_candidates(yr) {
+            if x_prime_id.index() >= y.index() {
+                // Bucket is ascending: nothing past here is an earlier node.
+                break;
+            }
             let xb = self.graph.blocking(x_prime_id);
-            // (1) candidate must be a non-root with its own creator;
-            // (2) creating-edge role + polarity must match.
-            let (Some(xp_id), Some(xr)) = (xb.parent, xb.parent_role) else {
+            // (1) candidate must be a non-root with its own creator.
+            let Some(xp_id) = xb.parent else {
                 continue;
             };
-            if xr != yr {
-                continue;
-            }
             // Exclude redirected (merged-away) candidates: their live state
             // lives on the representative, so their own label set is stale.
             if self.graph.node(x_prime_id).is_redirected() {

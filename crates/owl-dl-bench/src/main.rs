@@ -173,10 +173,6 @@ enum Command {
     /// If the input is outside ALCH (uses `≤n`/`≥n`, inverse roles,
     /// nominals, datatypes, role chains, transitivity) the CB engine
     /// reports `OutOfFragment` and the diff is skipped.
-    ///
-    /// NOTE: the CB engine is currently a stub (`todo!()` — Task B not yet
-    /// integrated). The command compiles and runs the harness; the engine
-    /// call will panic until Task B lands.
     CbDiff {
         /// Path to the OWL functional-syntax ontology.
         file: PathBuf,
@@ -576,6 +572,12 @@ pub struct DiffReport {
     /// Pairs in the current engine's hierarchy **not** in the CB hierarchy
     /// (CB misses / incompleteness if this is non-empty).
     pub only_in_current: Vec<(String, String)>,
+    /// Unsatisfiable classes flagged by CB but not the current engine
+    /// (CB over-derivation of unsat — potential FP if non-empty).
+    pub unsat_only_in_cb: Vec<String>,
+    /// Unsatisfiable classes flagged by the current engine but not CB
+    /// (CB miss of unsat — incompleteness if non-empty).
+    pub unsat_only_in_current: Vec<String>,
     /// Wall-clock time for the CB engine in milliseconds.
     pub cb_wall_ms: u128,
     /// Wall-clock time for the current (hybrid) engine in milliseconds.
@@ -594,6 +596,15 @@ pub struct DiffReport {
 /// 4. Equivalences: the current engine encodes `A ≡ B` as `entailed[A][B] &&
 ///    entailed[B][A]`; we include both `(A,B)` and `(B,A)` when both hold
 ///    (non-reflexive).
+/// 5. **Unsatisfiable classes are compared as a separate set, and pairs whose
+///    `sub` is unsatisfiable are excluded from the subsumption diff.** An unsat
+///    class is `⊑ ⊥` and thus `⊑ everything` under `⊥`-semantics; the current
+///    engine's `is_subclass(unsat, X)` returns `true` for every `X`, while the
+///    CB read-off (by design) keeps unsat classes out of `subsumptions` and in
+///    a dedicated `unsat` set. Materializing `unsat ⊑ all` on one side only is a
+///    reporting artifact, not a hierarchy disagreement — so the fair diff is:
+///    (a) the unsat sets must match, and (b) among satisfiable subjects the
+///    subsumption sets must match. `identical` requires both.
 ///
 /// # Errors
 /// Returns an error if the current hybrid engine fails.
@@ -608,10 +619,31 @@ pub fn cb_diff(internal: &InternalOntology) -> Result<DiffReport> {
     let cur_h = owl_dl_reasoner::classify_internal(internal).context("classify_internal")?;
     let cur_wall_ms = cur_start.elapsed().as_millis();
 
-    // ── Extract the CB hierarchy as (IRI, IRI) pairs ─────────────────────────
-    let cb_pairs: Option<BTreeSet<(String, String)>> = match &cb_result {
+    // ── Unsatisfiable-class sets (compared separately; see normalisation #5) ──
+    let cur_unsat: BTreeSet<String> = cur_h
+        .unsatisfiable_classes()
+        .into_iter()
+        .filter(|iri| !is_thing_or_nothing(iri))
+        .map(ToOwned::to_owned)
+        .collect();
+    let cb_unsat: Option<BTreeSet<String>> = match &cb_result {
         CbOutcome::OutOfFragment(_) => None,
         CbOutcome::Classified(hier) => {
+            let vocab = &internal.vocabulary;
+            Some(
+                hier.unsat
+                    .iter()
+                    .map(|c| vocab.class_iri(*c).to_owned())
+                    .filter(|iri| !is_thing_or_nothing(iri))
+                    .collect(),
+            )
+        }
+    };
+
+    // ── Extract the CB hierarchy as (IRI, IRI) pairs (satisfiable subjects) ──
+    let cb_pairs: Option<BTreeSet<(String, String)>> = match (&cb_result, &cb_unsat) {
+        (CbOutcome::OutOfFragment(_), _) | (_, None) => None,
+        (CbOutcome::Classified(hier), Some(cb_unsat)) => {
             let vocab = &internal.vocabulary;
             let pairs: BTreeSet<(String, String)> = hier
                 .subsumptions
@@ -624,17 +656,21 @@ pub fn cb_diff(internal: &InternalOntology) -> Result<DiffReport> {
                 })
                 .filter(|(sub, sup)| sub != sup) // no reflexive
                 .filter(|(sub, sup)| !is_thing_or_nothing(sub) && !is_thing_or_nothing(sup))
+                // unsat subjects are compared via the unsat set, not here
+                .filter(|(sub, _)| !cb_unsat.contains(sub))
                 .collect();
             Some(pairs)
         }
     };
 
     // ── Extract the current engine's hierarchy as (IRI, IRI) pairs ───────────
+    // Exclude pairs whose subject is unsatisfiable (it `⊑ everything` under
+    // ⊥-semantics — compared via the unsat set instead).
     let cur_pairs: BTreeSet<(String, String)> = {
         let classes = cur_h.classes();
         let mut pairs = BTreeSet::new();
         for sub in classes {
-            if is_thing_or_nothing(sub) {
+            if is_thing_or_nothing(sub) || cur_unsat.contains(sub.as_str()) {
                 continue;
             }
             for sup in classes {
@@ -660,12 +696,14 @@ pub fn cb_diff(internal: &InternalOntology) -> Result<DiffReport> {
         }
     };
 
-    let Some(cb_pairs) = cb_pairs else {
+    let (Some(cb_pairs), Some(cb_unsat)) = (cb_pairs, cb_unsat) else {
         return Ok(DiffReport {
             cb_outcome,
             identical: false,
             only_in_cb: Vec::new(),
             only_in_current: cur_pairs.into_iter().collect(),
+            unsat_only_in_cb: Vec::new(),
+            unsat_only_in_current: cur_unsat.into_iter().collect(),
             cb_wall_ms,
             cur_wall_ms,
         });
@@ -673,13 +711,20 @@ pub fn cb_diff(internal: &InternalOntology) -> Result<DiffReport> {
 
     let only_in_cb: Vec<(String, String)> = cb_pairs.difference(&cur_pairs).cloned().collect();
     let only_in_current: Vec<(String, String)> = cur_pairs.difference(&cb_pairs).cloned().collect();
-    let identical = only_in_cb.is_empty() && only_in_current.is_empty();
+    let unsat_only_in_cb: Vec<String> = cb_unsat.difference(&cur_unsat).cloned().collect();
+    let unsat_only_in_current: Vec<String> = cur_unsat.difference(&cb_unsat).cloned().collect();
+    let identical = only_in_cb.is_empty()
+        && only_in_current.is_empty()
+        && unsat_only_in_cb.is_empty()
+        && unsat_only_in_current.is_empty();
 
     Ok(DiffReport {
         cb_outcome,
         identical,
         only_in_cb,
         only_in_current,
+        unsat_only_in_cb,
+        unsat_only_in_current,
         cb_wall_ms,
         cur_wall_ms,
     })
@@ -699,6 +744,11 @@ pub fn print_diff_report(r: &DiffReport) {
     println!("identical:    {}", r.identical);
     println!("only_in_cb:   {} pair(s)", r.only_in_cb.len());
     println!("only_in_cur:  {} pair(s)", r.only_in_current.len());
+    println!("unsat_only_in_cb:  {} class(es)", r.unsat_only_in_cb.len());
+    println!(
+        "unsat_only_in_cur: {} class(es)",
+        r.unsat_only_in_current.len()
+    );
     if !r.only_in_cb.is_empty() {
         println!("# --- only in CB (potential FP) ---");
         for (sub, sup) in &r.only_in_cb {
@@ -709,6 +759,18 @@ pub fn print_diff_report(r: &DiffReport) {
         println!("# --- only in current engine (CB miss) ---");
         for (sub, sup) in &r.only_in_current {
             println!("  CUR+ {sub} ⊑ {sup}");
+        }
+    }
+    if !r.unsat_only_in_cb.is_empty() {
+        println!("# --- unsat only in CB (potential FP) ---");
+        for iri in &r.unsat_only_in_cb {
+            println!("  CB-unsat {iri}");
+        }
+    }
+    if !r.unsat_only_in_current.is_empty() {
+        println!("# --- unsat only in current engine (CB miss) ---");
+        for iri in &r.unsat_only_in_current {
+            println!("  CUR-unsat {iri}");
         }
     }
 }
@@ -752,6 +814,62 @@ Ontology(<http://test.example/chain>\n\
             "CB and current engine must agree on a simple A⊑B,B⊑C chain; \
              only_in_cb={:?} only_in_current={:?}",
             report.only_in_cb, report.only_in_current,
+        );
+    }
+
+    /// The **substitute differential gate** for Task E. The headline fixture
+    /// alehif is NOT ALCH (it is `ALEHIf` — functional + inverse + transitive
+    /// roles + a large `ABox` — all outside B1), so the CB engine soundly returns
+    /// `OutOfFragment` there and the literal `identical:true` gate is
+    /// unattainable by construction (not a calculus defect). This is the
+    /// in-fragment replacement: a nontrivial *real* ALCH ontology (15 classes;
+    /// disjunction + reasoning-by-cases, `∀` over a role hierarchy, `¬`/
+    /// disjointness, nested `∃`, a multi-hop unsat class) whose answers are
+    /// adjudicated by the trusted sound+complete hybrid — not hand-picked like
+    /// the canaries. Requires `identical:true`: `only_in_cb`/`unsat_only_in_cb`
+    /// empty (soundness — no CB over-derivation) AND `only_in_current`/
+    /// `unsat_only_in_current` empty (completeness for ALCH).
+    #[test]
+    fn cb_diff_nontrivial_alch_is_identical() {
+        let src = "Prefix(:=<http://t/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(<http://t/alch>\n\
+  Declaration(Class(:Animal)) Declaration(Class(:Pet)) Declaration(Class(:Dog))\n\
+  Declaration(Class(:Cat)) Declaration(Class(:Mammal)) Declaration(Class(:Carnivore))\n\
+  Declaration(Class(:Vegetarian)) Declaration(Class(:HappyOwner)) Declaration(Class(:Person))\n\
+  Declaration(Class(:PetOwner)) Declaration(Class(:DogOrCat)) Declaration(Class(:Loyal))\n\
+  Declaration(Class(:Wild)) Declaration(Class(:Tame)) Declaration(Class(:Impossible))\n\
+  Declaration(ObjectProperty(:owns)) Declaration(ObjectProperty(:hasPet))\n\
+  Declaration(ObjectProperty(:caresFor))\n\
+  SubObjectPropertyOf(:hasPet :owns) SubObjectPropertyOf(:owns :caresFor)\n\
+  SubClassOf(:Dog :Mammal) SubClassOf(:Cat :Mammal) SubClassOf(:Mammal :Animal)\n\
+  SubClassOf(:Dog :Loyal)\n\
+  EquivalentClasses(:DogOrCat ObjectUnionOf(:Dog :Cat)) SubClassOf(:DogOrCat :Pet)\n\
+  SubClassOf(:Pet :Tame) DisjointClasses(:Tame :Wild)\n\
+  SubClassOf(:Carnivore ObjectComplementOf(:Vegetarian)) SubClassOf(:Dog :Carnivore)\n\
+  SubClassOf(:PetOwner ObjectSomeValuesFrom(:hasPet :Pet))\n\
+  SubClassOf(:HappyOwner ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasPet :Dog)))\n\
+  SubClassOf(:HappyOwner :PetOwner)\n\
+  SubClassOf(ObjectSomeValuesFrom(:owns :Animal) :Person)\n\
+  SubClassOf(:Person ObjectAllValuesFrom(:caresFor :Tame))\n\
+  SubClassOf(:Impossible ObjectIntersectionOf(ObjectSomeValuesFrom(:hasPet :Wild) :Person))\n\
+)\n";
+        let mut cursor = std::io::Cursor::new(src);
+        let (onto, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = read(&mut cursor, ParserConfiguration::default()).expect("ALCH ontology parses");
+        let internal = convert_ontology(&onto).expect("convert_ontology");
+        let report = cb_diff(&internal).expect("cb_diff");
+        assert!(
+            report.identical,
+            "CB and hybrid must agree on the nontrivial ALCH ontology;\n\
+             only_in_cb={:?}\nonly_in_current={:?}\n\
+             unsat_only_in_cb={:?}\nunsat_only_in_current={:?}",
+            report.only_in_cb,
+            report.only_in_current,
+            report.unsat_only_in_cb,
+            report.unsat_only_in_current,
         );
     }
 }

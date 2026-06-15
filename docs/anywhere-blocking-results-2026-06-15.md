@@ -73,6 +73,35 @@ wedge Sat) + `RUSTDL_ANYWHERE_BLOCKING=1` + counters:
 ⇒ anywhere blocking, heavily exercised on real SROIQ with inverse roles +
 qualified cardinality, is **sound (FP=0) and complete (MISSED=0)**.
 
+To cover the **nominal** interaction (the other construct the task flags as
+soundness-sensitive, absent from ore-10908), shoiq-knowledge (SHOIQ: nominals +
+qualified cardinality) was run the same way (`trust_sat=0` + anywhere ON +
+counters):
+
+- `is_blocked_calls = 165,663,497`, `is_blocked_true = 37,934,845`
+  (1465 main-tableau contexts) — anywhere blocking fired 38M times.
+- closure 449 = 449, **FP=0 / MISSED=0**.
+
+⇒ the full soundness-sensitive surface — **inverse roles** (ore-10908),
+**qualified cardinality** (both fixtures), and **nominals** (shoiq-knowledge) —
+is firing-validated sound + complete when `is_blocked_anywhere` actually runs.
+
+### Scope of the corpus gate vs the firing runs
+
+The 12-fixture FP=0/MISSED=0 corpus gate (gate ON, default trust_sat) validates
+**no-regression on the default wedge path** — it does NOT exercise
+`is_blocked_anywhere` (0 main-tableau contexts on the corpus at default
+trust_sat). The feature's own soundness rests on the 11 white-box unit tests +
+the two `trust_sat=0` firing runs above (ore-10908, shoiq-knowledge), where the
+main tableau with anywhere blocking was heavily exercised at FP=0/MISSED=0.
+
+### Wall delta
+
+On the **default classify path** the change is wall-neutral by construction: the
+gate is inert there (the wedge answers every pair; the main tableau / its
+`is_blocked` are never reached). Gate-ON vs gate-OFF corpus walls are identical
+within host-load noise (e.g. wine ~406 s either way). No regression.
+
 ## Family termination (acceptance) — boundary documented, soundness-safe
 
 Driving the MAIN tableau consistency path directly on family's 1848-individual

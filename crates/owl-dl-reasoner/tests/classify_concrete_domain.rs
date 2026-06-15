@@ -325,11 +325,26 @@ fn datetime_interval_large_demand_sat_via_classify() {
 }
 
 // ─── PHASE 2: COUNTING-PAIR SUBSUMPTION (is_subclass) ─────────────────────
+//
+// Env-mutation safety: RUSTDL_COUNTING_PAIR_VERIFY is process-global.
+// `phase2_gate_off_restores_the_miss` sets it to "0"; any concurrent
+// `phase2_*` test that asserts `is_subclass == true` would flip its result
+// and fail.  PHASE2_ENV_MUTEX serializes all phase2 tests (including those
+// that only read the default) so the gate-off window is mutually exclusive.
+
+static PHASE2_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn parse(src: &str) -> SetOntology<RcStr> {
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse ofn");
     onto
+}
+
+/// Helper: acquire PHASE2_ENV_MUTEX (poison-tolerant).
+fn phase2_lock() -> std::sync::MutexGuard<'static, ()> {
+    PHASE2_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Phase 2 headline: `C ⊑ ≥5 p.int` entails `C ⊑ D` where `D ≡ ≥3 p.int`
@@ -338,6 +353,7 @@ fn parse(src: &str) -> SetOntology<RcStr> {
 /// to the main tableau's `concrete_domain_clash`.
 #[test]
 fn phase2_cardinality_monotonicity_subsumption_is_found() {
+    let _lock = phase2_lock();
     let src = "Prefix(:=<http://t/>)\n\
 Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
 Ontology(<http://t/x>\n\
@@ -349,5 +365,96 @@ Ontology(<http://t/x>\n\
     assert!(
         result.is_subclass("http://t/C", "http://t/D"),
         "C ⊑ D must be found via counting-pair verification (≥5 ⟹ ≥3)"
+    );
+}
+
+/// FP GUARD: `≥3` does NOT entail `≥5`, so `C ⊑ D` must NOT be reported.
+#[test]
+fn phase2_weaker_lower_bound_is_not_subsumed() {
+    let _lock = phase2_lock();
+    let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(<http://t/x>\n\
+  Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:p))\n\
+  SubClassOf(:C DataMinCardinality(3 :p xsd:integer))\n\
+  EquivalentClasses(:D DataMinCardinality(5 :p xsd:integer))\n\
+)\n";
+    let result = classify(&parse(src)).expect("classify");
+    assert!(
+        !result.is_subclass("http://t/C", "http://t/D"),
+        "≥3 must NOT be reported ⊑ ≥5 (false subsumption = FP)"
+    );
+}
+
+/// FP GUARD: different property ⇒ no subsumption.
+#[test]
+fn phase2_different_property_is_not_subsumed() {
+    let _lock = phase2_lock();
+    let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(<http://t/x>\n\
+  Declaration(Class(:C)) Declaration(Class(:D))\n\
+  Declaration(DataProperty(:p)) Declaration(DataProperty(:q))\n\
+  SubClassOf(:C DataMinCardinality(5 :p xsd:integer))\n\
+  EquivalentClasses(:D DataMinCardinality(3 :q xsd:integer))\n\
+)\n";
+    let result = classify(&parse(src)).expect("classify");
+    assert!(
+        !result.is_subclass("http://t/C", "http://t/D"),
+        "≥5 p must NOT be reported ⊑ ≥3 q (different property)"
+    );
+}
+
+/// Subsumer-inheritance: C ⊑ X, X ⊑ ≥5 p.int, D ≡ ≥3 p.int ⇒ C ⊑ D found
+/// (exercises the `counting_relevant` subsumer expansion — C carries no
+/// counting axiom directly, only via its subsumer X).
+#[test]
+fn phase2_inherited_counting_subsumption_is_found() {
+    let _lock = phase2_lock();
+    let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(<http://t/x>\n\
+  Declaration(Class(:C)) Declaration(Class(:X)) Declaration(Class(:D))\n\
+  Declaration(DataProperty(:p))\n\
+  SubClassOf(:C :X)\n\
+  SubClassOf(:X DataMinCardinality(5 :p xsd:integer))\n\
+  EquivalentClasses(:D DataMinCardinality(3 :p xsd:integer))\n\
+)\n";
+    let result = classify(&parse(src)).expect("classify");
+    assert!(
+        result.is_subclass("http://t/C", "http://t/D"),
+        "C ⊑ D must be found (C inherits ≥5 from X)"
+    );
+}
+
+/// Gate: with RUSTDL_COUNTING_PAIR_VERIFY=0 the headline miss returns
+/// (verifies the gate disables cleanly).
+#[test]
+fn phase2_gate_off_restores_the_miss() {
+    let _lock = phase2_lock();
+    let src = "Prefix(:=<http://t/>)\n\
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+Ontology(<http://t/x>\n\
+  Declaration(Class(:C)) Declaration(Class(:D)) Declaration(DataProperty(:p))\n\
+  SubClassOf(:C DataMinCardinality(5 :p xsd:integer))\n\
+  EquivalentClasses(:D DataMinCardinality(3 :p xsd:integer))\n\
+)\n";
+    // SAFETY: all phase2_* tests hold PHASE2_ENV_MUTEX for their duration,
+    // so this set_var races with no other phase2 test.  Restore is guaranteed
+    // because the mutex guard is dropped AFTER the remove_var below — if
+    // classify panics the guard unwinds before _lock drops, still restoring.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUSTDL_COUNTING_PAIR_VERIFY", "0");
+    }
+    let result = classify(&parse(src)).expect("classify");
+    let found = result.is_subclass("http://t/C", "http://t/D");
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("RUSTDL_COUNTING_PAIR_VERIFY");
+    }
+    assert!(
+        !found,
+        "with the gate off, the wedge Sat is trusted and C⊑D is missed"
     );
 }

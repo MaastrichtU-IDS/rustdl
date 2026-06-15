@@ -314,10 +314,53 @@ impl Clausifier {
                 let role = self.canon_role(*role);
                 self.clausify_consequent(vec![Atom::Role(role, X, y)], *range, y);
             }
-            // RBox (role chains/characteristics), ABox, declarations:
-            // not class clauses. `InverseObjectProperties` is consumed
-            // up front by `build_inverse_canon` (role canonicalization),
-            // so it needs no arm here. Chains/transitivity are HF3.
+            // HF3 role chains: a length-2 chain `R₁ ∘ R₂ ⊑ R₃` becomes
+            // the DL-clause `R₁(X,y) ∧ R₂(y,z) → R₃(X,z)` (body = a
+            // two-leg path rooted at X; head = a Role atom on the
+            // endpoints). The engine derives the `R₃` edge when both
+            // legs match. Roles are `canon_role`'d so a declared inverse
+            // leg/super-role reuses the engine's polarity-aware matching.
+            // Length-N (N > 2) chains never reach here — they are
+            // decomposed into length-2 chains + fresh aux roles by
+            // `convert::decompose_long_chains`; a residual non-2 chain is
+            // deferred (sound: a dropped role axiom only weakens the
+            // theory ⇒ can only MISS, never FP).
+            Axiom::SubObjectPropertyOf {
+                sub: crate::ontology::SubRolePath::Chain(parts),
+                sup,
+            } => {
+                if parts.len() == 2 {
+                    self.next_var = X + 1;
+                    let y = self.fresh_var();
+                    let z = self.fresh_var();
+                    let r1 = self.canon_role(parts[0]);
+                    let r2 = self.canon_role(parts[1]);
+                    let r3 = self.canon_role(*sup);
+                    self.clauses.push(DlClause {
+                        body: vec![Atom::Role(r1, X, y), Atom::Role(r2, y, z)],
+                        head: vec![Atom::Role(r3, X, z)],
+                    });
+                } else {
+                    self.defer("role-chain-len-ne-2");
+                }
+            }
+            // Transitivity `R ∘ R ⊑ R` → `R(X,y) ∧ R(y,z) → R(X,z)`.
+            Axiom::TransitiveRole(role) => {
+                self.next_var = X + 1;
+                let y = self.fresh_var();
+                let z = self.fresh_var();
+                let r = self.canon_role(*role);
+                self.clauses.push(DlClause {
+                    body: vec![Atom::Role(r, X, y), Atom::Role(r, y, z)],
+                    head: vec![Atom::Role(r, X, z)],
+                });
+            }
+            // RBox role hierarchy (`SubObjectPropertyOf{ Role }`),
+            // characteristics other than transitivity, ABox,
+            // declarations: not handled here. `SubObjectPropertyOf{ Role }`
+            // is handled by `build_role_hierarchy` / `role_matches`
+            // (do not duplicate). `InverseObjectProperties` is consumed
+            // up front by `build_inverse_canon` (role canonicalization).
             _ => {}
         }
     }
@@ -1110,6 +1153,81 @@ SubClassOf(:A ObjectMinCardinality(0 :r))\n)\n"
                 .iter()
                 .any(|c| c.head.iter().any(|a| matches!(a, Atom::AtLeast(..)))),
             "≥0 must emit no AtLeast"
+        );
+    }
+
+    // ---- HF3: role chains / transitivity ----
+
+    /// A clause whose body is two role atoms `R₁(X,y) ∧ R₂(y,z)` and
+    /// whose head is a single role atom on the endpoints `R₃(X,z)`.
+    fn is_two_leg_chain_clause(c: &DlClause) -> bool {
+        if c.head.len() != 1 || c.body.len() != 2 {
+            return false;
+        }
+        let Atom::Role(_, hu, hv) = c.head[0] else {
+            return false;
+        };
+        let (Atom::Role(_, b0u, b0v), Atom::Role(_, b1u, b1v)) = (c.body[0], c.body[1]) else {
+            return false;
+        };
+        // Body must form a path X → y → z; head on X, z.
+        b0u == X && b0v == b1u && b1v != X && hu == X && hv == b1v
+    }
+
+    #[test]
+    fn chain_two_leg_emits_role_head_clause() {
+        // SubObjectPropertyOf(ObjectPropertyChain(:r0 :r1) :r2)
+        // → {Role(r0,X,y), Role(r1,y,z)} → {Role(r2,X,z)}
+        let (clauses, _stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(ObjectProperty(:r0))\nDeclaration(ObjectProperty(:r1))\nDeclaration(ObjectProperty(:r2))\n\
+SubObjectPropertyOf(ObjectPropertyChain(:r0 :r1) :r2)\n)\n"
+        ));
+        assert!(
+            clauses.iter().any(is_two_leg_chain_clause),
+            "expected a two-leg chain clause; clauses={clauses:?}"
+        );
+    }
+
+    #[test]
+    fn transitive_emits_role_chain_clause() {
+        // TransitiveObjectProperty(:r0) → {Role(r0,X,y),Role(r0,y,z)}→{Role(r0,X,z)}
+        let (clauses, _stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(ObjectProperty(:r0))\n\
+TransitiveObjectProperty(:r0)\n)\n"
+        ));
+        assert!(
+            clauses.iter().any(|c| {
+                is_two_leg_chain_clause(c)
+                    && matches!(
+                        (c.body[0], c.body[1], c.head[0]),
+                        (Atom::Role(a, ..), Atom::Role(b, ..), Atom::Role(d, ..))
+                            if a == b && b == d
+                    )
+            }),
+            "expected a transitivity chain clause; clauses={clauses:?}"
+        );
+    }
+
+    #[test]
+    fn chain_three_leg_not_emitted_by_clausifier_directly() {
+        // A bare 3-leg chain, clausified WITHOUT the convert decomposition
+        // pass, must NOT produce a (mis-encoded) two-leg chain clause. We
+        // build the InternalOntology by hand to bypass convert_ontology.
+        use crate::ir::Role;
+        use crate::ontology::SubRolePath;
+        let mut onto = InternalOntology::new();
+        let mut r = |i| onto.vocabulary.intern_role(&format!("http://x/r{i}"));
+        let (r0, r1, r2, s) = (r(0), r(1), r(2), r(3));
+        onto.axioms.push(Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Chain(vec![Role::Named(r0), Role::Named(r1), Role::Named(r2)]),
+            sup: Role::Named(s),
+        });
+        let (clauses, _stats) = clausify_with_stats(&onto);
+        assert!(
+            !clauses.iter().any(is_two_leg_chain_clause),
+            "3-leg chain must not be mis-encoded as a 2-leg clause; clauses={clauses:?}"
         );
     }
 }

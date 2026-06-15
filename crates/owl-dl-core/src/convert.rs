@@ -1767,8 +1767,95 @@ pub fn convert_ontology<A: ForIRI>(
     // saturator a case-split it otherwise drops). Runs on the fully
     // populated IR.
     crate::disjunction_existential::derive_disjunction_existentials(&mut out);
+    // HF3: decompose role chains longer than 2 legs into a cascade of
+    // 2-leg chains using fresh auxiliary roles, so both the wedge
+    // clausifier (which only encodes 2-leg chains) and the main tableau
+    // (`collect_chain_axioms`, len==2 only) pick them up. Runs late so the
+    // vocabulary is fully populated; allocates aux roles IN the vocabulary
+    // so `num_roles()` grows and `build_role_hierarchy` / the engine stay
+    // consistent. Sound + additive — see `decompose_long_chains`.
+    decompose_long_chains(&mut out);
     out.axioms.sort();
     Ok(out)
+}
+
+/// Decompose every `SubObjectPropertyOf{ Chain(parts), sup }` with
+/// `parts.len() > 2` into a left-associative cascade of length-2 chains
+/// joined by FRESH auxiliary roles, replacing the original axiom:
+///
+/// ```text
+///   R₁∘R₂∘R₃ ⊑ S   ≡   R₁∘R₂ ⊑ aux₀ ,  aux₀∘R₃ ⊑ S
+///   R₁∘R₂∘R₃∘R₄ ⊑ S ≡  R₁∘R₂ ⊑ aux₀ ,  aux₀∘R₃ ⊑ aux₁ ,  aux₁∘R₄ ⊑ S
+/// ```
+///
+/// SOUNDNESS:
+/// - The decomposition is an EXACT equivalence for any associativity
+///   (each aux denotes precisely its prefix composition).
+/// - **Aux IRIs are unique per decomposition site**
+///   (`urn:rustdl-aux-role:<axiom-idx>:<leg-idx>`), so an aux role is
+///   PRODUCED only by its prefix chain and CONSUMED only by its suffix
+///   chain — never shared across two different compositions (which would
+///   be a silent FP). No common-prefix CSE (sound only if the shared aux
+///   denotes the identical leg-prefix; not worth the FP risk).
+/// - Allocating aux roles via `intern_role` grows `vocabulary.num_roles()`,
+///   keeping the clausifier, `build_role_hierarchy`, and the engine's
+///   role indices mutually consistent (the role hierarchy is sized to
+///   `num_roles()` and panics on out-of-range ids).
+/// - Aux roles appear ONLY in the two decomposed chain axioms — they have
+///   no hierarchy edges of their own and no class-level use, so they are
+///   opaque connectors. They are interned by IRI in the reserved
+///   `urn:rustdl-aux-role:` namespace, unique per `(axiom-idx, leg-idx)`, so
+///   they collide only with an adversarially-named declared role in that
+///   reserved namespace (the same risk profile as the `urn:rustdl-dkey:`
+///   IRIs) — never with an ordinary declared role.
+///
+/// Length-≤2 chains and `TransitiveRole` are untouched.
+fn decompose_long_chains(out: &mut InternalOntology) {
+    // Collect the long chains with their original index (for unique aux
+    // IRIs), then rebuild the axiom list.
+    let long: Vec<(usize, Vec<Role>, Role)> = out
+        .axioms
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ax)| match ax {
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(parts),
+                sup,
+            } if parts.len() > 2 => Some((i, parts.clone(), *sup)),
+            _ => None,
+        })
+        .collect();
+    if long.is_empty() {
+        return;
+    }
+    // Remove the originals (mark by index), then append the decomposition.
+    let drop_idx: std::collections::HashSet<usize> = long.iter().map(|(i, _, _)| *i).collect();
+    let kept: Vec<Axiom> = out
+        .axioms
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop_idx.contains(i))
+        .map(|(_, ax)| ax.clone())
+        .collect();
+    out.axioms = kept;
+    for (axiom_idx, parts, sup) in long {
+        // Left-fold: cur ∘ parts[i] ⊑ (aux | sup).
+        let mut cur = parts[0];
+        let last = parts.len() - 1;
+        for (leg_idx, &leg) in parts.iter().enumerate().skip(1) {
+            let target = if leg_idx == last {
+                sup
+            } else {
+                let iri = format!("urn:rustdl-aux-role:{axiom_idx}:{leg_idx}");
+                Role::Named(out.vocabulary.intern_role(&iri))
+            };
+            out.axioms.push(Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(vec![cur, leg]),
+                sup: target,
+            });
+            cur = target;
+        }
+    }
 }
 
 /// Emit `SubClassOf(DKey(r1), DKey(r2))` for every ordered pair of
@@ -2809,5 +2896,140 @@ mod tests {
         // never "*", so a singleton {"*"} encodes distinctly.
         let star = StrSet::singleton("*".to_string());
         assert_eq!(parse_string_dkey_iri(&str_dkey_iri(&star)), Some(star));
+    }
+
+    // ---- HF3: long-chain decomposition ----
+
+    /// Collect the 2-leg chain axioms from an ontology as
+    /// `(leg0_id, leg1_id, sup_id)` tuples (named roles only).
+    fn two_leg_chains(o: &InternalOntology) -> Vec<(u32, u32, u32)> {
+        o.axioms
+            .iter()
+            .filter_map(|ax| match ax {
+                Axiom::SubObjectPropertyOf {
+                    sub: SubRolePath::Chain(p),
+                    sup,
+                } if p.len() == 2 => Some((
+                    p[0].role_id().index(),
+                    p[1].role_id().index(),
+                    sup.role_id().index(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_long_chain(o: &InternalOntology) -> bool {
+        o.axioms.iter().any(|ax| {
+            matches!(ax, Axiom::SubObjectPropertyOf { sub: SubRolePath::Chain(p), .. } if p.len() > 2)
+        })
+    }
+
+    #[test]
+    fn decompose_three_leg_chain_to_two_two_leg() {
+        let mut o = InternalOntology::new();
+        let (r0, r1, r2, s) = (
+            o.vocabulary.intern_role("http://x/r0"),
+            o.vocabulary.intern_role("http://x/r1"),
+            o.vocabulary.intern_role("http://x/r2"),
+            o.vocabulary.intern_role("http://x/s"),
+        );
+        let n0 = o.vocabulary.num_roles();
+        o.axioms.push(Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Chain(vec![Role::Named(r0), Role::Named(r1), Role::Named(r2)]),
+            sup: Role::Named(s),
+        });
+        decompose_long_chains(&mut o);
+        // No long chain remains.
+        assert!(!has_long_chain(&o), "3-leg chain must be decomposed away");
+        // Exactly one fresh aux role allocated.
+        assert_eq!(o.vocabulary.num_roles(), n0 + 1, "one aux role expected");
+        let aux = u32::try_from(n0).expect("fits"); // first fresh id after the 4 declared roles
+        let chains = two_leg_chains(&o);
+        // R0∘R1 ⊑ aux ; aux∘R2 ⊑ S.
+        assert!(
+            chains.contains(&(r0.index(), r1.index(), aux)),
+            "expected R0∘R1⊑aux; chains={chains:?}"
+        );
+        assert!(
+            chains.contains(&(aux, r2.index(), s.index())),
+            "expected aux∘R2⊑S; chains={chains:?}"
+        );
+    }
+
+    #[test]
+    fn decompose_four_leg_chain() {
+        let mut o = InternalOntology::new();
+        let ids: Vec<u32> = (0..4)
+            .map(|i| o.vocabulary.intern_role(&format!("http://x/r{i}")).index())
+            .collect();
+        let s = o.vocabulary.intern_role("http://x/s").index();
+        let n0 = o.vocabulary.num_roles();
+        o.axioms.push(Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Chain(
+                ids.iter()
+                    .map(|&i| Role::Named(crate::ir::RoleId::new(i)))
+                    .collect(),
+            ),
+            sup: Role::Named(crate::ir::RoleId::new(s)),
+        });
+        decompose_long_chains(&mut o);
+        assert!(!has_long_chain(&o));
+        // 4 legs → 3 two-leg chains → 2 aux roles.
+        assert_eq!(o.vocabulary.num_roles(), n0 + 2, "two aux roles expected");
+        assert_eq!(two_leg_chains(&o).len(), 3, "4-leg → three 2-leg chains");
+    }
+
+    #[test]
+    fn decompose_two_distinct_chains_use_disjoint_aux() {
+        // Soundness: two different 3-leg chains must NOT share an aux id.
+        let mut o = InternalOntology::new();
+        let r = |o: &mut InternalOntology, n: &str| o.vocabulary.intern_role(n).index();
+        let (a0, a1, a2, sa) = (
+            r(&mut o, "http://x/a0"),
+            r(&mut o, "http://x/a1"),
+            r(&mut o, "http://x/a2"),
+            r(&mut o, "http://x/sa"),
+        );
+        let (b0, b1, b2, sb) = (
+            r(&mut o, "http://x/b0"),
+            r(&mut o, "http://x/b1"),
+            r(&mut o, "http://x/b2"),
+            r(&mut o, "http://x/sb"),
+        );
+        use crate::ir::RoleId;
+        o.axioms.push(Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Chain(vec![
+                Role::Named(RoleId::new(a0)),
+                Role::Named(RoleId::new(a1)),
+                Role::Named(RoleId::new(a2)),
+            ]),
+            sup: Role::Named(RoleId::new(sa)),
+        });
+        o.axioms.push(Axiom::SubObjectPropertyOf {
+            sub: SubRolePath::Chain(vec![
+                Role::Named(RoleId::new(b0)),
+                Role::Named(RoleId::new(b1)),
+                Role::Named(RoleId::new(b2)),
+            ]),
+            sup: Role::Named(RoleId::new(sb)),
+        });
+        let n0 = o.vocabulary.num_roles();
+        decompose_long_chains(&mut o);
+        // Two 3-leg chains → 2 aux roles, distinct.
+        assert_eq!(o.vocabulary.num_roles(), n0 + 2, "two distinct aux roles");
+        let chains = two_leg_chains(&o);
+        // The aux feeding chain A must differ from the aux feeding chain B.
+        let aux_a = chains
+            .iter()
+            .find(|(l0, l1, _)| *l0 == a0 && *l1 == a1)
+            .map(|(_, _, sup)| *sup)
+            .expect("chain A prefix present");
+        let aux_b = chains
+            .iter()
+            .find(|(l0, l1, _)| *l0 == b0 && *l1 == b1)
+            .map(|(_, _, sup)| *sup)
+            .expect("chain B prefix present");
+        assert_ne!(aux_a, aux_b, "distinct chains must use distinct aux roles");
     }
 }

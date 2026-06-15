@@ -2,7 +2,11 @@
 **/*.rs.bk
 Cargo.lock.bak
 
-# Ontology corpus (fetched by xtask, not vendored)
+# Ontology corpus (fetched by xtask, not vendored).
+# Match BOTH the directory and a bare `ontologies` symlink (no trailing
+# slash) — a worktree-local symlink named `ontologies` once slipped past
+# `/ontologies/` and got committed, and merging it deleted the real corpus.
+/ontologies
 /ontologies/
 
 # IDE / editor

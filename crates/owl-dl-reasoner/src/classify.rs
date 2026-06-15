@@ -20,7 +20,9 @@ use horned_owl::ontology::set::SetOntology;
 use rayon::prelude::*;
 
 use owl_dl_core::convert::convert_ontology;
-use owl_dl_core::{Axiom, ConceptExpr, ConceptId, ConceptPool, InternalOntology, SubRolePath};
+use owl_dl_core::{
+    Axiom, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, SubRolePath,
+};
 use owl_dl_saturation::saturate;
 
 use crate::{PreparedOntology, ReasonError};
@@ -874,14 +876,67 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 /// chains>2, no inverse) stay on the fast path — verified by
 /// `galen_notgalen_in_saturator_fragment` + the corpus FP/MISSED gate.
 pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
+    // The set of roles for which conversion emitted a derived `∃R.⊤ ⊑ ≤1 R`
+    // GCI: `FunctionalRole(r) → r` (FORWARD only — `derive_functional_max_
+    // cardinality` does not emit for inverse-functional). The saturator
+    // enforces functionality via its FunctionalRole BITSET (Phase-2e
+    // witness-merge — accepted at the role-axiom arm below); it DROPS the
+    // derived `Max` GCI entirely, so `closure(O ∪ {derived}) == closure(O)`.
+    // Recognizing the EXACT derived shape (only when backed by a matching
+    // `FunctionalRole` axiom) therefore keeps the fragment verdict identical
+    // to the pre-derivation ontology — without it, the `Max` would spuriously
+    // kick EL+functional ontologies (GALEN/notgalen) off the fast path. A
+    // user-written `≤1 R` with NO functional declaration is NOT in this set ⇒
+    // still rejected (it would be a silently-dropped real `≤1` = unsound
+    // completeness, the D10 bug class).
+    let functional_roles: HashSet<Role> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::FunctionalRole(r) => Some(*r),
+            _ => None,
+        })
+        .collect();
     internal
         .axioms
         .iter()
-        .all(|ax| is_saturator_axiom(ax, &internal.concepts))
+        .all(|ax| is_saturator_axiom(ax, &internal.concepts, &functional_roles))
 }
 
-fn is_saturator_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
+/// True iff `c` is exactly the derived functional-enforcement consequent
+/// `≤1 role.⊤` (`Max(1, role, Top)` unqualified) AND `role` carries a matching
+/// functional axiom (so the saturator's bitset enforces it). Used to accept
+/// the `SubClassOf{∃role.⊤, ≤1 role}` GCI emitted by
+/// `derive_functional_max_cardinality` without losing the EL fast path.
+fn is_derived_functional_max(
+    c: ConceptId,
+    pool: &ConceptPool,
+    functional_roles: &HashSet<Role>,
+) -> bool {
+    matches!(
+        pool.get(c),
+        ConceptExpr::Max(1, role, filler)
+            if matches!(pool.get(*filler), ConceptExpr::Top)
+                && functional_roles.contains(role)
+    )
+}
+
+fn is_saturator_axiom(ax: &Axiom, pool: &ConceptPool, functional_roles: &HashSet<Role>) -> bool {
     match ax {
+        // Recognize the derived functional-enforcement GCI
+        // `∃role.⊤ ⊑ ≤1 role` (role backed by a matching functional axiom) so
+        // it does NOT kick the ontology off the fast path. Exact shape only.
+        Axiom::SubClassOf { sub, sup }
+            if is_derived_functional_max(*sup, pool, functional_roles)
+                && matches!(
+                    pool.get(*sub),
+                    ConceptExpr::Some(role, filler)
+                        if matches!(pool.get(*filler), ConceptExpr::Top)
+                            && functional_roles.contains(role)
+                ) =>
+        {
+            true
+        }
         Axiom::SubClassOf { sub, sup } => {
             is_saturator_concept(*sub, pool) && is_saturator_concept(*sup, pool)
         }
@@ -2913,6 +2968,62 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !saturator_complete_fragment(&i),
             "≤n cardinality must drop out of the saturator fragment"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_user_unqualified_max_without_functional() {
+        // The FP-CRITICAL guard for the functional-enforcement fragment fix:
+        // a user-written UNQUALIFIED `≤1 r` (Max(1,r,Top)) with NO
+        // `FunctionalObjectProperty(r)` declaration must STILL reject — the
+        // saturator has no bitset to enforce it, so accepting it would be a
+        // silently-dropped real `≤1` (the D10 unsound-completeness bug class).
+        // Only the conversion-DERIVED shape (backed by FunctionalRole) is
+        // accepted.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) ObjectMaxCardinality(1 :r))\n",
+        );
+        assert!(
+            !saturator_complete_fragment(&i),
+            "user unqualified ≤1 r WITHOUT FunctionalObjectProperty must reject"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_accepts_derived_functional_max_gci() {
+        // The conversion-derived `∃r.⊤ ⊑ ≤1 r` GCI (emitted by
+        // derive_functional_max_cardinality for a FunctionalObjectProperty)
+        // must be RECOGNIZED so an EL+functional ontology stays on the fast
+        // path. We exercise it through convert_ontology (which emits the GCI),
+        // so a plain EL + functional ontology must remain in-fragment — the
+        // derived Max GCI it now carries must not kick it out.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    FunctionalObjectProperty(:r)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n",
+        );
+        // Sanity: the derived GCI is actually present (Some(r,Top) ⊑ Max(1,r,Top)).
+        let has_derived = i.axioms.iter().any(|ax| {
+            if let Axiom::SubClassOf { sub, sup } = ax {
+                matches!(i.concepts.get(*sup), ConceptExpr::Max(1, _, f)
+                    if matches!(i.concepts.get(*f), ConceptExpr::Top))
+                    && matches!(i.concepts.get(*sub), ConceptExpr::Some(_, f)
+                        if matches!(i.concepts.get(*f), ConceptExpr::Top))
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_derived,
+            "conversion must emit the derived ∃r.⊤ ⊑ ≤1 r GCI"
+        );
+        assert!(
+            saturator_complete_fragment(&i),
+            "EL + functional with the DERIVED ≤1 GCI must stay in the saturator fragment"
         );
     }
 

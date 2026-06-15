@@ -227,3 +227,102 @@ fn out_of_el_abox_terminates_quickly() {
         "wedge consistency must terminate quickly, took {elapsed:?}"
     );
 }
+
+// ───────────── HF3: role chains in the wedge (family mechanism) ───────
+
+/// The family inconsistency mechanism at small scale: a chain fires over
+/// a GENERATED ∃-successor and derives a role edge that drives a clash.
+///   Start ⊑ ∃r1.Mid , Mid ⊑ ∃r2.End  (two generated successors)
+///   r1∘r2 ⊑ r3                         (2-leg chain)
+///   ∃r3.End ⊑ Bad                      (role-head consequence: r3(x,y)∧End(y)→Bad(x))
+///   Start ⊓ Bad ⊑ ⊥
+///   a : Start
+/// a:Start generates n1:Mid, n1 generates n2:End; the chain derives
+/// r3(a,n2); ∃r3.End makes a:Bad; Start⊓Bad clashes. This is exactly the
+/// shape the wedge previously DROPPED (chain over a generated node).
+#[test]
+fn hf3_chain_over_generated_successor_is_inconsistent() {
+    let body = "\
+        Declaration(Class(:Start)) Declaration(Class(:Mid)) Declaration(Class(:End))\n\
+        Declaration(Class(:Bad))\n\
+        Declaration(ObjectProperty(:r1)) Declaration(ObjectProperty(:r2))\n\
+        Declaration(ObjectProperty(:r3))\n\
+        Declaration(NamedIndividual(:a))\n\
+        SubClassOf(:Start ObjectSomeValuesFrom(:r1 :Mid))\n\
+        SubClassOf(:Mid ObjectSomeValuesFrom(:r2 :End))\n\
+        SubObjectPropertyOf(ObjectPropertyChain(:r1 :r2) :r3)\n\
+        SubClassOf(ObjectSomeValuesFrom(:r3 :End) :Bad)\n\
+        DisjointClasses(:Start :Bad)\n\
+        ClassAssertion(:Start :a)\n";
+    assert!(
+        !consistent(body),
+        "chain over a generated ∃-successor must drive the clash (HF3)"
+    );
+}
+
+/// 3-leg variant — exercises the convert decomposition (aux roles) end to
+/// end through the wedge.
+#[test]
+fn hf3_three_leg_chain_over_generated_successors_is_inconsistent() {
+    let body = "\
+        Declaration(Class(:Start)) Declaration(Class(:M1)) Declaration(Class(:M2))\n\
+        Declaration(Class(:End)) Declaration(Class(:Bad))\n\
+        Declaration(ObjectProperty(:r1)) Declaration(ObjectProperty(:r2))\n\
+        Declaration(ObjectProperty(:r3)) Declaration(ObjectProperty(:s))\n\
+        Declaration(NamedIndividual(:a))\n\
+        SubClassOf(:Start ObjectSomeValuesFrom(:r1 :M1))\n\
+        SubClassOf(:M1 ObjectSomeValuesFrom(:r2 :M2))\n\
+        SubClassOf(:M2 ObjectSomeValuesFrom(:r3 :End))\n\
+        SubObjectPropertyOf(ObjectPropertyChain(:r1 :r2 :r3) :s)\n\
+        SubClassOf(ObjectSomeValuesFrom(:s :End) :Bad)\n\
+        DisjointClasses(:Start :Bad)\n\
+        ClassAssertion(:Start :a)\n";
+    assert!(
+        !consistent(body),
+        "3-leg chain (decomposed to aux roles) over generated successors must clash (HF3)"
+    );
+}
+
+/// Catastrophic-guard: the SAME chain structure WITHOUT the disjointness
+/// must stay CONSISTENT. A spurious Unsat here would mean the chain
+/// derivation invented a clash — the worst unsoundness.
+#[test]
+fn hf3_chain_without_disjointness_stays_consistent() {
+    let body = "\
+        Declaration(Class(:Start)) Declaration(Class(:Mid)) Declaration(Class(:End))\n\
+        Declaration(Class(:Bad))\n\
+        Declaration(ObjectProperty(:r1)) Declaration(ObjectProperty(:r2))\n\
+        Declaration(ObjectProperty(:r3))\n\
+        Declaration(NamedIndividual(:a))\n\
+        SubClassOf(:Start ObjectSomeValuesFrom(:r1 :Mid))\n\
+        SubClassOf(:Mid ObjectSomeValuesFrom(:r2 :End))\n\
+        SubObjectPropertyOf(ObjectPropertyChain(:r1 :r2) :r3)\n\
+        SubClassOf(ObjectSomeValuesFrom(:r3 :End) :Bad)\n\
+        ClassAssertion(:Start :a)\n";
+    assert!(
+        consistent(body),
+        "chain-derived Bad without a disjointness must NOT flip to inconsistent"
+    );
+}
+
+/// Transitivity over a chain of generated successors: r transitive,
+/// Start⊑∃r.Mid, Mid⊑∃r.End, ∃r.End⊑Bad, Start⊓Bad⊑⊥. Transitivity
+/// derives r(a, n2:End) over the two generated hops.
+#[test]
+fn hf3_transitivity_over_generated_successors_is_inconsistent() {
+    let body = "\
+        Declaration(Class(:Start)) Declaration(Class(:Mid)) Declaration(Class(:End))\n\
+        Declaration(Class(:Bad))\n\
+        Declaration(ObjectProperty(:r))\n\
+        Declaration(NamedIndividual(:a))\n\
+        TransitiveObjectProperty(:r)\n\
+        SubClassOf(:Start ObjectSomeValuesFrom(:r :Mid))\n\
+        SubClassOf(:Mid ObjectSomeValuesFrom(:r :End))\n\
+        SubClassOf(ObjectSomeValuesFrom(:r :End) :Bad)\n\
+        DisjointClasses(:Start :Bad)\n\
+        ClassAssertion(:Start :a)\n";
+    assert!(
+        !consistent(body),
+        "transitivity over generated successors must derive r(a,end) and clash"
+    );
+}

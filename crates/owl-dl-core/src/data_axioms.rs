@@ -92,6 +92,7 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_data_cardinality_violations(&facts, top_id, bot_id, &mut out);
     emit_data_range_value_violations(src, top_id, bot_id, &mut out);
     emit_functional_dp_cardinality_violations(src, top_id, bot_id, &mut out);
+    emit_data_cardinality_violations_typed(src, top_id, bot_id, &mut out);
     out
 }
 
@@ -2393,7 +2394,6 @@ fn decimal_as_i64(d: &Decimal) -> Option<i64> {
 ///
 /// **FP-critical**: a false `true` would over-count distinct in-range values
 /// and emit a spurious `Top ⊑ Bot`. When uncertain, MUST return `false`.
-#[allow(dead_code)] // used by emit_data_cardinality_violations_typed in Task 3
 fn value_in_range<A: ForIRI>(v: &DistinctVal, dr: &DataRange<A>) -> bool {
     match v {
         DistinctVal::Num(dec) => {
@@ -2536,6 +2536,139 @@ fn emit_functional_dp_cardinality_violations<A: ForIRI>(
                 }
             }
             if distinct.len() >= 2 {
+                out.push(Axiom::SubClassOf {
+                    sub: top_id,
+                    sup: bot_id,
+                });
+                return;
+            }
+        }
+    }
+}
+
+/// DP-2b: a typed/faceted from-type data-cardinality violation ⇒ global
+/// inconsistency. `ClassAssertion(C₀, a)` with `C₀ ⊑* C` and
+/// `C ⊑ ≤n dp.dr` (`DataMax`/`DataExact`) bounds the count of `a`'s `dp`-fillers
+/// in `dr`. When `a` is asserted MORE than `n` distinct values provably in `dr`
+/// (directly or via a sub-dp `dp' ⊑ dp`), the ABox has no model ⇒ `Top ⊑ Bot`.
+///
+/// Sound by construction: distinctness via canonical [`DistinctVal`] keys
+/// (integer+decimal folded; `xsd:float`/language-tagged excluded); membership
+/// via [`value_in_range`] (provably-in-range only; cross-family never counts);
+/// `DataMax`/`DataExact` only (never `DataMin`); sub→super dp routing; told
+/// reflexive-transitive `SubClassOf` typing; anonymous individuals ignored.
+/// Leaves the functional-≤1 and bare-string-≤n checks untouched; overlap is a
+/// harmless idempotent `Top ⊑ Bot`.
+#[allow(clippy::too_many_lines)]
+fn emit_data_cardinality_violations_typed<A: ForIRI>(
+    src: &SetOntology<A>,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    use Component as C;
+
+    let mut sub_dp: Vec<(String, String)> = Vec::new();
+    let mut subclass_atomic: Vec<(String, String)> = Vec::new();
+    let mut ind_dp_vals: BTreeMap<(String, String), BTreeSet<DistinctVal>> = BTreeMap::new();
+    let mut ind_classes: Vec<(String, String)> = Vec::new();
+    // (class_iri, dp_iri, max_n, data_range)
+    let mut constraints: Vec<(String, String, u32, DataRange<A>)> = Vec::new();
+
+    for ac in src {
+        match &ac.component {
+            C::SubDataPropertyOf(ax) => {
+                let (sub, sup) = (dpe_iri(&ax.sub), dpe_iri(&ax.sup));
+                if !sub.is_empty() && !sup.is_empty() {
+                    sub_dp.push((sub, sup));
+                }
+            }
+            C::EquivalentDataProperties(ax) => {
+                let iris: Vec<String> = ax.0.iter().map(dpe_iri).collect();
+                for i in 0..iris.len() {
+                    for j in 0..iris.len() {
+                        if i != j {
+                            sub_dp.push((iris[i].clone(), iris[j].clone()));
+                        }
+                    }
+                }
+            }
+            C::SubClassOf(ax) => {
+                if let (Some(s), Some(t)) = (class_iri(&ax.sub), class_iri(&ax.sup)) {
+                    subclass_atomic.push((s, t));
+                }
+                if let Some(c) = class_iri(&ax.sub) {
+                    match &ax.sup {
+                        ClassExpression::DataMaxCardinality { n, dp, dr }
+                        | ClassExpression::DataExactCardinality { n, dp, dr } => {
+                            constraints.push((c, dpe_iri(dp), *n, dr.clone()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            C::ClassAssertion(ax) => {
+                if let (Some(c), Some(ind)) = (class_iri(&ax.ce), individual_iri(&ax.i)) {
+                    ind_classes.push((ind, c));
+                }
+            }
+            C::DataPropertyAssertion(ax) => {
+                let Some(ind) = individual_iri(&ax.from) else {
+                    continue;
+                };
+                if let Some(v) = literal_to_distinct_val(&ax.to) {
+                    ind_dp_vals
+                        .entry((ind, dpe_iri(&ax.dp)))
+                        .or_default()
+                        .insert(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if constraints.is_empty() || ind_classes.is_empty() || ind_dp_vals.is_empty() {
+        return;
+    }
+
+    let class_closure = closure_sub_dp(&subclass_atomic);
+    let dp_closure = closure_sub_dp(&sub_dp);
+
+    // Individual → all (told) types.
+    let mut ind_types: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (ind, c) in &ind_classes {
+        let entry = ind_types.entry(ind.as_str()).or_default();
+        match class_closure.get(c) {
+            Some(supers) => entry.extend(supers.iter().map(String::as_str)),
+            None => {
+                entry.insert(c.as_str());
+            }
+        }
+    }
+
+    for (class, dp, n, dr) in &constraints {
+        for (ind, types) in &ind_types {
+            if !types.contains(class.as_str()) {
+                continue;
+            }
+            let mut distinct: BTreeSet<DistinctVal> = BTreeSet::new();
+            for ((i, q), vals) in &ind_dp_vals {
+                if i.as_str() != *ind {
+                    continue;
+                }
+                let is_sub = dp_closure
+                    .get(q.as_str())
+                    .map_or(q == dp, |supers| supers.contains(dp));
+                if !is_sub {
+                    continue;
+                }
+                for v in vals {
+                    if value_in_range(v, dr) {
+                        distinct.insert(v.clone());
+                    }
+                }
+            }
+            if distinct.len() > *n as usize {
                 out.push(Axiom::SubClassOf {
                     sub: top_id,
                     sup: bot_id,
@@ -3149,8 +3282,8 @@ Ontology(<http://t/x>
 
     #[test]
     fn value_in_range_integer_and_decimal() {
-        let int5 = literal_to_distinct_val(&vir_dt_lit("5", "integer"))
-            .expect("5^^xsd:integer parses");
+        let int5 =
+            literal_to_distinct_val(&vir_dt_lit("5", "integer")).expect("5^^xsd:integer parses");
         let dec_1_5 = literal_to_distinct_val(&vir_dt_lit("1.5", "decimal"))
             .expect("1.5^^xsd:decimal parses");
 
@@ -3179,8 +3312,8 @@ Ontology(<http://t/x>
     #[test]
     fn value_in_range_cross_datatype_and_string() {
         // xsd:double value 5.0 against integer range → false (cross-family).
-        let dbl = literal_to_distinct_val(&vir_dt_lit("5.0", "double"))
-            .expect("5.0^^xsd:double parses");
+        let dbl =
+            literal_to_distinct_val(&vir_dt_lit("5.0", "double")).expect("5.0^^xsd:double parses");
         assert!(
             !value_in_range(&dbl, &DataRange::Datatype(vir_dt("integer"))),
             "double 5.0 ∉ xsd:integer (cross-family)"

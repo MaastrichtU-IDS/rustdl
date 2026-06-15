@@ -692,3 +692,112 @@ fn dp2_dp1_coexistence_is_consistent() {
     DataPropertyAssertion(:p :a "hello")"#
     ));
 }
+
+// ─── DP-2b: typed/faceted from-type data-cardinality ──────────────────
+
+/// FIRES: C ⊑ ≤2 dp.xsd:integer, individual:C with 3 distinct integers.
+#[test]
+fn typed_card_three_integers_over_max_two_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(2 :p xsd:integer))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "2"^^xsd:integer)
+    DataPropertyAssertion(:p :a "3"^^xsd:integer)"#
+    ));
+}
+
+/// FIRES: faceted range [0,10], ≤1, two distinct in-range values.
+#[test]
+fn typed_card_faceted_range_two_in_range_over_max_one_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "3"^^xsd:integer)
+    DataPropertyAssertion(:p :a "7"^^xsd:integer)"#
+    ));
+}
+
+/// FIRES: DataExactCardinality(1) behaves as ≤1.
+#[test]
+fn typed_card_exact_one_two_values_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataExactCardinality(1 :p xsd:double))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:double)
+    DataPropertyAssertion(:p :a "2.0"^^xsd:double)"#
+    ));
+}
+
+/// FIRES: values split across dp and a sub-dp dp' ⊑ dp sum past n.
+#[test]
+fn typed_card_subproperty_routing_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(DataProperty(:q)) Declaration(NamedIndividual(:a))
+    SubDataPropertyOf(:q :p)
+    SubClassOf(:C DataMaxCardinality(1 :p xsd:integer))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:q :a "2"^^xsd:integer)"#
+    ));
+}
+
+// ── FP GUARDS (must stay consistent) ──
+
+#[test]
+fn typed_card_out_of_range_value_uncounted_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "5"^^xsd:integer)
+    DataPropertyAssertion(:p :a "20"^^xsd:integer)"#
+    ));
+}
+
+#[test]
+fn typed_card_cross_datatype_uncounted_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p xsd:integer))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "2.0"^^xsd:double)"#
+    ));
+}
+
+#[test]
+fn typed_card_duplicate_values_count_once_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p xsd:integer))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "01"^^xsd:integer)"#
+    ));
+}
+
+#[test]
+fn typed_card_exclusive_boundary_uncounted_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxExclusive "5"^^xsd:integer)))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "2"^^xsd:integer)
+    DataPropertyAssertion(:p :a "5"^^xsd:integer)"#
+    ));
+}
+
+#[test]
+fn typed_card_untyped_individual_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p xsd:integer))
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:p :a "2"^^xsd:integer)
+    DataPropertyAssertion(:p :a "3"^^xsd:integer)"#
+    ));
+}

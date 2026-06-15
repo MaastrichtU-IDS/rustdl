@@ -113,26 +113,49 @@ ranges at `≤n>1` (e.g. `≤1 dp.{"a","b"}` + values `"a"`,`"b"` ⇒ 2 distinct
 in-range > 1 ⇒ fires). The bare-string path keeps closing `ore_ont_12174`;
 overlap on bare `xsd:string` is a harmless idempotent re-emission.
 
-### New code: `contains` per range type
+### Membership via `point().subset()` — no new boundary algebra
 
-`subset` exists on every range type; `contains(value)` does not. Add it,
-mirroring the existing boundary algebra:
+Every range type already has both a singleton constructor (`IntegerRange::point`,
+`FloatRange::point`, `OrdRange::point`, `StrSet::singleton`) **and** a
+soundness-reviewed `subset`. So `v ∈ dr` is exactly
+`Range::point(v).subset(dr_range)` — this **reuses the already-opus-reviewed
+boundary algebra**, adding **zero new boundary FP surface**. (This supersedes
+the "new `contains` methods" framing from the approved design — strictly fewer
+moving parts and no new endpoint-comparison code.)
 
-- **`IntegerRange::contains(i64)`** — `lo ≤ v ≤ hi` against the (already
-  ±1-normalized-to-inclusive) integer bounds. The `Num(Decimal)` value is
-  converted to `i64` *only if* its fraction is empty (a non-integer decimal like
-  `1.5` is not an `xsd:integer` value ⇒ never counted) **and** it fits `i64`.
-  A whole-number value too large for `i64` *is* a legitimate `xsd:integer` but
-  is unrepresentable here ⇒ skipped (sound under-count, never a false-fire).
-- **`FloatRange::contains(f64)`** — explicit inclusive/exclusive boundary check
-  (`min`/`min_incl`/`max`/`max_incl`); NaN/±∞ never reach here (`literal_to_
-  distinct_val` already rejects non-finite doubles).
-- **`OrdRange<T>::contains(&T)`** (`T: Ord`) — explicit-boundary containment,
-  same equal-endpoint rule as `OrdRange::subset`.
-- **`StrSet::contains(&str)`** — `Top` contains everything; `Set(s)` ⟺ `s.contains`.
+The only new code is a value-driven dispatcher and one tiny integer helper:
 
-Each is small and gets exhaustive boundary unit tests (every inclusive/exclusive
-endpoint combination, empty range, singleton, signed-zero for float).
+```rust
+// frac-empty (integer-valued) AND fits i64; else None (sound under-count).
+fn decimal_as_i64(d: &Decimal) -> Option<i64>
+
+fn value_in_range<A: ForIRI>(v: &DistinctVal, dr: &DataRange<A>) -> bool {
+    match v {
+        // xsd:integer range first (mutually exclusive parsers); then xsd:decimal.
+        DistinctVal::Num(dec) => {
+            if let Some(ir) = parse_integer_range(dr) {
+                return decimal_as_i64(dec).is_some_and(|i| IntegerRange::point(i).subset(ir));
+            }
+            parse_decimal_range(dr).is_some_and(|r| OrdRange::point(dec.clone()).subset(&r))
+        }
+        DistinctVal::Double(f)    => parse_float_range(dr).is_some_and(|r| FloatRange::point(f.0).subset(r)),
+        DistinctVal::Date(d)      => parse_date_range(dr).is_some_and(|r| OrdRange::point(d.clone()).subset(&r)),
+        DistinctVal::DateTime(d)  => parse_datetime_range(dr).is_some_and(|r| OrdRange::point(d.clone()).subset(&r)),
+        DistinctVal::Str(s)       => parse_string_range(dr).is_some_and(|r| StrSet::singleton(s.clone()).subset(&r)),
+    }
+}
+```
+
+The parsers are pairwise mutually exclusive (pinned by the existing D8
+`parser_matrix_mutual_exclusivity` canary), so a value is tested against `dr`
+only when their datatype families match; any parser returning `None` ⇒ the value
+is not provably in `dr` ⇒ not counted (sound under-count). An integer-valued
+`Num` against an `xsd:decimal` range correctly counts (integer ⊂ decimal); a
+non-integer `Num` (`1.5`) against an `xsd:integer` range correctly does not. A
+whole-number value too large for `i64` is a legitimate `xsd:integer` but
+unrepresentable here ⇒ skipped (sound under-count, never a false-fire).
+
+`decimal_as_i64` gets unit tests (frac-empty vs non-empty, negative, overflow).
 
 ### Soundness invariants
 
@@ -185,9 +208,10 @@ in `crates/owl-dl-core/src/data_axioms.rs`.
 - Anonymous individual ⇒ ignored.
 - Boundary: `≤1 dp.[0,5)` (max exclusive) + value `5` ⇒ `5 ∉ range` ⇒ consistent.
 
-### `contains` unit tests
-Every endpoint inclusive/exclusive combination, empty range, singleton range,
-signed-zero for `FloatRange`.
+### `decimal_as_i64` unit tests
+Frac-empty integer parses; non-empty fraction (`1.5`) ⇒ `None`; negative; value
+beyond `i64::MAX` ⇒ `None`. (Boundary inclusive/exclusive cases are already
+covered by the existing `subset` unit tests — `point().subset()` reuses them.)
 
 ### Regression / corpus
 - Existing `ore_ont_12174` string-cardinality detection unchanged.

@@ -1803,8 +1803,11 @@ pub fn convert_ontology<A: ForIRI>(
 ///   `num_roles()` and panics on out-of-range ids).
 /// - Aux roles appear ONLY in the two decomposed chain axioms — they have
 ///   no hierarchy edges of their own and no class-level use, so they are
-///   opaque connectors. They are interned past the real vocabulary so
-///   they cannot collide with a declared role.
+///   opaque connectors. They are interned by IRI in the reserved
+///   `urn:rustdl-aux-role:` namespace, unique per `(axiom-idx, leg-idx)`, so
+///   they collide only with an adversarially-named declared role in that
+///   reserved namespace (the same risk profile as the `urn:rustdl-dkey:`
+///   IRIs) — never with an ordinary declared role.
 ///
 /// Length-≤2 chains and `TransitiveRole` are untouched.
 fn decompose_long_chains(out: &mut InternalOntology) {

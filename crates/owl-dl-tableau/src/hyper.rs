@@ -4492,4 +4492,54 @@ mod tests {
             "inverse-leg chain R1∘R1⁻⊑R3 must derive R3(root,root) and clash"
         );
     }
+
+    /// **Dep-fold isolating discriminator** (independent-review regression
+    /// guard). Unlike T4b (`hf3_chain_edge_under_one_disjunct_stays_sat`),
+    /// where the clash binds an ∃-successor that independently carries the
+    /// deciding disjunct in its `birth_deps`, here the chain-derived edge is
+    /// an inverse self-loop `R3(root,root)` and the clash binds the ROOT —
+    /// whose natural `birth_deps` is EMPTY. So the ONLY way the deciding `P`
+    /// disjunct reaches the clash's dep-set is the `derive_role_edge`
+    /// birth_deps fold. With the fold ON the clash carries `P`, backjumping
+    /// keeps the clash-free `Q` sibling, and the graph is `Sat`. With the
+    /// fold OFF the clash deps are EMPTY, backjumping wrongly prunes `Q`, and
+    /// the graph false-`Unsat`s (the residual-C / corpus-invisible class).
+    /// This test goes RED iff the fold is dropped — verified by mutation.
+    #[test]
+    #[allow(clippy::many_single_char_names, clippy::doc_markdown)]
+    fn hf3_chain_edge_dep_fold_isolating_discriminator() {
+        let (a, p, q, b) = (cls(0), cls(1), cls(2), cls(3));
+        let (r1, r3) = (nrole(10), nrole(12));
+        let r1_inv = Role::Inverse(RoleId::new(10));
+        let clauses = vec![
+            // A → P ∨ Q  (the decision; A is the pre-branch root label).
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(p, X), Atom::Class(q, X)],
+            },
+            // Only the P branch builds the R1-successor that feeds the chain.
+            DlClause {
+                body: vec![Atom::Class(p, X)],
+                head: vec![Atom::Exists(r1, b, X)],
+            },
+            // R1(X,y) ∧ R1⁻(y,z) → R3(X,z): self-loop R3(root,root) under P.
+            DlClause {
+                body: vec![Atom::Role(r1, X, 1), Atom::Role(r1_inv, 1, 2)],
+                head: vec![Atom::Role(r3, X, 2)],
+            },
+            // {A(X), R3(X,z), A(z)} → ⊥ : binds z=root; deps must carry P.
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Role(r3, X, 1), Atom::Class(a, 1)],
+                head: vec![],
+            },
+        ];
+        let mut e = HyperEngine::new(&clauses, a);
+        assert_eq!(
+            e.decide(64),
+            HyperResult::Sat,
+            "Q is clash-free; the chain-edge clash under P must carry the P \
+             decision via the derive_role_edge birth_deps fold so backjumping \
+             cannot prune Q. A false Unsat here = the dep-fold regressed."
+        );
+    }
 }

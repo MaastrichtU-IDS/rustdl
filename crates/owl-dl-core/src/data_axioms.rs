@@ -2359,6 +2359,24 @@ fn literal_to_distinct_val<A: ForIRI>(l: &Literal<A>) -> Option<DistinctVal> {
     }
 }
 
+/// A [`Decimal`] as an `i64`, or `None` when it is not a representable integer:
+/// a non-empty fraction (`1.5` is not an `xsd:integer` value) or a magnitude
+/// outside `i64`. `None` => the value is not counted against an integer range
+/// (a sound under-count — never a false-fire).
+#[allow(dead_code)] // used by value_in_range in Task 2
+fn decimal_as_i64(d: &Decimal) -> Option<i64> {
+    if !d.frac.is_empty() {
+        return None;
+    }
+    let mag: i128 = if d.int.is_empty() {
+        0
+    } else {
+        d.int.parse().ok()?
+    };
+    let signed: i128 = if d.negative { -mag } else { mag };
+    i64::try_from(signed).ok()
+}
+
 /// DP-2: **Functional data property ABox cardinality violation** ⇒ global
 /// inconsistency.
 ///
@@ -3024,5 +3042,25 @@ Ontology(<http://t/x>
             datatype_iri: b.iri("http://www.w3.org/2001/XMLSchema#integer"),
         };
         assert!(!literal_provably_outside_range(&range, &int));
+    }
+
+    #[test]
+    fn decimal_as_i64_integer_values() {
+        assert_eq!(decimal_as_i64(&parse_decimal("5").unwrap()), Some(5));
+        assert_eq!(decimal_as_i64(&parse_decimal("-7").unwrap()), Some(-7));
+        assert_eq!(decimal_as_i64(&parse_decimal("0").unwrap()), Some(0));
+        // Leading-zero normalisation: "007" is the integer 7.
+        assert_eq!(decimal_as_i64(&parse_decimal("007").unwrap()), Some(7));
+    }
+
+    #[test]
+    fn decimal_as_i64_rejects_non_integer_and_overflow() {
+        // Non-empty fraction => not an xsd:integer value.
+        assert_eq!(decimal_as_i64(&parse_decimal("1.5").unwrap()), None);
+        // Beyond i64::MAX => unrepresentable here => None (sound under-count).
+        assert_eq!(
+            decimal_as_i64(&parse_decimal("99999999999999999999").unwrap()),
+            None
+        );
     }
 }

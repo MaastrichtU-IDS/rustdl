@@ -701,6 +701,17 @@ pub fn label_heuristic_enabled() -> bool {
     std::env::var_os("RUSTDL_LABEL_HEURISTIC").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Concrete Phase 2 — counting-pair verification. When ON, a wedge
+/// `NotSubsumed` verdict on a subsumption pair where either side is
+/// data-counting-constrained (or has a counting subsumer) is NOT trusted;
+/// the pair falls through to the main tableau (`concrete_domain_clash`).
+/// Sound (only swaps a trusted wedge `Sat` for the complete path). On by
+/// default; `RUSTDL_COUNTING_PAIR_VERIFY=0` reverts to trusting the wedge.
+#[must_use]
+pub fn counting_pair_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_COUNTING_PAIR_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
 /// Project flag for the Konclude snapshot cache. When ON,
 /// `subsumes_via_tableau` consults a per-class snapshot-replay
 /// cache ahead of the wedge.

@@ -269,6 +269,10 @@ pub struct ClassificationStats {
     /// classify result mirrors Konclude's behaviour on inconsistent
     /// input. See `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
     pub inconsistent: bool,
+    /// Phase 2: subsumption pairs recovered by counting-pair verification —
+    /// a wedge `NotSubsumed` that the main-tableau `concrete_domain_clash`
+    /// flipped to `Subsumed` because the pair was data-counting-relevant.
+    pub counting_verified_pairs: usize,
 }
 
 impl Classification {

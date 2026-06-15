@@ -1034,6 +1034,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "owl-dl-cb"
+version = "0.3.8"
+dependencies = [
+ "hashbrown 0.15.5",
+ "horned-owl",
+ "owl-dl-core",
+]
+
+[[package]]
 name = "owl-dl-cli"
 version = "0.3.8"
 dependencies = [

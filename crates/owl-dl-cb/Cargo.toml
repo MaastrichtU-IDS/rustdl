@@ -11,5 +11,8 @@ repository.workspace = true
 owl-dl-core = { workspace = true }
 hashbrown = { workspace = true }
 
+[dev-dependencies]
+horned-owl.workspace = true
+
 [lints]
 workspace = true

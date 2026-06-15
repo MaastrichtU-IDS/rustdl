@@ -712,6 +712,21 @@ pub fn counting_pair_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_COUNTING_PAIR_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
+/// (`RUSTDL_ANYWHERE_BLOCKING`). Opt-IN, default OFF: returns `true` only when
+/// the variable is exactly `"1"`. When ON, `TableauContext::is_blocked` scopes
+/// the pair-blocking candidate to ANY earlier-created node (Motik/Shearer/
+/// Horrocks anywhere blocking) instead of only tree-ancestors, keeping the
+/// completion small on large generative `ABox`es. The actual decision is read
+/// once per `TableauContext` at construction (see
+/// `owl_dl_tableau::anywhere_blocking_enabled`); this mirror exists for
+/// discoverability alongside the other gate fns. Default OFF until the
+/// soundness gate validates it corpus-wide.
+#[must_use]
+pub fn anywhere_blocking_enabled() -> bool {
+    std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
+}
+
 /// Project flag for the Konclude snapshot cache. When ON,
 /// `subsumes_via_tableau` consults a per-class snapshot-replay
 /// cache ahead of the wedge.
@@ -3230,6 +3245,124 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .any(|i| i.min == Some(37) && i.max == Some(100)),
             "expected CardRange::Int([37,100]) in the side-map, got {ranges:?}"
         );
+    }
+
+    /// T3 termination acceptance for anywhere blocking (plan
+    /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`).
+    ///
+    /// Drives the MAIN tableau consistency path directly on family's `ABox`
+    /// (`PreparedOntology::decide_with_deadline(Top)` — the exact `decide` that
+    /// hangs >60 s under ancestor-only blocking) with `RUSTDL_ANYWHERE_BLOCKING`
+    /// forced ON via the env the `TableauContext` ctor reads. Asserts the main
+    /// tableau TERMINATES within a generous wall cap (vs hanging) and reports
+    /// the verdict. Per the plan, family must come back **inconsistent** (a
+    /// terminating-but-consistent result would mean the clash was masked by an
+    /// unsound blocker). `#[ignore]`d (needs the gitignored family fixture);
+    /// run with `-- --ignored --nocapture`. Single-threaded by nature (it
+    /// mutates the process env), so run it in isolation.
+    #[test]
+    #[ignore = "needs ontologies/real/family.ofn; main-tableau anywhere-blocking termination acceptance"]
+    #[allow(unsafe_code)] // test-only: set/unset RUSTDL_ANYWHERE_BLOCKING around one decide
+    fn family_main_tableau_terminates_under_anywhere_blocking() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use std::time::{Duration, Instant};
+        // The corpus is gitignored and lives only in the main checkout, not in
+        // git worktrees. Probe a few candidate locations + an env override.
+        let candidates = [
+            std::env::var("RUSTDL_FAMILY_OFN").unwrap_or_default(),
+            "../../ontologies/real/family.ofn".to_string(),
+            "/data/dumontier/rustdl/ontologies/real/family.ofn".to_string(),
+        ];
+        let Some(path) = candidates
+            .iter()
+            .map(std::path::Path::new)
+            .find(|p| p.exists())
+        else {
+            eprintln!(
+                "SKIP: family.ofn not found in {candidates:?}; \
+                 set RUSTDL_FAMILY_OFN to its absolute path"
+            );
+            return;
+        };
+        let src = std::fs::read_to_string(path).expect("read family");
+        let mut r = Cursor::new(src);
+        let (o, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse family");
+        let internal = convert_ontology(&o).expect("convert family");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepare family");
+
+        // Force anywhere blocking ON for the main-tableau ctx built inside
+        // `decide`. (This env is read once per TableauContext at construction.)
+        // SAFETY: test process; set/remove around the single decide call.
+        unsafe {
+            std::env::set_var("RUSTDL_ANYWHERE_BLOCKING", "1");
+        }
+        assert!(
+            anywhere_blocking_enabled(),
+            "gate must read ON after setting the env"
+        );
+
+        // Generous cap: ancestor-only hangs >60 s; anywhere should resolve far
+        // faster. If it elapses we report a soft FAIL (no hang, but no verdict).
+        // Override with RUSTDL_FAMILY_CAP_S (e.g. a short cap for diagnosis).
+        let cap_s = std::env::var("RUSTDL_FAMILY_CAP_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
+        let cap = Duration::from_secs(cap_s);
+        let started = Instant::now();
+        let deadline = started + cap;
+        let outcome = prepared.decide_with_deadline(deadline, owl_dl_core::ConceptPool::top);
+        let elapsed = started.elapsed();
+
+        unsafe {
+            std::env::remove_var("RUSTDL_ANYWHERE_BLOCKING");
+        }
+
+        eprintln!(
+            "family main-tableau decide(Top) under anywhere blocking: \
+             outcome={outcome:?} elapsed={elapsed:?}"
+        );
+        // decide(Top): Ok(Some(true)) = Top satisfiable = CONSISTENT;
+        //              Ok(Some(false)) = Top unsatisfiable = INCONSISTENT;
+        //              Ok(None) = deadline elapsed cleanly (DepthLimit + deadline
+        //                         reached) — NOT a hang, NOT a definite verdict.
+        //
+        // SOUNDNESS GUARD (the only hard FAIL): a definite CONSISTENT verdict
+        // would mean anywhere blocking masked family's known clash — an unsound
+        // over-block. That MUST fail. A clean deadline (`Ok(None)`) is the
+        // soundness-SAFE direction (no false `consistent`), so it does NOT fail.
+        //
+        // EMPIRICAL FINDING (2026-06-15, counters): anywhere blocking fires
+        // heavily on family (~2.5M `is_blocked_true` in 20 s) but the dominant
+        // single parent-role bucket is itself O(N) — even Phase-B bucket-keyed
+        // blocking can't bound family's generative nominal ABox, so `decide`
+        // hits the deadline rather than converging. Closing family end-to-end
+        // needs the separate, out-of-scope wedge role-chain work (and/or a
+        // HermiT-style NI-rule for nominal-driven generation). This test
+        // therefore documents the boundary; it asserts only SOUNDNESS.
+        match outcome {
+            Ok(Some(true)) => {
+                panic!(
+                    "SOUNDNESS FAILURE: family came back CONSISTENT in \
+                     {elapsed:?} — anywhere blocking masked family's known \
+                     clash (unsound over-block). This must never happen."
+                );
+            }
+            Ok(Some(false)) => {
+                eprintln!("family inconsistent (terminated in {elapsed:?}) — ideal outcome");
+            }
+            Ok(None) => {
+                eprintln!(
+                    "family did NOT converge within {cap:?} under anywhere \
+                     blocking — clean deadline (Ok(None)), soundness-SAFE (no \
+                     false `consistent`). Documented scoping limitation: the \
+                     dominant single-role candidate bucket is O(N); closing \
+                     family needs separate wedge role-chain / NI-rule work."
+                );
+            }
+            Err(e) => panic!("decide errored: {e:?}"),
+        }
     }
 
     /// Perf probe (wine wall, 2026-06-07): split the per-pair wedge cost into

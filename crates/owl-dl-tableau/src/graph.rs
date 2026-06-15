@@ -267,12 +267,69 @@ pub struct CompletionGraph {
     /// another already represents `a`, they must denote the same
     /// individual — the rule merges them.
     pub(crate) nominals: HashMap<IndividualId, NodeId>,
+    /// Anywhere-blocking candidate index: `parent_role → ascending node ids`.
+    /// Mirrors the wedge's `block_index` (`hyper.rs`). Each non-root node is
+    /// appended to `block_index[parent_role]` at `push_node_with_parent` time,
+    /// so a bucket lists every node created with that creating-edge role, in
+    /// creation order. `is_blocked_anywhere` iterates only the bucket for `y`'s
+    /// `parent_role` (condition (2)) instead of scanning all earlier nodes —
+    /// O(bucket) vs O(N). Truncated in lockstep by `truncate_nodes` (entries
+    /// `>= new_len` dropped on rollback). Maintained ONLY when anywhere
+    /// blocking is active; otherwise left empty (ancestor blocking never reads
+    /// it). The scan still guards `cand < y.index()` and arena bounds, so a
+    /// stale/missing entry can never block against a non-existent or
+    /// later-created node.
+    pub(crate) block_index: HashMap<Role, Vec<NodeId>>,
+    /// Whether to maintain [`Self::block_index`] on node create/truncate.
+    /// Set from the context's `anywhere_blocking` flag so the ancestor-only
+    /// default path pays nothing (the index stays empty and unread).
+    pub(crate) block_index_enabled: bool,
 }
 
 impl CompletionGraph {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build an empty graph, optionally maintaining the anywhere-blocking
+    /// candidate index ([`Self::block_index`]). Pass `false` (the
+    /// [`Self::new`] default) for ancestor-only blocking — the index stays
+    /// empty and is never touched.
+    #[must_use]
+    pub(crate) fn with_block_index(enabled: bool) -> Self {
+        Self {
+            block_index_enabled: enabled,
+            ..Self::default()
+        }
+    }
+
+    /// Toggle anywhere-blocking index maintenance. When switching ON, rebuild
+    /// [`Self::block_index`] from the current arena so nodes created before the
+    /// flip are indexed (used by `TableauContext::set_anywhere_blocking`).
+    /// Switching OFF clears the index. No-op if the flag is unchanged and the
+    /// index is already consistent.
+    pub(crate) fn set_block_index_enabled(&mut self, enabled: bool) {
+        self.block_index_enabled = enabled;
+        self.block_index.clear();
+        if enabled {
+            for (idx, summary) in self.blocking.iter().enumerate() {
+                if let Some(role) = summary.parent_role {
+                    let id = NodeId(u32::try_from(idx).expect("node count fits u32"));
+                    self.block_index.entry(role).or_default().push(id);
+                }
+            }
+        }
+    }
+
+    /// Anywhere-blocking candidate bucket for `parent_role`: node ids created
+    /// with that creating-edge role, in ascending (creation) order. Empty when
+    /// the index is disabled or no node carries that role.
+    #[must_use]
+    pub(crate) fn block_candidates(&self, parent_role: Role) -> &[NodeId] {
+        self.block_index
+            .get(&parent_role)
+            .map_or(&[][..], Vec::as_slice)
     }
 
     #[must_use]
@@ -319,6 +376,15 @@ impl CompletionGraph {
             parent_role,
             label_sig: 0,
         });
+        // Anywhere-blocking candidate index: bucket the new node under its
+        // creating-edge role. Roots (parent_role == None) are never blockers
+        // and never blocked, so they're not indexed. Ids enter each bucket in
+        // ascending order (monotone allocation), so buckets stay sorted.
+        if self.block_index_enabled
+            && let Some(role) = parent_role
+        {
+            self.block_index.entry(role).or_default().push(id);
+        }
         self.residuals_saturated.push(false);
         // New nodes start dirty: the saturator must visit them at
         // least once to apply rules over their initial labels/edges.
@@ -335,6 +401,18 @@ impl CompletionGraph {
         self.blocking.truncate(new_len);
         self.residuals_saturated.truncate(new_len);
         self.dirty.truncate(new_len);
+        // Drop anywhere-blocking index entries for nodes that no longer exist.
+        // Buckets are ascending, so the entries to remove are a contiguous
+        // tail (`id >= new_len`); `retain` is O(bucket) and trivially correct.
+        // (The `is_blocked_anywhere` scan also guards `cand < y.index()` and
+        // arena bounds, so even a missed truncation can never block against a
+        // dead node — this keeps the index tight, not a correctness crutch.)
+        if self.block_index_enabled {
+            let cutoff = u32::try_from(new_len).unwrap_or(u32::MAX);
+            for bucket in self.block_index.values_mut() {
+                bucket.retain(|n| n.0 < cutoff);
+            }
+        }
     }
 
     /// Worklist accessor: `true` iff this node has had a relevant

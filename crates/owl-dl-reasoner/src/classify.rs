@@ -1308,6 +1308,9 @@ pub(crate) fn classify_top_down_internal(
                 .filter(|&c| {
                     prepared.data_counting_classes.contains(&c)
                         || closure
+                            // `subsumers_of` is the EL closure (under-approximate): a
+                            // missing subsumer only SKIPS a counting pair (sound MISS),
+                            // never causes a false subsumption.
                             .subsumers_of(c)
                             .iter()
                             .any(|s| prepared.data_counting_classes.contains(s))

@@ -427,11 +427,33 @@ Ontology(<http://t/x>\n\
     );
 }
 
+/// RAII guard: removes `RUSTDL_COUNTING_PAIR_VERIFY` on drop, even if
+/// the test body panics.  Must be dropped while PHASE2_ENV_MUTEX is still
+/// held (i.e., declared AFTER `_lock` so Rust drops it first).
+struct RemoveEnvGuard(&'static str);
+impl Drop for RemoveEnvGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: single-var cleanup; PHASE2_ENV_MUTEX is still held at
+        // drop time because `_lock` is declared before `_guard` in the
+        // test and therefore drops after it (Rust reverses declaration order).
+        unsafe { std::env::remove_var(self.0) };
+    }
+}
+
 /// Gate: with RUSTDL_COUNTING_PAIR_VERIFY=0 the headline miss returns
 /// (verifies the gate disables cleanly).
 #[test]
 fn phase2_gate_off_restores_the_miss() {
     let _lock = phase2_lock();
+    // `_guard` is declared AFTER `_lock` so it drops first (Rust reverses
+    // declaration order), guaranteeing the var is removed while the mutex
+    // is still held — even if `classify` panics.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUSTDL_COUNTING_PAIR_VERIFY", "0");
+    }
+    let _guard = RemoveEnvGuard("RUSTDL_COUNTING_PAIR_VERIFY");
     let src = "Prefix(:=<http://t/>)\n\
 Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
 Ontology(<http://t/x>\n\
@@ -439,20 +461,8 @@ Ontology(<http://t/x>\n\
   SubClassOf(:C DataMinCardinality(5 :p xsd:integer))\n\
   EquivalentClasses(:D DataMinCardinality(3 :p xsd:integer))\n\
 )\n";
-    // SAFETY: all phase2_* tests hold PHASE2_ENV_MUTEX for their duration,
-    // so this set_var races with no other phase2 test.  Restore is guaranteed
-    // because the mutex guard is dropped AFTER the remove_var below — if
-    // classify panics the guard unwinds before _lock drops, still restoring.
-    #[allow(unsafe_code)]
-    unsafe {
-        std::env::set_var("RUSTDL_COUNTING_PAIR_VERIFY", "0");
-    }
     let result = classify(&parse(src)).expect("classify");
     let found = result.is_subclass("http://t/C", "http://t/D");
-    #[allow(unsafe_code)]
-    unsafe {
-        std::env::remove_var("RUSTDL_COUNTING_PAIR_VERIFY");
-    }
     assert!(
         !found,
         "with the gate off, the wedge Sat is trusted and C⊑D is missed"

@@ -1775,8 +1775,82 @@ pub fn convert_ontology<A: ForIRI>(
     // so `num_roles()` grows and `build_role_hierarchy` / the engine stay
     // consistent. Sound + additive — see `decompose_long_chains`.
     decompose_long_chains(&mut out);
+    // Functional object-property ENFORCEMENT for the tableau + hypertableau
+    // wedge. `FunctionalRole(R)` is read by the EL saturator's bitset
+    // machinery (classify), but the wedge clausifier DROPS it and the main
+    // tableau never sees a `≤1 R` constraint — so consistency / ABox-merge /
+    // non-EL paths miss functional-merge clashes. We emit a derived
+    // ROLE-TRIGGERED GCI `∃R.⊤ ⊑ ≤1 R` that both engines pick up through
+    // existing machinery (the wedge's `Some`-antecedent + `Max`-consequent
+    // clausifier; the tableau's `apply_max`). The `FunctionalRole` axiom is
+    // KEPT (the saturator still reads it).
+    //
+    // FORWARD ONLY. Inverse-functional (`InverseFunctionalRole(R)`) is NOT
+    // translated: the engine does not perform `≤1 R⁻` predecessor-merge even
+    // for an EXPLICIT `ObjectMaxCardinality(1, R⁻)` (proven — that case still
+    // reports `consistent`), so emitting `∃R⁻.⊤ ⊑ ≤1 R⁻` would be a silent
+    // no-op. Inverse-functional enforcement is a documented sound MISS pending
+    // an engine fix to inverse-role predecessor merging. See
+    // `docs/superpowers/specs/2026-06-15-functional-role-enforcement-design.md`.
+    derive_functional_max_cardinality(&mut out);
     out.axioms.sort();
     Ok(out)
+}
+
+/// Emit a derived role-triggered `≤1` GCI for every (forward) functional
+/// object property.
+///
+/// For `Axiom::FunctionalRole(R)` emit `SubClassOf(∃R.⊤, ≤1 R)`. The `≤1` is
+/// UNQUALIFIED (`Max(1, role, ⊤)`).
+///
+/// SOUNDNESS: the emitted GCI is EXACTLY the axiom's meaning —
+/// `FunctionalRole(R) ≡ ⊤ ⊑ ≤1R`, and the role-triggered `∃R.⊤ ⊑ ≤1R` is
+/// satisfiability-equivalent (a node with no `R`-successor trivially satisfies
+/// `≤1R`). Additive: it can only enable genuine `≤1`-merge clashes, never
+/// spurious ones (the engines' merge is sound). The original `FunctionalRole`
+/// axiom is left in place so the saturator's bitset handling is untouched.
+///
+/// Translates `Axiom::FunctionalRole(R)` only. `Axiom::InverseFunctionalRole`
+/// is deliberately NOT translated: the engine does not perform `≤1 R⁻`
+/// predecessor merges (even explicit ones — verified), so the GCI would be a
+/// silent no-op (deferred sound MISS; see the `#[ignore]`d sentinels in
+/// `functional_enforcement.rs`). NOTE: a `FunctionalObjectProperty(ObjectInverseOf(r))`
+/// — inverse-functionality written the other way — converts to
+/// `Axiom::FunctionalRole(R⁻)` and DOES get `∃R⁻.⊤ ⊑ ≤1 R⁻` emitted; that is
+/// sound (correct functional semantics on the inverse role) and routes to the
+/// hybrid path (the fast-path gate rejects inverse roles), where it is harmless.
+///
+/// PERF: role-triggered (`∃R.⊤ ⊑ ≤1R`), NOT global (`⊤ ⊑ ≤1R`) — fires merge
+/// work only on nodes that already have an `R`-successor.
+///
+/// The derived `SubClassOf{Some(R,⊤), Max(1,R,⊤)}` shape is recognized by
+/// `saturator_complete_fragment` (classify.rs) so EL+functional ontologies
+/// (GALEN/notgalen) stay on the saturation fast path — the derived `≤n` must
+/// not kick them onto the slower hybrid path.
+fn derive_functional_max_cardinality(out: &mut InternalOntology) {
+    // Collect the forward functional roles to constrain. Duplicate GCIs are
+    // harmless — the pool interns the shape and `out.axioms.sort()` keeps the
+    // axiom list canonical — but dedup the source roles to avoid emitting the
+    // same GCI twice.
+    let mut roles: Vec<Role> = out
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::FunctionalRole(r) => Some(*r),
+            _ => None,
+        })
+        .collect();
+    if roles.is_empty() {
+        return;
+    }
+    roles.sort_by_key(|r| (r.role_id().index(), r.is_inverse()));
+    roles.dedup();
+    let top = out.concepts.top();
+    for role in roles {
+        let sub = out.concepts.some(role, top);
+        let sup = out.concepts.max(1, role, top);
+        out.axioms.push(Axiom::SubClassOf { sub, sup });
+    }
 }
 
 /// Decompose every `SubObjectPropertyOf{ Chain(parts), sup }` with

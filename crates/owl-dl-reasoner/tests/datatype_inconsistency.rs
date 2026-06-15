@@ -801,3 +801,28 @@ fn typed_card_untyped_individual_is_consistent() {
     DataPropertyAssertion(:p :a "3"^^xsd:integer)"#
     ));
 }
+
+/// FIRES: ≤1 dp.xsd:dateTime with two distinct (tz-free) dateTimes.
+#[test]
+fn typed_card_two_datetimes_over_max_one_is_inconsistent() {
+    assert!(!consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p xsd:dateTime))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "2020-01-01T00:00:00"^^xsd:dateTime)
+    DataPropertyAssertion(:p :a "2021-06-15T12:30:00"^^xsd:dateTime)"#
+    ));
+}
+
+/// FP GUARD: faceted dateTime range, one in-range + one out-of-range ⇒ only
+/// one counts ⇒ consistent.
+#[test]
+fn typed_card_datetime_out_of_range_uncounted_is_consistent() {
+    assert!(consistent(
+        r#"    Declaration(Class(:C)) Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    SubClassOf(:C DataMaxCardinality(1 :p DatatypeRestriction(xsd:dateTime xsd:minInclusive "2020-01-01T00:00:00"^^xsd:dateTime xsd:maxInclusive "2020-12-31T23:59:59"^^xsd:dateTime)))
+    ClassAssertion(:C :a)
+    DataPropertyAssertion(:p :a "2020-06-01T00:00:00"^^xsd:dateTime)
+    DataPropertyAssertion(:p :a "2025-01-01T00:00:00"^^xsd:dateTime)"#
+    ));
+}

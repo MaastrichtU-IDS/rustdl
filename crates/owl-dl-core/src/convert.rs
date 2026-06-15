@@ -1810,9 +1810,15 @@ pub fn convert_ontology<A: ForIRI>(
 /// spurious ones (the engines' merge is sound). The original `FunctionalRole`
 /// axiom is left in place so the saturator's bitset handling is untouched.
 ///
-/// FORWARD ONLY: `InverseFunctionalRole` is deliberately NOT translated — the
-/// engine ignores `≤1 R⁻` predecessor merges (even explicit ones), so the GCI
-/// would be a silent no-op. See the call-site comment.
+/// Translates `Axiom::FunctionalRole(R)` only. `Axiom::InverseFunctionalRole`
+/// is deliberately NOT translated: the engine does not perform `≤1 R⁻`
+/// predecessor merges (even explicit ones — verified), so the GCI would be a
+/// silent no-op (deferred sound MISS; see the `#[ignore]`d sentinels in
+/// `functional_enforcement.rs`). NOTE: a `FunctionalObjectProperty(ObjectInverseOf(r))`
+/// — inverse-functionality written the other way — converts to
+/// `Axiom::FunctionalRole(R⁻)` and DOES get `∃R⁻.⊤ ⊑ ≤1 R⁻` emitted; that is
+/// sound (correct functional semantics on the inverse role) and routes to the
+/// hybrid path (the fast-path gate rejects inverse roles), where it is harmless.
 ///
 /// PERF: role-triggered (`∃R.⊤ ⊑ ≤1R`), NOT global (`⊤ ⊑ ≤1R`) — fires merge
 /// work only on nodes that already have an `R`-successor.

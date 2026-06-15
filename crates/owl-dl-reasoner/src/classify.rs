@@ -933,6 +933,12 @@ fn is_saturator_axiom(ax: &Axiom, pool: &ConceptPool, functional_roles: &HashSet
         // Recognize the derived functional-enforcement GCI
         // `∃role.⊤ ⊑ ≤1 role` (role backed by a matching functional axiom) so
         // it does NOT kick the ontology off the fast path. Exact shape only.
+        // NOTE: the sub-role and sup-role are not required to be the SAME role
+        // — a hypothetical `∃R.⊤ ⊑ ≤1 S` with both R,S functional is still
+        // accepted. That is sound: S functional ⇒ the bitset already enforces
+        // global `≤1 S` (strictly stronger than the gated form), so the
+        // saturator loses nothing. `derive_functional_max_cardinality` only
+        // ever emits the same-role shape, so this is a theoretical case.
         Axiom::SubClassOf { sub, sup }
             if is_derived_functional_max(*sup, pool, functional_roles)
                 && matches!(

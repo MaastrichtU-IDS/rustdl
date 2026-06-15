@@ -2906,9 +2906,11 @@ mod tests {
                 Axiom::SubObjectPropertyOf {
                     sub: SubRolePath::Chain(p),
                     sup,
-                } if p.len() == 2 => {
-                    Some((p[0].role_id().index(), p[1].role_id().index(), sup.role_id().index()))
-                }
+                } if p.len() == 2 => Some((
+                    p[0].role_id().index(),
+                    p[1].role_id().index(),
+                    sup.role_id().index(),
+                )),
                 _ => None,
             })
             .collect()
@@ -2939,7 +2941,7 @@ mod tests {
         assert!(!has_long_chain(&o), "3-leg chain must be decomposed away");
         // Exactly one fresh aux role allocated.
         assert_eq!(o.vocabulary.num_roles(), n0 + 1, "one aux role expected");
-        let aux = (n0) as u32; // first fresh id after the 4 declared roles
+        let aux = u32::try_from(n0).expect("fits"); // first fresh id after the 4 declared roles
         let chains = two_leg_chains(&o);
         // R0∘R1 ⊑ aux ; aux∘R2 ⊑ S.
         assert!(
@@ -2961,7 +2963,11 @@ mod tests {
         let s = o.vocabulary.intern_role("http://x/s").index();
         let n0 = o.vocabulary.num_roles();
         o.axioms.push(Axiom::SubObjectPropertyOf {
-            sub: SubRolePath::Chain(ids.iter().map(|&i| Role::Named(crate::ir::RoleId::new(i))).collect()),
+            sub: SubRolePath::Chain(
+                ids.iter()
+                    .map(|&i| Role::Named(crate::ir::RoleId::new(i)))
+                    .collect(),
+            ),
             sup: Role::Named(crate::ir::RoleId::new(s)),
         });
         decompose_long_chains(&mut o);

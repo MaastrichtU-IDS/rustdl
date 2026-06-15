@@ -1221,11 +1221,7 @@ TransitiveObjectProperty(:r0)\n)\n"
         let mut r = |i| onto.vocabulary.intern_role(&format!("http://x/r{i}"));
         let (r0, r1, r2, s) = (r(0), r(1), r(2), r(3));
         onto.axioms.push(Axiom::SubObjectPropertyOf {
-            sub: SubRolePath::Chain(vec![
-                Role::Named(r0),
-                Role::Named(r1),
-                Role::Named(r2),
-            ]),
+            sub: SubRolePath::Chain(vec![Role::Named(r0), Role::Named(r1), Role::Named(r2)]),
             sup: Role::Named(s),
         });
         let (clauses, _stats) = clausify_with_stats(&onto);

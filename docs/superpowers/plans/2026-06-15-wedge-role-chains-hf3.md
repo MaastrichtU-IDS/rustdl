@@ -101,3 +101,40 @@ backjump deps, (c) termination is preserved.
 One commit per task (plan first). Messages end with
 `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 Do NOT merge to main; do NOT push.
+
+## RESULTS (2026-06-15)
+
+### Implemented (all sound, all tested)
+- T1 clausifier: 2-leg chain + transitivity → role-head DL-clauses.
+- T2 engine: `derive_role_edge` in `apply_head_atom` (forward storage,
+  inverse-head flipped, both-endpoints `birth_deps` fold, dedup, re-queue).
+- T3 `role_back_trigger` index (second-leg back-prop, scoped).
+- T4/T4b backjump soundness tests (incl. the FP-direction guard: chain
+  clash under one disjunct stays Sat).
+- T5 convert `decompose_long_chains` (N>2 → 2-leg cascade, unique aux roles
+  in the vocabulary).
+- T6 wedge_consistency canaries (chain over generated ∃-successor → Unsat,
+  3-leg, transitivity, + catastrophic-guard consistent variant).
+
+### SOUNDNESS GATE — PASS (FP=0 AND MISSED=0 on EVERY fixture)
+galen 27997, notgalen 32739, sio 8904, ore-10908 6001, ore-15672 142,
+wine 653, pizza 499, alehif 247, shoiq-knowledge 449, ro 158 (3-leg chains,
+decomposed), sulo 51, bibtex 16, + ro-stripped/sulo-stripped/sio-stripped.
+fmt clean, clippy `-D warnings` clean, full workspace tests green.
+
+### family / family-stripped: STILL `consistent` (sound MISS — NOT closed)
+The chain machinery is correct and works over ABox individuals + generated
+successors (proved by `mech2`: chain → Bad → disjoint clash → wedge Unsat).
+But the family inconsistency additionally needs a **functional-role merge
+over a generated ∃-successor on an ABox-seeded node** (`∃hasSex.Female ⊓
+∃hasSex.Male` under `Functional(hasSex)` → `Female⊓Male` clash). That merge
+is NOT detected by the wedge — and a minimal test WITHOUT any chain
+(`mech3`: `Start⊑∃hasSex.Female`, `Start⊑∃hasSex.Male`, functional, disjoint,
+`a:Start`) ALSO returns Sat. So this is a **pre-existing, separate
+functional-merge gap on ABox-seeded nodes**, independent of HF3 (mech3 has
+zero chains). Closing it is out of scope for this feature and was NOT
+attempted (would risk the gate / touch the merge+blocking interaction).
+The two `family*_inconsistency_detected` tests remain `#[ignore]`d and
+were NOT un-ignored or weakened. family stays a sound MISS (reported
+`consistent`; the safe direction). Do NOT raise the global `FIXPOINT_ITERS`
+(would risk MISSED-via-timeout on chain-heavy classify pairs).

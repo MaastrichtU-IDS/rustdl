@@ -2248,9 +2248,10 @@ impl<'c> HyperEngine<'c> {
             // the two bound nodes (the consequence of a chain / transitivity
             // clause `R₁(X,y) ∧ R₂(y,z) → R₃(X,z)`).
             Atom::Role(role, u, v) => {
-                let (Some(src0), Some(tgt0)) =
-                    (resolve_var(u, xnode, binding), resolve_var(v, xnode, binding))
-                else {
+                let (Some(src0), Some(tgt0)) = (
+                    resolve_var(u, xnode, binding),
+                    resolve_var(v, xnode, binding),
+                ) else {
                     return FireOutcome::NoChange;
                 };
                 self.derive_role_edge(role, src0, tgt0, deps)
@@ -2321,11 +2322,9 @@ impl<'c> HyperEngine<'c> {
         // role id + endpoints). Conservative — we only skip the exact
         // edge, never a merely sub/super-role one, so no derivation is
         // lost.
-        if self.nodes[from.index()]
-            .edges
-            .iter()
-            .any(|(er, t)| *t == to && er.is_inverse() == rstore.is_inverse() && er.role_id() == rstore.role_id())
-        {
+        if self.nodes[from.index()].edges.iter().any(|(er, t)| {
+            *t == to && er.is_inverse() == rstore.is_inverse() && er.role_id() == rstore.role_id()
+        }) {
             return FireOutcome::NoChange;
         }
         self.nodes[from.index()].edges.push((rstore, to));
@@ -4216,6 +4215,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn hf3_second_leg_added_last_still_clashes() {
         // T3 end-to-end: force the second leg's edge to be added LAST.
         // root:A; A→∃R1.B (root—R1→n1). A separate trigger D→∃R2.C is
@@ -4272,6 +4272,7 @@ mod tests {
     ///     the real clash → false `Sat`, or fail to → still `Unsat` but
     ///     for the wrong reason). We assert the verdict is `Unsat` both
     ///     with and without the disjunction.
+    ///
     /// This is the analog of `precise_card_deps_preserves_unsat_verdict`
     /// for role-chain edge derivation (the `nn_merge_edge_copy_residual_c`
     /// failure class the brief warns about).
@@ -4327,6 +4328,7 @@ mod tests {
     /// wrongly discard the satisfiable sibling and report a false `Unsat`.
     /// Asserts `Sat` — the edge-dep fold must keep the decision in scope.
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn hf3_chain_edge_under_one_disjunct_stays_sat() {
         let (a, p, q, b, c) = (cls(0), cls(1), cls(2), cls(3), cls(4));
         let (r1, r2, r3) = (nrole(10), nrole(11), nrole(12));
@@ -4367,6 +4369,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn hf3_three_leg_via_two_two_leg_clauses() {
         // Mimics decomposition output: R1∘R2⊑AUX, AUX∘R3⊑S, then the
         // path root—R1→n1—R2→n2—R3→n3 with n3:D, and {S(X,z),D(z)}→⊥.

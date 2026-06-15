@@ -1889,6 +1889,25 @@ impl<'c> HyperEngine<'c> {
             return true;
         }
         self.representative[s_j.index()] = s_i;
+        if cause_deps != DepSet::EMPTY {
+            // Fold the merge-causation dep into the survivor's `birth_deps`.
+            // `clause_body_deps` unions `birth_deps` of the firing node AND
+            // every bound node, and the survivor is the firing node for its
+            // (merge-copied) outgoing edges and a bound node for its incoming
+            // edges. So this one fold makes any clause matching an edge the
+            // merge created inherit the causation dep — for BOTH edge
+            // directions, and transitively for any head derived off the
+            // survivor. Closes the merge-copied-edge backjump hole (residual
+            // C, opus re-review): a back-prop `R(x,y) ∧ L(y) → M(x)` firing
+            // over a copied edge no longer under-reports its dep-set and so
+            // cannot trigger an unsound backjump past the deciding disjunct.
+            // The label-copy fold below and the `nn_tainted` direct-clash
+            // catch-all (residuals A/B) are retained as defence in depth.
+            // Widening `birth_deps` only reduces backjumping ⇒ sound; EMPTY
+            // (the `≤n` merge / classify path) ⇒ no-op.
+            let bi = &mut self.nodes[s_i.index()];
+            bi.birth_deps = bi.birth_deps.union(cause_deps);
+        }
         let s_j_labels: Vec<(ClassId, DepSet)> = {
             let nj = &self.nodes[s_j.index()];
             nj.labels
@@ -2849,6 +2868,98 @@ mod tests {
             HyperResult::Sat,
             "propagate-then-clash must be Sat with the merge-causation-dep \
              source fix; an Unsat = catastrophic false-inconsistent"
+        );
+    }
+
+    /// **Residual (C) probe — merge-copied-edge escape (opus re-review).**
+    /// The back-prop clause fires over an edge COPIED by the NN-merge
+    /// (the seeded `{0}` node's `R({0}, {1})` assertion), whose target's
+    /// `birth_deps` never received the merge-causation dep. The derived
+    /// head then escapes the `nn_tainted` catch-all onto a fresh `∃`
+    /// successor that clashes untainted ⇒ false-`Unsat`. Discriminator:
+    /// the same graph with a Horn (non-disjunctive) decision is provably
+    /// `Sat`, so the disjunctive version MUST also be `Sat`.
+    #[test]
+    fn nn_merge_edge_copy_residual_c() {
+        let (q, ll, mm, zz, p, g) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5));
+        let nom0 = cls(6);
+        let role = Role::Named(RoleId::new(0));
+        let role_s = Role::Named(RoleId::new(1));
+        // Decision D (disjunctive): q → {0} ⊔ p. Branch 1 places {0} on
+        // node2 (carrying q) ⇒ NN-merge node2 into the seeded {0}=node0,
+        // copying node0's seeded edge R(node0, node1). Branch 2 (p) is
+        // clash-free ⇒ the graph is consistent.
+        let disjunctive_d = DlClause {
+            body: vec![Atom::Class(q, X)],
+            head: vec![Atom::Class(nom0, X), Atom::Class(p, X)],
+        };
+        // Discriminator: Horn decision q → p (no branching, real model).
+        let nondisj_d = DlClause {
+            body: vec![Atom::Class(q, X)],
+            head: vec![Atom::Class(p, X)],
+        };
+        let base = |decision: DlClause| {
+            vec![
+                // {1}=node1 carries `ll` (EMPTY-dep seeded label):
+                DlClause {
+                    body: vec![Atom::Class(cls(7), X)],
+                    head: vec![Atom::Class(ll, X)],
+                },
+                // {2}=node2 carries `q` (the decision driver):
+                DlClause {
+                    body: vec![Atom::Class(cls(8), X)],
+                    head: vec![Atom::Class(q, X)],
+                },
+                // Guard G keyed on q ⇒ only on node2 (gates the back-prop
+                // so the INITIAL fixpoint over node0's own edge is
+                // clash-free; the clash arises only inside branch 1):
+                DlClause {
+                    body: vec![Atom::Class(q, X)],
+                    head: vec![Atom::Class(g, X)],
+                },
+                decision,
+                // Guarded back-prop over the COPIED edge:
+                // R(x,y) ∧ ll(y) ∧ G(x) → mm(x):
+                DlClause {
+                    body: vec![
+                        Atom::Role(role, X, 1),
+                        Atom::Class(ll, 1),
+                        Atom::Class(g, X),
+                    ],
+                    head: vec![Atom::Class(mm, X)],
+                },
+                // mm spawns a fresh untainted ∃-successor that clashes:
+                DlClause {
+                    body: vec![Atom::Class(mm, X)],
+                    head: vec![Atom::Exists(role_s, zz, X)],
+                },
+                DlClause {
+                    body: vec![Atom::Class(zz, X)],
+                    head: vec![],
+                },
+            ]
+        };
+        let seed = AboxSeed {
+            num_individuals: 3,
+            nominal_base: 6,
+            property_assertions: vec![(0, role, 1)],
+            same_pairs: vec![],
+        };
+        let discriminator = HyperEngine::new_seeded(&base(nondisj_d), &seed)
+            .with_nominals(6, 3)
+            .decide(64);
+        let exploit = HyperEngine::new_seeded(&base(disjunctive_d), &seed)
+            .with_nominals(6, 3)
+            .decide(64);
+        assert_eq!(
+            discriminator,
+            HyperResult::Sat,
+            "Horn discriminator proves the graph is consistent"
+        );
+        assert_eq!(
+            exploit,
+            HyperResult::Sat,
+            "merge-copied-edge back-prop must not false-Unsat a consistent graph (residual C)"
         );
     }
 

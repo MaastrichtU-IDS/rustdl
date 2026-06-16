@@ -212,3 +212,27 @@ fn tier2_residual_conditioned_neq_eq_clash_missed() {
         "C ⊑ E via residual-conditioned Eq/Neq resolution"
     );
 }
+
+/// CHARACTERIZED MISS (sound, FP=0). The CORE case of the unit-only same-pair
+/// clash limitation: `≥n R.A ⊓ ≤m R.A` with `n > m ≥ 2` is UNSAT (pigeonhole),
+/// but CB MISSES it. `≥3` emits 3 UNIT `Neq` pairs; `≤2` (on 3 witnesses) emits
+/// the 3-way disjunction `{Eq12,Eq13,Eq23}` — never a unit `Eq` — and each
+/// speculative merge's union-core `{A}` is satisfiable, so the discharge
+/// reflects nothing and `apply_eq_neq_clash` (unit-Eq-only) never fires.
+/// Fixture 47 (`≥2 ⊓ ≤1`) passes only because `m=1` makes `≤2` emit a *single*
+/// pair `{Eq}` (a unit). So the gap is precisely `n > m ≥ 2` — a CORE ALCHQ
+/// pattern, NOT exotic. Closure = general §2.4 Eq/Neq resolution (§3.4 reserve).
+/// FP=0 preserved (CB reports SAT where the truth is UNSAT — a MISS, never FP).
+#[test]
+#[ignore = "characterized MISS: ≥n⊓≤m (n>m≥2) needs §2.4 general Eq/Neq resolution (§3.4 reserve)"]
+fn tier2_min3_max2_pigeonhole_unsat_missed() {
+    let c = classify_alchq(
+        "Declaration(Class(:A))\n\
+         Declaration(Class(:Test))\n\
+         Declaration(ObjectProperty(:r))\n\
+         SubClassOf(:Test ObjectIntersectionOf(\n\
+             ObjectMinCardinality(3 :r :A)\n\
+             ObjectMaxCardinality(2 :r :A)))\n",
+    );
+    assert_unsat(&c, "Test");
+}

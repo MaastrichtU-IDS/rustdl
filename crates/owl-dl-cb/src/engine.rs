@@ -747,6 +747,18 @@ impl<'a> Engine<'a> {
     /// place `Neq` is consumed (fixture 47: `≥2 r.A` ⇒ `Neq(s,t)`, `≤1 r.A` ⇒
     /// forced `Eq(s,t)`). Both must be FORCED (unit) — a multi-literal
     /// disjunction containing `Eq`/`Neq` is not a commitment, so no clash.
+    ///
+    /// **Known completeness gap (sound MISS, FP=0; §3.4 reserve).** Being
+    /// unit-only, this misses every `≥n R.A ⊓ ≤m R.A` conflict with `n > m ≥ 2`
+    /// (a CORE ALCHQ pigeonhole UNSAT): `≥n` emits unit `Neq`s but `≤m` emits a
+    /// *disjunction* `⋁ Eq` (never a unit `Eq`), and the speculative merges'
+    /// union-cores are satisfiable so the discharge reflects nothing. Fixture 47
+    /// passes only because `m=1` ⇒ the `≤1` choose emits a single-pair unit
+    /// `{Eq}`. The sound closure is the general §2.4 Eq/Neq resolution
+    /// (`{R ⊔ Eq(s,t)}, {R' ⊔ Neq(s,t)} ⟹ {R ⊔ R'}`), deferred (FP-critical,
+    /// beyond the B2 deliverable). Pinned by the ignored canaries
+    /// `tier2_min3_max2_pigeonhole_unsat_missed` +
+    /// `tier2_residual_conditioned_neq_eq_clash_missed`.
     fn apply_eq_neq_clash(&mut self, v: ContextId) {
         let mut forced_eq: BTreeSet<(TermId, TermId)> = BTreeSet::new();
         let mut forced_neq: BTreeSet<(TermId, TermId)> = BTreeSet::new();

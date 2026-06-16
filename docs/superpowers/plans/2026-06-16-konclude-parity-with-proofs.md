@@ -4,9 +4,14 @@
 > **standing gates** (below) — FP=0/MISSED=0 is SACRED. Parallel tasks run in isolated
 > git worktrees off `main` to avoid edit conflicts; integrate + re-gate at merge.
 
-**Goal:** make rustdl's *production hybrid* (EL saturation + tableau + wedge, on `main`)
-Konclude-competitive on the EL/Horn fragment **and** produce DL proofs — the
-differentiator — while keeping the longer SROIQ-parity structural bet on a clear track.
+**Goal (headline, advisor-corrected):** the defensible, differentiated product is
+**DL proofs + ELK/HermiT-competitive EL/Horn + sound SROIQ degradation + embeddable
+Rust** — it does NOT require beating Konclude. "Match Konclude" is a *stretch*, not the
+success criterion (see Track A). rustdl on EL/Horn is currently ELK/HermiT-class (galen
+2.2× / notgalen 3.7× behind Konclude; ~8.5× behind ELK on go-basic), so there is real
+*algorithmic* headroom (we trail even the EL specialist) — but leapfrogging to
+Konclude's tier likely needs Konclude's saturation techniques, not allocation polish.
+**0.2 is the go/no-go** that tells us which.
 
 **Architecture:** three workstreams. **A (EL/Horn perf)** — close the 2–4× constant-factor
 gap on the saturation fast path (the achievable "match Konclude" target). **B (proofs)** —
@@ -54,7 +59,11 @@ differentiator). **C (SROIQ structural)** — anywhere-blocking + sound label-se
   (FP, must be 0), `only_in_oracle` (MISSED). This is gate #1/#2 mechanized.
 - [ ] Commit the harness + a `docs/perf-baseline-2026-06-16.md` snapshot table (seed from
   `docs/perf-2026-06-08-konclude-vs-rustdl.md`, re-measured this host).
-**Gate:** harness reproduces the known gap table; closure-diff shows FP=0 on all fixtures.
+**Gate:** **FIRST validate the Konclude+ROBOT pipeline itself** — prove it runs end-to-end
+and its output verdicts MATCH the existing oracles (`*-classified.owx`) on ≥3 fixtures incl.
+the 14 ROBOT-converted ones (class-count cross-check), before trusting any harness number
+(the whole FP=0/perf gate rests on this pipeline). Then: harness reproduces the known gap
+table; closure-diff shows FP=0 on all fixtures.
 
 ### Task 0.2 — Flamegraph attribution (EL/Horn) — drives Track A
 **Files:** `docs/flamegraphs/` (new svgs), append to `docs/perf-baseline-2026-06-16.md`.
@@ -76,9 +85,15 @@ differentiator). **C (SROIQ structural)** — anywhere-blocking + sound label-se
 
 ---
 
-## Track A — EL/Horn perf (achievable; "match Konclude" target)
+## Track A — EL/Horn perf (target: ELK/HermiT-class; Konclude-class = stretch)
 
-> Depends on 0.2. Worktree `wt-perf-elhorn`. Crate: `owl-dl-saturation` (+ `reasoner` glue).
+> Depends on 0.2 (which is the GO/NO-GO). Worktree `wt-perf-elhorn`. Crate:
+> `owl-dl-saturation` (+ `reasoner` glue). **Success criterion = close the gap to
+> ELK/HermiT-class on EL/Horn (evidence-backed achievable), with Konclude-class as a
+> stretch.** If 0.2 shows the residual is irreducible Rust-vs-hyper-optimized-C++
+> constant factor (not algorithmic), STOP, say so, and reframe the headline to the
+> differentiated product (proofs + competitive-not-fastest + embeddable) — do NOT chase
+> a mirage with the implementation budget.
 
 ### Task A.1 — Cut the top constant-factor cost from 0.2
 **Files:** per 0.2 attribution — likely `crates/owl-dl-saturation/src/*.rs` (the fixpoint
@@ -150,20 +165,24 @@ proof; on an out-of-fragment pair returns the justification fallback; proof-chec
 > Depends on 0.3. Worktree `wt-sroiq`. Crate: `owl-dl-tableau` (+ `reasoner`). C.1 before C.2
 > (smaller graphs → cleaner cache). This is the multi-month, FP-delicate track.
 
-### Task C.1 — Anywhere blocking
-**Files:** `crates/owl-dl-tableau/src/graph.rs` (`is_blocked`, the `label_sig` bloom),
-`crates/owl-dl-reasoner/src/lib.rs` (`is_blocked` flag, default currently OFF per notes).
-- [ ] Implement sound **anywhere (subset/equality) blocking** (a node blocked by ANY earlier
-  node with a compatible label, not only an ancestor) with correct dynamic-blocking
-  invalidation. Reuse the `label_sig` bloom prefilter. This shrinks the completion graphs
-  (sio 800 MB → small).
-- [ ] **SOUNDNESS is the whole game:** anywhere-blocking must preserve the model-construction
-  soundness (correct blocking condition for SROIQ — pairwise/double blocking as needed for
-  inverse+number restrictions). Adversarial review (opus) of the blocking condition before
-  trusting; then the standing gates with extra scrutiny on FP.
-**Gate:** FP=0/MISSED=0 corpus-wide (the sacred bar — anywhere-blocking done wrong = FP or
-nontermination); sio/wine peak-RSS ↓ ≥5×; sio/ore-10908 wall ↓; wine no longer DNFs at a
-usable timeout. Independent adversarial verification of the blocking condition.
+### Task C.1 — Anywhere blocking: VALIDATE & ENABLE (it already exists — do NOT reimplement)
+**ALREADY IMPLEMENTED, default-OFF.** `crates/owl-dl-tableau/src/graph.rs` has the
+anywhere-blocking candidate index + `block_index_enabled` (~270–410);
+`crates/owl-dl-tableau/src/lib.rs` has the `anywhere_blocking` field +
+`RUSTDL_ANYWHERE_BLOCKING` env (default `false`) + `set_anywhere_blocking()`; design at
+`docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`.
+- [ ] **FIRST: find out WHY it's default-OFF.** Read the existing impl + the 2026-06-15
+  plan doc + git log for that work. The reason it's off almost certainly encodes the real
+  problem (a soundness gap for SROIQ inverse/number-restrictions? incomplete? a perf
+  regression? unfinished?). Report the finding before touching anything.
+- [ ] If OFF for an unfinished/soundness reason: complete/fix the blocking condition
+  (correct pairwise/double blocking for inverse + number restrictions). If OFF only for
+  caution: validate + enable.
+- [ ] Adversarial opus review of the blocking condition's SROIQ soundness before trusting.
+**Gate:** with anywhere-blocking ON — FP=0/MISSED=0 corpus-wide (sacred — wrong blocking =
+FP or nontermination); sio/wine peak-RSS ↓ ≥5×; sio/ore-10908 wall ↓; wine no longer DNFs
+at a usable timeout. Independent adversarial verification. (Net new code likely small — the
+machinery exists; the work is the soundness validation + whatever made it unsafe to enable.)
 
 ### Task C.2 — Sound label-set (un)sat caching
 **Files:** `crates/owl-dl-tableau/src/` (new `satcache.rs`), `reasoner` (wire into the
@@ -187,12 +206,13 @@ fuzz (FP=0, the sacred bar); per-pair tableau wall ↓ on sio/ore/wine; adversar
 
 - **Sequential prereq:** Phase 0 (0.1 → {0.2, 0.3}). 0.2 unblocks A; 0.3 unblocks C; B is
   independent (needs only 0.1's gate harness).
-- **Parallel after Phase 0:** Track A (worktree `wt-perf-elhorn`, `owl-dl-saturation`),
-  Track B (`wt-proofs`, saturator additive + reasoner/cli), Track C (`wt-sroiq`,
-  `owl-dl-tableau`) run concurrently in isolated worktrees. **Conflict note:** A and B both
-  touch `owl-dl-saturation` — sequence B.1 (recording, additive) after A's hot-loop edits
-  land, OR have A and B coordinate on the saturator file (A = hot loop, B = additive
-  side-table + new proof.rs); C is a different crate (parallel-safe).
+- **Parallel after Phase 0:** Track C (`wt-sroiq`, `owl-dl-tableau` — different crate) runs
+  concurrently with the saturator work. **A BEFORE B in the saturator (advisor-corrected):**
+  Track A restructures the saturation fixpoint; Track B attaches `(rule, premises)` recording
+  hooks to those same rules. Parallel-editing the hot loop conflicts at merge and B's hooks
+  may attach to code A is rewriting. So: **A's loop changes land first, THEN B's recording
+  goes onto the stabilized loop.** B's *spec* (read-only, running now) is fine in parallel;
+  B's *implementation* waits for A.
 - **Integration:** each task merges to `main` only after its gate AND a re-run of the full
   standing-gate harness on the merged tree (catch cross-track regressions). FP=0 re-verified
   at every merge.
@@ -200,11 +220,17 @@ fuzz (FP=0, the sacred bar); per-pair tableau wall ↓ on sio/ore/wine; adversar
   of the soundness argument + an FP-fuzz before merge — same discipline that caught the CB
   cruxes. Perf/proofs tasks get the standing gates.
 
-## Sequencing recommendation (honest)
-Start **A + B in parallel** (the achievable, differentiated "Konclude-competitive EL/Horn +
-proofs" headline). Begin **C.1 (anywhere-blocking)** in parallel as the long structural bet,
-but treat C as the uncertain multi-month track — its gate (FP=0 under anywhere-blocking +
-sound caching) is the hardest in the repo. Ship A+B as the near-term win; let C mature.
+## Sequencing recommendation (honest, advisor-corrected)
+**HOLD the implementation wave until Phase 0 data lands** — do not pre-launch. The single
+highest-value output is **0.2's attribution**: it decides whether Track A → ELK-class is
+real and whether → Konclude-class is reachable, and that result should *reshape the headline*
+before committing the implementation budget. Then: **A first** (saturator perf, to its
+ELK/HermiT-class bar), **then B** onto the stabilized loop (proofs — the differentiator).
+**C.1 in parallel** (different crate) but as VALIDATE-&-ENABLE of the existing
+anywhere-blocking, not a from-scratch build; treat C as the uncertain longer bet (its
+FP=0-under-blocking + sound-caching gate is the hardest in the repo). Ship A+B as the
+near-term differentiated win; let C mature. Proofs work even if Track A only reaches
+ELK-class — the product doesn't depend on beating Konclude.
 
 ## Self-review notes
 - No task optimizes before its attribution (A depends on 0.2, C on 0.3) — no guessing.

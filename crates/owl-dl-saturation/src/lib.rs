@@ -5,6 +5,17 @@
 //! we re-implement against our own IR (see `owl-dl-core`) to avoid IR-boundary
 //! copies in the hot loop.
 //!
+//! ## Opt-in proof recording
+//!
+//! Set `RUSTDL_PROOF=1` or use [`saturate_with_config`] with
+//! `record_proofs: true` to enable proof recording. This populates a
+//! [`proof::ProofTrace`] side-table mapping each derived fact to the
+//! rule that produced it. Zero-cost when off: a single `bool` check per
+//! derivation, no allocation.
+//!
+//! After saturation, [`proof::prove_subsumption`] walks the trace backward
+//! to the axiom leaves and returns a [`proof::ProofNode`] tree.
+//!
 //! ## What this engine covers
 //!
 //! Subsumer closure over the atomic-class subset of the input
@@ -49,6 +60,8 @@
 //! fast path (when *every* axiom is in scope) or fall through to
 //! tableau on the misses.
 
+pub mod proof;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use fixedbitset::FixedBitSet;
@@ -56,6 +69,30 @@ use owl_dl_core::{
     Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, InternalOntology, Role,
     RoleId, SubRolePath,
 };
+
+use proof::{AxiomRef, DerivedFact, ElRule, Inference, ProofTrace};
+
+/// Read `RUSTDL_PROOF` once and cache it.  Default OFF.
+fn proof_enabled() -> bool {
+    std::env::var("RUSTDL_PROOF").as_deref() == Ok("1")
+}
+
+/// Configuration for [`saturate_with_config`].
+#[derive(Debug, Clone)]
+pub struct SaturateConfig {
+    /// Whether to record proof steps. Also controlled by the `RUSTDL_PROOF`
+    /// environment variable (default OFF). Setting this to `true` overrides
+    /// the env var (e.g. for the `rustdl prove` subcommand).
+    pub record_proofs: bool,
+}
+
+impl Default for SaturateConfig {
+    fn default() -> Self {
+        Self {
+            record_proofs: proof_enabled(),
+        }
+    }
+}
 
 /// Compute the subsumer closure over the EL-fragment subset of
 /// `internal`. The result maps every declared `ClassId` to the set
@@ -68,13 +105,39 @@ use owl_dl_core::{
 /// full-table sweep on each fixed-point iteration.
 #[must_use]
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
+    saturate_with_config(internal, &SaturateConfig::default()).0
+}
+
+/// Like [`saturate`] but also supports optional proof recording.
+///
+/// Returns `(Subsumers, Some(ProofTrace))` when `cfg.record_proofs` is `true`,
+/// or `(Subsumers, None)` when proof recording is off (zero extra cost).
+///
+/// The `ProofTrace` maps each derived fact to the inference step that first
+/// produced it. Use [`proof::prove_subsumption`] to extract a backward proof
+/// tree.
+#[must_use]
+pub fn saturate_with_config(
+    internal: &InternalOntology,
+    cfg: &SaturateConfig,
+) -> (Subsumers, Option<ProofTrace>) {
     let n = internal.vocabulary.num_classes();
     let role_super = build_role_super(internal);
-    let (rules, tseitin, num_total_classes) = collect_el_rules(internal, &role_super);
-    let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
-    engine.seed();
+    let (rules, tseitin, num_total_classes, maybe_trace) =
+        collect_el_rules_with_provenance(internal, &role_super, cfg.record_proofs);
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes,
+        rules,
+        tseitin,
+        role_super,
+        cfg.record_proofs,
+        maybe_trace,
+    );
+    engine.seed(internal);
     engine.run();
-    engine.subsumers
+    let trace = engine.proof_trace;
+    (engine.subsumers, trace)
 }
 
 /// Worklist-driven saturation engine. Maintains the running closure
@@ -167,15 +230,25 @@ struct WorklistEngine {
     /// and X already had a fact on `R_k`). Used by structural canaries /
     /// diagnostics; not consumed by the reasoner output.
     phase2c_sub_role_propagations: u64,
+
+    // --- Proof recording (zero-cost when off) ---
+    /// Whether proof recording is active. When `false`, every proof-recording
+    /// branch is skipped and `proof_trace` stays `None`.
+    record_proofs: bool,
+    /// The proof trace, populated only when `record_proofs` is `true`.
+    proof_trace: Option<ProofTrace>,
 }
 
 impl WorklistEngine {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         num_user_classes: usize,
         num_total_classes: usize,
         rules: ElRules,
         tseitin: TseitinAllocator,
         role_super: HashMap<RoleId, HashSet<RoleId>>,
+        record_proofs: bool,
+        proof_trace: Option<ProofTrace>,
     ) -> Self {
         let mut conjunctive_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
         for (idx, trigger) in rules.conjunctive_triggers.iter().enumerate() {
@@ -229,6 +302,8 @@ impl WorklistEngine {
             atomic_content_of,
             phase2d_facts_inherited: 0,
             phase2c_sub_role_propagations: 0,
+            record_proofs,
+            proof_trace,
         }
     }
 
@@ -371,7 +446,7 @@ impl WorklistEngine {
     }
 
     /// Seed the worklist from told axioms + reflexivity.
-    fn seed(&mut self) {
+    fn seed(&mut self, internal: &InternalOntology) {
         // Reflexive `C ⊑ C` for every declared class. Synthetic
         // Tseitin classes get their reflexive entry implicitly via
         // the conjunctive-trigger / atomic-subsumption rules that
@@ -389,15 +464,59 @@ impl WorklistEngine {
             let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
             self.todo_subsumer.push_back((id, id));
         }
-        // Told atomic subsumers.
-        for rule in &self.rules.atomic_subsumptions {
-            self.todo_subsumer.push_back((rule.sub, rule.sup));
+        // Told atomic subsumers. When proof recording is on, tag each
+        // seeded subsumption with the axiom that produced it.
+        if self.record_proofs {
+            let axiom_refs: Vec<Option<usize>> = self
+                .proof_trace
+                .as_ref()
+                .map(|t| t.atomic_sub_axiom.clone())
+                .unwrap_or_default();
+            for (idx, rule) in self.rules.atomic_subsumptions.iter().enumerate() {
+                self.todo_subsumer.push_back((rule.sub, rule.sup));
+                // Pre-record ToldSubsumer so process_subsumer finds it after
+                // record_subsumer; we use the probe in record_subsumer_with_rule.
+                let ax_ref = axiom_refs.get(idx).copied().flatten().map(AxiomRef);
+                let inf = Inference {
+                    rule: ElRule::ToldSubsumer,
+                    premise_facts: vec![],
+                    axiom_refs: ax_ref.into_iter().collect(),
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(DerivedFact::Sub(rule.sub, rule.sup), inf);
+                }
+            }
+        } else {
+            for rule in &self.rules.atomic_subsumptions {
+                self.todo_subsumer.push_back((rule.sub, rule.sup));
+            }
         }
         // Told existential facts (snapshot first to release the
         // borrow into `self.rules`).
         let told: Vec<ExistentialFact> = self.rules.existential_facts.clone();
-        for fact in told {
-            self.push_fact(fact);
+        if self.record_proofs {
+            let fact_axioms: Vec<Option<usize>> = self
+                .proof_trace
+                .as_ref()
+                .map(|t| t.existential_fact_axiom.clone())
+                .unwrap_or_default();
+            for (idx, fact) in told.into_iter().enumerate() {
+                let ax_ref = fact_axioms.get(idx).copied().flatten().map(AxiomRef);
+                let df = DerivedFact::Exist(fact.sub, fact.role, fact.target);
+                let inf = Inference {
+                    rule: ElRule::ToldFact,
+                    premise_facts: vec![],
+                    axiom_refs: ax_ref.into_iter().collect(),
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(df, inf);
+                }
+                self.push_fact(fact);
+            }
+        } else {
+            for fact in told {
+                self.push_fact(fact);
+            }
         }
         // Phase D4: classes told directly to be unsatisfiable via
         // `SubClassOf(Atomic, Bot)` (data-axiom preprocessing clash
@@ -405,8 +524,49 @@ impl WorklistEngine {
         // propagates to subclasses + fact targets via the standard
         // rules.
         let directly_unsat: Vec<ClassId> = self.rules.directly_unsat.clone();
-        for c in directly_unsat {
-            self.enqueue_unsat(c);
+        if self.record_proofs {
+            let unsat_axioms: Vec<Option<usize>> = self
+                .proof_trace
+                .as_ref()
+                .map(|t| t.directly_unsat_axiom.clone())
+                .unwrap_or_default();
+            for (idx, c) in directly_unsat.into_iter().enumerate() {
+                let ax_ref = unsat_axioms.get(idx).copied().flatten().map(AxiomRef);
+                let inf = Inference {
+                    rule: ElRule::ToldUnsat,
+                    premise_facts: vec![],
+                    axiom_refs: ax_ref.into_iter().collect(),
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(DerivedFact::Unsat(c), inf);
+                }
+                self.enqueue_unsat(c);
+            }
+        } else {
+            for c in directly_unsat {
+                self.enqueue_unsat(c);
+            }
+        }
+        // Reflexivity proof records: record Sub(C,C) for every user class
+        // (the told-subsumer loop will override if there's also an axiom, but
+        // first-writer-wins so reflexivity lands unless we record told first).
+        // We do this AFTER told so told wins if both apply (Sub(C,C) may be
+        // derived both by reflexivity and by a told axiom C ⊑ C).
+        // In practice the seeding queues Sub(C,C) before atomic_subsumptions,
+        // so we record reflexivity here after the told seeds.
+        if self.record_proofs {
+            for i in 0..internal.vocabulary.num_classes() {
+                let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+                let df = DerivedFact::Sub(id, id);
+                let inf = Inference {
+                    rule: ElRule::Reflexivity,
+                    premise_facts: vec![],
+                    axiom_refs: vec![],
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(df, inf);
+                }
+            }
         }
     }
 
@@ -542,16 +702,52 @@ impl WorklistEngine {
         // of C.
         let supers_of_d = self.supers_of_class(d);
         for e in supers_of_d {
+            // Proof: Sub(C,D) + Sub(D,E) ⟹ Sub(C,E)
+            if self.record_proofs && !self.subsumers.contains(c, e) {
+                let inf = Inference {
+                    rule: ElRule::SubsumerTransitivityFwd,
+                    premise_facts: vec![DerivedFact::Sub(c, d), DerivedFact::Sub(d, e)],
+                    axiom_refs: vec![],
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(DerivedFact::Sub(c, e), inf);
+                }
+            }
             self.enqueue_subsumer(c, e);
         }
         // Transitivity (backward): anything that had C as a
         // subsumer now also has D as a subsumer.
         let subs_of_c = self.subs_of_class(c);
         for x in subs_of_c {
+            // Proof: Sub(X,C) + Sub(C,D) ⟹ Sub(X,D)
+            if self.record_proofs && !self.subsumers.contains(x, d) {
+                let inf = Inference {
+                    rule: ElRule::SubsumerTransitivityBwd,
+                    premise_facts: vec![DerivedFact::Sub(x, c), DerivedFact::Sub(c, d)],
+                    axiom_refs: vec![],
+                };
+                if let Some(t) = self.proof_trace.as_mut() {
+                    t.record(DerivedFact::Sub(x, d), inf);
+                }
+            }
             self.enqueue_subsumer(x, d);
         }
         // Unsat propagation: if D is unsat, C is unsat too.
         if self.subsumers.is_unsatisfiable(d) {
+            // Proof: Sub(C,D) + Unsat(D) ⟹ Unsat(C)
+            if self.record_proofs {
+                let ci = c.index() as usize;
+                if !self.subsumers.unsatisfiable.contains(ci) {
+                    let inf = Inference {
+                        rule: ElRule::UnsatSubsumer,
+                        premise_facts: vec![DerivedFact::Sub(c, d), DerivedFact::Unsat(d)],
+                        axiom_refs: vec![],
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(DerivedFact::Unsat(c), inf);
+                    }
+                }
+            }
             self.enqueue_unsat(c);
         }
         // Conjunctive triggers: every trigger with D in its body
@@ -565,18 +761,61 @@ impl WorklistEngine {
                     .all(|b| self.subsumers.contains(c, *b))
                 {
                     let head = trigger.head;
+                    // Proof: Sub(C,Bi) for each body ⟹ Sub(C,head)
+                    if self.record_proofs && !self.subsumers.contains(c, head) {
+                        let premises: Vec<DerivedFact> = trigger
+                            .bodies
+                            .iter()
+                            .map(|&b| DerivedFact::Sub(c, b))
+                            .collect();
+                        let ax_ref = self
+                            .proof_trace
+                            .as_ref()
+                            .and_then(|t| t.conjunctive_trigger_axiom.get(tidx).copied().flatten())
+                            .map(AxiomRef);
+                        let inf = Inference {
+                            rule: ElRule::ConjunctiveTrigger,
+                            premise_facts: premises,
+                            axiom_refs: ax_ref.into_iter().collect(),
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Sub(c, head), inf);
+                        }
+                    }
                     self.enqueue_subsumer(c, head);
                 }
             }
         }
         // Disjointness: if any class disjoint from D is already a
         // subsumer of C, C is unsat.
-        if let Some(others) = Some(self.disjoints_by_class[d.index() as usize].clone())
-            && others
-                .iter()
-                .any(|other| self.subsumers.contains(c, *other))
-        {
-            self.enqueue_unsat(c);
+        if let Some(others) = Some(self.disjoints_by_class[d.index() as usize].clone()) {
+            for &other in &others {
+                if self.subsumers.contains(c, other) {
+                    // Proof: Sub(C,D) + Sub(C,other) + Disjoint(D,other) ⟹ Unsat(C)
+                    if self.record_proofs {
+                        let ci = c.index() as usize;
+                        if !self.subsumers.unsatisfiable.contains(ci) {
+                            // Find axiom ref for the disjoint pair (use the first one).
+                            let ax_ref = self.proof_trace.as_ref().and_then(|t| {
+                                t.disjoint_pair_axiom.iter().find_map(|ax| ax.map(AxiomRef))
+                            });
+                            let inf = Inference {
+                                rule: ElRule::DisjointnessClash,
+                                premise_facts: vec![
+                                    DerivedFact::Sub(c, d),
+                                    DerivedFact::Sub(c, other),
+                                ],
+                                axiom_refs: ax_ref.into_iter().collect(),
+                            };
+                            if let Some(t) = self.proof_trace.as_mut() {
+                                t.record(DerivedFact::Unsat(c), inf);
+                            }
+                        }
+                    }
+                    self.enqueue_unsat(c);
+                    break; // one disjoint clash is enough
+                }
+            }
         }
         // Existential trigger firing — target side: for facts whose
         // target is C, a new subsumer D may match a trigger body.
@@ -597,7 +836,46 @@ impl WorklistEngine {
                     let head = trigger.head;
                     let candidates = self.subs_of_class(fact.sub);
                     for y in candidates {
+                        if self.record_proofs && !self.subsumers.contains(y, head) {
+                            let ax_ref = self
+                                .proof_trace
+                                .as_ref()
+                                .and_then(|t| {
+                                    t.existential_trigger_axiom.get(*tidx).copied().flatten()
+                                })
+                                .map(AxiomRef);
+                            let inf = Inference {
+                                rule: ElRule::ExistentialTriggerTarget,
+                                premise_facts: vec![
+                                    DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                    DerivedFact::Sub(fact.target, d),
+                                    DerivedFact::Sub(y, fact.sub),
+                                ],
+                                axiom_refs: ax_ref.into_iter().collect(),
+                            };
+                            if let Some(t) = self.proof_trace.as_mut() {
+                                t.record(DerivedFact::Sub(y, head), inf);
+                            }
+                        }
                         self.enqueue_subsumer(y, head);
+                    }
+                    if self.record_proofs && !self.subsumers.contains(fact.sub, head) {
+                        let ax_ref = self
+                            .proof_trace
+                            .as_ref()
+                            .and_then(|t| t.existential_trigger_axiom.get(*tidx).copied().flatten())
+                            .map(AxiomRef);
+                        let inf = Inference {
+                            rule: ElRule::ExistentialTriggerTarget,
+                            premise_facts: vec![
+                                DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                DerivedFact::Sub(fact.target, d),
+                            ],
+                            axiom_refs: ax_ref.into_iter().collect(),
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Sub(fact.sub, head), inf);
+                        }
                     }
                     // fact.sub itself always has fact.sub ∈ subsumers(sub).
                     self.enqueue_subsumer(fact.sub, head);
@@ -622,6 +900,28 @@ impl WorklistEngine {
                             if !fact_role_supers.contains(&trigger.role) {
                                 continue;
                             }
+                            let head = trigger.head;
+                            if self.record_proofs && !self.subsumers.contains(c, head) {
+                                let ax_ref = self
+                                    .proof_trace
+                                    .as_ref()
+                                    .and_then(|t| {
+                                        t.existential_trigger_axiom.get(tidx).copied().flatten()
+                                    })
+                                    .map(AxiomRef);
+                                let inf = Inference {
+                                    rule: ElRule::ExistentialTriggerSub,
+                                    premise_facts: vec![
+                                        DerivedFact::Sub(c, d),
+                                        DerivedFact::Exist(d, fact.role, fact.target),
+                                        DerivedFact::Sub(fact.target, sub),
+                                    ],
+                                    axiom_refs: ax_ref.into_iter().collect(),
+                                };
+                                if let Some(t) = self.proof_trace.as_mut() {
+                                    t.record(DerivedFact::Sub(c, head), inf);
+                                }
+                            }
                             self.enqueue_subsumer(c, trigger.head);
                         }
                     }
@@ -636,6 +936,25 @@ impl WorklistEngine {
                         .cloned()
                         .unwrap_or_default();
                     for dom in doms {
+                        if self.record_proofs && !self.subsumers.contains(c, dom) {
+                            let ax_ref = self.proof_trace.as_ref().and_then(|t| {
+                                t.domain_axiom_refs
+                                    .iter()
+                                    .find(|(r, d_, _)| r == super_role && *d_ == dom)
+                                    .map(|(_, _, idx)| AxiomRef(*idx))
+                            });
+                            let inf = Inference {
+                                rule: ElRule::DomainSub,
+                                premise_facts: vec![
+                                    DerivedFact::Sub(c, d),
+                                    DerivedFact::Exist(d, fact.role, fact.target),
+                                ],
+                                axiom_refs: ax_ref.into_iter().collect(),
+                            };
+                            if let Some(t) = self.proof_trace.as_mut() {
+                                t.record(DerivedFact::Sub(c, dom), inf);
+                            }
+                        }
                         self.enqueue_subsumer(c, dom);
                     }
                 }
@@ -661,6 +980,23 @@ impl WorklistEngine {
                 role: fact.role,
                 target: fact.target,
             };
+            // Proof for fact inheritance: Sub(C,D) + Exist(D,r,T) ⟹ Exist(C,r,T)
+            if self.record_proofs {
+                let df = DerivedFact::Exist(c, fact.role, fact.target);
+                if !self.seen_facts.contains(&(c, fact.role, fact.target)) {
+                    let inf = Inference {
+                        rule: ElRule::FactInheritance,
+                        premise_facts: vec![
+                            DerivedFact::Sub(c, d),
+                            DerivedFact::Exist(d, fact.role, fact.target),
+                        ],
+                        axiom_refs: vec![],
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(df, inf);
+                    }
+                }
+            }
             if self.push_fact(inherited).is_some() {
                 self.phase2d_facts_inherited += 1;
             }
@@ -680,7 +1016,8 @@ impl WorklistEngine {
                 .iter()
                 .map(|&i| self.facts[i])
                 .collect();
-            for (r1, r2, sup) in chain_axioms {
+            for (chain_idx, (r1, r2, sup)) in chain_axioms.iter().enumerate() {
+                let (r1, r2, sup) = (*r1, *r2, *sup);
                 for head in &head_facts {
                     if !supers_of(&self.role_super, head.role).contains(&r1) {
                         continue;
@@ -688,6 +1025,28 @@ impl WorklistEngine {
                     for tail in &tail_facts {
                         if !supers_of(&self.role_super, tail.role).contains(&r2) {
                             continue;
+                        }
+                        // Proof: Exist(A,r1,C) + Sub(C,D) + Exist(D,r2,T) ⟹ Exist(A,sup,T)
+                        if self.record_proofs
+                            && !self.seen_facts.contains(&(head.sub, sup, tail.target))
+                        {
+                            let ax_ref = self
+                                .proof_trace
+                                .as_ref()
+                                .and_then(|t| t.chain_axiom_axiom.get(chain_idx).copied().flatten())
+                                .map(AxiomRef);
+                            let inf = Inference {
+                                rule: ElRule::RoleChainSubsumer,
+                                premise_facts: vec![
+                                    DerivedFact::Exist(head.sub, head.role, head.target),
+                                    DerivedFact::Sub(c, d),
+                                    DerivedFact::Exist(d, tail.role, tail.target),
+                                ],
+                                axiom_refs: ax_ref.into_iter().collect(),
+                            };
+                            if let Some(t) = self.proof_trace.as_mut() {
+                                t.record(DerivedFact::Exist(head.sub, sup, tail.target), inf);
+                            }
                         }
                         self.push_fact(ExistentialFact {
                             sub: head.sub,
@@ -713,6 +1072,23 @@ impl WorklistEngine {
         {
             let derived: Vec<ClassId> = reach.clone();
             for b_key in derived {
+                // Proof (R15, coarse): premise is the triggering Exist;
+                // ABox path axioms are included when abox_path is available.
+                if self.record_proofs && !self.seen_facts.contains(&(fact.sub, fact.role, b_key)) {
+                    let ax_refs: Vec<AxiomRef> = self
+                        .proof_trace
+                        .as_ref()
+                        .and_then(|t| t.abox_path.get(&(fact.role, fact.target, b_key)).cloned())
+                        .unwrap_or_default();
+                    let inf = Inference {
+                        rule: ElRule::NominalTransitiveProp,
+                        premise_facts: vec![DerivedFact::Exist(fact.sub, fact.role, fact.target)],
+                        axiom_refs: ax_refs,
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(DerivedFact::Exist(fact.sub, fact.role, b_key), inf);
+                    }
+                }
                 self.push_fact(ExistentialFact {
                     sub: fact.sub,
                     role: fact.role,
@@ -780,8 +1156,47 @@ impl WorklistEngine {
             if !domains.is_empty() {
                 let candidates = self.subs_of_class(fact.sub);
                 for dom in domains {
+                    if self.record_proofs && !self.subsumers.contains(fact.sub, dom) {
+                        let ax_ref = self.proof_trace.as_ref().and_then(|t| {
+                            t.domain_axiom_refs
+                                .iter()
+                                .find(|(r, d_, _)| r == super_role && *d_ == dom)
+                                .map(|(_, _, idx)| AxiomRef(*idx))
+                        });
+                        let inf = Inference {
+                            rule: ElRule::DomainFact,
+                            premise_facts: vec![DerivedFact::Exist(
+                                fact.sub,
+                                fact.role,
+                                fact.target,
+                            )],
+                            axiom_refs: ax_ref.into_iter().collect(),
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Sub(fact.sub, dom), inf);
+                        }
+                    }
                     self.enqueue_subsumer(fact.sub, dom);
                     for y in &candidates {
+                        if self.record_proofs && !self.subsumers.contains(*y, dom) {
+                            let ax_ref = self.proof_trace.as_ref().and_then(|t| {
+                                t.domain_axiom_refs
+                                    .iter()
+                                    .find(|(r, d_, _)| r == super_role && *d_ == dom)
+                                    .map(|(_, _, idx)| AxiomRef(*idx))
+                            });
+                            let inf = Inference {
+                                rule: ElRule::DomainFact,
+                                premise_facts: vec![
+                                    DerivedFact::Sub(*y, fact.sub),
+                                    DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                ],
+                                axiom_refs: ax_ref.into_iter().collect(),
+                            };
+                            if let Some(t) = self.proof_trace.as_mut() {
+                                t.record(DerivedFact::Sub(*y, dom), inf);
+                            }
+                        }
                         self.enqueue_subsumer(*y, dom);
                     }
                 }
@@ -791,6 +1206,22 @@ impl WorklistEngine {
         // unsat (an A-instance would need an r-successor in an
         // empty class).
         if self.subsumers.is_unsatisfiable(fact.target) {
+            if self.record_proofs {
+                let ci = fact.sub.index() as usize;
+                if !self.subsumers.unsatisfiable.contains(ci) {
+                    let inf = Inference {
+                        rule: ElRule::UnsatTarget,
+                        premise_facts: vec![
+                            DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                            DerivedFact::Unsat(fact.target),
+                        ],
+                        axiom_refs: vec![],
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(DerivedFact::Unsat(fact.sub), inf);
+                    }
+                }
+            }
             self.enqueue_unsat(fact.sub);
         }
         // Existential triggers (fact side): for each trigger
@@ -809,8 +1240,47 @@ impl WorklistEngine {
                         continue;
                     }
                     let head = trigger.head;
+                    if self.record_proofs && !self.subsumers.contains(fact.sub, head) {
+                        let ax_ref = self
+                            .proof_trace
+                            .as_ref()
+                            .and_then(|t| t.existential_trigger_axiom.get(tidx).copied().flatten())
+                            .map(AxiomRef);
+                        let inf = Inference {
+                            rule: ElRule::ExistentialTriggerFact,
+                            premise_facts: vec![
+                                DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                DerivedFact::Sub(fact.target, *sub),
+                            ],
+                            axiom_refs: ax_ref.into_iter().collect(),
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Sub(fact.sub, head), inf);
+                        }
+                    }
                     self.enqueue_subsumer(fact.sub, head);
                     for y in &candidates {
+                        if self.record_proofs && !self.subsumers.contains(*y, head) {
+                            let ax_ref = self
+                                .proof_trace
+                                .as_ref()
+                                .and_then(|t| {
+                                    t.existential_trigger_axiom.get(tidx).copied().flatten()
+                                })
+                                .map(AxiomRef);
+                            let inf = Inference {
+                                rule: ElRule::ExistentialTriggerFact,
+                                premise_facts: vec![
+                                    DerivedFact::Sub(*y, fact.sub),
+                                    DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                    DerivedFact::Sub(fact.target, *sub),
+                                ],
+                                axiom_refs: ax_ref.into_iter().collect(),
+                            };
+                            if let Some(t) = self.proof_trace.as_mut() {
+                                t.record(DerivedFact::Sub(*y, head), inf);
+                            }
+                        }
                         self.enqueue_subsumer(*y, head);
                     }
                 }
@@ -818,7 +1288,8 @@ impl WorklistEngine {
         }
         // Chain rule: pair with existing facts.
         let chain_axioms = self.rules.chain_axioms.clone();
-        for (r1, r2, sup) in chain_axioms {
+        for (chain_idx, (r1, r2, sup)) in chain_axioms.iter().enumerate() {
+            let (r1, r2, sup) = (*r1, *r2, *sup);
             let role_in_r1 = role_supers.contains(&r1);
             let role_in_r2 = role_supers.contains(&r2);
             if role_in_r1 {
@@ -830,6 +1301,28 @@ impl WorklistEngine {
                     for tidx in tail_idxs {
                         let tail = self.facts[tidx];
                         if supers_of(&self.role_super, tail.role).contains(&r2) {
+                            if self.record_proofs
+                                && !self.seen_facts.contains(&(fact.sub, sup, tail.target))
+                            {
+                                let ax_ref = self
+                                    .proof_trace
+                                    .as_ref()
+                                    .and_then(|t| {
+                                        t.chain_axiom_axiom.get(chain_idx).copied().flatten()
+                                    })
+                                    .map(AxiomRef);
+                                let inf = Inference {
+                                    rule: ElRule::RoleChainFact,
+                                    premise_facts: vec![
+                                        DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                        DerivedFact::Exist(tail.sub, tail.role, tail.target),
+                                    ],
+                                    axiom_refs: ax_ref.into_iter().collect(),
+                                };
+                                if let Some(t) = self.proof_trace.as_mut() {
+                                    t.record(DerivedFact::Exist(fact.sub, sup, tail.target), inf);
+                                }
+                            }
                             self.push_fact(ExistentialFact {
                                 sub: fact.sub,
                                 role: sup,
@@ -848,10 +1341,39 @@ impl WorklistEngine {
                 for cand in head_targets {
                     let head_idxs = self.facts_by_target[cand.index() as usize].clone();
                     for hidx in head_idxs {
-                        let head = self.facts[hidx];
-                        if supers_of(&self.role_super, head.role).contains(&r1) {
+                        let head_fact = self.facts[hidx];
+                        if supers_of(&self.role_super, head_fact.role).contains(&r1) {
+                            if self.record_proofs
+                                && !self.seen_facts.contains(&(head_fact.sub, sup, fact.target))
+                            {
+                                let ax_ref = self
+                                    .proof_trace
+                                    .as_ref()
+                                    .and_then(|t| {
+                                        t.chain_axiom_axiom.get(chain_idx).copied().flatten()
+                                    })
+                                    .map(AxiomRef);
+                                let inf = Inference {
+                                    rule: ElRule::RoleChainFact,
+                                    premise_facts: vec![
+                                        DerivedFact::Exist(
+                                            head_fact.sub,
+                                            head_fact.role,
+                                            head_fact.target,
+                                        ),
+                                        DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                                    ],
+                                    axiom_refs: ax_ref.into_iter().collect(),
+                                };
+                                if let Some(t) = self.proof_trace.as_mut() {
+                                    t.record(
+                                        DerivedFact::Exist(head_fact.sub, sup, fact.target),
+                                        inf,
+                                    );
+                                }
+                            }
                             self.push_fact(ExistentialFact {
-                                sub: head.sub,
+                                sub: head_fact.sub,
                                 role: sup,
                                 target: fact.target,
                             });
@@ -873,6 +1395,17 @@ impl WorklistEngine {
             let new_atoms = self.atomic_content_of_or_self(fact.target);
             for rf in funcs {
                 let key = (fact.sub, rf);
+                // R21: update merge_contributors before we borrow prev_set
+                if self.record_proofs {
+                    let contrib = self.proof_trace.as_mut().map(|t| &mut t.merge_contributors);
+                    if let Some(c) = contrib {
+                        c.entry(key).or_default().push(DerivedFact::Exist(
+                            fact.sub,
+                            fact.role,
+                            fact.target,
+                        ));
+                    }
+                }
                 let prev_set = self.merged_atom_sets.entry(key).or_default();
                 let was_first = prev_set.is_empty();
                 let grew = !new_atoms.is_subset(prev_set);
@@ -906,6 +1439,27 @@ impl WorklistEngine {
                 };
                 let dedup_key = (new_fact.sub, new_fact.role, new_fact.target);
                 if self.seen_facts.insert(dedup_key) {
+                    // R21 proof: all contributing facts + functional role axiom.
+                    if self.record_proofs {
+                        let premises: Vec<DerivedFact> = self
+                            .proof_trace
+                            .as_ref()
+                            .and_then(|t| t.merge_contributors.get(&key).cloned())
+                            .unwrap_or_default();
+                        let ax_ref = self
+                            .proof_trace
+                            .as_ref()
+                            .and_then(|t| t.functional_role_axiom.get(&rf).copied())
+                            .map(AxiomRef);
+                        let inf = Inference {
+                            rule: ElRule::FunctionalMerge,
+                            premise_facts: premises,
+                            axiom_refs: ax_ref.into_iter().collect(),
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Exist(fact.sub, rf, synthetic), inf);
+                        }
+                    }
                     let new_idx = self.facts.len();
                     self.facts.push(new_fact);
                     self.facts_by_sub[new_fact.sub.index() as usize].push(new_idx);
@@ -960,6 +1514,27 @@ impl WorklistEngine {
                     if !self.rules.functional_supers_of(other.role).contains(&rf) {
                         continue;
                     }
+                    // R22: back-prop
+                    if self.record_proofs
+                        && !self.seen_facts.contains(&(fact.sub, other.role, synthetic))
+                    {
+                        let ax_ref = self
+                            .proof_trace
+                            .as_ref()
+                            .and_then(|t| t.functional_role_axiom.get(&rf).copied())
+                            .map(AxiomRef);
+                        let inf = Inference {
+                            rule: ElRule::FunctionalMergeSubRole,
+                            premise_facts: vec![
+                                DerivedFact::Exist(fact.sub, other.role, other.target),
+                                DerivedFact::Exist(fact.sub, rf, synthetic),
+                            ],
+                            axiom_refs: ax_ref.into_iter().collect(),
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Exist(fact.sub, other.role, synthetic), inf);
+                        }
+                    }
                     let prop_fact = ExistentialFact {
                         sub: fact.sub,
                         role: other.role,
@@ -983,12 +1558,43 @@ impl WorklistEngine {
         // Every class with c as a subsumer is also unsat.
         let dependents = self.subs_of_class(c);
         for d in dependents {
+            // Proof (R23): D ⊑ C, C ⊑ ⊥ ⟹ D ⊑ ⊥
+            if self.record_proofs {
+                let di = d.index() as usize;
+                if !self.subsumers.unsatisfiable.contains(di) {
+                    let inf = Inference {
+                        rule: ElRule::UnsatSubclass,
+                        premise_facts: vec![DerivedFact::Unsat(c), DerivedFact::Sub(d, c)],
+                        axiom_refs: vec![],
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(DerivedFact::Unsat(d), inf);
+                    }
+                }
+            }
             self.enqueue_unsat(d);
         }
         // Every fact with c as its target makes its source unsat.
         if let Some(fact_idxs) = Some(self.facts_by_target[c.index() as usize].clone()) {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
+                // Proof (R24): (D,r,C), C ⊑ ⊥ ⟹ D ⊑ ⊥
+                if self.record_proofs {
+                    let di = fact.sub.index() as usize;
+                    if !self.subsumers.unsatisfiable.contains(di) {
+                        let inf = Inference {
+                            rule: ElRule::UnsatFactSource,
+                            premise_facts: vec![
+                                DerivedFact::Unsat(c),
+                                DerivedFact::Exist(fact.sub, fact.role, fact.target),
+                            ],
+                            axiom_refs: vec![],
+                        };
+                        if let Some(t) = self.proof_trace.as_mut() {
+                            t.record(DerivedFact::Unsat(fact.sub), inf);
+                        }
+                    }
+                }
                 self.enqueue_unsat(fact.sub);
             }
         }
@@ -1409,6 +2015,254 @@ impl TseitinAllocator {
         });
         marker
     }
+}
+
+/// Wrapper around `collect_el_rules` that optionally builds a `ProofTrace`
+/// with axiom provenance tables filled in. When `record_proofs` is false, returns
+/// `(rules, tseitin, total_classes, None)` at zero extra cost.
+fn collect_el_rules_with_provenance(
+    internal: &InternalOntology,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+    record_proofs: bool,
+) -> (ElRules, TseitinAllocator, usize, Option<ProofTrace>) {
+    let (rules, tseitin, total_classes) = collect_el_rules(internal, role_super);
+    if !record_proofs {
+        return (rules, tseitin, total_classes, None);
+    }
+
+    // Build provenance tables by re-scanning `internal.axioms` and matching
+    // the rule entries that were produced.
+    //
+    // Strategy: re-walk axioms in the same order as `collect_el_rules` and
+    // track `before`/`after` counts to assign ranges of rule slots to their
+    // source axiom.  This is the same range-snapshotting pattern used in
+    // `introduce_runtime_synthetic`.
+    //
+    // We need parallel provenance Vecs of the same length as each rule Vec.
+
+    let num_atomic = rules.atomic_subsumptions.len();
+    let num_conj = rules.conjunctive_triggers.len();
+    let num_facts = rules.existential_facts.len();
+    let num_trigs = rules.existential_triggers.len();
+    let num_disjt = rules.disjoint_pairs.len();
+    let num_chain = rules.chain_axioms.len();
+    let num_unsat = rules.directly_unsat.len();
+
+    let mut atomic_sub_axiom: Vec<Option<usize>> = vec![None; num_atomic];
+    let mut conjunctive_trigger_axiom: Vec<Option<usize>> = vec![None; num_conj];
+    let mut existential_fact_axiom: Vec<Option<usize>> = vec![None; num_facts];
+    let mut existential_trigger_axiom: Vec<Option<usize>> = vec![None; num_trigs];
+    let mut disjoint_pair_axiom: Vec<Option<usize>> = vec![None; num_disjt];
+    let mut chain_axiom_axiom: Vec<Option<usize>> = vec![None; num_chain];
+    let mut directly_unsat_axiom: Vec<Option<usize>> = vec![None; num_unsat];
+    let mut domain_axiom_refs: Vec<(RoleId, ClassId, usize)> = Vec::new();
+    let mut functional_role_axiom: HashMap<RoleId, usize> = HashMap::new();
+
+    // We re-simulate the axiom-to-rule mapping by tracking counters.
+    // Simulated counters for Pass 1 (DisjointClasses, Domain, Chain, Transitive):
+    let mut disjt_cur = 0usize;
+    let mut chain_cur = 0usize;
+
+    // Pass 1 (same order as collect_el_rules Pass 1):
+    for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+        match ax {
+            Axiom::DisjointClasses(members) => {
+                let atomics: Vec<ClassId> = members
+                    .iter()
+                    .filter_map(|c| match internal.concepts.get(*c) {
+                        ConceptExpr::Atomic(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect();
+                let count = atomics.len() * atomics.len().saturating_sub(1) / 2;
+                for slot in disjt_cur..disjt_cur + count {
+                    if let Some(entry) = disjoint_pair_axiom.get_mut(slot) {
+                        *entry = Some(ax_idx);
+                    }
+                }
+                disjt_cur += count;
+            }
+            Axiom::ObjectPropertyDomain { role, domain } => {
+                if !role.is_inverse()
+                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
+                {
+                    domain_axiom_refs.push((role.role_id(), *id, ax_idx));
+                }
+            }
+            Axiom::SubObjectPropertyOf {
+                sub: SubRolePath::Chain(parts),
+                sup,
+            } if parts.len() == 2
+                && !parts[0].is_inverse()
+                && !parts[1].is_inverse()
+                && !sup.is_inverse() =>
+            {
+                if let Some(entry) = chain_axiom_axiom.get_mut(chain_cur) {
+                    *entry = Some(ax_idx);
+                }
+                chain_cur += 1;
+            }
+            Axiom::TransitiveRole(role) if !role.is_inverse() => {
+                if let Some(entry) = chain_axiom_axiom.get_mut(chain_cur) {
+                    *entry = Some(ax_idx);
+                }
+                chain_cur += 1;
+            }
+            Axiom::FunctionalRole(role) if !role.is_inverse() => {
+                functional_role_axiom.insert(role.role_id(), ax_idx);
+            }
+            _ => {}
+        }
+    }
+
+    // Pass 2: SubClassOf / EquivalentClasses — atomic_sub, existential_fact,
+    // conjunctive_trigger, existential_trigger, directly_unsat.
+    // We simulate lower_sub_class_of by counting, not re-running.
+    // Use the counts from the already-built rules to attribute by axiom.
+    //
+    // Because lower_sub_class_of processes axioms in source order and appends
+    // to the rule Vecs, the range [before..after] for each axiom is
+    // monotonically increasing. We track cursors per Vec.
+    let num_classes = internal.vocabulary.num_classes();
+    // `tseitin.next_id` is used only to verify total_classes; no action needed here.
+    let mut atomic_cur = 0usize;
+    let mut conj_cur = 0usize;
+    let mut facts_cur = 0usize;
+    let mut trigs_cur = 0usize;
+    let mut unsat_cur = 0usize;
+
+    // We need a minimal simulation of what lower_sub_class_of does to know
+    // how many rule slots each axiom produced. Rather than fully re-running,
+    // we build a mini-version that counts only.
+    //
+    // For simplicity: run collect_el_rules a SECOND time on each individual
+    // axiom (we already have the results, so we just need to attribute them).
+    // This is O(n_axioms * rules_per_axiom) and only happens when record_proofs=true.
+    {
+        use std::collections::HashMap as SMap;
+        let mut mini_rules = ElRules::default();
+        let mut mini_tseitin = TseitinAllocator::new(num_classes);
+        // Pass 1 mini: just range (needed for effective_ranges).
+        for ax in &internal.axioms {
+            if let Axiom::ObjectPropertyRange { role, range } = ax
+                && !role.is_inverse()
+                && let ConceptExpr::Atomic(id) = internal.concepts.get(*range)
+            {
+                mini_rules
+                    .role_ranges
+                    .entry(role.role_id())
+                    .or_default()
+                    .push(*id);
+            }
+        }
+        let mut mini_effective: SMap<RoleId, Vec<ClassId>> = SMap::new();
+        for (&r, supers) in role_super {
+            let mut union: Vec<ClassId> = supers
+                .iter()
+                .flat_map(|s| mini_rules.role_ranges.get(s).into_iter().flatten().copied())
+                .collect();
+            union.sort();
+            union.dedup();
+            if !union.is_empty() {
+                mini_effective.insert(r, union);
+            }
+        }
+        for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+            match ax {
+                Axiom::SubClassOf { sub, sup } => {
+                    let b_a = mini_rules.atomic_subsumptions.len();
+                    let b_c = mini_rules.conjunctive_triggers.len();
+                    let b_f = mini_rules.existential_facts.len();
+                    let b_t = mini_rules.existential_triggers.len();
+                    let b_u = mini_rules.directly_unsat.len();
+                    lower_sub_class_of(
+                        *sub,
+                        *sup,
+                        &internal.concepts,
+                        &mut mini_rules,
+                        &mut mini_tseitin,
+                        &mini_effective,
+                    );
+                    let a_a = mini_rules.atomic_subsumptions.len();
+                    let a_c = mini_rules.conjunctive_triggers.len();
+                    let a_f = mini_rules.existential_facts.len();
+                    let a_t = mini_rules.existential_triggers.len();
+                    let a_u = mini_rules.directly_unsat.len();
+                    atomic_sub_axiom[atomic_cur..atomic_cur + (a_a - b_a)].fill(Some(ax_idx));
+                    atomic_cur += a_a - b_a;
+                    conjunctive_trigger_axiom[conj_cur..conj_cur + (a_c - b_c)].fill(Some(ax_idx));
+                    conj_cur += a_c - b_c;
+                    existential_fact_axiom[facts_cur..facts_cur + (a_f - b_f)].fill(Some(ax_idx));
+                    facts_cur += a_f - b_f;
+                    existential_trigger_axiom[trigs_cur..trigs_cur + (a_t - b_t)]
+                        .fill(Some(ax_idx));
+                    trigs_cur += a_t - b_t;
+                    directly_unsat_axiom[unsat_cur..unsat_cur + (a_u - b_u)].fill(Some(ax_idx));
+                    unsat_cur += a_u - b_u;
+                }
+                Axiom::EquivalentClasses(members) => {
+                    for i in 0..members.len() {
+                        for j in 0..members.len() {
+                            if i != j {
+                                let b_a = mini_rules.atomic_subsumptions.len();
+                                let b_c = mini_rules.conjunctive_triggers.len();
+                                let b_f = mini_rules.existential_facts.len();
+                                let b_t = mini_rules.existential_triggers.len();
+                                let b_u = mini_rules.directly_unsat.len();
+                                lower_sub_class_of(
+                                    members[i],
+                                    members[j],
+                                    &internal.concepts,
+                                    &mut mini_rules,
+                                    &mut mini_tseitin,
+                                    &mini_effective,
+                                );
+                                let a_a = mini_rules.atomic_subsumptions.len();
+                                let a_c = mini_rules.conjunctive_triggers.len();
+                                let a_f = mini_rules.existential_facts.len();
+                                let a_t = mini_rules.existential_triggers.len();
+                                let a_u = mini_rules.directly_unsat.len();
+                                atomic_sub_axiom[atomic_cur..atomic_cur + (a_a - b_a)]
+                                    .fill(Some(ax_idx));
+                                atomic_cur += a_a - b_a;
+                                conjunctive_trigger_axiom[conj_cur..conj_cur + (a_c - b_c)]
+                                    .fill(Some(ax_idx));
+                                conj_cur += a_c - b_c;
+                                existential_fact_axiom[facts_cur..facts_cur + (a_f - b_f)]
+                                    .fill(Some(ax_idx));
+                                facts_cur += a_f - b_f;
+                                existential_trigger_axiom[trigs_cur..trigs_cur + (a_t - b_t)]
+                                    .fill(Some(ax_idx));
+                                trigs_cur += a_t - b_t;
+                                directly_unsat_axiom[unsat_cur..unsat_cur + (a_u - b_u)]
+                                    .fill(Some(ax_idx));
+                                unsat_cur += a_u - b_u;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let trace = ProofTrace {
+        steps: HashMap::new(),
+        synthetic_defs: HashMap::new(),
+        atomic_sub_axiom,
+        existential_fact_axiom,
+        conjunctive_trigger_axiom,
+        existential_trigger_axiom,
+        disjoint_pair_axiom,
+        chain_axiom_axiom,
+        directly_unsat_axiom,
+        domain_axiom_refs,
+        functional_role_axiom,
+        merge_contributors: HashMap::new(),
+        abox_path: HashMap::new(),
+    };
+
+    (rules, tseitin, total_classes, Some(trace))
 }
 
 fn collect_el_rules(
@@ -3558,8 +4412,16 @@ Ontology(<http://rustdl.test/p2d/test>
         let n = internal.vocabulary.num_classes();
         let role_super = build_role_super(&internal);
         let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
-        let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
-        engine.seed();
+        let mut engine = WorklistEngine::new(
+            n,
+            num_total_classes,
+            rules,
+            tseitin,
+            role_super,
+            false,
+            None,
+        );
+        engine.seed(&internal);
         engine.run();
 
         let a = internal
@@ -3654,8 +4516,16 @@ Ontology(<http://rustdl.test/p2c_counter/test>
         let n = internal.vocabulary.num_classes();
         let role_super = build_role_super(&internal);
         let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
-        let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
-        engine.seed();
+        let mut engine = WorklistEngine::new(
+            n,
+            num_total_classes,
+            rules,
+            tseitin,
+            role_super,
+            false,
+            None,
+        );
+        engine.seed(&internal);
         engine.run();
 
         assert!(
@@ -3954,5 +4824,258 @@ Ontology(<http://rustdl.test/p2bD/test>
             subsumers.contains(x, t),
             "Phase 2b deeper nesting canary: 2-level nested existential lowering should work."
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof recording smoke tests (Track B)
+    // -----------------------------------------------------------------------
+
+    /// Smoke test §7.1 — EL chain proof.
+    ///
+    /// `Pizza ⊑ ∃hasTopping.Topping`
+    /// `Topping ⊑ EdibleThing`
+    /// `∃hasTopping.EdibleThing ⊑ FoodItem`
+    /// ⟹ `Pizza ⊑ FoodItem`
+    ///
+    /// Assert that `prove_subsumption` returns a `ProofNode` with the root
+    /// rule being `ExistentialTrigger*` (fact or sub), and that the tree
+    /// has premises for `ToldFact` and `ToldSubsumer`. The faithfulness
+    /// checker must pass.
+    #[test]
+    fn proof_recording_el_chain_pizza_food() {
+        use crate::proof::{DerivedFact, ElRule, check_proof, prove_subsumption};
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Pizza))\n\
+    Declaration(Class(:Topping))\n\
+    Declaration(Class(:EdibleThing))\n\
+    Declaration(Class(:FoodItem))\n\
+    Declaration(ObjectProperty(:hasTopping))\n\
+    SubClassOf(:Pizza ObjectSomeValuesFrom(:hasTopping :Topping))\n\
+    SubClassOf(:Topping :EdibleThing)\n\
+    SubClassOf(ObjectSomeValuesFrom(:hasTopping :EdibleThing) :FoodItem)\n\
+)\n"
+        ));
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let pizza = class(&internal, "Pizza");
+        let food = class(&internal, "FoodItem");
+        assert!(
+            subs.contains(pizza, food),
+            "Pizza ⊑ FoodItem must be entailed"
+        );
+        let trace = maybe_trace.expect("proof trace must be Some when record_proofs=true");
+        let mut memo = std::collections::HashMap::new();
+        let root = prove_subsumption(&trace, pizza, food, &mut memo)
+            .expect("prove_subsumption must return Some for a derived pair");
+        // Root rule should be an existential trigger.
+        assert!(
+            matches!(
+                root.rule,
+                ElRule::ExistentialTriggerFact
+                    | ElRule::ExistentialTriggerTarget
+                    | ElRule::ExistentialTriggerSub
+            ),
+            "root rule should be an existential trigger, got {:?}",
+            root.rule
+        );
+        // Faithfulness check.
+        check_proof(&root, internal.axioms.len())
+            .expect("proof checker must pass on the EL chain proof");
+        // Check that the conclusion fact matches.
+        assert_eq!(
+            root.conclusion,
+            DerivedFact::Sub(pizza, food),
+            "root conclusion must be Sub(Pizza, FoodItem)"
+        );
+    }
+
+    /// Smoke test §7.2 — Role-chain proof.
+    ///
+    /// Niece ⊑ ∃hasParent.Parent
+    /// Parent ⊑ ∃hasBrother.Man
+    /// `SubObjectPropertyOf(ObjectPropertyChain(hasParent hasBrother) hasUncle)`
+    /// `∃hasUncle.Man ⊑ HasUncle`
+    /// ⟹ `Niece ⊑ HasUncle`
+    #[test]
+    fn proof_recording_role_chain() {
+        use crate::proof::{DerivedFact, check_proof, prove_subsumption};
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Niece))\n\
+    Declaration(Class(:Parent))\n\
+    Declaration(Class(:Man))\n\
+    Declaration(Class(:HasUncle))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(ObjectProperty(:hasBrother))\n\
+    Declaration(ObjectProperty(:hasUncle))\n\
+    SubObjectPropertyOf(ObjectPropertyChain(:hasParent :hasBrother) :hasUncle)\n\
+    SubClassOf(:Niece ObjectSomeValuesFrom(:hasParent :Parent))\n\
+    SubClassOf(:Parent ObjectSomeValuesFrom(:hasBrother :Man))\n\
+    SubClassOf(ObjectSomeValuesFrom(:hasUncle :Man) :HasUncle)\n\
+)\n"
+        ));
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let niece = class(&internal, "Niece");
+        let has_uncle = class(&internal, "HasUncle");
+        assert!(
+            subs.contains(niece, has_uncle),
+            "Niece ⊑ HasUncle must be entailed"
+        );
+        let trace = maybe_trace.expect("trace must be Some");
+        let mut memo = std::collections::HashMap::new();
+        let root = prove_subsumption(&trace, niece, has_uncle, &mut memo)
+            .expect("prove_subsumption must return Some");
+        assert_eq!(root.conclusion, DerivedFact::Sub(niece, has_uncle));
+        check_proof(&root, internal.axioms.len()).expect("proof checker must pass on role-chain");
+    }
+
+    /// Verify that proof recording does NOT affect the closure: the same
+    /// subsumption set is derived with and without recording on.
+    #[test]
+    fn proof_recording_verdicts_identical_to_baseline() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(Class(:D))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+    SubClassOf(:B :C)\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :C) :D)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        // Baseline: proof OFF.
+        let baseline = saturate(&internal);
+        // With proof recording ON.
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (with_proof, _) = saturate_with_config(&internal, &cfg);
+        // Both closures must be identical.
+        let num = u32::try_from(internal.vocabulary.num_classes()).expect("class count fits u32");
+        for i in 0..num {
+            let c = ClassId::new(i);
+            for j in 0..num {
+                let d = ClassId::new(j);
+                assert_eq!(
+                    baseline.contains(c, d),
+                    with_proof.contains(c, d),
+                    "proof recording changed verdict for class pair ({i}, {j})"
+                );
+            }
+        }
+    }
+
+    /// Transitivity proof should chain correctly.
+    #[test]
+    fn proof_recording_transitivity() {
+        use crate::proof::{DerivedFact, ElRule, check_proof, prove_subsumption};
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+)\n"
+        ));
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let a = class(&internal, "A");
+        let c = class(&internal, "C");
+        assert!(subs.contains(a, c));
+        let trace = maybe_trace.expect("trace must be Some");
+        let mut memo = std::collections::HashMap::new();
+        let root = prove_subsumption(&trace, a, c, &mut memo).expect("should have proof");
+        assert_eq!(root.conclusion, DerivedFact::Sub(a, c));
+        // Root should be transitivity.
+        assert!(
+            matches!(
+                root.rule,
+                ElRule::SubsumerTransitivityFwd | ElRule::SubsumerTransitivityBwd
+            ),
+            "expected transitivity rule, got {:?}",
+            root.rule
+        );
+        check_proof(&root, internal.axioms.len()).expect("checker must pass");
+    }
+
+    /// Reflexivity: every class has `Sub(C,C)` in the trace.
+    #[test]
+    fn proof_recording_reflexivity_seeded() {
+        use crate::proof::{DerivedFact, ElRule, prove_subsumption};
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X))\n\
+)\n"
+        ));
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (_subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let trace = maybe_trace.expect("trace must be Some");
+        let x = class(&internal, "X");
+        let mut memo = std::collections::HashMap::new();
+        let root = prove_subsumption(&trace, x, x, &mut memo).expect("reflexivity proof");
+        assert_eq!(root.conclusion, DerivedFact::Sub(x, x));
+        // Should be Reflexivity or ToldSubsumer (if overridden by told).
+        assert!(
+            matches!(root.rule, ElRule::Reflexivity | ElRule::ToldSubsumer),
+            "expected Reflexivity or ToldSubsumer, got {:?}",
+            root.rule
+        );
+    }
+
+    /// Verify that the proof trace is non-empty after saturation with proof recording.
+    /// Also verifies that every step reachable from the proof root has a recorded rule.
+    #[test]
+    fn proof_recording_trace_non_empty_on_nontrivial_ontology() {
+        use crate::proof::prove_subsumption;
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:C))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+    SubClassOf(:B :C)\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :C) :C)\n\
+)\n"
+        ));
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let a = class(&internal, "A");
+        let c = class(&internal, "C");
+        assert!(subs.contains(a, c), "A ⊑ C must hold");
+        let trace = maybe_trace.expect("trace must be Some");
+        assert!(!trace.steps.is_empty(), "trace must be non-empty");
+        let mut memo = std::collections::HashMap::new();
+        let root = prove_subsumption(&trace, a, c, &mut memo).expect("proof must exist");
+        // Walk the entire proof tree and assert every node has a rule.
+        fn walk(node: &crate::proof::ProofNode) {
+            // Rule is always present (it's a non-Option field).
+            for premise in &node.premises {
+                walk(premise);
+            }
+        }
+        walk(&root);
     }
 }

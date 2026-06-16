@@ -112,6 +112,18 @@ FP=0/MISSED=0 + closure-identical; full corpus non-regression.
   Rust-vs-C++ constant factor (document which).
 **Gate:** updated gap table; honest note on the residual (closeable vs inherent).
 
+### Task A.4 — Parallel saturation (SECONDARY, optional, large-pure-EL only)
+Design: `docs/superpowers/specs/2026-06-16-parallel-el-saturation-design.md`. **Right-sized
+by evidence: this is NOT the primary EL lever.** Konclude's EL fixpoint is itself
+SINGLE-THREADED (source-confirmed) and wins on per-core efficiency — so the constant-factor
+work (A.1) is primary. Parallel saturation (ELK-style per-context ownership + message-passing)
+is gated on functional-role-free ontologies (go-basic yes; galen/notgalen no) and capped at
+**2–4× at 8 cores** (the `record_subsumer` superclass-row `AtomicU64` contention obstacle),
+and only helps the fixpoint (go-basic's wall is parse-dominated). **Do A.1/A.2/A.3 first;
+pursue A.4 only if large-pure-EL throughput is still the bottleneck after the constant-factor
+fixes + the n² matrix fix.** Soundness: monotone accumulation → byte-identical closure;
+`RUSTDL_PROOF=1` pins single-thread.
+
 ### Task A.3 — Fixed-overhead audit (parallel-safe small wins)
 **Files:** `owl-dl-reasoner` (orchestrator setup), `owl-dl-cli` (parse/print).
 - [ ] On small fixtures rustdl rides a large fixed floor vs Konclude's ~30 ms. Profile

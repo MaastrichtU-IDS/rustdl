@@ -44,6 +44,7 @@ use owl_dl_core::DKEY_IRI_PREFIX;
 use owl_dl_core::ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, Role, RoleId};
 use owl_dl_core::normalize::nnf_axioms;
 use owl_dl_core::ontology::{Axiom, InternalOntology, SubRolePath};
+use std::collections::BTreeSet;
 
 /// A normalized ALCH ontology: clausal axioms + the reportable atomic-class
 /// vocabulary + the role hierarchy (for `∀`-propagation) + the (possibly
@@ -54,6 +55,12 @@ pub(crate) struct Normalized {
     pub(crate) classes: Vec<ClassId>,
     /// `R ⊑ S` edges (used by the engine's `∀`-propagation).
     pub(crate) role_hierarchy: Vec<(Role, Role)>,
+    /// Roles carrying a relevant `≤m S._` (`m≥1`) constraint (any polarity /
+    /// nesting). The engine uses this (with the role hierarchy) to decide whether
+    /// a count-1 witness on a role may be SHARED by `(role, ctx)` — coarsening the
+    /// minting signature past the edge residual is sound only on roles whose
+    /// witnesses can never be collected by the `≤n` FP guard (`apply_at_most`).
+    pub(crate) max_roles: BTreeSet<Role>,
     /// Owned pool; may gain definitional atoms from the structural transform.
     pub(crate) pool: ConceptPool,
 }
@@ -86,6 +93,12 @@ struct Normalizer {
     def: DefAtoms,
     /// IRIs for DKey-prefix check (indexed by [`ClassId`]).
     class_iris: Vec<String>,
+    /// Roles `S` that carry a relevant `≤m S._` (`m≥1`) constraint anywhere in
+    /// the ontology (either polarity, any nesting depth). Computed in a pre-pass
+    /// over the NNF axioms — BEFORE `emit_clauses` populates `role_hierarchy` —
+    /// so the `≥n` distinctness gate (`min_needs_distinctness`) sees a complete,
+    /// axiom-order-independent picture. See [`Normalizer::scan_max_roles`].
+    max_roles: BTreeSet<Role>,
 }
 
 impl Normalizer {
@@ -97,6 +110,7 @@ impl Normalizer {
             role_hierarchy: Vec::new(),
             def: DefAtoms::new(next_id),
             class_iris,
+            max_roles: BTreeSet::new(),
         }
     }
 
@@ -148,6 +162,122 @@ impl Normalizer {
                 self.check_concept(filler)
             }
         }
+    }
+
+    // ── `≥n` distinctness gate (Fix A: termination on cyclic `≥n`) ───────────
+
+    /// Recursively collect every role `S` carrying a relevant `≤m S._` (`m≥1`)
+    /// constraint inside `cid`, into `self.max_roles`. Both polarities and any
+    /// nesting depth — mirrors [`Normalizer::check_concept`]'s walk, since a
+    /// nested or LHS `Max` reaches the engine's `at_most` via def-atom forward
+    /// clauses just the same. `≤0` is excluded (normalize rewrites it to `∀R.¬C`,
+    /// which can never drive a pigeonhole), as is `≥n` itself.
+    fn collect_max_roles(&mut self, cid: ConceptId) {
+        match self.pool.get(cid).clone() {
+            ConceptExpr::Top
+            | ConceptExpr::Bot
+            | ConceptExpr::Atomic(_)
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_) => {}
+            ConceptExpr::Not(inner) => self.collect_max_roles(inner),
+            ConceptExpr::And(args) | ConceptExpr::Or(args) => {
+                for a in args {
+                    self.collect_max_roles(a);
+                }
+            }
+            ConceptExpr::Some(_, filler)
+            | ConceptExpr::All(_, filler)
+            | ConceptExpr::Min(_, _, filler) => {
+                self.collect_max_roles(filler);
+            }
+            ConceptExpr::Max(n, role, filler) => {
+                if n >= 1 {
+                    self.max_roles.insert(role);
+                }
+                self.collect_max_roles(filler);
+            }
+        }
+    }
+
+    /// Pre-pass over the NNF axioms: populate [`Normalizer::max_roles`] (every
+    /// relevant `≤m` role) and [`Normalizer::role_hierarchy`] (every `R ⊑ S`
+    /// edge). Run BEFORE `emit_clauses`, so the gate in `flatten_head`'s `Min`
+    /// arm reads a complete, axiom-order-independent picture (the role hierarchy
+    /// is otherwise only built incrementally during emission).
+    fn scan_max_and_hierarchy(&mut self, axioms: &[Axiom]) {
+        for axiom in axioms {
+            match axiom {
+                Axiom::SubClassOf { sub, sup } => {
+                    self.collect_max_roles(*sub);
+                    self.collect_max_roles(*sup);
+                }
+                Axiom::EquivalentClasses(members)
+                | Axiom::DisjointClasses(members)
+                | Axiom::DisjointUnion { members, .. } => {
+                    for m in members {
+                        self.collect_max_roles(*m);
+                    }
+                }
+                Axiom::ObjectPropertyDomain { domain, .. } => self.collect_max_roles(*domain),
+                Axiom::ObjectPropertyRange { range, .. } => self.collect_max_roles(*range),
+                Axiom::SubObjectPropertyOf {
+                    sub: SubRolePath::Role(r),
+                    sup,
+                } => self.role_hierarchy.push((*r, *sup)),
+                Axiom::EquivalentObjectProperties(roles) => {
+                    for i in 0..roles.len() {
+                        for j in 0..roles.len() {
+                            if i != j {
+                                self.role_hierarchy.push((roles[i], roles[j]));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `sub ⊑* sup` under [`Normalizer::role_hierarchy`] (reflexive-transitive
+    /// closure). Mirrors the engine's `role_subsumed`; used only by the gate.
+    fn role_subsumed(&self, sub: Role, sup: Role) -> bool {
+        if sub == sup {
+            return true;
+        }
+        let mut frontier = vec![sub];
+        let mut seen: BTreeSet<Role> = BTreeSet::new();
+        seen.insert(sub);
+        while let Some(r) = frontier.pop() {
+            for &(a, b) in &self.role_hierarchy {
+                if a == r && seen.insert(b) {
+                    if b == sup {
+                        return true;
+                    }
+                    frontier.push(b);
+                }
+            }
+        }
+        false
+    }
+
+    /// Fix A gate: does a `≥n R._` (n≥2) need to mint `n` distinct witnesses
+    /// (term + pairwise `Neq`), or can it be collapsed to a single-witness `∃R._`?
+    ///
+    /// `≥n`'s distinctness is ONLY ever consumed by a pigeonhole clash with a
+    /// `≤m S._` (`m<n`) on the same role or a SUPER-role (`R ⊑* S`). With no such
+    /// `≤m`, the `n` terms + pairwise `Neq` are pure waste — and under a cyclic
+    /// `∃` on `R` they breed unboundedly many distinct `Neq`-bearing term
+    /// signatures (non-termination). So when no relevant `≤m` exists we lower
+    /// `≥n R.C` to `∃R.C` (one witness, no `Neq`) — exactly B1 behaviour.
+    ///
+    /// **Sound + complete.** Collapsing `≥n`→`∃` removes derivations, so it is
+    /// MISS-biased, never an FP. It is also complete: `≥n` and `∃` differ in the
+    /// atomic-class read-off only via a `≤m` pigeonhole; absent any reachable
+    /// `≤m`, the multiplicity is never read off. The gate is conservative
+    /// (keeps distinctness whenever a super-role `≤m` MIGHT apply), so it can
+    /// only ever over-keep (slower), never over-collapse (a MISS).
+    fn min_needs_distinctness(&self, role: Role) -> bool {
+        self.max_roles.iter().any(|&s| self.role_subsumed(role, s))
     }
 
     // ── Structural transformation helpers ────────────────────────────────────
@@ -429,7 +559,10 @@ impl Normalizer {
                     // ≥0 R.C ≡ ⊤ — tautological disjunct; mark the clause taut.
                     let top = self.pool.top();
                     out.push(top);
-                } else if n == 1 {
+                } else if n == 1 || !self.min_needs_distinctness(role) {
+                    // ≥1, or Fix A: no reachable `≤m` can pigeonhole this `≥n` ⇒
+                    // collapse to a single-witness `∃R.C` (sound, complete, and
+                    // termination-safe — no `Neq`-bearing term blow-up).
                     let flat = self.flatten_to_literal(filler);
                     let lit = self.pool.some(role, flat);
                     out.push(lit);
@@ -593,21 +726,10 @@ impl Normalizer {
                         }
                     }
                 }
-                Axiom::SubObjectPropertyOf {
-                    sub: SubRolePath::Role(r),
-                    sup,
-                } => {
-                    self.role_hierarchy.push((r, sup));
-                }
-                Axiom::EquivalentObjectProperties(roles) => {
-                    for i in 0..roles.len() {
-                        for j in 0..roles.len() {
-                            if i != j {
-                                self.role_hierarchy.push((roles[i], roles[j]));
-                            }
-                        }
-                    }
-                }
+                // Role hierarchy (`SubObjectPropertyOf` / `EquivalentObjectProperties`)
+                // is recorded in the `scan_max_and_hierarchy` pre-pass, not here —
+                // the `≥n` distinctness gate needs the full hierarchy before any
+                // clause is emitted.
                 Axiom::ObjectPropertyDomain { role, domain } => {
                     // ∃R.⊤ ⊑ domain
                     let top_id = self.pool.top();
@@ -653,6 +775,10 @@ pub(crate) fn normalize(internal: &InternalOntology) -> Result<Normalized, &'sta
     // Fragment gate: check all axioms (using NNF-transformed forms).
     n.check_axioms_fragment(&axioms)?;
 
+    // Pre-pass: collect the relevant `≤m` roles + the full role hierarchy BEFORE
+    // emitting any clause, so the `≥n` distinctness gate is axiom-order-independent.
+    n.scan_max_and_hierarchy(&axioms);
+
     // Emit clauses.
     n.emit_clauses(axioms);
 
@@ -680,6 +806,7 @@ pub(crate) fn normalize(internal: &InternalOntology) -> Result<Normalized, &'sta
         clauses: n.clauses,
         classes,
         role_hierarchy: n.role_hierarchy,
+        max_roles: n.max_roles,
         pool: n.pool,
     })
 }

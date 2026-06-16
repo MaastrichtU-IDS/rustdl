@@ -270,3 +270,49 @@ fn tier2_min2_max2_no_pigeonhole_stays_sat() {
     );
     assert_sat(&c, "Test");
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TERMINATION: cyclic `≥n` with NO relevant `≤m` (the CB_NONTERM_REPRO shape)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// REGRESSION (cyclic-`≥n`-no-`≤m` non-termination, 2026-06-16). The minimal
+/// reproducer that hung the engine >90s:
+///
+/// ```text
+/// C0 ≡ ∃r0.(∀r0.C0)                     -- cyclic ∃/∀ on the shared role r0
+/// C1 ≡ ∃r0.(≥3 r0.C4)                   -- a nested ≥3 on the SAME role r0
+/// ```
+///
+/// There is NO `≤m` anywhere on `r0` (nor a super-role of it), so the `≥3`'s
+/// distinctness (3 terms + 3 pairwise `Neq`) can never pigeonhole — it is pure
+/// waste, and under the cyclic `∃` on `r0` the `Neq`-bearing / residual-bearing
+/// term signatures bred unboundedly many witnesses (one `process()` pass
+/// exploded). Fix: (A) normalize collapses `≥n`→`∃` on Max-free roles, and the
+/// engine SHARES count-1 witnesses by `(role, ctx)` on Max-free roles (coarsening
+/// the minting signature past the residual). Both are MISS-biased (sound).
+///
+/// The whole ontology is consistent: all three classes are satisfiable and there
+/// is no atomic subsumption among them (Konclude + the hybrid agree, 0 ms). This
+/// test asserts BOTH termination (it runs to completion) AND the verdict.
+#[test]
+fn tier2_cyclic_min_no_max_terminates_and_is_sat() {
+    let c = classify_alchq(
+        "Declaration(Class(:C0))\n\
+         Declaration(Class(:C1))\n\
+         Declaration(Class(:C4))\n\
+         Declaration(ObjectProperty(:r0))\n\
+         EquivalentClasses(:C0 ObjectSomeValuesFrom(:r0 ObjectAllValuesFrom(:r0 :C0)))\n\
+         EquivalentClasses(:C1 ObjectSomeValuesFrom(:r0 ObjectMinCardinality(3 :r0 :C4)))\n",
+    );
+    // Verdict (matches the hybrid + Konclude): every class satisfiable …
+    assert_sat(&c, "C0");
+    assert_sat(&c, "C1");
+    assert_sat(&c, "C4");
+    // … and no non-trivial atomic subsumption among the three.
+    for (a, b) in [("C0", "C1"), ("C1", "C0"), ("C0", "C4"), ("C1", "C4")] {
+        assert!(
+            !c.hierarchy.subsumptions.contains(&(cls(&c, a), cls(&c, b))),
+            "spurious subsumption {a} ⊑ {b}"
+        );
+    }
+}

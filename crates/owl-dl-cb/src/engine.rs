@@ -268,6 +268,17 @@ impl<'a> Engine<'a> {
         false
     }
 
+    /// Does role `r` (or any super-role of `r`) carry a relevant `≤m _._`
+    /// (`m≥1`) constraint? If so, a witness on `r` can be collected by the `≤n`
+    /// FP guard (`apply_at_most`), so its `Term.residual` is soundness-load-bearing
+    /// and the minting signature must NOT be coarsened (see `ensure_terms`).
+    fn has_relevant_max(&self, r: Role) -> bool {
+        self.norm
+            .max_roles
+            .iter()
+            .any(|&s| self.role_subsumed(r, s))
+    }
+
     /// Saturate to fixpoint.
     fn run(&mut self) {
         let mut pool_classes: Vec<ConceptId> = Vec::new();
@@ -531,23 +542,39 @@ impl<'a> Engine<'a> {
         residual: &Clause,
     ) {
         let u = self.intern_context(core.clone());
-        // Existing live terms of `v` with this exact (role, ctx, residual)
-        // signature. We tie the signature to the *edge residual* (so distinct
-        // residuals don't share witnesses — matches B1 `link_successor` dedup).
         let mut want = residual.clone();
         want.sort_unstable();
         want.dedup();
-        // Key idempotency on ALL terms of the signature (not just live ones): a
-        // term that witnessed this `(role, ctx, residual)` is never re-minted,
-        // removing any dependence on merge state. (With edge-only merges no term
-        // is ever merged-away, but this stays robust if forced merges land.)
+        // Witness-minting signature. Two regimes, partitioned by role:
+        //
+        // * **Max-relevant role** (`has_relevant_max(r)`): a `≤m` on `r` or a
+        //   super-role of `r` can collect this witness in `apply_at_most`, whose
+        //   §2.2 FP guard reads `Term.residual` to condition the emitted
+        //   `Eq`-disjunction. So the witness identity MUST stay keyed on the edge
+        //   residual — two distinct residuals are two distinct witnesses, else a
+        //   stale residual would weaken the FP guard (unsound). This is the
+        //   only regime that ever sees `count ≥ 2` (Fix A collapses `≥n`→`∃` on
+        //   Max-free roles), so the pigeonhole / `Neq` machinery is unchanged.
+        //
+        // * **Max-free role** (the common case, and the cyclic-`∃`/`∀` blow-up):
+        //   the `≤n` guard can NEVER collect a witness on this role
+        //   (`apply_at_most` collects only `role_subsumed(t.role, max_role)`), so
+        //   `Term.residual` is pure idempotency key — never read for soundness.
+        //   We then SHARE the (single, `count==1`) witness by `(role, ctx)` alone,
+        //   ignoring the residual. This restores the B1 "reuse-by-core" sharing
+        //   the residual-keying broke: under a cyclic shared-role `∃`/`∀` the
+        //   residual walks the (finite but exponential) powerset of derived
+        //   disjuncts, minting one witness per residual value — bounding it to one
+        //   witness per `(role, ctx)` is what makes saturation tractable. Sound by
+        //   construction: fewer witnesses ⇒ MISS-biased, never an FP.
+        let coarsen = count == 1 && !self.has_relevant_max(r);
         let mut sig_terms: Vec<TermId> = Vec::new();
         for (gid, owner) in self.term_owner.iter().enumerate() {
             if *owner != v {
                 continue;
             }
             let t = &self.terms[gid];
-            if t.role == r && t.ctx == u && t.residual == want {
+            if t.role == r && t.ctx == u && (coarsen || t.residual == want) {
                 sig_terms.push(gid);
             }
         }
@@ -555,9 +582,12 @@ impl<'a> Engine<'a> {
         let mut minted = sig_terms.clone();
         for _ in have..count {
             let gid = self.new_term(v, u, r, want.clone());
-            self.register_edge(v, u, EdgeKind::Succ(r), residual.clone());
             minted.push(gid);
         }
+        // Register the spawning edge once (dedup by (v, kind, residual) inside).
+        // Pulled out of the mint loop so the reuse path (have ≥ count, nothing
+        // minted) still records THIS edge's residual for back-prop conditioning.
+        self.register_edge(v, u, EdgeKind::Succ(r), residual.clone());
         // Pairwise Neq among ALL terms of this signature (≥n distinctness),
         // conditioned on the residual (the n witnesses exist only under ¬N).
         if count >= 2 {
@@ -906,10 +936,30 @@ mod tests {
             self.role_hierarchy.push((sub, sup));
         }
         fn finish(self) -> Normalized {
+            // Mirror normalize's pre-pass: collect every role carrying a `≤m`
+            // (m≥1) literal so the engine's count-1 witness-sharing gate
+            // (`has_relevant_max`) matches production behaviour on hand-built
+            // clauses. (These tests inject `Max` literals directly into heads.)
+            // NOTE: this scan is SHALLOW (top-level clause literals only), unlike
+            // production's recursive `collect_max_roles`. Adequate for the current
+            // tests (all `Max` literals are top-level); a future test with a
+            // NESTED `Max` (e.g. `∃R.(≤2 S.C)`) would need the recursive walk to
+            // avoid silently coarsening an S-witness the `≤n` guard could collect.
+            let mut max_roles: BTreeSet<Role> = BTreeSet::new();
+            for c in &self.clauses {
+                for &lit in c.premise.iter().chain(c.head.iter()) {
+                    if let ConceptExpr::Max(n, role, _) = self.pool.get(lit)
+                        && *n >= 1
+                    {
+                        max_roles.insert(*role);
+                    }
+                }
+            }
             Normalized {
                 clauses: self.clauses,
                 classes: self.classes,
                 role_hierarchy: self.role_hierarchy,
+                max_roles,
                 pool: self.pool,
             }
         }

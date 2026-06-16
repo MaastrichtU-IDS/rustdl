@@ -103,6 +103,17 @@ pub(crate) fn read_hierarchy(norm: &Normalized, graph: &ContextGraph) -> CbHiera
         }
     }
 
+    // NOTE (known limitation, FP-latent but corpus-clean): `top_equiv` uses only
+    // the SYNTACTIC `⊤ ⊑ C` signal (empty-premise unit ontology clause) + its
+    // hierarchy closure. A *derived* `⊤ ⊑ C` (e.g. `⊤ ⊑ C ⊔ D` with `D ⊑ ⊥`)
+    // is NOT detected, so if the hybrid folds such a C into owl:Thing while CB
+    // reports `X ⊑ C`, that would surface as `only_in_cb`. The robust read-off
+    // alternative ("C derived as a unit in every satisfiable root") was rejected:
+    // it mis-fires on a genuine common superclass of all NAMED classes (A⊑C,
+    // B⊑C with C ≠ ⊤), dropping real subsumptions = a MISS. The syntactic signal
+    // is principled (sound, never a MISS) and FP-clean across 41-49 + bibtex; the
+    // derived-⊤ case is left as a documented reserve item.
+
     // Transitive closure over the direct relation.
     // (Floyd-style fixpoint; small class counts in B1.)
     let classes: Vec<ClassId> = norm.classes.clone();

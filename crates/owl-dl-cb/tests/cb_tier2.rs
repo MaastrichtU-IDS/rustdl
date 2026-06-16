@@ -182,3 +182,33 @@ fn tier2_neq_meets_forced_eq_is_bot() {
     );
     assert_unsat(&c, "Test");
 }
+
+/// CHARACTERIZED MISS (sound, FP=0 — NOT a failure to force; recorded per the
+/// §3.4 reserve-mode boundary). `C ⊑ (≥2 r.A ⊔ E) ⊓ ≤1 r.A` ⟹ `C ⊑ E`
+/// (hybrid derives it). CB MISSES it: the `Neq(s,t)` (from `≥2`, riding residual
+/// `{E}`) and the forced `Eq(s,t)` (from `≤1`, riding residual `{E}`) both carry
+/// the residual, so neither is a *unit* clause; `apply_eq_neq_clash` fires only
+/// on FORCED (unit) Eq+Neq, and the union-core `{A}` is satisfiable so the
+/// discharge reflects nothing. The sound closure is the general §2.4 Eq/Neq
+/// resolution (`{R ⊔ Eq} , {R' ⊔ Neq} ⟹ {R ⊔ R'}`) — deferred as §3.4 reserve
+/// (FP-critical, beyond the B2 deliverable). FP=0 is preserved (`only_in_cb=0`):
+/// the uncertainty biases to a MISS, never an FP.
+#[test]
+#[ignore = "characterized MISS: residual-conditioned Eq/Neq clash needs §2.4 general resolution (§3.4 reserve)"]
+fn tier2_residual_conditioned_neq_eq_clash_missed() {
+    let c = classify_alchq(
+        "Declaration(Class(:A))\n\
+         Declaration(Class(:C))\n\
+         Declaration(Class(:E))\n\
+         Declaration(ObjectProperty(:r))\n\
+         SubClassOf(:C ObjectUnionOf(ObjectMinCardinality(2 :r :A) :E))\n\
+         SubClassOf(:C ObjectMaxCardinality(1 :r :A))\n",
+    );
+    // The sound entailment the full calculus derives; CB currently misses it.
+    assert!(
+        c.hierarchy
+            .subsumptions
+            .contains(&(cls(&c, "C"), cls(&c, "E"))),
+        "C ⊑ E via residual-conditioned Eq/Neq resolution"
+    );
+}

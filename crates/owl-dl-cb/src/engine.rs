@@ -1,70 +1,49 @@
-//! The consequence-based ALCH calculus: context saturation (Task B).
+//! The consequence-based ALCHQ calculus: context saturation.
 //!
-//! This is a faithful implementation of the consequence-based classification
-//! procedure for ALCH (Simančík–Kazakov–Horrocks, IJCAI 2011, "Consequence-Based
-//! Reasoning beyond Horn Ontologies"), in the **context-decomposed** form of
-//! §5 of that paper (and the later Bate-et-al / Tena-Cucala SROIQ context
-//! calculus, restricted to ALCH). Each *context* reasons about a hypothetical
-//! element whose `core` conjunction of atoms holds; derived clauses are the
-//! disjunctions `core ⊑ ⊔(literals)` entailed at that element. Existentials
-//! create successor contexts (reused by core — the termination key); `∀` and
-//! the complement-encoded left-existentials propagate information back to
-//! predecessors.
+//! B1 (ALCH) is the Simančík–Kazakov–Horrocks (IJCAI 2011) context calculus with
+//! **unordered** hyperresolution; B2 Tier-2 layers Sequoia-style equality
+//! reasoning for qualified number restrictions `≤n R.C` / `≥n R.C` (ALCHQ) on top
+//! of an unordered-Hyper host (Tena-Cucala et al., arXiv:1805.01396), per
+//! `docs/superpowers/specs/2026-06-16-cb-b2-tier2-equality-design.md` (§9 is
+//! authoritative).
 //!
 //! ## Clause form
-//! A *derived clause* in a context is a disjunction of literals `⊔ⱼ Lⱼ`, where
-//! each literal is atomic `B`, `∃R.B`, or `∀R.B` (B atomic). It is understood as
-//! `core ⊑ ⊔ⱼ Lⱼ` — i.e. *given the core conjunction, one of the disjuncts
-//! holds*. The empty disjunction is `core ⊑ ⊥` (the core is unsatisfiable).
-//! (The frozen [`DerivedClause`] carries a `premise` field; the context-internal
-//! clauses are conditioned on the whole core, so `premise` stays empty — the
-//! core itself is the conjunctive antecedent.)
+//! A *derived clause* in a context is a disjunction of [`HeadLit`]s — `Concept(_)`
+//! (atomic `B`, `∃R.B`, `∀R.B`) plus the B2 equality literals `Eq(s,t)`/`Neq(s,t)`
+//! ranging over **successor terms**. Understood as `core ⊑ ⊔ⱼ Lⱼ`. Empty = `⊥`.
 //!
-//! ## Inference rules (context form)
-//! 1. **Init** — every core atom `A` is a derived unit clause `{A}`.
-//! 2. **Hyper (hyperresolution, SKH `Rⁿ⊓`)** — an ontology clause
-//!    `⊓ᵢ Pᵢ ⊑ ⊔ M` fires when each premise atom `Pᵢ` occurs in *some* derived
-//!    clause `Nᵢ ⊔ {Pᵢ}`; it derives `(⋃ᵢ Nᵢ) ⊔ M`. This single rule realizes
-//!    hyperresolution, disjunctive case-splitting, `R⁻A` (resolution against a
-//!    disjointness clause `{A,X} ⊑ ⊥`), and the `⊥` rule (`M` empty). The
-//!    resolution is **unordered** — see `apply_hyper` for why (the ordering
-//!    restriction preserves only refutational completeness, which needs the
-//!    goal-directed `A ⊓ ¬B` seeds the frozen model does not have).
-//! 3. **Succ (`R⁺∃`)** — every `∃R.B` literal in a derived clause `N ⊔ {∃R.B}`
-//!    spawns/links a successor context whose core contains `B`; the edge carries
-//!    the residual `N`.
-//! 4. **∀-prop (`R∀`)** — a `∀S.B` literal in a clause `N ⊔ {∀S.B}` at `v` with
-//!    an edge `v —R→ u`, `R ⊑* S`, adds a *new* edge `v —R→ (core(u) ∪ {B})`
-//!    with residual `edge_res ⊔ N`. The shared successor `u` is **never
-//!    mutated** (that would corrupt other predecessors — unsound). `R∀`
-//!    compounds across the fixpoint, accumulating multiple universals.
-//! 5. **⊥-back-prop (`R⁻∃` via complement encoding, `R∀` residual)** — when a
-//!    successor `u` of `v` (edge residual `N`, role `R`) derives the empty
-//!    clause (`u ⊑ ⊥`), `v` derives the residual `N` (the disjunction; `⊥`
-//!    itself only when `N` is empty — the soundness landmine). The positive
-//!    consequences of left-existentials (`∃R.A ⊑ B`) are realized through this:
-//!    Task A encodes `∃R.A ⊑ B` as `⊤ ⊑ B ⊔ ∀R.X` + `{A,X} ⊑ ⊥`, so `R∀` forms
-//!    the augmented context `core(u) ∪ {X}`, its `A`/`X` clash gives `⊥`, and
-//!    the residual `{B}` reflects to `v`.
-//! 6. **Read-off** — `A ⊑ B` iff the root context of `A` derives the *singleton*
-//!    unit clause `{B}`; unsat iff it derives the empty clause.
+//! ## Stratification (the Slice-0 / §3 constraint)
+//! `apply_hyper` operates ONLY on `Concept(_)` literals and stays **unordered** —
+//! it never indexes `Eq`/`Neq`. The equality disjunction is discharged by the
+//! §9.2 recursive `apply_eq_discharge` rule (speculative merge per `Eq`-disjunct,
+//! residual = the clause minus that literal), NOT by Hyper.
+//!
+//! ## Soundness (the sacred invariant)
+//! A speculative merge reflects its residual to the parent **only when its
+//! union-core derives `⊥`** (§4.2/§9.3); bare `⊥` is reflected only when the
+//! residual is empty (full case-exhaustion). Merge edges are ⊥-back-prop ONLY —
+//! never a source of positive `Concept` back-prop, never an R∀ source — so a
+//! satisfiable union-core's derived atoms can never leak to the parent as a
+//! spurious subsumption.
 
-use crate::model::{Atom, Context, ContextGraph, ContextId, DerivedClause, Literal};
+use crate::model::{
+    Atom, Context, ContextGraph, ContextId, DerivedClause, EdgeKind, HeadLit, Term, TermId,
+};
 use crate::normalize::Normalized;
 use owl_dl_core::ir::{ConceptExpr, ConceptId, Role};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// A head disjunction of literals, sorted+deduped. Empty = `⊥`.
-type Clause = Vec<Literal>;
+type Clause = Vec<HeadLit>;
 
 /// `a ⊆ b` for two ascending-sorted literal slices (set subset).
-fn is_subset(a: &[Literal], b: &[Literal]) -> bool {
+fn is_subset(a: &[HeadLit], b: &[HeadLit]) -> bool {
     let mut j = 0;
-    for &x in a {
-        while j < b.len() && b[j] < x {
+    for x in a {
+        while j < b.len() && b[j] < *x {
             j += 1;
         }
-        if j >= b.len() || b[j] != x {
+        if j >= b.len() || b[j] != *x {
             return false;
         }
         j += 1;
@@ -72,13 +51,22 @@ fn is_subset(a: &[Literal], b: &[Literal]) -> bool {
     true
 }
 
+/// An edge into a context: `(parent, kind, residual)`.
+type Edge = (ContextId, EdgeKind, Clause);
+
 /// Engine-internal mutable state layered over the frozen [`ContextGraph`].
 struct Engine<'a> {
     norm: &'a Normalized,
     graph: ContextGraph,
-    /// Predecessors of each context: `(pred_context, role, residual)`.
-    /// The residual is the disjunction `N` from the spawning clause `N ⊔ ∃R.B`.
-    preds: Vec<Vec<(ContextId, Role, Clause)>>,
+    /// Predecessors of each context: `(pred_context, edge_kind, residual)`.
+    preds: Vec<Vec<Edge>>,
+    /// Global term store. `TermId` indexes this directly; `Term.ctx` is the
+    /// witness's *type* context, and a term's *owner* (the parent it is a
+    /// successor of) is `term_owner[id]`. `merged_into` always points within
+    /// the same owner (a merge unions two of one parent's terms).
+    terms: Vec<Term>,
+    /// Owner (parent) context of each term.
+    term_owner: Vec<ContextId>,
     /// Worklist of contexts whose clause set changed and must be (re)processed.
     dirty: VecDeque<ContextId>,
     /// Membership guard so a context is enqueued at most once at a time.
@@ -91,6 +79,8 @@ impl<'a> Engine<'a> {
             norm,
             graph: ContextGraph::default(),
             preds: Vec::new(),
+            terms: Vec::new(),
+            term_owner: Vec::new(),
             dirty: VecDeque::new(),
             in_queue: Vec::new(),
         }
@@ -107,11 +97,10 @@ impl<'a> Engine<'a> {
             core: core.clone(),
             ..Context::default()
         };
-        // Init rule: each core atom is a unit clause.
         for &a in &core {
             let dc = DerivedClause {
                 premise: Vec::new(),
-                head: vec![a],
+                head: vec![HeadLit::Concept(a)],
             };
             ctx.seen.insert(dc.clone());
             ctx.clauses.push(dc);
@@ -131,48 +120,89 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Add a derived clause `head` (sorted+deduped) to context `v`, applying the
-    /// redundancy gate (tautology deletion + forward/backward subsumption).
-    /// Returns `true` if it was stored. Enqueues `v` and its predecessors on
-    /// change. Every drop here removes only an *entailed* (redundant) clause, so
-    /// it can never lose a consequence ⟹ MISS-free, never an FP.
-    fn add_clause(&mut self, v: ContextId, mut head: Clause) -> bool {
-        head.sort_unstable();
-        head.dedup();
-        // Tautology deletion: a head containing `Top` is `core ⊑ (… ⊔ ⊤)`,
-        // trivially true — no information.
-        if head
-            .iter()
-            .any(|&l| matches!(self.norm.pool.get(l), ConceptExpr::Top))
-        {
-            return false;
+    /// Union-find representative of a term, following `merged_into` chains.
+    fn find(&self, t: TermId) -> TermId {
+        let mut cur = t;
+        while let Some(next) = self.terms[cur].merged_into {
+            cur = next;
         }
+        cur
+    }
+
+    /// Mint a fresh term owned by `owner`, typed by context `ctx`, on role `r`,
+    /// with the given edge `residual` (sorted+deduped) as its signature.
+    fn new_term(&mut self, owner: ContextId, ctx: ContextId, r: Role, residual: Clause) -> TermId {
+        let id = self.terms.len();
+        let term = Term {
+            ctx,
+            role: r,
+            residual,
+            merged_into: None,
+        };
+        self.terms.push(term.clone());
+        self.term_owner.push(owner);
+        self.graph.contexts[owner].terms.push(term);
+        id
+    }
+
+    /// Add a derived clause `head` to context `v`, applying the redundancy gate
+    /// (tautology deletion + forward/backward subsumption + equality
+    /// canonicalization). Returns `true` if stored. Enqueues `v` and its
+    /// predecessors on change. Every drop removes only an entailed (redundant)
+    /// clause ⟹ MISS-free, never an FP.
+    #[allow(clippy::needless_pass_by_value)] // logically consumes the clause
+    fn add_clause(&mut self, v: ContextId, head: Clause) -> bool {
+        // Canonicalize equalities via union-find; drop reflexive Eq (taut) and
+        // false Neq(s,s) disjuncts; tautology-delete `Concept(Top)`.
+        let mut filtered: Clause = Vec::with_capacity(head.len());
+        for &l in &head {
+            match l {
+                HeadLit::Concept(c) if matches!(self.norm.pool.get(c), ConceptExpr::Top) => {
+                    return false;
+                }
+                HeadLit::Eq(s, t) => {
+                    let (cs, ct) = (self.find(s), self.find(t));
+                    if cs == ct {
+                        return false; // Eq(s,s) reflexive ⇒ clause is a tautology.
+                    }
+                    filtered.push(HeadLit::Eq(cs.min(ct), cs.max(ct)));
+                }
+                HeadLit::Neq(s, t) => {
+                    let (cs, ct) = (self.find(s), self.find(t));
+                    if cs == ct {
+                        // Neq(s,s) is false: this disjunct contributes nothing.
+                    } else {
+                        filtered.push(HeadLit::Neq(cs.min(ct), cs.max(ct)));
+                    }
+                }
+                other @ HeadLit::Concept(_) => filtered.push(other),
+            }
+        }
+        filtered.sort_unstable();
+        filtered.dedup();
         let dc = DerivedClause {
             premise: Vec::new(),
-            head,
+            head: filtered,
         };
         {
             let ctx = &self.graph.contexts[v];
             if ctx.seen.contains(&dc) {
                 return false;
             }
-            // Forward subsumption: an existing stronger (subset) clause already
-            // entails this one.
             if ctx.clauses.iter().any(|e| is_subset(&e.head, &dc.head)) {
                 return false;
             }
         }
-        // Backward subsumption: drop existing **purely-atomic** clauses that are
-        // strictly weaker (superset) than the new one. Restricted to purely-atomic
-        // heads so a `∃/∀`-bearing clause whose structural consequence may not
-        // have fired yet is never retracted (conservative — MISS-free).
+        // Backward subsumption: drop strictly-weaker (superset) clauses whose
+        // head carries no structural `∃/∀` literal (purely Atomic / Eq / Neq).
         let mut removed: Vec<DerivedClause> = Vec::new();
         for e in &self.graph.contexts[v].clauses {
             if e.head != dc.head
                 && is_subset(&dc.head, &e.head)
-                && e.head
-                    .iter()
-                    .all(|&l| matches!(self.norm.pool.get(l), ConceptExpr::Atomic(_)))
+                && e.head.iter().all(|l| match l {
+                    HeadLit::Concept(c) => matches!(self.norm.pool.get(*c), ConceptExpr::Atomic(_)),
+                    HeadLit::Eq(_, _) | HeadLit::Neq(_, _) => true,
+                })
             {
                 removed.push(e.clone());
             }
@@ -188,7 +218,6 @@ impl<'a> Engine<'a> {
         ctx.seen.insert(dc.clone());
         ctx.clauses.push(dc);
         self.enqueue(v);
-        // Predecessors may now be able to back-propagate.
         let preds: Vec<ContextId> = self.preds[v].iter().map(|(p, _, _)| *p).collect();
         for p in preds {
             self.enqueue(p);
@@ -196,34 +225,33 @@ impl<'a> Engine<'a> {
         true
     }
 
-    /// Literal classification helpers (frozen `Literal = ConceptId`).
-    fn is_atomic(&self, l: Literal) -> bool {
+    /// Literal classification helpers.
+    fn is_atomic(&self, l: ConceptId) -> bool {
         matches!(
             self.norm.pool.get(l),
             ConceptExpr::Atomic(_) | ConceptExpr::Top
         )
     }
 
-    fn as_some(&self, l: Literal) -> Option<(Role, ConceptId)> {
+    fn as_some(&self, l: ConceptId) -> Option<(Role, ConceptId)> {
         match self.norm.pool.get(l) {
             ConceptExpr::Some(r, c) => Some((*r, *c)),
             _ => None,
         }
     }
 
-    fn as_all(&self, l: Literal) -> Option<(Role, ConceptId)> {
+    fn as_all(&self, l: ConceptId) -> Option<(Role, ConceptId)> {
         match self.norm.pool.get(l) {
             ConceptExpr::All(r, c) => Some((*r, *c)),
             _ => None,
         }
     }
 
-    /// `R ⊑* S` under the (reflexive-transitive closure of the) role hierarchy.
+    /// `R ⊑* S` under the role hierarchy (reflexive-transitive closure).
     fn role_subsumed(&self, sub: Role, sup: Role) -> bool {
         if sub == sup {
             return true;
         }
-        // BFS over role_hierarchy edges (sub ⊑ sup).
         let mut frontier = vec![sub];
         let mut seen: BTreeSet<Role> = BTreeSet::new();
         seen.insert(sub);
@@ -242,11 +270,8 @@ impl<'a> Engine<'a> {
 
     /// Saturate to fixpoint.
     fn run(&mut self) {
-        // Seed root contexts: one per reportable class.
         let mut pool_classes: Vec<ConceptId> = Vec::new();
         for &c in &self.norm.classes {
-            // Intern the atomic concept id for this class.
-            // The pool already contains it (normalize interns all classes).
             pool_classes.push(self.atom_of_class(c));
         }
         for a in pool_classes {
@@ -266,15 +291,8 @@ impl<'a> Engine<'a> {
             dequeues += 1;
             if debug && dequeues.is_multiple_of(100) {
                 let total: usize = self.graph.contexts.iter().map(|c| c.clauses.len()).sum();
-                let max = self
-                    .graph
-                    .contexts
-                    .iter()
-                    .map(|c| c.clauses.len())
-                    .max()
-                    .unwrap_or(0);
                 eprintln!(
-                    "[cb] dequeues={dequeues} contexts={} total_clauses={total} max_clauses={max} queue={}",
+                    "[cb] dequeues={dequeues} contexts={} total_clauses={total} queue={}",
                     self.graph.contexts.len(),
                     self.dirty.len()
                 );
@@ -282,10 +300,8 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Resolve a `ClassId` to its interned `Atomic` `ConceptId` in the pool.
+    /// Resolve a `ClassId` to its interned `Atomic` `ConceptId`.
     fn atom_of_class(&self, c: owl_dl_core::ir::ClassId) -> ConceptId {
-        // The pool is read-only here; the class atom must already be interned.
-        // Linear scan is acceptable (done once per class at seed time).
         for (id, e) in self.norm.pool.iter_with_ids() {
             if let ConceptExpr::Atomic(cc) = e
                 && *cc == c
@@ -293,43 +309,24 @@ impl<'a> Engine<'a> {
                 return id;
             }
         }
-        // Fallback: should not happen for reportable classes.
         unreachable!("reportable class atom not interned in pool");
     }
 
     /// Process all rules for context `v` over its current clause set.
     fn process(&mut self, v: ContextId) {
-        // 1+2. Hyper (ordered hyperresolution) over ontology clauses.
         self.apply_hyper(v);
-        // 3+4. Successor creation + ∀-propagation.
         self.apply_succ_and_forall(v);
-        // 5. Back-propagation from successors.
+        self.apply_at_most(v);
+        self.apply_eq_discharge(v);
         self.apply_back_prop(v);
     }
 
-    /// Rule 2: hyperresolution (SKH Table 3, `Rⁿ⊓` generalized to disjunctions).
+    /// Rule 2: unordered hyperresolution (SKH Table 3, `Rⁿ⊓` generalized).
     ///
-    /// For each ontology clause `⊓ᵢ Pᵢ ⊑ ⊔ M`, if each premise atom `Pᵢ` occurs
-    /// in some derived clause `Nᵢ ⊔ {Pᵢ}` (with `Pᵢ` resolved away), derive
-    /// `(⋃ᵢ Nᵢ) ⊔ M`. This is the **unordered** form — it resolves on *any*
-    /// occurrence of `Pᵢ`, which is directly complete for the positive read-off
-    /// (the root context of `A` derives the singleton `{B}` ⟺ `A ⊑ B`).
-    ///
-    /// **Why unordered, and how it still terminates fast.** The engine reads
-    /// positive units directly (not goal-directed refutation), so it relies on
-    /// the *direct* completeness of the full Table 3. Restricting resolution to
-    /// the ⊔-maximal atom (SKH Remark 5) breaks this — reasoning-by-cases
-    /// (`A⊑B⊔C, B⊑D, C⊑D ⟹ A⊑D`) needs *both* disjuncts resolved, but a single
-    /// total order leaves one buried whenever the consequence atom is maximal, so
-    /// the entailed unit is never derived. Instead the `2^vocab` clause explosion
-    /// is tamed by the **redundancy gate** in [`add_clause`] (tautology deletion +
-    /// forward/backward subsumption), which keeps only a subsumption-minimal
-    /// antichain: a derived unit `{B}` subsumes every `{B, …}` superset, so the
-    /// disjunctive fan-out collapses. Worst case stays `ExpTime` (ALCH
-    /// classification is `ExpTime`-complete), but real inputs (e.g. alehif)
-    /// saturate quickly.
+    /// Resolves ONLY on `Concept(_)` atomic literals; `Eq`/`Neq` are invisible
+    /// here (§3.2 — keeping the term ordering off the concept stratum). They are
+    /// retained in residuals (we remove only the pivot index, never strip them).
     fn apply_hyper(&mut self, v: ContextId) {
-        // Snapshot the current clauses.
         let clauses: Vec<Clause> = self.graph.contexts[v]
             .clauses
             .iter()
@@ -337,17 +334,16 @@ impl<'a> Engine<'a> {
             .collect();
 
         // Index: for each atom `p`, the residuals `N` of every derived clause
-        // `N ⊔ {p}` (p removed) — *any* occurrence. Resolution is unordered (the
-        // full, directly-complete Table 3); the `2^vocab` blowup is tamed instead
-        // by the redundancy gate in `add_clause` (forward/backward subsumption),
-        // which keeps only a subsumption-minimal antichain of clauses.
+        // `N ⊔ {p}` (p removed) — *any* occurrence. Unordered (directly complete).
         let mut by_atom: BTreeMap<ConceptId, Vec<Clause>> = BTreeMap::new();
         for c in &clauses {
-            for (i, &lit) in c.iter().enumerate() {
-                if self.is_atomic(lit) {
+            for (i, lit) in c.iter().enumerate() {
+                if let HeadLit::Concept(cid) = lit
+                    && self.is_atomic(*cid)
+                {
                     let mut residual = c.clone();
                     residual.remove(i);
-                    by_atom.entry(lit).or_default().push(residual);
+                    by_atom.entry(*cid).or_default().push(residual);
                 }
             }
         }
@@ -355,12 +351,9 @@ impl<'a> Engine<'a> {
         let mut new_clauses: Vec<Clause> = Vec::new();
         let ont_clauses = self.norm.clauses.clone();
         for oc in &ont_clauses {
-            // Build the cartesian product of premise-supporting clauses.
-            // Empty premise ⇒ single empty combination (derive M directly).
             let mut combos: Vec<Clause> = vec![Vec::new()];
             let mut ok = true;
             for &p in &oc.premise {
-                // `Top` premise atoms are vacuously satisfied.
                 if matches!(self.norm.pool.get(p), ConceptExpr::Top) {
                     continue;
                 }
@@ -386,7 +379,7 @@ impl<'a> Engine<'a> {
             }
             for base in combos {
                 let mut head = base;
-                head.extend_from_slice(&oc.head);
+                head.extend(oc.head.iter().map(|&c| HeadLit::Concept(c)));
                 new_clauses.push(head);
             }
         }
@@ -395,23 +388,17 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Rule 3 (`R⁺∃` / Succ) + Rule 4 (`R∀`, the back-propagation enabler).
+    /// Rule 3 (`R⁺∃` / Succ) + the `≥n` term-minting + Rule 4 (`R∀`).
     ///
-    /// **Succ.** Every `∃R.B` literal in any derived clause `N ⊔ {∃R.B}` spawns
-    /// (or links to) a successor context whose core contains `B`. The edge
-    /// `v —R→ u` is tagged with the residual disjunction `N` (the rest of the
-    /// clause), which rides the edge for back-propagation.
-    ///
-    /// **R∀ (find-or-create, never mutate).** SKH Table 3 `R∀`:
-    /// `H ⊑ M ⊔ ∃R.K`, `H ⊑ N ⊔ ∀S.B`, `R ⊑* S`
-    /// ⟹ `H ⊑ M ⊔ N ⊔ ∃R.(K ⊓ B)`. In the context decomposition the combined
-    /// existential `∃R.(K ⊓ B)` is an **edge to the augmented successor**
-    /// `core(u) ∪ {B}` carrying residual `M ⊔ N`. The shared successor `u` is
-    /// never mutated (that would corrupt other predecessors — unsound); we
-    /// find-or-create the augmented context and add a *new* edge. Finitely many
-    /// cores ⇒ this still terminates. `R∀` compounds across the fixpoint: the
-    /// augmented edge is itself eligible for further `R∀` applications, so
-    /// multiple universals accumulate (`{C,X₁}` → `{C,X₁,X₂}` …).
+    /// **Succ.** Every `∃R.B` literal mints/links a successor *term* whose type
+    /// context contains `B`. The edge carries the residual disjunction `N`.
+    /// **`≥n`.** A `Min(n,R,B)` literal mints `n` distinct terms (each typed by
+    /// `B`) plus pairwise `Neq` (rule lowered in normalize → see `Min` arm). In
+    /// this engine `Min` is lowered by normalize to a fresh marker; here we mint
+    /// the terms when we encounter the marker literal.
+    /// **R∀ (find-or-create, never mutate).** A `∀S.B` literal at `v`, over an
+    /// edge `v —R→ u` with `R ⊑* S`, adds a *new* edge to the augmented
+    /// successor `core(u) ∪ {B}`. The shared `u` is never mutated.
     fn apply_succ_and_forall(&mut self, v: ContextId) {
         let clauses: Vec<Clause> = self.graph.contexts[v]
             .clauses
@@ -419,38 +406,46 @@ impl<'a> Engine<'a> {
             .map(|dc| dc.head.clone())
             .collect();
 
-        // ── Succ: every ∃R.B literal in every clause. ──
-        let mut existentials: Vec<(Role, ConceptId, Clause)> = Vec::new();
+        // ── Succ + ≥n: each ∃R.B / ≥n R.B literal. ──
+        // For each (role, filler-core, residual) signature we ensure at most the
+        // requested count of live terms — `1` for ∃, `n` for ≥n. This keys term
+        // minting so the worklist re-processing is idempotent (termination).
+        let mut requests: Vec<(Role, BTreeSet<Atom>, u32, Clause)> = Vec::new();
         for c in &clauses {
-            for (i, &lit) in c.iter().enumerate() {
-                if let Some((r, bfill)) = self.as_some(lit) {
-                    let mut residual = c.clone();
-                    residual.remove(i);
-                    existentials.push((r, bfill, residual));
+            for (i, lit) in c.iter().enumerate() {
+                let HeadLit::Concept(cid) = lit else {
+                    continue;
+                };
+                let mut residual = c.clone();
+                residual.remove(i);
+                if let Some((r, bfill)) = self.as_some(*cid) {
+                    let core = self.filler_core(bfill);
+                    if let Some(core) = core {
+                        requests.push((r, core, 1, residual));
+                    }
+                } else if let ConceptExpr::Min(n, r, bfill) = self.norm.pool.get(*cid) {
+                    let (n, r, bfill) = (*n, *r, *bfill);
+                    if n == 0 {
+                        continue; // ≥0 ≡ ⊤.
+                    }
+                    if let Some(core) = self.filler_core(bfill) {
+                        requests.push((r, core, n, residual));
+                    }
                 }
             }
         }
-        for (r, b, residual) in existentials {
-            let mut core: BTreeSet<Atom> = BTreeSet::new();
-            match self.norm.pool.get(b) {
-                ConceptExpr::Atomic(_) => {
-                    core.insert(b);
-                }
-                ConceptExpr::Top => {} // ∃R.⊤ — successor core is just ⊤.
-                _ => continue,         // non-atomic filler shouldn't occur post-norm.
-            }
-            self.link_successor(v, r, core, residual);
+        for (r, core, count, residual) in requests {
+            self.ensure_terms(v, r, &core, count, &residual);
         }
 
-        // ── R∀: for each edge v —R→ u (residual M) and each derived clause
-        // `N ⊔ {∀S.B}` with R ⊑* S, add edge v —R→ (core(u) ∪ {B}) with
-        // residual M ⊔ N. ──
-        let edges: Vec<(Role, ContextId, Clause)> = self.preds_of_v_edges(v);
-        // Collect (role S, filler B, residual N) for every ∀ literal occurrence.
+        // ── R∀: for each outgoing Succ-edge v —R→ u (residual M) and each ∀S.B
+        // with R ⊑* S, add edge v —R→ (core(u) ∪ {B}) residual M ⊔ N. ──
+        let edges: Vec<(Role, ContextId, Clause)> = self.succ_edges(v);
         let mut foralls: Vec<(Role, ConceptId, Clause)> = Vec::new();
         for c in &clauses {
-            for (i, &lit) in c.iter().enumerate() {
-                if let Some((s, bb)) = self.as_all(lit)
+            for (i, lit) in c.iter().enumerate() {
+                if let HeadLit::Concept(cid) = lit
+                    && let Some((s, bb)) = self.as_all(*cid)
                     && matches!(self.norm.pool.get(bb), ConceptExpr::Atomic(_))
                 {
                     let mut residual = c.clone();
@@ -466,95 +461,283 @@ impl<'a> Engine<'a> {
                 }
                 let mut new_core = self.graph.contexts[*u].core.clone();
                 if !new_core.insert(*bb) {
-                    continue; // B already in successor core — nothing new.
+                    continue;
                 }
                 let mut new_res = edge_res.clone();
                 new_res.extend_from_slice(fa_res);
-                new_res.sort_unstable();
-                new_res.dedup();
-                self.link_successor(v, *r, new_core, new_res);
+                // The augmented edge is a Succ edge typed at the same role `r`,
+                // re-using a fresh term (the ∀-augmented witness). We mint one
+                // term per (role, augmented-core, residual) signature.
+                self.ensure_terms(v, *r, &new_core, 1, &new_res);
             }
         }
     }
 
-    /// The set of outgoing edges of `v`: `(role, successor, residual)`.
-    fn preds_of_v_edges(&self, v: ContextId) -> Vec<(Role, ContextId, Clause)> {
+    /// The successor core for an existential filler: `Some(core)` (atomic ⇒
+    /// `{B}`, `⊤` ⇒ `{}`), or `None` if the filler is non-atomic (shouldn't
+    /// occur post-normalize).
+    fn filler_core(&self, bfill: ConceptId) -> Option<BTreeSet<Atom>> {
+        let mut core: BTreeSet<Atom> = BTreeSet::new();
+        match self.norm.pool.get(bfill) {
+            ConceptExpr::Atomic(_) => {
+                core.insert(bfill);
+                Some(core)
+            }
+            ConceptExpr::Top => Some(core),
+            _ => None,
+        }
+    }
+
+    /// Ensure context `v` has at least `count` live terms with the given
+    /// `(role, type-core, residual)` signature, minting any shortfall, plus
+    /// pairwise `Neq` (conditioned on the residual) among the `count` terms of
+    /// this signature. Idempotent (re-processing mints nothing new once the
+    /// count is met) — the termination key for terms.
+    fn ensure_terms(
+        &mut self,
+        v: ContextId,
+        r: Role,
+        core: &BTreeSet<Atom>,
+        count: u32,
+        residual: &Clause,
+    ) {
+        let u = self.intern_context(core.clone());
+        // Existing live terms of `v` with this exact (role, ctx, residual)
+        // signature. We tie the signature to the *edge residual* (so distinct
+        // residuals don't share witnesses — matches B1 `link_successor` dedup).
+        let mut want = residual.clone();
+        want.sort_unstable();
+        want.dedup();
+        let mut sig_terms: Vec<TermId> = Vec::new();
+        for gid in self.live_terms(v) {
+            let t = &self.terms[gid];
+            if t.role == r && t.ctx == u && t.residual == want {
+                sig_terms.push(gid);
+            }
+        }
+        let have = u32::try_from(sig_terms.len()).unwrap_or(u32::MAX);
+        let mut minted = sig_terms.clone();
+        for _ in have..count {
+            let gid = self.new_term(v, u, r, want.clone());
+            self.register_edge(v, u, EdgeKind::Succ(r), residual.clone());
+            minted.push(gid);
+        }
+        // Pairwise Neq among ALL terms of this signature (≥n distinctness),
+        // conditioned on the residual (the n witnesses exist only under ¬N).
+        if count >= 2 {
+            for i in 0..minted.len() {
+                for j in (i + 1)..minted.len() {
+                    let mut h = residual.clone();
+                    h.push(HeadLit::Neq(minted[i], minted[j]));
+                    self.add_clause(v, h);
+                }
+            }
+        }
+    }
+
+    /// Register an edge `v —kind→ u` with `residual` (deduped), if absent.
+    fn register_edge(&mut self, v: ContextId, u: ContextId, kind: EdgeKind, mut residual: Clause) {
+        residual.sort_unstable();
+        residual.dedup();
+        let exists = self.preds[u]
+            .iter()
+            .any(|(p, k, res)| *p == v && *k == kind && res == &residual);
+        if !exists {
+            self.preds[u].push((v, kind, residual));
+            self.enqueue(u);
+            self.enqueue(v);
+        }
+    }
+
+    /// Outgoing `Succ` edges of `v`: `(role, successor, residual)`.
+    fn succ_edges(&self, v: ContextId) -> Vec<(Role, ContextId, Clause)> {
         let mut out = Vec::new();
-        for (r, u) in &self.graph.contexts[v].succ {
-            for (p, role, res) in &self.preds[*u] {
-                if *p == v && role == r {
-                    out.push((*r, *u, res.clone()));
+        for (u, edges) in self.preds.iter().enumerate() {
+            for (p, kind, res) in edges {
+                if *p == v
+                    && let EdgeKind::Succ(r) = kind
+                {
+                    out.push((*r, u, res.clone()));
                 }
             }
         }
         out
     }
 
-    /// Find-or-create the successor with the given `core` and record the edge
-    /// `v —R→ u` with `residual` (deduped), if not already present.
-    fn link_successor(
-        &mut self,
-        v: ContextId,
-        r: Role,
-        core: BTreeSet<Atom>,
-        mut residual: Clause,
-    ) {
-        residual.sort_unstable();
-        residual.dedup();
-        let u = self.intern_context(core);
-        let edge_exists = self.preds[u]
+    /// Tier-2 `r≤` choose rule (§2.2): record `≤n R.C` constraints and, when a
+    /// context has `≥ n+1` live `C`-witnesses on `R`, derive the equality
+    /// disjunction `⋁_{i<j} Eq(sᵢ,sⱼ)` (plus the chosen witnesses' residuals).
+    fn apply_at_most(&mut self, v: ContextId) {
+        let constraints = self.graph.contexts[v].at_most.clone();
+        for (n, r, c) in constraints {
+            // Collect live witnesses: terms s with role R' ⊑* R and C ∈ core(s.ctx)
+            // (C = ⊤ ⇒ every term qualifies).
+            let c_is_top = matches!(self.norm.pool.get(c), ConceptExpr::Top);
+            let mut witnesses: Vec<TermId> = Vec::new();
+            let live: Vec<TermId> = self.live_terms(v);
+            for s in live {
+                let t = &self.terms[s];
+                if !self.role_subsumed(t.role, r) {
+                    continue;
+                }
+                let qualifies = c_is_top || self.graph.contexts[t.ctx].core.contains(&c);
+                if qualifies {
+                    witnesses.push(s);
+                }
+            }
+            let need = n as usize + 1;
+            if witnesses.len() < need {
+                continue;
+            }
+            // Choose every (n+1)-subset; emit the equality disjunction conditioned
+            // on the chosen witnesses' edge residuals.
+            self.choose_and_emit(v, r, &witnesses, need);
+        }
+    }
+
+    /// For each `(n+1)`-subset of `witnesses`, derive
+    /// `⋁(chosen residuals) ⊔ ⋁_{i<j} Eq(sᵢ,sⱼ)`.
+    fn choose_and_emit(&mut self, v: ContextId, r: Role, witnesses: &[TermId], need: usize) {
+        let _ = r;
+        let idxs: Vec<usize> = (0..witnesses.len()).collect();
+        let mut combo: Vec<usize> = Vec::with_capacity(need);
+        let mut chosen_sets: Vec<Vec<TermId>> = Vec::new();
+        Self::for_each_subset(&idxs, need, 0, &mut combo, &mut |sub| {
+            chosen_sets.push(sub.iter().map(|&i| witnesses[i]).collect());
+        });
+        for chosen in chosen_sets {
+            // Residual = ⋃(chosen witnesses' edge residuals): the equality
+            // disjunction is conditioned on every disjunct that had to be true
+            // for these witnesses to exist (§2.2, the FP guard).
+            let mut head: Clause = Vec::new();
+            for &s in &chosen {
+                head.extend_from_slice(&self.terms[s].residual);
+            }
+            for i in 0..chosen.len() {
+                for j in (i + 1)..chosen.len() {
+                    head.push(HeadLit::Eq(chosen[i], chosen[j]));
+                }
+            }
+            self.add_clause(v, head);
+        }
+    }
+
+    /// All live (un-merged) terms owned by `v`, as global ids.
+    fn live_terms(&self, v: ContextId) -> Vec<TermId> {
+        self.term_owner
             .iter()
-            .any(|(p, role, res)| *p == v && *role == r && res == &residual);
-        if !edge_exists {
-            self.preds[u].push((v, r, residual));
-            self.graph.contexts[v].succ.push((r, u));
-            self.enqueue(u);
+            .enumerate()
+            .filter(|(gid, owner)| **owner == v && self.terms[*gid].merged_into.is_none())
+            .map(|(gid, _)| gid)
+            .collect()
+    }
+
+    /// Generate every `k`-subset of `items` (by index), invoking `f` on each.
+    fn for_each_subset<F: FnMut(&[usize])>(
+        items: &[usize],
+        k: usize,
+        start: usize,
+        combo: &mut Vec<usize>,
+        f: &mut F,
+    ) {
+        if combo.len() == k {
+            f(combo);
+            return;
+        }
+        for i in start..items.len() {
+            combo.push(items[i]);
+            Self::for_each_subset(items, k, i + 1, combo, f);
+            combo.pop();
+        }
+    }
+
+    /// §9.2 Eq-disjunction discharge rule (runs every `process`). For ANY stored
+    /// clause with ≥1 `Eq` literal, spawn one speculative `merge_terms` per
+    /// `Eq`-disjunct with `res = head \ {that Eq}` (the rest of the clause).
+    fn apply_eq_discharge(&mut self, v: ContextId) {
+        let clauses: Vec<Clause> = self.graph.contexts[v]
+            .clauses
+            .iter()
+            .map(|dc| dc.head.clone())
+            .collect();
+        for head in &clauses {
+            // Find Eq literals (canonical reps).
+            let eqs: Vec<(usize, TermId, TermId)> = head
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| match l {
+                    HeadLit::Eq(s, t) => Some((i, self.find(*s), self.find(*t))),
+                    _ => None,
+                })
+                .collect();
+            for (i, s, t) in eqs {
+                if s == t {
+                    continue; // reflexive — dropped on insert, but guard anyway.
+                }
+                let mut res = head.clone();
+                res.remove(i);
+                self.merge_terms(v, s, t, res);
+            }
+        }
+    }
+
+    /// §2.3/§9.2 speculative merge: union two of `v`'s terms (find-or-create the
+    /// union-core context, repoint via union-find, NEVER mutate a shared ctx),
+    /// register a ⊥-back-prop `Merge` edge carrying `res`.
+    #[allow(clippy::needless_pass_by_value)] // logically consumes the residual
+    fn merge_terms(&mut self, v: ContextId, s: TermId, t: TermId, res: Clause) {
+        let (rep_s, rep_t) = (self.find(s), self.find(t));
+        if rep_s == rep_t {
+            return;
+        }
+        // WLOG merge the larger TermId into the smaller (orientation, §2.4).
+        let (keep, gone) = (rep_s.min(rep_t), rep_s.max(rep_t));
+        let union_core: BTreeSet<Atom> = {
+            let core_keep = &self.graph.contexts[self.terms[keep].ctx].core;
+            let core_gone = &self.graph.contexts[self.terms[gone].ctx].core;
+            core_keep.union(core_gone).copied().collect()
+        };
+        let u = self.intern_context(union_core);
+        // Register the ⊥-back-prop merge edge BEFORE committing the union-find
+        // binding, so dedup `(v, u, res)` is consulted.
+        self.register_edge(v, u, EdgeKind::Merge, res);
+        // Commit the speculative union (monotone — never unset).
+        if self.terms[gone].merged_into.is_none() {
+            self.terms[gone].merged_into = Some(keep);
+            // Re-evaluate `≤n` (witness count may have dropped).
             self.enqueue(v);
         }
     }
 
-    /// Rule 5: back-propagation from successors of `v`.
+    /// Rule 5: back-propagation from `v`'s successors / merge edges.
     ///
-    /// For each successor edge `v —R→ u` (residual `N`):
-    /// - If `u` derives the empty clause (`u ⊑ ⊥`), then `v ⊑ N` (the residual
-    ///   disjunction). When `N` is empty this is `v ⊑ ⊥`.
-    /// - For every ontology clause encoding a left-existential `∃S.A ⊑ ⊔M`
-    ///   (carried as the `∀S.X`/complement clauses), if `u` derives a clause
-    ///   `D ⊔ {A}` with `A` maximal and `R ⊑* S`, then `v` derives
-    ///   `N ⊔ M ⊔ (back-projected D)`. In B1, the complement encoding routes
-    ///   this through ordinary atomic clauses, so the *atomic* consequences of
-    ///   `u` that are forced by every model (unit clauses `{A}` with `A`
-    ///   atomic) combine with the `∀`-machinery; the residual-`N` reflection
-    ///   below is the general (disjunctive) case.
+    /// For each edge `v —(kind)→ u` (residual `N`): if `u` derives the empty
+    /// clause (`u ⊑ ⊥`), reflect `N` to `v` (`v ⊑ ⊥` only when `N` is empty —
+    /// the soundness landmine). `Succ` and `Merge` edges are treated
+    /// identically here (⊥-back-prop only).
     fn apply_back_prop(&mut self, v: ContextId) {
-        let succ = self.graph.contexts[v].succ.clone();
-        for (r, u) in succ {
-            // Gather the residual(s) for this (v -> u, R) edge.
-            let residuals: Vec<Clause> = self.preds[u]
-                .iter()
-                .filter(|(p, role, _)| *p == v && *role == r)
-                .map(|(_, _, res)| res.clone())
-                .collect();
-            if residuals.is_empty() {
-                continue;
+        // Gather all edges out of v: (u, residual).
+        let mut edges: Vec<(ContextId, Clause)> = Vec::new();
+        for (u, ins) in self.preds.iter().enumerate() {
+            for (p, _kind, res) in ins {
+                if *p == v {
+                    edges.push((u, res.clone()));
+                }
             }
-            // ⊥-back-prop: if u derives the empty clause, reflect each residual.
+        }
+        for (u, residual) in edges {
             let u_has_bot = self.graph.contexts[u]
                 .clauses
                 .iter()
                 .any(|dc| dc.head.is_empty());
             if u_has_bot {
-                for residual in &residuals {
-                    self.add_clause(v, residual.clone());
-                }
+                self.add_clause(v, residual);
             }
         }
     }
 }
 
-/// Saturate the context graph under the consequence-based ALCH inference rules
-/// (core resolution, ordered `⊔` resolution, `∃`-Succ, `∀`-Pred, `⊥`) to a
-/// fixpoint.
+/// Saturate the context graph under the consequence-based ALCHQ inference rules.
 #[must_use]
 pub(crate) fn saturate(norm: &Normalized) -> ContextGraph {
     let mut eng = Engine::new(norm);
@@ -563,7 +746,7 @@ pub(crate) fn saturate(norm: &Normalized) -> ContextGraph {
 }
 
 #[cfg(test)]
-#[allow(clippy::many_single_char_names)] // DL canaries: A, B, C … are concepts.
+#[allow(clippy::many_single_char_names)]
 mod tests {
     use super::*;
     use crate::CbHierarchy;
@@ -571,7 +754,6 @@ mod tests {
     use crate::model::OntClause;
     use owl_dl_core::ir::{ClassId, ConceptPool, RoleId};
 
-    /// Builder for a hand-constructed `Normalized` (does NOT depend on Task A).
     struct B {
         pool: ConceptPool,
         clauses: Vec<OntClause>,
@@ -602,7 +784,6 @@ mod tests {
         fn role(n: u32) -> Role {
             Role::named(RoleId::new(n))
         }
-        /// `⊓premise ⊑ ⊔head` from raw `ConceptId`s.
         fn clause(&mut self, premise: Vec<ConceptId>, head: Vec<ConceptId>) {
             self.clauses.push(OntClause { premise, head });
         }
@@ -635,33 +816,30 @@ mod tests {
             .contains(&(ClassId::new(sub), ClassId::new(sup)))
     }
 
-    // ── Headline: disjunctive subsumption (EL saturator CANNOT do this) ──
     // A ⊑ B ⊔ C, B ⊑ D, C ⊑ D  ⟹  A ⊑ D
     #[test]
     fn disjunctive_subsumption_by_cases() {
         let mut b = B::new();
         let (a, bb, c, d) = (b.class(0), b.class(1), b.class(2), b.class(3));
         let (ea, eb, ec, ed) = (b.atom(a), b.atom(bb), b.atom(c), b.atom(d));
-        b.clause(vec![ea], vec![eb, ec]); // A ⊑ B ⊔ C
-        b.clause(vec![eb], vec![ed]); // B ⊑ D
-        b.clause(vec![ec], vec![ed]); // C ⊑ D
+        b.clause(vec![ea], vec![eb, ec]);
+        b.clause(vec![eb], vec![ed]);
+        b.clause(vec![ec], vec![ed]);
         let h = classify_built(&b.finish());
         assert!(subsumes(&h, 0, 3), "A ⊑ D by reasoning-by-cases");
     }
 
-    // FP guard: A ⊑ B ⊔ C alone does NOT give A ⊑ B (nor A ⊑ C).
     #[test]
     fn disjunction_alone_no_unit_subsumption() {
         let mut b = B::new();
         let (a, bb, c) = (b.class(0), b.class(1), b.class(2));
         let (ea, eb, ec) = (b.atom(a), b.atom(bb), b.atom(c));
-        b.clause(vec![ea], vec![eb, ec]); // A ⊑ B ⊔ C
+        b.clause(vec![ea], vec![eb, ec]);
         let h = classify_built(&b.finish());
         assert!(!subsumes(&h, 0, 1), "A ⊑ B must NOT be derived");
         assert!(!subsumes(&h, 0, 2), "A ⊑ C must NOT be derived");
     }
 
-    // ∀ + ∃ + ¬ clash → unsat: A ⊑ ∀R.B, A ⊑ ∃R.C, C ⊓ B ⊑ ⊥  ⟹  A ⊑ ⊥
     #[test]
     fn forall_exists_clash_unsat() {
         let mut b = B::new();
@@ -670,14 +848,13 @@ mod tests {
         let r = B::role(0);
         let all_rb = b.all(r, eb);
         let some_rc = b.some(r, ec);
-        b.clause(vec![ea], vec![all_rb]); // A ⊑ ∀R.B
-        b.clause(vec![ea], vec![some_rc]); // A ⊑ ∃R.C
-        b.clause(vec![ec, eb], vec![]); // C ⊓ B ⊑ ⊥
+        b.clause(vec![ea], vec![all_rb]);
+        b.clause(vec![ea], vec![some_rc]);
+        b.clause(vec![ec, eb], vec![]);
         let h = classify_built(&b.finish());
         assert!(h.unsat.contains(&ClassId::new(0)), "A unsat via ∀+∃+clash");
     }
 
-    // ⊥ up ∃: A ⊑ ∃R.C, C ⊑ ⊥  ⟹  A ⊑ ⊥
     #[test]
     fn bot_propagates_up_existential() {
         let mut b = B::new();
@@ -685,14 +862,12 @@ mod tests {
         let (ea, ec) = (b.atom(a), b.atom(c));
         let r = B::role(0);
         let some_rc = b.some(r, ec);
-        b.clause(vec![ea], vec![some_rc]); // A ⊑ ∃R.C
-        b.clause(vec![ec], vec![]); // C ⊑ ⊥
+        b.clause(vec![ea], vec![some_rc]);
+        b.clause(vec![ec], vec![]);
         let h = classify_built(&b.finish());
         assert!(h.unsat.contains(&ClassId::new(0)), "A unsat (⊥ up ∃)");
     }
 
-    // Role-hierarchy ∀-prop: A ⊑ ∀S.B, A ⊑ ∃R.C, R ⊑ S  ⟹  C-context gets B
-    // Observable as: with C ⊓ B ⊑ ⊥ added, A becomes unsat (B reached C via S⊒R).
     #[test]
     fn forall_propagation_over_role_hierarchy() {
         let mut b = B::new();
@@ -700,12 +875,12 @@ mod tests {
         let (ea, eb, ec) = (b.atom(a), b.atom(bb), b.atom(c));
         let r = B::role(0);
         let s = B::role(1);
-        b.role_incl(r, s); // R ⊑ S
+        b.role_incl(r, s);
         let all_sb = b.all(s, eb);
         let some_rc = b.some(r, ec);
-        b.clause(vec![ea], vec![all_sb]); // A ⊑ ∀S.B
-        b.clause(vec![ea], vec![some_rc]); // A ⊑ ∃R.C
-        b.clause(vec![ec, eb], vec![]); // C ⊓ B ⊑ ⊥  (B did reach the R-succ)
+        b.clause(vec![ea], vec![all_sb]);
+        b.clause(vec![ea], vec![some_rc]);
+        b.clause(vec![ec, eb], vec![]);
         let h = classify_built(&b.finish());
         assert!(
             h.unsat.contains(&ClassId::new(0)),
@@ -713,29 +888,23 @@ mod tests {
         );
     }
 
-    // Pure-EL still correct (left-existential via complement encoding):
-    // A ⊑ ∃R.B, B ⊑ C, ∃R.C ⊑ D  ⟹  A ⊑ D
-    // Encode ∃R.C ⊑ D as: ⊤ ⊑ D ⊔ ∀R.X  and  {C, X} ⊑ ⊥.
     #[test]
     fn pure_el_left_existential() {
         let mut b = B::new();
         let (a, bb, c, d) = (b.class(0), b.class(1), b.class(2), b.class(3));
-        let x = b.class(4); // complement atom X ≡ ¬C
+        let x = b.class(4);
         let (ea, eb, ec, ed, ex) = (b.atom(a), b.atom(bb), b.atom(c), b.atom(d), b.atom(x));
         let r = B::role(0);
         let some_rb = b.some(r, eb);
         let all_rx = b.all(r, ex);
-        b.clause(vec![ea], vec![some_rb]); // A ⊑ ∃R.B
-        b.clause(vec![eb], vec![ec]); // B ⊑ C
-        b.clause(vec![], vec![ed, all_rx]); // ⊤ ⊑ D ⊔ ∀R.X   (= ∃R.C ⊑ D)
-        b.clause(vec![ec, ex], vec![]); // {C, X} ⊑ ⊥
+        b.clause(vec![ea], vec![some_rb]);
+        b.clause(vec![eb], vec![ec]);
+        b.clause(vec![], vec![ed, all_rx]);
+        b.clause(vec![ec, ex], vec![]);
         let h = classify_built(&b.finish());
         assert!(subsumes(&h, 0, 3), "A ⊑ D via left-existential complement");
     }
 
-    // General (non-⊥) disjunctive back-prop — alehif-class case:
-    // A ⊑ ∃R.C, C ⊑ D₁ ⊔ D₂, ∃R.D₁ ⊑ F, ∃R.D₂ ⊑ F  ⟹  A ⊑ F
-    // Encode ∃R.Dᵢ ⊑ F as: ⊤ ⊑ F ⊔ ∀R.Xᵢ  and  {Dᵢ, Xᵢ} ⊑ ⊥.
     #[test]
     fn disjunctive_back_propagation() {
         let mut b = B::new();
@@ -755,17 +924,16 @@ mod tests {
         let some_rc = b.some(r, ec);
         let all_rx1 = b.all(r, ex1);
         let all_rx2 = b.all(r, ex2);
-        b.clause(vec![ea], vec![some_rc]); // A ⊑ ∃R.C
-        b.clause(vec![ec], vec![ed1, ed2]); // C ⊑ D₁ ⊔ D₂
-        b.clause(vec![], vec![ef, all_rx1]); // ∃R.D₁ ⊑ F
-        b.clause(vec![ed1, ex1], vec![]); // {D₁,X₁} ⊑ ⊥
-        b.clause(vec![], vec![ef, all_rx2]); // ∃R.D₂ ⊑ F
-        b.clause(vec![ed2, ex2], vec![]); // {D₂,X₂} ⊑ ⊥
+        b.clause(vec![ea], vec![some_rc]);
+        b.clause(vec![ec], vec![ed1, ed2]);
+        b.clause(vec![], vec![ef, all_rx1]);
+        b.clause(vec![ed1, ex1], vec![]);
+        b.clause(vec![], vec![ef, all_rx2]);
+        b.clause(vec![ed2, ex2], vec![]);
         let h = classify_built(&b.finish());
         assert!(subsumes(&h, 0, 4), "A ⊑ F via disjunctive back-propagation");
     }
 
-    // Plain told subsumption + transitivity: A ⊑ B, B ⊑ C ⟹ A ⊑ C.
     #[test]
     fn told_transitive() {
         let mut b = B::new();
@@ -779,9 +947,6 @@ mod tests {
         assert!(subsumes(&h, 0, 2), "transitive A ⊑ C");
     }
 
-    // Termination on a cyclic existential: A ⊑ ∃R.A reuses A's own context by
-    // core (the termination key); saturation must halt and report A ⊑ A only
-    // (excluded as reflexive) — i.e. no spurious subsumptions, and no hang.
     #[test]
     fn cyclic_existential_terminates() {
         let mut b = B::new();
@@ -789,14 +954,12 @@ mod tests {
         let ea = b.atom(a);
         let r = B::role(0);
         let some_ra = b.some(r, ea);
-        b.clause(vec![ea], vec![some_ra]); // A ⊑ ∃R.A
+        b.clause(vec![ea], vec![some_ra]);
         let h = classify_built(&b.finish());
         assert!(h.subsumptions.is_empty(), "only reflexive A ⊑ A (excluded)");
         assert!(h.unsat.is_empty());
     }
 
-    // FP guard for back-prop: a satisfiable successor must NOT make the parent
-    // unsat. A ⊑ ∀R.B, A ⊑ ∃R.C (B, C consistent) ⟹ A satisfiable, no A ⊑ ⊥.
     #[test]
     fn satisfiable_successor_no_false_unsat() {
         let mut b = B::new();
@@ -805,8 +968,8 @@ mod tests {
         let r = B::role(0);
         let all_rb = b.all(r, eb);
         let some_rc = b.some(r, ec);
-        b.clause(vec![ea], vec![all_rb]); // A ⊑ ∀R.B
-        b.clause(vec![ea], vec![some_rc]); // A ⊑ ∃R.C   (no B⊓C clash)
+        b.clause(vec![ea], vec![all_rb]);
+        b.clause(vec![ea], vec![some_rc]);
         let h = classify_built(&b.finish());
         assert!(
             !h.unsat.contains(&ClassId::new(0)),
@@ -814,21 +977,18 @@ mod tests {
         );
     }
 
-    // ∀ over a role hierarchy must NOT fire when the roles are unrelated:
-    // A ⊑ ∀S.B, A ⊑ ∃R.C, C⊓B⊑⊥, but R ⋢ S ⟹ A satisfiable (∀S.B does not
-    // reach the R-successor). FP guard for the role-subsumption side-condition.
     #[test]
     fn forall_unrelated_role_no_propagation() {
         let mut b = B::new();
         let (a, bb, c) = (b.class(0), b.class(1), b.class(2));
         let (ea, eb, ec) = (b.atom(a), b.atom(bb), b.atom(c));
         let r = B::role(0);
-        let s = B::role(1); // unrelated to R (no role_incl)
+        let s = B::role(1);
         let all_sb = b.all(s, eb);
         let some_rc = b.some(r, ec);
-        b.clause(vec![ea], vec![all_sb]); // A ⊑ ∀S.B
-        b.clause(vec![ea], vec![some_rc]); // A ⊑ ∃R.C
-        b.clause(vec![ec, eb], vec![]); // C ⊓ B ⊑ ⊥
+        b.clause(vec![ea], vec![all_sb]);
+        b.clause(vec![ea], vec![some_rc]);
+        b.clause(vec![ec, eb], vec![]);
         let h = classify_built(&b.finish());
         assert!(
             !h.unsat.contains(&ClassId::new(0)),

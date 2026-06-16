@@ -74,13 +74,12 @@ pub(crate) fn read_hierarchy(norm: &Normalized, graph: &ContextGraph) -> CbHiera
             out.unsat.insert(cls);
         }
         for dc in &ctx.clauses {
-            if dc.head.len() == 1 {
-                let lit = dc.head[0];
-                if let Some(&sup) = atom_class.get(&lit)
-                    && sup != cls
-                {
-                    direct.entry(cls).or_default().insert(sup);
-                }
+            if dc.head.len() == 1
+                && let crate::model::HeadLit::Concept(lit) = dc.head[0]
+                && let Some(&sup) = atom_class.get(&lit)
+                && sup != cls
+            {
+                direct.entry(cls).or_default().insert(sup);
             }
         }
     }

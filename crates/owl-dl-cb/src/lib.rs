@@ -13,7 +13,10 @@ mod engine;
 mod model;
 mod normalize;
 
-pub use model::{Atom, Context, ContextGraph, ContextId, DerivedClause, Literal, OntClause};
+pub use model::{
+    Atom, Context, ContextGraph, ContextId, DerivedClause, EdgeKind, HeadLit, Literal, OntClause,
+    Term, TermId,
+};
 
 use owl_dl_core::ir::ClassId;
 use owl_dl_core::ontology::InternalOntology;

@@ -1126,26 +1126,18 @@ impl HyperCache {
         use owl_dl_core::clause::{Atom, DlClause, X};
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
         // Clause-index amortization (§5 of the go/no-go spec):
-        // The Q-clause `q ⊑ c` varies only in its head class `c`; its
-        // body trigger ({Class(fresh_q, X)}) is identical across all
-        // 1585 probes. Rather than cloning the full base clause Vec and
-        // rebuilding ClauseIndexes + disjoint_pairs O(#clauses) per probe:
-        //   1. Allocate the Q-clause locally (zero base-clause allocation).
-        //   2. Share pre-built indexes + disjoint_pairs via Arc::clone (O(1)).
-        //   3. The Q-clause delta (x_trigger[fresh_q] += [clauses.len()])
-        //      was pre-applied in HyperCache::build — no per-probe work.
-        //   4. Pass `&self.clauses` directly (no clone) as the base slice.
-        let q_clause = DlClause {
+        // Clone the base clause Vec and push the per-probe Q-clause, then
+        // use pre-built `ClauseIndexes` and `disjoint_pairs` (Arc-shared,
+        // O(1) ref-count bump) instead of rebuilding them O(#clauses).
+        // The Q-clause delta (x_trigger[fresh_q] += [clauses.len()]) was
+        // pre-applied to base_indexes in HyperCache::build.
+        let mut clauses = self.clauses.clone();
+        clauses.push(DlClause {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(c, X)],
-        };
-        // O(1): share pre-built indexes and disjoint_pairs via Arc.
-        // The Q-clause delta (x_trigger[fresh_q] += [clauses.len()]) was
-        // pre-applied to base_indexes in HyperCache::build, so no per-probe
-        // mutation is needed here.
+        });
         let mut engine = HyperEngine::new_with_prebuilt(
-            &self.clauses,
-            &q_clause,
+            &clauses,
             self.fresh_q,
             std::sync::Arc::clone(&self.base_indexes),
             std::sync::Arc::clone(&self.base_disjoint_pairs),

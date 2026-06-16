@@ -134,13 +134,19 @@ impl Normalizer {
                 }
                 Ok(())
             }
-            ConceptExpr::Some(role, filler) | ConceptExpr::All(role, filler) => {
+            // `∃R`/`∀R` and (B2 ALCHQ) `≥n R`/`≤n R` all admit a NAMED role with
+            // an in-fragment filler. Inverse roles ⇒ B3 (rejected by
+            // `check_role`); a DKey filler ⇒ datatype (rejected by the filler's
+            // `check_concept`).
+            ConceptExpr::Some(role, filler)
+            | ConceptExpr::All(role, filler)
+            | ConceptExpr::Min(_, role, filler)
+            | ConceptExpr::Max(_, role, filler) => {
                 let role = *role;
                 let filler = *filler;
                 Self::check_role(role)?;
                 self.check_concept(filler)
             }
-            ConceptExpr::Min(_, _, _) | ConceptExpr::Max(_, _, _) => Err("cardinality"),
         }
     }
 
@@ -411,13 +417,42 @@ impl Normalizer {
                 out.push(top);
             }
             // ⊥ in head: contributes nothing (deletes this disjunct).
-            // Nominal/Self/Min/Max: should be gate-rejected; also contribute nothing.
-            ConceptExpr::Bot
-            | ConceptExpr::Nominal(_)
-            | ConceptExpr::SelfRestriction(_)
-            | ConceptExpr::Min(_, _, _)
-            | ConceptExpr::Max(_, _, _) => {
+            // Nominal/Self: gate-rejected; contribute nothing.
+            ConceptExpr::Bot | ConceptExpr::Nominal(_) | ConceptExpr::SelfRestriction(_) => {
                 let _ = out;
+            }
+            // B2 `≥n R.C` (§2.1): `≥0` ≡ ⊤ (drop); `≥1 R.C` ≡ ∃R.C; `≥n` (n≥2)
+            // keeps the `Min(n,R,C')` literal with `C'` flattened to atomic. The
+            // engine mints n distinct terms + pairwise Neq.
+            ConceptExpr::Min(n, role, filler) => {
+                if n == 0 {
+                    // ≥0 R.C ≡ ⊤ — tautological disjunct; mark the clause taut.
+                    let top = self.pool.top();
+                    out.push(top);
+                } else if n == 1 {
+                    let flat = self.flatten_to_literal(filler);
+                    let lit = self.pool.some(role, flat);
+                    out.push(lit);
+                } else {
+                    let flat = self.flatten_to_literal(filler);
+                    let lit = self.pool.min(n, role, flat);
+                    out.push(lit);
+                }
+            }
+            // B2 `≤n R.C` (§2.1): `≤0 R.C` ≡ ∀R.¬C (Tier-0 reduction); `≤n`
+            // (n≥1) keeps the `Max(n,R,C')` literal (engine records `at_most`).
+            ConceptExpr::Max(n, role, filler) => {
+                if n == 0 {
+                    // ≤0 R.C ≡ ∀R.¬C.
+                    let neg_filler = self.neg_nnf(filler);
+                    let flat_neg = self.flatten_to_literal(neg_filler);
+                    let lit = self.pool.all(role, flat_neg);
+                    out.push(lit);
+                } else {
+                    let flat = self.flatten_to_literal(filler);
+                    let lit = self.pool.max(n, role, flat);
+                    out.push(lit);
+                }
             }
             ConceptExpr::Atomic(_) => {
                 out.push(cid);
@@ -1295,9 +1330,10 @@ Ontology(<http://rustdl.test/test>\n\
     // Fragment gate tests — each must return Err
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// `Max` (`≤n`) → `Err("cardinality")`
+    /// B2 ALCHQ: `Max` (`≤n`) over a NAMED role is now IN fragment (admitted,
+    /// lowered to a `Max` head literal the engine records as `at_most`).
     #[test]
-    fn fragment_gate_max_cardinality() {
+    fn fragment_gate_max_cardinality_admitted() {
         let internal = parse(&onto(
             "Declaration(Class(:A))\n\
              Declaration(Class(:B))\n\
@@ -1305,14 +1341,14 @@ Ontology(<http://rustdl.test/test>\n\
              SubClassOf(:A ObjectMaxCardinality(1 :R :B))\n",
         ));
         assert!(
-            matches!(normalize(&internal), Err("cardinality")),
-            "expected Err(\"cardinality\")"
+            normalize(&internal).is_ok(),
+            "≤n over a named role is in the B2 ALCHQ fragment"
         );
     }
 
-    /// `Min` (`≥n`, n≥1) → `Err("cardinality")`
+    /// B2 ALCHQ: `Min` (`≥n`, n≥1) over a NAMED role is now IN fragment.
     #[test]
-    fn fragment_gate_min_cardinality() {
+    fn fragment_gate_min_cardinality_admitted() {
         let internal = parse(&onto(
             "Declaration(Class(:A))\n\
              Declaration(Class(:B))\n\
@@ -1320,8 +1356,23 @@ Ontology(<http://rustdl.test/test>\n\
              SubClassOf(:A ObjectMinCardinality(2 :R :B))\n",
         ));
         assert!(
-            matches!(normalize(&internal), Err("cardinality")),
-            "expected Err(\"cardinality\")"
+            normalize(&internal).is_ok(),
+            "≥n over a named role is in the B2 ALCHQ fragment"
+        );
+    }
+
+    /// `≥n`/`≤n` over an INVERSE role stays out of fragment (B3).
+    #[test]
+    fn fragment_gate_inverse_cardinality_rejected() {
+        let internal = parse(&onto(
+            "Declaration(Class(:A))\n\
+             Declaration(Class(:B))\n\
+             Declaration(ObjectProperty(:R))\n\
+             SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:R) :B))\n",
+        ));
+        assert!(
+            matches!(normalize(&internal), Err("inverse role")),
+            "≥n over an inverse role is B3, must be rejected"
         );
     }
 

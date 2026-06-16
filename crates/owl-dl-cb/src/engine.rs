@@ -315,10 +315,39 @@ impl<'a> Engine<'a> {
     /// Process all rules for context `v` over its current clause set.
     fn process(&mut self, v: ContextId) {
         self.apply_hyper(v);
+        self.record_at_most(v);
         self.apply_succ_and_forall(v);
         self.apply_at_most(v);
         self.apply_eq_discharge(v);
+        self.apply_eq_neq_clash(v);
         self.apply_back_prop(v);
+    }
+
+    /// Record `(n, R, C)` in `v.at_most` for every **unit** derived clause
+    /// `{Max(n,R,C)}` — i.e. `core(v) ⊑ ≤n R.C` is *entailed*. A `Max` literal
+    /// inside a multi-literal disjunction is NOT recorded (the constraint is not
+    /// forced): sound, MISS-biased. Idempotent (dedup by `(n,R,C)`).
+    fn record_at_most(&mut self, v: ContextId) {
+        let mut found: Vec<(u32, Role, Atom)> = Vec::new();
+        for dc in &self.graph.contexts[v].clauses {
+            if dc.head.len() == 1
+                && let HeadLit::Concept(cid) = dc.head[0]
+                && let ConceptExpr::Max(n, r, c) = self.norm.pool.get(cid)
+            {
+                found.push((*n, *r, *c));
+            }
+        }
+        let ctx = &mut self.graph.contexts[v];
+        let mut added = false;
+        for triple in found {
+            if !ctx.at_most.contains(&triple) {
+                ctx.at_most.push(triple);
+                added = true;
+            }
+        }
+        if added {
+            self.enqueue(v);
+        }
     }
 
     /// Rule 2: unordered hyperresolution (SKH Table 3, `Rⁿ⊓` generalized).
@@ -508,8 +537,15 @@ impl<'a> Engine<'a> {
         let mut want = residual.clone();
         want.sort_unstable();
         want.dedup();
+        // Key idempotency on ALL terms of the signature (not just live ones): a
+        // term that witnessed this `(role, ctx, residual)` is never re-minted,
+        // removing any dependence on merge state. (With edge-only merges no term
+        // is ever merged-away, but this stays robust if forced merges land.)
         let mut sig_terms: Vec<TermId> = Vec::new();
-        for gid in self.live_terms(v) {
+        for (gid, owner) in self.term_owner.iter().enumerate() {
+            if *owner != v {
+                continue;
+            }
             let t = &self.terms[gid];
             if t.role == r && t.ctx == u && t.residual == want {
                 sig_terms.push(gid);
@@ -681,31 +717,54 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// §2.3/§9.2 speculative merge: union two of `v`'s terms (find-or-create the
-    /// union-core context, repoint via union-find, NEVER mutate a shared ctx),
-    /// register a ⊥-back-prop `Merge` edge carrying `res`.
+    /// §2.3/§9.2 speculative merge — **edge-only** (the load-bearing soundness +
+    /// termination discipline). Find-or-create the union-core context and
+    /// register a ⊥-back-prop `Merge` edge carrying `res`; do NOT mutate
+    /// `merged_into`. The union-find binding is *local to this edge's reasoning*
+    /// (the disjunction is NOT committed) — exactly like B1 `link_successor`,
+    /// which mutates no union-find and discharges purely by the union-core's `⊥`
+    /// back-propagating its residual. Committing the merge globally would (a)
+    /// corrupt subsequent `Eq`/`Neq` canonicalization and (b) drop the witness
+    /// below `n+1`, re-triggering `∃`-minting of a fresh witness — an unbounded
+    /// merge↔re-mint oscillation. Dedup by `(v, union_core, res)` (§9.2).
     #[allow(clippy::needless_pass_by_value)] // logically consumes the residual
     fn merge_terms(&mut self, v: ContextId, s: TermId, t: TermId, res: Clause) {
-        let (rep_s, rep_t) = (self.find(s), self.find(t));
-        if rep_s == rep_t {
+        if s == t {
             return;
         }
-        // WLOG merge the larger TermId into the smaller (orientation, §2.4).
-        let (keep, gone) = (rep_s.min(rep_t), rep_s.max(rep_t));
         let union_core: BTreeSet<Atom> = {
-            let core_keep = &self.graph.contexts[self.terms[keep].ctx].core;
-            let core_gone = &self.graph.contexts[self.terms[gone].ctx].core;
-            core_keep.union(core_gone).copied().collect()
+            let core_s = &self.graph.contexts[self.terms[s].ctx].core;
+            let core_t = &self.graph.contexts[self.terms[t].ctx].core;
+            core_s.union(core_t).copied().collect()
         };
         let u = self.intern_context(union_core);
-        // Register the ⊥-back-prop merge edge BEFORE committing the union-find
-        // binding, so dedup `(v, u, res)` is consulted.
         self.register_edge(v, u, EdgeKind::Merge, res);
-        // Commit the speculative union (monotone — never unset).
-        if self.terms[gone].merged_into.is_none() {
-            self.terms[gone].merged_into = Some(keep);
-            // Re-evaluate `≤n` (witness count may have dropped).
-            self.enqueue(v);
+    }
+
+    /// §2.4 same-pair clash. If a context derives a **unit** `{Eq(s,t)}` (a forced
+    /// equality, empty residual) AND a **unit** `{Neq(s,t)}` (a forced
+    /// inequality) on the same canonical pair, derive `⊥`. This is the only
+    /// place `Neq` is consumed (fixture 47: `≥2 r.A` ⇒ `Neq(s,t)`, `≤1 r.A` ⇒
+    /// forced `Eq(s,t)`). Both must be FORCED (unit) — a multi-literal
+    /// disjunction containing `Eq`/`Neq` is not a commitment, so no clash.
+    fn apply_eq_neq_clash(&mut self, v: ContextId) {
+        let mut forced_eq: BTreeSet<(TermId, TermId)> = BTreeSet::new();
+        let mut forced_neq: BTreeSet<(TermId, TermId)> = BTreeSet::new();
+        for dc in &self.graph.contexts[v].clauses {
+            if dc.head.len() == 1 {
+                match dc.head[0] {
+                    HeadLit::Eq(s, t) => {
+                        forced_eq.insert((s.min(t), s.max(t)));
+                    }
+                    HeadLit::Neq(s, t) => {
+                        forced_neq.insert((s.min(t), s.max(t)));
+                    }
+                    HeadLit::Concept(_) => {}
+                }
+            }
+        }
+        if forced_eq.intersection(&forced_neq).next().is_some() {
+            self.add_clause(v, Vec::new()); // ⊥
         }
     }
 

@@ -61,28 +61,54 @@ fn assert_out_of_fragment(body: &str) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 1. ObjectMaxCardinality (≤n) — B2 construct, not ALCH
+// 1. ObjectMaxCardinality (≤n) over a NAMED role — now IN the B2 ALCHQ fragment
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn gate_max_cardinality() {
-    assert_out_of_fragment(
-        r"    Declaration(Class(:A))
+fn gate_max_cardinality_admitted() {
+    assert!(
+        matches!(
+            outcome(
+                r"    Declaration(Class(:A))
     Declaration(ObjectProperty(:R))
-    SubClassOf(:A ObjectMaxCardinality(1 :R owl:Thing))",
+    SubClassOf(:A ObjectMaxCardinality(1 :R owl:Thing))"
+            ),
+            CbOutcome::Classified(_)
+        ),
+        "≤n over a named role is in the B2 ALCHQ fragment"
     );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 2. ObjectMinCardinality (≥n) — B2 construct, not ALCH
+// 2. ObjectMinCardinality (≥n) over a NAMED role — now IN the B2 ALCHQ fragment
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn gate_min_cardinality() {
+fn gate_min_cardinality_admitted() {
+    assert!(
+        matches!(
+            outcome(
+                r"    Declaration(Class(:A))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(:A ObjectMinCardinality(2 :R owl:Thing))"
+            ),
+            CbOutcome::Classified(_)
+        ),
+        "≥n over a named role is in the B2 ALCHQ fragment"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 2b. Cardinality over an INVERSE role stays out of fragment (B3).
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn gate_inverse_cardinality_rejected() {
     assert_out_of_fragment(
         r"    Declaration(Class(:A))
+    Declaration(Class(:B))
     Declaration(ObjectProperty(:R))
-    SubClassOf(:A ObjectMinCardinality(2 :R owl:Thing))",
+    SubClassOf(:A ObjectMinCardinality(2 ObjectInverseOf(:R) :B))",
     );
 }
 

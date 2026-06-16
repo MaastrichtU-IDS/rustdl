@@ -51,6 +51,25 @@ pub(crate) fn read_hierarchy(norm: &Normalized, graph: &ContextGraph) -> CbHiera
         .map(|(c, id)| (*id, *c))
         .collect();
 
+    // ⊤-equivalent classes: `⊤ ⊑ C` is entailed (e.g. `C ≡ ≥0 r.D`, which
+    // lowers to a tautology forward + `⊤ ⊑ C` backward). Such a class is
+    // ≡ owl:Thing; the hybrid folds it into Thing and never reports `X ⊑ C`.
+    // We exclude it from the *superclass* position so the CB read-off matches
+    // (mirroring the existing `owl:Thing` exclusion). Sound: every class is a
+    // subclass of ⊤, so dropping `X ⊑ C` here only ever MISSes, never FPs.
+    // Base set = classes appearing as the sole atomic head of an empty-premise
+    // ontology clause; transitively closed under the derived hierarchy below.
+    let mut top_equiv: BTreeSet<ClassId> = BTreeSet::new();
+    for cl in &norm.clauses {
+        if cl.premise.is_empty()
+            && cl.head.len() == 1
+            && let ConceptExpr::Atomic(c) = norm.pool.get(cl.head[0])
+            && reportable.contains(c)
+        {
+            top_equiv.insert(*c);
+        }
+    }
+
     // For each reportable class, find its root context (core == {A-atom}).
     let mut root_of: BTreeMap<ClassId, usize> = BTreeMap::new();
     for &cls in &norm.classes {
@@ -110,9 +129,24 @@ pub(crate) fn read_hierarchy(norm: &Normalized, graph: &ContextGraph) -> CbHiera
         }
     }
 
+    // Transitively close ⊤-equivalence under the derived hierarchy: if `⊤ ⊑ X`
+    // and `X ⊑ Y` then `⊤ ⊑ Y` (Y ≡ Thing too).
+    {
+        let base: Vec<ClassId> = top_equiv.iter().copied().collect();
+        for x in base {
+            if let Some(sups) = reach.get(&x) {
+                for &y in sups {
+                    top_equiv.insert(y);
+                }
+            }
+        }
+    }
+
     for (&sub, sups) in &reach {
         for &sup in sups {
-            if sub != sup {
+            // Exclude ⊤-equivalent classes from the superclass position
+            // (mirrors the hybrid folding them into owl:Thing).
+            if sub != sup && !top_equiv.contains(&sup) {
                 out.subsumptions.insert((sub, sup));
             }
         }

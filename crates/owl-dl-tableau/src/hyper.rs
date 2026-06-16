@@ -397,18 +397,32 @@ pub struct SearchStats {
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
+    /// Optional extra clause appended logically after `clauses`
+    /// (clause index `clauses.len()`). Used by the clause-index
+    /// amortization path in `classify_labels` to avoid cloning the
+    /// full base clause slice just to append one Q-clause: the base
+    /// `ClauseIndexes` are pre-built once and cloned cheaply; only
+    /// the single extra clause's index delta is applied at construction.
+    /// `None` for all other engine uses (standard paths).
+    extra_clause: Option<&'c DlClause>,
     /// Pairwise class disjointness `(a, b)` (`a.index() < b.index()`),
     /// extracted once at construction from ⊥-headed two-`Class`-atom
-    /// clauses. Read-only; drives the `≤n` cardinality clash pre-check
-    /// (two successors carrying disjoint labels can never be merged).
-    disjoint_pairs: std::collections::HashSet<(u32, u32)>,
+    /// clauses. Read-only (never mutated during search); drives the `≤n`
+    /// cardinality clash pre-check (two successors carrying disjoint
+    /// labels can never be merged). Stored as `Arc` so
+    /// `HyperCache::classify_labels` probes can share the pre-built
+    /// set via an O(1) reference-count bump instead of an O(N) clone.
+    disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
     nodes: Vec<HyperNode>,
     stats: SearchStats,
     init_depth: usize,
     deadline: Option<Instant>,
     /// Trigger indexes routing derivation events to the clauses they
-    /// newly enable (see [`ClauseIndexes`]).
-    indexes: ClauseIndexes,
+    /// newly enable (see [`ClauseIndexes`]). Read-only after construction
+    /// (never mutated during search). Stored as `Arc` so
+    /// `HyperCache::classify_labels` probes can share the pre-built
+    /// indexes via an O(1) reference-count bump instead of an O(N) clone.
+    indexes: std::sync::Arc<ClauseIndexes>,
     /// Semi-naive worklist of derivation *events* (LIFO). Each event
     /// fires only the clauses it newly enables (not all of a node's
     /// clauses), which is what prunes the re-fire cost. See
@@ -524,9 +538,9 @@ enum Event {
 /// Firing a clause whose other atoms aren't yet present is a cheap
 /// `match_body` no-op (the duplicate-fire cost, bounded by body size).
 #[derive(Debug, Default, Clone)]
-struct ClauseIndexes {
+pub struct ClauseIndexes {
     /// By class index: clauses with that class as an `X`-body atom.
-    x_trigger: Vec<Vec<usize>>,
+    pub x_trigger: Vec<Vec<usize>>,
     /// By class index: clauses with that class as a successor-body atom.
     succ_trigger: Vec<Vec<usize>>,
     /// By role index: clauses with a body role atom on that role.
@@ -554,7 +568,7 @@ fn role_id_index(r: Role) -> usize {
 
 /// Build the [`ClauseIndexes`] for the Horn clauses. Non-Horn clauses
 /// are branch points handled by `find_open_disjunction`, not indexed.
-fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
+pub fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
     let mut ix = ClauseIndexes::default();
     let push = |v: &mut Vec<Vec<usize>>, key: usize, ci: usize| {
         if key >= v.len() {
@@ -599,7 +613,7 @@ fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
 /// `{A(X)} → ⊥` means "A is unsatisfiable" (not a pair), and a role-spanning
 /// body (`{A(X), R(X,Y), B(Y)} → ⊥`) is not a pairwise disjointness. Pairs
 /// are stored normalized (`lo.index() < hi.index()`).
-fn build_disjoint_pairs(clauses: &[DlClause]) -> std::collections::HashSet<(u32, u32)> {
+pub fn build_disjoint_pairs(clauses: &[DlClause]) -> std::collections::HashSet<(u32, u32)> {
     let mut set = std::collections::HashSet::new();
     for cl in clauses {
         if !cl.head.is_empty() || cl.body.len() != 2 {
@@ -628,12 +642,13 @@ impl<'c> HyperEngine<'c> {
         root_node.add(root, DepSet::EMPTY);
         Self {
             clauses,
-            disjoint_pairs: build_disjoint_pairs(clauses),
+            extra_clause: None,
+            disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
             nodes: vec![root_node],
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
-            indexes: build_clause_indexes(clauses),
+            indexes: std::sync::Arc::new(build_clause_indexes(clauses)),
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
@@ -647,6 +662,72 @@ impl<'c> HyperEngine<'c> {
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
+        }
+    }
+
+    /// Build an engine for `base_clauses` (the shared pre-indexed clause set)
+    /// plus a single extra clause (the per-probe Q-clause). Pre-built
+    /// `ClauseIndexes` and `disjoint_pairs` are accepted directly, already
+    /// including the index delta for the extra clause, avoiding the O(#clauses)
+    /// rebuild cost. See `docs/superpowers/specs/2026-06-16-soundcaching-design-and-gonogo.md` §5.
+    ///
+    /// The extra clause's logical index is `base_clauses.len()`; every
+    /// `get_clause(ci)` / `clause_count()` access routes through the
+    /// two-slice view.
+    #[must_use]
+    pub fn new_with_prebuilt(
+        base_clauses: &'c [DlClause],
+        extra: &'c DlClause,
+        root: ClassId,
+        indexes: std::sync::Arc<ClauseIndexes>,
+        disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+    ) -> Self {
+        let mut root_node = HyperNode {
+            order: 0,
+            ..HyperNode::default()
+        };
+        root_node.add(root, DepSet::EMPTY);
+        Self {
+            clauses: base_clauses,
+            extra_clause: Some(extra),
+            disjoint_pairs,
+            nodes: vec![root_node],
+            stats: SearchStats::default(),
+            init_depth: 0,
+            deadline: None,
+            indexes,
+            worklist: Vec::new(),
+            representative: vec![HNode(0)],
+            sub_roles: None,
+            neq: Vec::new(),
+            nominals: None,
+            clash_deps: DepSet::EMPTY,
+            double_blocking: false,
+            precise_card_deps: false,
+            block_index: None,
+            nn_taint_disabled: false,
+            snapshot_origin: vec![false],
+            snapshot_backprop_aborted: false,
+            lazy_replay_state: None,
+        }
+    }
+
+    /// Total logical clause count — `clauses.len()` plus 1 if there is
+    /// an `extra_clause` (the Q-clause in `classify_labels` probes).
+    fn clause_count(&self) -> usize {
+        self.clauses.len() + usize::from(self.extra_clause.is_some())
+    }
+
+    /// Retrieve clause `ci`. For `ci < clauses.len()` this is a direct
+    /// slice index; `ci == clauses.len()` routes to `extra_clause` (only
+    /// valid when `extra_clause.is_some()`). Panics on out-of-bounds
+    /// exactly as a slice index would.
+    fn get_clause(&self, ci: usize) -> &DlClause {
+        if ci < self.clauses.len() {
+            &self.clauses[ci]
+        } else {
+            self.extra_clause
+                .expect("ci == clauses.len() requires extra_clause to be set")
         }
     }
 
@@ -1456,12 +1537,13 @@ impl<'c> HyperEngine<'c> {
             .collect();
         let mut engine = Self {
             clauses,
-            disjoint_pairs: build_disjoint_pairs(clauses),
+            extra_clause: None,
+            disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
             nodes,
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
-            indexes: build_clause_indexes(clauses),
+            indexes: std::sync::Arc::new(build_clause_indexes(clauses)),
             worklist: Vec::new(),
             representative,
             sub_roles: None,
@@ -1528,11 +1610,11 @@ impl<'c> HyperEngine<'c> {
             let d = u32::try_from(self.init_depth - depth).unwrap_or(u32::MAX);
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
-            let head_len = self.clauses[ci].head.len();
+            let head_len = self.get_clause(ci).head.len();
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
             for k in 0..head_len {
-                let head_atom = self.clauses[ci].head[k];
+                let head_atom = self.get_clause(ci).head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
@@ -1637,8 +1719,8 @@ impl<'c> HyperEngine<'c> {
     fn find_open_disjunction(&self) -> Option<(usize, HNode, Binding)> {
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
-            for ci in 0..self.clauses.len() {
-                if self.clauses[ci].is_horn() {
+            for ci in 0..self.clause_count() {
+                if self.get_clause(ci).is_horn() {
                     continue;
                 }
                 let Some(bindings) = self.match_body(ci, node) else {
@@ -1658,7 +1740,7 @@ impl<'c> HyperEngine<'c> {
     /// the given binding (class label present, or `∃` witness found).
     fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
         let resolve = |v: Var| resolve_var(v, xnode, binding);
-        for head in &self.clauses[ci].head {
+        for head in &self.get_clause(ci).head {
             match head {
                 Atom::Class(c, v) => {
                     if let Some(t) = resolve(*v)
@@ -2015,7 +2097,7 @@ impl<'c> HyperEngine<'c> {
     /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
         // Disjunctive clauses are branch points, not Horn-fired here.
-        if !self.clauses[ci].is_horn() {
+        if !self.get_clause(ci).is_horn() {
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
@@ -2051,7 +2133,7 @@ impl<'c> HyperEngine<'c> {
         for &(_, node) in binding {
             deps = deps.union(self.nodes[node.index()].birth_deps);
         }
-        for atom in &self.clauses[ci].body {
+        for atom in &self.get_clause(ci).body {
             if let Atom::Class(c, v) = atom
                 && let Some(node) = resolve_var(*v, xnode, binding)
             {
@@ -2076,7 +2158,7 @@ impl<'c> HyperEngine<'c> {
     fn match_body(&self, ci: usize, node: HNode) -> Option<Vec<Binding>> {
         let mut role_atoms: Vec<(Role, Var, Var)> = Vec::new();
         let mut other_classes: Vec<(ClassId, Var)> = Vec::new();
-        let clause = &self.clauses[ci];
+        let clause = self.get_clause(ci);
         for atom in &clause.body {
             match atom {
                 Atom::Class(c, v) if *v == X => {
@@ -2172,7 +2254,7 @@ impl<'c> HyperEngine<'c> {
         binding: &Binding,
         body_deps: DepSet,
     ) -> FireOutcome {
-        let clause = &self.clauses[ci];
+        let clause = self.get_clause(ci);
         if clause.head.is_empty() {
             // body → ⊥ : the body matched, so this is a clash. Record
             // the dep-set so `solve` can backjump. If the clashing node

@@ -982,6 +982,18 @@ pub(crate) struct HyperCache {
     sup_neg: std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<owl_dl_core::clause::Atom>>,
     /// Fresh helper concept `q` for the `sub ⊓ ¬sup` injection.
     fresh_q: owl_dl_core::ir::ClassId,
+    /// Pre-built trigger indexes for `self.clauses` plus the Q-clause
+    /// delta (`x_trigger[fresh_q] += [clauses.len()]`). Built once in
+    /// `HyperCache::build` and shared via `Arc::clone` (O(1) ref-count
+    /// bump) across all `classify_labels` probes — eliminates the
+    /// O(#clauses) `build_clause_indexes` + clone cost per probe.
+    /// Indexes are **read-only after construction** — rayon safety holds.
+    /// See `docs/superpowers/specs/2026-06-16-soundcaching-design-and-gonogo.md` §5.
+    base_indexes: std::sync::Arc<owl_dl_tableau::hyper::ClauseIndexes>,
+    /// Pre-built pairwise-disjoint set for `self.clauses`. Shared via
+    /// `Arc::clone` per `classify_labels` probe (Q-clause is not
+    /// ⊥-headed so adds no new pairs — same set for every probe).
+    base_disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
 }
 
 impl HyperCache {
@@ -1023,10 +1035,40 @@ impl HyperCache {
             &mut clauses,
             &mut next_fresh,
         );
+        // Pre-build the trigger indexes and disjoint-pair set once from
+        // the base clause slice, then pre-apply the Q-clause delta so
+        // `classify_labels` probes need zero per-probe index work.
+        //
+        // Q-clause body is always {Class(fresh_q, X)} — the same trigger
+        // body for every probe. Its contribution is exactly one entry:
+        //   x_trigger[fresh_q.index()] += [clauses.len()]
+        // (clauses.len() is the Q-clause's logical index in every probe).
+        // We pre-populate this entry here so probes just Arc::clone the
+        // shared indexes in O(1) without any per-probe mutation.
+        //
+        // Soundness: `clauses.len()` is the index that `get_clause(ci)`
+        // will route to `extra_clause` — this is consistent with
+        // `HyperEngine::new_with_prebuilt` setting `extra_clause = &q_clause`
+        // with logical index `clauses.len()`. The delta is applied before
+        // Arc::new, so all shared probes see the same correct index.
+        let mut base_indexes_inner = owl_dl_tableau::hyper::build_clause_indexes(&clauses);
+        {
+            let q_ci = clauses.len(); // logical index of the Q-clause in every probe
+            let q_key = fresh_q.index() as usize;
+            if q_key >= base_indexes_inner.x_trigger.len() {
+                base_indexes_inner.x_trigger.resize(q_key + 1, Vec::new());
+            }
+            base_indexes_inner.x_trigger[q_key].push(q_ci);
+        }
+        let base_indexes = std::sync::Arc::new(base_indexes_inner);
+        let base_disjoint_pairs =
+            std::sync::Arc::new(owl_dl_tableau::hyper::build_disjoint_pairs(&clauses));
         Self {
             clauses,
             sup_neg,
             fresh_q,
+            base_indexes,
+            base_disjoint_pairs,
         }
     }
 
@@ -1083,13 +1125,31 @@ impl HyperCache {
     ) -> LabelOracle {
         use owl_dl_core::clause::{Atom, DlClause, X};
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
-        let mut clauses = self.clauses.clone();
-        // Single Q-clause: q ⊑ c. No negated sup (unlike `decide`).
-        clauses.push(DlClause {
+        // Clause-index amortization (§5 of the go/no-go spec):
+        // The Q-clause `q ⊑ c` varies only in its head class `c`; its
+        // body trigger ({Class(fresh_q, X)}) is identical across all
+        // 1585 probes. Rather than cloning the full base clause Vec and
+        // rebuilding ClauseIndexes + disjoint_pairs O(#clauses) per probe:
+        //   1. Allocate the Q-clause locally (zero base-clause allocation).
+        //   2. Share pre-built indexes + disjoint_pairs via Arc::clone (O(1)).
+        //   3. The Q-clause delta (x_trigger[fresh_q] += [clauses.len()])
+        //      was pre-applied in HyperCache::build — no per-probe work.
+        //   4. Pass `&self.clauses` directly (no clone) as the base slice.
+        let q_clause = DlClause {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(c, X)],
-        });
-        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        };
+        // O(1): share pre-built indexes and disjoint_pairs via Arc.
+        // The Q-clause delta (x_trigger[fresh_q] += [clauses.len()]) was
+        // pre-applied to base_indexes in HyperCache::build, so no per-probe
+        // mutation is needed here.
+        let mut engine = HyperEngine::new_with_prebuilt(
+            &self.clauses,
+            &q_clause,
+            self.fresh_q,
+            std::sync::Arc::clone(&self.base_indexes),
+            std::sync::Arc::clone(&self.base_disjoint_pairs),
+        );
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }

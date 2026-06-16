@@ -57,6 +57,21 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// A head disjunction of literals, sorted+deduped. Empty = `⊥`.
 type Clause = Vec<Literal>;
 
+/// `a ⊆ b` for two ascending-sorted literal slices (set subset).
+fn is_subset(a: &[Literal], b: &[Literal]) -> bool {
+    let mut j = 0;
+    for &x in a {
+        while j < b.len() && b[j] < x {
+            j += 1;
+        }
+        if j >= b.len() || b[j] != x {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
 /// Engine-internal mutable state layered over the frozen [`ContextGraph`].
 struct Engine<'a> {
     norm: &'a Normalized,
@@ -116,20 +131,62 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// Add a derived clause `head` (sorted+deduped) to context `v`. Returns
-    /// `true` if it was new. Enqueues `v` and its predecessors on change.
+    /// Add a derived clause `head` (sorted+deduped) to context `v`, applying the
+    /// redundancy gate (tautology deletion + forward/backward subsumption).
+    /// Returns `true` if it was stored. Enqueues `v` and its predecessors on
+    /// change. Every drop here removes only an *entailed* (redundant) clause, so
+    /// it can never lose a consequence ⟹ MISS-free, never an FP.
     fn add_clause(&mut self, v: ContextId, mut head: Clause) -> bool {
         head.sort_unstable();
         head.dedup();
+        // Tautology deletion: a head containing `Top` is `core ⊑ (… ⊔ ⊤)`,
+        // trivially true — no information.
+        if head
+            .iter()
+            .any(|&l| matches!(self.norm.pool.get(l), ConceptExpr::Top))
+        {
+            return false;
+        }
         let dc = DerivedClause {
             premise: Vec::new(),
             head,
         };
-        if self.graph.contexts[v].seen.contains(&dc) {
-            return false;
+        {
+            let ctx = &self.graph.contexts[v];
+            if ctx.seen.contains(&dc) {
+                return false;
+            }
+            // Forward subsumption: an existing stronger (subset) clause already
+            // entails this one.
+            if ctx.clauses.iter().any(|e| is_subset(&e.head, &dc.head)) {
+                return false;
+            }
         }
-        self.graph.contexts[v].seen.insert(dc.clone());
-        self.graph.contexts[v].clauses.push(dc);
+        // Backward subsumption: drop existing **purely-atomic** clauses that are
+        // strictly weaker (superset) than the new one. Restricted to purely-atomic
+        // heads so a `∃/∀`-bearing clause whose structural consequence may not
+        // have fired yet is never retracted (conservative — MISS-free).
+        let mut removed: Vec<DerivedClause> = Vec::new();
+        for e in &self.graph.contexts[v].clauses {
+            if e.head != dc.head
+                && is_subset(&dc.head, &e.head)
+                && e.head
+                    .iter()
+                    .all(|&l| matches!(self.norm.pool.get(l), ConceptExpr::Atomic(_)))
+            {
+                removed.push(e.clone());
+            }
+        }
+        let ctx = &mut self.graph.contexts[v];
+        if !removed.is_empty() {
+            let rm: BTreeSet<&DerivedClause> = removed.iter().collect();
+            ctx.clauses.retain(|e| !rm.contains(e));
+            for r in &removed {
+                ctx.seen.remove(r);
+            }
+        }
+        ctx.seen.insert(dc.clone());
+        ctx.clauses.push(dc);
         self.enqueue(v);
         // Predecessors may now be able to back-propagate.
         let preds: Vec<ContextId> = self.preds[v].iter().map(|(p, _, _)| *p).collect();
@@ -198,9 +255,30 @@ impl<'a> Engine<'a> {
             self.intern_context(core);
         }
 
+        let debug = std::env::var("RUSTDL_CB_DEBUG").is_ok();
+        if debug {
+            eprintln!("[cb] seeded {} root contexts", self.graph.contexts.len());
+        }
+        let mut dequeues: u64 = 0;
         while let Some(v) = self.dirty.pop_front() {
             self.in_queue[v] = false;
             self.process(v);
+            dequeues += 1;
+            if debug && dequeues.is_multiple_of(100) {
+                let total: usize = self.graph.contexts.iter().map(|c| c.clauses.len()).sum();
+                let max = self
+                    .graph
+                    .contexts
+                    .iter()
+                    .map(|c| c.clauses.len())
+                    .max()
+                    .unwrap_or(0);
+                eprintln!(
+                    "[cb] dequeues={dequeues} contexts={} total_clauses={total} max_clauses={max} queue={}",
+                    self.graph.contexts.len(),
+                    self.dirty.len()
+                );
+            }
         }
     }
 
@@ -233,19 +311,23 @@ impl<'a> Engine<'a> {
     ///
     /// For each ontology clause `⊓ᵢ Pᵢ ⊑ ⊔ M`, if each premise atom `Pᵢ` occurs
     /// in some derived clause `Nᵢ ⊔ {Pᵢ}` (with `Pᵢ` resolved away), derive
-    /// `(⋃ᵢ Nᵢ) ⊔ M`. This is the *unordered* form — it resolves on **any**
-    /// occurrence of `Pᵢ`, not only the maximal one.
+    /// `(⋃ᵢ Nᵢ) ⊔ M`. This is the **unordered** form — it resolves on *any*
+    /// occurrence of `Pᵢ`, which is directly complete for the positive read-off
+    /// (the root context of `A` derives the singleton `{B}` ⟺ `A ⊑ B`).
     ///
-    /// **Why unordered.** The ordering restriction (SKH Remark 5) preserves only
-    /// *refutational* completeness, which the §5.1 procedure exploits by seeding
-    /// the goal-directed contexts `H = A ⊓ ¬B` and deriving `⊥`. The frozen
-    /// model seeds exactly one root context per class (`core = {A}`) and reads
-    /// the *positive* hierarchy directly, so it must rely on the *direct*
-    /// completeness of the full (unordered) Table 3, where `O ⊢ H ⊑ A` for
-    /// every entailed atomic subsumption. Unordered resolution still terminates:
-    /// derived clauses are disjunctions over the finite literal vocabulary, so
-    /// each context has finitely many (≤ `2^vocab`) clauses (the `ExpTime`
-    /// bound).
+    /// **Why unordered, and how it still terminates fast.** The engine reads
+    /// positive units directly (not goal-directed refutation), so it relies on
+    /// the *direct* completeness of the full Table 3. Restricting resolution to
+    /// the ⊔-maximal atom (SKH Remark 5) breaks this — reasoning-by-cases
+    /// (`A⊑B⊔C, B⊑D, C⊑D ⟹ A⊑D`) needs *both* disjuncts resolved, but a single
+    /// total order leaves one buried whenever the consequence atom is maximal, so
+    /// the entailed unit is never derived. Instead the `2^vocab` clause explosion
+    /// is tamed by the **redundancy gate** in [`add_clause`] (tautology deletion +
+    /// forward/backward subsumption), which keeps only a subsumption-minimal
+    /// antichain: a derived unit `{B}` subsumes every `{B, …}` superset, so the
+    /// disjunctive fan-out collapses. Worst case stays `ExpTime` (ALCH
+    /// classification is `ExpTime`-complete), but real inputs (e.g. alehif)
+    /// saturate quickly.
     fn apply_hyper(&mut self, v: ContextId) {
         // Snapshot the current clauses.
         let clauses: Vec<Clause> = self.graph.contexts[v]
@@ -255,7 +337,10 @@ impl<'a> Engine<'a> {
             .collect();
 
         // Index: for each atom `p`, the residuals `N` of every derived clause
-        // `N ⊔ {p}` (p removed) — *any* occurrence, not only the maximal one.
+        // `N ⊔ {p}` (p removed) — *any* occurrence. Resolution is unordered (the
+        // full, directly-complete Table 3); the `2^vocab` blowup is tamed instead
+        // by the redundancy gate in `add_clause` (forward/backward subsumption),
+        // which keeps only a subsumption-minimal antichain of clauses.
         let mut by_atom: BTreeMap<ConceptId, Vec<Clause>> = BTreeMap::new();
         for c in &clauses {
             for (i, &lit) in c.iter().enumerate() {

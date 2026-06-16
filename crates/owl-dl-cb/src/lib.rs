@@ -42,10 +42,24 @@ pub struct CbHierarchy {
 /// Classify `internal` with the consequence-based engine.
 #[must_use]
 pub fn classify(internal: &InternalOntology) -> CbOutcome {
+    let dbg = std::env::var("RUSTDL_CB_DEBUG").is_ok();
+    if dbg {
+        eprintln!("[cb] classify: entering normalize");
+    }
     match normalize::normalize(internal) {
         Err(reason) => CbOutcome::OutOfFragment(reason),
         Ok(norm) => {
+            if dbg {
+                eprintln!(
+                    "[cb] normalize done: {} clauses, {} classes; entering saturate",
+                    norm.clauses.len(),
+                    norm.classes.len()
+                );
+            }
             let graph = engine::saturate(&norm);
+            if dbg {
+                eprintln!("[cb] saturate done; entering read_hierarchy");
+            }
             CbOutcome::Classified(classify::read_hierarchy(&norm, &graph))
         }
     }

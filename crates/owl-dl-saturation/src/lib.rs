@@ -69,8 +69,9 @@ use owl_dl_core::{
 #[must_use]
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     let n = internal.vocabulary.num_classes();
-    let role_super = build_role_super(internal);
-    let (rules, tseitin, num_total_classes) = collect_el_rules(internal, &role_super);
+    let role_super_map = build_role_super(internal);
+    let (rules, tseitin, num_total_classes) = collect_el_rules(internal, &role_super_map);
+    let role_super = freeze_role_super(&role_super_map);
     let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
     engine.seed();
     engine.run();
@@ -116,7 +117,11 @@ struct WorklistEngine {
     todo_unsat: VecDeque<ClassId>,
 
     rules: ElRules,
-    role_super: HashMap<RoleId, HashSet<RoleId>>,
+    /// Dense reflexive-transitive super-role closure indexed by `RoleId::index()`.
+    /// `role_super[r.index()]` is the sorted slice of all roles `s` with `r ⊑ s`
+    /// (including `r` itself). Built once from `build_role_super` via
+    /// `freeze_role_super`; enables O(1) Vec indexing in the hot saturation loop.
+    role_super: Vec<Box<[RoleId]>>,
     /// Dense per-class indices into `rules.conjunctive_triggers`.
     conjunctive_by_body: Vec<Vec<usize>>,
     /// Dense per-class indices into `rules.existential_triggers`.
@@ -175,7 +180,7 @@ impl WorklistEngine {
         num_total_classes: usize,
         rules: ElRules,
         tseitin: TseitinAllocator,
-        role_super: HashMap<RoleId, HashSet<RoleId>>,
+        role_super: Vec<Box<[RoleId]>>,
     ) -> Self {
         let mut conjunctive_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
         for (idx, trigger) in rules.conjunctive_triggers.iter().enumerate() {
@@ -586,7 +591,7 @@ impl WorklistEngine {
         {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
-                let fact_role_supers = supers_of(&self.role_super, fact.role);
+                let fact_role_supers = supers_of(&self.role_super, fact.role).to_vec();
                 for tidx in &trigger_idxs {
                     let trigger = self.rules.existential_triggers[*tidx];
                     if !fact_role_supers.contains(&trigger.role) {
@@ -612,7 +617,7 @@ impl WorklistEngine {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
                 let target_subsumers = self.supers_of_class(fact.target);
-                let fact_role_supers = supers_of(&self.role_super, fact.role);
+                let fact_role_supers = supers_of(&self.role_super, fact.role).to_vec();
                 for sub in target_subsumers {
                     if let Some(trigger_idxs) =
                         Some(self.existential_triggers_by_body[sub.index() as usize].clone())
@@ -750,7 +755,7 @@ impl WorklistEngine {
                 self.enqueue_forall_targets(fact.sub, fact.role, ind);
             }
         }
-        let role_supers = supers_of(&self.role_super, fact.role);
+        let role_supers = supers_of(&self.role_super, fact.role).to_vec();
         // NOTE: range propagation deliberately omitted.
         //
         // `ObjectPropertyRange(R, C)` is sound for instance reasoning:
@@ -995,12 +1000,15 @@ impl WorklistEngine {
     }
 }
 
-/// Look up the reflexive + transitive super-role closure for `r`,
-/// falling back to `[r]` if the closure has no entry.
-fn supers_of(role_super: &HashMap<RoleId, HashSet<RoleId>>, r: RoleId) -> Vec<RoleId> {
+/// Look up the reflexive-transitive super-role closure for `r`.
+///
+/// Returns a zero-alloc `&[RoleId]` slice from the dense Vec indexed by
+/// `r.index()`. Returns `&[]` for any out-of-bounds index (unreachable
+/// for vocabulary roles, which all lie in `0..role_super.len()`).
+fn supers_of(role_super: &[Box<[RoleId]>], r: RoleId) -> &[RoleId] {
     role_super
-        .get(&r)
-        .map_or_else(|| vec![r], |set| set.iter().copied().collect())
+        .get(r.index() as usize)
+        .map_or(&[], |b| b.as_ref())
 }
 
 /// Subsumer closure: for each class `C`, the set of named classes
@@ -2221,6 +2229,29 @@ fn not_atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<ClassId
             .collect(),
         _ => negated_atomic(c).into_iter().collect(),
     }
+}
+
+/// Convert the `HashMap` closure produced by `build_role_super` into a
+/// dense `Vec<Box<[RoleId]>>` indexed by `RoleId::index()`.
+///
+/// Each slot holds the sorted super-role slice for that role
+/// (including reflexive self), enabling O(1) `Vec` indexing in the
+/// hot saturation loop instead of `SipHash`-keyed `HashMap` lookups.
+///
+/// All vocabulary roles lie in `0..num_roles` by construction
+/// (dense sequential assignment), so every lookup is in-bounds.
+pub(crate) fn freeze_role_super(closure: &HashMap<RoleId, HashSet<RoleId>>) -> Vec<Box<[RoleId]>> {
+    let num_roles = closure.len();
+    let mut dense: Vec<Box<[RoleId]>> = vec![Box::new([]) as Box<[RoleId]>; num_roles];
+    for (&r, supers) in closure {
+        let idx = r.index() as usize;
+        if idx < num_roles {
+            let mut v: Vec<RoleId> = supers.iter().copied().collect();
+            v.sort_unstable_by_key(|x| x.index());
+            dense[idx] = v.into_boxed_slice();
+        }
+    }
+    dense
 }
 
 /// Build the reflexive-transitive closure of the named-role
@@ -3556,8 +3587,9 @@ Ontology(<http://rustdl.test/p2d/test>
         // Mirror saturate() inline so we retain ownership of the engine
         // and can inspect its internal facts_by_sub + counter.
         let n = internal.vocabulary.num_classes();
-        let role_super = build_role_super(&internal);
-        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
+        let role_super_map = build_role_super(&internal);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super_map);
+        let role_super = freeze_role_super(&role_super_map);
         let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
         engine.seed();
         engine.run();
@@ -3652,8 +3684,9 @@ Ontology(<http://rustdl.test/p2c_counter/test>
         // Mirror `saturate()` inline so we retain ownership of the
         // engine and can inspect its private counter.
         let n = internal.vocabulary.num_classes();
-        let role_super = build_role_super(&internal);
-        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super);
+        let role_super_map = build_role_super(&internal);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super_map);
+        let role_super = freeze_role_super(&role_super_map);
         let mut engine = WorklistEngine::new(n, num_total_classes, rules, tseitin, role_super);
         engine.seed();
         engine.run();

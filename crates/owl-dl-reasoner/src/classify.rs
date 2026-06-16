@@ -1530,33 +1530,68 @@ pub(crate) fn classify_top_down_internal(
                     u32::try_from(cand).expect("class index fits in u32"),
                 );
                 let mut local_stats = ClassificationStats::default();
-                // Defined-sup sweep. The `trust_sat` parameter is
-                // available here for future selective verification
-                // (the wedge's `NotSubsumed` is incomplete on
-                // functional-role + ≥n-with-disjointness, undercounting
-                // real entailments on GALEN/notgalen-style ontologies).
-                // Set to `false` here to disregard the wedge's Sat
-                // verdicts; we currently default to `true` because
-                // GALEN's 699 defined classes × ~2700 candidates =
-                // ~1.9M pair-tests is too expensive at any per-pair
-                // budget that's actually useful. Users who need full
-                // completeness can opt out of trust-Sat globally with
-                // `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` (slow, but recovers
-                // the ~109 GALEN / ~27 notgalen MISSED). Future work
-                // can wire a selective verification heuristic here.
-                let subsumed = subsumes_via_tableau(
-                    &prepared,
-                    cand_id,
-                    sup_id,
-                    Some(sweep_budget),
-                    global_deadline,
-                    true,
-                    &counting_relevant,
-                    &mut local_stats,
-                )
-                .ok()
-                .flatten()
-                .unwrap_or(false);
+                // Phase 7 label-heuristic gate — same logic as the tier
+                // walk's `find_direct_parents_top_down` inner loop.
+                // Gate on `labels(cand)` membership of `sup_id`:
+                //   Sat(labels) + sup_id ∉ labels → prune (sound
+                //     counterexample model; same oracle the wedge built).
+                //   Sat(labels) + sup_id ∈ labels → fall through to
+                //     subsumes_via_tableau (may be coincidence of model).
+                //   Unsat → vacuously subsumed (cand filtered by
+                //     unsatisfiable_idxs above, so this branch is
+                //     near-dead, but mirror for faithfulness).
+                //   NoVerdict | None → fall through (oracle incomplete;
+                //     wine's oracle is mostly NoVerdict, so wine's
+                //     verdicts are unchanged). RUSTDL_LABEL_HEURISTIC=0
+                //     makes the cache all-NoVerdict → full fall-through
+                //     (free opt-out, no new flag needed).
+                let subsumed = match label_cache.get(cand) {
+                    Some(crate::LabelOracle::Sat(labels)) => {
+                        if labels.contains(&sup_id) {
+                            // sup_id ∈ labels: might be coincidence of
+                            // model; verify via subsumes_via_tableau.
+                            local_stats.label_cache_pass_through += 1;
+                            subsumes_via_tableau(
+                                &prepared,
+                                cand_id,
+                                sup_id,
+                                Some(sweep_budget),
+                                global_deadline,
+                                true,
+                                &counting_relevant,
+                                &mut local_stats,
+                            )
+                            .ok()
+                            .flatten()
+                            .unwrap_or(false)
+                        } else {
+                            // sup_id ∉ labels: sound non-subsumption.
+                            local_stats.label_cache_pruned += 1;
+                            false
+                        }
+                    }
+                    Some(crate::LabelOracle::Unsat) => {
+                        // cand is unsatisfiable: vacuously subsumed.
+                        true
+                    }
+                    Some(crate::LabelOracle::NoVerdict) | None => {
+                        // Oracle incomplete — fall through to per-pair.
+                        local_stats.label_cache_misses += 1;
+                        subsumes_via_tableau(
+                            &prepared,
+                            cand_id,
+                            sup_id,
+                            Some(sweep_budget),
+                            global_deadline,
+                            true,
+                            &counting_relevant,
+                            &mut local_stats,
+                        )
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false)
+                    }
+                };
                 (cand, subsumed, local_stats)
             })
             .collect();
@@ -1577,6 +1612,9 @@ pub(crate) fn classify_top_down_internal(
             stats.snapshot_replay_not_subsumed += sd.snapshot_replay_not_subsumed;
             stats.snapshot_replay_aborts += sd.snapshot_replay_aborts;
             stats.snapshot_cache_falls_through += sd.snapshot_cache_falls_through;
+            stats.label_cache_pruned += sd.label_cache_pruned;
+            stats.label_cache_pass_through += sd.label_cache_pass_through;
+            stats.label_cache_misses += sd.label_cache_misses;
             for (k, v) in sd.pairs_per_sub {
                 *stats.pairs_per_sub.entry(k).or_insert(0) += v;
             }

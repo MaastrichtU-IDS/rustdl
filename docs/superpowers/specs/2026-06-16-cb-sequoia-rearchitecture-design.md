@@ -237,6 +237,36 @@ eligible and `A→D` is actually derived. A **subsumer-respecting order** (told 
   order-construction theory is the blocker and the re-architecture must pause for a
   verbatim Appendix-A extraction before S2+.**
 
+### 0.46 GAP-FOUND (S1 adversarial validation, 2026-06-16): the heuristic order is INCOMPLETE
+
+S1 built the subsumer-respecting heuristic order (told-subsumer-depth) and it
+PASSED the by-cases canary + bibtex, but volume fuzzing (sequoia vs the
+ALCH-complete B1) FALSIFIED ALCH parity: **5 MISSes / 243 in-fragment ALCH
+ontologies, FP=0.** Minimal witness (`/tmp/seqfuzz/GAP/minimal-gap.ofn`):
+`K1 ⊑ K3⊔K2 ; K3⊑⊥ ⟹ K1⊑K2` — B1 derives it, sequoia MISSES it when the dead
+disjunct K3 ranks `≻`-below the live K2 (order-of-interning-dependent; ~half of
+orderings mask it, which is why bibtex passed).
+
+**Root cause** (`seq_order.rs::build`): depth is credited ONLY from told UNIT
+clauses (`premise.len==1 ∧ head.len==1`). `K3⊑⊥` is `premise=[K3], head=[]` — a
+non-unit, invisible to the depth builder ⟹ the order is NOT subsumer-respecting
+for subsumptions arising from `⊥`-elimination OR disjunction-derived subsumers.
+The eligible-atom Hyper then can't fire the `⊥` propagation. **This is the exact
+§0.45 `D≻C≻B` blocking failure one step removed from told units.** Seed 166 MISSES
+with ZERO unsat classes — a separate `∀`/back-prop manifestation — so the hole is
+BROADER than the `⊥` case; a "credit ⊥-disjuncts" patch is whack-a-mole.
+
+**Conclusion: the told-unit-depth heuristic is the wrong order construction.** A
+correct order must credit ALL entailed subsumptions, not just told units — i.e.
+the verbatim **Sequoia Appendix-A order construction** (which the design extracted
+Theorem 2's *statement* + C2 but NOT the construction). S2+ is PAUSED per §0.45
+until the order is correct. Open question for the next stage: whether Appendix-A's
+order is even statically computable in rustdl's setting, or whether the
+direct-positive read-off is fundamentally fragile and the engine should instead
+keep B1's UNORDERED (directly-complete) resolution and solve termination a
+different way (the tension this whole arc keeps surfacing). Artifacts:
+`/tmp/seqfuzz/GAP/` (witnesses, VERIFY.sh, FINDINGS.md), `/tmp/seqfuzz/fuzz.py`.
+
 ### 0.5 Correction log (so the SKH-vs-Sequoia distinction is not re-lost)
 
 An earlier draft of §0 claimed Sequoia restores completeness via a **negative-

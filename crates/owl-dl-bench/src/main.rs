@@ -338,6 +338,7 @@ fn run(cli: Cli) -> Result<()> {
 
 #[cfg(feature = "whelk-compare")]
 fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
+    use owl_dl_core::convert::convert_ontology as core_convert;
     use whelk::whelk::owl::translate_ontology;
     use whelk::whelk::reasoner::assert as whelk_assert;
 
@@ -346,7 +347,7 @@ fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
     println!("file: {}", path.display());
     println!("iters: {iters} (first iteration discarded as warmup)\n");
 
-    // Time rustdl `classify`.
+    // Time rustdl `classify` (full: convert + saturate + classify_pure_el matrix).
     let mut rustdl_samples: Vec<std::time::Duration> = Vec::with_capacity(iters);
     let mut last_rustdl_stats = None;
     for _ in 0..iters {
@@ -357,15 +358,72 @@ fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
         rustdl_samples.push(elapsed);
     }
 
+    // Time rustdl `saturate()` only (convert_ontology + saturate, no classify matrix).
+    // This is the fair apples-to-apples comparison with whelk's `assert()`.
+    // The pair-count is computed OUTSIDE the timing window to avoid contaminating
+    // the measurement with an extra n² scan.
+    let mut rustdl_sat_samples: Vec<std::time::Duration> = Vec::with_capacity(iters);
+    let mut last_closure = None;
+    let mut last_internal = None;
+    for _ in 0..iters {
+        let start = Instant::now();
+        let internal = core_convert(&ontology).context("rustdl convert_ontology")?;
+        let closure = owl_dl_saturation::saturate(&internal);
+        let elapsed = start.elapsed();
+        last_closure = Some(closure);
+        last_internal = Some(internal);
+        rustdl_sat_samples.push(elapsed);
+    }
+    // Count non-reflexive named-to-named pairs in the saturation closure,
+    // excluding synthetics and Top/Bot. Computed outside the timing window.
+    let last_rustdl_sat_pairs: usize =
+        if let (Some(cl), Some(internal)) = (&last_closure, &last_internal) {
+            let n = internal.vocabulary.num_classes();
+            let mut count = 0usize;
+            for i in 0..n {
+                let ci = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits"));
+                let sub_iri = internal.vocabulary.class_iri(ci);
+                if sub_iri == "http://www.w3.org/2002/07/owl#Thing"
+                    || sub_iri == "http://www.w3.org/2002/07/owl#Nothing"
+                    || sub_iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                    || sub_iri.starts_with("urn:rustdl-")
+                {
+                    continue;
+                }
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    let cj = owl_dl_core::ClassId::new(u32::try_from(j).expect("fits"));
+                    let sup_iri = internal.vocabulary.class_iri(cj);
+                    if sup_iri == "http://www.w3.org/2002/07/owl#Thing"
+                        || sup_iri == "http://www.w3.org/2002/07/owl#Nothing"
+                        || sup_iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                        || sup_iri.starts_with("urn:rustdl-")
+                    {
+                        continue;
+                    }
+                    if cl.contains(ci, cj) {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        } else {
+            0
+        };
+
     // Time whelk: translate_ontology + assert (the saturation step).
     let mut whelk_samples: Vec<std::time::Duration> = Vec::with_capacity(iters);
     let mut last_whelk_subsumptions: usize = 0;
+    let mut last_whelk_state = None;
     for _ in 0..iters {
         let start = Instant::now();
         let translated = translate_ontology(&ontology);
         let state = whelk_assert(&translated);
         let elapsed = start.elapsed();
         last_whelk_subsumptions = state.named_subsumptions().len();
+        last_whelk_state = Some(state);
         whelk_samples.push(elapsed);
     }
 
@@ -376,14 +434,16 @@ fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
         let mean = total / u32::try_from(trimmed.len()).expect("iter count fits");
         let min = trimmed.iter().min().copied().unwrap_or_default();
         let max = trimmed.iter().max().copied().unwrap_or_default();
-        println!("{label:<10} mean={mean:>9.3?}  min={min:>9.3?}  max={max:>9.3?}");
+        println!("{label:<20} mean={mean:>9.3?}  min={min:>9.3?}  max={max:>9.3?}");
     };
-    summary("rustdl", &rustdl_samples);
-    summary("whelk", &whelk_samples);
+    summary("rustdl classify", &rustdl_samples);
+    summary("rustdl saturate()", &rustdl_sat_samples);
+    summary("whelk assert()", &whelk_samples);
+
     if let Some((classes, stats)) = last_rustdl_stats {
         println!();
         println!(
-            "rustdl: classes={classes} pure_el_mode={} sat_sub={} tab_sub={} sat_unsat={} tab_unsat={}",
+            "rustdl classify: classes={classes} pure_el_mode={} sat_sub={} tab_sub={} sat_unsat={} tab_unsat={}",
             stats.pure_el_mode,
             stats.saturation_subsumption_hits,
             stats.tableau_subsumption_calls,
@@ -391,7 +451,80 @@ fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
             stats.tableau_unsat_calls,
         );
     }
-    println!("whelk: derived {last_whelk_subsumptions} named subsumptions");
+    println!("rustdl saturate(): non-reflexive pairs in full closure = {last_rustdl_sat_pairs}");
+    println!(
+        "whelk assert(): named_subsumptions (includes reflexive + ⊑Top) = {last_whelk_subsumptions}"
+    );
+
+    // Closure set comparison: build (sub_iri, sup_iri) pairs from both engines,
+    // normalized to exclude reflexive and ⊑ owl:Thing / ⊑ owl:Nothing edges,
+    // restricted to declared named classes. Diff surfaces any genuine disagreement.
+    println!("\n--- Closure diff (declared named classes, excluding reflexive and ⊑Top/Bot) ---");
+    let internal_for_diff = core_convert(&ontology).context("convert for diff")?;
+    let closure_for_diff = owl_dl_saturation::saturate(&internal_for_diff);
+    let vocab = &internal_for_diff.vocabulary;
+    let n = vocab.num_classes();
+    // Build rustdl set: (class_iri, class_iri) for named classes only,
+    // excluding Top/Bot and DKey/aux synthetics.
+    let mut rustdl_pairs: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::default();
+    for i in 0..n {
+        let ci = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits"));
+        let sub_iri = vocab.class_iri(ci);
+        if sub_iri == "http://www.w3.org/2002/07/owl#Thing"
+            || sub_iri == "http://www.w3.org/2002/07/owl#Nothing"
+            || sub_iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+            || sub_iri.starts_with("urn:rustdl-")
+        {
+            continue;
+        }
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let cj = owl_dl_core::ClassId::new(u32::try_from(j).expect("fits"));
+            let sup_iri = vocab.class_iri(cj);
+            if sup_iri == "http://www.w3.org/2002/07/owl#Thing"
+                || sup_iri == "http://www.w3.org/2002/07/owl#Nothing"
+                || sup_iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)
+                || sup_iri.starts_with("urn:rustdl-")
+            {
+                continue;
+            }
+            if closure_for_diff.contains(ci, cj) {
+                rustdl_pairs.insert((sub_iri.to_string(), sup_iri.to_string()));
+            }
+        }
+    }
+    // Build whelk set: from the last whelk state, collect all AtomicConcept pairs,
+    // excluding reflexive and ⊑ owl:Thing / ⊑ owl:Nothing.
+    let mut whelk_pairs: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::default();
+    if let Some(ref ws) = last_whelk_state {
+        for (sub_name, sup_name) in ws.named_subsumptions() {
+            if sub_name == sup_name {
+                continue;
+            }
+            if sup_name == "http://www.w3.org/2002/07/owl#Thing"
+                || sup_name == "http://www.w3.org/2002/07/owl#Nothing"
+                || sub_name == "http://www.w3.org/2002/07/owl#Thing"
+                || sub_name == "http://www.w3.org/2002/07/owl#Nothing"
+            {
+                continue;
+            }
+            whelk_pairs.insert((sub_name.to_string(), sup_name.to_string()));
+        }
+    }
+    let rustdl_only: Vec<_> = rustdl_pairs.difference(&whelk_pairs).take(10).collect();
+    let whelk_only: Vec<_> = whelk_pairs.difference(&rustdl_pairs).take(10).collect();
+    println!("rustdl normalized pairs: {}", rustdl_pairs.len());
+    println!("whelk  normalized pairs: {}", whelk_pairs.len());
+    println!("in rustdl only (first 10): {rustdl_only:?}");
+    println!("in whelk only  (first 10): {whelk_only:?}");
+    println!(
+        "symmetric diff total: {}",
+        rustdl_pairs.symmetric_difference(&whelk_pairs).count()
+    );
     Ok(())
 }
 

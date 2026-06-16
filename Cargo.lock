@@ -1023,7 +1023,9 @@ dependencies = [
  "anyhow",
  "clap",
  "horned-owl",
+ "owl-dl-core",
  "owl-dl-reasoner",
+ "owl-dl-saturation",
  "pprof",
  "serde",
  "serde_json",
@@ -1031,6 +1033,14 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "whelk",
+]
+
+[[package]]
+name = "owl-dl-cb"
+version = "0.3.8"
+dependencies = [
+ "hashbrown 0.15.5",
+ "owl-dl-core",
 ]
 
 [[package]]

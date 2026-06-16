@@ -58,34 +58,68 @@ pub(crate) fn read_hierarchy(norm: &Normalized, graph: &SeqGraph) -> CbHierarchy
         }
     }
 
-    // Root context per reportable class (core == {A-atom}).
-    let mut root_of: BTreeMap<ClassId, usize> = BTreeMap::new();
-    for &cls in &norm.classes {
-        let Some(&atom) = class_atom.get(&cls) else {
-            continue;
-        };
-        let mut core = BTreeSet::new();
-        core.insert(atom);
-        if let Some(&cid) = graph.by_core.get(&core) {
-            root_of.insert(cls, cid);
-        }
-    }
-
     // Direct subsumptions + unsat via the `∈̂` read-off (Def-4): head ⊆ {sup}.
+    //
+    // Two regimes (mirror `seq_engine::order_regime`):
+    // - R2 (`per_class`, default): one root context per class, cored `{A}`,
+    //   reused via `by_core`. Harvest ALL unit/empty heads from it.
+    // - R1 (`per_query`): one root QUERY context per `(A,B)` pair, cored `{A}`
+    //   with `B` head-minimal, in `by_query`. Read the specific pair from its
+    //   own context (`A → B` iff `→ B` or `→ ⊥` is in `S_{q_(A,B)}`).
+    let per_query = matches!(std::env::var("RUSTDL_CB_ORDER").as_deref(), Ok("per_query"));
     let mut direct: BTreeMap<ClassId, BTreeSet<ClassId>> = BTreeMap::new();
-    for (&cls, &cid) in &root_of {
-        let ctx = &graph.contexts[cid];
-        let has_bot = ctx.clauses.iter().any(|c| c.head.is_empty());
-        if has_bot {
-            out.unsat.insert(cls);
-        }
-        for c in &ctx.clauses {
-            // `Δ' ⊆ {sup}`: a unit head `{sup}` witnesses `A → sup`.
-            if c.head.len() == 1
-                && let Some(&sup) = atom_class.get(&c.head[0])
-                && sup != cls
+
+    if per_query {
+        for ((core, head), &cid) in &graph.by_query {
+            // core is the singleton `{A}` here.
+            let Some(&sub_atom) = core.iter().next() else {
+                continue;
+            };
+            let Some(&sub) = atom_class.get(&sub_atom) else {
+                continue;
+            };
+            let ctx = &graph.contexts[cid];
+            let has_bot = ctx.clauses.iter().any(|c| c.head.is_empty());
+            if has_bot {
+                out.unsat.insert(sub);
+            }
+            if let Some(&sup) = atom_class.get(head)
+                && sup != sub
+                && ctx
+                    .clauses
+                    .iter()
+                    .any(|c| c.head.is_empty() || (c.head.len() == 1 && c.head[0] == *head))
             {
-                direct.entry(cls).or_default().insert(sup);
+                direct.entry(sub).or_default().insert(sup);
+            }
+        }
+    } else {
+        // R2: root context per reportable class (core == {A-atom}).
+        let mut root_of: BTreeMap<ClassId, usize> = BTreeMap::new();
+        for &cls in &norm.classes {
+            let Some(&atom) = class_atom.get(&cls) else {
+                continue;
+            };
+            let mut core = BTreeSet::new();
+            core.insert(atom);
+            if let Some(&cid) = graph.by_core.get(&core) {
+                root_of.insert(cls, cid);
+            }
+        }
+        for (&cls, &cid) in &root_of {
+            let ctx = &graph.contexts[cid];
+            let has_bot = ctx.clauses.iter().any(|c| c.head.is_empty());
+            if has_bot {
+                out.unsat.insert(cls);
+            }
+            for c in &ctx.clauses {
+                // `Δ' ⊆ {sup}`: a unit head `{sup}` witnesses `A → sup`.
+                if c.head.len() == 1
+                    && let Some(&sup) = atom_class.get(&c.head[0])
+                    && sup != cls
+                {
+                    direct.entry(cls).or_default().insert(sup);
+                }
             }
         }
     }

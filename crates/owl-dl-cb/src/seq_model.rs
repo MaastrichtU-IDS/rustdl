@@ -76,4 +76,8 @@ pub(crate) struct SeqContext {
 pub(crate) struct SeqGraph {
     pub(crate) contexts: Vec<SeqContext>,
     pub(crate) by_core: hashbrown::HashMap<BTreeSet<Atom>, ContextId>,
+    /// R1 (`RUSTDL_CB_ORDER=per_query`) only: root query contexts keyed by
+    /// `(core, head)` — NOT by `by_core` alone, which would wrongly merge
+    /// `(A,B1)` and `(A,B2)` (identical core, different head-minimal orders).
+    pub(crate) by_query: hashbrown::HashMap<(BTreeSet<Atom>, ConceptId), ContextId>,
 }

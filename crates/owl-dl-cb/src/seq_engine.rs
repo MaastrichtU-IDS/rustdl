@@ -21,9 +21,25 @@
 
 use crate::normalize::Normalized;
 use crate::seq_model::{Atom, ContextId, SeqClause, SeqContext, SeqEdge, SeqGraph, SeqLit};
-use crate::seq_order::OrderBuilder;
+use crate::seq_order::{OrderBuilder, OrderMode};
 use owl_dl_core::ir::{ConceptExpr, ConceptId, Role};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// The order regime selected by `RUSTDL_CB_ORDER` (`per_class` [default, R2] |
+/// `per_query` [R1, Theorem-2-exact: one context per `(A,B)` query pair, head
+/// `≻`-minimal]). See `seq_order.rs` / the extraction PART 4 item 5.
+fn order_regime() -> OrderRegime {
+    match std::env::var("RUSTDL_CB_ORDER").as_deref() {
+        Ok("per_query") => OrderRegime::PerQuery,
+        _ => OrderRegime::PerClass,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OrderRegime {
+    PerClass,
+    PerQuery,
+}
 
 /// `a ⊆ b` for two ascending-sorted literal slices (set subset). NOTE: the head
 /// is sorted by `≻ᵥ`, but subset on a sorted-by-key slice still needs a true set
@@ -48,6 +64,7 @@ type PredEdge = (ContextId, Vec<SeqLit>);
 struct SeqEngine<'a> {
     norm: &'a Normalized,
     order: OrderBuilder,
+    regime: OrderRegime,
     graph: SeqGraph,
     /// Predecessors of each context: `(parent, residual)`. A child reflects `⊥`
     /// (under the residual) to each parent here.
@@ -63,6 +80,7 @@ impl<'a> SeqEngine<'a> {
         Self {
             norm,
             order,
+            regime: order_regime(),
             graph: SeqGraph::default(),
             preds: Vec::new(),
             dirty: VecDeque::new(),
@@ -124,28 +142,57 @@ impl<'a> SeqEngine<'a> {
         false
     }
 
-    /// Find-or-create the context whose core is exactly `core`. `query` is
-    /// `Some(atom)` for a root classification context (forces it `≻`-minimal),
-    /// `None` for a successor context. Seeds the core as Core units, enqueues.
-    fn intern_context(&mut self, core: BTreeSet<Atom>, query: Option<ConceptId>) -> ContextId {
+    /// Find-or-create the context whose core is exactly `core`. The per-context
+    /// three-tier order (dead-maximal / live / core-minimal) is materialised from
+    /// `core`. Seeds the core as Core units, enqueues.
+    fn intern_context(&mut self, core: BTreeSet<Atom>) -> ContextId {
         if let Some(&id) = self.graph.by_core.get(&core) {
             return id;
         }
+        let order = self.order.per_context(&core);
+        let id = self.alloc_context(core.clone(), order);
+        self.graph.by_core.insert(core, id);
+        id
+    }
+
+    /// R1 (`per_query`): find-or-create the ROOT query context for the pair
+    /// `(core, head)`, with the head atom forced `≻`-minimal (Condition C2).
+    /// Keyed by `(core, head)` so distinct query subsumers do NOT merge.
+    fn intern_query_context(&mut self, core: BTreeSet<Atom>, head: ConceptId) -> ContextId {
+        let key = (core.clone(), head);
+        if let Some(&id) = self.graph.by_query.get(&key) {
+            return id;
+        }
+        let order = self
+            .order
+            .per_context_mode(&core, OrderMode::PerQuery(head));
+        let id = self.alloc_context(core, order);
+        self.graph.by_query.insert(key, id);
+        id
+    }
+
+    /// Allocate a fresh context with the given `core` + `order`, seed the core as
+    /// Core units, register bookkeeping, and enqueue. Does NOT touch `by_core` /
+    /// `by_query` — the caller owns the reuse-key insertion.
+    fn alloc_context(
+        &mut self,
+        core: BTreeSet<Atom>,
+        order: crate::seq_order::PerContextOrder,
+    ) -> ContextId {
         let id = self.graph.contexts.len();
-        let order = self.order.per_context(query);
         let mut ctx = SeqContext {
-            core: core.clone(),
+            core,
             order,
             ..SeqContext::default()
         };
         // Core: seed each core atom as a unit clause `→ A`.
-        for &a in &core {
+        let core_atoms: Vec<Atom> = ctx.core.iter().copied().collect();
+        for a in core_atoms {
             let cl = SeqClause { head: vec![a] };
             ctx.seen.insert(cl.clone());
             ctx.clauses.push(cl);
         }
         self.graph.contexts.push(ctx);
-        self.graph.by_core.insert(core, id);
         self.preds.push(Vec::new());
         self.in_queue.push(false);
         self.enqueue(id);
@@ -234,16 +281,37 @@ impl<'a> SeqEngine<'a> {
 
     /// Saturate to fixpoint.
     fn run(&mut self) {
-        // Seed one root context per reportable class, each query-minimal at its
-        // own atom (Condition C2).
-        let mut roots: Vec<ConceptId> = Vec::new();
-        for &c in &self.norm.classes {
-            roots.push(self.atom_of_class(c));
-        }
-        for a in roots {
-            let mut core = BTreeSet::new();
-            core.insert(a);
-            self.intern_context(core, Some(a));
+        let roots: Vec<ConceptId> = self
+            .norm
+            .classes
+            .iter()
+            .map(|&c| self.atom_of_class(c))
+            .collect();
+        match self.regime {
+            // R2 (default): one root context per reportable class, cored `{A}`;
+            // the read-off harvests all subsumers `B` of `A` from it.
+            OrderRegime::PerClass => {
+                for a in roots {
+                    let mut core = BTreeSet::new();
+                    core.insert(a);
+                    self.intern_context(core);
+                }
+            }
+            // R1 (Theorem-2-exact): one root QUERY context per `(A, B)` pair,
+            // cored `{A}` with the head atom `B` forced `≻`-minimal (C2). Keyed by
+            // `(core, head)` so `(A,B1)` and `(A,B2)` do not merge.
+            OrderRegime::PerQuery => {
+                for &a in &roots {
+                    for &b in &roots {
+                        if a == b {
+                            continue;
+                        }
+                        let mut core = BTreeSet::new();
+                        core.insert(a);
+                        self.intern_query_context(core, b);
+                    }
+                }
+            }
         }
 
         let debug = std::env::var("RUSTDL_CB_DEBUG").is_ok();
@@ -387,7 +455,7 @@ impl<'a> SeqEngine<'a> {
             }
         }
         for (r, core, residual) in succ_requests {
-            let u = self.intern_context(core, None);
+            let u = self.intern_context(core);
             self.link_edge(v, u, r, residual);
         }
 
@@ -425,7 +493,7 @@ impl<'a> SeqEngine<'a> {
             }
         }
         for (r, core, residual) in forall_links {
-            let u = self.intern_context(core, None);
+            let u = self.intern_context(core);
             self.link_edge(v, u, r, residual);
         }
     }
@@ -607,6 +675,68 @@ mod tests {
             subsumes(&h, 3, 0),
             "A(3) ⊑ D(0) under subsumer-respecting order (adversarial ids)"
         );
+    }
+
+    // ── Three-tier order regression: the dead-MAXIMAL tier ──────────────────
+    // minimal-gap shape: K1 ⊑ K3 ⊔ K2, K3 ⊑ ⊥ ⊢ K1 ⊑ K2. The told-unit-depth
+    // builder gave K3 (globally unsat) no rank, so the ConceptId tie could rank
+    // K2 ≻ K3 and block the ⊥-elimination of K3 from the disjunction. Tier-1
+    // (global_unsat ⟹ dead ⟹ ≻-maximal) fixes it deterministically.
+    #[test]
+    fn minimal_gap_global_unsat_disjunct_resolved() {
+        let mut b = B::new();
+        let (k1, k2, k3) = (b.class(1), b.class(2), b.class(3));
+        let (e1, e2, e3) = (b.atom(k1), b.atom(k2), b.atom(k3));
+        b.clause(vec![e1], vec![e3, e2]); // K1 ⊑ K3 ⊔ K2
+        b.clause(vec![e3], vec![]); // K3 ⊑ ⊥
+        let h = classify_built(&b.finish());
+        assert!(
+            subsumes(&h, 1, 2),
+            "K1 ⊑ K2 via dead-maximal elimination of the unsat disjunct K3"
+        );
+        assert!(h.unsat.contains(&ClassId::new(3)), "K3 unsat");
+    }
+
+    // ADVERSARIAL interning for minimal-gap: the dead disjunct interned with a
+    // SMALLER id than the live one (so a depth+ConceptId tie would rank it
+    // BELOW the live disjunct). Tier-1 must still derive K1 ⊑ K2.
+    #[test]
+    fn minimal_gap_dead_disjunct_smaller_id() {
+        let mut b = B::new();
+        // dead = class 0 (smallest id), live = class 1, core = class 2.
+        let (dead, live, core) = (b.class(0), b.class(1), b.class(2));
+        let (ed, el, ec) = (b.atom(dead), b.atom(live), b.atom(core));
+        b.clause(vec![ec], vec![ed, el]); // core ⊑ dead ⊔ live
+        b.clause(vec![ed], vec![]); // dead ⊑ ⊥
+        let h = classify_built(&b.finish());
+        assert!(
+            subsumes(&h, 2, 1),
+            "core ⊑ live even with dead interned at the smallest id (tier-1 dead-maximal)"
+        );
+    }
+
+    // ── Told-disjoint-from-core tier (seed166 shape) ────────────────────────
+    // A ⊑ X ⊔ Y ⊔ Z, A ⊓ Y ⊑ ⊥, A ⊓ Z ⊑ ⊥, X ≡ W ⊢ A ⊑ W. In context A both
+    // Y and Z are told-disjoint-from-core ⟹ contextually DEAD ⟹ ≻-maximal, so
+    // they are Hyper-resolved out of the disjunction leaving X, then X⊑W gives
+    // A ⊑ W. The two-atom empty-head clauses ({A,Y}→{}, {A,Z}→{}) feed the
+    // per-context dead tier (symmetric lookup).
+    #[test]
+    fn told_disjoint_from_core_disjuncts_resolved() {
+        let mut b = B::new();
+        let (a, x, y, z, w) = (b.class(0), b.class(1), b.class(2), b.class(3), b.class(4));
+        let (ea, ex, ey, ez, ew) = (b.atom(a), b.atom(x), b.atom(y), b.atom(z), b.atom(w));
+        b.clause(vec![ea], vec![ex, ey, ez]); // A ⊑ X ⊔ Y ⊔ Z
+        b.clause(vec![ea, ey], vec![]); // A ⊓ Y ⊑ ⊥
+        b.clause(vec![ea, ez], vec![]); // A ⊓ Z ⊑ ⊥
+        b.clause(vec![ex], vec![ew]); // X ⊑ W
+        b.clause(vec![ew], vec![ex]); // W ⊑ X (X ≡ W)
+        let h = classify_built(&b.finish());
+        assert!(
+            subsumes(&h, 0, 4),
+            "A ⊑ W: Y,Z told-disjoint-from-core are dead-maximal, resolved out, leaving X⊑W"
+        );
+        assert!(subsumes(&h, 0, 1), "A ⊑ X (the surviving disjunct)");
     }
 
     // FP guard: disjunction alone gives no unit subsumption.

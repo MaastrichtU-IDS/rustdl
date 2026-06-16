@@ -267,6 +267,41 @@ keep B1's UNORDERED (directly-complete) resolution and solve termination a
 different way (the tension this whole arc keeps surfacing). Artifacts:
 `/tmp/seqfuzz/GAP/` (witnesses, VERIFY.sh, FINDINGS.md), `/tmp/seqfuzz/fuzz.py`.
 
+### 0.47 RESOLVED via primary-source extraction (Appendix A) — the fix is a dead-maximal tier
+
+Full extraction + spec: `docs/superpowers/specs/2026-06-16-cb-sequoia-order-extraction-and-spec.md`
+(from the arXiv **LaTeX tarball** `proof-order.tex` — the Appendix-A construction ar5iv omits).
+It CORRECTS two things in §0.45/§0.46 above:
+
+1. **§0.45's C2 reading was INVERTED.** Theorem-2 C2 (verbatim) quantifies over the
+   query **head** `Δ_Q`: for `A⊑B` it forces the **subsumer `B` ≻-MINIMAL**, not the
+   body `A`. So §0.45's "counterexample" order `D≻C≻B≻A` (with `D` the head, ≻-maximal)
+   is **NOT a C2 order** — it violates C2. Under a correct order the by-cases derives
+   `A→D` directly. My §0.45 "any C2 order misses" is therefore wrong as stated; the real
+   defect was narrower (below).
+2. **The actual construction** is an **LPO induced by the a-term order `⋗`, with
+   concept-symbol precedence ARBITRARY** — NOT "told-subsumer-depth," NOT "subsumer-
+   respecting." For the ALCH read-off it reduces to a total concept-name precedence;
+   the binding constraint is C2 (per-query) or the empirical three-tier order (per-class).
+
+**The narrow, real defect (and the fix).** All 5 fuzz misses (§0.46) are ONE order gap,
+NOT an engine gap (seed-166's "∀/back-prop" hypothesis is FALSIFIED — it's pure
+propositional + disjointness). The hole: a **contextually-dead atom** `X` (where
+`O⊨A⊓X⊑⊥`) must be `≻`-MAXIMAL so the empty-head clause (`{X}→{}` global-unsat, or
+`{A,X}→{}` told-disjoint) is Hyper-eligible to resolve `X` OUT of a disjunction
+`A→…⊔X⊔…`. The told-UNIT-depth heuristic gave dead atoms no rank ⟹ they could tie below
+a live disjunct ⟹ MISS (interning-order-dependent). **Fix = three-tier per-context order:
+dead-MAXIMAL (from empty-head clauses + told-disjoint-from-core) > live (subsumer-
+respecting depth — my heuristic, correct for the unit-chain) > core-MINIMAL.** Three
+traces (by-cases, minimal-gap, seed-166) confirm derivability (extraction §3.2–3.4).
+
+**Regimes:** R2 = one context per class + the three-tier order = empirically complete
+(B1-parity status, fuzz-validated — NOT Theorem-2-inherited, since no single head atom is
+minimal). R1 = one context per query clause `(A,B)` with head `B` minimal (C2-exact),
+keyed by `(core,head)` = literally Theorem-2-complete = the sound FALLBACK for any
+residual R2 miss. The `∈̂` read-off stays syntactic (Def-4); a candidate-model read-off is
+NOT the answer. Build R2, gate it on the fuzz suite, fall to R1 only on a measured residual.
+
 ### 0.5 Correction log (so the SKH-vs-Sequoia distinction is not re-lost)
 
 An earlier draft of §0 claimed Sequoia restores completeness via a **negative-

@@ -1,8 +1,8 @@
 //! Read the atomic-class hierarchy off the saturated context graph (Task B).
 
+use crate::CbHierarchy;
 use crate::model::ContextGraph;
 use crate::normalize::Normalized;
-use crate::CbHierarchy;
 
 /// Read the (transitively closed) atomic-class subsumption relation + the
 /// unsatisfiable set from the saturated graph.

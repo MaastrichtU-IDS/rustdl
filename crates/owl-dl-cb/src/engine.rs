@@ -319,7 +319,7 @@ impl<'a> Engine<'a> {
         self.apply_succ_and_forall(v);
         self.apply_at_most(v);
         self.apply_eq_discharge(v);
-        self.apply_eq_neq_clash(v);
+        self.apply_eq_resolution(v);
         self.apply_back_prop(v);
     }
 
@@ -741,42 +741,80 @@ impl<'a> Engine<'a> {
         self.register_edge(v, u, EdgeKind::Merge, res);
     }
 
-    /// §2.4 same-pair clash. If a context derives a **unit** `{Eq(s,t)}` (a forced
-    /// equality, empty residual) AND a **unit** `{Neq(s,t)}` (a forced
-    /// inequality) on the same canonical pair, derive `⊥`. This is the only
-    /// place `Neq` is consumed (fixture 47: `≥2 r.A` ⇒ `Neq(s,t)`, `≤1 r.A` ⇒
-    /// forced `Eq(s,t)`). Both must be FORCED (unit) — a multi-literal
-    /// disjunction containing `Eq`/`Neq` is not a commitment, so no clash.
+    /// §10.1 general `Eq/Neq` resolution (closes the cardinality pigeonhole).
     ///
-    /// **Known completeness gap (sound MISS, FP=0; §3.4 reserve).** Being
-    /// unit-only, this misses every `≥n R.A ⊓ ≤m R.A` conflict with `n > m ≥ 2`
-    /// (a CORE ALCHQ pigeonhole UNSAT): `≥n` emits unit `Neq`s but `≤m` emits a
-    /// *disjunction* `⋁ Eq` (never a unit `Eq`), and the speculative merges'
-    /// union-cores are satisfiable so the discharge reflects nothing. Fixture 47
-    /// passes only because `m=1` ⇒ the `≤1` choose emits a single-pair unit
-    /// `{Eq}`. The sound closure is the general §2.4 Eq/Neq resolution
-    /// (`{R ⊔ Eq(s,t)}, {R' ⊔ Neq(s,t)} ⟹ {R ⊔ R'}`), deferred (FP-critical,
-    /// beyond the B2 deliverable). Pinned by the ignored canaries
-    /// `tier2_min3_max2_pigeonhole_unsat_missed` +
-    /// `tier2_residual_conditioned_neq_eq_clash_missed`.
-    fn apply_eq_neq_clash(&mut self, v: ContextId) {
-        let mut forced_eq: BTreeSet<(TermId, TermId)> = BTreeSet::new();
-        let mut forced_neq: BTreeSet<(TermId, TermId)> = BTreeSet::new();
-        for dc in &self.graph.contexts[v].clauses {
-            if dc.head.len() == 1 {
-                match dc.head[0] {
+    /// For any two stored clauses at `v`, `C₁ = R ⊔ Eq(s,t)` and
+    /// `C₂ = R′ ⊔ Neq(s,t)` where `(s,t)` are the SAME canonical pair (union-find
+    /// representatives, min/max), derive `R ⊔ R′` via [`Self::add_clause`]. `R`,
+    /// `R′` are the remaining literals (any mix of `Concept`/`Eq`/`Neq`, possibly
+    /// empty). This is plain binary resolution on the complementary literal
+    /// `(s=t)`/`(s≠t)`: `R ∨ R′` holds in **all** models, so it is FP-safe (§10.2)
+    /// — it resolves only the sound stored clause heads (the `r≤` disjunction §4.1
+    /// and the `≥n` `Neq` facts §2.1), never speculative-merge-internal state
+    /// (merges are edge-only, never set `merged_into`, so `find` is identity here).
+    ///
+    /// The **unit case** `R = R′ = ∅` yields the empty clause = `⊥` — exactly the
+    /// former same-pair clash (`tier2_neq_meets_forced_eq_is_bot`), now subsumed.
+    ///
+    /// Keying by the canonical pair gives FP-guard (a) structurally: `Eq` and
+    /// `Neq` on DIFFERENT pairs land in different buckets and never cross-resolve.
+    /// Lives entirely in the equality stratum — `apply_hyper` is untouched.
+    fn apply_eq_resolution(&mut self, v: ContextId) {
+        // Snapshot heads; bucket each clause's residual (clause minus the pivot
+        // literal) by the canonical `Eq`/`Neq` pair it carries.
+        let clauses: Vec<Clause> = self.graph.contexts[v]
+            .clauses
+            .iter()
+            .map(|dc| dc.head.clone())
+            .collect();
+        let mut eq_by_pair: BTreeMap<(TermId, TermId), Vec<Clause>> = BTreeMap::new();
+        let mut neq_by_pair: BTreeMap<(TermId, TermId), Vec<Clause>> = BTreeMap::new();
+        for head in &clauses {
+            for (i, lit) in head.iter().enumerate() {
+                match lit {
                     HeadLit::Eq(s, t) => {
-                        forced_eq.insert((s.min(t), s.max(t)));
+                        let (cs, ct) = (self.find(*s), self.find(*t));
+                        if cs == ct {
+                            continue; // reflexive — not a resolvable Eq.
+                        }
+                        let mut residual = head.clone();
+                        residual.remove(i);
+                        eq_by_pair
+                            .entry((cs.min(ct), cs.max(ct)))
+                            .or_default()
+                            .push(residual);
                     }
                     HeadLit::Neq(s, t) => {
-                        forced_neq.insert((s.min(t), s.max(t)));
+                        let (cs, ct) = (self.find(*s), self.find(*t));
+                        if cs == ct {
+                            continue; // Neq(s,s) is false — not a resolvable Neq.
+                        }
+                        let mut residual = head.clone();
+                        residual.remove(i);
+                        neq_by_pair
+                            .entry((cs.min(ct), cs.max(ct)))
+                            .or_default()
+                            .push(residual);
                     }
                     HeadLit::Concept(_) => {}
                 }
             }
         }
-        if forced_eq.intersection(&forced_neq).next().is_some() {
-            self.add_clause(v, Vec::new()); // ⊥
+        let mut resolvents: Vec<Clause> = Vec::new();
+        for (pair, eq_residuals) in &eq_by_pair {
+            let Some(neq_residuals) = neq_by_pair.get(pair) else {
+                continue;
+            };
+            for er in eq_residuals {
+                for nr in neq_residuals {
+                    let mut head = er.clone();
+                    head.extend_from_slice(nr);
+                    resolvents.push(head);
+                }
+            }
+        }
+        for h in resolvents {
+            self.add_clause(v, h);
         }
     }
 

@@ -183,19 +183,14 @@ fn tier2_neq_meets_forced_eq_is_bot() {
     assert_unsat(&c, "Test");
 }
 
-/// CHARACTERIZED MISS (sound, FP=0 — NOT a failure to force; recorded per the
-/// §3.4 reserve-mode boundary). `C ⊑ (≥2 r.A ⊔ E) ⊓ ≤1 r.A` ⟹ `C ⊑ E`
-/// (hybrid derives it). CB MISSES it: the `Neq(s,t)` (from `≥2`, riding residual
-/// `{E}`) and the forced `Eq(s,t)` (from `≤1`, riding residual `{E}`) both carry
-/// the residual, so neither is a *unit* clause; `apply_eq_neq_clash` fires only
-/// on FORCED (unit) Eq+Neq, and the union-core `{A}` is satisfiable so the
-/// discharge reflects nothing. The sound closure is the general §2.4 Eq/Neq
-/// resolution (`{R ⊔ Eq} , {R' ⊔ Neq} ⟹ {R ⊔ R'}`) — deferred as §3.4 reserve
-/// (FP-critical, beyond the B2 deliverable). FP=0 is preserved (`only_in_cb=0`):
-/// the uncertainty biases to a MISS, never an FP.
+/// §10 CLOSURE (was a characterized MISS). `C ⊑ (≥2 r.A ⊔ E) ⊓ ≤1 r.A` ⟹
+/// `C ⊑ E`. The `Neq(s,t)` (from `≥2`, riding residual `{E}`) and the `Eq(s,t)`
+/// (from `≤1`, riding residual `{E}`) both carry the residual, so neither is a
+/// unit clause — the former unit-only same-pair clash MISSED it. The general
+/// §10.1 `Eq/Neq` resolution (`{E ⊔ Eq} , {E ⊔ Neq} ⟹ {E}`) now derives it
+/// (sound binary resolution, §10.2; FP=0).
 #[test]
-#[ignore = "characterized MISS: residual-conditioned Eq/Neq clash needs §2.4 general resolution (§3.4 reserve)"]
-fn tier2_residual_conditioned_neq_eq_clash_missed() {
+fn tier2_residual_conditioned_neq_eq_clash_resolves() {
     let c = classify_alchq(
         "Declaration(Class(:A))\n\
          Declaration(Class(:C))\n\
@@ -213,19 +208,14 @@ fn tier2_residual_conditioned_neq_eq_clash_missed() {
     );
 }
 
-/// CHARACTERIZED MISS (sound, FP=0). The CORE case of the unit-only same-pair
-/// clash limitation: `≥n R.A ⊓ ≤m R.A` with `n > m ≥ 2` is UNSAT (pigeonhole),
-/// but CB MISSES it. `≥3` emits 3 UNIT `Neq` pairs; `≤2` (on 3 witnesses) emits
-/// the 3-way disjunction `{Eq12,Eq13,Eq23}` — never a unit `Eq` — and each
-/// speculative merge's union-core `{A}` is satisfiable, so the discharge
-/// reflects nothing and `apply_eq_neq_clash` (unit-Eq-only) never fires.
-/// Fixture 47 (`≥2 ⊓ ≤1`) passes only because `m=1` makes `≤2` emit a *single*
-/// pair `{Eq}` (a unit). So the gap is precisely `n > m ≥ 2` — a CORE ALCHQ
-/// pattern, NOT exotic. Closure = general §2.4 Eq/Neq resolution (§3.4 reserve).
-/// FP=0 preserved (CB reports SAT where the truth is UNSAT — a MISS, never FP).
+/// §10 CLOSURE (was the CORE characterized MISS). `≥n R.A ⊓ ≤m R.A` with
+/// `n > m ≥ 2` is UNSAT (pigeonhole). `≥3` emits 3 UNIT `Neq` pairs; `≤2` (on 3
+/// witnesses) emits the 3-way disjunction `{Eq12,Eq13,Eq23}` — never a unit
+/// `Eq`. The general §10.1 `Eq/Neq` resolution collapses it: resolve
+/// `{Eq12,Eq13,Eq23}` with `{Neq12}` → `{Eq13,Eq23}`, with `{Neq13}` →
+/// `{Eq23}`, with `{Neq23}` → `{}` = `⊥` ⇒ UNSAT (§10.3). Sound (§10.2; FP=0).
 #[test]
-#[ignore = "characterized MISS: ≥n⊓≤m (n>m≥2) needs §2.4 general Eq/Neq resolution (§3.4 reserve)"]
-fn tier2_min3_max2_pigeonhole_unsat_missed() {
+fn tier2_min3_max2_pigeonhole_unsat() {
     let c = classify_alchq(
         "Declaration(Class(:A))\n\
          Declaration(Class(:Test))\n\
@@ -235,4 +225,48 @@ fn tier2_min3_max2_pigeonhole_unsat_missed() {
              ObjectMaxCardinality(2 :r :A)))\n",
     );
     assert_unsat(&c, "Test");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §10.5 FP-guard canaries for the general Eq/Neq resolution rule
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// FP guard (a): `Eq` and `Neq` on DIFFERENT pairs must NOT resolve. A real unit
+/// `Eq` on the s-pair (`≤1 s.⊤` forces the merge of the distinct, NON-disjoint
+/// `B`- and `C`-witnesses — union-core `{B,C}` is SAT) coexists with a unit `Neq`
+/// on the r-pair (from `≥2 r.A`). Correct pair-keying ⇒ different canonical pairs
+/// ⇒ no resolvent ⇒ SAT. A pair-ignoring bug would resolve `{Eq(sB,sC)}` against
+/// `{Neq(r1,r2)}` → `{}` = `⊥` ⇒ spurious UNSAT. Sharp discriminator.
+#[test]
+fn tier2_eq_neq_different_pairs_no_resolution_stays_sat() {
+    let c = classify_alchq(
+        "Declaration(Class(:A))\n\
+         Declaration(Class(:B))\n\
+         Declaration(Class(:C))\n\
+         Declaration(Class(:Test))\n\
+         Declaration(ObjectProperty(:r))\n\
+         Declaration(ObjectProperty(:s))\n\
+         SubClassOf(:Test ObjectIntersectionOf(\n\
+             ObjectMinCardinality(2 :r :A)\n\
+             ObjectMaxCardinality(1 :s owl:Thing)\n\
+             ObjectSomeValuesFrom(:s :B)\n\
+             ObjectSomeValuesFrom(:s :C)))\n",
+    );
+    assert_sat(&c, "Test");
+}
+
+/// FP guard (b): `≥2 r.A ⊓ ≤2 r.A` (n ≤ m, no pigeonhole) stays SAT. The 2 `Neq`
+/// witnesses and the `≤2` obligation (only 2 witnesses, n+1=3 not reached) ⇒ no
+/// `r≤` Eq-disjunction is emitted at all ⇒ no resolution ⇒ SAT.
+#[test]
+fn tier2_min2_max2_no_pigeonhole_stays_sat() {
+    let c = classify_alchq(
+        "Declaration(Class(:A))\n\
+         Declaration(Class(:Test))\n\
+         Declaration(ObjectProperty(:r))\n\
+         SubClassOf(:Test ObjectIntersectionOf(\n\
+             ObjectMinCardinality(2 :r :A)\n\
+             ObjectMaxCardinality(2 :r :A)))\n",
+    );
+    assert_sat(&c, "Test");
 }

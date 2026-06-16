@@ -799,3 +799,70 @@ disjoint_unsat` case-exhaustion) remain the headline acceptance tests — the UN
 now passes via the recursive discharge. Independent opus re-review of §9.2–9.4 (the
 recursive rule's soundness + the corrected trace) is folded into the pre-merge review
 already required by §8.2.
+
+---
+
+# 10. CLOSURE — general `Eq/Neq` resolution (closes the cardinality pigeonhole) — AUTHORITATIVE
+
+The first B2 build (commits `3dde6b8`..`89d4212`) shipped sound (FP=0) but with the
+same-pair `Eq/Neq` clash implemented **unit-only**, so it MISSES `≥n R.A ⊓ ≤m R.A`
+with `n>m≥2` (the cardinality **pigeonhole**, core ALCHQ) and the residual-conditioned
+variant. The two MISSes are pinned by `#[ignore]`d canaries
+`tier2_min3_max2_pigeonhole_unsat_missed` (cb_tier2.rs:57) and
+`tier2_residual_conditioned_neq_eq_clash_missed` (cb_tier2.rs:208). This section is the
+authoritative closure for full ALCHQ completeness.
+
+## 10.1 The rule (`apply_eq_resolution`)
+
+> **General `Eq/Neq` resolution.** For any two stored clauses at a context `v`,
+> `C₁ = R ⊔ Eq(s,t)` and `C₂ = R′ ⊔ Neq(s,t)` where `(s,t)` are the **union-find
+> representatives** of the same pair (`find(s),find(t)`, canonicalized `min/max` as in
+> `add_clause`), derive `R ⊔ R′` via `add_clause(v, …)`. `R`, `R′` are the rest of each
+> clause (any mix of `Concept`/`Eq`/`Neq` literals; possibly empty).
+
+- The **unit case** `R=R′=∅` is the existing same-pair clash → `⊥`. This rule strictly
+  generalizes it; keep the unit clash or subsume it under this rule.
+- Lives **entirely in the equality stratum**: it consumes/produces `HeadLit` clauses but
+  the *resolved literal* is the `Eq`/`Neq` pair — `apply_hyper` (concept resolution) is
+  untouched and stays unordered. No new ordering on concept atoms.
+- Route results through `add_clause` (tautology + forward/backward subsumption +
+  union-find canonicalization) exactly like every other derived clause. Add
+  `apply_eq_resolution(v)` to the per-context `process(v)` saturation step.
+
+## 10.2 Soundness (FP-safe — standard binary resolution)
+
+`Eq(s,t)` ≙ `s=t`, `Neq(s,t)` ≙ `s≠t` are complementary. From `core ⊑ R∨(s=t)` and
+`core ⊑ R′∨(s≠t)`: in any model of `core`, `(s=t)` is true or false; if true the second
+clause forces `R′`, if false the first forces `R`; either way `R∨R′` holds. So `R⊔R′` is
+valid in **all** models ⇒ never an FP. This is plain resolution on the literal `(s=t)`;
+no speculative state, no chosen identification (it resolves *derived sound clauses* — the
+`r≤` clause §4.1 and the `≥n` `Neq` facts §2.1 are both sound). **It is cleaner than and
+independent of the speculative-merge path (§9): that path handles distinctness arising
+from a clashing union-core; this rule handles distinctness arising from an explicit
+`Neq` (from `≥n`).** Both coexist.
+
+## 10.3 Pigeonhole trace (`≥3 r.A ⊓ ≤2 r.A`)
+
+`≥3` mints `sA1,sA2,sA3` (core `{A}`) + unit `Neq` clauses `{Neq12},{Neq13},{Neq23}`.
+`≤2` (3 witnesses) ⇒ `r≤` clause `{Eq12,Eq13,Eq23}`. Resolve with `{Neq12}` → `{Eq13,Eq23}`;
+with `{Neq13}` → `{Eq23}`; with `{Neq23}` → `{}` = `⊥`. UNSAT ✓. Residual-conditioned
+`(≥2 r.A ⊔ E) ⊓ ≤1 r.A`: the `≥2` `Neq` and the `≤1` `Eq` both carry residual `E`;
+`{Eq12 ⊔ E}` resolves with `{Neq12 ⊔ E}` → `{E}` ⇒ `C ⊑ E` ✓.
+
+## 10.4 Termination
+
+`Eq/Neq` literals range over the finite live-term-pair set of `v`; resolution produces
+clauses over the same finite `HeadLit` vocabulary; the redundancy gate keeps a
+subsumption-minimal antichain; `merged_into` monotone. Bounded, ExpTime worst case
+unchanged.
+
+## 10.5 Acceptance (closure gate)
+
+- **Un-ignore** `tier2_min3_max2_pigeonhole_unsat_missed` + `tier2_residual_conditioned_
+  neq_eq_clash_missed` → both PASS.
+- **New FP-guard canaries:** `Eq`/`Neq` on DIFFERENT pairs must NOT resolve (no spurious
+  `⊥`); `≥2 r.A ⊓ ≤2 r.A` (no pigeonhole, `n≤m`) stays SAT.
+- All prior 64 active tests still green; the §8.1 FP-guard SAT canary still SAT.
+- bibtex + fixtures 41–49 `cb-diff`: `only_in_cb=0` (FP=0 hard gate) preserved.
+- clippy `-D warnings` + fmt clean. Independent adversarial re-check of §10.2 (no FP) +
+  termination before merge.

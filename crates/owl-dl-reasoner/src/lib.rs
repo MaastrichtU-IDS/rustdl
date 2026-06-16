@@ -3199,6 +3199,158 @@ where
     }
 }
 
+// ---------------------------------------------------------------------------
+// Proof API (Track B)
+// ---------------------------------------------------------------------------
+
+pub use owl_dl_saturation::proof::{
+    AxiomRef, DerivedFact, ElRule, Inference, ProofNode, ProofTrace, ProveResult, check_proof,
+    prove_subsumption, render_proof,
+};
+pub use owl_dl_saturation::{SaturateConfig, saturate_with_config};
+
+/// Step-level proof result, boxed to avoid large-size enum variants.
+#[derive(Debug)]
+pub struct SaturatorProofData {
+    /// The root of the proof tree.
+    pub root: ProofNode,
+    /// The `ProofTrace` used.
+    pub trace: ProofTrace,
+    /// Number of declared classes (for vocabulary lookups).
+    pub vocab_num_classes: usize,
+    /// Number of axioms in the `InternalOntology` (for axiom-ref range checks).
+    pub num_axioms: usize,
+}
+
+/// Result of a `prove_entailment` call.
+#[derive(Debug)]
+pub enum ProveEntailmentResult {
+    /// Step-level proof from the EL saturator.
+    SaturatorProof(Box<SaturatorProofData>),
+    /// The entailment is not in the saturation fragment; axiom-level justification.
+    JustificationFallback(justify::Justification<horned_owl::model::RcStr>),
+    /// The entailment does not hold.
+    NotEntailed,
+}
+
+/// Prove a `sub ⊑ sup` entailment: run the saturator with proof recording and
+/// return either a step-level proof tree (EL fragment) or check if held (via
+/// the general reasoner) + note that the step proof is unavailable.
+///
+/// For the full justification fallback (with axiom sets), use [`prove_entailment_rcstr`].
+///
+/// This forces `record_proofs: true` regardless of `RUSTDL_PROOF`.
+///
+/// # Errors
+/// Propagates `ReasonError` from conversion.
+pub fn prove_entailment<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    sub_iri: &str,
+    sup_iri: &str,
+) -> Result<ProveEntailmentResult, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let sub_opt = internal.vocabulary.class_id(sub_iri);
+    let sup_opt = internal.vocabulary.class_id(sup_iri);
+    let (Some(sub), Some(sup)) = (sub_opt, sup_opt) else {
+        return Ok(ProveEntailmentResult::NotEntailed);
+    };
+
+    let cfg = SaturateConfig {
+        record_proofs: true,
+    };
+    let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+
+    if subs.contains(sub, sup) {
+        let trace = maybe_trace.unwrap_or_default();
+        let mut memo = std::collections::HashMap::new();
+        if let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) {
+            return Ok(ProveEntailmentResult::SaturatorProof(Box::new(
+                SaturatorProofData {
+                    root,
+                    vocab_num_classes: internal.vocabulary.num_classes(),
+                    num_axioms: internal.axioms.len(),
+                    trace,
+                },
+            )));
+        }
+    }
+
+    // Check if the entailment holds at all.
+    let held = is_subclass_of(ontology, sub_iri, sup_iri)?;
+    if !held {
+        return Ok(ProveEntailmentResult::NotEntailed);
+    }
+
+    // Held but not in saturation fragment; no justification available in generic path.
+    // (Use prove_entailment_rcstr for the full justification fallback.)
+    Ok(ProveEntailmentResult::JustificationFallback(
+        justify::Justification {
+            axioms: vec![],
+            fragment: classify::FragmentClassification::OutOfFragment,
+            minimal_guaranteed: false,
+        },
+    ))
+}
+
+/// Variant of `prove_entailment` for `SetOntology<RcStr>` (the common case
+/// used by the CLI and most tests), which supports the justification fallback.
+///
+/// # Errors
+/// Propagates `ReasonError`.
+pub fn prove_entailment_rcstr(
+    ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+    sub_iri: &str,
+    sup_iri: &str,
+) -> Result<ProveEntailmentResult, ReasonError> {
+    use justify::Entailment;
+
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let sub_opt = internal.vocabulary.class_id(sub_iri);
+    let sup_opt = internal.vocabulary.class_id(sup_iri);
+
+    // If classes not found, not entailed.
+    let (Some(sub), Some(sup)) = (sub_opt, sup_opt) else {
+        return Ok(ProveEntailmentResult::NotEntailed);
+    };
+
+    let cfg = SaturateConfig {
+        record_proofs: true,
+    };
+    let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+
+    if subs.contains(sub, sup) {
+        let trace = maybe_trace.unwrap_or_default();
+        let mut memo = std::collections::HashMap::new();
+        if let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) {
+            return Ok(ProveEntailmentResult::SaturatorProof(Box::new(
+                SaturatorProofData {
+                    vocab_num_classes: internal.vocabulary.num_classes(),
+                    num_axioms: internal.axioms.len(),
+                    root,
+                    trace,
+                },
+            )));
+        }
+    }
+
+    // Check if the entailment holds at all (possibly via tableau).
+    let held = is_subclass_of(ontology, sub_iri, sup_iri)?;
+    if !held {
+        return Ok(ProveEntailmentResult::NotEntailed);
+    }
+
+    // Holds but not in saturation fragment — axiom-level justification.
+    let q = Entailment::SubClassOf {
+        sub: sub_iri.to_string(),
+        sup: sup_iri.to_string(),
+    };
+    match justify::find_one_justification(ontology, &q) {
+        Ok(Some(j)) => Ok(ProveEntailmentResult::JustificationFallback(j)),
+        Ok(None) => Ok(ProveEntailmentResult::NotEntailed),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

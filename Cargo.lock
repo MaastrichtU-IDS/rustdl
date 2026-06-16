@@ -1050,6 +1050,7 @@ dependencies = [
  "anyhow",
  "clap",
  "horned-owl",
+ "owl-dl-core",
  "owl-dl-reasoner",
  "tracing",
  "tracing-subscriber",

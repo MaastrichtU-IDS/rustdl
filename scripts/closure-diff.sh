@@ -146,15 +146,18 @@ for label in "${FIXTURE_ORDER[@]}"; do
       -- --ignored --nocapture "$test_name" 2>&1
   )" || test_rc=$?
 
-  # Check for SKIP (fixture missing)
-  if echo "$test_output" | grep -q "SKIP: missing"; then
+  # Parse the metrics first.  For corpus tests (e.g. corpus_closure_matches_konclude)
+  # some *other* fixtures in the same test may print "SKIP: missing fixture" while the
+  # target fixture still produces valid rustdl_closure= lines.  Only skip if no
+  # rustdl_closure= line was produced for this fixture.
+  read -r rclosure kclosure fp missed < <(parse_diff_output "$test_output")
+
+  # If we couldn't extract any metric, then this fixture is genuinely absent.
+  if [[ "$rclosure" == "?" && "$fp" == "?" ]]; then
     echo "  SKIP (fixture not present)" >&2
     emit_row "$label" "?" "?" "?" "?" "SKIP: fixture not present"
     continue
   fi
-
-  # Parse the metrics
-  read -r rclosure kclosure fp missed < <(parse_diff_output "$test_output")
 
   # Determine result
   result="ok (FP=0 MISSED=${missed})"

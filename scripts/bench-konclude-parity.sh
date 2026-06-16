@@ -310,9 +310,17 @@ for label in "${LABELS[@]}"; do
 
   # --- rustdl MT ---
   echo "  rustdl MT ..." >&2
-  read -r wallmt _f2 _t2 _c2 < <(
+  read -r wallmt frag_mt timed_out_mt classes_mt < <(
     median_rustdl "$ofn" --pair-timeout-ms "$local_pair_ms"
   )
+
+  # If 1T DNFed, take frag/classes from the MT run (which completes).
+  # The MT run uses the same budget so its frag and timed_out are valid.
+  if [[ "$wall1" == "DNF" ]]; then
+    frag="$frag_mt"
+    timed_out="$timed_out_mt"
+    classes="$classes_mt"
+  fi
 
   # --- Konclude ---
   # pizza: save output to oracle dir so closure-diff can use it

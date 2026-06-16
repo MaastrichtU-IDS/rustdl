@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use fixedbitset::FixedBitSet;
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
 use rayon::prelude::*;
@@ -60,10 +61,12 @@ fn reportable_class_iris(internal: &InternalOntology) -> Vec<String> {
 pub struct Classification {
     classes: Vec<String>,
     index: HashMap<String, usize>,
-    /// `entailed[i][j]` is true iff `classes[i] ⊑ classes[j]` in the
-    /// input ontology (including reflexive entries `i == j`). Stored
-    /// as a row-major bit-vector via `Vec<bool>`.
-    entailed: Vec<Vec<bool>>,
+    /// `entailed[i].contains(j)` is true iff `classes[i] ⊑ classes[j]`
+    /// in the input ontology (including reflexive entries `i == j`).
+    /// Stored as a row-major `FixedBitSet` so the O(n²) `Vec<Vec<bool>>`
+    /// allocation is replaced by a dense bitset (64× smaller footprint,
+    /// word-level iteration in `equivalent_classes` / `direct_subsumers`).
+    entailed: Vec<FixedBitSet>,
     unsatisfiable_idxs: HashSet<usize>,
     stats: ClassificationStats,
 }
@@ -293,7 +296,7 @@ impl Classification {
         let (Some(&i), Some(&j)) = (self.index.get(sub), self.index.get(sup)) else {
             return false;
         };
-        self.entailed[i][j]
+        self.entailed[i].contains(j)
     }
 
     /// All classes equivalent to `c` (including `c` itself). Empty if
@@ -304,7 +307,7 @@ impl Classification {
             return Vec::new();
         };
         (0..self.classes.len())
-            .filter(|&j| self.entailed[i][j] && self.entailed[j][i])
+            .filter(|&j| self.entailed[i].contains(j) && self.entailed[j].contains(i))
             .map(|j| self.classes[j].as_str())
             .collect()
     }
@@ -320,7 +323,7 @@ impl Classification {
         let n = self.classes.len();
         // First: every strict super (i ⊑ j, not j ⊑ i).
         let strict_supers: Vec<usize> = (0..n)
-            .filter(|&j| j != i && self.entailed[i][j] && !self.entailed[j][i])
+            .filter(|&j| j != i && self.entailed[i].contains(j) && !self.entailed[j].contains(i))
             .collect();
         // Then: prune any `j` for which there is a `k` strictly
         // between i and j (i ⊑ k ⊑ j, neither equivalent).
@@ -328,9 +331,9 @@ impl Classification {
             .iter()
             .copied()
             .filter(|&j| {
-                !strict_supers
-                    .iter()
-                    .any(|&k| k != j && self.entailed[k][j] && !self.entailed[j][k])
+                !strict_supers.iter().any(|&k| {
+                    k != j && self.entailed[k].contains(j) && !self.entailed[j].contains(k)
+                })
             })
             .map(|j| self.classes[j].as_str())
             .collect()
@@ -627,13 +630,13 @@ pub(crate) fn classify_internal_with_timeout(
     // run them in parallel; reduce into the entailment matrix and
     // stats counters. Skip rows where `i` is unsatisfiable (it
     // subsumes everything trivially — fill the row).
-    let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
+    let mut entailed: Vec<FixedBitSet> = (0..n).map(|_| FixedBitSet::with_capacity(n)).collect();
     let mut work: Vec<(usize, usize)> = Vec::new();
     #[allow(clippy::needless_range_loop)]
     for i in 0..n {
-        entailed[i][i] = true;
+        entailed[i].insert(i);
         if unsatisfiable_idxs.contains(&i) {
-            entailed[i].iter_mut().take(n).for_each(|v| *v = true);
+            entailed[i].insert_range(..n);
             continue;
         }
         for j in 0..n {
@@ -696,7 +699,7 @@ pub(crate) fn classify_internal_with_timeout(
         } else {
             stats.tableau_subsumption_calls += 1;
         }
-        entailed[i][j] = is_entailed;
+        entailed[i].set(j, is_entailed);
     }
     let _ = satisfiable; // currently informational only
     Ok(Classification {
@@ -724,36 +727,45 @@ fn classify_pure_el(
         fragment: analyze_fragment(internal),
         ..ClassificationStats::default()
     };
+
+    // Pass 1 — identify unsatisfiable classes (O(n) via the closure bitset).
+    // Build the unsatisfiable bitset directly for O(1) per-bit membership test
+    // in the subsumption read-off below.
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
-    let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
-    for (i, row) in entailed.iter_mut().enumerate().take(n) {
-        row[i] = true;
-        let class_id =
-            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-        if closure.is_unsatisfiable(class_id) {
+    let unsat_bs = closure.unsatisfiable_bitset();
+    for i in 0..n {
+        if i < unsat_bs.len() && unsat_bs.contains(i) {
             unsatisfiable_idxs.insert(i);
             stats.saturation_unsat_hits += 1;
-            for v in row.iter_mut() {
-                *v = true;
-            }
         }
     }
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..n {
+
+    // Pass 2 — build the entailed bitset rows in one pass over the closure.
+    // For an unsat class i: all n bits set (⊥ subsumes everything).
+    // For a sat class i: copy the closure row for i, restricted to [0,n),
+    //   then clear bits for unsat j (unsat classes are ⊑ ⊥, not ⊒ others),
+    //   then set the reflexive bit i. Count non-reflexive, non-unsat-j hits
+    //   as saturation_subsumption_hits, matching the original counter semantics.
+    let mut entailed: Vec<FixedBitSet> = (0..n).map(|_| FixedBitSet::with_capacity(n)).collect();
+    for (i, row) in entailed.iter_mut().enumerate() {
+        row.insert(i); // reflexive
+        let class_id =
+            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
         if unsatisfiable_idxs.contains(&i) {
+            row.insert_range(..n);
             continue;
         }
-        let sub_class =
-            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-        #[allow(clippy::needless_range_loop)]
-        for j in 0..n {
-            if i == j || unsatisfiable_idxs.contains(&j) {
-                continue;
-            }
-            let super_class =
-                owl_dl_core::ClassId::new(u32::try_from(j).expect("class index fits in u32"));
-            if closure.contains(sub_class, super_class) {
-                entailed[i][j] = true;
+        if let Some(closure_row) = closure.subsumers_bitset(class_id) {
+            // Iterate over set bits in the closure row; restrict to j < n and
+            // skip unsat j (mirrors the original `for j in 0..n` loop semantics).
+            for j in closure_row.ones() {
+                if j >= n {
+                    break; // synthetic Tseitin/DKey id — outside user vocabulary
+                }
+                if j == i || unsatisfiable_idxs.contains(&j) {
+                    continue; // reflexive already set; unsat-j skipped per original
+                }
+                row.insert(j);
                 stats.saturation_subsumption_hits += 1;
             }
         }
@@ -779,7 +791,13 @@ fn classify_inconsistent(
     fragment: FragmentClassification,
 ) -> Classification {
     let n = classes.len();
-    let entailed = vec![vec![true; n]; n];
+    let entailed: Vec<FixedBitSet> = (0..n)
+        .map(|_| {
+            let mut bs = FixedBitSet::with_capacity(n);
+            bs.insert_range(..n);
+            bs
+        })
+        .collect();
     let unsatisfiable_idxs: HashSet<usize> = (0..n).collect();
     let stats = ClassificationStats {
         inconsistent: true,
@@ -1717,25 +1735,26 @@ pub(crate) fn classify_top_down_internal(
     // 2. **Reflexive + unsat-row trivial fill.**
     // 3. **Tableau-derived direct supers** from the top-down walk,
     //    transitively closed via BFS over `direct_supers`.
-    let mut entailed: Vec<Vec<bool>> = vec![vec![false; n]; n];
+    let mut entailed: Vec<FixedBitSet> = (0..n).map(|_| FixedBitSet::with_capacity(n)).collect();
     for i in 0..n {
-        entailed[i][i] = true;
+        entailed[i].insert(i);
         if unsatisfiable_idxs.contains(&i) {
-            entailed[i].iter_mut().take(n).for_each(|v| *v = true);
+            entailed[i].insert_range(..n);
             continue;
         }
         // Closure seed.
         let i_id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-        for sup in closure.subsumers_of(i_id) {
-            let j = sup.index() as usize;
-            if j < n {
-                entailed[i][j] = true;
+        if let Some(row) = closure.subsumers_bitset(i_id) {
+            for j in row.ones() {
+                if j < n {
+                    entailed[i].insert(j);
+                }
             }
         }
         // BFS over direct_supers starting from `i` to pick up the
         // tableau-derived transitive closure. Tracked via a
         // `visited` set so we descend through every reached node
-        // exactly once — `entailed[i][j]` may already be true from
+        // exactly once — `entailed[i].contains(j)` may already be true from
         // the closure seed above, but we still need to follow
         // `direct_supers[j]` to catch tableau-only ancestors of `j`
         // that aren't on `i`'s closure ray.
@@ -1746,7 +1765,7 @@ pub(crate) fn classify_top_down_internal(
                 continue;
             }
             visited[j] = true;
-            entailed[i][j] = true;
+            entailed[i].insert(j);
             for &k in &direct_supers[j] {
                 if !visited[k] {
                     frontier.push(k);

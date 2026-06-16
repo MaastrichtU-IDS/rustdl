@@ -1686,6 +1686,22 @@ impl Subsumers {
             .unwrap_or_default()
     }
 
+    /// A reference to the raw subsumer bitset for class `c`.
+    /// The bitset may be wider than the user class vocabulary (it
+    /// includes Tseitin / `DKey` synthetic IDs ≥ n). Callers that want
+    /// only user-vocabulary subsumers must restrict to `[0, n)`.
+    #[must_use]
+    pub fn subsumers_bitset(&self, c: ClassId) -> Option<&FixedBitSet> {
+        self.subsumers.get(Self::class_index(c))
+    }
+
+    /// A reference to the raw unsatisfiable bitset.
+    /// Bit `i` set iff `class_i ⊑ ⊥` according to saturation.
+    #[must_use]
+    pub fn unsatisfiable_bitset(&self) -> &FixedBitSet {
+        &self.unsatisfiable
+    }
+
     /// True iff saturation proved `c` is empty in every model (i.e.
     /// `c ⊑ ⊥`).
     #[must_use]

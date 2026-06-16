@@ -19,6 +19,7 @@ owl-dl-datatypes.workspace = true
 horned-owl.workspace = true
 rayon.workspace = true
 dashmap.workspace = true
+fixedbitset.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

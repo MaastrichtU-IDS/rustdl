@@ -66,6 +66,14 @@ pub(crate) fn read_hierarchy(norm: &Normalized, graph: &SeqGraph) -> CbHierarchy
     // - R1 (`per_query`): one root QUERY context per `(A,B)` pair, cored `{A}`
     //   with `B` head-minimal, in `by_query`. Read the specific pair from its
     //   own context (`A → B` iff `→ B` or `→ ⊥` is in `S_{q_(A,B)}`).
+    //
+    // CAVEAT (R1 only): this OVER-reports an unsat sub `A` — `→ ⊥ ∈ S_{q_(A,B)}`
+    // emits `A ⊑ B` for EVERY `B` (logically sound, `⊥ ⊑ X`), whereas B1 / the R2
+    // read-off suppress subsumers of an unsat class. R1 is opt-in and unused on
+    // the default path (R2 clears the gate); were it ever invoked, cb-diff would
+    // show spurious `only_in_cb` for unsat subjects. R1 is the C2-EXACT order
+    // *oracle for ordering*, not a B1-output-identical engine — do not treat it
+    // as a validated drop-in. Tighten the unsat handling here if R1 is promoted.
     let per_query = matches!(std::env::var("RUSTDL_CB_ORDER").as_deref(), Ok("per_query"));
     let mut direct: BTreeMap<ClassId, BTreeSet<ClassId>> = BTreeMap::new();
 

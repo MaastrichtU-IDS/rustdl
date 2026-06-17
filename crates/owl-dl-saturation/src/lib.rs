@@ -5282,7 +5282,7 @@ Ontology(<http://rustdl.test/test>\n\
         use std::fs::File;
         use std::io::BufReader;
 
-        use crate::proof::{ElRule, check_proof, prove_subsumption};
+        use crate::proof::{ElRule, check_proof_with_content, prove_subsumption};
 
         // Resolve path relative to the workspace root (two levels up from this crate).
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -5304,7 +5304,6 @@ Ontology(<http://rustdl.test/test>\n\
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let trace = maybe_trace.expect("trace must be Some");
 
-        let num_axioms = internal.axioms.len();
         let num_classes = u32::try_from(internal.vocabulary.num_classes()).expect("fits");
 
         let mut total = 0usize;
@@ -5313,6 +5312,7 @@ Ontology(<http://rustdl.test/test>\n\
         let mut failures: Vec<String> = Vec::new();
 
         // Sample up to 500 derived subsumptions (skip trivial C⊑C).
+        // Uses check_proof_with_content which validates axiom-ref content (not just range).
         'outer: for i in 0..num_classes {
             let sub = ClassId::new(i);
             for j in 0..num_classes {
@@ -5328,7 +5328,7 @@ Ontology(<http://rustdl.test/test>\n\
                     continue;
                 };
                 total += 1;
-                match check_proof(&root, num_axioms) {
+                match check_proof_with_content(&root, &internal) {
                     Ok(()) => {
                         // Check for coarse leaves (axiom-ref absent on ToldSubsumer/ToldFact/ToldUnsat).
                         fn count_coarse(node: &crate::proof::ProofNode, count: &mut usize) {
@@ -5388,7 +5388,7 @@ Ontology(<http://rustdl.test/test>\n\
         use std::fs::File;
         use std::io::BufReader;
 
-        use crate::proof::{ElRule, check_proof, prove_subsumption};
+        use crate::proof::{ElRule, check_proof_with_content, prove_subsumption};
 
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let path = format!("{manifest_dir}/../../ontologies/real/go-basic.ofn");
@@ -5409,7 +5409,6 @@ Ontology(<http://rustdl.test/test>\n\
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let trace = maybe_trace.expect("trace must be Some");
 
-        let num_axioms = internal.axioms.len();
         let num_classes = u32::try_from(internal.vocabulary.num_classes()).expect("fits");
 
         let mut total = 0usize;
@@ -5418,6 +5417,7 @@ Ontology(<http://rustdl.test/test>\n\
         let mut failures: Vec<String> = Vec::new();
 
         // Sample 2000 derived non-trivial subsumptions.
+        // Uses check_proof_with_content which validates axiom-ref content (not just range).
         'outer: for i in 0..num_classes {
             let sub = ClassId::new(i);
             for j in 0..num_classes {
@@ -5433,7 +5433,7 @@ Ontology(<http://rustdl.test/test>\n\
                     continue;
                 };
                 total += 1;
-                match check_proof(&root, num_axioms) {
+                match check_proof_with_content(&root, &internal) {
                     Ok(()) => {
                         fn count_coarse(node: &crate::proof::ProofNode, count: &mut usize) {
                             match node.rule {
@@ -5476,6 +5476,128 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             failures.is_empty(),
             "Faithfulness failures on go-basic corpus:\n{failures:#?}"
+        );
+    }
+
+    /// Faithfulness corpus test on galen (large EL+functional ontology — exercises
+    /// Phase-2d `FactInheritance` and `FunctionalMerge`/`FunctionalMergeSubRole`).
+    /// Uses `check_proof_with_content` (axiom-ref content validation, not just range).
+    #[test]
+    #[ignore = "requires real ontology files; run with --include-ignored"]
+    fn proof_faithfulness_corpus_galen() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        use crate::proof::{ElRule, check_proof_with_content, prove_subsumption};
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = format!("{manifest_dir}/../../ontologies/external/galen.ofn");
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("# SKIP: {path} not found");
+            return;
+        }
+        let f = File::open(&path).expect("open galen.ofn");
+        let mut reader = BufReader::new(f);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parse galen.ofn");
+        let internal =
+            owl_dl_core::convert::convert_ontology(&set_onto).expect("convert galen.ofn");
+
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let trace = maybe_trace.expect("trace must be Some");
+
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).expect("fits");
+
+        let mut total = 0usize;
+        let mut pass = 0usize;
+        let mut coarse_leaf = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        let mut fact_inheritance_seen = 0usize;
+        let mut functional_merge_seen = 0usize;
+
+        // Sample 2000 derived non-trivial subsumptions from galen.
+        // Galen is EL+functional — exercises Phase-2d and FunctionalMerge.
+        'outer: for i in 0..num_classes {
+            let sub = ClassId::new(i);
+            for j in 0..num_classes {
+                if i == j {
+                    continue;
+                }
+                let sup = ClassId::new(j);
+                if !subs.contains(sub, sup) {
+                    continue;
+                }
+                let mut memo = std::collections::HashMap::new();
+                let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) else {
+                    continue;
+                };
+                total += 1;
+                // Count rule types for diagnostic.
+                fn count_rules(
+                    node: &crate::proof::ProofNode,
+                    fi: &mut usize,
+                    fm: &mut usize,
+                    coarse: &mut usize,
+                ) {
+                    match node.rule {
+                        ElRule::FactInheritance => *fi += 1,
+                        ElRule::FunctionalMerge | ElRule::FunctionalMergeSubRole => *fm += 1,
+                        ElRule::ToldSubsumer | ElRule::ToldFact | ElRule::ToldUnsat
+                            if node.axiom_refs.is_empty() =>
+                        {
+                            *coarse += 1;
+                        }
+                        _ => {}
+                    }
+                    for p in &node.premises {
+                        count_rules(p, fi, fm, coarse);
+                    }
+                }
+                let mut fi = 0;
+                let mut fm = 0;
+                let mut c = 0;
+                count_rules(&root, &mut fi, &mut fm, &mut c);
+                fact_inheritance_seen += fi;
+                functional_merge_seen += fm;
+                coarse_leaf += c;
+
+                match check_proof_with_content(&root, &internal) {
+                    Ok(()) => {
+                        pass += 1;
+                    }
+                    Err(e) => {
+                        failures.push(format!("({i},{j}): {e}"));
+                        if failures.len() >= 10 {
+                            break 'outer;
+                        }
+                    }
+                }
+                if total >= 2000 {
+                    break 'outer;
+                }
+            }
+        }
+
+        eprintln!(
+            "# corpus galen: {pass}/{total} pass, {coarse_leaf} coarse leaves, \
+             {fact_inheritance_seen} FactInheritance steps, \
+             {functional_merge_seen} FunctionalMerge steps, \
+             {} failures",
+            failures.len()
+        );
+        for f in &failures {
+            eprintln!("  FAIL: {f}");
+        }
+        assert!(
+            failures.is_empty(),
+            "Faithfulness failures on galen corpus:\n{failures:#?}"
         );
     }
 }

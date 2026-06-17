@@ -772,17 +772,17 @@ fn main() -> Result<()> {
             match prove_entailment_rcstr(&onto, &sub, &sup).context("prove_entailment")? {
                 ProveEntailmentResult::SaturatorProof(data) => {
                     let root = &data.root;
-                    let num_axioms = data.num_axioms;
+                    // Render using the internal vocabulary and synthetic defs.
+                    // Re-convert to get the internal ontology (for rendering + content check).
+                    let internal = owl_dl_core::convert::convert_ontology(&onto)
+                        .context("re-convert for rendering")?;
                     if verify_proof {
-                        match owl_dl_reasoner::check_proof(root, num_axioms) {
-                            Ok(()) => eprintln!("# proof verified OK"),
+                        // Use content-checking variant: validates axiom-ref content, not just range.
+                        match owl_dl_reasoner::check_proof_with_content(root, &internal) {
+                            Ok(()) => eprintln!("# proof verified OK (content-validated)"),
                             Err(e) => eprintln!("# proof check FAILED: {e}"),
                         }
                     }
-                    // Render using the internal vocabulary and synthetic defs.
-                    // Re-parse to get the vocabulary (only for display, not for correctness).
-                    let internal = owl_dl_core::convert::convert_ontology(&onto)
-                        .context("re-convert for rendering")?;
                     let proof_text = render_proof_with_defs(
                         root,
                         Some(&internal.vocabulary),
@@ -806,7 +806,10 @@ fn main() -> Result<()> {
                     collect_axiom_refs(root, &mut all_refs);
                     all_refs.sort_unstable();
                     if !all_refs.is_empty() {
-                        println!("# axiom provenance ({num_axioms} axioms in ontology):");
+                        println!(
+                            "# axiom provenance ({} axioms in ontology):",
+                            internal.axioms.len()
+                        );
                         for idx in all_refs {
                             if let Some(ax) = internal.axioms.get(idx) {
                                 println!("  axiom[{idx}]: {ax:?}");

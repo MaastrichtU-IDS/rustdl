@@ -185,6 +185,11 @@ struct WorklistEngine {
     /// (including `r` itself). Built once from `build_role_super` via
     /// `freeze_role_super`; enables O(1) Vec indexing in the hot saturation loop.
     role_super: Vec<Box<[RoleId]>>,
+    /// Bitset version of `role_super` for O(1) `is_sub_role(r, s)` tests.
+    /// `role_super_bitset[r.index()].contains(s.index())` iff `r ⊑ s` (reflexive).
+    /// Built once alongside `role_super`; eliminates the O(k) `slice::contains`
+    /// call that dominated the profile post-fix1 at ~21% for galen.
+    role_super_bitset: Vec<FixedBitSet>,
     /// Dense per-class indices into `rules.conjunctive_triggers`.
     conjunctive_by_body: Vec<Vec<usize>>,
     /// Dense per-class indices into `rules.existential_triggers`.
@@ -285,6 +290,21 @@ impl WorklistEngine {
             let atoms: std::collections::BTreeSet<ClassId> = body.iter().copied().collect();
             atomic_content_of.insert(synthetic, atoms);
         }
+        // Build the role-super bitset from the already-built dense Vec.
+        // `role_super_bitset[r].contains(s)` iff `r ⊑ s` (including reflexive).
+        // Used for O(1) sub-role tests in the hot loop, replacing the O(k)
+        // `slice_contains` that was ~21% of galen wall post-fix1.
+        let num_roles = role_super.len();
+        let mut role_super_bitset: Vec<FixedBitSet> =
+            vec![FixedBitSet::with_capacity(num_roles); num_roles];
+        for (r_idx, supers) in role_super.iter().enumerate() {
+            for s in supers {
+                let si = s.index() as usize;
+                if si < num_roles {
+                    role_super_bitset[r_idx].insert(si);
+                }
+            }
+        }
         Self {
             subsumers: Subsumers::with_capacity(num_total_classes),
             subsumed_by,
@@ -297,6 +317,7 @@ impl WorklistEngine {
             todo_unsat: VecDeque::new(),
             rules,
             role_super,
+            role_super_bitset,
             conjunctive_by_body,
             existential_triggers_by_body,
             disjoints_by_class,
@@ -310,6 +331,18 @@ impl WorklistEngine {
             record_proofs,
             proof_trace,
         }
+    }
+
+    /// O(1) sub-role test: returns `true` iff `r ⊑ s` in the reflexive-transitive
+    /// super-role closure. Uses `role_super_bitset` so it avoids the linear slice
+    /// scan that `supers_of(role_super, r).contains(&s)` performed.
+    #[inline]
+    fn is_sub_role(&self, r: RoleId, s: RoleId) -> bool {
+        let ri = r.index() as usize;
+        let si = s.index() as usize;
+        self.role_super_bitset
+            .get(ri)
+            .is_some_and(|bs| si < bs.len() && bs.contains(si))
     }
 
     /// Snapshot the bitset at `subsumers.subsumers[c.index()]` as a
@@ -830,10 +863,9 @@ impl WorklistEngine {
         {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
-                let fact_role_supers = supers_of(&self.role_super, fact.role).to_vec();
                 for tidx in &trigger_idxs {
                     let trigger = self.rules.existential_triggers[*tidx];
-                    if !fact_role_supers.contains(&trigger.role) {
+                    if !self.is_sub_role(fact.role, trigger.role) {
                         continue;
                     }
                     // Every Y with fact.sub ∈ subsumers(Y) gains
@@ -895,14 +927,13 @@ impl WorklistEngine {
             for fidx in fact_idxs {
                 let fact = self.facts[fidx];
                 let target_subsumers = self.supers_of_class(fact.target);
-                let fact_role_supers = supers_of(&self.role_super, fact.role).to_vec();
                 for sub in target_subsumers {
                     if let Some(trigger_idxs) =
                         Some(self.existential_triggers_by_body[sub.index() as usize].clone())
                     {
                         for tidx in trigger_idxs {
                             let trigger = self.rules.existential_triggers[tidx];
-                            if !fact_role_supers.contains(&trigger.role) {
+                            if !self.is_sub_role(fact.role, trigger.role) {
                                 continue;
                             }
                             let head = trigger.head;
@@ -933,7 +964,11 @@ impl WorklistEngine {
                 }
                 // Domain axiom: if there's a domain for any super
                 // of fact.role, C now gets that domain.
-                for super_role in &fact_role_supers {
+                // Snapshot the super-role slice to release the immutable borrow
+                // on `self.role_super` before the `enqueue_subsumer` mutable call.
+                let fact_role_supers_snap: Vec<RoleId> =
+                    supers_of(&self.role_super, fact.role).to_vec();
+                for super_role in &fact_role_supers_snap {
                     let doms: Vec<ClassId> = self
                         .rules
                         .role_domains
@@ -1011,8 +1046,7 @@ impl WorklistEngine {
         // chain's r1 in r1's super-roles, and every fact2 = (d, r2',
         // T) whose sub is the new subsumer `d`, derive (A, sup, T)
         // when the chain matches.
-        let chain_axioms = self.rules.chain_axioms.clone();
-        if !chain_axioms.is_empty() {
+        if !self.rules.chain_axioms.is_empty() {
             let head_facts: Vec<ExistentialFact> = self.facts_by_target[c.index() as usize]
                 .iter()
                 .map(|&i| self.facts[i])
@@ -1021,14 +1055,14 @@ impl WorklistEngine {
                 .iter()
                 .map(|&i| self.facts[i])
                 .collect();
-            for (chain_idx, (r1, r2, sup)) in chain_axioms.iter().enumerate() {
-                let (r1, r2, sup) = (*r1, *r2, *sup);
+            for chain_idx in 0..self.rules.chain_axioms.len() {
+                let (r1, r2, sup) = self.rules.chain_axioms[chain_idx];
                 for head in &head_facts {
-                    if !supers_of(&self.role_super, head.role).contains(&r1) {
+                    if !self.is_sub_role(head.role, r1) {
                         continue;
                     }
                     for tail in &tail_facts {
-                        if !supers_of(&self.role_super, tail.role).contains(&r2) {
+                        if !self.is_sub_role(tail.role, r2) {
                             continue;
                         }
                         // Proof: Exist(A,r1,C) + Sub(C,D) + Exist(D,r2,T) ⟹ Exist(A,sup,T)
@@ -1126,12 +1160,11 @@ impl WorklistEngine {
             // direction (subsumer arrives after the fact) is handled in
             // `process_subsumer`.
             if let Some(&mk) = self.rules.max1_key_by_role.get(&fact.role)
-                && self.supers_of_class(fact.sub).contains(&mk)
+                && self.subsumers.contains(fact.sub, mk)
             {
                 self.enqueue_forall_targets(fact.sub, fact.role, ind);
             }
         }
-        let role_supers = supers_of(&self.role_super, fact.role).to_vec();
         // NOTE: range propagation deliberately omitted.
         //
         // `ObjectPropertyRange(R, C)` is sound for instance reasoning:
@@ -1149,7 +1182,10 @@ impl WorklistEngine {
         // future work; safe to drop for now (the orchestrator's
         // tableau path still handles range correctly via its own
         // clausifier).
-        for super_role in &role_supers {
+        // Snapshot the super-role slice to release the immutable borrow on
+        // `self.role_super` before the `enqueue_subsumer` mutable calls inside.
+        let role_supers_snap: Vec<RoleId> = supers_of(&self.role_super, fact.role).to_vec();
+        for super_role in &role_supers_snap {
             // Domain axiom: every class with fact.sub as a subsumer
             // (including fact.sub itself) gains the domain.
             let domains: Vec<ClassId> = self
@@ -1241,7 +1277,7 @@ impl WorklistEngine {
             {
                 for tidx in trigger_idxs {
                     let trigger = self.rules.existential_triggers[tidx];
-                    if !role_supers.contains(&trigger.role) {
+                    if !self.is_sub_role(fact.role, trigger.role) {
                         continue;
                     }
                     let head = trigger.head;
@@ -1292,11 +1328,10 @@ impl WorklistEngine {
             }
         }
         // Chain rule: pair with existing facts.
-        let chain_axioms = self.rules.chain_axioms.clone();
-        for (chain_idx, (r1, r2, sup)) in chain_axioms.iter().enumerate() {
-            let (r1, r2, sup) = (*r1, *r2, *sup);
-            let role_in_r1 = role_supers.contains(&r1);
-            let role_in_r2 = role_supers.contains(&r2);
+        for chain_idx in 0..self.rules.chain_axioms.len() {
+            let (r1, r2, sup) = self.rules.chain_axioms[chain_idx];
+            let role_in_r1 = self.is_sub_role(fact.role, r1);
+            let role_in_r2 = self.is_sub_role(fact.role, r2);
             if role_in_r1 {
                 // This fact is the head; pair with tails whose sub
                 // is a subsumer of fact.target.
@@ -1305,7 +1340,7 @@ impl WorklistEngine {
                     let tail_idxs = self.facts_by_sub[sub.index() as usize].clone();
                     for tidx in tail_idxs {
                         let tail = self.facts[tidx];
-                        if supers_of(&self.role_super, tail.role).contains(&r2) {
+                        if self.is_sub_role(tail.role, r2) {
                             if self.record_proofs
                                 && !self.seen_facts.contains(&(fact.sub, sup, tail.target))
                             {
@@ -1347,7 +1382,7 @@ impl WorklistEngine {
                     let head_idxs = self.facts_by_target[cand.index() as usize].clone();
                     for hidx in head_idxs {
                         let head_fact = self.facts[hidx];
-                        if supers_of(&self.role_super, head_fact.role).contains(&r1) {
+                        if self.is_sub_role(head_fact.role, r1) {
                             if self.record_proofs
                                 && !self.seen_facts.contains(&(head_fact.sub, sup, fact.target))
                             {
@@ -1395,7 +1430,7 @@ impl WorklistEngine {
         // new fact (sub, R_f, synthetic). Termination: the atom set
         // is monotonically bounded by the atomic vocabulary, so per
         // (sub, R_f) the rule fires at most |atomic_vocabulary| times.
-        let funcs = self.rules.functional_supers_of(fact.role).to_vec();
+        let funcs: Vec<RoleId> = self.rules.functional_supers_of(fact.role).to_vec();
         if !funcs.is_empty() {
             let new_atoms = self.atomic_content_of_or_self(fact.target);
             for rf in funcs {
@@ -1516,7 +1551,7 @@ impl WorklistEngine {
                 let facts_snapshot = self.facts_by_sub[fact.sub.index() as usize].clone();
                 for other_idx in facts_snapshot {
                     let other = self.facts[other_idx];
-                    if !self.rules.functional_supers_of(other.role).contains(&rf) {
+                    if !self.is_sub_role(other.role, rf) || !self.rules.is_functional(rf) {
                         continue;
                     }
                     // R22: back-prop
@@ -3137,10 +3172,17 @@ pub(crate) fn freeze_role_super(closure: &HashMap<RoleId, HashSet<RoleId>>) -> V
 /// ignored: chain semantics belong to the tableau path.
 fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<RoleId>> {
     let num_roles = internal.vocabulary.num_roles();
-    let mut closure: HashMap<RoleId, HashSet<RoleId>> = HashMap::with_capacity(num_roles);
-    for i in 0..num_roles {
-        let id = RoleId::new(u32::try_from(i).expect("role count fits in u32"));
-        closure.entry(id).or_default().insert(id);
+    // Fast path: build the direct edge matrix as bitsets (densely indexed by
+    // RoleId::index()), then run Floyd-Warshall's transitive closure in one pass
+    // using bitwise OR — O(n³/64) instead of the old HashMap-iteration O(n³).
+    // For galen/notgalen (few hundred roles) the bitset pass is ~microseconds;
+    // for large EL ontologies with many roles (go-basic) it's still O(n²/64)
+    // per iteration.  After the bitset closure is computed, we convert to the
+    // caller's expected `HashMap<RoleId, HashSet<RoleId>>` shape.
+    let mut bs: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(num_roles); num_roles];
+    // Reflexive edges.
+    for (i, row) in bs.iter_mut().enumerate() {
+        row.insert(i);
     }
     let edge = |role: &Role| -> Option<RoleId> {
         if role.is_inverse() {
@@ -3156,15 +3198,23 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
                 sup,
             } => {
                 if let (Some(a), Some(b)) = (edge(sub_role), edge(sup)) {
-                    closure.entry(a).or_default().insert(b);
+                    let (ai, bi) = (a.index() as usize, b.index() as usize);
+                    if ai < num_roles && bi < num_roles {
+                        bs[ai].insert(bi);
+                    }
                 }
             }
             Axiom::EquivalentObjectProperties(members) => {
-                let named: Vec<RoleId> = members.iter().filter_map(edge).collect();
-                for a in &named {
-                    for b in &named {
-                        if a != b {
-                            closure.entry(*a).or_default().insert(*b);
+                let named: Vec<usize> = members
+                    .iter()
+                    .filter_map(edge)
+                    .map(|r| r.index() as usize)
+                    .filter(|&i| i < num_roles)
+                    .collect();
+                for &ai in &named {
+                    for &bi in &named {
+                        if ai != bi {
+                            bs[ai].insert(bi);
                         }
                     }
                 }
@@ -3172,31 +3222,28 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
             _ => {}
         }
     }
-    // Transitive closure (Warshall-style, small Vec-of-ids domain).
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let snapshot: Vec<(RoleId, Vec<RoleId>)> = closure
-            .iter()
-            .map(|(k, v)| (*k, v.iter().copied().collect()))
-            .collect();
-        for (a, supers) in snapshot {
-            let to_add: Vec<RoleId> = supers
-                .iter()
-                .flat_map(|s| {
-                    closure
-                        .get(s)
-                        .into_iter()
-                        .flat_map(|set| set.iter().copied())
-                })
-                .collect();
-            let entry = closure.entry(a).or_default();
-            for s in to_add {
-                if entry.insert(s) {
-                    changed = true;
-                }
+    // Floyd-Warshall transitive closure on the bitset matrix:
+    // for each intermediate node k, for each source i, if i reaches k,
+    // union row i with row k (reaching everything k reaches).
+    // Avoids snapshots and per-element HashMap insertions.
+    for k in 0..num_roles {
+        // Work on a cloned snapshot of row k to avoid aliasing.
+        let row_k = bs[k].clone();
+        for row in &mut bs {
+            if row.contains(k) {
+                row.union_with(&row_k);
             }
         }
+    }
+    // Convert to the expected HashMap output.
+    let mut closure: HashMap<RoleId, HashSet<RoleId>> = HashMap::with_capacity(num_roles);
+    for (i, row) in bs.iter().enumerate() {
+        let r = RoleId::new(u32::try_from(i).expect("role count fits in u32"));
+        let set: HashSet<RoleId> = row
+            .ones()
+            .map(|j| RoleId::new(u32::try_from(j).expect("role count fits in u32")))
+            .collect();
+        closure.insert(r, set);
     }
     closure
 }

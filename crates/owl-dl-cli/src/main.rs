@@ -789,7 +789,10 @@ fn main() -> Result<()> {
                         Some(&data.trace.synthetic_defs),
                         0,
                     );
-                    println!("# step proof ({} steps):", data.trace.steps.len());
+                    fn count_proof_nodes(node: &owl_dl_reasoner::ProofNode) -> usize {
+                        1 + node.premises.iter().map(count_proof_nodes).sum::<usize>()
+                    }
+                    println!("# step proof ({} steps):", count_proof_nodes(root));
                     print!("{proof_text}");
                     // Collect all axiom refs across the whole proof tree.
                     fn collect_axiom_refs(node: &owl_dl_reasoner::ProofNode, out: &mut Vec<usize>) {

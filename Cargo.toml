@@ -112,4 +112,4 @@ debug = "line-tables-only"
 # merge will drop this patch). See
 # docs/superpowers/specs/2026-06-12-horned-owl-manchester-io-design.md and
 # docs/manchester/manchester-io-report.md in the fork.
-horned-owl = { git = "https://github.com/micheldumontier/horned-owl", rev = "f5222f2e137468491784f6d57a0e3a7f1f21d811" }
+horned-owl = { git = "https://github.com/micheldumontier/horned-owl", rev = "b188edaf7c92600918f0524962d928097ecd6b4d" }

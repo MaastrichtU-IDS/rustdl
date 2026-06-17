@@ -640,7 +640,7 @@ checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 [[package]]
 name = "horned-owl"
 version = "1.4.0"
-source = "git+https://github.com/micheldumontier/horned-owl?rev=f5222f2e137468491784f6d57a0e3a7f1f21d811#f5222f2e137468491784f6d57a0e3a7f1f21d811"
+source = "git+https://github.com/micheldumontier/horned-owl?rev=b188edaf7c92600918f0524962d928097ecd6b4d#b188edaf7c92600918f0524962d928097ecd6b4d"
 dependencies = [
  "curie",
  "enum_meta",

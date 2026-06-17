@@ -21,7 +21,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::io::omn::AsManchester;
 use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::io::rdf::reader::read as read_rdf;
-use horned_owl::model::RcStr;
+use horned_owl::model::{AnnotationSubject, AnnotationValue, Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
@@ -226,6 +226,9 @@ enum Command {
         /// Cap on the number of justifications printed with --all.
         #[arg(long, default_value_t = 10)]
         max: usize,
+        /// Gloss each axiom with the rdfs:label of the entities it mentions.
+        #[arg(long)]
+        labels: bool,
     },
     /// Print a step-level DL proof tree for `SUB ⊑ SUP`.
     ///
@@ -398,6 +401,33 @@ fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)>
         OntFormat::Ofn => read_ofn(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display())),
     }
+}
+
+const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
+
+/// Map every entity IRI to its first `rdfs:label` literal (if any). Used by
+/// `justify --labels` to gloss opaque IRIs (e.g. SIO numeric codes).
+fn build_label_map(onto: &SetOntology<RcStr>) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    for ac in onto {
+        if let Component::AnnotationAssertion(aa) = &ac.component {
+            if aa.ann.ap.0.as_ref() != RDFS_LABEL {
+                continue;
+            }
+            if let (AnnotationSubject::IRI(iri), AnnotationValue::Literal(lit)) =
+                (&aa.subject, &aa.ann.av)
+            {
+                m.entry(iri.as_ref().to_string())
+                    .or_insert_with(|| lit.literal().clone());
+            }
+        }
+    }
+    m
+}
+
+/// The local name of an IRI — the part after the last `#` or `/`.
+fn local_name(iri: &str) -> &str {
+    iri.rsplit(['#', '/']).next().unwrap_or(iri)
 }
 
 fn print_classification(h: &Classification) {
@@ -728,9 +758,11 @@ fn main() -> Result<()> {
             query,
             all,
             max,
+            labels,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             let q = parse_justify_query(&query)?;
+            let label_map = labels.then(|| build_label_map(&onto));
             let render = |j: &owl_dl_reasoner::justify::Justification<RcStr>| {
                 let note = if j.minimal_guaranteed {
                     format!("minimal ({})", j.fragment)
@@ -740,6 +772,18 @@ fn main() -> Result<()> {
                 println!("# justification ({} axioms) — {note}", j.axioms.len());
                 for ax in &j.axioms {
                     println!("  {}", ax.as_manchester_with_prefixes(&pm));
+                    if let Some(lm) = &label_map {
+                        let glosses: Vec<String> = owl_dl_reasoner::justify::component_entities(ax)
+                            .into_iter()
+                            .filter_map(|iri| {
+                                lm.get(&iri)
+                                    .map(|l| format!("{} = \"{l}\"", local_name(&iri)))
+                            })
+                            .collect();
+                        if !glosses.is_empty() {
+                            println!("      label: {}", glosses.join("; "));
+                        }
+                    }
                 }
             };
             if all {
@@ -1209,5 +1253,43 @@ mod format_detect_tests {
         assert_eq!(detect_format(src, Some("owx")), OntFormat::Owx);
         assert_eq!(detect_format(src, Some("rdf")), OntFormat::RdfXml);
         assert_eq!(detect_format(src, None), OntFormat::Ofn);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod label_tests {
+    use super::{build_label_map, local_name};
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+
+    #[test]
+    fn local_name_splits_on_hash_and_slash() {
+        assert_eq!(local_name("http://x.org/foo#Bar"), "Bar");
+        assert_eq!(local_name("http://x.org/path/Baz"), "Baz");
+        assert_eq!(local_name("nocolon"), "nocolon");
+    }
+
+    #[test]
+    fn label_map_picks_up_rdfs_labels_only() {
+        let src = "\
+Prefix(:=<http://t/>)\n\
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)\n\
+Ontology(<http://t/o>\n\
+Declaration(Class(:A)) Declaration(Class(:B))\n\
+AnnotationAssertion(rdfs:label :A \"Alpha\")\n\
+AnnotationAssertion(rdfs:comment :B \"a comment, not a label\")\n\
+SubClassOf(:A :B))\n";
+        let (o, _): (SetOntology<RcStr>, _) = read_ofn(
+            &mut std::io::Cursor::new(src),
+            ParserConfiguration::default(),
+        )
+        .unwrap();
+        let m = build_label_map(&o);
+        assert_eq!(m.get("http://t/A").map(String::as_str), Some("Alpha"));
+        // rdfs:comment is not a label, and B has no label
+        assert_eq!(m.get("http://t/B"), None);
     }
 }

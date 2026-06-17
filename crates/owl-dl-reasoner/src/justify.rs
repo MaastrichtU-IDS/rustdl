@@ -441,6 +441,16 @@ fn collect_component_entities<A: ForIRI>(c: &Component<A>, out: &mut HashSet<Str
     }
 }
 
+/// All named-entity IRIs (classes, object/data properties, named individuals)
+/// occurring in `c`. Exposed for callers that gloss an axiom by entity — e.g.
+/// the CLI's `--labels` rendering. Deterministic order.
+#[must_use]
+pub fn component_entities<A: ForIRI>(c: &Component<A>) -> BTreeSet<String> {
+    let mut s = HashSet::new();
+    collect_component_entities(c, &mut s);
+    s.into_iter().collect()
+}
+
 /// The seed signature of a query: the entity IRIs the justification is "about".
 /// `None` ⇒ the query is not localizable (e.g. global inconsistency); the
 /// caller keeps the full axiom set.

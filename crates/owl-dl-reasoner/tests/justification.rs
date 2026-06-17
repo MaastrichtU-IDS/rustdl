@@ -539,3 +539,21 @@ fn module_preserves_all_justifications() {
         on.len()
     );
 }
+
+#[test]
+fn component_entities_collects_classes_and_property() {
+    // SubClassOf(:A, ∃:r.:D) — entities must be {A, r, D}.
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:D)) Declaration(ObjectProperty(:r))\n\
+         SubClassOf(:A ObjectSomeValuesFrom(:r :D))",
+    );
+    let (_fixed, candidates) = logical_axioms(&o);
+    let sub_ax = candidates
+        .iter()
+        .find(|c| matches!(c, Component::SubClassOf(_)))
+        .expect("the SubClassOf axiom");
+    let ents = owl_dl_reasoner::justify::component_entities(sub_ax);
+    assert!(ents.contains("http://t/A"), "missing A in {ents:?}");
+    assert!(ents.contains("http://t/r"), "missing r in {ents:?}");
+    assert!(ents.contains("http://t/D"), "missing D in {ents:?}");
+}

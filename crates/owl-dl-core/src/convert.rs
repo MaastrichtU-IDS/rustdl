@@ -1706,6 +1706,9 @@ pub fn convert_component<A: ForIRI>(
             Ok(Some(Axiom::EquivalentObjectProperties(roles)))
         }
 
+        // ── DisjointDataProperties: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // Disjoint(dp,dq) → DisjointObjectProperties on the dp-roles (gate-ON).
+        // When the gate is OFF, falls through to the catch-all Ok(None).
         C::DisjointDataProperties(ax) if data_properties_enabled() => {
             let roles: Vec<Role> =
                 ax.0.iter()
@@ -1713,16 +1716,25 @@ pub fn convert_component<A: ForIRI>(
                     .collect();
             Ok(Some(Axiom::DisjointObjectProperties(roles)))
         }
+        // ── FunctionalDataProperty: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // Functional(dp) → FunctionalRole(dp-role): ≤1 value via functional-merge (gate-ON).
+        // When the gate is OFF, falls through to the catch-all Ok(None).
         C::FunctionalDataProperty(ax) if data_properties_enabled() => {
             let dp = &ax.0;
             let role = Role::named(vocab.intern_role(dp.0.as_ref()));
             Ok(Some(Axiom::FunctionalRole(role)))
         }
+        // ── DataPropertyDomain: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // DataPropertyDomain(dp,C) → ObjectPropertyDomain on the dp-role (gate-ON).
+        // When the gate is OFF, falls through to the catch-all Ok(None).
         C::DataPropertyDomain(ax) if data_properties_enabled() => {
             let role = Role::named(vocab.intern_role(ax.dp.0.as_ref()));
             let domain = ce_or_skip!(convert_class_expression(&ax.ce, vocab, pool));
             Ok(Some(Axiom::ObjectPropertyDomain { role, domain }))
         }
+        // ── DataPropertyRange: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // DataPropertyRange(dp,R) → ObjectPropertyRange with DKey(R) filler (gate-ON).
+        // When the gate is OFF, or the range is unrecognized, drop silently (sound).
         C::DataPropertyRange(ax) if data_properties_enabled() => {
             match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {
                 Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange { role, range })),

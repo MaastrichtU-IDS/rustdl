@@ -20,6 +20,13 @@ impl DpGuard {
         unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "1") };
         Self { prior }
     }
+    #[allow(unsafe_code)]
+    fn off() -> Self {
+        let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
+        // SAFETY: serialized via DP_ENV_MUTEX; restored on Drop.
+        unsafe { std::env::remove_var("RUSTDL_DATA_PROPERTIES") };
+        Self { prior }
+    }
 }
 impl Drop for DpGuard {
     #[allow(unsafe_code)]
@@ -112,7 +119,8 @@ fn gate_off_classification_unchanged_on_data_fixture() {
     let _lock = DP_ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // gate not set ⇒ OFF ⇒ converter behaves as legacy.
+    let _g = DpGuard::off();
+    // gate explicitly forced OFF ⇒ converter behaves as legacy.
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../ontologies/real/shoiq-knowledge.ofn");
     if !path.exists() {

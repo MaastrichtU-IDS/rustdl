@@ -2473,7 +2473,11 @@ impl PreparedOntology {
         // (the ontology-wide classifier still drives `try_replay`).
         // Runs on the un-mutated `internal` (before absorb/NNF) so
         // axiom shapes match what `classify_ontology` saw.
-        let (per_class_safe_count, per_class_unsafe_count) = {
+        // Cost: O(n_classes × n_axioms × concept_tree_depth). Gate behind
+        // snapshot_capture_enabled() — when the snapshot cache is OFF (the
+        // default), this diagnostic loop is the only call site and can be
+        // skipped. Snapshot capture ON → run as before.
+        let (per_class_safe_count, per_class_unsafe_count) = if snapshot_capture_enabled() {
             let n = internal.vocabulary.num_classes();
             let mut safe = 0usize;
             let mut not_safe = 0usize;
@@ -2491,6 +2495,8 @@ impl PreparedOntology {
                 }
             }
             (safe, not_safe)
+        } else {
+            (0, 0)
         };
         expand_role_characteristics(&mut internal);
         let hierarchy = build_role_hierarchy(&internal);

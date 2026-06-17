@@ -1331,19 +1331,26 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    // Compute closure-subsumer counts once per class (used for sort key and
+    // tier grouping). Using subsumers_bitset (no Vec allocation) instead
+    // of subsumers_of (allocates Vec<ClassId> per call). sort_by_key calls the
+    // key fn O(n log n) times; pre-computing avoids repeated Vec allocations.
+    let subsumer_counts: Vec<usize> = (0..n)
+        .map(|i| {
+            let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+            closure
+                .subsumers_bitset(id)
+                .map_or(0, |bs| bs.ones().count())
+        })
+        .collect();
+
     // Sort the satisfiable classes by ascending closure-subsumer
     // count — "most general first". This ordering means when we
     // place class `c`, every class that could be `c`'s parent has
     // already been placed (modulo same-tier siblings, which are
     // handled by the walk's iterative refinement).
     let mut order: Vec<usize> = (0..n).filter(|i| !unsatisfiable_idxs.contains(i)).collect();
-    order.sort_by_key(|&i| {
-        closure
-            .subsumers_of(owl_dl_core::ClassId::new(
-                u32::try_from(i).expect("class index fits in u32"),
-            ))
-            .len()
-    });
+    order.sort_by_key(|&i| subsumer_counts[i]);
 
     // `direct_supers[i]` = direct super-classes of `i` placed so
     // far. The hierarchy is built tier-by-tier: a tier is the set
@@ -1359,16 +1366,13 @@ pub(crate) fn classify_top_down_internal(
     let mut top_level: Vec<usize> = Vec::new();
 
     // Group `order` into tiers of equal closure-subsumer count.
+    // Reuse the pre-computed `subsumer_counts` — no additional subsumers_of calls.
     let mut tiers: Vec<Vec<usize>> = Vec::new();
     {
         let mut current: Vec<usize> = Vec::new();
         let mut current_rank: Option<usize> = None;
         for &c in &order {
-            let rank = closure
-                .subsumers_of(owl_dl_core::ClassId::new(
-                    u32::try_from(c).expect("class index fits in u32"),
-                ))
-                .len();
+            let rank = subsumer_counts[c];
             if current_rank.is_some_and(|r| r != rank) {
                 tiers.push(std::mem::take(&mut current));
             }

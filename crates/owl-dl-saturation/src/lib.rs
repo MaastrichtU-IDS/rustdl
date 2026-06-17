@@ -686,8 +686,42 @@ impl WorklistEngine {
     ///
     /// See `docs/phase2d-design.md`.
     fn push_fact(&mut self, fact: ExistentialFact) -> Option<usize> {
+        // `parent_fact` carries the fact we are inheriting FROM when this is a
+        // Phase-2d recursive inheritance call.  `None` for top-level inserts.
+        self.push_fact_impl(fact, None)
+    }
+
+    /// Internal implementation for `push_fact` that accepts an optional
+    /// parent fact for Phase-2d proof recording.  When `parent_fact` is
+    /// `Some(p)` the new fact was inherited from `p` via a `Sub(c, p.sub)`
+    /// edge and we record a `FactInheritance` step.  All other callers pass
+    /// `None` (the top-level insert).
+    fn push_fact_impl(
+        &mut self,
+        fact: ExistentialFact,
+        parent_fact: Option<&DerivedFact>,
+    ) -> Option<usize> {
         if !self.seen_facts.insert((fact.sub, fact.role, fact.target)) {
             return None;
+        }
+        // Record the Phase-2d FactInheritance step when we have a parent fact.
+        if self.record_proofs
+            && let Some(pf) = parent_fact
+        {
+            // Sub(fact.sub, parent.sub) + Exist(parent) ⟹ Exist(fact.sub, role, target)
+            let df = DerivedFact::Exist(fact.sub, fact.role, fact.target);
+            let sub_edge = match pf {
+                DerivedFact::Exist(parent_sub, _, _) => DerivedFact::Sub(fact.sub, *parent_sub),
+                _ => DerivedFact::Sub(fact.sub, fact.sub), // fallback (should not occur)
+            };
+            let inf = Inference {
+                rule: ElRule::FactInheritance,
+                premise_facts: vec![sub_edge, pf.clone()],
+                axiom_refs: vec![],
+            };
+            if let Some(t) = self.proof_trace.as_mut() {
+                t.record(df, inf);
+            }
         }
         let idx = self.facts.len();
         self.facts.push(fact);
@@ -696,8 +730,9 @@ impl WorklistEngine {
         self.todo_fact.push_back(idx);
         // Phase 2d: propagate to every subclass of fact.sub.
         // subs_of_class returns an owned Vec, so no borrow conflict
-        // with the recursive push_fact mutable borrow.
+        // with the recursive push_fact_impl mutable borrow.
         let subs = self.subs_of_class(fact.sub);
+        let parent_df = DerivedFact::Exist(fact.sub, fact.role, fact.target);
         for c in subs {
             if c == fact.sub {
                 continue;
@@ -707,7 +742,8 @@ impl WorklistEngine {
                 role: fact.role,
                 target: fact.target,
             };
-            if self.push_fact(inherited).is_some() {
+            // Pass parent_df so the recursive call records FactInheritance.
+            if self.push_fact_impl(inherited, Some(&parent_df)).is_some() {
                 self.phase2d_facts_inherited += 1;
             }
         }
@@ -2305,9 +2341,56 @@ fn collect_el_rules_with_provenance(
         }
     }
 
+    // Build synthetic_defs from the tseitin allocator maps so rendering can
+    // expand synthetic class ids into their defining expressions.
+    let mut synthetic_defs: HashMap<ClassId, proof::SyntheticDef> = HashMap::new();
+    // Tseitin conjunctions: F ≡ B₁ ⊓ … ⊓ Bₙ
+    for (body_vec, &synthetic) in &tseitin.by_body {
+        synthetic_defs.insert(
+            synthetic,
+            proof::SyntheticDef::TseitinConj(body_vec.clone()),
+        );
+    }
+    // Existential markers (one-way: ∃R.B ⊑ M, or two-way: M ≡ ∃R.B).
+    // `by_existential` keyed by (role, body) → marker. Check whether the
+    // marker also has an existential fact (body, role) which would make it
+    // equivalent; otherwise it's one-way.
+    for (&(role, body), &marker) in &tseitin.by_existential {
+        // Determine if this marker has an equivalent existential fact
+        // (i.e. `introduce_equivalent_existential_marker` was used).
+        let is_equiv = rules
+            .existential_facts
+            .iter()
+            .any(|f| f.sub == marker && f.role == role && f.target == body);
+        let def = if is_equiv {
+            proof::SyntheticDef::ExistMarkerEquiv { role, body }
+        } else {
+            proof::SyntheticDef::ExistMarkerOneWay { role, body }
+        };
+        synthetic_defs.insert(marker, def);
+    }
+    // Nominal keys: NomKey(ind) → stand-in for {ind}
+    for (&ind, &nomkey) in &tseitin.nominal_by_ind {
+        synthetic_defs.insert(nomkey, proof::SyntheticDef::NominalKey(ind));
+    }
+    // MaxKey: MaxKey(n, role) → stand-in for ≤n R
+    for (&(n, role), &key) in &tseitin.max_key_by_role {
+        synthetic_defs.insert(key, proof::SyntheticDef::MaxKey { n, role });
+    }
+    // ForallKey: ForallKey(role, S) → stand-in for ∀role.OneOf(S)
+    for ((role, members), &key) in &tseitin.forall_key_by_role {
+        synthetic_defs.insert(
+            key,
+            proof::SyntheticDef::ForallKey {
+                role: *role,
+                members: members.clone(),
+            },
+        );
+    }
+
     let trace = ProofTrace {
         steps: HashMap::new(),
-        synthetic_defs: HashMap::new(),
+        synthetic_defs,
         atomic_sub_axiom,
         existential_fact_axiom,
         conjunctive_trigger_axiom,
@@ -5173,5 +5256,226 @@ Ontology(<http://rustdl.test/test>\n\
             }
         }
         walk(&root);
+    }
+
+    /// Faithfulness corpus test: run proof recording on pizza + go-basic (if
+    /// available), then extract and `check_proof` on a sample of derived
+    /// subsumptions.  Every proof must pass the checker AND bottom out at
+    /// genuine axiom leaves (no truncation, no misaligned axiom-ref).
+    ///
+    /// Intentionally marked `#[ignore]` so it only runs on demand
+    /// (`cargo test proof_faithfulness_corpus -- --ignored`) or in CI
+    /// via the explicit `--include-ignored` flag.
+    ///
+    /// Fail criteria:
+    /// - Any `check_proof` call returns `Err`.
+    /// - Any ToldSubsumer/ToldFact/ToldUnsat leaf has an empty `axiom_refs`
+    ///   (these should always cite the source axiom — axiom-ref absent = coarse;
+    ///   we report but do not hard-fail on pure coarse).
+    #[test]
+    #[ignore = "requires real ontology files; run with --include-ignored"]
+    fn proof_faithfulness_corpus_pizza() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        use crate::proof::{ElRule, check_proof, prove_subsumption};
+
+        // Resolve path relative to the workspace root (two levels up from this crate).
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = format!("{manifest_dir}/../../ontologies/real/pizza.ofn");
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("# SKIP: {path} not found");
+            return;
+        }
+        let f = File::open(&path).expect("open pizza.ofn");
+        let mut reader = BufReader::new(f);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parse pizza.ofn");
+        let internal =
+            owl_dl_core::convert::convert_ontology(&set_onto).expect("convert pizza.ofn");
+
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let trace = maybe_trace.expect("trace must be Some");
+
+        let num_axioms = internal.axioms.len();
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).expect("fits");
+
+        let mut total = 0usize;
+        let mut pass = 0usize;
+        let mut coarse_leaf = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+
+        // Sample up to 500 derived subsumptions (skip trivial C⊑C).
+        'outer: for i in 0..num_classes {
+            let sub = ClassId::new(i);
+            for j in 0..num_classes {
+                if i == j {
+                    continue;
+                }
+                let sup = ClassId::new(j);
+                if !subs.contains(sub, sup) {
+                    continue;
+                }
+                let mut memo = std::collections::HashMap::new();
+                let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) else {
+                    continue;
+                };
+                total += 1;
+                match check_proof(&root, num_axioms) {
+                    Ok(()) => {
+                        // Check for coarse leaves (axiom-ref absent on ToldSubsumer/ToldFact/ToldUnsat).
+                        fn count_coarse(node: &crate::proof::ProofNode, count: &mut usize) {
+                            match node.rule {
+                                ElRule::ToldSubsumer | ElRule::ToldFact | ElRule::ToldUnsat
+                                    if node.axiom_refs.is_empty() =>
+                                {
+                                    *count += 1;
+                                }
+                                _ => {}
+                            }
+                            for p in &node.premises {
+                                count_coarse(p, count);
+                            }
+                        }
+                        let mut coarse = 0;
+                        count_coarse(&root, &mut coarse);
+                        coarse_leaf += coarse;
+                        pass += 1;
+                    }
+                    Err(e) => {
+                        failures.push(format!("({i},{j}): {e}"));
+                        if failures.len() >= 10 {
+                            break 'outer;
+                        }
+                    }
+                }
+                if total >= 500 {
+                    break 'outer;
+                }
+            }
+        }
+
+        eprintln!(
+            "# corpus pizza: {pass}/{total} pass, {coarse_leaf} coarse leaves, {} failures",
+            failures.len()
+        );
+        for f in &failures {
+            eprintln!("  FAIL: {f}");
+        }
+        assert!(
+            failures.is_empty(),
+            "Faithfulness failures on pizza corpus:\n{failures:#?}"
+        );
+    }
+
+    /// Faithfulness corpus test on go-basic (large EL ontology with role chains).
+    /// Same semantics as `proof_faithfulness_corpus_pizza` but samples a broader
+    /// rule set (role hierarchy, chain, transitivity).
+    #[test]
+    #[ignore = "requires real ontology files; run with --include-ignored"]
+    fn proof_faithfulness_corpus_go_basic() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        use crate::proof::{ElRule, check_proof, prove_subsumption};
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = format!("{manifest_dir}/../../ontologies/real/go-basic.ofn");
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("# SKIP: {path} not found");
+            return;
+        }
+        let f = File::open(&path).expect("open go-basic.ofn");
+        let mut reader = BufReader::new(f);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parse go-basic.ofn");
+        let internal =
+            owl_dl_core::convert::convert_ontology(&set_onto).expect("convert go-basic.ofn");
+
+        let cfg = SaturateConfig {
+            record_proofs: true,
+        };
+        let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
+        let trace = maybe_trace.expect("trace must be Some");
+
+        let num_axioms = internal.axioms.len();
+        let num_classes = u32::try_from(internal.vocabulary.num_classes()).expect("fits");
+
+        let mut total = 0usize;
+        let mut pass = 0usize;
+        let mut coarse_leaf = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+
+        // Sample 2000 derived non-trivial subsumptions.
+        'outer: for i in 0..num_classes {
+            let sub = ClassId::new(i);
+            for j in 0..num_classes {
+                if i == j {
+                    continue;
+                }
+                let sup = ClassId::new(j);
+                if !subs.contains(sub, sup) {
+                    continue;
+                }
+                let mut memo = std::collections::HashMap::new();
+                let Some(root) = prove_subsumption(&trace, sub, sup, &mut memo) else {
+                    continue;
+                };
+                total += 1;
+                match check_proof(&root, num_axioms) {
+                    Ok(()) => {
+                        fn count_coarse(node: &crate::proof::ProofNode, count: &mut usize) {
+                            match node.rule {
+                                ElRule::ToldSubsumer | ElRule::ToldFact | ElRule::ToldUnsat
+                                    if node.axiom_refs.is_empty() =>
+                                {
+                                    *count += 1;
+                                }
+                                _ => {}
+                            }
+                            for p in &node.premises {
+                                count_coarse(p, count);
+                            }
+                        }
+                        let mut coarse = 0;
+                        count_coarse(&root, &mut coarse);
+                        coarse_leaf += coarse;
+                        pass += 1;
+                    }
+                    Err(e) => {
+                        failures.push(format!("({i},{j}): {e}"));
+                        if failures.len() >= 10 {
+                            break 'outer;
+                        }
+                    }
+                }
+                if total >= 2000 {
+                    break 'outer;
+                }
+            }
+        }
+
+        eprintln!(
+            "# corpus go-basic: {pass}/{total} pass, {coarse_leaf} coarse leaves, {} failures",
+            failures.len()
+        );
+        for f in &failures {
+            eprintln!("  FAIL: {f}");
+        }
+        assert!(
+            failures.is_empty(),
+            "Faithfulness failures on go-basic corpus:\n{failures:#?}"
+        );
     }
 }

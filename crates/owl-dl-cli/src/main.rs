@@ -30,7 +30,7 @@ use owl_dl_reasoner::{
     is_subclass_of, is_subclass_of_saturation_only, is_subclass_of_with_stats, realize,
     realize_saturation_only,
 };
-use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr};
+use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
 
 #[derive(Parser, Debug)]
 #[command(name = "rustdl", version, about = "OWL DL reasoner (rustdl)")]
@@ -779,39 +779,56 @@ fn main() -> Result<()> {
                             Err(e) => eprintln!("# proof check FAILED: {e}"),
                         }
                     }
-                    // Render using the internal vocabulary.
+                    // Render using the internal vocabulary and synthetic defs.
                     // Re-parse to get the vocabulary (only for display, not for correctness).
                     let internal = owl_dl_core::convert::convert_ontology(&onto)
                         .context("re-convert for rendering")?;
-                    let proof_text =
-                        owl_dl_reasoner::render_proof(root, Some(&internal.vocabulary), 0);
+                    let proof_text = render_proof_with_defs(
+                        root,
+                        Some(&internal.vocabulary),
+                        Some(&data.trace.synthetic_defs),
+                        0,
+                    );
                     println!("# step proof ({} steps):", data.trace.steps.len());
                     print!("{proof_text}");
-                    println!("# axiom provenance ({num_axioms} axioms available):");
-                    for ax_ref in root
-                        .axiom_refs
-                        .iter()
-                        .chain(root.premises.iter().flat_map(|p| p.axiom_refs.iter()))
-                    {
-                        if let Some(ax) = internal.axioms.get(ax_ref.0) {
-                            println!("  axiom[{}]: {:?}", ax_ref.0, ax);
+                    // Collect all axiom refs across the whole proof tree.
+                    fn collect_axiom_refs(node: &owl_dl_reasoner::ProofNode, out: &mut Vec<usize>) {
+                        for ax in &node.axiom_refs {
+                            if !out.contains(&ax.0) {
+                                out.push(ax.0);
+                            }
+                        }
+                        for premise in &node.premises {
+                            collect_axiom_refs(premise, out);
+                        }
+                    }
+                    let mut all_refs: Vec<usize> = Vec::new();
+                    collect_axiom_refs(root, &mut all_refs);
+                    all_refs.sort_unstable();
+                    if !all_refs.is_empty() {
+                        println!("# axiom provenance ({num_axioms} axioms in ontology):");
+                        for idx in all_refs {
+                            if let Some(ax) = internal.axioms.get(idx) {
+                                println!("  axiom[{idx}]: {ax:?}");
+                            }
                         }
                     }
                 }
                 ProveEntailmentResult::JustificationFallback(j) => {
+                    println!(
+                        "# step proof unavailable (out of EL saturation fragment); \
+                         axiom justification:"
+                    );
                     if j.axioms.is_empty() {
-                        println!("Step proof unavailable (out of EL saturation fragment).");
-                        println!("Axiom justification not available for this generic call.");
+                        println!("  (no justification available)");
                     } else {
-                        println!("Step proof unavailable (out of EL saturation fragment).");
-                        println!("Axiom justification ({} axioms):", j.axioms.len());
                         for ax in &j.axioms {
                             println!("  {}", ax.as_manchester_with_prefixes(&pm));
                         }
                     }
                 }
                 ProveEntailmentResult::NotEntailed => {
-                    println!("NOT entailed: {sub} ⊑ {sup} does not hold in this ontology");
+                    println!("NOT entailed: {sub} SubClassOf {sup} does not hold in this ontology");
                 }
             }
         }

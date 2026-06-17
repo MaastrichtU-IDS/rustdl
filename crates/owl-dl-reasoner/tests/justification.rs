@@ -427,3 +427,115 @@ fn corpus_justification_invariants() {
         j.minimal_guaranteed
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⊥-locality module pre-pass: completeness + reduction canaries.
+//
+// A fixture with TWO distinct justifications for one entailment (A ⊑ C):
+//   J1 = { A⊑B, B⊑C }                      (told chain)
+//   J2 = { A⊑∃r.D, Domain(r,C) }           (existential + property domain)
+// plus irrelevant axioms (unrelated chain, disjointness, an unrelated domain,
+// and a ∀ axiom) that the ⊥-module must drop. This exercises the hand-written
+// locality branches: SubClassOf, ∃ (ObjectSomeValuesFrom), domain, ⊔/¬ via the
+// Class base case, DisjointClasses, and ∀ (ObjectAllValuesFrom) exclusion.
+// ---------------------------------------------------------------------------
+
+use horned_owl::model::Component;
+use std::collections::{BTreeSet, HashSet};
+
+const TWO_JUST_FIXTURE: &str = "\
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+Declaration(Class(:M)) Declaration(Class(:N)) Declaration(Class(:P)) Declaration(Class(:Q))\n\
+Declaration(Class(:X)) Declaration(Class(:Y)) Declaration(Class(:Z)) Declaration(Class(:W))\n\
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t))\n\
+SubClassOf(:A :B) SubClassOf(:B :C)\n\
+SubClassOf(:A ObjectSomeValuesFrom(:r :D)) ObjectPropertyDomain(:r :C)\n\
+SubClassOf(:X :Y) SubClassOf(:Y :Z) DisjointClasses(:P :Q)\n\
+ObjectPropertyDomain(:s :W) SubClassOf(:M ObjectAllValuesFrom(:t :N))";
+
+fn just_set(js: &[Justification<RcStr>]) -> HashSet<BTreeSet<Component<RcStr>>> {
+    js.iter()
+        .map(|j| j.axioms.iter().cloned().collect::<BTreeSet<_>>())
+        .collect()
+}
+
+static JUSTIFY_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct NoModuleGuard {
+    prior: Option<std::ffi::OsString>,
+}
+impl NoModuleGuard {
+    #[allow(unsafe_code)]
+    fn on() -> Self {
+        let prior = std::env::var_os("RUSTDL_JUSTIFY_NO_MODULE");
+        // SAFETY: serialized via JUSTIFY_ENV_MUTEX; restored on Drop.
+        unsafe { std::env::set_var("RUSTDL_JUSTIFY_NO_MODULE", "1") };
+        Self { prior }
+    }
+}
+impl Drop for NoModuleGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see NoModuleGuard::on.
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var("RUSTDL_JUSTIFY_NO_MODULE", v),
+                None => std::env::remove_var("RUSTDL_JUSTIFY_NO_MODULE"),
+            }
+        }
+    }
+}
+
+#[test]
+fn bot_module_drops_irrelevant_axioms() {
+    let o = onto(TWO_JUST_FIXTURE);
+    let (_fixed, candidates) = logical_axioms(&o);
+    // 7 logical axioms total (2 + 2 relevant, 3 irrelevant: X⊑Y, Y⊑Z,
+    // DisjointClasses, unrelated-domain, ∀ — actually 5 irrelevant).
+    let mut seed = HashSet::new();
+    seed.insert("http://t/A".to_string());
+    seed.insert("http://t/C".to_string());
+    let module = owl_dl_reasoner::justify::extract_bot_module(&candidates, &seed);
+    assert_eq!(
+        module.len(),
+        4,
+        "⊥-module for {{A,C}} must keep exactly the 4 relevant axioms, got {}",
+        module.len()
+    );
+    for ax in &module {
+        assert!(candidates.contains(ax), "module axiom must be a candidate");
+    }
+}
+
+#[test]
+fn module_preserves_all_justifications() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let o = onto(TWO_JUST_FIXTURE);
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+
+    // Module ON (default).
+    let with_module = find_all_justifications(&o, &q, 16).unwrap();
+    // Module OFF (full candidate set — ground-truth HST).
+    let without_module = {
+        let _g = NoModuleGuard::on();
+        find_all_justifications(&o, &q, 16).unwrap()
+    };
+
+    let on = just_set(&with_module);
+    let off = just_set(&without_module);
+    assert_eq!(
+        on, off,
+        "⊥-module must not change the set of justifications (module-on vs module-off)"
+    );
+    assert_eq!(
+        on.len(),
+        2,
+        "A ⊑ C has exactly two justifications, got {}",
+        on.len()
+    );
+}

@@ -1718,6 +1718,17 @@ pub fn convert_component<A: ForIRI>(
             let role = Role::named(vocab.intern_role(dp.0.as_ref()));
             Ok(Some(Axiom::FunctionalRole(role)))
         }
+        C::DataPropertyDomain(ax) if data_properties_enabled() => {
+            let role = Role::named(vocab.intern_role(ax.dp.0.as_ref()));
+            let domain = ce_or_skip!(convert_class_expression(&ax.ce, vocab, pool));
+            Ok(Some(Axiom::ObjectPropertyDomain { role, domain }))
+        }
+        C::DataPropertyRange(ax) if data_properties_enabled() => {
+            match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {
+                Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange { role, range })),
+                None => Ok(None), // unrecognized range — drop (sound)
+            }
+        }
 
         // ── Data property / datatype: silently dropped per Phase D1 ─────
         // See the DeclareDataProperty / DeclareDatatype block above for
@@ -3365,5 +3376,39 @@ mod tests {
         ));
         let (_, ax) = convert_one(&c);
         assert!(matches!(ax, Some(Axiom::FunctionalRole(_))), "got {ax:?}");
+    }
+
+    #[test]
+    fn data_property_domain_lowers_to_object_domain() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::DataPropertyDomain(ho::DataPropertyDomain {
+            dp: b().data_property("http://t/dp"),
+            ce: ClassExpression::Class(b().class("http://t/C")),
+        });
+        let (_, ax) = convert_one(&c);
+        assert!(
+            matches!(ax, Some(Axiom::ObjectPropertyDomain { .. })),
+            "got {ax:?}"
+        );
+    }
+
+    #[test]
+    fn data_property_range_integer_lowers_to_object_range() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::DataPropertyRange(ho::DataPropertyRange {
+            dp: b().data_property("http://t/dp"),
+            dr: DataRange::Datatype(b().datatype("http://www.w3.org/2001/XMLSchema#integer")),
+        });
+        let (_, ax) = convert_one(&c);
+        assert!(
+            matches!(ax, Some(Axiom::ObjectPropertyRange { .. })),
+            "got {ax:?}"
+        );
     }
 }

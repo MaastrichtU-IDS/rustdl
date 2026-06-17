@@ -652,6 +652,62 @@ fn lower_float_data_to_some(
     pool.some(Role::named(role_id), filler)
 }
 
+/// Lower a single literal `l` to the concept `∃dp.DKey(point l)`, reusing the
+/// per-datatype point-range `DKey` encoding. `None` for any literal whose datatype
+/// the `DKey` machinery does not recognize (caller drops — sound under-approximation).
+fn data_point_some<A: ForIRI>(
+    dp_iri: &str,
+    l: &Literal<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> Option<ConceptId> {
+    if let Some(v) = integer_literal_value(l) {
+        Some(lower_data_to_some(
+            IntegerRange::point(v),
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some(v) = float_literal_value(l) {
+        Some(lower_float_data_to_some(
+            FloatRange::point(v),
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some(v) = decimal_literal_value(l) {
+        Some(lower_ord_data_to_some(
+            &OrdRange::point(v),
+            DKEY_DECIMAL_TAG,
+            decimal_key,
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some(v) = date_literal_value(l) {
+        Some(lower_ord_data_to_some(
+            &OrdRange::point(v),
+            DKEY_DATE_TAG,
+            date_key,
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some(v) = datetime_literal_value(l) {
+        Some(lower_ord_data_to_some(
+            &OrdRange::point(v),
+            DKEY_DATETIME_TAG,
+            datetime_key,
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else {
+        exact_string_literal(l)
+            .map(|s| lower_str_data_to_some(&StrSet::singleton(s), dp_iri, vocab, pool))
+    }
+}
+
 /// Errors produced by conversion from `horned-owl` to our IR.
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
 pub enum ConversionError {
@@ -809,59 +865,8 @@ pub fn convert_class_expression<A: ForIRI>(
                 None => Err(ConversionError::UnsupportedDataRange),
             }
         }
-        ClassExpression::DataHasValue { dp, l } => {
-            if let Some(v) = integer_literal_value(l) {
-                Ok(lower_data_to_some(
-                    IntegerRange::point(v),
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(v) = float_literal_value(l) {
-                Ok(lower_float_data_to_some(
-                    FloatRange::point(v),
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(v) = decimal_literal_value(l) {
-                Ok(lower_ord_data_to_some(
-                    &OrdRange::point(v),
-                    DKEY_DECIMAL_TAG,
-                    decimal_key,
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(v) = date_literal_value(l) {
-                Ok(lower_ord_data_to_some(
-                    &OrdRange::point(v),
-                    DKEY_DATE_TAG,
-                    date_key,
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(v) = datetime_literal_value(l) {
-                Ok(lower_ord_data_to_some(
-                    &OrdRange::point(v),
-                    DKEY_DATETIME_TAG,
-                    datetime_key,
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else if let Some(s) = exact_string_literal(l) {
-                Ok(lower_str_data_to_some(
-                    &StrSet::singleton(s),
-                    dp.0.as_ref(),
-                    vocab,
-                    pool,
-                ))
-            } else {
-                Err(ConversionError::UnsupportedDataRange)
-            }
-        }
+        ClassExpression::DataHasValue { dp, l } => data_point_some(dp.0.as_ref(), l, vocab, pool)
+            .ok_or(ConversionError::UnsupportedDataRange),
         // Phase D11: `∀p.DKey(range)` — the universal-restriction counterpart
         // of DataSomeValuesFrom. Sound object-encoding (under-approximate:
         // a `DKey(range)` member need not be a real in-range value, so object

@@ -1668,6 +1668,22 @@ pub fn convert_component<A: ForIRI>(
             }
         }
 
+        // ── NegativeDataPropertyAssertion: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // Lower `¬dp(from, to)` to a `ClassAssertion` of `¬∃dp.DKey(point v)`:
+        // the individual `from` must NOT have the data value `to` for property `dp`.
+        // When the gate is OFF, or the literal is an unrecognized datatype, drop
+        // silently (sound under-approximation).
+        C::NegativeDataPropertyAssertion(ax) if data_properties_enabled() => {
+            match data_point_some(ax.dp.0.as_ref(), &ax.to, vocab, pool) {
+                Some(some_concept) => {
+                    let class = pool.not(some_concept); // ¬∃dp.DKey(point v)
+                    let individual = convert_individual(&ax.from, vocab)?;
+                    Ok(Some(Axiom::ClassAssertion { class, individual }))
+                }
+                None => Ok(None),
+            }
+        }
+
         // ── Data property / datatype: silently dropped per Phase D1 ─────
         // See the DeclareDataProperty / DeclareDatatype block above for
         // the sound-under-approximation rationale.
@@ -3225,5 +3241,30 @@ mod tests {
         );
         let (_, ax) = convert_one(&c);
         assert!(ax.is_none(), "unrecognized datatype dropped; got {ax:?}");
+    }
+
+    #[test]
+    fn negative_data_property_assertion_lowers_to_complement() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::NegativeDataPropertyAssertion(ho::NegativeDataPropertyAssertion {
+            dp: b().data_property("http://t/dp"),
+            from: named_ind("http://t/a"),
+            to: ho::Literal::Datatype {
+                literal: "5".into(),
+                datatype_iri: b().iri(XSD_INT),
+            },
+        });
+        let (o, ax) = convert_one(&c);
+        let Some(Axiom::ClassAssertion { class, .. }) = ax else {
+            panic!("expected ClassAssertion, got {ax:?}");
+        };
+        // ¬∃dp.DKey — a Not concept (pool.not(...)).
+        assert!(
+            matches!(o.concepts.get(class), ConceptExpr::Not(_)),
+            "expected a Not concept"
+        );
     }
 }

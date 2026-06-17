@@ -172,6 +172,14 @@ const DKEY_DECIMAL_TAG: &str = "dec:";
 const DKEY_DATE_TAG: &str = "date:";
 const DKEY_DATETIME_TAG: &str = "dt:";
 
+/// First-class data-property lowering is opt-in (default OFF). When OFF, the
+/// data-property axiom arms drop to `Ok(None)` exactly as before this arc — so
+/// the converter is byte-identical to legacy behavior. Flipped ON only after the
+/// later sub-projects validate FP=0 corpus-wide. Read per call so tests can toggle.
+fn data_properties_enabled() -> bool {
+    std::env::var_os("RUSTDL_DATA_PROPERTIES").is_some()
+}
+
 /// Build a tagged `DKey` IRI for an [`OrdRange<T>`], encoding each bound via
 /// `key` (which MUST NOT emit a `:`) and inclusivity as `i`/`e`.
 fn ord_dkey_iri<T>(tag: &str, range: &OrdRange<T>, key: impl Fn(&T) -> String) -> String {
@@ -1645,6 +1653,21 @@ pub fn convert_component<A: ForIRI>(
             &ax.0, vocab,
         )?))),
 
+        // ── DataPropertyAssertion: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // When the gate is ON, lower `dp(from, to)` to a `ClassAssertion` via
+        // the DKey reduction (`∃dp.DKey(point v)` — the individual is then a
+        // member of that concept). When the gate is OFF, or the literal is an
+        // unrecognized datatype, drop silently (sound under-approximation).
+        C::DataPropertyAssertion(ax) if data_properties_enabled() => {
+            match data_point_some(ax.dp.0.as_ref(), &ax.to, vocab, pool) {
+                Some(class) => {
+                    let individual = convert_individual(&ax.from, vocab)?;
+                    Ok(Some(Axiom::ClassAssertion { class, individual }))
+                }
+                None => Ok(None), // unrecognized literal datatype — drop (sound)
+            }
+        }
+
         // ── Data property / datatype: silently dropped per Phase D1 ─────
         // See the DeclareDataProperty / DeclareDatatype block above for
         // the sound-under-approximation rationale.
@@ -3110,5 +3133,97 @@ mod tests {
             .map(|(_, _, sup)| *sup)
             .expect("chain B prefix present");
         assert_ne!(aux_a, aux_b, "distinct chains must use distinct aux roles");
+    }
+
+    // ── DataPropertyAssertion gated-lowering tests (RUSTDL_DATA_PROPERTIES) ─
+
+    static DP_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct DpGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl DpGuard {
+        #[allow(unsafe_code)]
+        fn on() -> Self {
+            let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
+            // SAFETY: serialized via DP_ENV_MUTEX; restored on Drop.
+            unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "1") };
+            Self { prior }
+        }
+
+        #[allow(unsafe_code)]
+        fn off() -> Self {
+            let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
+            // SAFETY: serialized via DP_ENV_MUTEX; restored on Drop.
+            unsafe { std::env::remove_var("RUSTDL_DATA_PROPERTIES") };
+            Self { prior }
+        }
+    }
+    impl Drop for DpGuard {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: see DpGuard::on.
+            unsafe {
+                match &self.prior {
+                    Some(v) => std::env::set_var("RUSTDL_DATA_PROPERTIES", v),
+                    None => std::env::remove_var("RUSTDL_DATA_PROPERTIES"),
+                }
+            }
+        }
+    }
+
+    const XSD_INT: &str = "http://www.w3.org/2001/XMLSchema#integer";
+
+    fn int_dp_assertion(dp: &str, ind: &str, lexical: &str, dt: &str) -> Component<RcStr> {
+        Component::DataPropertyAssertion(ho::DataPropertyAssertion {
+            dp: b().data_property(dp),
+            from: named_ind(ind),
+            to: ho::Literal::Datatype {
+                literal: lexical.to_string(),
+                datatype_iri: b().iri(dt),
+            },
+        })
+    }
+
+    #[test]
+    fn data_property_assertion_lowers_when_gate_on() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = int_dp_assertion("http://t/dp", "http://t/a", "5", XSD_INT);
+        let (_, ax) = convert_one(&c);
+        assert!(
+            matches!(ax, Some(Axiom::ClassAssertion { .. })),
+            "gate ON: data assertion lowers to ClassAssertion; got {ax:?}"
+        );
+    }
+
+    #[test]
+    fn data_property_assertion_dropped_when_gate_off() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::off();
+        let c = int_dp_assertion("http://t/dp", "http://t/a", "5", XSD_INT);
+        let (_, ax) = convert_one(&c);
+        assert!(ax.is_none(), "gate OFF: data assertion dropped; got {ax:?}");
+    }
+
+    #[test]
+    fn data_property_assertion_unrecognized_literal_dropped() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        // anyURI is not a DKey-recognized datatype ⇒ drop even with gate ON
+        let c = int_dp_assertion(
+            "http://t/dp",
+            "http://t/a",
+            "x",
+            "http://www.w3.org/2001/XMLSchema#anyURI",
+        );
+        let (_, ax) = convert_one(&c);
+        assert!(ax.is_none(), "unrecognized datatype dropped; got {ax:?}");
     }
 }

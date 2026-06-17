@@ -1684,6 +1684,28 @@ pub fn convert_component<A: ForIRI>(
             }
         }
 
+        // ── SubDataPropertyOf: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // Lower `sub ⊑ sup` (data properties) to a `SubObjectPropertyOf`
+        // role-hierarchy axiom by interning both IRIs into the shared role
+        // table. When the gate is OFF, falls through to the catch-all Ok(None).
+        C::SubDataPropertyOf(ax) if data_properties_enabled() => {
+            let sub = SubRolePath::Role(Role::named(vocab.intern_role(ax.sub.0.as_ref())));
+            let sup = Role::named(vocab.intern_role(ax.sup.0.as_ref()));
+            Ok(Some(Axiom::SubObjectPropertyOf { sub, sup }))
+        }
+
+        // ── EquivalentDataProperties: gated lowering (RUSTDL_DATA_PROPERTIES) ──
+        // Lower an equivalence cluster of data properties to
+        // `EquivalentObjectProperties` over the shared role table.
+        // When the gate is OFF, falls through to the catch-all Ok(None).
+        C::EquivalentDataProperties(ax) if data_properties_enabled() => {
+            let roles: Vec<Role> =
+                ax.0.iter()
+                    .map(|dp| Role::named(vocab.intern_role(dp.0.as_ref())))
+                    .collect();
+            Ok(Some(Axiom::EquivalentObjectProperties(roles)))
+        }
+
         // ── Data property / datatype: silently dropped per Phase D1 ─────
         // See the DeclareDataProperty / DeclareDatatype block above for
         // the sound-under-approximation rationale.
@@ -3266,5 +3288,39 @@ mod tests {
             matches!(o.concepts.get(class), ConceptExpr::Not(_)),
             "expected a Not concept"
         );
+    }
+
+    #[test]
+    fn sub_data_property_lowers_to_role_hierarchy() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::SubDataPropertyOf(ho::SubDataPropertyOf {
+            sub: b().data_property("http://t/dp"),
+            sup: b().data_property("http://t/dq"),
+        });
+        let (_, ax) = convert_one(&c);
+        assert!(
+            matches!(ax, Some(Axiom::SubObjectPropertyOf { .. })),
+            "got {ax:?}"
+        );
+    }
+
+    #[test]
+    fn equivalent_data_properties_lowers_to_equivalent_roles() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::EquivalentDataProperties(ho::EquivalentDataProperties(vec![
+            b().data_property("http://t/dp"),
+            b().data_property("http://t/dq"),
+        ]));
+        let (_, ax) = convert_one(&c);
+        let Some(Axiom::EquivalentObjectProperties(roles)) = ax else {
+            panic!("got {ax:?}")
+        };
+        assert_eq!(roles.len(), 2);
     }
 }

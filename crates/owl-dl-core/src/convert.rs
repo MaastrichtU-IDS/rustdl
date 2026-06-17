@@ -1706,6 +1706,19 @@ pub fn convert_component<A: ForIRI>(
             Ok(Some(Axiom::EquivalentObjectProperties(roles)))
         }
 
+        C::DisjointDataProperties(ax) if data_properties_enabled() => {
+            let roles: Vec<Role> =
+                ax.0.iter()
+                    .map(|dp| Role::named(vocab.intern_role(dp.0.as_ref())))
+                    .collect();
+            Ok(Some(Axiom::DisjointObjectProperties(roles)))
+        }
+        C::FunctionalDataProperty(ax) if data_properties_enabled() => {
+            let dp = &ax.0;
+            let role = Role::named(vocab.intern_role(dp.0.as_ref()));
+            Ok(Some(Axiom::FunctionalRole(role)))
+        }
+
         // ── Data property / datatype: silently dropped per Phase D1 ─────
         // See the DeclareDataProperty / DeclareDatatype block above for
         // the sound-under-approximation rationale.
@@ -3322,5 +3335,35 @@ mod tests {
             panic!("got {ax:?}")
         };
         assert_eq!(roles.len(), 2);
+    }
+
+    #[test]
+    fn disjoint_data_properties_lowers_to_disjoint_roles() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::DisjointDataProperties(ho::DisjointDataProperties(vec![
+            b().data_property("http://t/dp"),
+            b().data_property("http://t/dq"),
+        ]));
+        let (_, ax) = convert_one(&c);
+        assert!(
+            matches!(ax, Some(Axiom::DisjointObjectProperties(_))),
+            "got {ax:?}"
+        );
+    }
+
+    #[test]
+    fn functional_data_property_lowers_to_functional_role() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let c = Component::FunctionalDataProperty(ho::FunctionalDataProperty(
+            b().data_property("http://t/dp"),
+        ));
+        let (_, ax) = convert_one(&c);
+        assert!(matches!(ax, Some(Axiom::FunctionalRole(_))), "got {ax:?}");
     }
 }

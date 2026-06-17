@@ -1,5 +1,26 @@
 # Parallel EL Saturation — Design Document
 
+> **OUTCOME 2026-06-17: BUILT → NO-GO → REVERTED (do not re-attempt without a
+> lock-free queue AND a fix for hot-row contention).** Option B was implemented
+> (`parallel.rs`, ~1100 LOC: AtomicBitMatrix subsumers/subsumed_by, DashMap
+> seen-facts, Mutex<VecDeque>+Condvar work queue with an in_flight termination
+> counter, rayon::scope workers, gated on `functional_roles.is_clear()`, proofs
+> pin single-thread). It was SOUND — go-basic closure 357043 byte-identical across
+> 6 runs (no race), full corpus FP=0/MISSED=0 — but **~0.96× (a slight regression)
+> on go-basic**, far below the 1.5× ship bar, so it was reset off main (was commit
+> 9ecec23, unpushed). Two confirmed limiters: (1) the `Mutex<VecDeque>` queue
+> serializes all workers (~17M lock acquisitions/run); (2) `record_subsumer` writes
+> the *superclass* row, so hot near-root classes (owl:Thing-like) create
+> `AtomicU64::fetch_or` contention that saturates at ~2 threads — the contention
+> obstacle this design itself predicted (the 2–4× cap), made worse by the lock.
+> Only viable follow-up = lock-free `SegQueue` (needs crossbeam + re-designed
+> termination) AND it is STILL capped by the hot-row contention. **Verdict
+> (matches Konclude single-threaded EL + ELK-beats-rustdl-on-go-basic-via-
+> constant-factor): parallelism is NOT the EL lever — constant-factor (fix #1/#2,
+> shipped) and the parse cost (perf #1) are. Don't revisit parallel saturation
+> unless a measured workload needs it AND the lock-free + contention fixes are
+> scoped together.**
+
 **Date:** 2026-06-16
 **Status:** Design only — no `.rs` edits. Profiling is live on the same crate; do NOT touch source files until profiling is complete.
 **Author:** rustdl (Michel Dumontier + Claude)

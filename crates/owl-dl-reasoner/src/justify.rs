@@ -5,8 +5,11 @@
 use std::collections::{BTreeSet, HashSet};
 
 use horned_owl::model::{
-    Build, Class, ClassExpression, Component, DataProperty, EquivalentClasses, ForIRI, Individual,
-    MutableOntology, ObjectProperty, ObjectPropertyExpression, SubObjectPropertyExpression,
+    Build, Class, ClassExpression, Component, DataProperty, DataPropertyAssertion,
+    DifferentIndividuals, EquivalentClasses, ForIRI, Individual, Literal,
+    MutableOntology, NegativeDataPropertyAssertion, NegativeObjectPropertyAssertion,
+    ObjectProperty, ObjectPropertyAssertion, ObjectPropertyExpression, SameIndividual,
+    SubObjectPropertyExpression,
 };
 use horned_owl::ontology::set::SetOntology;
 
@@ -22,9 +25,20 @@ pub enum Entailment {
     Unsatisfiable { class: String },
     InstanceOf { individual: String, class: String },
     Inconsistent,
+    SubObjectProperty { sub: String, sup: String },
+    EquivalentObjectProperties { a: String, b: String },
+    DisjointObjectProperties { a: String, b: String },
+    ObjectPropertyAssertion { source: String, prop: String, target: String },
+    SameIndividual { a: String, b: String },
+    DifferentIndividuals { a: String, b: String },
+    SubDataProperty { sub: String, sup: String },
+    EquivalentDataProperties { a: String, b: String },
 }
 
 const PROBE_IRI: &str = "urn:rustdl-justify-probe";
+const PROBE_A: &str = "urn:rustdl-justify-probe-a";
+const PROBE_B: &str = "urn:rustdl-justify-probe-b";
+const PROBE_INT: &str = "http://www.w3.org/2001/XMLSchema#integer";
 
 /// Does `onto` entail `q`? Reduces to the public reasoner checks. The
 /// `DisjointClasses` case injects a fresh probe class `X ≡ a ⊓ b` and checks
@@ -56,7 +70,140 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
             crate::is_instance_of(onto, class, individual)
         }
         Entailment::Inconsistent => Ok(!crate::is_consistent(onto)?),
+        Entailment::SubObjectProperty { sub, sup } => {
+            let b: Build<A> = Build::new();
+            inconsistent_with(onto, vec![
+                Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
+                    ope: ope(&b, sub),
+                    from: named(&b, PROBE_A),
+                    to: named(&b, PROBE_B),
+                }),
+                Component::NegativeObjectPropertyAssertion(NegativeObjectPropertyAssertion {
+                    ope: ope(&b, sup),
+                    from: named(&b, PROBE_A),
+                    to: named(&b, PROBE_B),
+                }),
+            ])
+        }
+        Entailment::EquivalentObjectProperties { a, b } => Ok(entails(
+            onto,
+            &Entailment::SubObjectProperty { sub: a.clone(), sup: b.clone() },
+        )? && entails(
+            onto,
+            &Entailment::SubObjectProperty { sub: b.clone(), sup: a.clone() },
+        )?),
+        Entailment::DisjointObjectProperties { a, b } => {
+            let bld: Build<A> = Build::new();
+            inconsistent_with(onto, vec![
+                Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
+                    ope: ope(&bld, a),
+                    from: named(&bld, PROBE_A),
+                    to: named(&bld, PROBE_B),
+                }),
+                Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
+                    ope: ope(&bld, b),
+                    from: named(&bld, PROBE_A),
+                    to: named(&bld, PROBE_B),
+                }),
+            ])
+        }
+        Entailment::ObjectPropertyAssertion { source, prop, target } => {
+            let b: Build<A> = Build::new();
+            inconsistent_with(onto, vec![
+                Component::NegativeObjectPropertyAssertion(NegativeObjectPropertyAssertion {
+                    ope: ope(&b, prop),
+                    from: named(&b, source),
+                    to: named(&b, target),
+                }),
+            ])
+        }
+        Entailment::SameIndividual { a, b } => {
+            let bld: Build<A> = Build::new();
+            inconsistent_with(
+                onto,
+                vec![Component::DifferentIndividuals(DifferentIndividuals(vec![
+                    named(&bld, a),
+                    named(&bld, b),
+                ]))],
+            )
+        }
+        Entailment::DifferentIndividuals { a, b } => {
+            let bld: Build<A> = Build::new();
+            inconsistent_with(
+                onto,
+                vec![Component::SameIndividual(SameIndividual(vec![
+                    named(&bld, a),
+                    named(&bld, b),
+                ]))],
+            )
+        }
+        Entailment::SubDataProperty { sub, sup } => {
+            let b: Build<A> = Build::new();
+            let sub_lit = Literal::Datatype {
+                literal: "0".to_string(),
+                datatype_iri: b.iri(PROBE_INT),
+            };
+            let sup_lit = Literal::Datatype {
+                literal: "0".to_string(),
+                datatype_iri: b.iri(PROBE_INT),
+            };
+            // c1: asserting sub(_a,0) alone must be consistent (else range clash, not subsumption).
+            if inconsistent_with(onto, vec![Component::DataPropertyAssertion(
+                DataPropertyAssertion {
+                    dp: b.data_property(sub.as_str()),
+                    from: named(&b, PROBE_A),
+                    to: sub_lit,
+                },
+            )])? {
+                return Ok(false);
+            }
+            // c2: adding ¬sup(_a,0) becomes inconsistent ⟺ sub⊑sup forces sup(_a,0).
+            inconsistent_with(onto, vec![
+                Component::DataPropertyAssertion(DataPropertyAssertion {
+                    dp: b.data_property(sub.as_str()),
+                    from: named(&b, PROBE_A),
+                    to: Literal::Datatype {
+                        literal: "0".to_string(),
+                        datatype_iri: b.iri(PROBE_INT),
+                    },
+                }),
+                Component::NegativeDataPropertyAssertion(NegativeDataPropertyAssertion {
+                    dp: b.data_property(sup.as_str()),
+                    from: named(&b, PROBE_A),
+                    to: sup_lit,
+                }),
+            ])
+        }
+        Entailment::EquivalentDataProperties { a, b } => Ok(entails(
+            onto,
+            &Entailment::SubDataProperty { sub: a.clone(), sup: b.clone() },
+        )? && entails(
+            onto,
+            &Entailment::SubDataProperty { sub: b.clone(), sup: a.clone() },
+        )?),
     }
+}
+
+/// `true` iff `onto ∪ extra` is inconsistent. The `extra` axioms are query-
+/// encoding probes (fresh `PROBE_*` symbols), never candidate axioms — they
+/// appear in every tested subset and never in a justification.
+fn inconsistent_with<A: ForIRI>(
+    onto: &SetOntology<A>,
+    extra: Vec<Component<A>>,
+) -> Result<bool, ReasonError> {
+    let mut probed = onto.clone();
+    for c in extra {
+        probed.insert(c);
+    }
+    Ok(!crate::is_consistent(&probed)?)
+}
+
+fn named<A: ForIRI>(b: &Build<A>, iri: &str) -> Individual<A> {
+    Individual::Named(b.named_individual(iri))
+}
+
+fn ope<A: ForIRI>(b: &Build<A>, iri: &str) -> ObjectPropertyExpression<A> {
+    ObjectPropertyExpression::ObjectProperty(b.object_property(iri))
 }
 
 /// Split `onto` into (`fixed`, `candidates`): `fixed` = non-logical axioms
@@ -457,11 +604,19 @@ pub fn component_entities<A: ForIRI>(c: &Component<A>) -> BTreeSet<String> {
 fn query_seed_signature(q: &Entailment) -> Option<HashSet<String>> {
     let mut s = HashSet::new();
     match q {
-        Entailment::SubClassOf { sub, sup } => {
+        Entailment::SubClassOf { sub, sup }
+        | Entailment::SubObjectProperty { sub, sup }
+        | Entailment::SubDataProperty { sub, sup } => {
             s.insert(sub.clone());
             s.insert(sup.clone());
         }
-        Entailment::EquivalentClasses { a, b } | Entailment::DisjointClasses { a, b } => {
+        Entailment::EquivalentClasses { a, b }
+        | Entailment::DisjointClasses { a, b }
+        | Entailment::EquivalentObjectProperties { a, b }
+        | Entailment::DisjointObjectProperties { a, b }
+        | Entailment::SameIndividual { a, b }
+        | Entailment::DifferentIndividuals { a, b }
+        | Entailment::EquivalentDataProperties { a, b } => {
             s.insert(a.clone());
             s.insert(b.clone());
         }
@@ -471,6 +626,11 @@ fn query_seed_signature(q: &Entailment) -> Option<HashSet<String>> {
         Entailment::InstanceOf { individual, class } => {
             s.insert(individual.clone());
             s.insert(class.clone());
+        }
+        Entailment::ObjectPropertyAssertion { source, prop, target } => {
+            s.insert(source.clone());
+            s.insert(prop.clone());
+            s.insert(target.clone());
         }
         Entailment::Inconsistent => return None,
     }

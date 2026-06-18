@@ -984,6 +984,24 @@ pub fn convert_class_expression<A: ForIRI>(
                 }
                 return Ok(pool.or(disjuncts));
             }
+            // DataComplementOf: lower the inner range to DKey(r), then wrap
+            // the filler in a negation → `∃p.¬DKey(r)`.  A value-node carries
+            // `DKey({v})` (a point); a clash `DKey({v}) ⊓ ¬DKey(r)` fires ONLY
+            // when the told edge `DKey({v}) ⊑ DKey(r)` exists (seeded iff v∈r),
+            // so this is FP-safe. Composite inner ranges (DataUnionOf,
+            // DataIntersectionOf, nested DataComplementOf) return None from
+            // data_range_dkey → drop the whole axiom (sound under-approximation).
+            if data_properties_enabled()
+                && let DataRange::DataComplementOf(inner) = dr
+            {
+                return match data_range_dkey(inner, dp.0.as_ref(), vocab, pool) {
+                    Some((role, filler)) => {
+                        let not_filler = pool.not(filler); // split to satisfy borrow-checker
+                        Ok(pool.some(role, not_filler))
+                    }
+                    None => Err(ConversionError::UnsupportedDataRange),
+                };
+            }
             match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
                 Some((role, filler)) => Ok(pool.some(role, filler)),
                 None => Err(ConversionError::UnsupportedDataRange),
@@ -1018,6 +1036,21 @@ pub fn convert_class_expression<A: ForIRI>(
                         Ok(pool.all(role, filler))
                     }
                     DataIntersectionDkey::Empty => Err(ConversionError::UnsupportedDataRange),
+                };
+            }
+            // DataComplementOf: `∀p.¬DKey(r)` — contravariant with ∀-monotonicity
+            // (∀p.¬DKey(r1) ⊑ ∀p.¬DKey(r2) iff r2 ⊆ r1). Clash fires when a
+            // value-node carries DKey({v}) ⊓ ¬DKey(r) with told DKey({v})⊑DKey(r).
+            // Drop on composite inner (data_range_dkey returns None).
+            if data_properties_enabled()
+                && let DataRange::DataComplementOf(inner) = dr
+            {
+                return match data_range_dkey(inner, dp.0.as_ref(), vocab, pool) {
+                    Some((role, filler)) => {
+                        let not_filler = pool.not(filler); // split to satisfy borrow-checker
+                        Ok(pool.all(role, not_filler))
+                    }
+                    None => Err(ConversionError::UnsupportedDataRange),
                 };
             }
             match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
@@ -1975,6 +2008,18 @@ pub fn convert_component<A: ForIRI>(
                         Ok(Some(Axiom::ObjectPropertyRange { role, range }))
                     }
                     DataIntersectionDkey::Empty => Ok(None), // empty range → drop (sound)
+                };
+            }
+            // DataComplementOf: DataPropertyRange(p, DataComplementOf(r)) →
+            // ObjectPropertyRange(role, ¬DKey(r)). Semantics: every value on
+            // the role must lie outside r. Drop on composite inner (sound).
+            if let DataRange::DataComplementOf(inner) = &ax.dr {
+                return match data_range_dkey(inner, ax.dp.0.as_ref(), vocab, pool) {
+                    Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange {
+                        role,
+                        range: pool.not(range),
+                    })),
+                    None => Ok(None), // unrecognized inner → drop (sound)
                 };
             }
             match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {

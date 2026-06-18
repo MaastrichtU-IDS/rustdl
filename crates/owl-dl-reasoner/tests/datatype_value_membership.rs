@@ -1153,3 +1153,116 @@ fn data_union_forall_union_dropped() {
         "∀p.DataUnionOf should be dropped: C must remain satisfiable"
     );
 }
+
+// ── DataComplementOf canaries ─────────────────────────────────────────────────
+//
+// The lowering: DataComplementOf(r) → ¬DKey(r).
+// - `∃p.¬DKey(r)`: a value outside r.
+// - `∀p.¬DKey(r)`: all p-values must be outside r.
+// Clash only fires when told DKey({v}) ⊑ DKey(r) (i.e. v∈r) meets ¬DKey(r).
+// The NEGATIVES (no-FP guards) are the load-bearing tests.
+
+/// `C ≡ DataHasValue(h,val) ⊓ DataAllValuesFrom(h, DataComplementOf(range))`.
+/// Returns whether C is unsatisfiable.
+/// If val ∈ range: ∀ says "must be outside range" but ∃ witnesses val∈range → clash → unsat.
+/// If val ∉ range: no clash → sat.
+fn forall_complement_unsat(val: &str, range: &str) -> bool {
+    let c = classify(&format!(
+        r"    Declaration(Class(:C))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C ObjectIntersectionOf(DataHasValue(:h {val}) DataAllValuesFrom(:h DataComplementOf({range}))))
+"
+    ));
+    c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C"))
+}
+
+/// POSITIVE clash: value 5 ∈ [0,10], but ∀ requires value ∉ [0,10] → ⊥.
+#[test]
+fn forall_complement_value_in_range_clashes() {
+    assert!(
+        forall_complement_unsat(
+            r#""5"^^xsd:integer"#,
+            r#"DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)"#
+        ),
+        "5 ∈ [0,10] but ∀ DataComplementOf([0,10]) says outside: C must be unsatisfiable"
+    );
+}
+
+/// CRITICAL FP GUARD: value 5 ∉ [10,20] → NO clash; C must be satisfiable.
+/// If this fires ⊥ that is a false positive — STOP and report.
+#[test]
+fn forall_complement_value_outside_range_satisfiable() {
+    assert!(
+        !forall_complement_unsat(
+            r#""5"^^xsd:integer"#,
+            r#"DatatypeRestriction(xsd:integer xsd:minInclusive "10"^^xsd:integer xsd:maxInclusive "20"^^xsd:integer)"#
+        ),
+        "CRITICAL FP GUARD: 5 ∉ [10,20] → ∀ DataComplementOf([10,20]) is consistent with DataHasValue 5; C must be satisfiable"
+    );
+}
+
+/// ∃p.DataComplementOf([0,10]) is satisfiable on its own (a value outside [0,10]
+/// can exist). Must NOT be unsatisfiable.
+#[test]
+fn some_complement_satisfiable() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataComplementOf(DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer))))
+"#,
+    );
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "∃p.DataComplementOf([0,10]) is satisfiable: C must NOT be unsatisfiable"
+    );
+}
+
+/// Contravariant subsumption: `∃p.¬[0,10] ⊑ ∃p.¬[2,8]` since `[2,8]⊆[0,10]`.
+// Any value outside [0,10] is also outside [2,8].
+// The told `DKey([2,8]) ⊑ DKey([0,10])` edge (seeded by `seed_dkey_subsumptions`
+// because [2,8]⊆[0,10]) propagates `DKey([0,10])` onto the ¬DKey([0,10])
+// successor → clash → refutes C⊄D. Completeness-optional; asserted at full strength.
+#[test]
+fn some_complement_contravariant_subsumption() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    EquivalentClasses(:C DataSomeValuesFrom(:p DataComplementOf(DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer))))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DataComplementOf(DatatypeRestriction(xsd:integer xsd:minInclusive "2"^^xsd:integer xsd:maxInclusive "8"^^xsd:integer))))
+"#,
+    );
+    // [2,8] ⊆ [0,10] ⇒ ¬[0,10] ⊆ ¬[2,8] ⇒ ∃p.¬[0,10] ⊑ ∃p.¬[2,8] = D.
+    // This is a completeness claim (may miss), not a soundness claim.
+    assert!(
+        c.is_subclass(C, D),
+        "∃p.¬[0,10] ⊑ ∃p.¬[2,8] (contravariant; [2,8]⊆[0,10]): C ⊑ D must hold"
+    );
+}
+
+/// Drop on composite inner: `DataComplementOf(DataUnionOf(...))` is unrecognized
+/// (`data_range_dkey` returns `None` for `DataUnionOf`) → the whole axiom drops.
+/// C is satisfiable and no spurious subsumption is introduced.
+#[test]
+fn complement_composite_inner_dropped() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataComplementOf(DataUnionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:minInclusive "10"^^xsd:integer xsd:maxInclusive "15"^^xsd:integer)
+    ))))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)))
+"#,
+    );
+    // Composite inner → drop → no ∃p.¬DKey emitted → C stays satisfiable.
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "DataComplementOf(DataUnionOf(...)) dropped: C must be satisfiable"
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "DataComplementOf(DataUnionOf(...)) dropped: no spurious C ⊑ D"
+    );
+}

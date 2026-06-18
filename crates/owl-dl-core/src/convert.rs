@@ -182,6 +182,25 @@ fn data_properties_enabled() -> bool {
     std::env::var("RUSTDL_DATA_PROPERTIES").is_ok_and(|v| v == "1")
 }
 
+const XSD_FLOAT: &str = "http://www.w3.org/2001/XMLSchema#float";
+
+/// Returns `true` iff the literal has datatype `xsd:float`.
+/// Used to guard the gate-ON data-property arms: `xsd:float` is f32 but the
+/// `DKey` encoding uses f64 — two distinct f64 values can map to the SAME
+/// f32, producing spurious range-membership / functional-merge clashes → FP.
+/// Matches the DP-1/DP-2 float exclusion in `data_axioms.rs`. `xsd:double`
+/// (f64-exact) is NOT matched and flows through normally.
+fn literal_is_xsd_float<A: ForIRI>(l: &Literal<A>) -> bool {
+    matches!(l, Literal::Datatype { datatype_iri, .. } if datatype_iri.as_ref() == XSD_FLOAT)
+}
+
+/// Returns `true` iff the data range is an `xsd:float` datatype or
+/// `xsd:float`-restricted `DatatypeRestriction`. See [`literal_is_xsd_float`].
+fn data_range_is_xsd_float<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    matches!(dr, DataRange::Datatype(dt) if dt.0.as_ref() == XSD_FLOAT)
+        || matches!(dr, DataRange::DatatypeRestriction(dt, _) if dt.0.as_ref() == XSD_FLOAT)
+}
+
 /// Build a tagged `DKey` IRI for an [`OrdRange<T>`], encoding each bound via
 /// `key` (which MUST NOT emit a `:`) and inclusivity as `i`/`e`.
 fn ord_dkey_iri<T>(tag: &str, range: &OrdRange<T>, key: impl Fn(&T) -> String) -> String {
@@ -1713,6 +1732,13 @@ pub fn convert_component<A: ForIRI>(
         // member of that concept). When the gate is OFF, or the literal is an
         // unrecognized datatype, drop silently (sound under-approximation).
         C::DataPropertyAssertion(ax) if data_properties_enabled() => {
+            // xsd:float is f32; the f64 DKey encoding is unsound for it
+            // (same-f32 values differ as f64 → spurious clash). Drop float
+            // (matches data_axioms.rs DP-1/DP-2 float exclusion); xsd:double
+            // (f64-exact) is kept.
+            if literal_is_xsd_float(&ax.to) {
+                return Ok(None);
+            }
             match data_point_some(ax.dp.0.as_ref(), &ax.to, vocab, pool) {
                 Some(class) => {
                     let individual = convert_individual(&ax.from, vocab)?;
@@ -1728,6 +1754,13 @@ pub fn convert_component<A: ForIRI>(
         // When the gate is OFF, or the literal is an unrecognized datatype, drop
         // silently (sound under-approximation).
         C::NegativeDataPropertyAssertion(ax) if data_properties_enabled() => {
+            // xsd:float is f32; the f64 DKey encoding is unsound for it
+            // (same-f32 values differ as f64 → spurious clash). Drop float
+            // (matches data_axioms.rs DP-1/DP-2 float exclusion); xsd:double
+            // (f64-exact) is kept.
+            if literal_is_xsd_float(&ax.to) {
+                return Ok(None);
+            }
             match data_point_some(ax.dp.0.as_ref(), &ax.to, vocab, pool) {
                 Some(some_concept) => {
                     let class = pool.not(some_concept); // ¬∃dp.DKey(point v)
@@ -1790,6 +1823,13 @@ pub fn convert_component<A: ForIRI>(
         // DataPropertyRange(dp,R) → ObjectPropertyRange with DKey(R) filler (gate-ON).
         // When the gate is OFF, or the range is unrecognized, drop silently (sound).
         C::DataPropertyRange(ax) if data_properties_enabled() => {
+            // xsd:float is f32; the f64 DKey encoding is unsound for it
+            // (same-f32 values differ as f64 → spurious clash). Drop float
+            // (matches data_axioms.rs DP-1/DP-2 float exclusion); xsd:double
+            // (f64-exact) is kept.
+            if data_range_is_xsd_float(&ax.dr) {
+                return Ok(None);
+            }
             match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {
                 Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange { role, range })),
                 None => Ok(None), // unrecognized range — drop (sound)

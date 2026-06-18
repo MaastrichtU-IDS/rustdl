@@ -239,8 +239,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `docs/abox-consistency-check-handoff.md`. Spec:
   `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
 
-- **`crates/owl-dl-datatypes`** — concrete-domain reasoners. Scaffolded,
-  **not yet wired into reasoning.** Data axioms / data ranges that
+- **`crates/owl-dl-datatypes`** — concrete-domain reasoners (`card_sat`,
+  interval/finite-set value ranges). **Wired into reasoning** (via the DKey
+  side-map + the tableau `concrete_domain_clash`), and as of 2026-06-18 data
+  properties are first-class and default-ON — see the `RUSTDL_DATA_PROPERTIES`
+  entry in the soundness contract below. Data axioms / data ranges that
   are NOT recognized by the D4 preprocessing pass (see below) are
   silently dropped at conversion time (Phase D1, commit `e34aeb6`):
   sound under-approximation. Corpus-validated near-Konclude parity
@@ -525,6 +528,26 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   `docs/perf-2026-06-06-konclude-vs-rustdl.md`); inert on the EL/Horn
   corpus (Horn-shortcircuited). Set `RUSTDL_PRECISE_CARD_DEPS=0` to revert. Verdict-preservation regression tests:
   `precise_card_deps_preserves_{unsat,sat}_verdict` in `owl-dl-tableau`.
+
+- **First-class data properties (2026-06-18): `RUSTDL_DATA_PROPERTIES` defaults
+  ON** (`=0` opts out). An OWL 2 DL reasoner reasons about data properties by
+  default (cf. Konclude/HermiT); rustdl now does too. `convert.rs` lowers
+  data-property axioms to the object fragment (data property = object role,
+  literal = `DKey(point)` filler): `DataPropertyAssertion`→`ClassAssertion(a,
+  ∃dp.DKey)`, `SubDataPropertyOf`→role hierarchy, `Functional`→`FunctionalRole`,
+  `Disjoint`→`DisjointObjectProperties`, domain/range→object domain/range, `¬dp`
+  →`¬∃dp.DKey`. Sound: `xsd:float` is f32-exact (separate `f:`/`db:` DKey buckets
+  from `xsd:double`); `DisjointDataProperties` same-value clash via the gated
+  `DP-DJ` preprocessing (`data_axioms.rs::emit_disjoint_dp_same_value_clash`).
+  Justify gains property/individual + data-property query types (`subproperty`,
+  `equiv-property`, `disjoint-property`, `property`, `same`, `different`,
+  `subdata-property`, `equiv-data-property`, `data-value`,
+  `disjoint-data-property`). **FP=0/MISSED=0 re-validated at default-ON across the
+  full Konclude-oracle net.** Sound-but-incomplete only on the exotic concrete-
+  domain tail (data-cardinality counting, `DataComplementOf`/`Union`/`Intersection`
+  ranges, non-string `DataOneOf` for all datatypes) — deliberately not chased
+  (~0 corpus presence). Spec:
+  `docs/superpowers/specs/2026-06-17-first-class-data-properties-design.md`.
 
 When changing the saturation/wedge engines or caches, the failure mode that
 matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cache-project-complete.md` and `docs/abox-consistency-check-handoff.md` for

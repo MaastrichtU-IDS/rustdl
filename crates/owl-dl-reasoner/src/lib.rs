@@ -2978,6 +2978,13 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
                     }
                 }
             }
+            Axiom::SymmetricRole(role) if !role.is_inverse() => {
+                builder.mark_symmetric(role.role_id());
+            }
+            Axiom::InverseObjectProperties(a, b) if a.role_id() == b.role_id() => {
+                // Self-inverse declaration: InverseObjectProperties(r, r) ⟹ r is symmetric.
+                builder.mark_symmetric(a.role_id());
+            }
             _ => {}
         }
     }

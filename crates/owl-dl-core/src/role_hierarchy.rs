@@ -19,6 +19,8 @@ use crate::ir::RoleId;
 pub struct RoleHierarchyBuilder {
     /// `direct_super[r.index()]` holds the roles directly above `r`.
     direct_super: Vec<SmallVec<[RoleId; 4]>>,
+    /// `symmetric[r.index()]` is `true` iff `r` was declared symmetric.
+    symmetric: Vec<bool>,
 }
 
 impl RoleHierarchyBuilder {
@@ -27,6 +29,7 @@ impl RoleHierarchyBuilder {
     pub fn with_roles(n: u32) -> Self {
         Self {
             direct_super: (0..n as usize).map(|_| SmallVec::new()).collect(),
+            symmetric: vec![false; n as usize],
         }
     }
 
@@ -40,6 +43,14 @@ impl RoleHierarchyBuilder {
         if !supers.contains(&sup) {
             supers.push(sup);
         }
+    }
+
+    /// Record that `role` is symmetric (`role ≡ role⁻`).
+    ///
+    /// # Panics
+    /// Panics if `role` is out of range for this builder.
+    pub fn mark_symmetric(&mut self, role: RoleId) {
+        self.symmetric[role.index() as usize] = true;
     }
 
     #[must_use]
@@ -93,6 +104,7 @@ impl RoleHierarchyBuilder {
         RoleHierarchy {
             super_closure,
             sub_closure,
+            symmetric: self.symmetric.into_boxed_slice(),
         }
     }
 }
@@ -104,6 +116,8 @@ impl RoleHierarchyBuilder {
 pub struct RoleHierarchy {
     super_closure: Vec<Box<[RoleId]>>,
     sub_closure: Vec<Box<[RoleId]>>,
+    /// `symmetric[r.index()]` is `true` iff `r` was declared symmetric.
+    symmetric: Box<[bool]>,
 }
 
 impl RoleHierarchy {
@@ -134,6 +148,17 @@ impl RoleHierarchy {
         self.super_closure[sub.index() as usize]
             .binary_search(&sup)
             .is_ok()
+    }
+
+    /// Returns `true` iff `role` was declared symmetric (`role ≡ role⁻`),
+    /// directly via `SymmetricObjectProperty` or via self-inverse
+    /// `InverseObjectProperties(role, role)`.
+    ///
+    /// # Panics
+    /// Panics if `role` is out of range.
+    #[must_use]
+    pub fn is_symmetric(&self, role: RoleId) -> bool {
+        self.symmetric[role.index() as usize]
     }
 
     #[must_use]
@@ -227,5 +252,15 @@ mod tests {
         b.add_sub_role(r(0), r(1));
         let h = b.build();
         assert_eq!(h.super_roles(r(0)), [r(0), r(1)].as_slice());
+    }
+
+    #[test]
+    fn symmetric_set_roundtrips() {
+        let mut b = RoleHierarchyBuilder::with_roles(3);
+        b.mark_symmetric(r(1));
+        let h = b.build();
+        assert!(!h.is_symmetric(r(0)));
+        assert!(h.is_symmetric(r(1)));
+        assert!(!h.is_symmetric(r(2)));
     }
 }

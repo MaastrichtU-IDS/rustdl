@@ -650,6 +650,59 @@ impl FloatRange {
         }
         below(self, other) || below(other, self)
     }
+
+    /// `DataIntersectionOf` support: `self ∩ other` for float-family ranges.
+    /// Intersects the bounds using the same tighten logic as facet parsing.
+    /// The result may satisfy `is_empty()` if the bounds cross.
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact endpoint equality is intended (same as tighten_min/tighten_max)"
+    )]
+    pub(crate) fn intersect(self, other: Self) -> Self {
+        let mut result = self;
+        // Tighten lower bound by other.min.
+        if let Some(v) = other.min {
+            let tighter = match result.min {
+                None => true,
+                Some(existing) => {
+                    v > existing || (v == existing && !other.min_incl && result.min_incl)
+                }
+            };
+            if tighter {
+                result.min = Some(v);
+                result.min_incl = other.min_incl;
+            }
+        }
+        // Tighten upper bound by other.max.
+        if let Some(v) = other.max {
+            let tighter = match result.max {
+                None => true,
+                Some(existing) => {
+                    v < existing || (v == existing && !other.max_incl && result.max_incl)
+                }
+            };
+            if tighter {
+                result.max = Some(v);
+                result.max_incl = other.max_incl;
+            }
+        }
+        result
+    }
+
+    /// True iff the range contains no float value.
+    /// A range `[a, b]`/`(a, b]`/etc. is empty when `a > b`, or when
+    /// `a == b` and at least one endpoint is exclusive (the open interval
+    /// `(v, v)` contains nothing).
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact endpoint equality is intended — same as disjoint/subset"
+    )]
+    pub(crate) fn is_empty(self) -> bool {
+        match (self.min, self.max) {
+            (Some(lo), Some(hi)) => lo > hi || (lo == hi && (!self.min_incl || !self.max_incl)),
+            _ => false, // unbounded end → non-empty
+        }
+    }
 }
 
 /// Phase D8 (2026-06-09): a totally-ordered range with EXPLICIT
@@ -756,6 +809,29 @@ impl<T: Ord + Clone> OrdRange<T> {
         if tighter {
             self.max = Some(val);
             self.max_incl = incl;
+        }
+    }
+
+    /// `DataIntersectionOf` support: `self ∩ other`. Uses the same
+    /// `tighten_min`/`tighten_max` logic as facet folding.
+    /// The result may satisfy `is_empty()` if the bounds cross.
+    pub(crate) fn intersect(&self, other: &Self) -> Self {
+        let mut result = self.clone();
+        if let Some(v) = other.min.clone() {
+            result.tighten_min(v, other.min_incl);
+        }
+        if let Some(v) = other.max.clone() {
+            result.tighten_max(v, other.max_incl);
+        }
+        result
+    }
+
+    /// True iff the range contains no value. A range is empty when
+    /// `lo > hi`, or when `lo == hi` and at least one endpoint is exclusive.
+    pub(crate) fn is_empty(&self) -> bool {
+        match (&self.min, &self.max) {
+            (Some(lo), Some(hi)) => lo > hi || (lo == hi && (!self.min_incl || !self.max_incl)),
+            _ => false,
         }
     }
 }
@@ -1009,6 +1085,23 @@ impl StrSet {
         match (self, other) {
             (StrSet::Top, _) | (_, StrSet::Top) => false,
             (StrSet::Set(a), StrSet::Set(b)) => a.is_disjoint(b),
+        }
+    }
+
+    /// `DataIntersectionOf` support: `self ∩ other`.
+    /// `Top ∩ Top = Top`; `Top ∩ Set(S) = Set(S)`; `Set(A) ∩ Set(B) = Set(A∩B)`.
+    pub(crate) fn intersect(&self, other: &Self) -> Self {
+        match (self, other) {
+            (StrSet::Top, x) | (x, StrSet::Top) => x.clone(),
+            (StrSet::Set(a), StrSet::Set(b)) => StrSet::Set(a.intersection(b).cloned().collect()),
+        }
+    }
+
+    /// True iff the set contains no string (only possible for finite sets).
+    pub(crate) fn is_empty(&self) -> bool {
+        match self {
+            StrSet::Top => false,
+            StrSet::Set(s) => s.is_empty(),
         }
     }
 }
@@ -1760,6 +1853,252 @@ fn tighten_max(range: &mut FloatRange, val: f64, incl: bool) {
         range.max = Some(val);
         range.max_incl = incl;
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DataIntersectionOf lowering (DataIntersectionOf feature)
+//
+// `DataIntersectionOf([r1, r2, ...])` is lowered to the intersection of the
+// member ranges.  This is EXACT (not an approximation), so it is FP-safe by
+// construction.
+//
+// Rules:
+//  - ALL members must be parseable to the SAME bucket type.  If any member is
+//    unrecognized (no parser matches) → `None` (drop the whole intersection —
+//    sound under-approximation).
+//  - Mixed buckets (e.g. integer + string) → `DataIntersectionDkey::Empty`
+//    (the value spaces are disjoint, so the intersection is provably empty).
+//  - Same-bucket intersection that turns out empty (lo > hi etc.) →
+//    `DataIntersectionDkey::Empty`.
+//  - Successful non-empty fold → `DataIntersectionDkey::Iri(dkey_iri)`.
+//
+// Nested composites (DataIntersectionOf of DataUnionOf, etc.) → `None` (DROP).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A single parsed range from one member of `DataIntersectionOf`.
+/// Each variant corresponds to one DKey bucket; they are mutually exclusive.
+#[derive(Clone, Debug)]
+pub(crate) enum RangeBucket {
+    Integer(IntegerRange),
+    Float(FloatRange),  // xsd:float (f32-precision)
+    Double(FloatRange), // xsd:double (f64-precision)
+    Decimal(OrdRange<Decimal>),
+    Date(OrdRange<DateKey>),
+    DateTime(OrdRange<DateTimeKey>),
+    Str(StrSet),
+}
+
+/// Discriminant tag for [`RangeBucket`] (for cross-bucket detection).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BucketKind {
+    Integer,
+    Float,
+    Double,
+    Decimal,
+    Date,
+    DateTime,
+    Str,
+}
+
+impl RangeBucket {
+    fn kind(&self) -> BucketKind {
+        match self {
+            RangeBucket::Integer(_) => BucketKind::Integer,
+            RangeBucket::Float(_) => BucketKind::Float,
+            RangeBucket::Double(_) => BucketKind::Double,
+            RangeBucket::Decimal(_) => BucketKind::Decimal,
+            RangeBucket::Date(_) => BucketKind::Date,
+            RangeBucket::DateTime(_) => BucketKind::DateTime,
+            RangeBucket::Str(_) => BucketKind::Str,
+        }
+    }
+}
+
+/// Tri-state result of [`parse_data_intersection_dkey`].
+pub(crate) enum DataIntersectionDkey {
+    /// Non-empty intersection; the inner `RangeBucket` holds the folded range.
+    /// The caller (in `convert.rs`) converts it to a DKey IRI.
+    Bucket(RangeBucket),
+    /// The intersection is provably empty (either same-bucket bounds cross,
+    /// or members belong to different datatypes with disjoint value spaces).
+    /// For `∃p.empty` this signals `C ⊑ ⊥`; for `∀`/PropertyRange, DROP.
+    Empty,
+}
+
+/// Try to parse a single `DataRange` member into its bucket type.
+/// Returns `None` for any unrecognized or composite range.
+fn parse_range_bucket<A: horned_owl::model::ForIRI>(dr: &DataRange<A>) -> Option<RangeBucket> {
+    if let Some(r) = parse_integer_range(dr) {
+        return Some(RangeBucket::Integer(r));
+    }
+    if let Some(r) = parse_xsd_float_range(dr) {
+        return Some(RangeBucket::Float(r));
+    }
+    if let Some(r) = parse_xsd_double_range(dr) {
+        return Some(RangeBucket::Double(r));
+    }
+    if let Some(r) = parse_decimal_range(dr) {
+        return Some(RangeBucket::Decimal(r));
+    }
+    if let Some(r) = parse_date_range(dr) {
+        return Some(RangeBucket::Date(r));
+    }
+    if let Some(r) = parse_datetime_range(dr) {
+        return Some(RangeBucket::DateTime(r));
+    }
+    if let Some(s) = parse_string_range(dr) {
+        return Some(RangeBucket::Str(s));
+    }
+    // Numeric DataOneOf, nested composites, and other ranges are NOT handled
+    // here — they return None → DROP the whole DataIntersectionOf (sound).
+    None
+}
+
+/// Fold a sequence of same-bucket members into their intersection, then check
+/// for emptiness.  Returns `None` if the bucket mixes are incompatible (should
+/// not happen — caller guarantees same-kind; kept for safety).
+fn fold_same_bucket(members: Vec<RangeBucket>) -> Option<DataIntersectionDkey> {
+    // Guaranteed non-empty by caller.
+    match members
+        .into_iter()
+        .try_fold(None::<RangeBucket>, |acc, next| {
+            Some(match acc {
+                None => Some(next),
+                Some(RangeBucket::Integer(a)) => {
+                    if let RangeBucket::Integer(b) = next {
+                        Some(RangeBucket::Integer(a.intersect(b)))
+                    } else {
+                        return None;
+                    }
+                }
+                Some(RangeBucket::Float(a)) => {
+                    if let RangeBucket::Float(b) = next {
+                        Some(RangeBucket::Float(a.intersect(b)))
+                    } else {
+                        return None;
+                    }
+                }
+                Some(RangeBucket::Double(a)) => {
+                    if let RangeBucket::Double(b) = next {
+                        Some(RangeBucket::Double(a.intersect(b)))
+                    } else {
+                        return None;
+                    }
+                }
+                Some(RangeBucket::Decimal(a)) => {
+                    if let RangeBucket::Decimal(b) = next {
+                        Some(RangeBucket::Decimal(a.intersect(&b)))
+                    } else {
+                        return None;
+                    }
+                }
+                Some(RangeBucket::Date(a)) => {
+                    if let RangeBucket::Date(b) = next {
+                        Some(RangeBucket::Date(a.intersect(&b)))
+                    } else {
+                        return None;
+                    }
+                }
+                Some(RangeBucket::DateTime(a)) => {
+                    if let RangeBucket::DateTime(b) = next {
+                        Some(RangeBucket::DateTime(a.intersect(&b)))
+                    } else {
+                        return None;
+                    }
+                }
+                Some(RangeBucket::Str(a)) => {
+                    if let RangeBucket::Str(b) = next {
+                        Some(RangeBucket::Str(a.intersect(&b)))
+                    } else {
+                        return None;
+                    }
+                }
+            })
+        }) {
+        // None = mixed bucket (defensive) or empty accumulator (should not happen).
+        None | Some(None) => None,
+        Some(Some(result)) => {
+            // Check for emptiness.
+            let empty = match &result {
+                RangeBucket::Integer(r) => r.is_empty(),
+                RangeBucket::Float(r) | RangeBucket::Double(r) => r.is_empty(),
+                RangeBucket::Decimal(r) => r.is_empty(),
+                RangeBucket::Date(r) => r.is_empty(),
+                RangeBucket::DateTime(r) => r.is_empty(),
+                RangeBucket::Str(s) => s.is_empty(),
+            };
+            if empty {
+                return Some(DataIntersectionDkey::Empty);
+            }
+            // Return the bucket; convert.rs will build the DKey IRI.
+            Some(DataIntersectionDkey::Bucket(result))
+        }
+    }
+}
+
+/// Phase (DataIntersectionOf): attempt to lower a `DataRange::DataIntersectionOf`
+/// to a single DKey IRI (or empty-intersection signal).
+///
+/// Returns:
+/// - `Some(DataIntersectionDkey::Bucket(b))` — folded non-empty range.
+/// - `Some(DataIntersectionDkey::Empty)` — provably empty intersection
+///   (same-bucket disjoint, or cross-bucket with provably disjoint value
+///   spaces; see soundness note on `integer ∩ decimal` below).
+/// - `None` — any member unrecognized, nested composite, cross-bucket
+///   integer×decimal mix (value spaces overlap), or mixed-repr such as
+///   integer interval + integer `DataOneOf` → DROP (sound).
+///
+/// **Soundness note — `xsd:integer` ∩ `xsd:decimal`:** XSD defines
+/// `xsd:integer` as a sub-datatype of `xsd:decimal`, so their value
+/// spaces overlap.  A cross-bucket set whose *only* kinds are Integer
+/// and Decimal is therefore NOT provably empty → returns `None` (DROP).
+/// All other cross-bucket combinations (e.g. numeric × temporal,
+/// numeric × string, float × double) involve genuinely disjoint XSD
+/// value spaces → `DataIntersectionDkey::Empty`.
+///
+/// Only triggers when `dr` is `DataRange::DataIntersectionOf` **and**
+/// `data_properties_enabled()` is true; all other `DataRange` variants
+/// return `None` so the caller falls through to the normal parsers.
+pub(crate) fn parse_data_intersection_dkey<A: horned_owl::model::ForIRI>(
+    dr: &DataRange<A>,
+) -> Option<DataIntersectionDkey> {
+    let DataRange::DataIntersectionOf(members) = dr else {
+        return None;
+    };
+    if members.is_empty() {
+        // Empty DataIntersectionOf is formally ⊤ in OWL 2, but the spec says
+        // DataIntersectionOf needs ≥2 members; treat as unrecognized → DROP.
+        return None;
+    }
+    // Parse every member.  ANY unrecognized member → drop the whole thing.
+    let parsed: Vec<RangeBucket> = members
+        .iter()
+        .map(parse_range_bucket)
+        .collect::<Option<_>>()?;
+
+    // Check bucket kinds.
+    let first_kind = parsed[0].kind();
+    let all_same = parsed.iter().all(|b| b.kind() == first_kind);
+    if !all_same {
+        // Cross-bucket: value spaces are disjoint → empty intersection …
+        // EXCEPT for the `xsd:integer` × `xsd:decimal` pair: integer is a
+        // *subset* of decimal in XSD, so their intersection is non-empty.
+        // For any set of kinds that is a subset of {Integer, Decimal},
+        // we can't prove emptiness → DROP (sound under-approximation).
+        let present_kinds: std::collections::HashSet<BucketKind> =
+            parsed.iter().map(RangeBucket::kind).collect();
+        let only_int_dec = present_kinds
+            .iter()
+            .all(|k| matches!(k, BucketKind::Integer | BucketKind::Decimal));
+        if only_int_dec {
+            return None;
+        }
+        // All other cross-bucket mixes involve genuinely disjoint value
+        // spaces → the intersection is provably empty.
+        return Some(DataIntersectionDkey::Empty);
+    }
+    // All same bucket — fold.
+    fold_same_bucket(parsed)
 }
 
 /// Compute the transitive closure of `sub_data_property` edges:

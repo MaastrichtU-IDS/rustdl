@@ -905,3 +905,148 @@ fn forall_cross_datatype_no_clash() {
         "int value vs double range: cross-datatype, no clash"
     );
 }
+
+// ── DataIntersectionOf lowering ────────────────────────────────────────────
+//
+// Canaries for the `DataIntersectionOf([r1,r2,...])` → exact range-intersection
+// lowering.  NEGATIVES FIRST: the no-FP canary is load-bearing.
+
+/// `C ⊑ ∃p.DataIntersectionOf([≥0],[≤10])` must entail `C ⊑ ∃p.[−∞,∞ with subset [0,10]]`.
+/// We verify by defining `D ≡ ∃p.DataSomeValuesFrom(p, xsd:integer [≥0,≤20])` and checking `C ⊑ D`
+/// (the intersection [0,10] ⊆ [0,20] → the `DKey` subsumes → `C ⊑ D` holds).
+#[test]
+fn data_intersection_same_bucket_subsumption() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataIntersectionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:maxInclusive "10"^^xsd:integer)
+    )))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "20"^^xsd:integer)))
+"#,
+    );
+    // [0,10] ⊆ [0,20]: DKey([0,10]) ⊑ DKey([0,20]) ⟹ ∃p.DKey([0,10]) ⊑ ∃p.DKey([0,20]) ≡ D
+    assert!(
+        c.is_subclass(C, D),
+        "DataIntersectionOf([≥0],[≤10]) = [0,10] ⊆ [0,20]: C ⊑ D must hold"
+    );
+}
+
+/// NEGATIVE — no-FP: `C ⊑ ∃p.DataIntersectionOf([≥0],[≤10])` must NOT entail
+/// `C ⊑ ∃p.[20,30]`.  The intersection [0,10] is NOT a subset of [20,30].
+#[test]
+fn data_intersection_no_fp_disjoint_range() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataIntersectionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:maxInclusive "10"^^xsd:integer)
+    )))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "20"^^xsd:integer xsd:maxInclusive "30"^^xsd:integer)))
+"#,
+    );
+    // [0,10] is NOT a subset of [20,30] → C ⊑ D must NOT hold (the critical FP guard).
+    assert!(
+        !c.is_subclass(C, D),
+        "DataIntersectionOf([≥0],[≤10])=[0,10] is NOT ⊆ [20,30]: C ⊑ D must NOT hold"
+    );
+}
+
+/// Empty same-bucket intersection ([≥10]∩[≤5] = empty) → C ⊑ ⊥.
+#[test]
+fn data_intersection_empty_same_bucket_unsat() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataIntersectionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "10"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:maxInclusive "5"^^xsd:integer)
+    )))
+"#,
+    );
+    // [≥10] ∩ [≤5] = empty ⟹ C is unsatisfiable.
+    assert!(
+        c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "DataIntersectionOf([≥10],[≤5]) is empty ⟹ C must be unsatisfiable"
+    );
+}
+
+/// Empty cross-bucket intersection (integer ∩ string) → C ⊑ ⊥.
+/// Integer and string value spaces are disjoint — no shared value.
+#[test]
+fn data_intersection_cross_bucket_unsat() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataIntersectionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "100"^^xsd:integer)
+        xsd:string
+    )))
+"#,
+    );
+    // xsd:integer ∩ xsd:string = empty (distinct value spaces) ⟹ C unsatisfiable.
+    assert!(
+        c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "DataIntersectionOf(integer-range, xsd:string) is empty ⟹ C must be unsatisfiable"
+    );
+}
+
+/// FP guard — `xsd:integer ∩ xsd:decimal`: integer is a sub-datatype of decimal
+/// in XSD, so their value spaces OVERLAP (e.g. `5` is in both).  A
+/// `DataIntersectionOf` mixing these two buckets must NOT be treated as empty,
+/// and therefore must NOT cause C to be declared unsatisfiable.
+///
+/// This is the canonical soundness canary for the cross-bucket branch: if the
+/// implementation incorrectly maps integer×decimal to an empty intersection it
+/// emits `C ⊑ ⊥`, which is a false positive.
+#[test]
+fn data_intersection_integer_decimal_cross_bucket_no_fp() {
+    // C ⊑ ∃p.DataIntersectionOf(integer [0,10], decimal [5,5]).
+    // The value 5 (integer) is also 5 (decimal) → intersection non-empty.
+    // Correct: C is satisfiable.  Wrong: C declared ⊥ (FP).
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataIntersectionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)
+        DatatypeRestriction(xsd:decimal xsd:minInclusive "5"^^xsd:decimal xsd:maxInclusive "5"^^xsd:decimal)
+    )))
+"#,
+    );
+    // MUST be satisfiable — NOT a false-positive ⊥.
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "FP guard: integer ∩ decimal has shared values — C must NOT be declared unsatisfiable"
+    );
+}
+
+/// Drop on unrecognized member: a `DataIntersectionOf` whose second member is an
+/// unrecognized range (`DataComplementOf` — not handled) → the whole intersection
+/// drops → C is consistent; no spurious unsat or subsumption.
+#[test]
+fn data_intersection_unrecognized_member_drops_gracefully() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataIntersectionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer)
+        DataComplementOf(DatatypeRestriction(xsd:integer xsd:minInclusive "5"^^xsd:integer xsd:maxInclusive "15"^^xsd:integer))
+    )))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "20"^^xsd:integer xsd:maxInclusive "30"^^xsd:integer)))
+"#,
+    );
+    // Unrecognized member (DataComplementOf) → drop → C consistent, NOT ⊑ D.
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "Drop on DataComplementOf member: C must be satisfiable (not spuriously ⊥)"
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "Drop on DataComplementOf member: C ⊑ D must NOT hold (no spurious subsumption)"
+    );
+}

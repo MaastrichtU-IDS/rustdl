@@ -16,8 +16,9 @@ use thiserror::Error;
 use crate::ConceptPool;
 use crate::Vocabulary;
 use crate::data_axioms::{
-    DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, OrdRange, StrSet,
-    exact_string_literal, parse_date, parse_datetime, parse_decimal,
+    DataIntersectionDkey, DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, OrdRange,
+    RangeBucket, StrSet, exact_string_literal, parse_data_intersection_dkey, parse_date,
+    parse_datetime, parse_decimal,
 };
 use crate::ir::{ClassId, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
@@ -634,6 +635,22 @@ pub fn decode_datetime_oneof_dkey(iri: &str) -> Option<std::collections::BTreeSe
     parse_datetime_oneof_iri(iri)
 }
 
+/// Build the deterministic `DKey` IRI for a folded `RangeBucket`.
+/// Used by the `DataIntersectionOf` lowering path: after the bucket's ranges
+/// have been intersected in `data_axioms.rs`, convert.rs must turn the result
+/// back into an IRI using the same encoding as the individual-range parsers.
+pub(crate) fn bucket_to_dkey_iri(b: RangeBucket) -> String {
+    match b {
+        RangeBucket::Integer(r) => dkey_iri(r),
+        RangeBucket::Float(r) => float_dkey_iri(r),
+        RangeBucket::Double(r) => double_dkey_iri(r),
+        RangeBucket::Decimal(r) => ord_dkey_iri(DKEY_DECIMAL_TAG, &r, decimal_key),
+        RangeBucket::Date(r) => ord_dkey_iri(DKEY_DATE_TAG, &r, date_key),
+        RangeBucket::DateTime(r) => ord_dkey_iri(DKEY_DATETIME_TAG, &r, datetime_key),
+        RangeBucket::Str(s) => str_dkey_iri(&s),
+    }
+}
+
 /// Phase D11: the shared core of the data-restriction encodings — lower a
 /// recognized `DataRange` to `(role, DKey-filler)` where `role` is the data
 /// property treated as a forward object role and the filler is the opaque
@@ -922,6 +939,25 @@ pub fn convert_class_expression<A: ForIRI>(
             // incl. bare xsd:integer, float/double, decimal, date, dateTime,
             // string/oneOf). Distinct DKey datatype buckets never
             // cross-subsume. Any other range drops (UnsupportedDataRange).
+            //
+            // DataIntersectionOf: fold members into a single range (exact —
+            // no approximation). If the intersection is provably empty, lower
+            // to ⊥ directly (`pool.bot()`): any class C with `C ⊑ ∃p.empty`
+            // is unsatisfiable. Drop on any unrecognized member or nested
+            // composite (sound under-approximation).
+            if data_properties_enabled()
+                && let Some(intersection) = parse_data_intersection_dkey(dr)
+            {
+                return match intersection {
+                    DataIntersectionDkey::Bucket(b) => {
+                        let iri = bucket_to_dkey_iri(b);
+                        let role = Role::named(vocab.intern_role(dp.0.as_ref()));
+                        let filler = pool.atomic(vocab.intern_class(&iri));
+                        Ok(pool.some(role, filler))
+                    }
+                    DataIntersectionDkey::Empty => Ok(pool.bot()),
+                };
+            }
             match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
                 Some((role, filler)) => Ok(pool.some(role, filler)),
                 None => Err(ConversionError::UnsupportedDataRange),
@@ -939,7 +975,25 @@ pub fn convert_class_expression<A: ForIRI>(
         // D10). There the told `DKey ⊑ DKey` edges give ∀-monotonicity and
         // the seeded `DisjointClasses` (D11b) give the `∃p.DKey(v) ⊓
         // ∀p.DKey(r)` membership clash when `v ∉ r`.
+        //
+        // DataIntersectionOf: fold → DKey. Empty intersection → DROP (sound
+        // under-approximation: `∀p.empty` means "no p-successor allowed" —
+        // correct, but we can't confidently lower it without tableau support
+        // for the range-side empty-∀; dropping is safe).
         ClassExpression::DataAllValuesFrom { dp, dr } => {
+            if data_properties_enabled()
+                && let Some(intersection) = parse_data_intersection_dkey(dr)
+            {
+                return match intersection {
+                    DataIntersectionDkey::Bucket(b) => {
+                        let iri = bucket_to_dkey_iri(b);
+                        let role = Role::named(vocab.intern_role(dp.0.as_ref()));
+                        let filler = pool.atomic(vocab.intern_class(&iri));
+                        Ok(pool.all(role, filler))
+                    }
+                    DataIntersectionDkey::Empty => Err(ConversionError::UnsupportedDataRange),
+                };
+            }
             match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
                 Some((role, filler)) => Ok(pool.all(role, filler)),
                 None => Err(ConversionError::UnsupportedDataRange),
@@ -1882,6 +1936,21 @@ pub fn convert_component<A: ForIRI>(
         C::DataPropertyRange(ax) if data_properties_enabled() => {
             // xsd:float is now handled with f32-precision parsing (separate
             // `f:` bucket) so the drop guard is no longer needed.
+            //
+            // DataIntersectionOf: fold to a single range. Empty intersection →
+            // DROP (sound: `∀p.⊥`-semantics for PropertyRange needs careful
+            // tableau support; conservative drop avoids FP risk).
+            if let Some(intersection) = parse_data_intersection_dkey(&ax.dr) {
+                return match intersection {
+                    DataIntersectionDkey::Bucket(b) => {
+                        let iri = bucket_to_dkey_iri(b);
+                        let role = Role::named(vocab.intern_role(ax.dp.0.as_ref()));
+                        let range = pool.atomic(vocab.intern_class(&iri));
+                        Ok(Some(Axiom::ObjectPropertyRange { role, range }))
+                    }
+                    DataIntersectionDkey::Empty => Ok(None), // empty range → drop (sound)
+                };
+            }
             match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {
                 Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange { role, range })),
                 None => Ok(None), // unrecognized range — drop (sound)

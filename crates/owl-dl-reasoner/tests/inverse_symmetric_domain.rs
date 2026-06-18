@@ -189,10 +189,15 @@ fn family_core_inconsistent() {
     use std::path::Path;
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/family-mech4-ddmin-core.ofn");
     let body = std::fs::read_to_string(&path).expect("family core fixture");
-    let _serial = ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _abox = SetEnvGuard::set("RUSTDL_ABOX_CHECK", "0");
     let mut reader = std::io::Cursor::new(body);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse family core");
-    assert!(!is_consistent(&onto).expect("is_consistent"), "family core must be inconsistent");
+    assert!(
+        !is_consistent(&onto).expect("is_consistent"),
+        "family core must be inconsistent"
+    );
 }

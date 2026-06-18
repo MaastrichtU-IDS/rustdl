@@ -548,6 +548,14 @@ pub struct ClauseIndexes {
     /// predecessor that turns out not to be the chain root is a cheap
     /// no-op (perf only, never soundness).
     role_back_trigger: Vec<Vec<usize>>,
+    /// By role index: clauses with a FIRST-leg (`u == X`) body role atom
+    /// on an INVERSE role `Atom::Role(Inverse(_), X, v)`. Such a clause is
+    /// satisfied by an INCOMING edge at the home node (the node's
+    /// `Inverse(p)`-successor = its `p`-predecessor). `Event::Edge` fires
+    /// `role_trigger` only at the edge SOURCE, so the home node (the edge
+    /// TARGET) never re-fires. This index closes that gap: fire at `tgt`.
+    /// `match_body` re-verifies, so an over-fire is a perf no-op.
+    inverse_first_trigger: Vec<Vec<usize>>,
     /// Clauses with an empty body (`⊤ → …`) — fire at every node.
     empty_body: Vec<usize>,
 }
@@ -588,6 +596,10 @@ pub fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
                     // predecessor back-triggering (HF3 chain second-leg).
                     if *u != X {
                         push(&mut ix.role_back_trigger, role_id_index(*r), ci);
+                    }
+                    // First-leg inverse role: must fire at the edge TARGET.
+                    if *u == X && r.is_inverse() {
+                        push(&mut ix.inverse_first_trigger, role_id_index(*r), ci);
                     }
                 }
                 // Head-only atoms never appear in a (Horn) body.
@@ -1123,7 +1135,7 @@ impl<'c> HyperEngine<'c> {
                     }
                 }
             }
-            Event::Edge(src, role, _tgt) => {
+            Event::Edge(src, role, tgt) => {
                 // Clauses with a body atom on this role fire at `src`;
                 // these re-check the (now-present) successor's labels,
                 // covering the edge-added-after-label case.
@@ -1155,6 +1167,21 @@ impl<'c> HyperEngine<'c> {
                                 return FireOutcome::Clash;
                             }
                         }
+                    }
+                }
+                // Inverse first-leg trigger: this edge `src—role→tgt` gives
+                // `tgt` an `Inverse(role)`-successor (`src`). A clause
+                // `Atom::Role(Inverse(role), X, y) → …` rooted at `tgt` can now
+                // fire; `Event::Edge` otherwise only fires at `src`.
+                let n_inv = self
+                    .indexes
+                    .inverse_first_trigger
+                    .get(key)
+                    .map_or(0, Vec::len);
+                for i in 0..n_inv {
+                    let ci = self.indexes.inverse_first_trigger[key][i];
+                    if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                        return FireOutcome::Clash;
                     }
                 }
             }

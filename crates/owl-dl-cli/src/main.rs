@@ -220,7 +220,8 @@ enum Command {
         /// `equivalent A B` | `disjoint A B` | `inconsistent` |
         /// `subproperty P Q` | `equiv-property P Q` | `disjoint-property P Q` |
         /// `property A P B` | `same A B` | `different A B` |
-        /// `subdata-property DP DQ` | `equiv-data-property DP DQ`.
+        /// `subdata-property DP DQ` | `equiv-data-property DP DQ` |
+        /// `data-value A DP V` (V = `"lex"^^xsd:type` or `"lex"`).
         #[arg(num_args = 1..)]
         query: Vec<String>,
         /// Print ALL minimal justifications (capped by --max), not just one.
@@ -581,6 +582,33 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
     Ok(())
 }
 
+/// Parse a literal argument of the form `"lex"^^<dt>`, `"lex"^^xsd:type`, or
+/// `"lex"` (bare string).
+///
+/// Returns `(lexical, datatype_iri)`.
+fn parse_literal_arg(s: &str) -> (String, String) {
+    const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+    if let Some(pos) = s.find("^^") {
+        let lex_raw = &s[..pos];
+        let dt_raw = &s[pos + 2..];
+        // Strip surrounding double-quotes from the lexical part.
+        let lex = lex_raw.trim_matches('"').to_string();
+        // Strip surrounding <> (IRI form) or expand xsd: prefix.
+        let dt = if dt_raw.starts_with('<') && dt_raw.ends_with('>') {
+            dt_raw[1..dt_raw.len() - 1].to_string()
+        } else if let Some(local) = dt_raw.strip_prefix("xsd:") {
+            format!("{XSD}{local}")
+        } else {
+            dt_raw.to_string()
+        };
+        (lex, dt)
+    } else {
+        // No datatype: strip surrounding double-quotes, default to xsd:string.
+        let lex = s.trim_matches('"').to_string();
+        (lex, format!("{XSD}string"))
+    }
+}
+
 fn parse_justify_query(parts: &[String]) -> Result<owl_dl_reasoner::justify::Entailment> {
     use owl_dl_reasoner::justify::Entailment;
     let kind = parts.first().map_or("", String::as_str);
@@ -638,11 +666,20 @@ fn parse_justify_query(parts: &[String]) -> Result<owl_dl_reasoner::justify::Ent
             a: parts[1].clone(),
             b: parts[2].clone(),
         },
+        ("data-value", 4) => {
+            let (value_lexical, value_datatype) = parse_literal_arg(&parts[3]);
+            Entailment::DataPropertyValue {
+                source: parts[1].clone(),
+                prop: parts[2].clone(),
+                value_lexical,
+                value_datatype,
+            }
+        }
         _ => anyhow::bail!(
             "usage: justify <file> (subclass S T | equivalent A B | disjoint A B | unsat C | \
              instance I C | inconsistent | subproperty P Q | equiv-property P Q | \
              disjoint-property P Q | property A P B | same A B | different A B | \
-             subdata-property DP DQ | equiv-data-property DP DQ)"
+             subdata-property DP DQ | equiv-data-property DP DQ | data-value A DP V)"
         ),
     })
 }
@@ -1292,6 +1329,32 @@ mod format_detect_tests {
         assert_eq!(detect_format(src, Some("owx")), OntFormat::Owx);
         assert_eq!(detect_format(src, Some("rdf")), OntFormat::RdfXml);
         assert_eq!(detect_format(src, None), OntFormat::Ofn);
+    }
+}
+
+#[cfg(test)]
+mod literal_parse_tests {
+    use super::parse_literal_arg;
+
+    #[test]
+    fn parse_typed_integer() {
+        let (lex, dt) = parse_literal_arg("\"5\"^^xsd:integer");
+        assert_eq!(lex, "5");
+        assert_eq!(dt, "http://www.w3.org/2001/XMLSchema#integer");
+    }
+
+    #[test]
+    fn parse_bare_string_defaults_to_xsd_string() {
+        let (lex, dt) = parse_literal_arg("\"hi\"");
+        assert_eq!(lex, "hi");
+        assert_eq!(dt, "http://www.w3.org/2001/XMLSchema#string");
+    }
+
+    #[test]
+    fn parse_full_iri_datatype() {
+        let (lex, dt) = parse_literal_arg("\"2.0\"^^<http://www.w3.org/2001/XMLSchema#double>");
+        assert_eq!(lex, "2.0");
+        assert_eq!(dt, "http://www.w3.org/2001/XMLSchema#double");
     }
 }
 

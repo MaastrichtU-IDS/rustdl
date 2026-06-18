@@ -71,6 +71,12 @@ pub enum Entailment {
         a: String,
         b: String,
     },
+    DataPropertyValue {
+        source: String,
+        prop: String,
+        value_lexical: String,
+        value_datatype: String,
+    },
 }
 
 const PROBE_IRI: &str = "urn:rustdl-justify-probe";
@@ -248,6 +254,28 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 sup: a.clone(),
             },
         )?),
+        Entailment::DataPropertyValue {
+            source,
+            prop,
+            value_lexical,
+            value_datatype,
+        } => {
+            let b: Build<A> = Build::new();
+            let lit = Literal::Datatype {
+                literal: value_lexical.clone(),
+                datatype_iri: b.iri(value_datatype.as_str()),
+            };
+            inconsistent_with(
+                onto,
+                vec![Component::NegativeDataPropertyAssertion(
+                    NegativeDataPropertyAssertion {
+                        dp: b.data_property(prop.as_str()),
+                        from: named(&b, source),
+                        to: lit,
+                    },
+                )],
+            )
+        }
     }
 }
 
@@ -702,6 +730,10 @@ fn query_seed_signature(q: &Entailment) -> Option<HashSet<String>> {
             s.insert(source.clone());
             s.insert(prop.clone());
             s.insert(target.clone());
+        }
+        Entailment::DataPropertyValue { source, prop, .. } => {
+            s.insert(source.clone());
+            s.insert(prop.clone());
         }
         Entailment::Inconsistent => return None,
     }

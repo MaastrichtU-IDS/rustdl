@@ -736,6 +736,60 @@ fn justify_equivalent_data_properties() {
 }
 
 #[test]
+fn justify_data_property_value_entailed() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    // dp⊑dq, dp(a,5) ⇒ dq(a,5) entailed.
+    let src = "Prefix(:=<http://t/>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+               Ontology(<http://t/o>\n\
+               Declaration(DataProperty(:dp)) Declaration(DataProperty(:dq))\n\
+               Declaration(NamedIndividual(:a))\n\
+               SubDataPropertyOf(:dp :dq)\n\
+               DataPropertyAssertion(:dp :a \"5\"^^xsd:integer)\n\
+               )";
+    let (o, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+    let q = Entailment::DataPropertyValue {
+        source: "http://t/a".into(),
+        prop: "http://t/dq".into(),
+        value_lexical: "5".into(),
+        value_datatype: "http://www.w3.org/2001/XMLSchema#integer".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("dq(a,5) entailed");
+    assert!(!j.axioms.is_empty(), "got {:?}", j.axioms);
+}
+
+#[test]
+fn justify_data_property_value_not_entailed() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    let src = "Prefix(:=<http://t/>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+               Ontology(<http://t/o>\n\
+               Declaration(DataProperty(:dp)) Declaration(NamedIndividual(:a))\n\
+               DataPropertyAssertion(:dp :a \"5\"^^xsd:integer)\n\
+               )";
+    let (o, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+    // dp(a,6) is NOT entailed.
+    let q = Entailment::DataPropertyValue {
+        source: "http://t/a".into(),
+        prop: "http://t/dp".into(),
+        value_lexical: "6".into(),
+        value_datatype: "http://www.w3.org/2001/XMLSchema#integer".into(),
+    };
+    assert!(
+        find_one_justification(&o, &q).unwrap().is_none(),
+        "dp(a,6) must NOT be entailed (no FP)"
+    );
+}
+
+#[test]
 fn justify_probe_symbols_never_in_output() {
     let o = onto(
         "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\

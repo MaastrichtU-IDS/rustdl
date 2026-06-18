@@ -172,11 +172,14 @@ const DKEY_DECIMAL_TAG: &str = "dec:";
 const DKEY_DATE_TAG: &str = "date:";
 const DKEY_DATETIME_TAG: &str = "dt:";
 
-/// First-class data-property lowering. **Default ON** (since the ORE-scale FP=0
-/// validation); set `RUSTDL_DATA_PROPERTIES=0` to opt out (e.g. for A/B or to
-/// restore the pre-arc behavior). Read per call so tests can toggle.
+/// First-class data-property lowering. **Default OFF (opt-in)** — set
+/// `RUSTDL_DATA_PROPERTIES=1` to enable. (Was briefly flipped default-ON, but
+/// the gate-ON `ABox` path has an `xsd:float` value-identity false positive — see
+/// the float tests in `datatype_inconsistency.rs` — so the default reverts to OFF
+/// until that is fixed. The lowering itself is sound for non-float data and is
+/// classification-validated FP=0 at ORE scale.) Read per call so tests can toggle.
 fn data_properties_enabled() -> bool {
-    std::env::var("RUSTDL_DATA_PROPERTIES").map_or(true, |v| v != "0")
+    std::env::var("RUSTDL_DATA_PROPERTIES").is_ok_and(|v| v == "1")
 }
 
 /// Build a tagged `DKey` IRI for an [`OrdRange<T>`], encoding each bound via

@@ -486,6 +486,30 @@ impl Drop for NoModuleGuard {
     }
 }
 
+struct DataGateGuard {
+    prior: Option<std::ffi::OsString>,
+}
+impl DataGateGuard {
+    #[allow(unsafe_code)]
+    fn on() -> Self {
+        let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
+        // SAFETY: serialized via JUSTIFY_ENV_MUTEX; restored on Drop.
+        unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "1") };
+        Self { prior }
+    }
+}
+impl Drop for DataGateGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var("RUSTDL_DATA_PROPERTIES", v),
+                None => std::env::remove_var("RUSTDL_DATA_PROPERTIES"),
+            }
+        }
+    }
+}
+
 #[test]
 fn bot_module_drops_irrelevant_axioms() {
     let o = onto(TWO_JUST_FIXTURE);
@@ -668,6 +692,10 @@ fn justify_different_individuals() {
 
 #[test]
 fn justify_subdata_property() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
     let o = onto(
         "Declaration(DataProperty(:dp)) Declaration(DataProperty(:dq)) Declaration(DataProperty(:dr))\n\
                   SubDataPropertyOf(:dp :dq) SubDataPropertyOf(:dq :dr)",
@@ -689,6 +717,10 @@ fn justify_subdata_property() {
 
 #[test]
 fn justify_equivalent_data_properties() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
     let o = onto(
         "Declaration(DataProperty(:dp)) Declaration(DataProperty(:dq))\n\
                   SubDataPropertyOf(:dp :dq) SubDataPropertyOf(:dq :dp)",

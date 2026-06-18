@@ -101,6 +101,33 @@ used for snapshot-capture, horn-shortcircuit, precise-card-deps, etc.
    plus the now-feasible data-property queries (`dp⊑dq`, `dp≡dq`, `Disjoint(dp,dq)`,
    `a dp v`), whose reductions are now class-level `¬∃dp.DKey` consistency checks.
 
+### Sub-project 2 outcome (2026-06-18)
+
+A discovery spike (`rustdl consistent`, gate OFF vs ON) found most shapes already
+reason correctly via the reused object + concrete-domain machinery:
+`DataAllValuesFrom` + ABox out-of-range assertion (gate-isolated clash), data
+range + out-of-bounds value, qualified `≤n dp.T` + ABox, and termination with
+DKey leaf nodes all work. Two gaps surfaced:
+
+- **Gap 1 — unqualified data cardinality: FIXED.** `≥n dp` / `≤n dp` / `=n dp`
+  over `rdfs:Literal` (no datatype facet) previously dropped. Now lowered (gate-ON
+  only) to the same cardinality over the IR `⊤` filler, so the existing ≤n/≥n
+  merge + DKey-disjointness fires. **Soundness-restricted to `rdfs:Literal`**: a
+  specific *unrecognized* datatype still drops, because `≤n dp.⊤` over-constrains a
+  typed `≤n dp.T` restriction (counts all values, not just typed ones) → a false
+  clash = FP. Validated by an adversarial check (`≤1 dp.xsd:string` + two integer
+  values stays consistent). `convert.rs::lower_unqualified_data_cardinality`.
+
+- **Gap 2 — `DisjointDataProperties` same-value clash: DEFERRED (sound
+  under-approximation).** `Disjoint(dp,dq) + dp(a,v) + dq(a,v)` is not detected:
+  the two `DKey(v)` value-nodes are distinct anonymous nodes that are never merged,
+  so `DisjointObjectProperties` (the correct lowering, which IS emitted) has no
+  shared target to clash on. A missed clash here is **incompleteness, never an
+  FP** — sound. Disjoint data properties are rare, and the clean fix (value-node
+  canonicalization, so equal literals share one node) touches the tableau
+  node-creation model and is out of scope for this arc. Revisit only on a measured
+  need. (User-approved defer, 2026-06-18.)
+
 ---
 
 ## Sub-project 1 — IR + convert lowering (detailed)

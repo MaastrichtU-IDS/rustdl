@@ -1051,7 +1051,7 @@ impl HyperCache {
         // `HyperEngine::new_with_prebuilt` setting `extra_clause = &q_clause`
         // with logical index `clauses.len()`. The delta is applied before
         // Arc::new, so all shared probes see the same correct index.
-        let mut base_indexes_inner = owl_dl_tableau::hyper::build_clause_indexes(&clauses);
+        let mut base_indexes_inner = owl_dl_tableau::hyper::build_clause_indexes(&clauses, None);
         {
             let q_ci = clauses.len(); // logical index of the Q-clause in every probe
             let q_key = fresh_q.index() as usize;
@@ -2929,6 +2929,13 @@ fn build_role_hierarchy(internal: &InternalOntology) -> RoleHierarchy {
         for ax in &internal.axioms {
             if let Axiom::InverseObjectProperties(a, b) = ax {
                 if a.is_inverse() || b.is_inverse() {
+                    continue;
+                }
+                // Self-inverse InverseObjectProperties(p, p): semantics = symmetric,
+                // handled by mark_symmetric below. Adding p→Inverse(p) to the canon
+                // rewrite map would block a subsequent InverseObjectProperties(p, q)
+                // from mapping q→Inverse(p) (the contains_key guard fires). Skip.
+                if a.role_id() == b.role_id() {
                     continue;
                 }
                 if m.contains_key(&a.role_id()) || m.contains_key(&b.role_id()) {

@@ -138,3 +138,66 @@ fn unrelated_role_domain_stays_consistent() {
     ClassAssertion(:D :b)"
     ));
 }
+
+// ─── Symmetric-role tests ─────────────────────────────────────────────
+
+// H1a: explicit SymmetricObjectProperty + domain — INCONSISTENT
+#[test]
+fn symmetric_domain_inconsistent() {
+    assert!(!consistent_engine_only(
+        r"    Declaration(ObjectProperty(:p)) Declaration(Class(:C)) Declaration(Class(:D))
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+    SymmetricObjectProperty(:p)
+    ObjectPropertyDomain(:p :C)
+    DisjointClasses(:C :D)
+    ObjectPropertyAssertion(:p :a :b)
+    ClassAssertion(:D :b)"
+    ));
+}
+
+// H1: self-inverse InverseObjectProperties(p,p) + domain — INCONSISTENT
+#[test]
+fn self_inverse_domain_inconsistent() {
+    assert!(!consistent_engine_only(
+        r"    Declaration(ObjectProperty(:p)) Declaration(Class(:C)) Declaration(Class(:D))
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+    InverseObjectProperties(:p :p)
+    ObjectPropertyDomain(:p :C)
+    DisjointClasses(:C :D)
+    ObjectPropertyAssertion(:p :a :b)
+    ClassAssertion(:D :b)"
+    ));
+}
+
+// FIRE-BUT-HARMLESS control: symmetric domain fires at target but stays CONSISTENT
+// (b gets :C via symmetry; C and D are NOT disjoint, so no clash).
+#[test]
+fn symmetric_domain_fires_but_consistent() {
+    assert!(consistent_engine_only(
+        r"    Declaration(ObjectProperty(:p)) Declaration(Class(:C)) Declaration(Class(:D))
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+    SymmetricObjectProperty(:p)
+    ObjectPropertyDomain(:p :C)
+    ObjectPropertyAssertion(:p :a :b)
+    ClassAssertion(:D :b)"
+    ));
+}
+
+// Family core (15-axiom ddmin) — INCONSISTENT (SP1 headline gate)
+#[test]
+fn family_core_inconsistent() {
+    use std::path::Path;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/family-mech4-ddmin-core.ofn");
+    let body = std::fs::read_to_string(&path).expect("family core fixture");
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _abox = SetEnvGuard::set("RUSTDL_ABOX_CHECK", "0");
+    let mut reader = std::io::Cursor::new(body);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse family core");
+    assert!(
+        !is_consistent(&onto).expect("is_consistent"),
+        "family core must be inconsistent"
+    );
+}

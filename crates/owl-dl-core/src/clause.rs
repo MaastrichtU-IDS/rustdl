@@ -758,9 +758,19 @@ fn build_inverse_canon(axioms: &[Axiom]) -> HashMap<RoleId, Role> {
             if a.is_inverse() || b.is_inverse() {
                 continue;
             }
+            // Self-inverse: InverseObjectProperties(p, p). The semantic content is
+            // `p ≡ p⁻` (symmetric role), which is captured by `mark_symmetric` in
+            // `build_role_hierarchy`. Adding `p → Inverse(p)` to the canon rewrite
+            // map would make every mention of `p` in clauses an inverse atom and
+            // BLOCK a subsequent `InverseObjectProperties(p, q)` axiom from mapping
+            // `q → Inverse(p)` (the `m.contains_key(&r.role_id())` guard fires).
+            // Skip self-inverse axioms here; the symmetric-set path handles them.
+            let (r, s) = (*a, *b);
+            if r.role_id() == s.role_id() {
+                continue;
+            }
             // S ≡ R⁻ : map S's id to R⁻. Skip if either role is already
             // a key or value-base, to avoid rewrite cycles.
-            let (r, s) = (*a, *b);
             if m.contains_key(&r.role_id()) || m.contains_key(&s.role_id()) {
                 continue;
             }

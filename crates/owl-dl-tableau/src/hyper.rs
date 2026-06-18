@@ -568,7 +568,13 @@ fn role_id_index(r: Role) -> usize {
 
 /// Build the [`ClauseIndexes`] for the Horn clauses. Non-Horn clauses
 /// are branch points handled by `find_open_disjunction`, not indexed.
-pub fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
+///
+/// `sym` supplies the role hierarchy so that first-leg forward atoms on
+/// SYMMETRIC roles are also indexed in `inverse_first_trigger` — the same
+/// mechanism that fires inverse first-legs at the edge target (Part 1).
+/// Pass `None` when the hierarchy is not yet available (construction time);
+/// call [`HyperEngine::with_sub_roles`] afterwards to rebuild with symmetry.
+pub fn build_clause_indexes(clauses: &[DlClause], sym: Option<&RoleHierarchy>) -> ClauseIndexes {
     let mut ix = ClauseIndexes::default();
     let push = |v: &mut Vec<Vec<usize>>, key: usize, ci: usize| {
         if key >= v.len() {
@@ -597,8 +603,13 @@ pub fn build_clause_indexes(clauses: &[DlClause]) -> ClauseIndexes {
                     if *u != X {
                         push(&mut ix.role_back_trigger, role_id_index(*r), ci);
                     }
-                    // First-leg inverse role: must fire at the edge TARGET.
-                    if *u == X && r.is_inverse() {
+                    // First-leg inverse OR symmetric role: must fire at the
+                    // edge TARGET. For inverse roles, the incoming edge `src—p→tgt`
+                    // gives `tgt` an `Inverse(p)`-successor. For symmetric roles,
+                    // `p ≡ p⁻` so the incoming forward edge is also a reverse
+                    // traversal — trigger at `tgt` too.
+                    let is_symmetric = sym.is_some_and(|h| h.is_symmetric(r.role_id()));
+                    if *u == X && (r.is_inverse() || is_symmetric) {
                         push(&mut ix.inverse_first_trigger, role_id_index(*r), ci);
                     }
                 }
@@ -651,7 +662,7 @@ impl<'c> HyperEngine<'c> {
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
-            indexes: std::sync::Arc::new(build_clause_indexes(clauses)),
+            indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
@@ -831,8 +842,17 @@ impl<'c> HyperEngine<'c> {
 
     /// Supply the HF2 role hierarchy so `R`-edges satisfy `S`-atoms
     /// when `R ⊑* S`. Without it, role matching is reflexive only.
+    ///
+    /// Also rebuilds `ClauseIndexes` with symmetric-role awareness (Variant R):
+    /// first-leg forward atoms on symmetric roles are added to
+    /// `inverse_first_trigger` so they fire at the edge TARGET as well as
+    /// the source. This is a zero-cost no-op when no role is symmetric.
     #[must_use]
     pub fn with_sub_roles(mut self, hierarchy: RoleHierarchy) -> Self {
+        // Rebuild the index now that we have the hierarchy. The `new()` /
+        // `new_seeded()` constructors pass `None` (hierarchy not yet available);
+        // this call is the first moment both clauses and the hierarchy are in scope.
+        self.indexes = std::sync::Arc::new(build_clause_indexes(self.clauses, Some(&hierarchy)));
         self.sub_roles = Some(hierarchy);
         self
     }
@@ -1536,7 +1556,7 @@ impl<'c> HyperEngine<'c> {
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
-            indexes: std::sync::Arc::new(build_clause_indexes(clauses)),
+            indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             worklist: Vec::new(),
             representative,
             sub_roles: None,
@@ -2692,6 +2712,14 @@ fn resolve_var(v: Var, xnode: HNode, binding: &[(Var, HNode)]) -> Option<HNode> 
 /// covers both axes. With no hierarchy (`None`), this is reflexive —
 /// equal ids only, the pre-HF2 behaviour.
 fn role_matches(edge: Role, wanted: Role, sub_roles: Option<&RoleHierarchy>) -> bool {
+    // Symmetric role `p ≡ p⁻`: an edge labelled `p` (or `p⁻`) satisfies a
+    // wanted `p` (or `p⁻`) regardless of polarity when the ids coincide.
+    if let Some(h) = sub_roles
+        && edge.role_id() == wanted.role_id()
+        && h.is_symmetric(wanted.role_id())
+    {
+        return true;
+    }
     if edge.is_inverse() != wanted.is_inverse() {
         return false;
     }
@@ -4276,7 +4304,7 @@ mod tests {
             body: vec![Atom::Role(r1, X, 1), Atom::Role(r2, 1, 2)],
             head: vec![Atom::Role(r3, X, 2)],
         }];
-        let ix = build_clause_indexes(&clauses);
+        let ix = build_clause_indexes(&clauses, None);
         let k1 = role_id_index(r1);
         let k2 = role_id_index(r2);
         assert!(

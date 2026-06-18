@@ -958,6 +958,32 @@ pub fn convert_class_expression<A: ForIRI>(
                     DataIntersectionDkey::Empty => Ok(pool.bot()),
                 };
             }
+            // DataUnionOf: lower to a class-level disjunction
+            // `∃p.DKey(r1) ⊔ ∃p.DKey(r2) ⊔ ...` — EXACT for the ∃ direction.
+            //
+            // Soundness: ALL members must be lowerable; if ANY member is
+            // unrecognized (nested composite, DataComplementOf, etc.) we drop
+            // the ENTIRE union (return UnsupportedDataRange). Partial lowering
+            // would make the ∃ restriction narrower than the original range,
+            // which could create false-positive subsumptions — FP=0 is sacred.
+            //
+            // Empty DataUnionOf = ∃p.∅ = ⊥ (any class needing ∃p.empty is unsat).
+            if data_properties_enabled()
+                && let DataRange::DataUnionOf(members) = dr
+            {
+                if members.is_empty() {
+                    return Ok(pool.bot());
+                }
+                let mut disjuncts: Vec<ConceptId> = Vec::with_capacity(members.len());
+                for m in members {
+                    match data_range_dkey(m, dp.0.as_ref(), vocab, pool) {
+                        Some((role, filler)) => disjuncts.push(pool.some(role, filler)),
+                        // ANY unrecognized member → drop the whole union (sound).
+                        None => return Err(ConversionError::UnsupportedDataRange),
+                    }
+                }
+                return Ok(pool.or(disjuncts));
+            }
             match data_range_dkey(dr, dp.0.as_ref(), vocab, pool) {
                 Some((role, filler)) => Ok(pool.some(role, filler)),
                 None => Err(ConversionError::UnsupportedDataRange),

@@ -1050,3 +1050,106 @@ fn data_intersection_unrecognized_member_drops_gracefully() {
         "Drop on DataComplementOf member: C ⊑ D must NOT hold (no spurious subsumption)"
     );
 }
+
+// ── DataUnionOf lowering ───────────────────────────────────────────────────
+//
+// Canaries for the `DataUnionOf([r1,r2,...])` → class-level disjunction
+// `∃p.DKey(r1) ⊔ ∃p.DKey(r2) ⊔ ...` lowering (SOME direction only).
+// NEGATIVES FIRST: the no-FP canary is the critical one.
+
+/// CRITICAL no-FP canary: `C ⊑ ∃p.DataUnionOf([0,5],[10,15])` must NOT entail
+/// `C ⊑ ∃p.[0,5]` — the value could be in [10,15].
+/// If the implementation collapses the union to its first disjunct this emits
+/// a false-positive subsumption: a class bearing ∃p.[10,12] would be wrongly
+/// deemed a subclass of ∃p.[0,5].
+#[test]
+fn data_union_no_fp_disjunct_not_entailed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataUnionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:minInclusive "10"^^xsd:integer xsd:maxInclusive "15"^^xsd:integer)
+    )))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)))
+"#,
+    );
+    // MUST NOT hold: a value in [10,15] satisfies the union but NOT [0,5].
+    assert!(
+        !c.is_subclass(C, D),
+        "CRITICAL FP guard: C ⊑ ∃p.DataUnionOf([0,5],[10,15]) must NOT entail C ⊑ ∃p.[0,5]"
+    );
+}
+
+/// Disjunct-subsumption positive: `C ≡ ∃p.[0,5]` ⟹ `C ⊑ ∃p.DataUnionOf([0,5],[10,15])`.
+/// [0,5] is one of the union's disjuncts, so `DKey([0,5])` ⊑ `DKey([0,5])` → the ∃ subsumes.
+#[test]
+fn data_union_disjunct_subsumption_holds() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:U))
+    Declaration(DataProperty(:p))
+    EquivalentClasses(:C DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)))
+    EquivalentClasses(:U DataSomeValuesFrom(:p DataUnionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:minInclusive "10"^^xsd:integer xsd:maxInclusive "15"^^xsd:integer)
+    )))
+"#,
+    );
+    // C ≡ ∃p.[0,5]; U has ∃p.[0,5] as one disjunct — C ⊑ U must hold.
+    assert!(
+        c.is_subclass(C, "http://t/U"),
+        "C ≡ ∃p.[0,5] ⊑ ∃p.DataUnionOf([0,5],[10,15]) must hold"
+    );
+}
+
+/// Drop on unrecognized member: `DataUnionOf([0,5], DataComplementOf(...))` —
+/// the second member is not lowerable, so the whole union drops → C is
+/// consistent and no spurious subsumption is introduced.
+#[test]
+fn data_union_drop_on_unrecognized_member() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataSomeValuesFrom(:p DataUnionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)
+        DataComplementOf(DatatypeRestriction(xsd:integer xsd:minInclusive "3"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer))
+    )))
+    EquivalentClasses(:D DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)))
+"#,
+    );
+    // Unrecognized DataComplementOf → whole union dropped → no ∃p.DKey emitted.
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "Drop on unrecognized member: C must be satisfiable (not spuriously ⊥)"
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "Drop on unrecognized member: C ⊑ D must NOT hold (no spurious subsumption)"
+    );
+}
+
+/// ∀-union is dropped (sound under-approximation): `C ⊑ ∀p.DataUnionOf(...)`
+/// does NOT fire — the axiom drops, so a conflicting ∃ assertion does NOT
+/// produce a clash.  No FP.
+#[test]
+fn data_union_forall_union_dropped() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataAllValuesFrom(:p DataUnionOf(
+        DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "5"^^xsd:integer)
+        DatatypeRestriction(xsd:integer xsd:minInclusive "10"^^xsd:integer xsd:maxInclusive "15"^^xsd:integer)
+    )))
+    SubClassOf(:C DataSomeValuesFrom(:p DatatypeRestriction(xsd:integer xsd:minInclusive "20"^^xsd:integer xsd:maxInclusive "25"^^xsd:integer)))
+"#,
+    );
+    // ∀-union dropped → no ∀p.DKey filler → no clash with ∃p.[20,25].
+    // C must remain satisfiable.
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "∀p.DataUnionOf should be dropped: C must remain satisfiable"
+    );
+}

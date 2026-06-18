@@ -221,6 +221,7 @@ enum Command {
         /// `subproperty P Q` | `equiv-property P Q` | `disjoint-property P Q` |
         /// `property A P B` | `same A B` | `different A B` |
         /// `subdata-property DP DQ` | `equiv-data-property DP DQ` |
+        /// `disjoint-data-property DP DQ` |
         /// `data-value A DP V` (V = `"lex"^^xsd:type` or `"lex"`).
         #[arg(num_args = 1..)]
         query: Vec<String>,
@@ -666,6 +667,10 @@ fn parse_justify_query(parts: &[String]) -> Result<owl_dl_reasoner::justify::Ent
             a: parts[1].clone(),
             b: parts[2].clone(),
         },
+        ("disjoint-data-property", 3) => Entailment::DisjointDataProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
         ("data-value", 4) => {
             let (value_lexical, value_datatype) = parse_literal_arg(&parts[3]);
             Entailment::DataPropertyValue {
@@ -679,7 +684,8 @@ fn parse_justify_query(parts: &[String]) -> Result<owl_dl_reasoner::justify::Ent
             "usage: justify <file> (subclass S T | equivalent A B | disjoint A B | unsat C | \
              instance I C | inconsistent | subproperty P Q | equiv-property P Q | \
              disjoint-property P Q | property A P B | same A B | different A B | \
-             subdata-property DP DQ | equiv-data-property DP DQ | data-value A DP V)"
+             subdata-property DP DQ | equiv-data-property DP DQ | \
+             disjoint-data-property DP DQ | data-value A DP V)"
         ),
     })
 }

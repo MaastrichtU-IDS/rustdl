@@ -172,14 +172,16 @@ const DKEY_DECIMAL_TAG: &str = "dec:";
 const DKEY_DATE_TAG: &str = "date:";
 const DKEY_DATETIME_TAG: &str = "dt:";
 
-/// First-class data-property lowering. **Default OFF (opt-in)** — set
-/// `RUSTDL_DATA_PROPERTIES=1` to enable. (Was briefly flipped default-ON, but
-/// the gate-ON `ABox` path has an `xsd:float` value-identity false positive — see
-/// the float tests in `datatype_inconsistency.rs` — so the default reverts to OFF
-/// until that is fixed. The lowering itself is sound for non-float data and is
-/// classification-validated FP=0 at ORE scale.) Read per call so tests can toggle.
+/// First-class data-property lowering. **Default ON** — set
+/// `RUSTDL_DATA_PROPERTIES=0` to opt out. (Like Konclude/HermiT, an OWL 2 DL
+/// reasoner reasons about data properties by default. Flipped ON after the
+/// gate-ON path was validated: full unit suite green, ORE classification net
+/// FP=0, and the `xsd:float` value-identity FP fixed by dropping float in the
+/// gate-ON `ABox` arms. Sound under-approximation — `xsd:float`, disjoint-dp
+/// value clashes, and `a dp v` queries are deliberately not decided.) Read per
+/// call so tests can toggle.
 fn data_properties_enabled() -> bool {
-    std::env::var("RUSTDL_DATA_PROPERTIES").is_ok_and(|v| v == "1")
+    std::env::var("RUSTDL_DATA_PROPERTIES").map_or(true, |v| v != "0")
 }
 
 const XSD_FLOAT: &str = "http://www.w3.org/2001/XMLSchema#float";

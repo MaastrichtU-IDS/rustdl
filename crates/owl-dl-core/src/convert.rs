@@ -172,12 +172,11 @@ const DKEY_DECIMAL_TAG: &str = "dec:";
 const DKEY_DATE_TAG: &str = "date:";
 const DKEY_DATETIME_TAG: &str = "dt:";
 
-/// First-class data-property lowering is opt-in (default OFF). When OFF, the
-/// data-property axiom arms drop to `Ok(None)` exactly as before this arc — so
-/// the converter is byte-identical to legacy behavior. Flipped ON only after the
-/// later sub-projects validate FP=0 corpus-wide. Read per call so tests can toggle.
+/// First-class data-property lowering. **Default ON** (since the ORE-scale FP=0
+/// validation); set `RUSTDL_DATA_PROPERTIES=0` to opt out (e.g. for A/B or to
+/// restore the pre-arc behavior). Read per call so tests can toggle.
 fn data_properties_enabled() -> bool {
-    std::env::var_os("RUSTDL_DATA_PROPERTIES").is_some()
+    std::env::var("RUSTDL_DATA_PROPERTIES").map_or(true, |v| v != "0")
 }
 
 /// Build a tagged `DKey` IRI for an [`OrdRange<T>`], encoding each bound via
@@ -3316,7 +3315,7 @@ mod tests {
         fn off() -> Self {
             let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
             // SAFETY: serialized via DP_ENV_MUTEX; restored on Drop.
-            unsafe { std::env::remove_var("RUSTDL_DATA_PROPERTIES") };
+            unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "0") };
             Self { prior }
         }
     }

@@ -24,7 +24,7 @@ impl DpGuard {
     fn off() -> Self {
         let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
         // SAFETY: serialized via DP_ENV_MUTEX; restored on Drop.
-        unsafe { std::env::remove_var("RUSTDL_DATA_PROPERTIES") };
+        unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "0") };
         Self { prior }
     }
 }

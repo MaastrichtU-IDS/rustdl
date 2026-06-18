@@ -2290,6 +2290,19 @@ fn build_dkey_range_map(
                     max_incl,
                 }),
             );
+        } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_double_dkey(iri) {
+            // xsd:double uses the same DenseInterval<OrdF64> carrier as xsd:float
+            // but a separate `db:` DKey bucket — never cross-subsumes with `f:`.
+            // Bridge is identical: wrap f64 bounds in OrdF64 (signed-zero-safe).
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::Float(DenseInterval {
+                    min: min.map(OrdF64::new),
+                    min_incl,
+                    max: max.map(OrdF64::new),
+                    max_incl,
+                }),
+            );
         } else if let Some((min, min_incl, max, max_incl)) = owl_dl_core::decode_decimal_dkey(iri) {
             // Bridge OrdRange<Decimal> → DenseInterval<Decimal>: same shape.
             map.insert(

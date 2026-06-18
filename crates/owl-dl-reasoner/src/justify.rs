@@ -6,10 +6,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use horned_owl::model::{
     Build, Class, ClassExpression, Component, DataProperty, DataPropertyAssertion,
-    DifferentIndividuals, EquivalentClasses, ForIRI, Individual, Literal,
-    MutableOntology, NegativeDataPropertyAssertion, NegativeObjectPropertyAssertion,
-    ObjectProperty, ObjectPropertyAssertion, ObjectPropertyExpression, SameIndividual,
-    SubObjectPropertyExpression,
+    DifferentIndividuals, EquivalentClasses, ForIRI, Individual, Literal, MutableOntology,
+    NegativeDataPropertyAssertion, NegativeObjectPropertyAssertion, ObjectProperty,
+    ObjectPropertyAssertion, ObjectPropertyExpression, SameIndividual, SubObjectPropertyExpression,
 };
 use horned_owl::ontology::set::SetOntology;
 
@@ -19,20 +18,59 @@ use crate::classify::{FragmentClassification, analyze_fragment};
 /// An entailment to justify ("why does this hold?").
 #[derive(Debug, Clone)]
 pub enum Entailment {
-    SubClassOf { sub: String, sup: String },
-    EquivalentClasses { a: String, b: String },
-    DisjointClasses { a: String, b: String },
-    Unsatisfiable { class: String },
-    InstanceOf { individual: String, class: String },
+    SubClassOf {
+        sub: String,
+        sup: String,
+    },
+    EquivalentClasses {
+        a: String,
+        b: String,
+    },
+    DisjointClasses {
+        a: String,
+        b: String,
+    },
+    Unsatisfiable {
+        class: String,
+    },
+    InstanceOf {
+        individual: String,
+        class: String,
+    },
     Inconsistent,
-    SubObjectProperty { sub: String, sup: String },
-    EquivalentObjectProperties { a: String, b: String },
-    DisjointObjectProperties { a: String, b: String },
-    ObjectPropertyAssertion { source: String, prop: String, target: String },
-    SameIndividual { a: String, b: String },
-    DifferentIndividuals { a: String, b: String },
-    SubDataProperty { sub: String, sup: String },
-    EquivalentDataProperties { a: String, b: String },
+    SubObjectProperty {
+        sub: String,
+        sup: String,
+    },
+    EquivalentObjectProperties {
+        a: String,
+        b: String,
+    },
+    DisjointObjectProperties {
+        a: String,
+        b: String,
+    },
+    ObjectPropertyAssertion {
+        source: String,
+        prop: String,
+        target: String,
+    },
+    SameIndividual {
+        a: String,
+        b: String,
+    },
+    DifferentIndividuals {
+        a: String,
+        b: String,
+    },
+    SubDataProperty {
+        sub: String,
+        sup: String,
+    },
+    EquivalentDataProperties {
+        a: String,
+        b: String,
+    },
 }
 
 const PROBE_IRI: &str = "urn:rustdl-justify-probe";
@@ -72,50 +110,69 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
         Entailment::Inconsistent => Ok(!crate::is_consistent(onto)?),
         Entailment::SubObjectProperty { sub, sup } => {
             let b: Build<A> = Build::new();
-            inconsistent_with(onto, vec![
-                Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
-                    ope: ope(&b, sub),
-                    from: named(&b, PROBE_A),
-                    to: named(&b, PROBE_B),
-                }),
-                Component::NegativeObjectPropertyAssertion(NegativeObjectPropertyAssertion {
-                    ope: ope(&b, sup),
-                    from: named(&b, PROBE_A),
-                    to: named(&b, PROBE_B),
-                }),
-            ])
+            inconsistent_with(
+                onto,
+                vec![
+                    Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
+                        ope: ope(&b, sub),
+                        from: named(&b, PROBE_A),
+                        to: named(&b, PROBE_B),
+                    }),
+                    Component::NegativeObjectPropertyAssertion(NegativeObjectPropertyAssertion {
+                        ope: ope(&b, sup),
+                        from: named(&b, PROBE_A),
+                        to: named(&b, PROBE_B),
+                    }),
+                ],
+            )
         }
         Entailment::EquivalentObjectProperties { a, b } => Ok(entails(
             onto,
-            &Entailment::SubObjectProperty { sub: a.clone(), sup: b.clone() },
+            &Entailment::SubObjectProperty {
+                sub: a.clone(),
+                sup: b.clone(),
+            },
         )? && entails(
             onto,
-            &Entailment::SubObjectProperty { sub: b.clone(), sup: a.clone() },
+            &Entailment::SubObjectProperty {
+                sub: b.clone(),
+                sup: a.clone(),
+            },
         )?),
         Entailment::DisjointObjectProperties { a, b } => {
             let bld: Build<A> = Build::new();
-            inconsistent_with(onto, vec![
-                Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
-                    ope: ope(&bld, a),
-                    from: named(&bld, PROBE_A),
-                    to: named(&bld, PROBE_B),
-                }),
-                Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
-                    ope: ope(&bld, b),
-                    from: named(&bld, PROBE_A),
-                    to: named(&bld, PROBE_B),
-                }),
-            ])
+            inconsistent_with(
+                onto,
+                vec![
+                    Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
+                        ope: ope(&bld, a),
+                        from: named(&bld, PROBE_A),
+                        to: named(&bld, PROBE_B),
+                    }),
+                    Component::ObjectPropertyAssertion(ObjectPropertyAssertion {
+                        ope: ope(&bld, b),
+                        from: named(&bld, PROBE_A),
+                        to: named(&bld, PROBE_B),
+                    }),
+                ],
+            )
         }
-        Entailment::ObjectPropertyAssertion { source, prop, target } => {
+        Entailment::ObjectPropertyAssertion {
+            source,
+            prop,
+            target,
+        } => {
             let b: Build<A> = Build::new();
-            inconsistent_with(onto, vec![
-                Component::NegativeObjectPropertyAssertion(NegativeObjectPropertyAssertion {
-                    ope: ope(&b, prop),
-                    from: named(&b, source),
-                    to: named(&b, target),
-                }),
-            ])
+            inconsistent_with(
+                onto,
+                vec![Component::NegativeObjectPropertyAssertion(
+                    NegativeObjectPropertyAssertion {
+                        ope: ope(&b, prop),
+                        from: named(&b, source),
+                        to: named(&b, target),
+                    },
+                )],
+            )
         }
         Entailment::SameIndividual { a, b } => {
             let bld: Build<A> = Build::new();
@@ -148,38 +205,48 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 datatype_iri: b.iri(PROBE_INT),
             };
             // c1: asserting sub(_a,0) alone must be consistent (else range clash, not subsumption).
-            if inconsistent_with(onto, vec![Component::DataPropertyAssertion(
-                DataPropertyAssertion {
+            if inconsistent_with(
+                onto,
+                vec![Component::DataPropertyAssertion(DataPropertyAssertion {
                     dp: b.data_property(sub.as_str()),
                     from: named(&b, PROBE_A),
                     to: sub_lit,
-                },
-            )])? {
+                })],
+            )? {
                 return Ok(false);
             }
             // c2: adding ¬sup(_a,0) becomes inconsistent ⟺ sub⊑sup forces sup(_a,0).
-            inconsistent_with(onto, vec![
-                Component::DataPropertyAssertion(DataPropertyAssertion {
-                    dp: b.data_property(sub.as_str()),
-                    from: named(&b, PROBE_A),
-                    to: Literal::Datatype {
-                        literal: "0".to_string(),
-                        datatype_iri: b.iri(PROBE_INT),
-                    },
-                }),
-                Component::NegativeDataPropertyAssertion(NegativeDataPropertyAssertion {
-                    dp: b.data_property(sup.as_str()),
-                    from: named(&b, PROBE_A),
-                    to: sup_lit,
-                }),
-            ])
+            inconsistent_with(
+                onto,
+                vec![
+                    Component::DataPropertyAssertion(DataPropertyAssertion {
+                        dp: b.data_property(sub.as_str()),
+                        from: named(&b, PROBE_A),
+                        to: Literal::Datatype {
+                            literal: "0".to_string(),
+                            datatype_iri: b.iri(PROBE_INT),
+                        },
+                    }),
+                    Component::NegativeDataPropertyAssertion(NegativeDataPropertyAssertion {
+                        dp: b.data_property(sup.as_str()),
+                        from: named(&b, PROBE_A),
+                        to: sup_lit,
+                    }),
+                ],
+            )
         }
         Entailment::EquivalentDataProperties { a, b } => Ok(entails(
             onto,
-            &Entailment::SubDataProperty { sub: a.clone(), sup: b.clone() },
+            &Entailment::SubDataProperty {
+                sub: a.clone(),
+                sup: b.clone(),
+            },
         )? && entails(
             onto,
-            &Entailment::SubDataProperty { sub: b.clone(), sup: a.clone() },
+            &Entailment::SubDataProperty {
+                sub: b.clone(),
+                sup: a.clone(),
+            },
         )?),
     }
 }
@@ -627,7 +694,11 @@ fn query_seed_signature(q: &Entailment) -> Option<HashSet<String>> {
             s.insert(individual.clone());
             s.insert(class.clone());
         }
-        Entailment::ObjectPropertyAssertion { source, prop, target } => {
+        Entailment::ObjectPropertyAssertion {
+            source,
+            prop,
+            target,
+        } => {
             s.insert(source.clone());
             s.insert(prop.clone());
             s.insert(target.clone());

@@ -189,11 +189,18 @@ opt in**. The float FP is the blocker for re-flipping: it must be fixed (exclude
 float from the functional/cardinality merge, matching the conservative DP-2
 exclusion, OR make the float DKey identity exact across f32/f64) before default-ON.
 
-**Status: engine (1–3) + queries (4) built on branch
-`feat/data-properties-subproject1` (not merged/pushed). Default reasoner is
-FP=0 (data path opt-in). Remaining: fix the gate-ON `xsd:float` consistency FP,
-then the default flip can be reconsidered; gap-2 `Disjoint(dp,dq)` and `a dp v`
-remain deferred.**
+**xsd:float consistency FP — FIXED (2026-06-18).** The gate-ON data-property arms
+(`DataPropertyAssertion`/`NegativeDataPropertyAssertion`/`DataPropertyRange`) now
+drop `xsd:float` literals/ranges (matching the DP-1/DP-2 `is_float_datatype`
+exclusion); `xsd:double` is kept and the class path is untouched. The **full unit
+suite is now green gate-ON** (the validation the first flip skipped); the
+float-drop is strictly conservative so the ORE classification net stays FP=0.
+
+**Status: engine (1–3) + queries (4) built + the float FP fixed, on branch
+`feat/data-properties-subproject1` (not merged/pushed). Default reasoner FP=0
+(data path opt-in). The default-ON flip is now UNBLOCKED and validated (gate-ON
+full suite green + ORE net FP=0) but left default-OFF pending an explicit
+re-flip decision. Deferred: gap-2 `Disjoint(dp,dq)` query + `a dp v` assertion.**
 
 ---
 

@@ -196,11 +196,19 @@ exclusion); `xsd:double` is kept and the class path is untouched. The **full uni
 suite is now green gate-ON** (the validation the first flip skipped); the
 float-drop is strictly conservative so the ORE classification net stays FP=0.
 
-**Status: engine (1–3) + queries (4) built + the float FP fixed, on branch
-`feat/data-properties-subproject1` (not merged/pushed). Default reasoner FP=0
-(data path opt-in). The default-ON flip is now UNBLOCKED and validated (gate-ON
-full suite green + ORE net FP=0) but left default-OFF pending an explicit
-re-flip decision. Deferred: gap-2 `Disjoint(dp,dq)` query + `a dp v` assertion.**
+**DEFAULT-ON SHIPPED (2026-06-18, commit 5db0c8b).** After the float-FP fix,
+`data_properties_enabled()` is `map_or(true, |v| v != "0")` — **default ON, `=0`
+opts out**, matching how an OWL 2 DL reasoner (Konclude/HermiT) treats data
+properties. Re-validated at default-ON: full unit suite green + Konclude-oracle
+closure-diff net **FP=0/MISSED=0 on all 12 fixtures**. rustdl is now a sound
+(under-approximate) data-property reasoner by default — `xsd:float`,
+disjoint-dp value clashes, and `a dp v` queries remain deliberate sound
+under-approximations.
+
+**Status: the whole arc is COMPLETE on branch `feat/data-properties-subproject1`
+(25 commits, not merged/pushed): engine (1–3), queries (4), float-FP fix, and the
+default-ON flip — all FP=0-validated. Deferred (sound, documented): gap-2
+`Disjoint(dp,dq)` query + `a dp v` data assertion.**
 
 ---
 

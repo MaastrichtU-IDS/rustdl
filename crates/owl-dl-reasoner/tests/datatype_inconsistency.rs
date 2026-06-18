@@ -391,11 +391,11 @@ fn double_value_outside_range_is_inconsistent() {
 ///
 /// Bound `0.1000000014` and value `0.1000000015` denote the SAME f32 value
 /// (`0x3DCCCCCD`), so the value IS in range `[.., 0.1000000014]` in the
-/// xsd:float value space ⇒ the ontology is CONSISTENT. A naive f64
-/// comparison (value > bound) would falsely fire `Top ⊑ Bot` and mark every
-/// class unsatisfiable. DP-1 DROPS xsd:float (sound under-approximation), so
-/// this MUST stay consistent. Do not "optimize" by re-accepting xsd:float in
-/// the f64 path — that re-introduces the catastrophic false-inconsistent.
+/// xsd:float value space ⇒ the ontology is CONSISTENT. With f32-exact parsing
+/// (parse-as-f32-then-widen), both lexicals widen to the same f64 bit pattern,
+/// so they map to the same `DKey` point and the range check correctly reports
+/// the value as in-range. A naive f64 parse of both would produce distinct f64
+/// values and falsely fire `Top ⊑ Bot`.
 #[test]
 fn float_boundary_f32_f64_mismatch_stays_consistent() {
     assert!(consistent(
@@ -405,12 +405,13 @@ fn float_boundary_f32_f64_mismatch_stays_consistent() {
     ));
 }
 
-/// xsd:float is DROPPED entirely (under-approximation): even a CLEARLY
-/// out-of-range float value does not fire ⇒ stays consistent (a MISS, the
-/// sound direction — never a false-inconsistent).
+/// POSITIVE: value 2.0^xsd:float ∉ [0.0, 1.0]^xsd:float ⇒ INCONSISTENT.
+/// With f32-exact DKey parsing, 2.0 and the bounds round to exact f32 values,
+/// all land in separate DKey points/ranges, and the range disjointness fires.
+/// (Previously this was dropped entirely; now xsd:float is sound+complete.)
 #[test]
-fn float_clearly_outside_range_is_dropped_consistent() {
-    assert!(consistent(
+fn float_clearly_outside_range_is_inconsistent() {
+    assert!(!consistent(
         r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
     DataPropertyRange(:p DatatypeRestriction(xsd:float xsd:minInclusive "0.0"^^xsd:float xsd:maxInclusive "1.0"^^xsd:float))
     DataPropertyAssertion(:p :a "2.0"^^xsd:float)"#
@@ -635,12 +636,12 @@ fn dp2_not_functional_two_values_is_consistent() {
     ));
 }
 
-/// xsd:float EXCLUSION: two xsd:float literals that share the same f32
-/// value (but differ as f64) MUST NOT false-fire. xsd:float is excluded
-/// from distinctness counting (the DP-1 f32/f64 lesson). The values
-/// "0.1000000014" and "0.1000000015" denote the same f32 `0x3DCCCCCD`.
+/// NEGATIVE: two xsd:float literals that denote the SAME f32 value MUST
+/// NOT false-fire as distinct. With f32-exact parsing, `"0.1000000014"` and
+/// `"0.1000000015"` both parse to f32 `0x3DCCCCCD` and widen to the same f64
+/// bit pattern → same `DKey` point → NOT two distinct values → NOT inconsistent.
 #[test]
-fn dp2_functional_xsd_float_excluded_is_consistent() {
+fn dp2_functional_xsd_float_same_f32_value_is_consistent() {
     assert!(consistent(
         r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
     FunctionalDataProperty(:p)
@@ -824,5 +825,58 @@ fn typed_card_datetime_out_of_range_uncounted_is_consistent() {
     ClassAssertion(:C :a)
     DataPropertyAssertion(:p :a "2020-06-01T00:00:00"^^xsd:dateTime)
     DataPropertyAssertion(:p :a "2025-01-01T00:00:00"^^xsd:dateTime)"#
+    ));
+}
+
+// ── xsd:float f32-exact new canaries ─────────────────────────────────
+//
+// These pin the behaviour of the new complete+sound xsd:float handling.
+// The landmine is the f32/f64 value-identity problem: the fix is to
+// parse xsd:float literals as f32 then widen to f64 so same-f32 lexicals
+// produce the same DKey IRI.
+
+/// NEGATIVE: two xsd:float literals that map to the same f32 on a
+/// functional data property ⇒ NOT two distinct values ⇒ CONSISTENT.
+/// (Complements `dp2_functional_xsd_float_same_f32_value_is_consistent`
+/// with a different same-f32 pair: "1.0" repeated is trivially the same.)
+#[test]
+fn float_two_lexicals_same_f32_not_distinct_consistent() {
+    // "1.0" and "1.00" both parse to f32 1.0 and widen to the same f64.
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:float)
+    DataPropertyAssertion(:p :a "1.00"^^xsd:float)"#
+    ));
+}
+
+/// POSITIVE: two GENUINELY DISTINCT f32 values on a functional data
+/// property ⇒ INCONSISTENT (cannot have two different values for a
+/// functional property).
+#[test]
+fn float_distinct_f32_values_functional_inconsistent() {
+    // 1.0 and 2.0 are distinct f32 values; they widen to distinct f64 →
+    // distinct DKeys → two distinct witnesses → violates FunctionalDataProperty.
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    FunctionalDataProperty(:p)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:float)
+    DataPropertyAssertion(:p :a "2.0"^^xsd:float)"#
+    ));
+}
+
+/// NEGATIVE: cross-datatype no-clash — xsd:float and xsd:double are in
+/// SEPARATE DKey buckets; a float value vs a double range MUST NOT cross-
+/// subsume. Asserted float value does NOT violate the double-typed range
+/// (the float assertion simply drops into the float bucket, which has no
+/// range constraint, so no inconsistency fires).
+#[test]
+fn float_value_vs_double_range_no_cross_bucket_clash() {
+    // Float value "2.0" and double range [0.0, 1.0] are in disjoint buckets
+    // → the float assertion does not violate the double range → CONSISTENT.
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
+    DataPropertyRange(:p DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "1.0"^^xsd:double))
+    DataPropertyAssertion(:p :a "2.0"^^xsd:float)"#
     ));
 }

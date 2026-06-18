@@ -49,9 +49,16 @@ use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 /// recover each range — and its datatype kind — by parsing the IRI.
 pub const DKEY_IRI_PREFIX: &str = "urn:rustdl-dkey:";
 
-/// Datatype tag distinguishing the float/double `DKey` namespace from the
-/// untagged integer one. Full prefix is `urn:rustdl-dkey:f:`.
+/// Datatype tag for the `xsd:float` (f32-precision) `DKey` namespace.
+/// Full prefix is `urn:rustdl-dkey:f:`.
 const DKEY_FLOAT_TAG: &str = "f:";
+
+/// Datatype tag for the `xsd:double` (f64-precision) `DKey` namespace.
+/// Full prefix is `urn:rustdl-dkey:db:`. The prefix `db:` is mutually
+/// non-prefixing with all other tags (`f:`, `fo:`, `dec:`, `deo:`, `date:`,
+/// `dao:`, `dt:`, `dto:`, `str:`, and the untagged integer form), so the
+/// decoder exclusivity property is preserved.
+const DKEY_DOUBLE_TAG: &str = "db:";
 
 /// Build the deterministic integer `DKey` IRI.
 fn dkey_iri(range: IntegerRange) -> String {
@@ -61,9 +68,10 @@ fn dkey_iri(range: IntegerRange) -> String {
     format!("{DKEY_IRI_PREFIX}{}:{}", bound(range.min), bound(range.max))
 }
 
-/// Build the deterministic float/double `DKey` IRI. Bounds are encoded
-/// via `f64::to_bits()` for exact round-trip; inclusivity is `i`/`e`.
-fn float_dkey_iri(range: FloatRange) -> String {
+/// Internal helper: build a float-family `DKey` IRI with the given `tag`.
+/// Bounds are encoded via `f64::to_bits()` for exact round-trip;
+/// inclusivity is `i`/`e`.
+fn tagged_float_dkey_iri(tag: &str, range: FloatRange) -> String {
     fn bound(b: Option<f64>) -> String {
         b.map_or_else(|| "*".to_string(), |v| v.to_bits().to_string())
     }
@@ -71,12 +79,25 @@ fn float_dkey_iri(range: FloatRange) -> String {
         if incl { 'i' } else { 'e' }
     }
     format!(
-        "{DKEY_IRI_PREFIX}{DKEY_FLOAT_TAG}{}:{}:{}:{}",
+        "{DKEY_IRI_PREFIX}{tag}{}:{}:{}:{}",
         bound(range.min),
         flag(range.min_incl),
         bound(range.max),
         flag(range.max_incl),
     )
+}
+
+/// Build the deterministic `xsd:float` (`f:`) `DKey` IRI.
+/// Bounds are f64 representations of f32 values (exact by construction
+/// since every f32 is an exact f64); same-f32 lexicals map to the same
+/// bit pattern.
+fn float_dkey_iri(range: FloatRange) -> String {
+    tagged_float_dkey_iri(DKEY_FLOAT_TAG, range)
+}
+
+/// Build the deterministic `xsd:double` (`db:`) `DKey` IRI.
+fn double_dkey_iri(range: FloatRange) -> String {
+    tagged_float_dkey_iri(DKEY_DOUBLE_TAG, range)
 }
 
 /// Whether `iri` is a synthetic `DKey` class IRI (any datatype bucket).
@@ -118,11 +139,12 @@ pub(crate) fn parse_dkey_iri(iri: &str) -> Option<IntegerRange> {
     })
 }
 
-/// Parse a `DKey` IRI back into its FLOAT range. Returns `None` for any
-/// IRI that is not a well-formed float-tagged `DKey` IRI.
-pub(crate) fn parse_float_dkey_iri(iri: &str) -> Option<FloatRange> {
+/// Internal helper: parse a float-family `DKey` IRI with the given `tag`
+/// back into a [`FloatRange`]. Returns `None` for any IRI not carrying
+/// exactly this tag, or any malformed bound/flag.
+fn parse_tagged_float_dkey_iri(iri: &str, tag: &str) -> Option<FloatRange> {
     let rest = iri.strip_prefix(DKEY_IRI_PREFIX)?;
-    let rest = rest.strip_prefix(DKEY_FLOAT_TAG)?;
+    let rest = rest.strip_prefix(tag)?;
     let mut parts = rest.splitn(4, ':');
     let min_s = parts.next()?;
     let min_f = parts.next()?;
@@ -150,6 +172,18 @@ pub(crate) fn parse_float_dkey_iri(iri: &str) -> Option<FloatRange> {
         max: bound(max_s).ok()?,
         max_incl: flag(max_f).ok()?,
     })
+}
+
+/// Parse a `DKey` IRI back into its `xsd:float` (`f:`) range. Returns `None`
+/// for any IRI that is not a well-formed `xsd:float`-tagged `DKey` IRI.
+pub(crate) fn parse_float_dkey_iri(iri: &str) -> Option<FloatRange> {
+    parse_tagged_float_dkey_iri(iri, DKEY_FLOAT_TAG)
+}
+
+/// Parse a `DKey` IRI back into its `xsd:double` (`db:`) range. Returns
+/// `None` for any IRI that is not a well-formed `xsd:double`-tagged `DKey` IRI.
+pub(crate) fn parse_double_dkey_iri(iri: &str) -> Option<FloatRange> {
+    parse_tagged_float_dkey_iri(iri, DKEY_DOUBLE_TAG)
 }
 
 // ── Phase D8 (2026-06-09): decimal / date / dateTime DKey buckets ────────
@@ -182,25 +216,6 @@ const DKEY_DATETIME_TAG: &str = "dt:";
 /// call so tests can toggle.
 fn data_properties_enabled() -> bool {
     std::env::var("RUSTDL_DATA_PROPERTIES").map_or(true, |v| v != "0")
-}
-
-const XSD_FLOAT: &str = "http://www.w3.org/2001/XMLSchema#float";
-
-/// Returns `true` iff the literal has datatype `xsd:float`.
-/// Used to guard the gate-ON data-property arms: `xsd:float` is f32 but the
-/// `DKey` encoding uses f64 — two distinct f64 values can map to the SAME
-/// f32, producing spurious range-membership / functional-merge clashes → FP.
-/// Matches the DP-1/DP-2 float exclusion in `data_axioms.rs`. `xsd:double`
-/// (f64-exact) is NOT matched and flows through normally.
-fn literal_is_xsd_float<A: ForIRI>(l: &Literal<A>) -> bool {
-    matches!(l, Literal::Datatype { datatype_iri, .. } if datatype_iri.as_ref() == XSD_FLOAT)
-}
-
-/// Returns `true` iff the data range is an `xsd:float` datatype or
-/// `xsd:float`-restricted `DatatypeRestriction`. See [`literal_is_xsd_float`].
-fn data_range_is_xsd_float<A: ForIRI>(dr: &DataRange<A>) -> bool {
-    matches!(dr, DataRange::Datatype(dt) if dt.0.as_ref() == XSD_FLOAT)
-        || matches!(dr, DataRange::DatatypeRestriction(dt, _) if dt.0.as_ref() == XSD_FLOAT)
 }
 
 /// Build a tagged `DKey` IRI for an [`OrdRange<T>`], encoding each bound via
@@ -314,13 +329,22 @@ pub(crate) fn parse_datetime_dkey_iri(iri: &str) -> Option<OrdRange<DateTimeKey>
     parse_ord_dkey_iri(iri, DKEY_DATETIME_TAG, parse_datetime_key)
 }
 
-/// Public single-point decode of a FLOAT `DKey` IRI into its bound components
-/// `(min, min_incl, max, max_incl)`. Returns `None` for any non-float-bucket
-/// or malformed `DKey` IRI. Mirrors [`decode_integer_dkey`] — returns
-/// decomposed components so the internal `FloatRange` type need not be exposed.
+/// Public single-point decode of an `xsd:float` (`f:`) `DKey` IRI into its
+/// bound components `(min, min_incl, max, max_incl)`. Returns `None` for any
+/// non-float-bucket or malformed `DKey` IRI. Mirrors [`decode_integer_dkey`] —
+/// returns decomposed components so the internal `FloatRange` type need not be
+/// exposed.
 #[must_use]
 pub fn decode_float_dkey(iri: &str) -> Option<(Option<f64>, bool, Option<f64>, bool)> {
     parse_float_dkey_iri(iri).map(|r| (r.min, r.min_incl, r.max, r.max_incl))
+}
+
+/// Public single-point decode of an `xsd:double` (`db:`) `DKey` IRI into its
+/// bound components `(min, min_incl, max, max_incl)`. Returns `None` for any
+/// non-double-bucket or malformed `DKey` IRI.
+#[must_use]
+pub fn decode_double_dkey(iri: &str) -> Option<(Option<f64>, bool, Option<f64>, bool)> {
+    parse_double_dkey_iri(iri).map(|r| (r.min, r.min_incl, r.max, r.max_incl))
 }
 
 /// Public single-point decode of a DECIMAL `DKey` IRI into its bound components
@@ -626,8 +650,12 @@ fn data_range_dkey<A: ForIRI>(
 ) -> Option<(Role, ConceptId)> {
     let iri = if let Some(r) = crate::data_axioms::parse_integer_range(dr) {
         dkey_iri(r)
-    } else if let Some(r) = crate::data_axioms::parse_float_range(dr) {
+    } else if let Some(r) = crate::data_axioms::parse_xsd_float_range(dr) {
+        // xsd:float: f32-precision — same-f32 lexicals → same DKey IRI.
         float_dkey_iri(r)
+    } else if let Some(r) = crate::data_axioms::parse_xsd_double_range(dr) {
+        // xsd:double: f64-precision — separate bucket from xsd:float.
+        double_dkey_iri(r)
     } else if let Some(r) = crate::data_axioms::parse_decimal_range(dr) {
         ord_dkey_iri(DKEY_DECIMAL_TAG, &r, decimal_key)
     } else if let Some(r) = crate::data_axioms::parse_date_range(dr) {
@@ -669,16 +697,18 @@ fn lower_data_to_some(
     pool.some(Role::named(role_id), filler)
 }
 
-/// Float counterpart of [`lower_data_to_some`]: intern the float
-/// `DKey(range)` filler and return `∃p.DKey(range)`.
+/// Float-family counterpart of [`lower_data_to_some`]: intern the float-family
+/// `DKey(range)` filler (tagged by `tag` — `DKEY_FLOAT_TAG` for xsd:float,
+/// `DKEY_DOUBLE_TAG` for xsd:double) and return `∃p.DKey(range)`.
 fn lower_float_data_to_some(
+    tag: &str,
     range: FloatRange,
     dp_iri: &str,
     vocab: &mut Vocabulary,
     pool: &mut ConceptPool,
 ) -> ConceptId {
     let role_id = vocab.intern_role(dp_iri);
-    let dkey_class = vocab.intern_class(&float_dkey_iri(range));
+    let dkey_class = vocab.intern_class(&tagged_float_dkey_iri(tag, range));
     let filler = pool.atomic(dkey_class);
     pool.some(Role::named(role_id), filler)
 }
@@ -699,9 +729,10 @@ fn data_point_some<A: ForIRI>(
             vocab,
             pool,
         ))
-    } else if let Some(v) = float_literal_value(l) {
+    } else if let Some(fv) = float_literal_value(l) {
         Some(lower_float_data_to_some(
-            FloatRange::point(v),
+            fv.tag,
+            FloatRange::point(fv.value),
             dp_iri,
             vocab,
             pool,
@@ -1061,10 +1092,10 @@ fn lower_str_data_cardinality<A: ForIRI>(
     }
 }
 
-/// Lower a FLOAT-qualified data cardinality restriction to object `Min`/`Max`
-/// (or their `And` for `Exact`) over the float `DKey` filler. Returns
-/// `UnsupportedDataRange` (⇒ the whole axiom drops, soundly) for any
-/// non-float-bucket qualifier — mirrors [`lower_int_data_cardinality`].
+/// Lower a FLOAT-family-qualified data cardinality restriction (xsd:float OR
+/// xsd:double) to object `Min`/`Max` (or their `And` for `Exact`) over the
+/// appropriate float-family `DKey` filler. Returns `UnsupportedDataRange` for
+/// any non-float-family qualifier — mirrors [`lower_int_data_cardinality`].
 fn lower_float_data_cardinality<A: ForIRI>(
     n: u32,
     dp: &horned_owl::model::DataProperty<A>,
@@ -1074,7 +1105,11 @@ fn lower_float_data_cardinality<A: ForIRI>(
     want_min: bool,
     want_max: bool,
 ) -> Result<ConceptId, ConversionError> {
-    if crate::data_axioms::parse_float_range(dr).is_none() {
+    // Accept both xsd:float (f32-precision) and xsd:double (f64-precision);
+    // data_range_dkey will route each to the correct tagged bucket.
+    if crate::data_axioms::parse_xsd_float_range(dr).is_none()
+        && crate::data_axioms::parse_xsd_double_range(dr).is_none()
+    {
         return Err(ConversionError::UnsupportedDataRange);
     }
     let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
@@ -1388,19 +1423,47 @@ fn integer_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<i64> {
     }
 }
 
-/// Phase D6 (Part B): extract an `xsd:float` / `xsd:double`-typed
-/// literal's value. Returns `None` for any other literal kind or an
-/// unparseable / non-finite (NaN, ±∞) value — sound under-approximation
-/// (a non-finite point can never be a sound subset endpoint).
-fn float_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<f64> {
+/// A float-family literal value paired with its `DKey` tag so the caller
+/// can put it in the correct bucket (`f:` for xsd:float, `db:` for xsd:double).
+struct FloatLiteralValue {
+    value: f64,
+    tag: &'static str,
+}
+
+/// Phase D6 (Part B): extract an `xsd:float` / `xsd:double`-typed literal's
+/// value. Returns `None` for any other literal kind or an unparseable /
+/// non-finite (NaN, ±∞) value — sound under-approximation.
+///
+/// **Precision**: `xsd:float` is f32; we parse as `f32` then widen to `f64`
+/// so that two lexicals denoting the same f32 value map to the SAME f64 bit
+/// pattern (and therefore the same `DKey` IRI). `xsd:double` is f64-exact and
+/// is parsed directly as `f64`. The returned `tag` selects the correct bucket.
+fn float_literal_value<A: ForIRI>(l: &Literal<A>) -> Option<FloatLiteralValue> {
     match l {
         Literal::Datatype {
             literal,
             datatype_iri,
-        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float"
-            || datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" =>
-        {
-            literal.parse::<f64>().ok().filter(|v| v.is_finite())
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float" => {
+            // Parse as f32, widen: same-f32 lexicals → same f64 bit pattern.
+            let v = literal
+                .parse::<f32>()
+                .ok()
+                .map(f64::from)
+                .filter(|v| v.is_finite())?;
+            Some(FloatLiteralValue {
+                value: v,
+                tag: DKEY_FLOAT_TAG,
+            })
+        }
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" => {
+            let v = literal.parse::<f64>().ok().filter(|v| v.is_finite())?;
+            Some(FloatLiteralValue {
+                value: v,
+                tag: DKEY_DOUBLE_TAG,
+            })
         }
         _ => None,
     }
@@ -1734,13 +1797,9 @@ pub fn convert_component<A: ForIRI>(
         // member of that concept). When the gate is OFF, or the literal is an
         // unrecognized datatype, drop silently (sound under-approximation).
         C::DataPropertyAssertion(ax) if data_properties_enabled() => {
-            // xsd:float is f32; the f64 DKey encoding is unsound for it
-            // (same-f32 values differ as f64 → spurious clash). Drop float
-            // (matches data_axioms.rs DP-1/DP-2 float exclusion); xsd:double
-            // (f64-exact) is kept.
-            if literal_is_xsd_float(&ax.to) {
-                return Ok(None);
-            }
+            // xsd:float is now handled with f32-precision parsing (same-f32
+            // lexicals → same DKey IRI) so the drop guard is no longer needed.
+            // xsd:double is f64-exact. Both flow through data_point_some.
             match data_point_some(ax.dp.0.as_ref(), &ax.to, vocab, pool) {
                 Some(class) => {
                     let individual = convert_individual(&ax.from, vocab)?;
@@ -1756,13 +1815,9 @@ pub fn convert_component<A: ForIRI>(
         // When the gate is OFF, or the literal is an unrecognized datatype, drop
         // silently (sound under-approximation).
         C::NegativeDataPropertyAssertion(ax) if data_properties_enabled() => {
-            // xsd:float is f32; the f64 DKey encoding is unsound for it
-            // (same-f32 values differ as f64 → spurious clash). Drop float
-            // (matches data_axioms.rs DP-1/DP-2 float exclusion); xsd:double
-            // (f64-exact) is kept.
-            if literal_is_xsd_float(&ax.to) {
-                return Ok(None);
-            }
+            // xsd:float is now handled with f32-precision parsing so the drop
+            // guard is no longer needed.  xsd:double is f64-exact. Both flow
+            // through data_point_some.
             match data_point_some(ax.dp.0.as_ref(), &ax.to, vocab, pool) {
                 Some(some_concept) => {
                     let class = pool.not(some_concept); // ¬∃dp.DKey(point v)
@@ -1825,13 +1880,8 @@ pub fn convert_component<A: ForIRI>(
         // DataPropertyRange(dp,R) → ObjectPropertyRange with DKey(R) filler (gate-ON).
         // When the gate is OFF, or the range is unrecognized, drop silently (sound).
         C::DataPropertyRange(ax) if data_properties_enabled() => {
-            // xsd:float is f32; the f64 DKey encoding is unsound for it
-            // (same-f32 values differ as f64 → spurious clash). Drop float
-            // (matches data_axioms.rs DP-1/DP-2 float exclusion); xsd:double
-            // (f64-exact) is kept.
-            if data_range_is_xsd_float(&ax.dr) {
-                return Ok(None);
-            }
+            // xsd:float is now handled with f32-precision parsing (separate
+            // `f:` bucket) so the drop guard is no longer needed.
             match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {
                 Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange { role, range })),
                 None => Ok(None), // unrecognized range — drop (sound)
@@ -2139,7 +2189,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // bucket — never across datatypes. Cross-datatype subsumption would be
     // unsound (integer / real / decimal / temporal value spaces are
     // disjoint for our purposes; deliberate conservative under-approx).
-    // The five decoders are pairwise mutually exclusive on IRIs (the
+    // The decoders are pairwise mutually exclusive on IRIs (the
     // `parser_matrix_*` canaries pin this), so a given `DKey` IRI lands in
     // exactly one bucket.
     let int_dkeys: Vec<(ClassId, IntegerRange)> = out
@@ -2147,10 +2197,18 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
+    // xsd:float (f:) and xsd:double (db:) are SEPARATE buckets — they have
+    // disjoint OWL value spaces (float is f32, double is f64); cross-bucket
+    // subsumption would be unsound.
     let float_dkeys: Vec<(ClassId, FloatRange)> = out
         .vocabulary
         .classes()
         .filter_map(|(cid, iri)| parse_float_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
+    let double_dkeys: Vec<(ClassId, FloatRange)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_double_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
     let dec_dkeys: Vec<(ClassId, OrdRange<Decimal>)> = out
         .vocabulary
@@ -2177,6 +2235,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // `Copy`; the ordered ranges compare by reference.
     seed_bucket(out, &int_dkeys, |a, b| a.subset(*b));
     seed_bucket(out, &float_dkeys, |a, b| a.subset(*b));
+    seed_bucket(out, &double_dkeys, |a, b| a.subset(*b));
     seed_bucket(out, &dec_dkeys, OrdRange::subset);
     seed_bucket(out, &date_dkeys, OrdRange::subset);
     seed_bucket(out, &dt_dkeys, OrdRange::subset);
@@ -2187,10 +2246,11 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // ∀p.DKey(r)` membership clash (v ∉ r). `disjoint` is conservative
     // (true only when no value is shared), so a wrong "disjoint" — which
     // would spuriously make a class ⊥ = FP — cannot arise from overlapping
-    // ranges. Same datatype bucketing: int / float / decimal / date /
+    // ranges. Same datatype bucketing: int / float / double / decimal / date /
     // dateTime / string never cross-seed.
     seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b));
     seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b));
+    seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b));
     seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint);
     seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint);
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint);
@@ -2921,8 +2981,10 @@ mod tests {
         parse_decimal(s).unwrap_or_else(|| panic!("parse_decimal({s:?})"))
     }
 
-    /// Sample IRI from each of the five `DKey` buckets (a bounded range so
-    /// the encoding is exercised, not just `*`).
+    /// Sample IRI from each of the `DKey` interval/string buckets (a bounded
+    /// range so the encoding is exercised, not just `*`). Now includes the
+    /// separate `xsd:double` (`db:`) bucket alongside the `xsd:float` (`f:`)
+    /// bucket — the two must be mutually exclusive.
     fn sample_iris() -> Vec<(&'static str, String)> {
         vec![
             (
@@ -2933,6 +2995,7 @@ mod tests {
                 }),
             ),
             ("float", float_dkey_iri(FloatRange::point(1.5))),
+            ("double", double_dkey_iri(FloatRange::point(1.5))),
             (
                 "dec",
                 ord_dkey_iri(DKEY_DECIMAL_TAG, &OrdRange::point(dec("1.5")), decimal_key),
@@ -2960,10 +3023,11 @@ mod tests {
         ]
     }
 
-    /// THE matrix (advisor's #1 new test): each of the five decoders must
-    /// return `Some` for EXACTLY its own bucket's IRI and `None` for all
-    /// four others. A single off-diagonal `Some` = a cross-datatype edge
-    /// seeded with mismatched semantics = false positive.
+    /// THE matrix: each decoder must return `Some` for EXACTLY its own
+    /// bucket's IRI and `None` for all others. A single off-diagonal `Some`
+    /// = a cross-datatype edge seeded with mismatched semantics = false
+    /// positive. Now covers 7 interval/string buckets (int, float, double,
+    /// dec, date, dt, str) — float and double must reject each other.
     #[test]
     fn parser_matrix_mutual_exclusivity() {
         let iris = sample_iris();
@@ -2971,6 +3035,7 @@ mod tests {
             match bucket {
                 "int" => parse_dkey_iri(iri).is_some(),
                 "float" => parse_float_dkey_iri(iri).is_some(),
+                "double" => parse_double_dkey_iri(iri).is_some(),
                 "dec" => parse_decimal_dkey_iri(iri).is_some(),
                 "date" => parse_date_dkey_iri(iri).is_some(),
                 "dt" => parse_datetime_dkey_iri(iri).is_some(),
@@ -3032,15 +3097,16 @@ mod tests {
                 ),
             ),
         ];
-        // Every IRI in the system: the 6 interval/string samples + the 5 oneof.
+        // Every IRI in the system: the 7 interval/string samples + the 5 oneof.
         let mut all = sample_iris();
         all.extend(oneof.iter().cloned());
 
-        // Decoders for ALL eleven buckets.
+        // Decoders for ALL twelve buckets (7 interval/string + 5 oneof).
         let probe = |bucket: &str, iri: &str| -> bool {
             match bucket {
                 "int" => parse_dkey_iri(iri).is_some(),
                 "float" => parse_float_dkey_iri(iri).is_some(),
+                "double" => parse_double_dkey_iri(iri).is_some(),
                 "dec" => parse_decimal_dkey_iri(iri).is_some(),
                 "date" => parse_date_dkey_iri(iri).is_some(),
                 "dt" => parse_datetime_dkey_iri(iri).is_some(),

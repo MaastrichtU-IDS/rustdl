@@ -1561,8 +1561,9 @@ pub(crate) fn parse_integer_range<A: ForIRI>(dr: &DataRange<A>) -> Option<Intege
         // Only xsd:integer for Tier C; other numeric datatypes
         // (xsd:decimal, xsd:dateTime) extend with their own range types
         // but share this preprocessing's algebra. Float/double are
-        // handled by `parse_float_range` (a DISTINCT datatype bucket —
-        // see the DKey datatype-tagging in `convert.rs`).
+        // handled by `parse_xsd_float_range`/`parse_xsd_double_range`
+        // (DISTINCT datatype buckets — see the DKey datatype-tagging in
+        // `convert.rs`).
         DataRange::DatatypeRestriction(dt, facets) if dt.0.to_string() == XSD_INTEGER => {
             parse_integer_facets(facets)
         }
@@ -1604,31 +1605,36 @@ fn parse_integer_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<Int
     Some(range)
 }
 
-/// Phase D6 (Part B): the float-family datatype IRIs we model. Both
-/// share the real value space and the same facet algebra. We keep them
-/// in SEPARATE DKey buckets from each other and from integer (see
-/// `convert.rs`) so no cross-datatype subsumption can ever be seeded.
-fn is_float_datatype(iri: &str) -> bool {
-    iri == "http://www.w3.org/2001/XMLSchema#float"
-        || iri == "http://www.w3.org/2001/XMLSchema#double"
+/// Parse an **`xsd:float`-only** `DataRange` into a [`FloatRange`] using
+/// **f32 precision**: each facet bound is parsed as `f32` then widened to
+/// `f64` (`s.parse::<f32>().ok().map(f64::from)`). This guarantees that two
+/// lexicals denoting the same `xsd:float` value map to bit-identical `f64`
+/// bounds — the precondition for sound `FloatRange::subset` comparisons
+/// inside the DKey encoding (different f64 parses of the same f32 would
+/// falsely look like distinct range endpoints).
+///
+/// Returns `None` for non-`xsd:float` data ranges, unrecognized facets,
+/// and any unparseable / non-finite (NaN, ±∞) literal.
+pub(crate) fn parse_xsd_float_range<A: ForIRI>(dr: &DataRange<A>) -> Option<FloatRange> {
+    const XSD_FLOAT: &str = "http://www.w3.org/2001/XMLSchema#float";
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_FLOAT => Some(FloatRange::unbounded()),
+        DataRange::DatatypeRestriction(dt, facets) if dt.0.as_ref() == XSD_FLOAT => {
+            parse_float32_facets(facets)
+        }
+        _ => None,
+    }
 }
 
-/// Phase D6 (Part B): parse an `xsd:float` / `xsd:double` `DataRange`
-/// into a [`FloatRange`]. Returns `None` for non-float datatypes,
-/// unrecognized facets, unparseable / non-finite (NaN, ±∞) literals —
-/// sound under-approximation (a dropped range contributes no constraint,
-/// never a wrong one).
-pub(crate) fn parse_float_range<A: ForIRI>(dr: &DataRange<A>) -> Option<FloatRange> {
+/// Parse an **`xsd:double`-only** `DataRange` into a [`FloatRange`] using
+/// f64 precision (`xsd:double` value space IS f64 — exact round-trip).
+/// Mirrors [`parse_xsd_float_range`] but for the double bucket.
+/// Returns `None` for non-`xsd:double` ranges, unrecognized facets, NaN/±∞.
+pub(crate) fn parse_xsd_double_range<A: ForIRI>(dr: &DataRange<A>) -> Option<FloatRange> {
+    const XSD_DOUBLE: &str = "http://www.w3.org/2001/XMLSchema#double";
     match dr {
-        // Bare `xsd:float` / `xsd:double` (no facet) is the unbounded
-        // real range. NOTE: intentionally NOT emitted from `convert.rs`'s
-        // `DataSomeValuesFrom` bare arm (it's a standalone necessary
-        // condition that drops harmlessly and is not needed for the 37);
-        // kept here only for completeness of the parser.
-        DataRange::Datatype(dt) if is_float_datatype(dt.0.as_ref()) => {
-            Some(FloatRange::unbounded())
-        }
-        DataRange::DatatypeRestriction(dt, facets) if is_float_datatype(dt.0.as_ref()) => {
+        DataRange::Datatype(dt) if dt.0.as_ref() == XSD_DOUBLE => Some(FloatRange::unbounded()),
+        DataRange::DatatypeRestriction(dt, facets) if dt.0.as_ref() == XSD_DOUBLE => {
             parse_float_facets(facets)
         }
         _ => None,
@@ -1647,6 +1653,32 @@ fn parse_float_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<Float
                 .parse()
                 .ok()
                 .filter(|v: &f64| v.is_finite())?;
+        match fr.f {
+            Facet::MinInclusive => tighten_min(&mut range, val, true),
+            Facet::MinExclusive => tighten_min(&mut range, val, false),
+            Facet::MaxInclusive => tighten_max(&mut range, val, true),
+            Facet::MaxExclusive => tighten_max(&mut range, val, false),
+            _ => return None,
+        }
+    }
+    Some(range)
+}
+
+/// f32-precision counterpart of [`parse_float_facets`]: each bound is parsed
+/// as `f32` then widened to `f64`. Same-f32 lexicals (`"0.1000000014"` and
+/// `"0.1000000015"` both round to f32 `0x3DCCCCCD`) produce the SAME bound,
+/// ensuring the DKey encoding is sound for the `xsd:float` value space.
+fn parse_float32_facets<A: ForIRI>(facets: &[FacetRestriction<A>]) -> Option<FloatRange> {
+    let mut range = FloatRange::unbounded();
+    for fr in facets {
+        // Parse as f32; NaN/±∞ in the f32 domain are also rejected by
+        // `is_finite()` on the widened f64 (they widen to NaN/±∞ as well).
+        let val: f64 =
+            fr.l.literal()
+                .parse::<f32>()
+                .ok()
+                .map(f64::from)
+                .filter(|v| v.is_finite())?;
         match fr.f {
             Facet::MinInclusive => tighten_min(&mut range, val, true),
             Facet::MinExclusive => tighten_min(&mut range, val, false),
@@ -2127,9 +2159,8 @@ fn double_literal_value_pub<A: ForIRI>(l: &Literal<A>) -> Option<f64> {
     }
 }
 
-/// Parse an **xsd:double-only** `DataRange` into a [`FloatRange`]. Unlike
-/// `parse_float_range` (which also accepts `xsd:float`), this restricts to
-/// `xsd:double` so DP-1's value-membership comparison stays exact in f64 —
+/// Parse an **xsd:double-only** `DataRange` into a [`FloatRange`]. Restricts
+/// to `xsd:double` so DP-1's value-membership comparison stays exact in f64 —
 /// `xsd:float` is dropped at the value-literal side, but a range whose facet
 /// datatype is `xsd:float` must ALSO not match here (a float-typed bound
 /// against a double value would re-introduce the f32/f64 mismatch). The
@@ -2386,10 +2417,9 @@ fn decimal_as_i64(d: &Decimal) -> Option<i64> {
 /// - A `Num` (integer/decimal) is checked against `xsd:integer` first via
 ///   `decimal_as_i64`; if that returns `None` (non-integer decimal like `1.5`)
 ///   the integer range rejects it, and the decimal range is tried next.
-/// - `Double` (`xsd:double` only) uses `parse_double_range` — not
-///   `parse_float_range` — to avoid the f32/f64 soundness landmine documented
-///   in `literal_provably_outside_range` (an `xsd:float`-typed bound with f64
-///   arithmetic can mis-compare; xsd:double is exactly f64).
+/// - `Double` (`xsd:double` only) uses `parse_double_range` (not the DKey
+///   path) to avoid the f32/f64 soundness landmine: an `xsd:float`-typed bound
+///   with f64 arithmetic can mis-compare; `xsd:double` is exactly f64.
 /// - Cross-family values never match (the matching parser returns `None`).
 ///
 /// **FP-critical**: a false `true` would over-count distinct in-range values

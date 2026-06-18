@@ -9,11 +9,11 @@
 //! Sound under-approximation: every positive verdict is a direct
 //! semantic clash on the `ABox`; no inferred subsumption is created.
 //!
-//! Seven clash patterns implemented incrementally (P1 direct-Bot
+//! Eight clash patterns implemented incrementally (P1 direct-Bot
 //! assertion, P2 disjoint types per individual, P3 NegOPA-vs-OPA,
 //! P4 SameAs∩DifferentFrom, P5 Functional+two-distinct-witnesses,
 //! P6 Asymmetric/Irreflexive violations, P7 domain/range as a
-//! stretch).
+//! stretch, P9 `DisjointObjectProperties` direct `ABox` clash).
 //!
 //! Spec: `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
 
@@ -92,6 +92,14 @@ pub(crate) enum ClashReason {
         role: RoleId,
         q1: ClassId,
         q2: ClassId,
+    },
+    /// P9: `DisjointObjectProperties(R, S)` and both `R(a, b)` and
+    /// `S(a, b)` are directly asserted in the `ABox`.
+    DisjointRolePairViolation {
+        r: RoleId,
+        s: RoleId,
+        from: IndividualId,
+        to: IndividualId,
     },
 }
 
@@ -575,6 +583,24 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // P9: DisjointObjectProperties direct ABox clash.
+    // For each disjoint pair (r, s), check whether any (from, to) has
+    // both r(from, to) and s(from, to) directly asserted. Uses `pos`
+    // (already built for P3) for O(1) lookup per triple.
+    // Sound: only reports when both assertions are present verbatim —
+    // no role-hierarchy expansion (a sub-role assertion implies a
+    // super-role, but that direction never CREATES a new disjoint
+    // violation; the violation is on the asserted roles themselves).
+    for &(r, s) in &prepared.disjoint_role_pairs {
+        for &(from, role, to) in &prepared.abox.property_assertions {
+            if role == r && pos.contains(&(from, s, to)) {
+                return AboxVerdict::Inconsistent {
+                    reason: ClashReason::DisjointRolePairViolation { r, s, from, to },
+                };
             }
         }
     }

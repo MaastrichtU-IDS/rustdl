@@ -557,3 +557,167 @@ fn component_entities_collects_classes_and_property() {
     assert!(ents.contains("http://t/r"), "missing r in {ents:?}");
     assert!(ents.contains("http://t/D"), "missing D in {ents:?}");
 }
+
+#[test]
+fn justify_subproperty() {
+    let o = onto(
+        "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q)) Declaration(ObjectProperty(:r))\n\
+                  SubObjectPropertyOf(:p :q) SubObjectPropertyOf(:q :r)",
+    );
+    let q = Entailment::SubObjectProperty {
+        sub: "http://t/p".into(),
+        sup: "http://t/r".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("p⊑r entailed");
+    assert_eq!(j.axioms.len(), 2, "got {:?}", j.axioms);
+    let nq = Entailment::SubObjectProperty {
+        sub: "http://t/r".into(),
+        sup: "http://t/p".into(),
+    };
+    assert!(find_one_justification(&o, &nq).unwrap().is_none());
+}
+
+#[test]
+fn justify_equivalent_object_properties() {
+    let o = onto(
+        "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+                  SubObjectPropertyOf(:p :q) SubObjectPropertyOf(:q :p)",
+    );
+    let q = Entailment::EquivalentObjectProperties {
+        a: "http://t/p".into(),
+        b: "http://t/q".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("p≡q entailed");
+    assert!(!j.axioms.is_empty());
+}
+
+#[test]
+fn justify_disjoint_object_properties() {
+    let o = onto(
+        "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+                  DisjointObjectProperties(:p :q)",
+    );
+    let q = Entailment::DisjointObjectProperties {
+        a: "http://t/p".into(),
+        b: "http://t/q".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("p,q disjoint told");
+    assert_eq!(j.axioms.len(), 1);
+}
+
+#[test]
+fn justify_object_property_assertion() {
+    let o = onto(
+        "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+                  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+                  SubObjectPropertyOf(:p :q) ObjectPropertyAssertion(:p :a :b)",
+    );
+    let q = Entailment::ObjectPropertyAssertion {
+        source: "http://t/a".into(),
+        prop: "http://t/q".into(),
+        target: "http://t/b".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("a q b entailed");
+    assert_eq!(j.axioms.len(), 2);
+    let nq = Entailment::ObjectPropertyAssertion {
+        source: "http://t/b".into(),
+        prop: "http://t/q".into(),
+        target: "http://t/a".into(),
+    };
+    assert!(find_one_justification(&o, &nq).unwrap().is_none());
+}
+
+#[test]
+fn justify_same_individual() {
+    let o = onto(
+        "Declaration(ObjectProperty(:p)) Declaration(NamedIndividual(:x)) \
+                  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+                  FunctionalObjectProperty(:p) ObjectPropertyAssertion(:p :x :a) ObjectPropertyAssertion(:p :x :b)",
+    );
+    let q = Entailment::SameIndividual {
+        a: "http://t/a".into(),
+        b: "http://t/b".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("a=b via functional");
+    assert!(!j.axioms.is_empty());
+}
+
+#[test]
+fn justify_different_individuals() {
+    let o = onto(
+        "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+                  DifferentIndividuals(:a :b)",
+    );
+    let q = Entailment::DifferentIndividuals {
+        a: "http://t/a".into(),
+        b: "http://t/b".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("a≠b told");
+    assert_eq!(j.axioms.len(), 1);
+}
+
+#[test]
+fn justify_subdata_property() {
+    let o = onto(
+        "Declaration(DataProperty(:dp)) Declaration(DataProperty(:dq)) Declaration(DataProperty(:dr))\n\
+                  SubDataPropertyOf(:dp :dq) SubDataPropertyOf(:dq :dr)",
+    );
+    let q = Entailment::SubDataProperty {
+        sub: "http://t/dp".into(),
+        sup: "http://t/dr".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("dp⊑dr entailed");
+    assert_eq!(j.axioms.len(), 2, "got {:?}", j.axioms);
+    let nq = Entailment::SubDataProperty {
+        sub: "http://t/dr".into(),
+        sup: "http://t/dp".into(),
+    };
+    assert!(find_one_justification(&o, &nq).unwrap().is_none());
+}
+
+#[test]
+fn justify_equivalent_data_properties() {
+    let o = onto(
+        "Declaration(DataProperty(:dp)) Declaration(DataProperty(:dq))\n\
+                  SubDataPropertyOf(:dp :dq) SubDataPropertyOf(:dq :dp)",
+    );
+    let q = Entailment::EquivalentDataProperties {
+        a: "http://t/dp".into(),
+        b: "http://t/dq".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("dp≡dq entailed");
+    assert!(!j.axioms.is_empty());
+}
+
+#[test]
+fn justify_probe_symbols_never_in_output() {
+    let o = onto(
+        "Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))\n\
+                  SubObjectPropertyOf(:p :q)",
+    );
+    let q = Entailment::SubObjectProperty {
+        sub: "http://t/p".into(),
+        sup: "http://t/q".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("entailed");
+    for ax in &j.axioms {
+        assert!(
+            !format!("{ax:?}").contains("rustdl-justify-probe"),
+            "probe leaked"
+        );
+    }
+}

@@ -623,6 +623,35 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Results
+## Results (2026-06-18/19)
 
-(Filled during Task 6.)
+**Outcome: SP1 shipped via Variant R. Merge `377b301` on `feat/wedge-inverse-symmetric-sp1`.**
+
+### Part 1 (inverse first-leg triggering) — commit `2ccb98a`
+- Motif: tinv/trinv (syntactic inverse domain/range), H4 (declared inverse) → inconsistent; negative control consistent.
+- Corpus FP net (Task 3): **FP=0/MISSED=0** all fixtures; family sentinel `#[ignore]d` (expected). 124 wedge tests pass.
+- Code-quality (opus): soundness crux confirmed — an over-fire is a `match_body`-re-verified no-op, never a false clash.
+
+### Bake-off comparison table
+
+| Criterion | **Variant R (role_matches + canon fix)** | Variant M (materialization) |
+|---|---|---|
+| Symmetric motif + self-inverse | ✅ pass | ✅ pass |
+| **Family core inconsistent (SP1 gate)** | ✅ **inconsistent** | ❌ **consistent — GATE FAIL** |
+| Corpus FP=0/MISSED=0 | ✅ verified all fixtures (galen 27997, notgalen 32739, sio 8904, wine 653, ore-10908 6001, ore-15672 142, alehif 247, ro 158, pizza 499, bibtex 16) | moot (fails gate; lacks canon fix) |
+| Graph growth | none | yes (materialized reverse edges) |
+| Termination risk | none | guarded by `derive_role_edge` dedup |
+| Complexity / hot-path | `role_matches` O(1) branch + narrow self-inverse canon skip | edge materialization in `Event::Edge` + trail/backjump; **and still needs the canon fix to pass the gate** |
+
+### Decision
+**Variant R wins** on the primary criterion (correctness — the only variant that closes the family-core gate), and also on FP=0, graph growth (none, aligns with SP2's scale goal), and simplicity. The decisive finding: closing the family core **requires** suppressing the degenerate self-inverse `canon` rewrite (it was shadowing the genuine `isAuntInLawOf = hasAuntInLaw⁻` pair via the first-wins guard); materialization alone does not address that. Variant M was discarded; its branch/worktree removed.
+
+### Final validation (merged branch `377b301`)
+- Family core (`docs/family-mech4-ddmin-core.ofn`) → **inconsistent** (Konclude oracle parity).
+- `cargo test --workspace` → green (tableau 124, saturation 51, justification 32, wedge_consistency 14, inverse_symmetric_domain 8, …).
+- `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+- Corpus closure-diff net → **FP=0/MISSED=0** on every fixture (480 s); only the `#[ignore]d` `family_inconsistency_detected` (full family at scale = SP2) "fails", as expected.
+
+### Carried forward to SP2
+- Full `family.ofn` / `family-stripped.ofn` remain sound MISSes — a **scale** stall (transitive-role closure explosion + disjunctive branching depth ~256), not a calculus gap.
+- Minor (noted in Part-1 code review): multi-atom clauses with an inverse first leg only target-trigger on the first-leg edge; if a later leg's edge arrives after, the clause is not re-fired at the target. MISS-not-FP (`match_body` re-verifies), out of SP1 scope (domain/range are single-atom).

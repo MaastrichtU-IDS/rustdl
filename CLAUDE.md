@@ -154,6 +154,39 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   break-even where HashMap-lookup overhead exceeds saved
   `edge_satisfies` cost on edge-heavy / rule-thin patterns. See
   `docs/phase3e-results.md` and dead-end ledger §16.
+  SP1 (Konclude-class engine, sub-project 1; merge 377b301) closed a
+  wedge completeness gap: `domain`/`range` (single-role-body clauses)
+  did not fire through **inverse** or **symmetric** roles. Two sound,
+  additive parts: (Part 1) inverse first-leg clauses
+  (`Atom::Role(Inverse(p),X,y)→…`, the form `domain`/`range` on an
+  inverse role clausifies to) are now triggered at the edge **target**
+  via a new `inverse_first_trigger` index — `Event::Edge` previously
+  fired first-leg clauses only at the source; (Part 2, "Variant R")
+  symmetric/self-inverse handling — `role_matches` treats an edge as
+  satisfying a body atom of the same role-id when that role
+  `is_symmetric` (regardless of inverse polarity), symmetric first-legs
+  are also target-triggered, and the degenerate self-inverse
+  `InverseObjectProperties(p,p)` canon-rewrite (which was shadowing a
+  genuine declared inverse pair `p⁻=q` via the first-wins `contains_key`
+  guard) is suppressed in `build_inverse_canon` + `build_role_hierarchy`.
+  Symmetric detection (`RoleHierarchy::is_symmetric`, O(1)) comes from
+  `SymmetricObjectProperty` + self-inverse `InverseObjectProperties(p,p)`.
+  **Sound by construction** (only adds genuinely-entailed matches — an
+  over-fire is a `match_body`-re-verified no-op, never a false clash).
+  **Closes the family *calculus* gap**: the 15-axiom ddmin core
+  `docs/family-mech4-ddmin-core.ofn` is now `inconsistent` (Konclude
+  oracle parity); **full `family.ofn` remains a sound MISS — that is a
+  *scale* stall (transitive closure + disjunctive depth), deferred to
+  SP2**, so `family*_inconsistency_detected` stay `#[ignore]`d.
+  FP=0/MISSED=0 re-verified corpus-wide (galen/notgalen/sio/wine/
+  ore-10908/ore-15672/alehif/ro/pizza/bibtex). A bake-off rejected
+  "Variant M" (symmetric edge materialization): it fails the family-core
+  gate without the canon fix and grows the completion graph. Canaries:
+  `crates/owl-dl-reasoner/tests/inverse_symmetric_domain.rs` (8, incl.
+  inverse/symmetric/self-inverse domain+range, negative + fire-but-
+  harmless controls, family core). Spec
+  `docs/superpowers/specs/2026-06-18-wedge-declared-inverse-symmetric-design.md`,
+  plan `docs/superpowers/plans/2026-06-18-wedge-inverse-symmetric-sp1.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;

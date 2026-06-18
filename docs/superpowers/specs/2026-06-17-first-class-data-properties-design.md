@@ -128,6 +128,36 @@ DKey leaf nodes all work. Two gaps surfaced:
   node-creation model and is out of scope for this arc. Revisit only on a measured
   need. (User-approved defer, 2026-06-18.)
 
+### Sub-project 3 outcome (2026-06-18) — reconciliation + FP gate + default flip
+
+- **`data_axioms.rs` reconciliation = keep both (no code change).** With the gate
+  ON, both the D4–D11 preprocessing and the new first-class lowering run; both only
+  ADD sound axioms, so their union is sound (no FP from double-handling). A
+  gate-ON-vs-gate-OFF classify diff across all 10 real fixtures (incl. data-heavy
+  family/bibtex) was **byte-identical** — the new path is inert on classification
+  output (its value is data-ABox consistency + the future Spec 2 queries), so
+  disabling D4 patterns was unnecessary and would only risk the gate-OFF path.
+- **FP=0 validated at ORE-oracle scale (gate ON).** The `konclude_closure_diff`
+  net (vs Konclude-classified `.owx` oracles) ran with `RUSTDL_DATA_PROPERTIES=1`:
+  **FP=0 / MISSED=0 on every oracle fixture** — bibtex, galen (27997=27997),
+  notgalen (32739), sulo, ro, ore-10908 (6001), alehif, pizza (499), sio (8904),
+  ore-15672 (142), wine (653). The data-bearing ORE fixture ore-15516-alchoiq
+  (50 data axioms) agrees with Konclude (both find it inconsistent) and is
+  gate-ON==gate-OFF. The lone net failure `family_inconsistency_detected` is a
+  **pre-existing** ABox-inconsistency stretch goal (fails gate-OFF too; orthogonal
+  to data properties; `docs/abox-consistency-check-handoff.md`).
+- **Gate flipped default ON.** `data_properties_enabled()` is now
+  `var("RUSTDL_DATA_PROPERTIES").map_or(true, |v| v != "0")` — **default ON, `=0`
+  opts out** (fixes the prior `is_some()` footgun where `=0` wrongly enabled). The
+  two test `DpGuard::off()` helpers were updated to set `"0"` (not `remove_var`) so
+  gate-OFF tests stay valid under the new default. Perf note: data-bearing
+  ontologies do more tableau work gate-ON (e.g. family more probes, bibtex leaves
+  the pure-EL fast path) for identical results — accepted cost of first-class data.
+
+**Status: the engine arc (sub-projects 1–3) is complete on branch
+`feat/data-properties-subproject1` (not merged/pushed). Sub-project 4 (Spec 2
+data-property queries) is unblocked and is the remaining piece.**
+
 ---
 
 ## Sub-project 1 — IR + convert lowering (detailed)

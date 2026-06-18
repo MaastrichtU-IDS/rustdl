@@ -1238,6 +1238,14 @@ fn some_complement_contravariant_subsumption() {
         c.is_subclass(C, D),
         "∃p.¬[0,10] ⊑ ∃p.¬[2,8] (contravariant; [2,8]⊆[0,10]): C ⊑ D must hold"
     );
+    // REVERSE DIRECTION FP guard: D = ∃p.¬[2,8] must NOT subsume C = ∃p.¬[0,10].
+    // 9 is outside [2,8] but inside [0,10], so ¬[2,8] ⊄ ¬[0,10].
+    // The told edge DKey([0,10]) ⊑ DKey([2,8]) does not exist (since [0,10] ⊄ [2,8]),
+    // so no clash → not subsumed. If this fires, it is a false positive — STOP.
+    assert!(
+        !c.is_subclass(D, C),
+        "FP GUARD: ∃p.¬[2,8] ⊄ ∃p.¬[0,10] (9 ∉ [2,8] but 9 ∈ [0,10]): D ⊑ C must NOT hold"
+    );
 }
 
 /// Drop on composite inner: `DataComplementOf(DataUnionOf(...))` is unrecognized
@@ -1264,5 +1272,23 @@ fn complement_composite_inner_dropped() {
     assert!(
         !c.is_subclass(C, D),
         "DataComplementOf(DataUnionOf(...)) dropped: no spurious C ⊑ D"
+    );
+}
+
+/// Cardinality over complement drops: `DataMinCardinality(2, p, DataComplementOf([0,10]))`
+/// is not recognized by any `lower_*_data_cardinality` chain (complement is not a
+/// plain range type), so the axiom drops. C must be satisfiable.
+#[test]
+fn complement_cardinality_dropped() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:p))
+    SubClassOf(:C DataMinCardinality(2 :p DataComplementOf(DatatypeRestriction(xsd:integer xsd:minInclusive "0"^^xsd:integer xsd:maxInclusive "10"^^xsd:integer))))
+"#,
+    );
+    // The cardinality axiom over a complement drops — no spurious ⊥.
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "DataMinCardinality over DataComplementOf must drop: C must be satisfiable"
     );
 }

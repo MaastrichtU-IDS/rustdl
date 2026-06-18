@@ -895,8 +895,10 @@ pub fn convert_class_expression<A: ForIRI>(
         // object `Min`/`Max` over the DKey filler so the tableau's
         // concrete-domain clash can count it (capacity / conflict). Try each
         // bucket in turn; parsers are mutually exclusive by datatype IRI so
-        // only one branch matches. Unqualified or unrecognized cardinality
-        // still drops (UnsupportedDataRange → whole axiom drops, soundly).
+        // only one branch matches. Unrecognized (specific) datatypes still drop
+        // (UnsupportedDataRange → whole axiom drops, soundly). Unqualified
+        // `rdfs:Literal` cardinality is handled by the final `.or_else` fallback
+        // (lower_unqualified_data_cardinality) when the data-properties gate is ON.
         // The tableau SUPPRESSES object-cardinality expansion for DKey fillers,
         // so this never materialises successors (it would otherwise blow up on
         // a large `≥n` over a tiny range).
@@ -920,6 +922,10 @@ pub fn convert_class_expression<A: ForIRI>(
                 .or_else(|_| {
                     lower_datetime_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, false)
                 })
+                .or_else(|_| {
+                    lower_unqualified_data_cardinality(*n, dp, dr, vocab, pool, true, false)
+                        .ok_or(ConversionError::UnsupportedDataRange)
+                })
         }
         ClassExpression::DataMaxCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, false, true)
@@ -941,6 +947,10 @@ pub fn convert_class_expression<A: ForIRI>(
                 .or_else(|_| {
                     lower_datetime_oneof_data_cardinality(*n, dp, dr, vocab, pool, false, true)
                 })
+                .or_else(|_| {
+                    lower_unqualified_data_cardinality(*n, dp, dr, vocab, pool, false, true)
+                        .ok_or(ConversionError::UnsupportedDataRange)
+                })
         }
         ClassExpression::DataExactCardinality { n, dp, dr } => {
             lower_int_data_cardinality(*n, dp, dr, vocab, pool, true, true)
@@ -959,6 +969,10 @@ pub fn convert_class_expression<A: ForIRI>(
                 .or_else(|_| lower_date_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true))
                 .or_else(|_| {
                     lower_datetime_oneof_data_cardinality(*n, dp, dr, vocab, pool, true, true)
+                })
+                .or_else(|_| {
+                    lower_unqualified_data_cardinality(*n, dp, dr, vocab, pool, true, true)
+                        .ok_or(ConversionError::UnsupportedDataRange)
                 })
         }
     }
@@ -1294,6 +1308,44 @@ fn lower_datetime_oneof_data_cardinality<A: ForIRI>(
         }
         (false, false) => unreachable!("at least one of min/max requested"),
     }
+}
+
+/// Whether `dr` is exactly the unqualified `rdfs:Literal` data range. Only this
+/// range may fall back to a `⊤` filler for data cardinality — a specific
+/// unrecognized datatype must keep dropping (using `⊤` there over-constrains a
+/// `≤n` restriction → unsound FP).
+fn is_rdfs_literal<A: ForIRI>(dr: &DataRange<A>) -> bool {
+    matches!(dr, DataRange::Datatype(dt)
+        if dt.0.as_ref() == "http://www.w3.org/2000/01/rdf-schema#Literal")
+}
+
+/// Gated fallback for UNQUALIFIED data cardinality (`≥n dp` / `≤n dp` over
+/// `rdfs:Literal`): lower to the same cardinality over the IR `⊤` filler.
+/// `None` ⇒ not applicable (gate off, or range not `rdfs:Literal`) ⇒ caller drops.
+fn lower_unqualified_data_cardinality<A: ForIRI>(
+    n: u32,
+    dp: &horned_owl::model::DataProperty<A>,
+    dr: &DataRange<A>,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+    want_min: bool,
+    want_max: bool,
+) -> Option<ConceptId> {
+    if !data_properties_enabled() || !is_rdfs_literal(dr) {
+        return None;
+    }
+    let role = Role::named(vocab.intern_role(dp.0.as_ref()));
+    let top = pool.top();
+    Some(match (want_min, want_max) {
+        (true, false) => pool.min(n, role, top),
+        (false, true) => pool.max(n, role, top),
+        (true, true) => {
+            let lo = pool.min(n, role, top);
+            let hi = pool.max(n, role, top);
+            pool.and([lo, hi])
+        }
+        (false, false) => unreachable!("at least one of min/max requested"),
+    })
 }
 
 /// Extract an `xsd:integer`-typed literal's value. Returns `None` for
@@ -2734,24 +2786,59 @@ mod tests {
             "expected the SUP to lower to Max(1, dp, DKey(str))"
         );
 
-        // (c) unrecognized bucket (e.g. bare rdfs:Literal) still drops.
-        let other_card = Component::<RcStr>::SubClassOf(ho::SubClassOf {
-            sub: ce_class("A"),
-            sup: ClassExpression::DataMaxCardinality {
-                n: 1,
-                dp,
-                dr: DataRange::Datatype(Datatype(
-                    b().iri("http://www.w3.org/2000/01/rdf-schema#Literal"),
-                )),
-            },
-        });
-        let mut o3 = InternalOntology::new();
-        assert!(
-            convert_component(&other_card, &mut o3.vocabulary, &mut o3.concepts)
+        // (c) gate-OFF: rdfs:Literal (unqualified) still drops.
+        {
+            let _lock = DP_ENV_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _g = DpGuard::off();
+            let other_card = Component::<RcStr>::SubClassOf(ho::SubClassOf {
+                sub: ce_class("A"),
+                sup: ClassExpression::DataMaxCardinality {
+                    n: 1,
+                    dp: dp.clone(),
+                    dr: DataRange::Datatype(Datatype(
+                        b().iri("http://www.w3.org/2000/01/rdf-schema#Literal"),
+                    )),
+                },
+            });
+            let mut o3 = InternalOntology::new();
+            assert!(
+                convert_component(&other_card, &mut o3.vocabulary, &mut o3.concepts)
+                    .unwrap()
+                    .is_none(),
+                "gate OFF: unqualified rdfs:Literal cardinality still drops"
+            );
+        }
+
+        // (d) gate-ON: rdfs:Literal lowers to Max over ⊤ filler.
+        {
+            let _lock = DP_ENV_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _g = DpGuard::on();
+            let unqual_card = Component::<RcStr>::SubClassOf(ho::SubClassOf {
+                sub: ce_class("A"),
+                sup: ClassExpression::DataMaxCardinality {
+                    n: 1,
+                    dp,
+                    dr: DataRange::Datatype(Datatype(
+                        b().iri("http://www.w3.org/2000/01/rdf-schema#Literal"),
+                    )),
+                },
+            });
+            let mut o4 = InternalOntology::new();
+            let ax4 = convert_component(&unqual_card, &mut o4.vocabulary, &mut o4.concepts)
                 .unwrap()
-                .is_none(),
-            "unrecognized datatype bucket still drops (sound under-approximation)"
-        );
+                .expect("gate ON: unqualified rdfs:Literal cardinality lowers");
+            let crate::ontology::Axiom::SubClassOf { sup: sup4, .. } = ax4 else {
+                panic!("expected SubClassOf");
+            };
+            assert!(
+                matches!(o4.concepts.get(sup4), ConceptExpr::Max(1, _, _)),
+                "gate ON: rdfs:Literal cardinality lowers to Max(1, dp, ⊤)"
+            );
+        }
     }
 
     #[test]

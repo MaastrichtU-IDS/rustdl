@@ -139,3 +139,41 @@ fn gate_off_classification_unchanged_on_data_fixture() {
         "gate-OFF classify produces a hierarchy"
     );
 }
+
+#[test]
+fn poc_unqualified_max_cardinality_merges_distinct_values() {
+    let _lock = DP_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DpGuard::on();
+    let o = onto(
+        "Declaration(DataProperty(:dp)) Declaration(Class(:C)) Declaration(NamedIndividual(:a))\n\
+         SubClassOf(:C DataMaxCardinality(1 :dp))\n\
+         SubClassOf(:C DataHasValue(:dp \"5\"^^xsd:integer))\n\
+         ClassAssertion(:C :a)\n\
+         DataPropertyAssertion(:dp :a \"6\"^^xsd:integer)",
+    );
+    assert!(
+        !owl_dl_reasoner::is_consistent(&o).unwrap(),
+        "≤1 unqualified dp with two distinct values must be inconsistent (gate ON)"
+    );
+}
+
+#[test]
+fn poc_unqualified_max_cardinality_consistent_gate_off() {
+    let _lock = DP_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DpGuard::off();
+    let o = onto(
+        "Declaration(DataProperty(:dp)) Declaration(Class(:C)) Declaration(NamedIndividual(:a))\n\
+         SubClassOf(:C DataMaxCardinality(1 :dp))\n\
+         SubClassOf(:C DataHasValue(:dp \"5\"^^xsd:integer))\n\
+         ClassAssertion(:C :a)\n\
+         DataPropertyAssertion(:dp :a \"6\"^^xsd:integer)",
+    );
+    assert!(
+        owl_dl_reasoner::is_consistent(&o).unwrap(),
+        "gate OFF: unqualified cardinality + dp assertion drop → consistent"
+    );
+}

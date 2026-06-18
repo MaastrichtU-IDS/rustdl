@@ -154,9 +154,46 @@ DKey leaf nodes all work. Two gaps surfaced:
   ontologies do more tableau work gate-ON (e.g. family more probes, bibtex leaves
   the pure-EL fast path) for identical results — accepted cost of first-class data.
 
-**Status: the engine arc (sub-projects 1–3) is complete on branch
-`feat/data-properties-subproject1` (not merged/pushed). Sub-project 4 (Spec 2
-data-property queries) is unblocked and is the remaining piece.**
+### Sub-project 4 outcome (2026-06-18) — queries + a float-FP revert
+
+Spec 2 queries shipped on the branch (see
+`2026-06-18-justification-spec2-queries.md`): 7 sound query types —
+`SubObjectProperty`, `EquivalentObjectProperties`, `DisjointObjectProperties`,
+`ObjectPropertyAssertion`, `SameIndividual`, `DifferentIndividuals`,
+`SubDataProperty`, `EquivalentDataProperties` — via inconsistency-with-probe.
+Data sub-property uses a two-check guard (`c1` baseline) to avoid a probe-value
+range FP. Deferred: `Disjoint(dp,dq)` query (gap 2) and `a dp v` data assertion
+(CLI literal parsing).
+
+**Object-disjoint required an engine fix + exposed a pre-existing latent bug.**
+The `DisjointObjectProperties` query needs the consistency checker to detect a
+disjoint-role ABox clash (the wedge/trust_sat did not), so ABox pattern **P9**
+(`DisjointRolePairViolation`) was added. Adversarial review then found
+`collect_disjoint_role_pairs` strips inverse polarity (`.role_id()`), so
+`Disjoint(r, Inv(s))` was stored as `(r,s)` → a **false positive** for both P9
+*and the latent tableau path* (rules.rs:1447). Fixed by emitting **forward–forward
+disjoint pairs only** (inverse-involving pairs = sound under-approximation,
+skipped). Canaries pin the inverse no-FP case.
+
+**THE DEFAULT FLIP (sub-project 3) WAS REVERTED — gate is opt-in again.** The
+full `owl-dl-reasoner` test suite run gate-ON surfaced a **confined `xsd:float`
+consistency false positive**: 3 tests in `datatype_inconsistency.rs`
+(`float_boundary_f32_f64_mismatch_stays_consistent`,
+`dp2_functional_xsd_float_excluded_is_consistent`,
+`float_clearly_outside_range_is_dropped_consistent`) report inconsistent gate-ON
+where the ontology is consistent — a float value-identity issue (f32/f64
+representation) in the gate-ON ABox functional/cardinality path. The ORE
+*classification* closure-diff net missed it (it's a *consistency* FP); the unit
+suite caught it. `data_properties_enabled()` reverted to **default-OFF, `=1` to
+opt in**. The float FP is the blocker for re-flipping: it must be fixed (exclude
+float from the functional/cardinality merge, matching the conservative DP-2
+exclusion, OR make the float DKey identity exact across f32/f64) before default-ON.
+
+**Status: engine (1–3) + queries (4) built on branch
+`feat/data-properties-subproject1` (not merged/pushed). Default reasoner is
+FP=0 (data path opt-in). Remaining: fix the gate-ON `xsd:float` consistency FP,
+then the default flip can be reconsidered; gap-2 `Disjoint(dp,dq)` and `a dp v`
+remain deferred.**
 
 ---
 

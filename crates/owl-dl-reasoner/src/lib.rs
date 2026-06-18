@@ -3110,14 +3110,36 @@ fn collect_asymmetric_roles(internal: &InternalOntology) -> Vec<RoleId> {
 /// from itself, which is only satisfiable when no pair is in `r`. We
 /// leave that diagnosis to higher-level validators rather than seed
 /// universal clashes.
+/// Collect forward-only disjoint role pairs from `DisjointObjectProperties` axioms.
+///
+/// **Soundness restriction (forward-only):** a `DisjointObjectProperties(r, ObjectInverseOf(s))`
+/// axiom forbids `r(a,b) ∧ s(b,a)`, NOT `r(a,b) ∧ s(a,b)`. The `(RoleId, RoleId)` pair type
+/// strips polarity via `role_id()`, so emitting an inverse-involving pair would represent a
+/// DIFFERENT (weaker) semantic constraint and would cause false-positive clashes in the P9
+/// `ABox` pre-check and the tableau disjoint-role rule.
+///
+/// Solution: emit a pair only when **both** roles are forward/named (`!role.is_inverse()`).
+/// Axioms that involve an inverse are silently skipped — a sound under-approximation
+/// (may miss a clash, never produces a false positive).  Polarity-aware disjoint-role
+/// handling (storing the full `Role` pair) is deferred as future work.
 fn collect_disjoint_role_pairs(internal: &InternalOntology) -> Vec<(RoleId, RoleId)> {
     let mut pairs = Vec::new();
     for ax in &internal.axioms {
         if let Axiom::DisjointObjectProperties(roles) = ax {
             for i in 0..roles.len() {
                 for j in (i + 1)..roles.len() {
-                    let a = roles[i].role_id();
-                    let b = roles[j].role_id();
+                    let ri = roles[i];
+                    let rj = roles[j];
+                    // Soundness: only forward–forward disjoint pairs.  An inverse-involving
+                    // pair (e.g. `Disjoint(r, Inv(s))`) forbids `r(a,b) ∧ s(b,a)`, not
+                    // `r(a,b) ∧ s(a,b)`.  The polarity-stripped `(RoleId, RoleId)` representation
+                    // cannot express that distinction; emitting it would be an FP in P9 and the
+                    // tableau disjoint-role clash.  Skip — a sound under-approximation.
+                    if ri.is_inverse() || rj.is_inverse() {
+                        continue;
+                    }
+                    let a = ri.role_id();
+                    let b = rj.role_id();
                     if a != b {
                         pairs.push((a, b));
                     }

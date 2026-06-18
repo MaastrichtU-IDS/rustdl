@@ -715,4 +715,91 @@ mod tests {
             "P8 must NOT fire when the qualifiers aren't disjoint"
         );
     }
+
+    // ── P9: DisjointObjectProperties direct ABox clash ─────────────────
+
+    /// P9 positive (forward–forward): `DisjointObjectProperties(:r :s)` +
+    /// `r(a,b)` + `s(a,b)` → `DisjointRolePairViolation`.
+    #[test]
+    fn p9_forward_disjoint_roles_is_inconsistent() {
+        let src = "Prefix(:=<http://t/>)\n\
+                   Ontology(<http://t/p9pos>\n\
+                     Declaration(ObjectProperty(:r))\n\
+                     Declaration(ObjectProperty(:s))\n\
+                     Declaration(NamedIndividual(:a))\n\
+                     Declaration(NamedIndividual(:b))\n\
+                     DisjointObjectProperties(:r :s)\n\
+                     ObjectPropertyAssertion(:r :a :b)\n\
+                     ObjectPropertyAssertion(:s :a :b)\n\
+                   )";
+        assert!(
+            matches!(
+                verdict_of(src),
+                AboxVerdict::Inconsistent {
+                    reason: ClashReason::DisjointRolePairViolation { .. }
+                }
+            ),
+            "P9 must fire: DisjointObjectProperties(:r :s) + r(a,b) + s(a,b): {:?}",
+            verdict_of(src)
+        );
+    }
+
+    /// P9 negative (no disjoint axiom): `r(a,b)` + `s(a,b)` without any
+    /// disjoint axiom → consistent (no clash source).
+    #[test]
+    fn p9_no_disjoint_axiom_is_consistent() {
+        let src = "Prefix(:=<http://t/>)\n\
+                   Ontology(<http://t/p9neg1>\n\
+                     Declaration(ObjectProperty(:r))\n\
+                     Declaration(ObjectProperty(:s))\n\
+                     Declaration(NamedIndividual(:a))\n\
+                     Declaration(NamedIndividual(:b))\n\
+                     ObjectPropertyAssertion(:r :a :b)\n\
+                     ObjectPropertyAssertion(:s :a :b)\n\
+                   )";
+        assert!(
+            !matches!(
+                verdict_of(src),
+                AboxVerdict::Inconsistent {
+                    reason: ClashReason::DisjointRolePairViolation { .. }
+                }
+            ),
+            "P9 must NOT fire when there is no DisjointObjectProperties axiom"
+        );
+    }
+
+    /// P9 negative (inverse-disjoint — the FP that the fix prevents):
+    /// `DisjointObjectProperties(:r ObjectInverseOf(:s))` + `r(a,b)` +
+    /// `s(a,b)` → consistent.
+    ///
+    /// The axiom forbids `r(a,b) ∧ s(b,a)`, NOT `r(a,b) ∧ s(a,b)`.
+    /// Before the fix, the polarity-stripped `(r,s)` pair was emitted and
+    /// P9 would fire here — a false positive.  After the fix, the inverse-
+    /// involving pair is skipped and this configuration is correctly
+    /// classified as `Unknown` (= consistent from the `ABox` pre-check's
+    /// perspective).
+    #[test]
+    fn p9_inverse_disjoint_same_direction_is_consistent() {
+        let src = "Prefix(:=<http://t/>)\n\
+                   Ontology(<http://t/p9neg2>\n\
+                     Declaration(ObjectProperty(:r))\n\
+                     Declaration(ObjectProperty(:s))\n\
+                     Declaration(NamedIndividual(:a))\n\
+                     Declaration(NamedIndividual(:b))\n\
+                     DisjointObjectProperties(:r ObjectInverseOf(:s))\n\
+                     ObjectPropertyAssertion(:r :a :b)\n\
+                     ObjectPropertyAssertion(:s :a :b)\n\
+                   )";
+        assert!(
+            !matches!(
+                verdict_of(src),
+                AboxVerdict::Inconsistent {
+                    reason: ClashReason::DisjointRolePairViolation { .. }
+                }
+            ),
+            "P9 must NOT fire for inverse-disjoint + same-direction assertions \
+             (this was the FP the fix closes): {:?}",
+            verdict_of(src)
+        );
+    }
 }

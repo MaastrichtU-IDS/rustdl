@@ -216,8 +216,11 @@ enum Command {
     Justify {
         /// Path to the ontology (.ofn).
         file: PathBuf,
-        /// Query: `subclass S T` | `unsat C` | `instance I C` |
-        /// `equivalent A B` | `disjoint A B` | `inconsistent` (full IRIs).
+        /// Query (full IRIs): `subclass S T` | `unsat C` | `instance I C` |
+        /// `equivalent A B` | `disjoint A B` | `inconsistent` |
+        /// `subproperty P Q` | `equiv-property P Q` | `disjoint-property P Q` |
+        /// `property A P B` | `same A B` | `different A B` |
+        /// `subdata-property DP DQ` | `equiv-data-property DP DQ`.
         #[arg(num_args = 1..)]
         query: Vec<String>,
         /// Print ALL minimal justifications (capped by --max), not just one.
@@ -602,8 +605,44 @@ fn parse_justify_query(parts: &[String]) -> Result<owl_dl_reasoner::justify::Ent
             class: parts[2].clone(),
         },
         ("inconsistent", 1) => Entailment::Inconsistent,
+        ("subproperty", 3) => Entailment::SubObjectProperty {
+            sub: parts[1].clone(),
+            sup: parts[2].clone(),
+        },
+        ("equiv-property", 3) => Entailment::EquivalentObjectProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("disjoint-property", 3) => Entailment::DisjointObjectProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("property", 4) => Entailment::ObjectPropertyAssertion {
+            source: parts[1].clone(),
+            prop: parts[2].clone(),
+            target: parts[3].clone(),
+        },
+        ("same", 3) => Entailment::SameIndividual {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("different", 3) => Entailment::DifferentIndividuals {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("subdata-property", 3) => Entailment::SubDataProperty {
+            sub: parts[1].clone(),
+            sup: parts[2].clone(),
+        },
+        ("equiv-data-property", 3) => Entailment::EquivalentDataProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
         _ => anyhow::bail!(
-            "usage: justify <file> (subclass S T | equivalent A B | disjoint A B | unsat C | instance I C | inconsistent)"
+            "usage: justify <file> (subclass S T | equivalent A B | disjoint A B | unsat C | \
+             instance I C | inconsistent | subproperty P Q | equiv-property P Q | \
+             disjoint-property P Q | property A P B | same A B | different A B | \
+             subdata-property DP DQ | equiv-data-property DP DQ)"
         ),
     })
 }

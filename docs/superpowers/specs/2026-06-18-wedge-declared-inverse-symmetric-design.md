@@ -51,6 +51,23 @@ clauses) through **inverse** and **symmetric** roles, so the clause types the
 correct node. Closes the calculus half of `family` (the 15-axiom core →
 `inconsistent`) and a general SROIQ completeness gap.
 
+### Reach (scoping note, added post-implementation)
+
+SP1's firing is live on the paths that build the wedge with the role hierarchy
+(`with_sub_roles`): **consistency checking** (`ConsistencyCache::decide`) and the
+diagnostic subsumption probe (`hyper_subsumption_probe`). The default per-pair
+**classification** subsumption oracle (`HyperCache::decide` / `classify_labels`)
+currently builds its engine with `sub_roles = None`, so it does **not** carry the
+inverse/symmetric domain/range firing. This is **FP-safe** (the `None` path
+under-fires → fewer Unsats → never a spurious subsumption) and corpus-neutral
+(MISSED=0 corpus-wide — no corpus subsumption depends on inverse/symmetric
+domain/range). Extending the firing to the classify oracle (pass `Some(&hierarchy)`
+in `HyperCache::build`) is a clean, FP-safe follow-up (**SP1.1**), gated on the
+`with_sub_roles`/prebuilt-`base_indexes` interaction (today no caller combines
+`new_with_prebuilt` + `with_sub_roles`; SP1.1 would, so the index-rebuild must
+preserve the Q-clause delta). Deferred so the classify hot-path change gets its
+own corpus re-validation.
+
 ### Non-goals
 
 - **Scale.** Full `family` still stalls (SP2). SP1's gate is the 15-axiom core.

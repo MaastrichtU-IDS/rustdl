@@ -183,6 +183,20 @@ fn symmetric_domain_fires_but_consistent() {
     ));
 }
 
+// FP-control for the inverse first-leg path: domain on ObjectInverseOf(p) FIRES
+// at the target (deriving b:C), but C and D are NOT disjoint, so it stays
+// CONSISTENT. Guards against the inverse-trigger inducing a spurious clash.
+#[test]
+fn inverse_domain_fires_but_consistent() {
+    assert!(consistent_engine_only(
+        r"    Declaration(ObjectProperty(:p)) Declaration(Class(:C)) Declaration(Class(:D))
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+    ObjectPropertyDomain(ObjectInverseOf(:p) :C)
+    ObjectPropertyAssertion(:p :a :b)
+    ClassAssertion(:D :b)"
+    ));
+}
+
 // Family core (15-axiom ddmin) — INCONSISTENT (SP1 headline gate)
 #[test]
 fn family_core_inconsistent() {

@@ -543,10 +543,15 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   `equiv-property`, `disjoint-property`, `property`, `same`, `different`,
   `subdata-property`, `equiv-data-property`, `data-value`,
   `disjoint-data-property`). **FP=0/MISSED=0 re-validated at default-ON across the
-  full Konclude-oracle net.** Sound-but-incomplete only on the exotic concrete-
-  domain tail (data-cardinality counting, `DataComplementOf`/`Union`/`Intersection`
-  ranges, non-string `DataOneOf` for all datatypes) — deliberately not chased
-  (~0 corpus presence). Spec:
+  full Konclude-oracle net.** Concrete-domain coverage extended 2026-06-18 to the
+  composite data ranges — `DataIntersectionOf` (exact range intersection;
+  empty→⊥; integer⊂decimal FP-guard), `DataUnionOf` (`∃` → class-level
+  disjunction, all-or-drop), `DataComplementOf` (`¬DKey(r)`; clash only via told
+  `⊑` edges) — plus `DataOneOf` for all datatypes and bounded-integer cardinality
+  counting (all FP=0-validated corpus-wide). Sound-but-incomplete now ONLY on the
+  true asymptote: nested composites (`DataComplementOf(DataUnionOf(…))`, dropped),
+  `∀`/range/cardinality over union/complement (dropped), and deep theoretical
+  SROIQ(D) completeness — all ~0 corpus presence. Spec:
   `docs/superpowers/specs/2026-06-17-first-class-data-properties-design.md`.
 
 When changing the saturation/wedge engines or caches, the failure mode that

@@ -12,8 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::doc_markdown)]
 
-use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::io::ParserConfiguration;
+use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::Classification;
@@ -43,7 +43,7 @@ fn classification_has_subsumption(c: &Classification, sub_iri: &str, sup_iri: &s
 /// Before Layer B this test is RED; after it is GREEN.
 #[test]
 fn default_classify_finds_inverse_domain_subsumption() {
-    let src = r#"Prefix(:=<http://e#>)
+    let src = r"Prefix(:=<http://e#>)
 Ontology(
 Declaration(ObjectProperty(:p))
 Declaration(Class(:C)) Declaration(Class(:G)) Declaration(Class(:H)) Declaration(Class(:K)) Declaration(Class(:D))
@@ -52,7 +52,7 @@ ObjectPropertyDomain(ObjectInverseOf(:p) :H)
 SubClassOf(ObjectIntersectionOf(:G :H) :K)
 SubClassOf(ObjectSomeValuesFrom(:p :K) :D)
 )
-"#;
+";
     let mut r = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut r, ParserConfiguration::default()).expect("parse");
@@ -67,14 +67,14 @@ SubClassOf(ObjectSomeValuesFrom(:p :K) :D)
 /// are NOT subsumption-related. Layer B must not add a spurious C⊑D or D⊑C.
 #[test]
 fn default_classify_no_spurious_same_tier_subsumption() {
-    let src = r#"Prefix(:=<http://e#>)
+    let src = r"Prefix(:=<http://e#>)
 Ontology(
 Declaration(ObjectProperty(:p))
 Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:E))
 SubClassOf(:A ObjectSomeValuesFrom(:p :E))
 SubClassOf(:B ObjectSomeValuesFrom(:p :E))
 )
-"#;
+";
     let mut r = Cursor::new(src);
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut r, ParserConfiguration::default()).expect("parse");

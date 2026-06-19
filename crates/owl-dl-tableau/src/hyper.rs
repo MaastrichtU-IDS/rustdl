@@ -1825,7 +1825,13 @@ impl<'c> HyperEngine<'c> {
             // applied here, so skipping `n`'s ⊔ drops no clash. Skipping rule
             // applications can only *remove* clashes, never add one ⟹ FP=0 by
             // construction; corpus closure stays byte-identical to the
-            // Konclude∩HermiT oracle (FP=0/MISSED=0) across every fixture.
+            // Konclude∩HermiT oracle (FP=0/MISSED=0) across every fixture, and
+            // the disjunctive-`Unsat` path still proves subsumptions with
+            // blocking live (`blocked_disjunction_soundness` canary). Scope: the
+            // same `is_blocked` predicate already gates generation
+            // (`apply_exists`/`generate_at_least`) in BOTH blocking modes, so
+            // extending it to ⊔ is no more unsound than that existing gating;
+            // the default double-blocking mode is the corpus-validated one.
             if self.is_blocked(node) {
                 continue;
             }

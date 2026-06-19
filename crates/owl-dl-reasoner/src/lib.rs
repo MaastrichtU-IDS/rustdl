@@ -619,6 +619,80 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     Ok(probe)
 }
 
+/// Diagnostic: run the **real classify per-pair oracle** ([`HyperCache::decide`])
+/// for a single `(sub, sup)` pair and return its raw [`HyperResult`],
+/// [`SearchStats`], and wall (ms). Unlike [`hyper_subsumption_probe`] this uses
+/// the identical `HyperCache` construction classify uses (`¬sup` expansion,
+/// `DifferentIndividuals` seeding, role hierarchy, all the per-pair flags), so
+/// the stats characterise the actual production search — used to root-cause
+/// *why* a classify pair stalls (depth cap vs deadline vs branch explosion vs
+/// blocking failure). Returns `Ok(None)` if either IRI is not a named class.
+///
+/// `depth` is the branch-depth cap; `per_pair_timeout` bounds the wall.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn decide_pair_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    sub_iri: &str,
+    sup_iri: &str,
+    depth: usize,
+    per_pair_timeout: Option<std::time::Duration>,
+) -> Result<Option<(HyperResult, SearchStats, f64)>, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let cache = HyperCache::build(&internal);
+    let sub = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == sub_iri)
+        .map(|(id, _)| id);
+    let sup = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == sup_iri)
+        .map(|(id, _)| id);
+    let (Some(sub), Some(sup)) = (sub, sup) else {
+        return Ok(None);
+    };
+    let deadline = per_pair_timeout.map(|t| std::time::Instant::now() + t);
+    let start = std::time::Instant::now();
+    let (result, stats) = cache.decide_with_stats(sub, sup, depth, deadline);
+    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok(Some((result, stats, wall_ms)))
+}
+
+/// Diagnostic sibling of [`decide_pair_probe`]: wedge satisfiability of a single
+/// class ALONE (no `¬sup`). Returns `Ok(None)` if `class_iri` is not a named
+/// class. Used to localise a per-pair stall to `c`'s own expansion vs the
+/// `c ⊓ ¬sup` interaction.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn sat_class_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    class_iri: &str,
+    depth: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<(HyperResult, SearchStats, f64)>, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let cache = HyperCache::build(&internal);
+    let Some(c) = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == class_iri)
+        .map(|(id, _)| id)
+    else {
+        return Ok(None);
+    };
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    let start = std::time::Instant::now();
+    let (result, stats) = cache.sat_only_with_stats(c, depth, deadline);
+    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok(Some((result, stats, wall_ms)))
+}
+
 /// Branching-recursion depth cap for the H4 in-orchestrator hyper
 /// subsumption check (the per-pair wall budget bounds it further).
 const HYPER_WEDGE_DEPTH: usize = 256;
@@ -1134,8 +1208,35 @@ impl HyperCache {
         sup: owl_dl_core::ir::ClassId,
         deadline: Option<std::time::Instant>,
     ) -> HyperVerdict {
+        use owl_dl_tableau::hyper::HyperResult;
+        let (result, _stats) = self.decide_with_stats(sub, sup, HYPER_WEDGE_DEPTH, deadline);
+        match result {
+            HyperResult::Unsat => HyperVerdict::Subsumed,
+            HyperResult::Sat => HyperVerdict::NotSubsumed,
+            HyperResult::Stalled => HyperVerdict::Unknown,
+        }
+    }
+
+    /// Diagnostic sibling of [`decide`](Self::decide): runs the identical
+    /// per-pair Q-clause construction + engine configuration but returns the
+    /// raw [`HyperResult`] alongside the engine's [`SearchStats`], and takes
+    /// the depth cap explicitly (so a probe can separate a depth-cap `Stalled`
+    /// from a deadline/branch-explosion `Stalled`). Used by
+    /// [`decide_pair_probe`] to characterise *why* a classify per-pair search
+    /// stalls. Soundness/behaviour is identical to `decide` at
+    /// `depth == HYPER_WEDGE_DEPTH`.
+    pub(crate) fn decide_with_stats(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        depth: usize,
+        deadline: Option<std::time::Instant>,
+    ) -> (
+        owl_dl_tableau::hyper::HyperResult,
+        owl_dl_tableau::hyper::SearchStats,
+    ) {
         use owl_dl_core::clause::{Atom, DlClause, X};
-        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        use owl_dl_tableau::hyper::HyperEngine;
         let mut clauses = self.clauses.clone();
         clauses.push(DlClause {
             body: vec![Atom::Class(self.fresh_q, X)],
@@ -1171,11 +1272,46 @@ impl HyperCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
-        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
-            HyperResult::Unsat => HyperVerdict::Subsumed,
-            HyperResult::Sat => HyperVerdict::NotSubsumed,
-            HyperResult::Stalled => HyperVerdict::Unknown,
+        let result = engine.decide_with_deadline(depth, deadline);
+        (result, engine.stats())
+    }
+
+    /// Diagnostic: wedge satisfiability of `c` ALONE (no `¬sup`), returning the
+    /// raw [`HyperResult`] + [`SearchStats`]. Discriminates whether a per-pair
+    /// stall lives in `c`'s own disjunctive expansion (this thrashes too) or in
+    /// the `c ⊓ ¬sup` interaction (this is fast, the pair is not). Mirrors
+    /// [`classify_labels`](Self::classify_labels)' construction.
+    pub(crate) fn sat_only_with_stats(
+        &self,
+        c: owl_dl_core::ir::ClassId,
+        depth: usize,
+        deadline: Option<std::time::Instant>,
+    ) -> (
+        owl_dl_tableau::hyper::HyperResult,
+        owl_dl_tableau::hyper::SearchStats,
+    ) {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_tableau::hyper::HyperEngine;
+        let mut clauses = self.clauses.clone();
+        clauses.push(DlClause {
+            body: vec![Atom::Class(self.fresh_q, X)],
+            head: vec![Atom::Class(c, X)],
+        });
+        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        if crate::classify_same_tier_enabled() {
+            engine = engine.with_sub_roles(self.sub_roles.clone());
         }
+        if hyper_double_block_enabled() {
+            engine = engine.with_double_blocking();
+        }
+        if hyper_precise_card_deps_enabled() {
+            engine = engine.with_precise_card_deps();
+        }
+        if crate::adaptive_budget_enabled() {
+            engine = engine.with_adaptive_budget();
+        }
+        let result = engine.decide_with_deadline(depth, deadline);
+        (result, engine.stats())
     }
 
     /// Run wedge satisfiability of `c` alone (no negated sup) and return

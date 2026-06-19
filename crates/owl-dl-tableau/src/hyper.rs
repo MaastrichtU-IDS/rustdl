@@ -1807,9 +1807,34 @@ impl<'c> HyperEngine<'c> {
     /// some node-binding and **none** of whose head disjuncts is
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
-    fn find_open_disjunction(&self) -> Option<(usize, HNode, Binding)> {
+    fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
+            // A directly-blocked node gets NO rule applied — including the ⊔
+            // rule. Generation (∃/≥n) already skips blocked nodes
+            // (`apply_exists` / `generate_at_least`), but the disjunction rule
+            // did not: applying ⊔ to a blocked node mutated its label, could
+            // *unblock* it, and resumed generation — defeating blocking's
+            // termination guarantee. On disjunction-heavy SROIQ (ore-15672,
+            // sio, ore-10908, alehif) this drove the search to arbitrary depth
+            // without ever finding the (existing, finite) model: depth 256→32768
+            // all Stalled, ~115k all-clashing branches on a *satisfiable* class.
+            // Sound under the established (double-)pair-blocking unravelling: a
+            // directly-blocked `n` (blocker `m`, L(n)⊆L(m)) realises its model
+            // via `m`'s expansion, and `m` — being unblocked — has its own ⊔
+            // applied here, so skipping `n`'s ⊔ drops no clash. Skipping rule
+            // applications can only *remove* clashes, never add one ⟹ FP=0 by
+            // construction; corpus closure stays byte-identical to the
+            // Konclude∩HermiT oracle (FP=0/MISSED=0) across every fixture, and
+            // the disjunctive-`Unsat` path still proves subsumptions with
+            // blocking live (`blocked_disjunction_soundness` canary). Scope: the
+            // same `is_blocked` predicate already gates generation
+            // (`apply_exists`/`generate_at_least`) in BOTH blocking modes, so
+            // extending it to ⊔ is no more unsound than that existing gating;
+            // the default double-blocking mode is the corpus-validated one.
+            if self.is_blocked(node) {
+                continue;
+            }
             for ci in 0..self.clauses.len() {
                 if self.clauses[ci].is_horn() {
                     continue;

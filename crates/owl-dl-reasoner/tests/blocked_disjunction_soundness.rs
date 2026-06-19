@@ -9,20 +9,29 @@
 //! `Unsat` because a needed ⊔-clash was skipped. This canary exercises exactly
 //! that path on a self-contained ontology, in the blocking-active regime.
 //!
-//! Ontology (all named; `r` cyclic so blocking is live). The disjuncts clash by
-//! DIFFERENT paths so the told-common-subsumer preprocessing cannot compile the
-//! `⊔` away into a Horn fact (that is what makes the wedge actually branch):
+//! SCOPE (precise — do not overstate): this proves the wedge's ⊔→clash→`Unsat`
+//! (subsumption-proving) path SURVIVES the fix and is exercised on a generated
+//! successor. It does NOT empirically cover "skipping ⊔ on a *blocked* node
+//! drops no clash" — here the disjunction-bearing successor C1 is UNBLOCKED, and
+//! because it clashes immediately the cyclic `∃r.C` never generates a second
+//! (blockable) C, so `find_open_disjunction` never skips anything. The
+//! blocked-node case rests on standard pair-blocking unravelling theory (a
+//! blocked `n` realises its model via its unblocked blocker `m`, whose ⊔ IS
+//! applied), reinforced by the fact that the fix moves the engine toward the
+//! textbook calculus (all rules skip blocked nodes; generation already did).
+//!
+//! Ontology (all named). The disjuncts clash by DIFFERENT paths so the
+//! told-common-subsumer preprocessing cannot compile the `⊔` away into a Horn
+//! fact (that is what makes the wedge actually branch):
 //!   A ⊑ ∃r.C
-//!   C ⊑ ∃r.C                 — cyclic ⟹ deep r-successors get blocked
-//!   C ⊑ D ⊔ E                — disjunction lives on the generated successor C
+//!   C ⊑ ∃r.C                 — cyclic (keeps blocking machinery live)
+//!   C ⊑ D ⊔ E                — disjunction on the generated successor C
 //!   C ⊑ ¬D,  C ⊑ ¬E          — each disjunct self-clashes ⟹ C ⊑ ⊥
 //! Entailment: A ⊑ K for the unrelated K (A needs an r-successor that is the
 //! unsatisfiable C, so A ⊑ ⊥ ⊑ K). The refutation of `A ⊓ ¬K` MUST branch C's
-//! `D ⊔ E` on a successor node: the D-branch clashes `D ⊓ ¬D`, the E-branch
-//! clashes `E ⊓ ¬E`, so C is unsat. With the fix the depth-1 C (unblocked) still
-//! gets ⊔ applied; only the deeper cyclic repeats are blocked+skipped. If the
-//! skip were over-broad (dropping the unblocked C's ⊔) the subsumption would be
-//! MISSED. We assert it is found AND that the ⊔ rule was actually used.
+//! `D ⊔ E`: the D-branch clashes `D ⊓ ¬D`, the E-branch clashes `E ⊓ ¬E`. If the
+//! fix had over-broadly dropped the ⊔ rule, this subsumption would be MISSED. We
+//! assert it is found AND that the ⊔ rule was actually used (disj_branches>0).
 
 #![allow(clippy::unwrap_used)]
 

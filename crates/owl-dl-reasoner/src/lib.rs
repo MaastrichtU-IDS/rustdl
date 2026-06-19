@@ -582,6 +582,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
             }
+            if crate::adaptive_budget_enabled() {
+                engine = engine.with_adaptive_budget();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -720,6 +723,20 @@ pub fn counting_pair_verify_enabled() -> bool {
 #[must_use]
 pub(crate) fn classify_same_tier_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_some_and(|v| v == "1")
+}
+
+/// Lever #1: adaptive early-cut of diverging wedge searches. Default OFF until the
+/// corpus MISSED-unchanged gate confirms it. Set `RUSTDL_ADAPTIVE_BUDGET=1`.
+///
+/// When ON, `HyperEngine::with_adaptive_budget` is applied to every wedge engine
+/// built at classify/consistency/label-cache sites. The predicate fires only on
+/// searches that saturate `max_depth` without progress (depth-saturated + high
+/// restore ratio + growing model) — non-diverging searches are unaffected and the
+/// adaptive cut can only convert a stalling `Stalled` verdict to an early exit, not
+/// flip a sound `Unsat` or `Sat`.
+#[must_use]
+pub(crate) fn adaptive_budget_enabled() -> bool {
+    std::env::var("RUSTDL_ADAPTIVE_BUDGET").is_ok_and(|v| v == "1")
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
@@ -1149,6 +1166,9 @@ impl HyperCache {
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
         }
+        if crate::adaptive_budget_enabled() {
+            engine = engine.with_adaptive_budget();
+        }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
@@ -1203,6 +1223,9 @@ impl HyperCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if crate::adaptive_budget_enabled() {
+            engine = engine.with_adaptive_budget();
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,
@@ -1394,6 +1417,9 @@ impl ConsistencyCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if crate::adaptive_budget_enabled() {
+            engine = engine.with_adaptive_budget();
         }
         engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
     }
@@ -3774,6 +3800,9 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             }
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
+            }
+            if crate::adaptive_budget_enabled() {
+                engine = engine.with_adaptive_budget();
             }
             let new_ms = t_new.elapsed().as_secs_f64() * 1000.0;
             // Timer 3: the actual search, 5s cap (NOT None — may not terminate).

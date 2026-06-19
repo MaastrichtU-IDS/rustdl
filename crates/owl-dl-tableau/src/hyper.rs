@@ -857,6 +857,18 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// Set the role hierarchy WITHOUT rebuilding `ClauseIndexes`. Use only when
+    /// the engine's index was already built hierarchy-aware
+    /// (`build_clause_indexes(.., Some(&h))`), e.g. the amortized classify-label
+    /// path that supplies a prebuilt index via `new_with_prebuilt`. Setting the
+    /// hierarchy enables `role_matches` symmetry + sub-role matching; the index
+    /// (trigger sets) must already reflect the same hierarchy.
+    #[must_use]
+    pub fn with_sub_roles_keep_index(mut self, hierarchy: RoleHierarchy) -> Self {
+        self.sub_roles = Some(hierarchy);
+        self
+    }
+
     /// Resolve a node through the merge union-find to its canonical
     /// representative (H3c). Identity for un-merged nodes.
     fn resolve(&self, n: HNode) -> HNode {

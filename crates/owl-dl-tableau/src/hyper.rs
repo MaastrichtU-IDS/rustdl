@@ -386,6 +386,11 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// EXPERIMENT (wine pinpoint): histogram of the chosen disjunction's viable
+    /// disjunct count at each branch decision. `branch_viable_hist[v]` = #decisions
+    /// where the branched disjunction had `v` non-clashing disjuncts (capped at 15).
+    /// `v<=1` = forced (propagation); `v>=2` = a genuine choice.
+    pub branch_viable_hist: [u64; 16],
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -1742,6 +1747,13 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            // EXPERIMENT (wine pinpoint): record the chosen disjunction's viable count.
+            {
+                let v = self
+                    .fc_viable_count(ci, node, &binding, decision_deps)
+                    .min(15);
+                self.stats.branch_viable_hist[v] += 1;
+            }
             let order: Vec<usize> = if self.semantic_branching {
                 self.reorder_disjunction_heads(ci, node, &binding)
             } else {
@@ -1916,6 +1928,32 @@ impl<'c> HyperEngine<'c> {
                     n += 1;
                 }
             } else {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// EXPERIMENT (wine pinpoint): TRUE forward-check viable count — a disjunct is
+    /// viable iff tentatively asserting it + one fixpoint propagation does NOT
+    /// clash. `fc_viable<=1` ⇒ forced/dead after propagation (FC would prune);
+    /// `fc_viable>=2` ⇒ genuine choice even after propagation (needs learning).
+    fn fc_viable_count(
+        &mut self,
+        ci: usize,
+        node: HNode,
+        binding: &Binding,
+        decision_deps: DepSet,
+    ) -> usize {
+        let head_len = self.clauses[ci].head.len();
+        let mut n = 0usize;
+        for k in 0..head_len {
+            let atom = self.clauses[ci].head[k];
+            let saved = self.save();
+            let _ = self.apply_head_atom(atom, node, binding, decision_deps);
+            let res = self.horn_fixpoint(FIXPOINT_ITERS);
+            self.restore(saved);
+            if res != HyperResult::Unsat {
                 n += 1;
             }
         }

@@ -21,11 +21,18 @@ fn wine_cf_varorder() {
             let mut r = Cursor::new(src.into_bytes());
             let ont: SetOntology<RcStr> = read_ofn(&mut r, ParserConfiguration::default()).unwrap().0;
             let cf = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/wine#CabernetFranc";
+            // 30s sample is enough to characterize the branch-decision distribution.
             let (res, s, wall) =
-                owl_dl_reasoner::sat_class_probe(&ont, cf, 256, Some(Duration::from_secs(200)))
+                owl_dl_reasoner::sat_class_probe(&ont, cf, 256, Some(Duration::from_secs(30)))
                     .unwrap()
                     .unwrap();
-            println!("VARORDER sat(CabernetFranc) flag-on: {res:?} wall={wall:.0}ms branches={} (baseline 1492974)", s.branches_taken);
+            println!("WINE CF: {res:?} wall={wall:.0}ms branches={}", s.branches_taken);
+            println!("VIABLE HISTOGRAM (v => #decisions branching a disjunction with v viable disjuncts):");
+            for (v, c) in s.branch_viable_hist.iter().enumerate() {
+                if *c > 0 {
+                    println!("  viable={v:<2} : {c}");
+                }
+            }
         })
         .unwrap();
     child.join().unwrap();

@@ -220,6 +220,29 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-## Results
+## Results (2026-06-19) — SHIPPED, default ON
 
-(Filled during execution: final `(DIV_WINDOW, θ)`; ore-15672/wine wall ON vs OFF; corpus FP=0 + closure-identity confirmation; default ON or opt-in.)
+**Final tuning:** `DIV_WINDOW = 500`, `θ = 0.98`. The `model_grew` clause was **dropped**
+during Task 1/3 — the #2 reuse probe showed the divergence is *thrashing through a tiny
+state set at stable node count*, not growth, so a growth clause never fired. Predicate:
+`depth_saturated && restores≈branches (≥98%)` over a 500-branch window; the window size is
+the discriminator vs a converging Unsat proof (real proofs terminate within 500 branches;
+only a search still all-failing-at-cap after 500 is cut).
+
+**Wall:** ore-15672 **138s → 91s (~34%)**, verdict-preserving. (N=5000 gave zero gain — the
+window matched the per-pair branch budget, firing only at the deadline; N=500 cuts early.)
+
+**Soundness gate: PASS.** Corpus closure net at `RUSTDL_ADAPTIVE_BUDGET=1`, N=500:
+**FP=0, MISSED=0, every closure byte-identical** to baseline (galen 27997, notgalen 32739,
+sio 8904, wine 653, ore-10908 6001, ore-15672 142, alehif 247, ro 158, pizza 499, bibtex 16;
+net wall 454s ≤ baseline). No real subsumption proof is cut — they all complete within 500
+branches. FP=0 is structural (early-cut only yields `Stalled`/"not subsumed").
+
+**Default ON** (`adaptive_budget_enabled` → `map_or(true, v != "0")`): strictly
+verdict-preserving + faster, so no reason for opt-in; `RUSTDL_ADAPTIVE_BUDGET=0` reverts.
+Full workspace suite green; clippy/fmt clean.
+
+**Headroom (future tuning knob):** the gain is modest (34%) because many hard pairs reach
+`depth_saturated` only after >500 branches, so they're cut later than ~100ms. Lower
+`DIV_WINDOW` and/or a relaxed depth threshold would gain more — each step gated by a fresh
+corpus MISSED net (the convergence-risk curve). N=500 is the validated safe point shipped now.

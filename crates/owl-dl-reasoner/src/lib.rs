@@ -736,7 +736,9 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
 /// flip a sound `Unsat` or `Sat`.
 #[must_use]
 pub(crate) fn adaptive_budget_enabled() -> bool {
-    std::env::var("RUSTDL_ADAPTIVE_BUDGET").is_ok_and(|v| v == "1")
+    // DEFAULT ON: strictly verdict-preserving (corpus MISSED=0, byte-identical
+    // closures at DIV_WINDOW=500) and faster (ore-15672 138→91s). `=0` opts out.
+    std::env::var("RUSTDL_ADAPTIVE_BUDGET").map_or(true, |v| v != "0")
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau

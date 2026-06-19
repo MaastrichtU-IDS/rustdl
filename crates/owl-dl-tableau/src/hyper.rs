@@ -1898,7 +1898,68 @@ impl<'c> HyperEngine<'c> {
     /// some node-binding and **none** of whose head disjuncts is
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
+    /// EXPERIMENT (wine var-ordering): count head atoms of an open disjunction
+    /// that do NOT obviously clash at their target. Fewer ⇒ more constrained ⇒
+    /// branch first (MRV/fail-first; `viable<=1` is forced ⇒ unit propagation).
+    fn viable_disjunct_count(&mut self, ci: usize, node: HNode, binding: &Binding) -> usize {
+        let head_len = self.clauses[ci].head.len();
+        let mut n = 0usize;
+        for k in 0..head_len {
+            if let Atom::Class(c, v) = self.clauses[ci].head[k] {
+                let ruled_out = resolve_var(v, node, binding).is_some_and(|target| {
+                    let t = self.resolve(target);
+                    self.complement_of(c).is_some_and(|neg| {
+                        self.nodes[t.index()].labels.binary_search(&neg).is_ok()
+                    })
+                });
+                if !ruled_out {
+                    n += 1;
+                }
+            } else {
+                n += 1;
+            }
+        }
+        n
+    }
+
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
+        if !self.semantic_branching {
+            return self.find_open_disjunction_first();
+        }
+        let mut best: Option<(usize, HNode, Binding)> = None;
+        let mut best_viable = usize::MAX;
+        for idx in 0..self.nodes.len() {
+            let node = HNode(u32::try_from(idx).expect("fits u32"));
+            if self.is_blocked(node) {
+                continue;
+            }
+            for ci in 0..self.clauses.len() {
+                if self.clauses[ci].is_horn() {
+                    continue;
+                }
+                let Some(bindings) = self.match_body(ci, node) else {
+                    continue;
+                };
+                for binding in bindings {
+                    if !self.any_head_satisfied(ci, node, &binding) {
+                        let viable = self.viable_disjunct_count(ci, node, &binding);
+                        if viable < best_viable {
+                            best_viable = viable;
+                            best = Some((ci, node, binding));
+                            if best_viable <= 1 {
+                                return best; // forced disjunct — can't do better
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// Original positional selection (first open disjunction). Used when
+    /// `semantic_branching` is off (byte-identical to pre-experiment).
+    fn find_open_disjunction_first(&mut self) -> Option<(usize, HNode, Binding)> {
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             // A directly-blocked node gets NO rule applied — including the ⊔

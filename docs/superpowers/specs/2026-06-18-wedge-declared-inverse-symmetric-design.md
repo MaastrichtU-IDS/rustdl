@@ -61,12 +61,33 @@ currently builds its engine with `sub_roles = None`, so it does **not** carry th
 inverse/symmetric domain/range firing. This is **FP-safe** (the `None` path
 under-fires → fewer Unsats → never a spurious subsumption) and corpus-neutral
 (MISSED=0 corpus-wide — no corpus subsumption depends on inverse/symmetric
-domain/range). Extending the firing to the classify oracle (pass `Some(&hierarchy)`
-in `HyperCache::build`) is a clean, FP-safe follow-up (**SP1.1**), gated on the
-`with_sub_roles`/prebuilt-`base_indexes` interaction (today no caller combines
-`new_with_prebuilt` + `with_sub_roles`; SP1.1 would, so the index-rebuild must
-preserve the Q-clause delta). Deferred so the classify hot-path change gets its
-own corpus re-validation.
+domain/range).
+
+**SP1.1 investigation result (2026-06-19) — the classify gap is TWO-layered;
+deferred as one coherent future sub-project, NOT shipped in SP1.** Driver
+`/tmp/sp11sub.ofn` (`C ⊑ D` derivable only via inverse-domain firing on a
+*generated* successor; Konclude confirms) — `rustdl classify` misses it, but the
+consistency path (which builds `.with_sub_roles`) catches the identical inference.
+Two independent causes:
+- **Layer A — oracle reach.** `HyperCache::{decide,classify_labels}` build with
+  `sub_roles = None`. A POC fix (carry the hierarchy; `build_clause_indexes(.,
+  Some(&h))` for the shared amortized index + a `with_sub_roles_keep_index` setter
+  that preserves the prebuilt index/Q-delta) is **correct and FP=0/MISSED=0
+  corpus-wide** (proven by an N²-pairs test) — preserved on branch
+  `wip/sp1.1-classify-oracle-reach` (commit a2b3014).
+- **Layer B — tier routing.** The default top-down classifier
+  (`find_direct_parents_top_down`) processes same-tier classes in parallel and
+  **never tests same-tier pairs**. `C`/`D` are same-tier, so even with the oracle
+  fixed, default `classify()` never asks about `C ⊑ D` — Layer A alone yields no
+  end-to-end gain on the headline example.
+
+Layer B blocks the visible win and the whole gap is corpus-invisible (MISSED=0
+regardless), so shipping Layer A alone adds code + perf (~8% on the closure-diff
+wall, cause not isolated) for no measurable benefit. Decision: **Layer A reverted
+from SP1** (preserved on the WIP branch); close the classify-side gap as a future
+sub-project doing Layer A + Layer B together with its own corpus + perf
+re-validation. SP1 ships consistency-scoped — which is what the family target
+needed.
 
 ### Non-goals
 

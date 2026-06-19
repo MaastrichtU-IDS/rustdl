@@ -811,7 +811,6 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// The registered literal complement `¬c`, if any.
-    #[allow(dead_code)] // consumed by SP1 Task 3/4
     fn complement_of(&self, c: ClassId) -> Option<ClassId> {
         self.complements
             .get(usize::try_from(c.index()).unwrap_or(usize::MAX))
@@ -1748,6 +1747,10 @@ impl<'c> HyperEngine<'c> {
             } else {
                 (0..head_len).collect()
             };
+            // SP1 restricted semantic branching: literal complements of failed
+            // disjuncts, re-asserted (dep-tagged) on each subsequent sibling so
+            // a re-derivation of the failed disjunct clashes immediately.
+            let mut literal_complements: Vec<ClassId> = Vec::new();
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
             for &k in &order {
@@ -1755,6 +1758,9 @@ impl<'c> HyperEngine<'c> {
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
+                for &comp in &literal_complements {
+                    let _ = self.add_label(node, comp, decision_deps);
+                }
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return HyperResult::Sat,
@@ -1770,6 +1776,12 @@ impl<'c> HyperEngine<'c> {
                             return HyperResult::Unsat;
                         }
                         combined = combined.union(child_deps);
+                        if self.semantic_branching
+                            && let Atom::Class(c, _) = head_atom
+                            && let Some(comp) = self.complement_of(c)
+                        {
+                            literal_complements.push(comp);
+                        }
                     }
                     HyperResult::Stalled => {
                         self.restore(saved);

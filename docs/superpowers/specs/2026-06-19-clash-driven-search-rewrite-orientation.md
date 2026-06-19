@@ -118,6 +118,45 @@ multi-month-with-uncertain-payoff) before committing.
 - **Measure decisive-verdict-reuse, not just state-reuse** (the #2 lesson) — the
   caching P0 must check that reused states reach Unsat/Sat, not just that they recur.
 
+## 6b. CORRECTION (2026-06-19, after first P0 attempts) — diagnostics were on PROXIES
+
+The orientation above conflated **three different searches** that give **contradictory**
+results, so §1–§5's specifics must be re-validated before scoping R1:
+- **classify per-pair (the real 138s):** `sat(ewe ⊓ ¬sup)` — Q-clause-injected;
+  **109 pairs (all sub = `epistemic-workflow-enactment`) time out.** THIS is the
+  ground-truth bottleneck.
+- **hyper-sat per-class:** `sat(e-interaction)` / `sat(e-usage)` — 591k branches /
+  48 states / Stall. A *different* search (class sat, not pair sub⊓¬sup).
+- **consistency ABox-probe:** `sat(e-interaction)` ABox-seeded — **0.01s, terminates.**
+  Yet a *third* construction of "the same" class sat.
+
+Two probe-driven conclusions were therefore WRONG:
+- **"e-interaction terminates at depth 100k" was a wrong-probe artifact** (ABox-sat is
+  trivial regardless of depth). **classify ore-15672 @ depth 100k + cache is STILL
+  141.89s** — raising the depth cap does NOT fix the real per-pair searches, and the
+  built cache stays inert. Depth is NOT the limiter for the real bottleneck.
+- **The "48-state reuse" (hyper-sat) may not characterize the classify per-pair
+  searches** at all — they're a different construction.
+
+Intriguing live clue (worth R0): the SAME class is 0.01s as an ABox-sat but thrashes
+as a Q-clause sat. If the classify oracle's query *construction* (Q-clause + clausify)
+is what makes the search pathological — vs the ABox-seeded construction being trivial —
+that could be a far cheaper fix than blocking. Disentangle in R0:
+`ABox-sat(ewe ⊓ ¬sup)` for a timed-out `sup` — fast ⟹ construction-pathology (cheap);
+thrash ⟹ the `¬sup` is genuinely hard.
+
+## 6c. Corrected R0 (do FIRST, with clean per-pair tooling)
+
+Build a **single-pair** probe for the EXACT classify search: `sat(sub ⊓ ¬sup)` via the
+HyperCache `decide` path (the real construction), on a timed-out `(ewe, sup)` pair,
+with configurable depth + stats + cache toggle. Then:
+1. Confirm it reproduces the thrash (the per-pair search, not a proxy).
+2. Disentangle: construction (Q-clause vs ABox) vs `¬sup`-hardness vs depth vs strategy.
+3. Only then does R1's lever (blocking / heuristics / construction-fix) become scopable.
+**Do not scope R1 until R0 reproduces and attributes the REAL per-pair thrash.** The
+proxy diagnostics burned effort; the lesson is the perf playbook's own rule — *confirm
+the frame on the real classify per-pair search*, which §1–§5 did not.
+
 ## 7. Immediate next step
 
 Build **R0** (single-class probe tooling) + run **P0b** (depth-vs-thrash on

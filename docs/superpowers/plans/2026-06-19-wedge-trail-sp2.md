@@ -403,4 +403,21 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ## Results
 
-(Filled during execution. Record: P0 GO/NO-GO + evidence; ore-15672 baseline→new wall; node_clones before/after; corpus closure-identity confirmation; perf non-regression.)
+**P0 GATE = NO-GO (2026-06-19). Trail NOT built.** Step 3 (`hyper-sat ore-15672
+--per-class-timeout-ms 110000`): `e-interaction-situation` explored **593,034 disjunctive
+branches in 110s and did NOT terminate** (all restored, depth pinned at 256); `e-usage-situation`
+64,762 branches, also Stalled. So **the branch COUNT is the wall, not per-branch cost** —
+exactly the case §3's gate said must halt the build. Two reasons the trail fails:
+1. **Can't make it terminate** — it only makes each branch cheaper (constant factor); the search
+   needs ≫593K branches to find the model, which no constant factor crosses (exponential).
+2. **Wouldn't reduce the classify wall anyway** — ore-15672's 138s = 109 hard pairs each burning
+   their fixed **1000ms per-pair deadline** (they stall to the deadline); a trail just does more
+   futile branches within the same 1000ms. Wall is deadline-capped regardless. The constant-factor
+   win never manifests because the pairs don't terminate under the deadline even at 110× it.
+
+**Conclusion:** the only remaining lever is **branch-count reduction** (search heuristics /
+sub-search caching / conflict learning) — the prior NO-GO (`conflict-learning-simple-is-weak`,
+bjgap≈1). No bounded lever exists for these 3 pathological fixtures; the practical answer remains
+the `--pair-timeout-ms` knob (sound + tunably complete). SP2-via-trail is closed. Spec/plan retained
+as the record of the measured NO-GO. (Diagnostic `RUSTDL_FIXPOINT_ITERS` probe reverted; no engine
+code was changed for this gate.)

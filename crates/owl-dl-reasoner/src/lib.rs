@@ -1231,7 +1231,10 @@ impl HyperCache {
         sup: owl_dl_core::ir::ClassId,
         depth: usize,
         deadline: Option<std::time::Instant>,
-    ) -> (owl_dl_tableau::hyper::HyperResult, owl_dl_tableau::hyper::SearchStats) {
+    ) -> (
+        owl_dl_tableau::hyper::HyperResult,
+        owl_dl_tableau::hyper::SearchStats,
+    ) {
         use owl_dl_core::clause::{Atom, DlClause, X};
         use owl_dl_tableau::hyper::HyperEngine;
         let mut clauses = self.clauses.clone();
@@ -1283,7 +1286,10 @@ impl HyperCache {
         c: owl_dl_core::ir::ClassId,
         depth: usize,
         deadline: Option<std::time::Instant>,
-    ) -> (owl_dl_tableau::hyper::HyperResult, owl_dl_tableau::hyper::SearchStats) {
+    ) -> (
+        owl_dl_tableau::hyper::HyperResult,
+        owl_dl_tableau::hyper::SearchStats,
+    ) {
         use owl_dl_core::clause::{Atom, DlClause, X};
         use owl_dl_tableau::hyper::HyperEngine;
         let mut clauses = self.clauses.clone();

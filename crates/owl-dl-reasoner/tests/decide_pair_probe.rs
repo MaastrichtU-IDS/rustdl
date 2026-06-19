@@ -29,7 +29,8 @@ use std::io::Cursor;
 use std::time::Duration;
 
 const OFN_PATH: &str = "/tmp/ore15672_probe.ofn";
-const SUB: &str = "http://www.loa-cnr.it/ontologies/OD/OntologyDesign.owl#epistemic-workflow-enactment";
+const SUB: &str =
+    "http://www.loa-cnr.it/ontologies/OD/OntologyDesign.owl#epistemic-workflow-enactment";
 const SUP: &str = "http://www.loa-cnr.it/ontologies/ExtendedDnS.owl#task";
 
 fn load() -> SetOntology<RcStr> {
@@ -76,10 +77,9 @@ fn probe_ewe_alone() {
             let ont = load();
             let t = Some(Duration::from_secs(30));
             for depth in [256usize, 2048] {
-                let (result, s, wall_ms) =
-                    owl_dl_reasoner::sat_class_probe(&ont, SUB, depth, t)
-                        .expect("probe ok")
-                        .expect("IRI resolves");
+                let (result, s, wall_ms) = owl_dl_reasoner::sat_class_probe(&ont, SUB, depth, t)
+                    .expect("probe ok")
+                    .expect("IRI resolves");
                 println!("\n===== sat(ewe) ALONE depth={depth} =====");
                 println!("  result={result:?}  wall_ms={wall_ms:.0}");
                 println!(

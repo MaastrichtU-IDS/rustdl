@@ -31,7 +31,7 @@
 //! unsatisfiable C, so A ⊑ ⊥ ⊑ K). The refutation of `A ⊓ ¬K` MUST branch C's
 //! `D ⊔ E`: the D-branch clashes `D ⊓ ¬D`, the E-branch clashes `E ⊓ ¬E`. If the
 //! fix had over-broadly dropped the ⊔ rule, this subsumption would be MISSED. We
-//! assert it is found AND that the ⊔ rule was actually used (disj_branches>0).
+//! assert it is found AND that the ⊔ rule was actually used (`disj_branches`>0).
 
 #![allow(clippy::unwrap_used)]
 

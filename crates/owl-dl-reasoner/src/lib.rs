@@ -585,6 +585,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
             }
+            if crate::wedge_cache_enabled() {
+                engine = engine.with_wedge_cache();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -813,6 +816,20 @@ pub(crate) fn adaptive_budget_enabled() -> bool {
     // DEFAULT ON: strictly verdict-preserving (corpus MISSED=0, byte-identical
     // closures at DIV_WINDOW=500) and faster (ore-15672 138→91s). `=0` opts out.
     std::env::var("RUSTDL_ADAPTIVE_BUDGET").map_or(true, |v| v != "0")
+}
+
+/// Lever #2: within-search state memoization. Default OFF until the key-completeness
+/// review + corpus closure-identity gate pass. Set `RUSTDL_WEDGE_CACHE=1`.
+///
+/// When ON, `HyperEngine::with_wedge_cache` is applied to every wedge engine
+/// built at classify/consistency/label-cache sites. The cache memoizes intermediate
+/// search states by a full structural key so subsequent searches can short-circuit
+/// when an identical state is encountered again within the same `decide` call.
+/// **Default OFF**: the key-completeness review and corpus closure-identity gate
+/// (Task 3) must pass before this is turned on by default. Set `RUSTDL_WEDGE_CACHE=0`
+/// to explicitly opt out (same as absent).
+pub(crate) fn wedge_cache_enabled() -> bool {
+    std::env::var("RUSTDL_WEDGE_CACHE").is_ok_and(|v| v == "1")
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
@@ -1272,6 +1289,9 @@ impl HyperCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
+        if crate::wedge_cache_enabled() {
+            engine = engine.with_wedge_cache();
+        }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
     }
@@ -1309,6 +1329,9 @@ impl HyperCache {
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::wedge_cache_enabled() {
+            engine = engine.with_wedge_cache();
         }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
@@ -1364,6 +1387,9 @@ impl HyperCache {
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::wedge_cache_enabled() {
+            engine = engine.with_wedge_cache();
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,
@@ -1558,6 +1584,9 @@ impl ConsistencyCache {
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::wedge_cache_enabled() {
+            engine = engine.with_wedge_cache();
         }
         engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
     }
@@ -3941,6 +3970,9 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
+            }
+            if crate::wedge_cache_enabled() {
+                engine = engine.with_wedge_cache();
             }
             let new_ms = t_new.elapsed().as_secs_f64() * 1000.0;
             // Timer 3: the actual search, 5s cap (NOT None — may not terminate).

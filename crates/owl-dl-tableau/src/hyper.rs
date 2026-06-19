@@ -659,10 +659,17 @@ pub fn build_disjoint_pairs(clauses: &[DlClause]) -> std::collections::HashSet<(
 
 /// Divergence predicate (Lever #1): a wedge search is making no progress toward a
 /// satisfying completion when, over a window of `db` branches, ~all failed
-/// (`dr`/`db` ≥ θ), the branch depth has saturated the cap, and the model is still
-/// growing (∃-generation manufacturing successors, not stabilizing). θ = 0.98.
-fn is_diverging(db: u64, dr: u64, depth_saturated: bool, model_grew: bool) -> bool {
-    depth_saturated && model_grew && db > 0 && dr.saturating_mul(100) >= db.saturating_mul(98)
+/// (`dr`/`db` ≥ θ) at saturated branch depth. θ = 0.98.
+///
+/// NOTE: an earlier `model_grew` clause was DROPPED — the #2 reuse probe showed the
+/// divergence is THRASHING through a tiny state set at STABLE node count (not
+/// unbounded growth), so a growth clause never fires. The discriminator against a
+/// converging Unsat proof (which also has restores≈branches at depth) is the WINDOW
+/// SIZE `N`: a real proof terminates within `N` branches; only a search still
+/// all-failing-at-cap after `N` branches is cut. `N` is tuned via the corpus MISSED
+/// gate (raise until no real subsumption proof is cut).
+fn is_diverging(db: u64, dr: u64, depth_saturated: bool) -> bool {
+    depth_saturated && db > 0 && dr.saturating_mul(100) >= db.saturating_mul(98)
 }
 
 impl<'c> HyperEngine<'c> {
@@ -1656,8 +1663,8 @@ impl<'c> HyperEngine<'c> {
         if self.adaptive_budget {
             // Lever #1: divergence early-cut.  Sampled every DIV_WINDOW
             // branches so the check itself costs O(1) amortized.
-            const DIV_WINDOW: u64 = 5_000;
-            let (b0, r0, n0) = self.div_checkpoint;
+            const DIV_WINDOW: u64 = 500;
+            let (b0, r0, _) = self.div_checkpoint;
             let db = self.stats.branches_taken.saturating_sub(b0);
             if db >= DIV_WINDOW {
                 let dr = self.stats.restores.saturating_sub(r0);
@@ -1668,8 +1675,7 @@ impl<'c> HyperEngine<'c> {
                 // branch reached that cap.
                 let cap = u32::try_from(self.init_depth).unwrap_or(u32::MAX);
                 let depth_saturated = self.stats.max_branch_depth >= cap;
-                let model_grew = self.nodes.len() > n0;
-                if is_diverging(db, dr, depth_saturated, model_grew) {
+                if is_diverging(db, dr, depth_saturated) {
                     return HyperResult::Stalled;
                 }
                 self.div_checkpoint = (
@@ -2830,10 +2836,10 @@ mod tests {
 
     #[test]
     fn is_diverging_fires_only_on_no_progress() {
-        assert!(is_diverging(5000, 4990, true, true));
-        assert!(!is_diverging(5000, 1000, true, true)); // progressing (restores ≪ branches)
-        assert!(!is_diverging(5000, 4990, false, true)); // depth not saturated
-        assert!(!is_diverging(5000, 4990, true, false)); // model stabilized
+        assert!(is_diverging(5000, 4990, true)); // ~all failing at saturated depth
+        assert!(!is_diverging(5000, 1000, true)); // progressing (restores ≪ branches)
+        assert!(!is_diverging(5000, 4990, false)); // depth not saturated → not (yet) diverging
+        assert!(!is_diverging(0, 0, true)); // empty window
     }
 
     #[test]

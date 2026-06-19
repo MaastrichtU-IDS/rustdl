@@ -201,9 +201,39 @@ model-search is fundamentally lost, not merely slow.
   §2's bjgap≈1 NO-GO targets — here the issue is *which* disjunct to try, not *what to
   learn* from a clash). Re-validate the NO-GOs against (2) before committing.
 
-## 7. Immediate next step
+## 6f. RESOLVED (2026-06-19) — the "multi-month rewrite" was a ONE-LINE termination bug
 
-R0 done (§6e). The lever choice ((a) global-model vs (b) disjunct-selection heuristics) is
-the next gate — measure WHY a satisfiable single class never reaches `Sat` (bad ordering
-vs pathological re-derivation) before scoping R1. The honest start of the rewrite — days, not
+Following §6e's mechanical question ("why is there always an open disjunction even 32768
+deep, when ewe has a finite model?"), the advisor-suggested check on `find_open_disjunction`
+found it: **the ⊔ rule was applied to directly-BLOCKED nodes.** Generation (∃/≥n) already
+skips blocked nodes (`apply_exists`/`generate_at_least`), but the disjunction rule did not —
+so applying ⊔ to a blocked node mutated its label, could *unblock* it, and resumed
+generation, defeating blocking's termination guarantee. The search drove to any depth cap
+without ever finding the existing finite model.
+
+**Fix (commit `7649855`):** one `if self.is_blocked(node) { continue; }` in
+`find_open_disjunction`. `sat(ewe)` 30s-Stalled/118k-branches → **Sat in 4ms / 12 branches**.
+
+**Results (FP=0 sacred — held):**
+- Wall: ore-15672 138s→**0.05s**, ore-10908 ~7.5s→**0.21s**, sio ~2s→**0.70s**,
+  alehif ~6.6s→**0.06s**.
+- Corpus closure **byte-identical to the Konclude∩HermiT oracle** (FP=0/MISSED=0) on every
+  fixture; family inconsistency verdict unchanged (pre-fix stash confirmed).
+- **FP-safe by construction**: skipping a rule application strictly shrinks the derived-fact
+  set ⟹ biases `decide` toward `Sat`, can never invent an `Unsat` ⟹ cannot create a
+  subsumption. The only possible regression is a *missed* subsumption (dropped ⊔-clash) —
+  the corpus is blind to it (all closures saturation-carried, `tableau=0`), so a dedicated
+  completeness canary (`blocked_disjunction_soundness`) proves the disjunctive-`Unsat` path
+  still subsumes with blocking live. Regression guard `blocked_disjunction_termination`
+  asserts ore-15672 classifies with `timed_out_pairs==0`.
+
+**The (a) global-model vs (b) disjunct-heuristics fork is moot** — neither was needed. The
+shelved anywhere-blocking R-track and the #2 within-search cache remain unnecessary. The
+SROIQ-hard tail that motivated the whole rewrite program is closed at near-EL speed.
+
+## 7. Status: rewrite program CLOSED by §6f
+
+The orientation/decomposition below (R0–R3) was the plan for a multi-month engine rewrite.
+It is retired: the bottleneck was a termination bug, fixed in one line and corpus-validated.
+Historical R0 tooling (`decide_pair_probe`/`sat_class_probe`) is kept as durable diagnostics.
 months, and it converts the multi-month decision from a guess into a measured branch.

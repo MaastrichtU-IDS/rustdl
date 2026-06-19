@@ -1516,7 +1516,9 @@ pub(crate) fn classify_top_down_internal(
     // label-gated sweep body then tests them (a sup in no label set adds zero
     // oracle calls). Sound: the sweep only ADDS candidate pairs; every recorded
     // subsumption is oracle-confirmed and the label gate only prunes.
-    let sweep_sups: Vec<usize> = {
+    // DEFAULT OFF (RUSTDL_CLASSIFY_SAME_TIER=1 to enable): corpus-invisible gain
+    // at ~2× wall cost. When off, sweep_sups == defined_sups (pre-SP1.1 behavior).
+    let sweep_sups: Vec<usize> = if crate::classify_same_tier_enabled() {
         let mut set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
         for oracle in &label_cache {
             if let crate::LabelOracle::Sat(labels) = oracle {
@@ -1529,6 +1531,8 @@ pub(crate) fn classify_top_down_internal(
             }
         }
         set.into_iter().collect()
+    } else {
+        defined_sups.clone()
     };
     // Sweep budget: honour the caller's per_pair_timeout so that
     // pairs requiring more than the default 200 ms (e.g. ones that

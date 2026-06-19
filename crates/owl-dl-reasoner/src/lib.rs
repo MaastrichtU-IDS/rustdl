@@ -712,6 +712,16 @@ pub fn counting_pair_verify_enabled() -> bool {
     std::env::var_os("RUSTDL_COUNTING_PAIR_VERIFY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Same-tier classify-completeness (SP1.1): carry the role hierarchy into the
+/// classify oracle (Layer A) + broaden the same-tier sweep to label-driven
+/// (Layer B), so inverse/symmetric-domain subsumptions surface in default
+/// classify. DEFAULT OFF — sound (FP=0) but corpus-invisible and ~2× wall, so
+/// opt-in. Set `RUSTDL_CLASSIFY_SAME_TIER=1` to enable.
+#[must_use]
+pub(crate) fn classify_same_tier_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_some_and(|v| v == "1")
+}
+
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
 /// (`RUSTDL_ANYWHERE_BLOCKING`). Opt-IN, default OFF: returns `true` only when
 /// the variable is exactly `"1"`. When ON, `TableauContext::is_blocked` scopes
@@ -1068,8 +1078,12 @@ impl HyperCache {
         // The index is built with the role hierarchy so that inverse + symmetric
         // role triggers (`inverse_first_trigger`) are included in the amortized
         // shared index, matching what each engine gets via `with_sub_roles_keep_index`.
+        // When SP1.1 is OFF the hierarchy is not threaded into the classify oracle,
+        // so build without it (matches pre-SP1.1 behavior and avoids the ~2× wall).
+        let same_tier = crate::classify_same_tier_enabled();
+        let idx_hier = if same_tier { Some(&sub_roles) } else { None };
         let mut base_indexes_inner =
-            owl_dl_tableau::hyper::build_clause_indexes(&clauses, Some(&sub_roles));
+            owl_dl_tableau::hyper::build_clause_indexes(&clauses, idx_hier);
         {
             let q_ci = clauses.len(); // logical index of the Q-clause in every probe
             let q_key = fresh_q.index() as usize;
@@ -1124,8 +1138,11 @@ impl HyperCache {
         // with the hierarchy (includes the per-pair Q + ¬sup clauses appended
         // above), which is necessary because those clauses aren't in the base
         // amortized index.
-        let mut engine =
-            HyperEngine::new(&clauses, self.fresh_q).with_sub_roles(self.sub_roles.clone());
+        // Only thread the hierarchy in when SP1.1 is enabled (default OFF).
+        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        if crate::classify_same_tier_enabled() {
+            engine = engine.with_sub_roles(self.sub_roles.clone());
+        }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
@@ -1169,13 +1186,18 @@ impl HyperCache {
         // `with_sub_roles_keep_index` sets `self.sub_roles` only, so
         // `role_matches` + `inverse_first_trigger` fire correctly without
         // a redundant rebuild.
+        // When SP1.1 is OFF the base_indexes was built without the hierarchy
+        // (None) so we must NOT call with_sub_roles_keep_index — the two sites
+        // are a matched pair (build gate ↔ classify_labels gate).
         let mut engine = HyperEngine::new_with_prebuilt(
             &clauses,
             self.fresh_q,
             std::sync::Arc::clone(&self.base_indexes),
             std::sync::Arc::clone(&self.base_disjoint_pairs),
-        )
-        .with_sub_roles_keep_index(self.sub_roles.clone());
+        );
+        if crate::classify_same_tier_enabled() {
+            engine = engine.with_sub_roles_keep_index(self.sub_roles.clone());
+        }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }

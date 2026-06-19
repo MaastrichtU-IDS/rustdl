@@ -431,6 +431,16 @@ pub struct HyperEngine<'c> {
     /// time. `None` ⇒ reflexive only (every role subsumes just itself),
     /// the pre-HF2 behaviour.
     sub_roles: Option<RoleHierarchy>,
+    /// SP1 semantic-branching complement map: `complements[c.index()]` is the
+    /// literal complement `¬c` of class `c`, or `None` if `c` has no registered
+    /// complement. Threaded from `HyperCache` (built by the §2 complement
+    /// machinery). Used only when `semantic_branching` is on.
+    complements: Vec<Option<ClassId>>,
+    /// SP1: when `true`, the `solve` disjunction loop reorders disjuncts
+    /// cheapest-first and carries failed `Class` disjuncts' literal complements
+    /// onto subsequent siblings (restricted semantic branching). Off ⇒ the loop
+    /// is byte-identical to pre-SP1.
+    semantic_branching: bool,
     /// `HF3a` node inequalities `x ≠ y`. Stored as resolved pairs at
     /// insert time; queried through `resolve` so merges keep the
     /// relation correct without rewriting. The `≥n`-rule marks its
@@ -693,6 +703,8 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
+            complements: Vec::new(),
+            semantic_branching: false,
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,
@@ -737,6 +749,8 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
+            complements: Vec::new(),
+            semantic_branching: false,
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,
@@ -778,6 +792,33 @@ impl<'c> HyperEngine<'c> {
     pub fn with_adaptive_budget(mut self) -> Self {
         self.adaptive_budget = true;
         self
+    }
+
+    /// Provide the literal-complement map for SP1 semantic branching. `map[i]`
+    /// (if `Some`) is `¬c` for the class with index `i`. No index rebuild needed
+    /// (complements don't affect clause trigger indexes).
+    #[must_use]
+    #[allow(dead_code)] // consumed by SP1 Task 3/4
+    pub fn with_complements(mut self, map: Vec<Option<ClassId>>) -> Self {
+        self.complements = map;
+        self
+    }
+
+    /// Enable SP1 restricted semantic branching + disjunct reordering.
+    #[must_use]
+    #[allow(dead_code)] // consumed by SP1 Task 3/4
+    pub fn with_semantic_branching(mut self) -> Self {
+        self.semantic_branching = true;
+        self
+    }
+
+    /// The registered literal complement `¬c`, if any.
+    #[allow(dead_code)] // consumed by SP1 Task 3/4
+    fn complement_of(&self, c: ClassId) -> Option<ClassId> {
+        self.complements
+            .get(usize::try_from(c.index()).unwrap_or(usize::MAX))
+            .copied()
+            .flatten()
     }
 
     /// Test-only: disable BOTH NN-merge backjump-dep fixes (the
@@ -1611,6 +1652,8 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative,
             sub_roles: None,
+            complements: Vec::new(),
+            semantic_branching: false,
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,

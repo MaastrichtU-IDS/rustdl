@@ -157,6 +157,43 @@ with configurable depth + stats + cache toggle. Then:
 proxy diagnostics burned effort; the lesson is the perf playbook's own rule — *confirm
 the frame on the real classify per-pair search*, which §1–§5 did not.
 
+## 6d. BREAKTHROUGH (2026-06-19, R0 disentangler PAID OFF) — it's a CONSTRUCTION pathology, likely CHEAP
+
+The R0 disentangler confirmed the live clue and **reframes the whole rewrite**:
+**`sat(ewe ⊓ ¬sup)` decided via the ABox construction terminates in 0.00–0.01s
+(`consistent` = not-subsumed, the CORRECT verdict) for EVERY tested timed-out pair**
+(`¬task`, `¬design-choice`, `¬ontology-project-execution`, `¬rational-agent`,
+`¬communication-situation`) — the *identical logical queries* that classify's
+**Q-clause construction thrashes on** (1000ms timeout × 109 pairs = the 138s).
+
+**Same engine, same query, ~10⁴× difference ⟹ the bottleneck is the classify per-pair
+oracle's QUERY CONSTRUCTION** (fresh Q-class ≡ sub + clausified ¬sup, via
+`HyperCache::decide`), **not intractability and not the depth cap.** The textbook
+reduction `sub ⊑ sup ⟺ {x : sub ⊓ ¬sup} inconsistent` (ABox-seeded) is sound AND fast
+here; rustdl's Q-clause wedge reduction explodes the disjunctive search on the same
+content.
+
+**This very likely makes the rewrite CHEAP, not multi-month:** route the classify
+per-pair subsumption oracle through the fast construction (or fix the Q-clause
+construction's extra disjunctive firing) instead of building anywhere-blocking. R1 is
+re-scoped accordingly.
+
+### Re-scoped R1 (was: anywhere-blocking → now: construction fix)
+1. **Root-cause WHY the ABox construction is fast** (which engine/route/seeding it uses
+   — same wedge with direct concept-seeding vs Q-class indirection? main tableau via the
+   consistency route? different absorption/GCI firing?). Pin the exact difference.
+2. **Prototype routing the classify per-pair oracle through the fast construction**
+   (e.g. `is_subclass_of(sub,sup)` → `is_consistent({x : sub ⊓ ¬sup})` via the fast path).
+3. **Gate:** ore-15672 classify collapses (138s → seconds) AND corpus closure-IDENTITY
+   (FP=0, byte-identical — the construction change must not alter any verdict) AND no
+   regression on the fast corpus. If verdict-identical + faster → ship.
+   CAVEAT: confirm the fast path is COMPLETE (decides, not gives-up) on these pairs — it
+   returned decisive `consistent` (model found), not Stalled, so it is; re-confirm corpus-wide.
+
+If R1 lands, R2 (#2 caching) and the whole anywhere-blocking R-track may be UNNECESSARY —
+the construction fix alone could close the SROIQ-hard tail cheaply. Validate before
+declaring; the construction-difference must be understood (not a fluke of deadline/route).
+
 ## 7. Immediate next step
 
 Build **R0** (single-class probe tooling) + run **P0b** (depth-vs-thrash on

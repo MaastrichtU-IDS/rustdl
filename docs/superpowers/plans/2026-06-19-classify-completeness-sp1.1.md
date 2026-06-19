@@ -298,6 +298,28 @@ git branch -D wip/sp1.1-classify-oracle-reach   # superseded by this branch's La
 
 ---
 
-## Results
+## Results (2026-06-19)
 
-(Filled during execution. Record: driver test verdict; corpus FP=0 + any closure that grew (recovered MISS) or shrank (bug); ore-15672/wine walls vs baseline; accept/revert decision.)
+**Soundness: PASS. Perf: FAIL (default-ON). Resolution pending user decision.**
+
+- **Driver:** `default_classify_finds_inverse_domain_subsumption` RED after Layer A,
+  **GREEN after Layer B** (sp11sub `C ⊑ D` now surfaces in default classify). FP control green.
+- **Corpus closure net (FP-soundness gate): PASS** — FP=0/MISSED=0, **every closure
+  byte-identical** to baseline (galen 27997, notgalen 32739, sio 8904, wine 653, ore-10908
+  6001, ore-15672 142, alehif 247, ro 158, pizza 499, bibtex 16). Layer B is sound; the
+  code-quality review confirmed FP-safety by construction (additive, oracle-confirmed,
+  transitively-closed matrix).
+- **Perf gate: FAIL.** Per-fixture classify walls: sio 2.05→4.04s (~2×), **ore-15672
+  138→252s (+114s)**, ore-10908 0.22→0.58s; galen/alehif unchanged (EL/Horn — Layer B
+  inert). Corpus-net wall ~480→1001s. Cause = the O(n²) broadened sweep (review-predicted):
+  on ore-15672 it surfaces the same-tier `ewe`/situation pairs, which are **SP2-hard
+  non-subsumptions** that burn the per-pair deadline and find nothing.
+- **Net assessment:** Layer B closes a *real* gap (sp11sub) but the corpus has **zero
+  instances** of it (no closure changed), so default-ON it is **pure cost (~2×) for zero
+  corpus gain** — fails the "no wall blowup" ship criterion. This is the corpus-invisibility
+  of SP1.1 (flagged at scoping) made concrete.
+- **Resolution options (user decision):** (a) **flag-gate default-OFF** (sound, opt-in,
+  zero default regression — but not "default classify"); (b) **tighten** — a tight per-pair
+  deadline for the label-driven sweep + restrict to genuinely same-tier sups (recovers most
+  perf, keeps default-ON, misses only SP2-hard same-tier *non-subsumptions* → FP=0 preserved,
+  needs another implement+measure cycle); (c) accept the 2×. Not merged to main pending this.

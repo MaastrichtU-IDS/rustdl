@@ -798,7 +798,6 @@ impl<'c> HyperEngine<'c> {
     /// (if `Some`) is `¬c` for the class with index `i`. No index rebuild needed
     /// (complements don't affect clause trigger indexes).
     #[must_use]
-    #[allow(dead_code)] // consumed by SP1 Task 3/4
     pub fn with_complements(mut self, map: Vec<Option<ClassId>>) -> Self {
         self.complements = map;
         self
@@ -806,7 +805,6 @@ impl<'c> HyperEngine<'c> {
 
     /// Enable SP1 restricted semantic branching + disjunct reordering.
     #[must_use]
-    #[allow(dead_code)] // consumed by SP1 Task 3/4
     pub fn with_semantic_branching(mut self) -> Self {
         self.semantic_branching = true;
         self

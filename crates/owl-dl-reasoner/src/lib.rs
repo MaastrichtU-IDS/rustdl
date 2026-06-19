@@ -830,6 +830,15 @@ pub fn anywhere_blocking_enabled() -> bool {
     std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
 }
 
+/// SP1 wedge semantic branching (`RUSTDL_WEDGE_SEMANTIC_BRANCHING`). **Default
+/// off** during build/validation; flip to default-on after the FP=0
+/// byte-identical corpus gate passes. When off, the wedge disjunction loop is
+/// byte-identical to pre-SP1.
+#[must_use]
+pub(crate) fn semantic_branching_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_SEMANTIC_BRANCHING").is_some_and(|v| v == "1")
+}
+
 /// Project flag for the Konclude snapshot cache. When ON,
 /// `subsumes_via_tableau` consults a per-class snapshot-replay
 /// cache ahead of the wedge.
@@ -1106,7 +1115,6 @@ pub(crate) struct HyperCache {
     /// SP1 literal-complement map (`c.index()` → `¬c`), built by the §2
     /// complement machinery during `build`. Threaded into every engine for
     /// semantic branching.
-    #[allow(dead_code)] // consumed by SP1 Task 3/4
     complements: Vec<Option<owl_dl_core::ir::ClassId>>,
 }
 
@@ -1289,6 +1297,11 @@ impl HyperCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
+        if crate::semantic_branching_enabled() {
+            engine = engine
+                .with_complements(self.complements.clone())
+                .with_semantic_branching();
+        }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
     }
@@ -1326,6 +1339,11 @@ impl HyperCache {
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::semantic_branching_enabled() {
+            engine = engine
+                .with_complements(self.complements.clone())
+                .with_semantic_branching();
         }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
@@ -1381,6 +1399,11 @@ impl HyperCache {
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::semantic_branching_enabled() {
+            engine = engine
+                .with_complements(self.complements.clone())
+                .with_semantic_branching();
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,

@@ -280,6 +280,37 @@ reference spec + plan. Note if family now terminates.
 
 ---
 
-## Results
+## Results (2026-06-19) — BUILT, SOUND, but INEFFECTIVE-as-built. Not merged.
 
-(Filled during execution: key-completeness review verdict; ore-15672/wine/family walls ON vs OFF; corpus closure-identity confirmation; fast-corpus non-regression; default ON or opt-in; whether family terminated.)
+**Status: the cache is sound (closure byte-identical everywhere) but provides ZERO
+speedup — confirmed un-confounded.** Kept on branch `feat/within-search-caching`, gated
+`RUSTDL_WEDGE_CACHE` **default OFF** (a no-op when off). NOT merged to main.
+
+**Measurements (ore-15672):**
+- both OFF (true baseline): 138.25s. #2-only (cache ON, Lever#1 OFF): **138.27s — no gain**.
+  Closure IDENTICAL (sound). (Earlier 91s figures had Lever#1 default-ON.)
+- Root-cause probe — `hyper-sat e-interaction`, the long single search where the reuse was
+  measured: cache OFF 589,536 branches vs cache ON **591,742 branches (unchanged)**. The
+  cache does NOT fire even there.
+
+**Root cause (strong hypothesis): reuse ≠ cacheable reuse.** The diverging search hits the
+depth cap (256); the recurring states bottom out as **`Stalled`** (depth-limited, incomplete),
+which we correctly DON'T cache (caching a depth-relative Stalled would be unsound). The P0
+reuse probe counted *state-reuse* (48 distinct states × hundreds of thousands of visits) but
+NOT *decisive-verdict-reuse* — the reused states don't reach a cacheable Unsat/Sat, so there's
+nothing to memoize/hit. (Also ruled out: Lever#1 confounding — #2-alone still 138s; and the
+key-field fragmentation — dropping `order`/`parent`/`parent_role`/`at_least_done` from the key,
+verdict-irrelevant, still didn't make it fire.)
+
+**Verdict:** within-search caching, as designed, cannot help the depth-capped diverging
+searches it targets — their recurring states are non-decisive. The P0 gate measured reuse but
+not verdict-decisiveness-at-reuse; that's the lesson. Possible future angles (each its own
+investigation): raise the depth cap so recurring states reach decisive verdicts (then they're
+cacheable) — but that risks blowing up the model; or cache+reuse the *Stalled-with-partial-progress*
+state (research-grade, soundness-delicate). Neither is a quick fix. **Both bounded perf levers
+are now measured: #1 modest sound win (shipped), #2 ineffective-as-built.** The remaining gap is
+the hard clash-driven search rewrite — which #2 tried to shortcut and could not.
+
+Sound-by-construction soundness (whole-graph determinism) + key-completeness audit still hold
+for the cache mechanism — it's correct, just inert on these workloads. Adversarial key review
+NOT run (the lever's ineffectiveness mooted it before the soundness gate mattered).

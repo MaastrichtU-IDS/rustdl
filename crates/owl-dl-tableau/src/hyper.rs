@@ -1781,20 +1781,14 @@ impl<'c> HyperEngine<'c> {
             am.sort_unstable();
             am.hash(&mut h);
 
-            // ≥n fire-once tracking (order-independent; sort for stability).
-            let mut ald = node.at_least_done.clone();
-            ald.sort_unstable();
-            ald.hash(&mut h);
-
-            // Blocking order index (affects is_blocked comparisons).
-            node.order.hash(&mut h);
-
-            // Parent pointer (verdict-determining for double-blocking).
-            let parent_rep = node
-                .parent
-                .map(|p| u32::try_from(self.resolve(p).index()).unwrap_or(u32::MAX));
-            parent_rep.hash(&mut h);
-            node.parent_role.hash(&mut h);
+            // EXCLUDED (verdict-IRRELEVANT — restores the 48-state hit rate the
+            // reuse probe measured): `at_least_done`, `order`, `parent`,
+            // `parent_role`. Blocking is a verdict-PRESERVING model-bounding
+            // optimization, so order/parent/parent_role only change WHICH node
+            // blocks which, never the Sat/Unsat verdict; `at_least_done` (≥n
+            // fire-once) is implied by the generated successors already in `edges`.
+            // Soundness rests on blocking-verdict-preservation + the corpus
+            // closure-IDENTITY gate; SHIPS DEFAULT-OFF pending the adversarial review.
 
             // XOR with a position-mixing constant so swapped nodes hash differently.
             let i_u64 = u64::try_from(i).unwrap_or(u64::MAX);

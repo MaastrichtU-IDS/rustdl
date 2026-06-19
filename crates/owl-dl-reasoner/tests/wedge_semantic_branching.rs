@@ -97,3 +97,21 @@ Ontology(
     let _g = EnvGuard::set("RUSTDL_WEDGE_SEMANTIC_BRANCHING", "1");
     assert_eq!(sat(&ont, "urn:r#A"), HyperResult::Sat);
 }
+
+// Semantic branching must NOT break disjunctive-Unsat proofs. A ≡ (B ⊔ C),
+// A ⊑ ¬B, A ⊑ ¬C ⟹ A ⊑ ⊥ (unsat) — both disjuncts clash. Flag-on must still
+// return Unsat (a dropped clash would be a MISSED subsumption).
+#[test]
+fn semantic_branching_preserves_unsat() {
+    let ont = load(
+        "Prefix(:=<urn:u#>)
+Ontology(
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+  EquivalentClasses(:A ObjectUnionOf(:B :C))
+  SubClassOf(:A ObjectComplementOf(:B))
+  SubClassOf(:A ObjectComplementOf(:C))
+)",
+    );
+    let _g = EnvGuard::set("RUSTDL_WEDGE_SEMANTIC_BRANCHING", "1");
+    assert_eq!(sat(&ont, "urn:u#A"), HyperResult::Unsat, "A must still be unsat");
+}

@@ -1743,9 +1743,14 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            let order: Vec<usize> = if self.semantic_branching {
+                self.reorder_disjunction_heads(ci, node, &binding)
+            } else {
+                (0..head_len).collect()
+            };
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
-            for k in 0..head_len {
+            for &k in &order {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
@@ -1842,6 +1847,37 @@ impl<'c> HyperEngine<'c> {
         self.block_index = saved.block_index;
         self.snapshot_origin = saved.origin;
         self.stats.restores += 1;
+    }
+
+    /// SP1 disjunct score (lower tried first): 3 = the atom's complement is
+    /// already in the target's label (asserting it clashes immediately) ⇒ last;
+    /// 2 = generating/compound (`Exists`/`AtLeast`/`AtMost`) ⇒ creates a
+    /// successor or fires a merge; 1 = plain `Class`/`Equal`/`Role`.
+    fn score_disjunct(&self, atom: Atom, node: HNode, binding: &Binding) -> u8 {
+        match atom {
+            Atom::Class(c, v) => {
+                if let Some(target) = resolve_var(v, node, binding)
+                    && let Some(neg) = self.complement_of(c)
+                {
+                    let t = self.resolve(target);
+                    if self.nodes[t.index()].labels.binary_search(&neg).is_ok() {
+                        return 3;
+                    }
+                }
+                1
+            }
+            Atom::Exists(..) | Atom::AtLeast(..) | Atom::AtMost(..) => 2,
+            Atom::Role(..) | Atom::Equal(..) => 1,
+        }
+    }
+
+    /// SP1: indices of clause `ci`'s head atoms, cheapest-first. Stable on the
+    /// original index (deterministic). Identity order if scoring is uniform.
+    fn reorder_disjunction_heads(&self, ci: usize, node: HNode, binding: &Binding) -> Vec<usize> {
+        let head = &self.clauses[ci].head;
+        let mut idx: Vec<usize> = (0..head.len()).collect();
+        idx.sort_by_key(|&k| (self.score_disjunct(head[k], node, binding), k));
+        idx
     }
 
     /// Find an *open* disjunctive clause: one whose body matches at

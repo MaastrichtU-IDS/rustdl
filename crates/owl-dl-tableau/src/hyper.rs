@@ -343,6 +343,15 @@ pub enum HyperResult {
     Stalled,
 }
 
+/// A DECISIVE wedge verdict memoized per full graph-state within one search.
+/// Never `Stalled` (depth-relative). `Unsat`/`Sat` are absolute verdicts for
+/// a given closure-saturated graph, valid at any remaining depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedVerdict {
+    Unsat,
+    Sat,
+}
+
 /// Per-run search instrumentation, read after [`HyperEngine::decide`]
 /// to interpret a wall measurement: a `Sat` reached with
 /// `branches_taken == 0` was decided by pure Horn propagation and
@@ -523,6 +532,15 @@ pub struct HyperEngine<'c> {
     /// construction; updated each time a window of [`DIV_WINDOW`]
     /// branches is consumed without triggering a Stalled.
     div_checkpoint: (u64, u64, usize),
+    /// Lever #2: when `true`, [`Self::solve`] memoizes decisive verdicts
+    /// (`Sat`/`Unsat`) keyed by the full closure-saturated graph state
+    /// within a single search. Off by default. Enable via
+    /// [`Self::with_wedge_cache`].
+    wedge_cache: bool,
+    /// Lever #2: within-search state→verdict memo. Keyed by
+    /// [`Self::full_state_key`]; never stores `Stalled`. Cleared at the
+    /// start of each [`Self::decide_with_deadline`] call.
+    cache: std::collections::HashMap<u64, CachedVerdict>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -705,6 +723,8 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            wedge_cache: false,
+            cache: std::collections::HashMap::new(),
         }
     }
 
@@ -749,6 +769,8 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            wedge_cache: false,
+            cache: std::collections::HashMap::new(),
         }
     }
 
@@ -780,6 +802,29 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// Opt into within-search state memoization (Lever #2). Off by default.
+    ///
+    /// When enabled, [`Self::solve`] memoizes decisive (`Sat`/`Unsat`) verdicts
+    /// keyed by the full closure-saturated graph state so that equivalent
+    /// sub-problems encountered in different branches are answered immediately.
+    /// Sound by construction: `Sat`/`Unsat` are absolute (depth-independent)
+    /// verdicts for the current graph state; `Stalled` is never cached.
+    /// On a cached-`Unsat` hit, `clash_deps` is set to `DepSet::ALL`
+    /// (conservative — the original dep-set is not stored).
+    ///
+    /// **Do not combine with `from_snapshot` / `from_snapshot_lazy` engines.**
+    /// A cache hit can short-circuit `solve` and skip the `add_label_via_backprop`
+    /// call that would otherwise set `snapshot_backprop_aborted`. A later
+    /// `replay_with_neg_sup` would then trust a verdict it should have
+    /// distrusted. The classify wedge only uses `new`/`new_with_prebuilt`
+    /// (no snapshot-origin nodes), so this combination never occurs in
+    /// production — but it must not be introduced silently.
+    #[must_use]
+    pub fn with_wedge_cache(mut self) -> Self {
+        self.wedge_cache = true;
+        self
+    }
+
     /// Test-only: disable BOTH NN-merge backjump-dep fixes (the
     /// merge-causation-dep folding in `merge_with_cause` and the
     /// `nn_tainted` clash widening), reproducing the pre-fix backjump-dep
@@ -791,6 +836,14 @@ impl<'c> HyperEngine<'c> {
     fn with_nn_taint_disabled(mut self) -> Self {
         self.nn_taint_disabled = true;
         self
+    }
+
+    /// Test-only: number of entries currently in the within-search state cache.
+    /// Non-zero after a `decide` call iff at least one decisive verdict was
+    /// memoized.
+    #[cfg(test)]
+    fn cache_len(&self) -> usize {
+        self.cache.len()
     }
 
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
@@ -1297,6 +1350,7 @@ impl<'c> HyperEngine<'c> {
         deadline: Option<Instant>,
     ) -> HyperResult {
         self.stats = SearchStats::default();
+        self.cache.clear();
         self.init_depth = max_depth;
         self.deadline = deadline;
         self.solve(max_depth)
@@ -1623,6 +1677,8 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            wedge_cache: false,
+            cache: std::collections::HashMap::new(),
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices
@@ -1652,6 +1708,137 @@ impl<'c> HyperEngine<'c> {
             let _ = engine.merge(HNode(a), HNode(b));
         }
         engine
+    }
+
+    /// Compute a u64 hash of the full closure-saturated graph state that
+    /// determines [`Self::solve`]'s verdict. Called only when
+    /// [`Self::wedge_cache`] is `true`, immediately after
+    /// [`Self::horn_fixpoint`] returns `Sat` (worklist empty).
+    ///
+    /// **Soundness invariants** (correctness of the cache):
+    /// - Only canonical representative nodes contribute (non-reps are absorbed;
+    ///   their data lives on the rep after `merge`).
+    /// - Edges/preds and parent pointers are resolved through the union-find so
+    ///   two structurally-equivalent states hash identically regardless of
+    ///   internal merge history.
+    /// - Dep-tracking fields (`label_deps`, `at_most_dep`, `at_most_tainted`,
+    ///   `birth_deps`, `nn_tainted`) are deliberately EXCLUDED — they are
+    ///   backjumping bookkeeping, not verdict-determining for the full search.
+    ///   Two states identical in every verdict-determining field yield the same
+    ///   Sat/Unsat outcome regardless of their dep-tracking differences.
+    /// - `nominals` is engine-level and fixed at construction; included for
+    ///   completeness (contributes via the NN-rule which can fire differently).
+    /// - XOR-accumulation over nodes makes the key order-independent (canonical
+    ///   nodes can be encountered in any index order without affecting the key).
+    fn full_state_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut acc: u64 = 0;
+        let n = self.nodes.len();
+        for i in 0..n {
+            let h_i = HNode(u32::try_from(i).unwrap_or(u32::MAX));
+            let rep = self.resolve(h_i);
+            if rep.index() != i {
+                continue; // only canonical representatives contribute
+            }
+            let node = &self.nodes[i];
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+
+            // Labels (already kept sorted by ClassId index via HyperNode::add).
+            node.labels.hash(&mut h);
+
+            // Outgoing edges: resolve targets through union-find; sort for
+            // order-independence (edges are pushed in arrival order, not sorted).
+            let mut edges: Vec<(Role, u32)> = node
+                .edges
+                .iter()
+                .map(|&(r, t)| {
+                    (
+                        r,
+                        u32::try_from(self.resolve(t).index()).unwrap_or(u32::MAX),
+                    )
+                })
+                .collect();
+            edges.sort_unstable();
+            edges.hash(&mut h);
+
+            // Incoming edges: resolve sources through union-find; sort.
+            let mut preds: Vec<(Role, u32)> = node
+                .preds
+                .iter()
+                .map(|&(r, s)| {
+                    (
+                        r,
+                        u32::try_from(self.resolve(s).index()).unwrap_or(u32::MAX),
+                    )
+                })
+                .collect();
+            preds.sort_unstable();
+            preds.hash(&mut h);
+
+            // Cardinality constraints (tuple is already Ord+Hash via derives).
+            let mut am = node.at_most.clone();
+            am.sort_unstable();
+            am.hash(&mut h);
+
+            // ≥n fire-once tracking (order-independent; sort for stability).
+            let mut ald = node.at_least_done.clone();
+            ald.sort_unstable();
+            ald.hash(&mut h);
+
+            // Blocking order index (affects is_blocked comparisons).
+            node.order.hash(&mut h);
+
+            // Parent pointer (verdict-determining for double-blocking).
+            let parent_rep = node
+                .parent
+                .map(|p| u32::try_from(self.resolve(p).index()).unwrap_or(u32::MAX));
+            parent_rep.hash(&mut h);
+            node.parent_role.hash(&mut h);
+
+            // XOR with a position-mixing constant so swapped nodes hash differently.
+            let i_u64 = u64::try_from(i).unwrap_or(u64::MAX);
+            acc ^= h
+                .finish()
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15u64.wrapping_add(i_u64));
+        }
+
+        // Engine-level state: neq relation (order-independent; canonicalize pairs).
+        let mut h2 = std::collections::hash_map::DefaultHasher::new();
+        let mut neq: Vec<(u32, u32)> = self
+            .neq
+            .iter()
+            .map(|&(a, b)| {
+                let x = u32::try_from(self.resolve(a).index()).unwrap_or(u32::MAX);
+                let y = u32::try_from(self.resolve(b).index()).unwrap_or(u32::MAX);
+                if x <= y { (x, y) } else { (y, x) }
+            })
+            .collect();
+        neq.sort_unstable();
+        neq.dedup();
+        neq.hash(&mut h2);
+
+        // Nominal range (fixed at construction but affects NN-rule).
+        self.nominals.hash(&mut h2);
+
+        acc.wrapping_add(h2.finish())
+    }
+
+    /// Record a decisive verdict in the cache (if enabled) and return it.
+    /// `Stalled` is never cached — it is depth-relative.
+    fn memoize(&mut self, key: Option<u64>, v: HyperResult) -> HyperResult {
+        if let Some(k) = key {
+            match v {
+                HyperResult::Unsat => {
+                    self.cache.insert(k, CachedVerdict::Unsat);
+                }
+                HyperResult::Sat => {
+                    self.cache.insert(k, CachedVerdict::Sat);
+                }
+                HyperResult::Stalled => {}
+            }
+        }
+        v
     }
 
     fn solve(&mut self, depth: usize) -> HyperResult {
@@ -1690,6 +1877,24 @@ impl<'c> HyperEngine<'c> {
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
+        // Lever #2: within-search state memoization. At this point the
+        // worklist is empty and the graph is closure-saturated — an ideal
+        // checkpoint because the state is quiescent and determines the
+        // subsequent verdict exactly. `Sat`/`Unsat` are absolute (not
+        // depth-relative), so a verdict reached at any depth is valid here.
+        let cache_key: Option<u64> = if self.wedge_cache {
+            let k = self.full_state_key();
+            match self.cache.get(&k).copied() {
+                Some(CachedVerdict::Unsat) => {
+                    self.clash_deps = DepSet::ALL; // conservative: original dep-set not stored
+                    return HyperResult::Unsat;
+                }
+                Some(CachedVerdict::Sat) => return HyperResult::Sat,
+                None => Some(k),
+            }
+        } else {
+            None
+        };
         // Disjunctive-head branching (H2) with dependency-directed
         // backjumping. The decision level of this frame is `d`; the
         // asserted disjunct inherits the clause body's dep-set ∪ {d}.
@@ -1711,7 +1916,7 @@ impl<'c> HyperEngine<'c> {
                 self.stats.disj_branches += 1;
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
-                    HyperResult::Sat => return HyperResult::Sat,
+                    HyperResult::Sat => return self.memoize(cache_key, HyperResult::Sat),
                     HyperResult::Unsat => {
                         let child_deps = self.clash_deps;
                         self.restore(saved);
@@ -1721,7 +1926,7 @@ impl<'c> HyperEngine<'c> {
                             // dep-set up, skipping the remaining
                             // disjuncts (and this whole decision).
                             self.clash_deps = child_deps;
-                            return HyperResult::Unsat;
+                            return self.memoize(cache_key, HyperResult::Unsat);
                         }
                         combined = combined.union(child_deps);
                     }
@@ -1737,7 +1942,7 @@ impl<'c> HyperEngine<'c> {
             // Every disjunct failed with `d` in its clash deps: the
             // decision is exhausted, so drop `d` from the propagated set.
             self.clash_deps = combined.remove(d);
-            return HyperResult::Unsat;
+            return self.memoize(cache_key, HyperResult::Unsat);
         }
         // `≤n` merge branching (H3c): merge one pair of the violating
         // node's successors per branch, recursing.
@@ -1751,7 +1956,7 @@ impl<'c> HyperEngine<'c> {
             // `docs/wedge-cardinality-clash-precheck.md`.
             if self.forced_distinct_exceeds(&succs, n) {
                 self.clash_deps = self.card_clash_deps(node, &succs);
-                return HyperResult::Unsat;
+                return self.memoize(cache_key, HyperResult::Unsat);
             }
             if depth == 0 {
                 return HyperResult::Stalled;
@@ -1767,9 +1972,10 @@ impl<'c> HyperEngine<'c> {
             // partitions (hence the Sat/Unsat outcome) is identical; only
             // the order-redundancy is removed. See
             // `docs/wedge-cardinality-clash-precheck.md`.
-            return self.solve_at_most(&succs, n as usize, depth);
+            let v = self.solve_at_most(&succs, n as usize, depth);
+            return self.memoize(cache_key, v);
         }
-        HyperResult::Sat
+        self.memoize(cache_key, HyperResult::Sat)
     }
 
     fn track_depth(&mut self, depth: usize) {
@@ -4730,5 +4936,203 @@ mod tests {
              decision via the derive_role_edge birth_deps fold so backjumping \
              cannot prune Q. A false Unsat here = the dep-fold regressed."
         );
+    }
+
+    // ── Lever #2: within-search state memoization ────────────────────────
+
+    /// Build a representative set of clause fixtures for the cache verdict-
+    /// identity test. Each fixture is decided twice — once without the cache
+    /// and once with it — and the verdicts must match exactly.
+    ///
+    /// Coverage requirements (from the task spec):
+    /// 1. An Unsat case.
+    /// 2. A Sat case.
+    /// 3. A multi-disjunct / multi-level branching case.
+    /// 4. A case with inverse edges + `≤n` + a merge/`neq` — the FP-suspect
+    ///    constructs where an incomplete `full_state_key` would diverge.
+    fn cache_fixtures() -> Vec<Vec<DlClause>> {
+        let role = nrole(0);
+        let role_inv = Role::Inverse(RoleId::new(0));
+        let role2 = nrole(1);
+        let (root, a, b, c, d1, d2, d3, e_cls) = (
+            cls(0),
+            cls(1),
+            cls(2),
+            cls(3),
+            cls(4),
+            cls(5),
+            cls(6),
+            cls(7),
+        );
+
+        // Fixture 1: simple Unsat — Horn derivation clashes immediately.
+        //   root → A, root ∧ A → ⊥
+        let f1 = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Class(a, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X), Atom::Class(a, X)],
+                head: vec![],
+            },
+        ];
+
+        // Fixture 2: simple Sat — Horn chain, no clash.
+        //   root → A → B → C
+        let f2 = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Class(a, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X)],
+                head: vec![Atom::Class(c, X)],
+            },
+        ];
+
+        // Fixture 3: multi-disjunct / multi-level — three independent root
+        // disjunctions `root → {D1 ⊔ D2}`, `root → {D2 ⊔ D3}`, and a clash
+        // only on (D1 ∧ D3), so some branches Sat and some Unsat. Tests that
+        // nested branching with cache produces the same final verdict.
+        //   root → D1 ⊔ D2
+        //   root → D2 ⊔ D3
+        //   D1 ∧ D3 → ⊥
+        let f3 = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Class(d2, X), Atom::Class(d3, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(d1, X), Atom::Class(d3, X)],
+                head: vec![],
+            },
+        ];
+
+        // Fixture 4: inverse edges + ≤1 + merge + neq — exercises the
+        // FP-suspect constructs. `root → ∃R.A` and `root → ∃R.B`, with
+        // `A ≠ B` (disjoint-labelled), and `root ⊑ ≤1 R`, so the two
+        // R-successors must merge but can't (they are disjoint-labelled) →
+        // Unsat. Also adds an inverse-leg clause `R(X,y) ∧ R⁻(y,z) → E(X)`
+        // so that the inverse trigger fires during fixpoint, exercising
+        // the `preds` part of the key.
+        let f4 = vec![
+            // root → ∃R.A
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, a, X)],
+            },
+            // root → ∃R.B
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            // A ∧ B → ⊥  (disjoint — makes merge impossible)
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Class(b, X)],
+                head: vec![],
+            },
+            // root ⊑ ≤1 R  (forces merge attempt)
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+            // R(X,y) ∧ R⁻(y,z) → E(X): inverse-leg clause; exercises preds.
+            DlClause {
+                body: vec![Atom::Role(role, X, 1), Atom::Role(role_inv, 1, 2)],
+                head: vec![Atom::Class(e_cls, X)],
+            },
+        ];
+
+        // Fixture 5: ≤1 R with mergeable successors (Sat). Same shape as f4
+        // but A and B are NOT disjoint, so the merge succeeds → Sat. Tests that
+        // a merge under ≤n correctly keyed returns Sat consistently.
+        let f5 = vec![
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, a, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            // No disjointness — A and B can coexist after merge.
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+        ];
+
+        // Fixture 6: two roles with a ≥2 + ≤1 clash (uses neq: the ≥2 rule
+        // creates two pairwise-≠ successors; ≤1 must merge them but ≠
+        // prevents it → Unsat). Tests neq in the key.
+        let f6 = vec![
+            // root ⊑ ≥2 R2  (generates two pairwise-≠ R2-successors)
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtLeast(role2, None, 2, X)],
+            },
+            // root ⊑ ≤1 R2  (cannot satisfy with two ≠-forced successors → Unsat)
+            DlClause {
+                body: vec![Atom::Class(root, X)],
+                head: vec![Atom::AtMost(role2, None, 1, X)],
+            },
+        ];
+
+        vec![f1, f2, f3, f4, f5, f6]
+    }
+
+    /// Lever #2 verdict-identity test: cache-on must match cache-off on every
+    /// fixture. A divergence means `full_state_key` is missing a
+    /// verdict-determining field.
+    ///
+    /// **Scope of this test (important):** this test verifies that enabling
+    /// the cache does NOT change any verdict — it guards the cache-insert
+    /// path is inert when there are no hits. It does NOT verify that cache
+    /// HITS actually occur on these fixtures, because a synthetic "diamond"
+    /// (same full graph-state reached via two distinct search paths) is
+    /// extremely hard to construct: every disjunction branch writes at least
+    /// one new label into root's label-set, and the per-node `order` field
+    /// diverges across partition choices in `solve_at_most`, so two
+    /// structurally-equivalent post-merge states hash differently. Key
+    /// completeness therefore rests on the by-construction argument (all
+    /// verdict-determining fields enumerated in `full_state_key`) and will be
+    /// validated end-to-end by the corpus differential (Task 2).
+    ///
+    /// The second assertion verifies that `memoize` insertion IS exercised:
+    /// every fixture that reaches the cache lookup point (i.e. `horn_fixpoint`
+    /// returns `Sat`, triggering the post-fixpoint code) must produce at least
+    /// one cache entry. Fixture 1 (f1) returns `Unsat` from `horn_fixpoint`
+    /// itself (before the cache-key computation) and is therefore excluded.
+    #[test]
+    fn wedge_cache_matches_uncached_verdict() {
+        for (idx, clauses) in cache_fixtures().into_iter().enumerate() {
+            let off = HyperEngine::new(&clauses, cls(0)).decide(256);
+            let mut eng = HyperEngine::new(&clauses, cls(0)).with_wedge_cache();
+            let on = eng.decide(256);
+            assert_eq!(
+                off, on,
+                "fixture {idx}: cache changed the verdict {off:?}→{on:?} \
+                 (key likely incomplete — check which field differs)"
+            );
+            // Every fixture except f1 (pure Horn → immediate Unsat before the
+            // cache-key computation) must produce at least one memoized entry.
+            // If this fails, the `memoize` insertion path was never reached.
+            if idx != 0 {
+                assert!(
+                    eng.cache_len() > 0,
+                    "fixture {idx}: cache was enabled but no entries were inserted — \
+                     memoize path was never reached (all decisive returns must call memoize)"
+                );
+            }
+        }
     }
 }

@@ -205,6 +205,27 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   that needs it; flag-off path is byte-identical to pre-SP1.1. Spec
   `docs/superpowers/specs/2026-06-19-classify-completeness-sp1.1-design.md`,
   plan `docs/superpowers/plans/2026-06-19-classify-completeness-sp1.1.md`.
+  Adaptive budget (perf Lever #1; gated `RUSTDL_ADAPTIVE_BUDGET`, **default
+  ON**) early-cuts a *diverging* wedge search — `is_diverging` fires when,
+  over a `DIV_WINDOW=500`-branch window, ~all branches failed
+  (`restores≈branches`, ≥98%) at saturated depth (`max_branch_depth` ==
+  the `HYPER_WEDGE_DEPTH` cap) — returning `Stalled` early instead of
+  burning the per-pair deadline. **Sound: FP=0 structurally** (early-cut
+  only ever yields "not subsumed", a MISS at worst) **and verdict-
+  preserving** (corpus MISSED=0, byte-identical closures — every real
+  subsumption proof completes within 500 branches, so none is cut; the
+  window size is the discriminator vs a converging Unsat proof). The
+  divergence is *thrashing through a tiny state set at stable node count*
+  (the #2 reuse probe found `e-interaction` revisits ~14 states ~40k×), so
+  a node-growth clause was deliberately dropped. **ore-15672 138→91s
+  (~34%)**; modest by design (many hard pairs saturate depth after >500
+  branches → cut later than the ~100ms ideal); lower `DIV_WINDOW` gains
+  more, each step gated by a fresh corpus MISSED net (convergence-risk
+  curve). `=0` reverts. Spec
+  `docs/superpowers/specs/2026-06-19-adaptive-budget-design.md`, plan
+  `docs/superpowers/plans/2026-06-19-adaptive-budget.md`; companion
+  scoping (incl. Lever #2 within-search-caching P0 = VIABLE-strong)
+  `docs/superpowers/specs/2026-06-19-perf-frontier-levers-scoping.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;

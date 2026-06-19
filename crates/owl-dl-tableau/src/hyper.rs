@@ -511,6 +511,18 @@ pub struct HyperEngine<'c> {
     /// [`Self::from_snapshot`]). `Some` only via
     /// [`Self::from_snapshot_lazy`].
     lazy_replay_state: Option<LazyReplayState>,
+    /// Lever #1: when `true`, [`Self::solve`] applies the divergence
+    /// predicate every [`DIV_WINDOW`] branches and returns
+    /// [`HyperResult::Stalled`] early if the search appears to be
+    /// diverging (depth-saturated, model-growing, ~all branches failing).
+    /// Off by default — preserves deadline-only behaviour + test calibration.
+    /// Enable via [`Self::with_adaptive_budget`].
+    adaptive_budget: bool,
+    /// Lever #1 checkpoint: `(branches_taken, restores, nodes_len)` at
+    /// the last divergence-window boundary. Reset to `(0, 0, 0)` on
+    /// construction; updated each time a window of [`DIV_WINDOW`]
+    /// branches is consumed without triggering a Stalled.
+    div_checkpoint: (u64, u64, usize),
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -645,6 +657,21 @@ pub fn build_disjoint_pairs(clauses: &[DlClause]) -> std::collections::HashSet<(
     set
 }
 
+/// Divergence predicate (Lever #1): a wedge search is making no progress toward a
+/// satisfying completion when, over a window of `db` branches, ~all failed
+/// (`dr`/`db` ≥ θ) at saturated branch depth. θ = 0.98.
+///
+/// NOTE: an earlier `model_grew` clause was DROPPED — the #2 reuse probe showed the
+/// divergence is THRASHING through a tiny state set at STABLE node count (not
+/// unbounded growth), so a growth clause never fires. The discriminator against a
+/// converging Unsat proof (which also has restores≈branches at depth) is the WINDOW
+/// SIZE `N`: a real proof terminates within `N` branches; only a search still
+/// all-failing-at-cap after `N` branches is cut. `N` is tuned via the corpus MISSED
+/// gate (raise until no real subsumption proof is cut).
+fn is_diverging(db: u64, dr: u64, depth_saturated: bool) -> bool {
+    depth_saturated && db > 0 && dr.saturating_mul(100) >= db.saturating_mul(98)
+}
+
 impl<'c> HyperEngine<'c> {
     /// Build an engine for `clauses` seeded with a single root node
     /// labelled `root`.
@@ -676,6 +703,8 @@ impl<'c> HyperEngine<'c> {
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
+            adaptive_budget: false,
+            div_checkpoint: (0, 0, 0),
         }
     }
 
@@ -718,6 +747,8 @@ impl<'c> HyperEngine<'c> {
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
+            adaptive_budget: false,
+            div_checkpoint: (0, 0, 0),
         }
     }
 
@@ -738,6 +769,14 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_precise_card_deps(mut self) -> Self {
         self.precise_card_deps = true;
+        self
+    }
+
+    /// Opt into adaptive early-cut of diverging searches (Lever #1). Off by default
+    /// (preserves deadline-only behavior + test calibration).
+    #[must_use]
+    pub fn with_adaptive_budget(mut self) -> Self {
+        self.adaptive_budget = true;
         self
     }
 
@@ -1582,6 +1621,8 @@ impl<'c> HyperEngine<'c> {
             snapshot_origin: vec![false; n],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
+            adaptive_budget: false,
+            div_checkpoint: (0, 0, 0),
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices
@@ -1618,6 +1659,31 @@ impl<'c> HyperEngine<'c> {
             && Instant::now() >= dl
         {
             return HyperResult::Stalled;
+        }
+        if self.adaptive_budget {
+            // Lever #1: divergence early-cut.  Sampled every DIV_WINDOW
+            // branches so the check itself costs O(1) amortized.
+            const DIV_WINDOW: u64 = 500;
+            let (b0, r0, _) = self.div_checkpoint;
+            let db = self.stats.branches_taken.saturating_sub(b0);
+            if db >= DIV_WINDOW {
+                let dr = self.stats.restores.saturating_sub(r0);
+                // depth counts DOWN (init_depth→0); track_depth records
+                // level = init_depth - depth + 1, peaking at init_depth (256)
+                // when a branch was taken at depth=1 (the last allowed level
+                // before depth==0 early-returns Stalled).  Saturated iff any
+                // branch reached that cap.
+                let cap = u32::try_from(self.init_depth).unwrap_or(u32::MAX);
+                let depth_saturated = self.stats.max_branch_depth >= cap;
+                if is_diverging(db, dr, depth_saturated) {
+                    return HyperResult::Stalled;
+                }
+                self.div_checkpoint = (
+                    self.stats.branches_taken,
+                    self.stats.restores,
+                    self.nodes.len(),
+                );
+            }
         }
         match self.horn_fixpoint(FIXPOINT_ITERS) {
             HyperResult::Unsat => return HyperResult::Unsat,
@@ -2766,6 +2832,14 @@ mod tests {
 
     fn cls(i: u32) -> ClassId {
         ClassId::new(i)
+    }
+
+    #[test]
+    fn is_diverging_fires_only_on_no_progress() {
+        assert!(is_diverging(5000, 4990, true)); // ~all failing at saturated depth
+        assert!(!is_diverging(5000, 1000, true)); // progressing (restores ≪ branches)
+        assert!(!is_diverging(5000, 4990, false)); // depth not saturated → not (yet) diverging
+        assert!(!is_diverging(0, 0, true)); // empty window
     }
 
     #[test]

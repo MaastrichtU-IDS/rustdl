@@ -187,6 +187,24 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   harmless controls, family core). Spec
   `docs/superpowers/specs/2026-06-18-wedge-declared-inverse-symmetric-design.md`,
   plan `docs/superpowers/plans/2026-06-18-wedge-inverse-symmetric-sp1.md`.
+  SP1.1 (classify-completeness; gated `RUSTDL_CLASSIFY_SAME_TIER`,
+  **default OFF**) makes SP1's inverse/symmetric domain/range firing
+  reachable from the per-pair **classification** oracle (not just the
+  consistency path): Layer A threads the role hierarchy into
+  `HyperCache::{decide,classify_labels}`; Layer B broadens the
+  same-tier "defined-sup sweep" in `classify_top_down_internal` to
+  **label-driven** (the tier walk groups by EL/told subsumer count and
+  never compares same-tier classes, so engine-derived same-tier
+  subsumptions like `C ⊑ D` via inverse-domain on a generated
+  successor are missed). Sound (FP=0, oracle-confirmed, byte-identical
+  corpus closures). **Default OFF because it is corpus-invisible**
+  (closes zero benchmark subsumptions — the pattern occurs only in the
+  `sp11sub` synthetic, not in any fixture) **and costs ~2× wall**
+  (ore-15672 138→252s: it surfaces same-tier SP2-hard *non*-subsumptions
+  that burn deadlines). Opt-in (`=1`) for the rare DL-heavy ontology
+  that needs it; flag-off path is byte-identical to pre-SP1.1. Spec
+  `docs/superpowers/specs/2026-06-19-classify-completeness-sp1.1-design.md`,
+  plan `docs/superpowers/plans/2026-06-19-classify-completeness-sp1.1.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;

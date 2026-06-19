@@ -1509,6 +1509,31 @@ pub(crate) fn classify_top_down_internal(
         }
         set.into_iter().collect()
     };
+    // SP1.1 Layer B: broaden the sweep's sup-side from defined-classes-only to
+    // LABEL-DRIVEN. With the classify oracle now hierarchy-aware (Layer A),
+    // `labels(cand)` includes inverse/symmetric-domain-derived subsumers, so any
+    // such sup appears in some label set. Union those in; the existing
+    // label-gated sweep body then tests them (a sup in no label set adds zero
+    // oracle calls). Sound: the sweep only ADDS candidate pairs; every recorded
+    // subsumption is oracle-confirmed and the label gate only prunes.
+    // DEFAULT OFF (RUSTDL_CLASSIFY_SAME_TIER=1 to enable): corpus-invisible gain
+    // at ~2× wall cost. When off, sweep_sups == defined_sups (pre-SP1.1 behavior).
+    let sweep_sups: Vec<usize> = if crate::classify_same_tier_enabled() {
+        let mut set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
+        for oracle in &label_cache {
+            if let crate::LabelOracle::Sat(labels) = oracle {
+                for &sup_id in labels {
+                    let i = sup_id.index() as usize;
+                    if i < n && !unsatisfiable_idxs.contains(&i) {
+                        set.insert(i);
+                    }
+                }
+            }
+        }
+        set.into_iter().collect()
+    } else {
+        defined_sups.clone()
+    };
     // Sweep budget: honour the caller's per_pair_timeout so that
     // pairs requiring more than the default 200 ms (e.g. ones that
     // need the hyper wedge but converge in 1–5 s) aren't silently
@@ -1519,7 +1544,7 @@ pub(crate) fn classify_top_down_internal(
     // sub-second via direct probe but exceed 200 ms under the
     // top-down classifier's tier-parallel load.
     let sweep_budget = per_pair_timeout.unwrap_or(std::time::Duration::from_millis(200));
-    for &sup in &defined_sups {
+    for &sup in &sweep_sups {
         let sup_id =
             owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));
         // Parallel test of candidate subs. Skip pairs already known via

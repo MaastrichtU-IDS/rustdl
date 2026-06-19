@@ -157,46 +157,53 @@ with configurable depth + stats + cache toggle. Then:
 proxy diagnostics burned effort; the lesson is the perf playbook's own rule — *confirm
 the frame on the real classify per-pair search*, which §1–§5 did not.
 
-## 6d. BREAKTHROUGH (2026-06-19, R0 disentangler PAID OFF) — it's a CONSTRUCTION pathology, likely CHEAP
+## 6d. ~~BREAKTHROUGH~~ FALSIFIED (2026-06-19) — the "0.00s ABox construction" was a measurement artifact
 
-The R0 disentangler confirmed the live clue and **reframes the whole rewrite**:
-**`sat(ewe ⊓ ¬sup)` decided via the ABox construction terminates in 0.00–0.01s
-(`consistent` = not-subsumed, the CORRECT verdict) for EVERY tested timed-out pair**
-(`¬task`, `¬design-choice`, `¬ontology-project-execution`, `¬rational-agent`,
-`¬communication-situation`) — the *identical logical queries* that classify's
-**Q-clause construction thrashes on** (1000ms timeout × 109 pairs = the 138s).
+The §6d "breakthrough" (ABox construction decides `sat(ewe ⊓ ¬sup)` in 0.00–0.01s) is
+**WRONG and retracted.** Re-measured on the genuine probe file (full ore-15672 +
+`ClassAssertion(x, ewe)` + `ClassAssertion(x, ¬task)`): `rustdl consistent` takes **10.3s**
+and returns **`consistent (incomplete)` by TIMEOUT-DEFAULT** (`wedge Stalled → bounded
+tableau fall-through → timed out 10000ms → reporting consistent`). It is a give-up that
+happens to match "not-subsumed" for these (genuinely non-subsumed) pairs — NOT a sound
+fast decision. The prior "0.00s" almost certainly measured `x:ewe` ALONE (trivially
+satisfiable); the `¬sup` is what bites. There is no construction shortcut. Lesson:
+"validate before declaring" caught a false lead — the proxy mistake, again.
 
-**Same engine, same query, ~10⁴× difference ⟹ the bottleneck is the classify per-pair
-oracle's QUERY CONSTRUCTION** (fresh Q-class ≡ sub + clausified ¬sup, via
-`HyperCache::decide`), **not intractability and not the depth cap.** The textbook
-reduction `sub ⊑ sup ⟺ {x : sub ⊓ ¬sup} inconsistent` (ABox-seeded) is sound AND fast
-here; rustdl's Q-clause wedge reduction explodes the disjunctive search on the same
-content.
+## 6e. REAL R0 (2026-06-19) — the stall is STRATEGY-bound, and localized to `ewe`'s own expansion
 
-**This very likely makes the rewrite CHEAP, not multi-month:** route the classify
-per-pair subsumption oracle through the fast construction (or fix the Q-clause
-construction's extra disjunctive firing) instead of building anywhere-blocking. R1 is
-re-scoped accordingly.
+Built proper single-pair tooling (`decide_pair_probe` / `sat_class_probe` in `lib.rs`,
+test `tests/decide_pair_probe.rs`) that runs the EXACT production path
+(`HyperCache::decide` / `classify_labels` construction, all flags). Two decisive measurements:
 
-### Re-scoped R1 (was: anywhere-blocking → now: construction fix)
-1. **Root-cause WHY the ABox construction is fast** (which engine/route/seeding it uses
-   — same wedge with direct concept-seeding vs Q-class indirection? main tableau via the
-   consistency route? different absorption/GCI firing?). Pin the exact difference.
-2. **Prototype routing the classify per-pair oracle through the fast construction**
-   (e.g. `is_subclass_of(sub,sup)` → `is_consistent({x : sub ⊓ ¬sup})` via the fast path).
-3. **Gate:** ore-15672 classify collapses (138s → seconds) AND corpus closure-IDENTITY
-   (FP=0, byte-identical — the construction change must not alter any verdict) AND no
-   regression on the fast corpus. If verdict-identical + faster → ship.
-   CAVEAT: confirm the fast path is COMPLETE (decides, not gives-up) on these pairs — it
-   returned decisive `consistent` (model found), not Stalled, so it is; re-confirm corpus-wide.
+**(1) STRATEGY-bound, NOT depth-bound.** Real `HyperCache::decide(ewe, task)`, adaptive
+OFF, 30s/depth, depth cap swept 256 → **32768 (128×)**: **Stalled at EVERY depth, never
+`Sat`.** ~115k disjunctive branches in 30s, `restores == branches` (every branch clashes
+and backtracks), `max_branch_depth` always pins to the cap. Raising the cap 128× changes
+nothing. Blocking works fine (`blocks_fired ≈ block_eligible`, ~3.5M fires). So the search
+makes systematically bad disjunct choices and drives to any allowed depth without finding
+the model that demonstrably exists (Konclude classifies the whole ontology in 5ms).
+⟹ The "raise the cap + iterative `solve`" cheap fix is DEAD.
 
-If R1 lands, R2 (#2 caching) and the whole anywhere-blocking R-track may be UNNECESSARY —
-the construction fix alone could close the SROIQ-hard tail cheaply. Validate before
-declaring; the construction-difference must be understood (not a fluke of deadline/route).
+**(2) The thrash is in `ewe`'s OWN expansion, shared across all 109 pairs.** `sat(ewe)`
+ALONE (no `¬sup`) thrashes identically: Stalled, ~118k branches, `restores == branches`,
+never `Sat` — same signature as `ewe ⊓ ¬task`. So the `¬sup` interaction is NOT the
+problem; the per-pair loop redoes ewe's lost model-search 109×. **Alarming core fact:
+the wedge cannot find a model for a single SATISFIABLE class** (ewe is in the classified
+hierarchy). 118k all-clashing branches on a satisfiable class = the disjunctive
+model-search is fundamentally lost, not merely slow.
+
+**Implications for the lever (to reconcile with §2 NO-GOs before scoping R1):**
+- A per-pair construction trick cannot help (the single-class sat is already broken).
+- Two candidate directions, NOT yet chosen: (a) **global-model build** (Konclude-style:
+  compute the model(s) once, read off the hierarchy — the shared-expansion cost is paid
+  once, not 109×; cf. the `spec/global-model-rewrite` branch spec); (b) **disjunct-selection
+  heuristics** so the search finds the existing model (distinct from 1-UIP learning, which
+  §2's bjgap≈1 NO-GO targets — here the issue is *which* disjunct to try, not *what to
+  learn* from a clash). Re-validate the NO-GOs against (2) before committing.
 
 ## 7. Immediate next step
 
-Build **R0** (single-class probe tooling) + run **P0b** (depth-vs-thrash on
-`e-interaction`, cleanly isolated). That one experiment picks sub-project 1's lever
-(anywhere-blocking vs heuristics) and is the honest start of the rewrite — days, not
+R0 done (§6e). The lever choice ((a) global-model vs (b) disjunct-selection heuristics) is
+the next gate — measure WHY a satisfiable single class never reaches `Sat` (bad ordering
+vs pathological re-derivation) before scoping R1. The honest start of the rewrite — days, not
 months, and it converts the multi-month decision from a guess into a measured branch.

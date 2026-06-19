@@ -1134,6 +1134,11 @@ pub(crate) struct HyperCache {
     /// not just ABox-seeded nodes. Without this, classify misses subsumptions
     /// derivable only via an inverse-domain triggered on a generated successor.
     sub_roles: RoleHierarchy,
+    /// SP1 literal-complement map (`c.index()` → `¬c`), built by the §2
+    /// complement machinery during `build`. Threaded into every engine for
+    /// semantic branching.
+    #[allow(dead_code)] // consumed by SP1 Task 3/4
+    complements: Vec<Option<owl_dl_core::ir::ClassId>>,
 }
 
 impl HyperCache {
@@ -1219,6 +1224,17 @@ impl HyperCache {
         let base_indexes = std::sync::Arc::new(base_indexes_inner);
         let base_disjoint_pairs =
             std::sync::Arc::new(owl_dl_tableau::hyper::build_disjoint_pairs(&clauses));
+        // SP1: flatten the complement HashMap into an index-keyed Vec for the engine.
+        let max_idx = complements
+            .keys()
+            .chain(complements.values())
+            .map(|c| c.index() as usize)
+            .max()
+            .map_or(0, |m| m + 1);
+        let mut complements_vec: Vec<Option<ClassId>> = vec![None; max_idx];
+        for (&c, &nc) in &complements {
+            complements_vec[c.index() as usize] = Some(nc);
+        }
         Self {
             clauses,
             sup_neg,
@@ -1226,6 +1242,7 @@ impl HyperCache {
             base_indexes,
             base_disjoint_pairs,
             sub_roles,
+            complements: complements_vec,
         }
     }
 

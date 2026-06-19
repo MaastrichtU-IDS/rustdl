@@ -142,3 +142,32 @@ byte-identical to current main.
 Branching heuristics beyond the score-based reordering (SP2); nominal-aware unit
 propagation / BCP (SP3); (un)satisfiability label caching (SP4). SP1 is the
 foundation they build on.
+
+## Results — P0 NO-GO (2026-06-19)
+
+**SP1 built, sound, and verdict-correct — but INERT on wine. P0 gate FAILED.**
+
+- Implementation complete (commits 8c58409→cae01a2): complement threading, flag
+  (`RUSTDL_WEDGE_SEMANTIC_BRANCHING`, default off), disjunct reordering, restricted
+  semantic branching. 4 tests green incl. a cross-var **FP regression** caught by the
+  soundness review and fixed (the complement must be asserted on the disjunct var's
+  resolved target, not the body node — commit cae01a2). Flag-on SIO closure 8904=8904
+  FP=0/MISSED=0.
+- **P0 measurement (the gate):** `sat(CabernetFranc)` flag-on = `Sat` at **1,492,974
+  branches / 90 s — BYTE-IDENTICAL to the flag-off baseline (1,492,974)**. Zero
+  collapse (target was <150 k, ≥10×).
+- **Root cause (confirmed by the exact-equal branch count):** wine's disjunctions are
+  nominal (`ObjectOneOf`). `reorder_disjunction_heads` returns identity order (nominal
+  disjuncts all score 1 — no obvious-clash label at branch time), and `complement_of`
+  returns `None` for nominal classes (they are not in the §2 complement map), so the
+  semantic-branching carry-forward never fires. SP1's mechanism is structurally inert
+  on nominal disjunctions; it helps *object*-disjunction SROIQ (validated by the unit
+  tests) but the corpus has no object-disjunction stall — so SP1 is also
+  corpus-invisible.
+
+**Decision:** Do NOT flip the flag default-on (corpus-invisible + non-bite on the
+target). SP1 stays on this branch, flag-off, unmerged. **The real wine lever is the
+nominal axis — i.e. SP3 (nominal-aware unit propagation / registering complements +
+BCP for nominal disjunctions), a separate sub-project.** SP2 (object-disjunct
+heuristics) would also be inert on wine for the same reason. Tasks 6 (FP gate) and 7
+(flip default-on) are NOT executed — the P0 gate stops the build here, by design.

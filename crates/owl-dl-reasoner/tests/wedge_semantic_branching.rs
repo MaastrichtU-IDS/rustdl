@@ -98,6 +98,35 @@ Ontology(
     assert_eq!(sat(&ont, "urn:r#A"), HyperResult::Sat);
 }
 
+// FP regression (cross-var disjunct): a disjunct on a SUCCESSOR var must have its
+// semantic-branching complement asserted on the SUCCESSOR, not the body node.
+// C is satisfiable (the R-successor takes D2); a previous bug asserted ¬D1 on the
+// body node n0 (which carries D1 via C ⊑ D1), producing a spurious Unsat.
+// Flag-on MUST equal flag-off MUST equal Sat.
+#[test]
+fn semantic_branching_cross_var_no_fp() {
+    let ont = load(
+        "Prefix(:=<urn:x#>)
+Ontology(
+  Declaration(Class(:C)) Declaration(Class(:D1)) Declaration(Class(:D2))
+  Declaration(Class(:E)) Declaration(Class(:G)) Declaration(Class(:S))
+  Declaration(ObjectProperty(:R))
+  EquivalentClasses(:E ObjectIntersectionOf(:D1 :G))
+  SubClassOf(:C ObjectSomeValuesFrom(:R :S))
+  SubClassOf(:C ObjectAllValuesFrom(:R ObjectUnionOf(:D1 :D2)))
+  SubClassOf(:S ObjectComplementOf(:D1))
+  SubClassOf(:C :D1)
+)",
+    );
+    let off_guard = EnvGuard::remove("RUSTDL_WEDGE_SEMANTIC_BRANCHING");
+    let off = sat(&ont, "urn:x#C");
+    drop(off_guard);
+    let _on_guard = EnvGuard::set("RUSTDL_WEDGE_SEMANTIC_BRANCHING", "1");
+    let on = sat(&ont, "urn:x#C");
+    assert_eq!(off, HyperResult::Sat, "C is satisfiable (successor takes D2)");
+    assert_eq!(on, off, "semantic branching must NOT introduce a spurious Unsat (FP)");
+}
+
 // Semantic branching must NOT break disjunctive-Unsat proofs. A ≡ (B ⊔ C),
 // A ⊑ ¬B, A ⊑ ¬C ⟹ A ⊑ ⊥ (unsat) — both disjuncts clash. Flag-on must still
 // return Unsat (a dropped clash would be a MISSED subsumption).

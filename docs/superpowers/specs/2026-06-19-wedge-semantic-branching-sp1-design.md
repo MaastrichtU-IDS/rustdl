@@ -171,3 +171,23 @@ nominal axis — i.e. SP3 (nominal-aware unit propagation / registering compleme
 BCP for nominal disjunctions), a separate sub-project.** SP2 (object-disjunct
 heuristics) would also be inert on wine for the same reason. Tasks 6 (FP gate) and 7
 (flip default-on) are NOT executed — the P0 gate stops the build here, by design.
+
+## Full-corpus evaluation (2026-06-19, measured — not inferred)
+
+Evaluating the innovation against the WHOLE corpus (not just wine), flag-ON:
+
+- **Soundness (FP=0 gate, all fixtures):** byte-identical to the Konclude∩HermiT
+  oracle on every fixture — shoiq 16, bibtex 51, notgalen 27997, alehif 247, galen
+  32739, ore-10908 6001, ro 158, sio 8904, ore-15672 142, wine 499, sulo 653, pizza.
+  18 passed / 1 failed = the pre-existing `family` stretch sentinel (fails identically
+  flag-on/off). The cross-var FP fix (cae01a2) holds corpus-wide.
+- **Wall (classify, flag-OFF vs flag-ON):** galen 0.00/0.00 (EL control), alehif
+  0.06/0.07, ore-10908 0.18/0.15, ore-15672 0.04/0.05, sio 0.00/0.00, pizza
+  4.57/4.63 — all within run-to-run noise. SP1 is **wall-neutral corpus-wide**:
+  it neither accelerates nor regresses any fixture.
+
+**Verdict:** SP1 is sound + verdict-correct + wall-neutral + corpus-invisible. It is a
+correct, general object-disjunction capability with **no measurable corpus payoff**
+(the corpus has no object-disjunction stall; wine's is nominal). Not worth default-on.
+Left flag-off, unmerged, available as opt-in for a future object-disjunction-heavy
+workload. The wine lever remains SP3 (nominal axis).

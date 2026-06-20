@@ -39,8 +39,7 @@ fn parse_ofn(src: &str) -> SetOntology<RcStr> {
 }
 
 fn load_ofn_file(path: &str) -> SetOntology<RcStr> {
-    let src =
-        fs::read_to_string(Path::new(path)).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let src = fs::read_to_string(Path::new(path)).unwrap_or_else(|e| panic!("read {path}: {e}"));
     parse_ofn(&src)
 }
 
@@ -299,8 +298,15 @@ Ontology(
 fn is_consistent_flag_on_detects_family() {
     let o = load_ofn_file("../../ontologies/real/family.ofn");
     // SAFETY: serialized per-key; this test owns the flag for its duration.
-    unsafe { std::env::set_var("RUSTDL_ABOX_SATURATION", "1"); }
+    unsafe {
+        std::env::set_var("RUSTDL_ABOX_SATURATION", "1");
+    }
     let on = owl_dl_reasoner::is_consistent(&o).unwrap();
-    unsafe { std::env::set_var("RUSTDL_ABOX_SATURATION", "0"); }
-    assert!(!on, "family must be inconsistent with RUSTDL_ABOX_SATURATION=1");
+    unsafe {
+        std::env::set_var("RUSTDL_ABOX_SATURATION", "0");
+    }
+    assert!(
+        !on,
+        "family must be inconsistent with RUSTDL_ABOX_SATURATION=1"
+    );
 }

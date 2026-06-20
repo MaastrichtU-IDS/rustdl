@@ -126,8 +126,12 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     let mut chains2: Vec<((RoleId, bool), (RoleId, bool), (RoleId, bool))> = Vec::new();
 
     // SubObjectPropertyOf (chain len=3)
-    let mut chains3: Vec<((RoleId, bool), (RoleId, bool), (RoleId, bool), (RoleId, bool))> =
-        Vec::new();
+    let mut chains3: Vec<(
+        (RoleId, bool),
+        (RoleId, bool),
+        (RoleId, bool),
+        (RoleId, bool),
+    )> = Vec::new();
 
     // ObjectPropertyDomain: (role_id, is_inverse) → Vec<ClassId>
     let mut domains: HashMap<(RoleId, bool), Vec<ClassId>> = HashMap::new();
@@ -164,29 +168,29 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // Helper: extract `∃R.C` markers (Named R with atomic C) from a concept expression.
     // Recursively descends into And-bodies. Does NOT descend into Some/All/Not/Or.
     // Appends to `out`; used to build `existential_of`.
-    let collect_existentials =
-        |cid: owl_dl_core::ir::ConceptId, out: &mut Vec<(RoleId, ClassId)>| {
-            // Iterative stack-based traversal to avoid recursive closure issues
-            let mut stack = vec![cid];
-            while let Some(cur) = stack.pop() {
-                match pool.get(cur) {
-                    ConceptExpr::Some(r, filler) => {
-                        // Only Named(r) with atomic filler
-                        if !r.is_inverse() {
-                            if let ConceptExpr::Atomic(c) = pool.get(*filler) {
-                                out.push((r.role_id(), *c));
-                            }
+    let collect_existentials = |cid: owl_dl_core::ir::ConceptId,
+                                out: &mut Vec<(RoleId, ClassId)>| {
+        // Iterative stack-based traversal to avoid recursive closure issues
+        let mut stack = vec![cid];
+        while let Some(cur) = stack.pop() {
+            match pool.get(cur) {
+                ConceptExpr::Some(r, filler) => {
+                    // Only Named(r) with atomic filler
+                    if !r.is_inverse() {
+                        if let ConceptExpr::Atomic(c) = pool.get(*filler) {
+                            out.push((r.role_id(), *c));
                         }
                     }
-                    ConceptExpr::And(parts) => {
-                        for &p in parts.iter() {
-                            stack.push(p);
-                        }
-                    }
-                    _ => {}
                 }
+                ConceptExpr::And(parts) => {
+                    for &p in parts.iter() {
+                        stack.push(p);
+                    }
+                }
+                _ => {}
             }
-        };
+        }
+    };
 
     // Index TBox/RBox axioms
     for axiom in &internal.axioms {
@@ -449,8 +453,7 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // An individual X has marker (R, C) if X has some type A with A ⊑ ∃R.C.
     // Used for functional-role clash detection without anonymous witnesses.
     // Key: (IndividualId, RoleId), Value: set of ClassId fillers
-    let mut existential_markers: HashMap<(IndividualId, RoleId), HashSet<ClassId>> =
-        HashMap::new();
+    let mut existential_markers: HashMap<(IndividualId, RoleId), HashSet<ClassId>> = HashMap::new();
 
     // Worklists for types and edges
     let mut type_queue: VecDeque<(IndividualId, ClassId)> = VecDeque::new();
@@ -507,8 +510,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                     let ind_iri = vocab.individual_iri(ind);
                     let class_iri = vocab.class_iri(cls);
                     // Only trace specific individuals or Man/Woman types
-                    if (class_iri.ends_with("#Woman") || class_iri.ends_with("/Woman")
-                        || class_iri.ends_with("#Man") || class_iri.ends_with("/Man"))
+                    if (class_iri.ends_with("#Woman")
+                        || class_iri.ends_with("/Woman")
+                        || class_iri.ends_with("#Man")
+                        || class_iri.ends_with("/Man"))
                         && (ind_iri.ends_with("richard_john_bright_1962")
                             || ind_iri.ends_with("robert_david_bright_1965")
                             || ind_iri.ends_with("james_bright_1964"))
@@ -577,8 +582,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                         if trace {
                             let ind_iri = vocab.individual_iri(a);
                             let class_iri = vocab.class_iri(d);
-                            if (class_iri.ends_with("#Woman") || class_iri.ends_with("/Woman")
-                                || class_iri.ends_with("#Man") || class_iri.ends_with("/Man"))
+                            if (class_iri.ends_with("#Woman")
+                                || class_iri.ends_with("/Woman")
+                                || class_iri.ends_with("#Man")
+                                || class_iri.ends_with("/Man"))
                                 && (ind_iri.ends_with("richard_john_bright_1962")
                                     || ind_iri.ends_with("robert_david_bright_1965")
                                     || ind_iri.ends_with("james_bright_1964"))
@@ -784,9 +791,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                 for j in (i + 1)..filler_vec.len() {
                     let (f1, f2) = (filler_vec[i], filler_vec[j]);
                     // Check disjointness
-                    if disjoint_pairs.iter().any(|&(d1, d2)| {
-                        (d1 == f1 && d2 == f2) || (d1 == f2 && d2 == f1)
-                    }) {
+                    if disjoint_pairs
+                        .iter()
+                        .any(|&(d1, d2)| (d1 == f1 && d2 == f2) || (d1 == f2 && d2 == f1))
+                    {
                         if trace {
                             eprintln!(
                                 "[abox-sat] FUNCTIONAL-MARKER CLASH: {} has ∃{}.{} ∩ ∃{}.{} with Functional + Disjoint",
@@ -830,8 +838,14 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // full saturation. This is the precondition for the functional-hasSex clash:
     // Man ≡ Person ⊓ ∃hasSex.Male, Woman ≡ Person ⊓ ∃hasSex.Female,
     // Functional(hasSex) → same individual would need Male and Female → clash.
-    let man_id = vocab.classes().find(|(_, iri)| iri.ends_with("#Man") || iri.ends_with("/Man")).map(|(id, _)| id);
-    let woman_id = vocab.classes().find(|(_, iri)| iri.ends_with("#Woman") || iri.ends_with("/Woman")).map(|(id, _)| id);
+    let man_id = vocab
+        .classes()
+        .find(|(_, iri)| iri.ends_with("#Man") || iri.ends_with("/Man"))
+        .map(|(id, _)| id);
+    let woman_id = vocab
+        .classes()
+        .find(|(_, iri)| iri.ends_with("#Woman") || iri.ends_with("/Woman"))
+        .map(|(id, _)| id);
 
     if let (Some(man), Some(woman)) = (man_id, woman_id) {
         for (ind, ind_types) in &types {

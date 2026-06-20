@@ -274,7 +274,9 @@ fn find_one_inconsistent_functional_merge_saturation() {
          ClassAssertion(:C :x)",
     );
     let q = Entailment::Inconsistent;
-    let j = find_one_justification(&o, &q).unwrap().expect("inconsistent");
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("inconsistent");
     // All four logical axioms are load-bearing (drop any ⇒ consistent).
     assert_eq!(j.axioms.len(), 4, "got {:?}", dbgset(&j));
     // SOUNDNESS (the sacred gate): the returned core must genuinely entail ⊥.

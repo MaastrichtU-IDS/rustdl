@@ -209,7 +209,11 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 };
                 eprintln!(
                     "[justify-trace] call#{n} verdict={} {}ms engine={engine} axioms={}",
-                    if inconsistent { "INCONSISTENT" } else { "consistent" },
+                    if inconsistent {
+                        "INCONSISTENT"
+                    } else {
+                        "consistent"
+                    },
                     t.elapsed().as_millis(),
                     onto.iter().count()
                 );

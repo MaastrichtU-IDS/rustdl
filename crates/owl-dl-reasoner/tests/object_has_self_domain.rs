@@ -45,13 +45,22 @@ fn sub(o: &SetOntology<RcStr>, s: &str, t: &str) -> bool {
 #[test]
 fn self_restriction_propagates_domain_and_range() {
     let o = load();
-    assert!(sub(&o, "AspectFeature", "Verb"), "∃hasAspect.Self + domain=Verb ⟹ ⊑ Verb");
-    assert!(sub(&o, "AspectFeature", "Word"), "∃hasAspect.Self + range=Word ⟹ ⊑ Word");
+    assert!(
+        sub(&o, "AspectFeature", "Verb"),
+        "∃hasAspect.Self + domain=Verb ⟹ ⊑ Verb"
+    );
+    assert!(
+        sub(&o, "AspectFeature", "Word"),
+        "∃hasAspect.Self + range=Word ⟹ ⊑ Word"
+    );
 }
 
 #[test]
 fn self_restriction_no_spurious_subsumption() {
     // FP guard: Animal has no self-restriction ⟹ not a Verb.
     let o = load();
-    assert!(!sub(&o, "Animal", "Verb"), "Animal ⋢ Verb (no ∃hasAspect.Self)");
+    assert!(
+        !sub(&o, "Animal", "Verb"),
+        "Animal ⋢ Verb (no ∃hasAspect.Self)"
+    );
 }

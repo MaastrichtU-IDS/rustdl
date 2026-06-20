@@ -64,5 +64,8 @@ fn domain_gci_propagates_to_subject() {
 fn domain_gci_no_spurious_subsumption() {
     // FP guard: Atmosphere has no hasImpactOn-successor ⟹ NOT an Impact.
     let o = load();
-    assert!(!sub(&o, "Atmosphere", "Impact"), "Atmosphere ⋢ Impact (no R-successor)");
+    assert!(
+        !sub(&o, "Atmosphere", "Impact"),
+        "Atmosphere ⋢ Impact (no R-successor)"
+    );
 }

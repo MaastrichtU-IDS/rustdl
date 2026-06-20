@@ -2903,7 +2903,11 @@ fn lower_sub_class_of(
             // already complete (cf. the `ObjectPropertyDomain` arm).
             if matches!(pool.get(*body), ConceptExpr::Top) {
                 for head in atomic_operands_on_right(sup, pool) {
-                    rules.role_domains.entry(role.role_id()).or_default().push(head);
+                    rules
+                        .role_domains
+                        .entry(role.role_id())
+                        .or_default()
+                        .push(head);
                 }
                 return;
             }

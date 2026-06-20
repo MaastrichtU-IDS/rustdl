@@ -95,9 +95,11 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
     for (role, c, is_range) in dom_ranges {
         let cls = onto.concepts.atomic(c);
         if is_range {
-            onto.axioms.push(Axiom::ObjectPropertyRange { role, range: cls });
+            onto.axioms
+                .push(Axiom::ObjectPropertyRange { role, range: cls });
         } else {
-            onto.axioms.push(Axiom::ObjectPropertyDomain { role, domain: cls });
+            onto.axioms
+                .push(Axiom::ObjectPropertyDomain { role, domain: cls });
         }
     }
 }

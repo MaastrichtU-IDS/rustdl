@@ -2668,6 +2668,31 @@ fn lower_sub_class_of(
                     sup: atomic_sup,
                 });
             }
+            // `X ⊑ ∃R.Self` (ObjectHasSelf): X is both source and target of an
+            // R-edge to itself ⟹ `X ⊑ domain(R) ⊓ range(R)`. Without this the
+            // saturator drops SelfRestriction entirely, missing the whole
+            // self-loop → domain/range chain (olia/OBO: cost 461 MISSED on
+            // ore_ont_4827, e.g. AspectFeature ⊑ ∃hasAspect.Self, domain(hasAspect)
+            // = Verb ⟹ AspectFeature ⊑ Verb). Sound under-approximation. Domain /
+            // range tables are fully populated in Pass 1, before this Pass-2
+            // lowering, so reading them here is complete. Subclasses inherit via
+            // the atomic-subsumption closure (Y ⊑ X ⟹ Y ⊑ domain(R)).
+            for r in self_restriction_roles_on_right(sup, pool) {
+                let heads: Vec<ClassId> = rules
+                    .role_domains
+                    .get(&r)
+                    .into_iter()
+                    .chain(rules.role_ranges.get(&r))
+                    .flatten()
+                    .copied()
+                    .collect();
+                for head in heads {
+                    rules.atomic_subsumptions.push(AtomicSubsumption {
+                        sub: *sub_id,
+                        sup: head,
+                    });
+                }
+            }
             // Cluster-C lever: a told unqualified `≤n R` (top-level or an And
             // operand of the RHS) seeds `sub ⊑ MaxKey(n,R)` — the same opaque
             // key a defined class's `≤n R` conjunct lowers to, so the
@@ -3248,6 +3273,28 @@ fn atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<ClassId> {
                 _ => None,
             })
             .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Named roles `R` such that `SelfRestriction(R)` (`∃R.Self`, i.e.
+/// `ObjectHasSelf`) is `c` itself or a top-level `And` operand of `c`. Each
+/// witnesses `subject ⊑ ∃R.Self`: the subject has an R-edge to ITSELF, so it is
+/// both the source and the target of an R-edge ⟹ `subject ⊑ domain(R) ⊓ range(R)`.
+/// Inverse self-restrictions are skipped (the saturator's domain/range tables are
+/// keyed on forward roles). A sound under-approximation — the full `∃R.Self`
+/// semantics (the successor coincides with the node, so it also satisfies `∃R.C`
+/// for every `C` the node has) is otherwise dropped; the tableau handles those.
+fn self_restriction_roles_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<RoleId> {
+    let role_of = |cid: ConceptId| -> Option<RoleId> {
+        match pool.get(cid) {
+            ConceptExpr::SelfRestriction(r) if !r.is_inverse() => Some(r.role_id()),
+            _ => None,
+        }
+    };
+    match pool.get(c) {
+        ConceptExpr::SelfRestriction(_) => role_of(c).into_iter().collect(),
+        ConceptExpr::And(operands) => operands.iter().filter_map(|&op| role_of(op)).collect(),
         _ => Vec::new(),
     }
 }

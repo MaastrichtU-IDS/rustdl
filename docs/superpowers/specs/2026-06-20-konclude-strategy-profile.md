@@ -92,3 +92,34 @@ that is our SP1, confirmed inert on wine because wine's disjuncts are nominal (n
 
 Each lever is FP=0-gated against the canonical corpus (`docs/corpus.md`). Konclude source kept
 at `scratchpad/konclude-src` (throwaway clone).
+
+## Corpus-wide wedge profile (2026-06-20) — measured, corrects two earlier claims
+
+Profiled the canonical corpus (`docs/corpus.md`) with process-global counters over a
+1s/pair classify (branch `exp/corpus-profile`, unmerged — counters add hot-path overhead):
+
+| fixture | branches | backjumps | bj-rate | CI-unsat | cache-pot |
+|---|---:|---:|---:|---:|---:|
+| galen/notgalen/bibtex/alehif | 0 | 0 | — | 0 | — |
+| ro / sulo | 398 / 43 | 0 | 0% | 0 | 0% |
+| pizza | 82,134 | 2,358 | 2.87% | 52 | 0.2% |
+| ore-10908 | 5,489 | 0 | 0% | 0 | 0% |
+| ore-15672 | 296 | 0 | 0% | 0 | 0% |
+| sio | 3,735 | 0 | 0% | 5 | 12.8% |
+| **wine** | **92,526,281** | **15,126,714** | **16.35%** | 16 | **0.0%** |
+
+**Correction A (significant): wine is NOT bjgap≈1.** The full classify backjumps **16.35%**
+(15M backjumps). The earlier "bjgap≈1 / backjumping defeated" was specific to
+`sat(CabernetFranc)` — a 0.01%-backjump pathological *outlier* class — not wine-wide.
+**wine's wall is raw combinatorial scale: 92.5M branch decisions even WITH 16% working
+backjumping.** ⇒ L1 (scalar-deps / better backjumping) stays dead, but for the refined
+reason that backjumping already fires; the only wine-relevant lever is **branch-count
+reduction** (L2 deterministic-first ordering, L3 common-disjunct extraction, Konclude-style
+saturation keeping the tree small).
+
+**Correction B (minor): cache headroom is not strictly 0% everywhere** — sio is 12.8% (but
+only 5 in absolute terms). SP4/caching stays dead (negligible absolute headroom corpus-wide;
+wine 0.0%), but "0% everywhere" was an overstatement.
+
+**Method note:** don't generalize a wall from one class — `sat(CabernetFranc) ≠ wine`. The
+whole-corpus profile was necessary to catch Correction A.

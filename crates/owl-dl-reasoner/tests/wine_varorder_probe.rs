@@ -8,7 +8,7 @@ use std::time::Duration;
 
 #[test]
 #[ignore]
-fn wine_cf_varorder() {
+fn wine_cf_label_repetition() {
     // SAFETY: serialized single test.
     unsafe {
         std::env::set_var("RUSTDL_WEDGE_SEMANTIC_BRANCHING", "1");
@@ -21,18 +21,19 @@ fn wine_cf_varorder() {
             let mut r = Cursor::new(src.into_bytes());
             let ont: SetOntology<RcStr> = read_ofn(&mut r, ParserConfiguration::default()).unwrap().0;
             let cf = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/wine#CabernetFranc";
-            // 30s sample is enough to characterize the branch-decision distribution.
             let (res, s, wall) =
-                owl_dl_reasoner::sat_class_probe(&ont, cf, 256, Some(Duration::from_secs(30)))
+                owl_dl_reasoner::sat_class_probe(&ont, cf, 256, Some(Duration::from_secs(60)))
                     .unwrap()
                     .unwrap();
+            let total = s.total_branch_labels;
+            let distinct = s.distinct_branch_labels;
+            let rep = if distinct > 0 { total as f64 / distinct as f64 } else { 0.0 };
             println!("WINE CF: {res:?} wall={wall:.0}ms branches={}", s.branches_taken);
-            println!("VIABLE HISTOGRAM (v => #decisions branching a disjunction with v viable disjuncts):");
-            for (v, c) in s.branch_viable_hist.iter().enumerate() {
-                if *c > 0 {
-                    println!("  viable={v:<2} : {c}");
-                }
-            }
+            println!("LABEL REPETITION at branch points:");
+            println!("  total branch decisions   = {total}");
+            println!("  DISTINCT node-label sets = {distinct}");
+            println!("  avg reuse (total/distinct) = {rep:.1}x  (a per-node-label cache would hit ~{:.1}% of the time)",
+                if total > 0 { 100.0 * (1.0 - distinct as f64 / total as f64) } else { 0.0 });
         })
         .unwrap();
     child.join().unwrap();

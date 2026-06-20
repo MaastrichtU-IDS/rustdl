@@ -391,6 +391,12 @@ pub struct SearchStats {
     /// where the branched disjunction had `v` non-clashing disjuncts (capped at 15).
     /// `v<=1` = forced (propagation); `v>=2` = a genuine choice.
     pub branch_viable_hist: [u64; 16],
+    /// EXPERIMENT (wine label-repetition): total branch decisions observed.
+    pub total_branch_labels: u64,
+    /// Distinct node-label-sets seen at branch decisions (the size a
+    /// Konclude-style per-node-label sat cache would reach). `distinct / total`
+    /// far below 1 ⇒ heavy repetition ⇒ label caching is the lever.
+    pub distinct_branch_labels: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -441,6 +447,9 @@ pub struct HyperEngine<'c> {
     /// complement. Threaded from `HyperCache` (built by the §2 complement
     /// machinery). Used only when `semantic_branching` is on.
     complements: Vec<Option<ClassId>>,
+    /// EXPERIMENT (wine label-repetition): distinct node-label-set hashes seen at
+    /// branch decisions (cumulative across the whole search).
+    dbg_seen_labels: std::collections::HashSet<u64>,
     /// SP1: when `true`, the `solve` disjunction loop reorders disjuncts
     /// cheapest-first and carries failed `Class` disjuncts' literal complements
     /// onto subsequent siblings (restricted semantic branching). Off ⇒ the loop
@@ -709,6 +718,7 @@ impl<'c> HyperEngine<'c> {
             representative: vec![HNode(0)],
             sub_roles: None,
             complements: Vec::new(),
+            dbg_seen_labels: std::collections::HashSet::new(),
             semantic_branching: false,
             neq: Vec::new(),
             nominals: None,
@@ -755,6 +765,7 @@ impl<'c> HyperEngine<'c> {
             representative: vec![HNode(0)],
             sub_roles: None,
             complements: Vec::new(),
+            dbg_seen_labels: std::collections::HashSet::new(),
             semantic_branching: false,
             neq: Vec::new(),
             nominals: None,
@@ -1655,6 +1666,7 @@ impl<'c> HyperEngine<'c> {
             representative,
             sub_roles: None,
             complements: Vec::new(),
+            dbg_seen_labels: std::collections::HashSet::new(),
             semantic_branching: false,
             neq: Vec::new(),
             nominals: None,
@@ -1747,6 +1759,17 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            // EXPERIMENT (wine label-repetition): hash the branched node's label
+            // set; track distinct vs total to estimate a per-node-label cache's
+            // hit rate (the Konclude-style lever).
+            {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                self.nodes[node.index()].labels.hash(&mut h);
+                self.dbg_seen_labels.insert(h.finish());
+                self.stats.total_branch_labels += 1;
+                self.stats.distinct_branch_labels = self.dbg_seen_labels.len() as u64;
+            }
             let order: Vec<usize> = if self.semantic_branching {
                 self.reorder_disjunction_heads(ci, node, &binding)
             } else {
@@ -1973,11 +1996,7 @@ impl<'c> HyperEngine<'c> {
                 };
                 for binding in bindings {
                     if !self.any_head_satisfied(ci, node, &binding) {
-                        // FORWARD-CHECKING selection: real one-step propagation
-                        // lookahead (tentatively assert each disjunct + fixpoint).
-                        // Deps don't matter for the lookahead (restored), so EMPTY.
-                        let viable =
-                            self.fc_viable_count(ci, node, &binding, DepSet::EMPTY);
+                        let viable = self.viable_disjunct_count(ci, node, &binding);
                         if viable < best_viable {
                             best_viable = viable;
                             best = Some((ci, node, binding));

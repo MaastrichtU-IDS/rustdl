@@ -386,6 +386,17 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// EXPERIMENT (SP4 sound-lemma): total disjunction-exhaustion UNSAT returns.
+    pub total_unsat_exhaust: u64,
+    /// Of those, the CONTEXT-INDEPENDENT ones (propagated deps EMPTY after
+    /// discharging the local decision) — soundly cacheable as a label-keyed
+    /// UNSAT lemma by monotonicity.
+    pub total_ci_unsat: u64,
+    /// Distinct node-label sets among the context-independent UNSAT returns (the
+    /// size a sound UNSAT-lemma cache would reach). `total_ci_unsat /
+    /// distinct_ci_unsat` = sound reuse factor; `total_ci_unsat /
+    /// total_unsat_exhaust` = sound coverage.
+    pub distinct_ci_unsat: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -431,6 +442,9 @@ pub struct HyperEngine<'c> {
     /// time. `None` ⇒ reflexive only (every role subsumes just itself),
     /// the pre-HF2 behaviour.
     sub_roles: Option<RoleHierarchy>,
+    /// EXPERIMENT (SP4 sound-lemma): distinct label-set hashes of
+    /// context-independent UNSAT subtrees seen (cumulative).
+    dbg_sound_unsat: std::collections::HashSet<u64>,
     /// `HF3a` node inequalities `x ≠ y`. Stored as resolved pairs at
     /// insert time; queried through `resolve` so merges keep the
     /// relation correct without rewriting. The `≥n`-rule marks its
@@ -693,6 +707,7 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
+            dbg_sound_unsat: std::collections::HashSet::new(),
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,
@@ -737,6 +752,7 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
+            dbg_sound_unsat: std::collections::HashSet::new(),
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,
@@ -1611,6 +1627,7 @@ impl<'c> HyperEngine<'c> {
             worklist: Vec::new(),
             representative,
             sub_roles: None,
+            dbg_sound_unsat: std::collections::HashSet::new(),
             neq: Vec::new(),
             nominals: None,
             clash_deps: DepSet::EMPTY,
@@ -1737,6 +1754,21 @@ impl<'c> HyperEngine<'c> {
             // Every disjunct failed with `d` in its clash deps: the
             // decision is exhausted, so drop `d` from the propagated set.
             self.clash_deps = combined.remove(d);
+            // EXPERIMENT (SP4 sound-lemma): if the propagated deps are EMPTY, this
+            // node's disjunction failed independent of any ancestor decision ⇒
+            // the node (with its label) is UNSAT context-independently ⇒ soundly
+            // cacheable as a label-keyed UNSAT lemma (monotone).
+            {
+                self.stats.total_unsat_exhaust += 1;
+                if self.clash_deps == DepSet::EMPTY {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    self.nodes[node.index()].labels.hash(&mut h);
+                    self.dbg_sound_unsat.insert(h.finish());
+                    self.stats.total_ci_unsat += 1;
+                    self.stats.distinct_ci_unsat = self.dbg_sound_unsat.len() as u64;
+                }
+            }
             return HyperResult::Unsat;
         }
         // `≤n` merge branching (H3c): merge one pair of the violating

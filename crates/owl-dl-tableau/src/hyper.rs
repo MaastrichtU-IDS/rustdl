@@ -1747,13 +1747,6 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
-            // EXPERIMENT (wine pinpoint): record the chosen disjunction's viable count.
-            {
-                let v = self
-                    .fc_viable_count(ci, node, &binding, decision_deps)
-                    .min(15);
-                self.stats.branch_viable_hist[v] += 1;
-            }
             let order: Vec<usize> = if self.semantic_branching {
                 self.reorder_disjunction_heads(ci, node, &binding)
             } else {
@@ -1980,12 +1973,16 @@ impl<'c> HyperEngine<'c> {
                 };
                 for binding in bindings {
                     if !self.any_head_satisfied(ci, node, &binding) {
-                        let viable = self.viable_disjunct_count(ci, node, &binding);
+                        // FORWARD-CHECKING selection: real one-step propagation
+                        // lookahead (tentatively assert each disjunct + fixpoint).
+                        // Deps don't matter for the lookahead (restored), so EMPTY.
+                        let viable =
+                            self.fc_viable_count(ci, node, &binding, DepSet::EMPTY);
                         if viable < best_viable {
                             best_viable = viable;
                             best = Some((ci, node, binding));
                             if best_viable <= 1 {
-                                return best; // forced disjunct — can't do better
+                                return best; // forced/dead — can't do better
                             }
                         }
                     }

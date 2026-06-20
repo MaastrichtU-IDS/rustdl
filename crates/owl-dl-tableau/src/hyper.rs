@@ -1690,10 +1690,16 @@ impl<'c> HyperEngine<'c> {
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
+        // EXPERIMENT (L4): deterministic-only completion skips ⊔ disjunction
+        // branching but KEEPS the ≤n/functional merge block below (whose
+        // `forced_distinct_exceeds` pre-check is a DETERMINISTIC clash — the
+        // family inconsistency). FP-safe: a clash reached without ⊔ is real;
+        // skipping ⊔ only loses completeness.
+        let l4_det_only = std::env::var_os("RUSTDL_DET_ONLY").is_some();
         // Disjunctive-head branching (H2) with dependency-directed
         // backjumping. The decision level of this frame is `d`; the
         // asserted disjunct inherits the clause body's dep-set ∪ {d}.
-        if let Some((ci, node, binding)) = self.find_open_disjunction() {
+        if !l4_det_only && let Some((ci, node, binding)) = self.find_open_disjunction() {
             if depth == 0 {
                 return HyperResult::Stalled;
             }

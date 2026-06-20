@@ -258,6 +258,55 @@ fn find_one_inconsistent() {
 }
 
 #[test]
+fn find_one_inconsistent_functional_merge_saturation() {
+    // The family-kernel pattern the saturation-only oracle accelerates:
+    // x:C, C ⊑ ∃hasSex.Male ⊓ ∃hasSex.Female, Functional(hasSex),
+    // Disjoint(Male,Female) ⇒ x's single hasSex-value is both Male and Female
+    // ⇒ ⊥. Detected by the saturator's functional-merge of ∃-markers — so the
+    // oracle runs saturation-only (no wedge) on every QuickXplain sub-check.
+    let o = onto(
+        "Declaration(Class(:C)) Declaration(Class(:Male)) Declaration(Class(:Female))\n\
+         Declaration(ObjectProperty(:hasSex)) Declaration(NamedIndividual(:x))\n\
+         SubClassOf(:C ObjectIntersectionOf(ObjectSomeValuesFrom(:hasSex :Male) \
+                                            ObjectSomeValuesFrom(:hasSex :Female)))\n\
+         FunctionalObjectProperty(:hasSex)\n\
+         DisjointClasses(:Male :Female)\n\
+         ClassAssertion(:C :x)",
+    );
+    let q = Entailment::Inconsistent;
+    let j = find_one_justification(&o, &q).unwrap().expect("inconsistent");
+    // All four logical axioms are load-bearing (drop any ⇒ consistent).
+    assert_eq!(j.axioms.len(), 4, "got {:?}", dbgset(&j));
+    // SOUNDNESS (the sacred gate): the returned core must genuinely entail ⊥.
+    let (fixed, _) = logical_axioms(&o);
+    let core_onto = ontology_from(&fixed, &j.axioms);
+    assert!(
+        !owl_dl_reasoner::is_consistent(&core_onto).unwrap(),
+        "justification core must genuinely be inconsistent"
+    );
+}
+
+#[test]
+fn find_one_inconsistent_none_when_consistent() {
+    // Same shape WITHOUT disjointness ⇒ consistent ⇒ no justification. Guards
+    // the FP direction: the saturation oracle must never fabricate a conflict.
+    let o = onto(
+        "Declaration(Class(:C)) Declaration(Class(:Male)) Declaration(Class(:Female))\n\
+         Declaration(ObjectProperty(:hasSex)) Declaration(NamedIndividual(:x))\n\
+         SubClassOf(:C ObjectIntersectionOf(ObjectSomeValuesFrom(:hasSex :Male) \
+                                            ObjectSomeValuesFrom(:hasSex :Female)))\n\
+         FunctionalObjectProperty(:hasSex)\n\
+         ClassAssertion(:C :x)",
+    );
+    assert!(
+        find_one_justification(&o, &Entailment::Inconsistent)
+            .unwrap()
+            .is_none(),
+        "consistent ontology must yield no inconsistency justification"
+    );
+}
+
+#[test]
 fn sroiq_flags_minimality_not_guaranteed() {
     // Disjunction ⇒ out of EL/Horn ⇒ minimal_guaranteed = false.
     let o = onto(

@@ -88,6 +88,80 @@ const PROBE_A: &str = "urn:rustdl-justify-probe-a";
 const PROBE_B: &str = "urn:rustdl-justify-probe-b";
 const PROBE_INT: &str = "http://www.w3.org/2001/XMLSchema#integer";
 
+/// Diagnostic: count of oracle consistency checks issued this run (set
+/// `RUSTDL_JUSTIFY_TRACE=1` to emit one stderr line per check: verdict,
+/// wall-ms, and which engine answered).
+static JUSTIFY_ORACLE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn justify_trace_enabled() -> bool {
+    std::env::var_os("RUSTDL_JUSTIFY_TRACE").is_some_and(|v| v == "1")
+}
+
+thread_local! {
+    /// When set, the [`Entailment::Inconsistent`] oracle uses a saturation-only
+    /// consistency check — a SOUND refuter (clash ⇒ genuinely inconsistent;
+    /// no-clash ⇒ treated "consistent", i.e. "not refuted") — instead of the
+    /// full `is_consistent`, skipping the unbounded wedge/tableau. Enabled for an
+    /// `Inconsistent` justification ONLY when the full ontology's inconsistency is
+    /// itself saturation-detected, so QuickXplain converges on the (valid)
+    /// saturation-conflict. Soundness: with a sound refuter as the oracle, a
+    /// false-"consistent" can only cost *minimality* (QX keeps extra axioms),
+    /// never validity — the returned set always carries a real clash. Set
+    /// `RUSTDL_JUSTIFY_SAT_ORACLE=0` to force the full-`is_consistent` oracle.
+    static SATURATION_ORACLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard enabling [`SATURATION_ORACLE`] for its lifetime (restores prior).
+struct SatOracleGuard(bool);
+impl SatOracleGuard {
+    fn enabled() -> Self {
+        Self(SATURATION_ORACLE.with(|c| c.replace(true)))
+    }
+}
+impl Drop for SatOracleGuard {
+    fn drop(&mut self) {
+        let prev = self.0;
+        SATURATION_ORACLE.with(|c| c.set(prev));
+    }
+}
+
+fn sat_oracle_opt_out() -> bool {
+    std::env::var_os("RUSTDL_JUSTIFY_SAT_ORACLE").is_some_and(|v| v == "0")
+}
+
+/// `true` iff `onto` is inconsistent by the saturation refuter. SOUND but
+/// under-approximate: a clash is a genuine inconsistency; `false` means only
+/// "not refuted" (could be consistent, or inconsistent outside the saturation
+/// fragment) — never a consistency proof.
+fn saturation_inconsistent<A: ForIRI>(onto: &SetOntology<A>) -> bool {
+    owl_dl_core::convert::convert_ontology(onto)
+        .is_ok_and(|internal| crate::abox_saturation::saturate_abox_consistency(&internal).clash)
+}
+
+/// Enable the saturation-only oracle for an `Inconsistent` justification when the
+/// full candidate set is saturation-inconsistent (one convert+saturate, ~1.6s).
+/// Returns `None` (full-`is_consistent` oracle) otherwise — so non-saturation
+/// inconsistencies keep the complete behavior.
+fn maybe_saturation_oracle<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+) -> Option<SatOracleGuard> {
+    if sat_oracle_opt_out() || !matches!(q, Entailment::Inconsistent) {
+        return None;
+    }
+    if saturation_inconsistent(&ontology_from(fixed, all_candidates)) {
+        if justify_trace_enabled() {
+            eprintln!(
+                "[justify-trace] saturation oracle ENABLED (full inconsistency is saturation-detected)"
+            );
+        }
+        Some(SatOracleGuard::enabled())
+    } else {
+        None
+    }
+}
+
 /// Does `onto` entail `q`? Reduces to the public reasoner checks. The
 /// `DisjointClasses` case injects a fresh probe class `X ≡ a ⊓ b` and checks
 /// `X` unsatisfiable (probe = query encoding; never part of a justification).
@@ -117,7 +191,35 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
         Entailment::InstanceOf { individual, class } => {
             crate::is_instance_of(onto, class, individual)
         }
-        Entailment::Inconsistent => Ok(!crate::is_consistent(onto)?),
+        Entailment::Inconsistent => {
+            let sat_mode = SATURATION_ORACLE.with(std::cell::Cell::get);
+            if justify_trace_enabled() {
+                let n = JUSTIFY_ORACLE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let t = std::time::Instant::now();
+                let (inconsistent, engine) = if sat_mode {
+                    (saturation_inconsistent(onto), "saturation-only")
+                } else {
+                    let (consistent, stats) = crate::is_consistent_with_stats(onto)?;
+                    let engine = if stats.answered_by_saturation {
+                        "saturation"
+                    } else {
+                        "wedge/tableau"
+                    };
+                    (!consistent, engine)
+                };
+                eprintln!(
+                    "[justify-trace] call#{n} verdict={} {}ms engine={engine} axioms={}",
+                    if inconsistent { "INCONSISTENT" } else { "consistent" },
+                    t.elapsed().as_millis(),
+                    onto.iter().count()
+                );
+                Ok(inconsistent)
+            } else if sat_mode {
+                Ok(saturation_inconsistent(onto))
+            } else {
+                Ok(!crate::is_consistent(onto)?)
+            }
+        }
         Entailment::SubObjectProperty { sub, sup } => {
             let b: Build<A> = Build::new();
             inconsistent_with(
@@ -897,6 +999,7 @@ pub fn find_one_justification<A: ForIRI>(
     q: &Entailment,
 ) -> Result<Option<Justification<A>>, ReasonError> {
     let (fixed, all_candidates) = logical_axioms(onto);
+    let _sat_guard = maybe_saturation_oracle(&fixed, &all_candidates, q);
     let Some(candidates) = localized_candidates(&fixed, &all_candidates, q)? else {
         return Ok(None); // not entailed — nothing to justify
     };
@@ -951,6 +1054,7 @@ pub fn find_all_justifications<A: ForIRI>(
     max: usize,
 ) -> Result<Vec<Justification<A>>, ReasonError> {
     let (fixed, all_candidates) = logical_axioms(onto);
+    let _sat_guard = maybe_saturation_oracle(&fixed, &all_candidates, q);
     // Narrow to the query's ⊥-module up front: justification-preserving, so the
     // HST below still discovers *every* justification — over a far smaller set.
     let Some(candidates) = localized_candidates(&fixed, &all_candidates, q)? else {

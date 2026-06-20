@@ -53,6 +53,22 @@ clash's `max` decision level is meaningfully below the current level (Konclude-s
 vs always == current (genuine). If the max is below → scalar-max deps unlock backjumping →
 build it. If always == current → bjgap is real and scalar-max won't help either.
 
+## L1 P0 RESULT (2026-06-20): REFUTED — bjgap≈1 is genuine, not representational
+
+Ran the gating P0: disabled rustdl's merge-causation fold (`nn_taint_disabled`, which sets
+the fold's `cause_deps = EMPTY`) and re-measured wine `sat(CabernetFranc)` vs baseline.
+**Identical**: FOLD-ON 1,011,250 branches / 112 backjumps / Stalled; FOLD-OFF 1,010,408 /
+112 / Stalled. Removing the fold changes nothing ⇒ the dense dependencies are GENUINE, not
+an artifact of the set-union fold. And scalar-max vs set-union make the SAME backjump
+decision for the same dependency *content* (jump-past d ⟺ d∉deps ⟺ d<max(deps)); only the
+content (density) matters, and it's genuinely dense. **L1 is dead for wine** — Konclude's
+scalar-dep representation would not unlock backjumping here. The cheap P0 killed the
+multi-week dep-model change before building it. wine stays closed (caching dead by #6 +
+Konclude-confirmed; L1 dead by this P0). Konclude's wine speed must come from L2/L3
+(keeping the tree small so the genuinely-dense search never explodes) + saturation, NOT the
+dependency representation. The remaining LIVE, independent lever is **L4 (saturation
+consistency cascade) for the family CORRECTNESS gap**.
+
 ## Adoptable levers (prioritized)
 
 | # | Lever | Konclude evidence | rustdl target | Soundness | Effort |
@@ -68,9 +84,7 @@ that is our SP1, confirmed inert on wine because wine's disjuncts are nominal (n
 
 ## Recommendation
 
-1. **L1 P0 first** — it is the one finding that *revises* the "wine is unfixable bolt-on"
-   verdict. If bjgap≈1 is representational, scalar-max deps could unlock backjumping on wine
-   (and help family) — a real reopening. Cheap to measure, decisive.
+1. ~~L1 P0 first~~ **DONE — L1 REFUTED** (see L1 P0 RESULT above): bjgap≈1 is genuine; scalar-max deps won't help wine. wine stays closed.
 2. **L4** is the concrete **family** (correctness) lever and is independently valuable
    regardless of wine — saturate ABox individuals and catch the clash pre-tableau.
 3. **L2/L3** are sound, bounded tree-shrinkers worth doing if L1 lands.

@@ -1952,6 +1952,14 @@ struct TseitinAllocator {
     /// by `(role, body_class_id)` so repeated occurrences of the same
     /// `∃R.B` shape across different conjunctions share one marker.
     by_existential: HashMap<(RoleId, ClassId), ClassId>,
+    /// Cache for markers standing in for a *disjunctive* existential body
+    /// `∃R.(C1 ⊔ … ⊔ Cn)` used as an LHS conjunct. Keyed by `(role, sorted
+    /// alternatives)`. CRITICAL: this is a SEPARATE namespace from
+    /// `by_existential` — a union marker must never be the same synthetic as a
+    /// singleton `∃R.Ci` marker, or emitting the other alternatives' triggers
+    /// onto it would corrupt that singleton's meaning (an unsound FP — a class
+    /// with `∃R.Cj` would spuriously gain the `∃R.Ci` marker).
+    by_union_existential: HashMap<(RoleId, Vec<ClassId>), ClassId>,
     /// Stable synthetic atomic class per individual used as a nominal
     /// (`{a}`) in an existential body. Treated as an opaque atom
     /// (no subsumers, no triggers) — a 1:1 structural stand-in so the
@@ -1984,6 +1992,7 @@ impl TseitinAllocator {
             next_id: u32::try_from(num_original_classes).expect("class count fits in u32"),
             by_body: HashMap::new(),
             by_existential: HashMap::new(),
+            by_union_existential: HashMap::new(),
             nominal_by_ind: HashMap::new(),
             max_key_by_role: HashMap::new(),
             forall_key_by_role: HashMap::new(),
@@ -2072,6 +2081,43 @@ impl TseitinAllocator {
             head: marker,
         });
         self.by_existential.insert((role, body), marker);
+        marker
+    }
+
+    /// Get-or-allocate a FRESH synthetic marker for a *disjunctive*
+    /// existential body `∃R.(C1 ⊔ … ⊔ Cn)` appearing as an LHS conjunct.
+    /// Emits `∃R.Ci ⊑ marker` for every alternative, so any single
+    /// alternative satisfies the marker (sound: `∃R.Ci ⊑ ∃R.(C1 ⊔ … ⊔ Cn)`).
+    ///
+    /// CRITICAL — soundness: the marker is allocated in `by_union_existential`,
+    /// a namespace DISJOINT from the singleton `by_existential` markers. It must
+    /// never coincide with a singleton `∃R.Ci` marker: doing so (the prior bug)
+    /// added the other alternatives' triggers onto a singleton marker that
+    /// genuine `X ≡ ∃R.Ci ⊓ …` axioms also key on, so a class carrying only
+    /// `∃R.Cj` spuriously gained the `∃R.Ci` marker and the unentailed
+    /// subsumption `…∃R.Cj… ⊑ …∃R.Ci…` was derived. Memoized by
+    /// `(role, sorted alternatives)` so identical unions still share one marker.
+    fn introduce_union_existential_marker(
+        &mut self,
+        role: RoleId,
+        mut body_ids: Vec<ClassId>,
+        rules: &mut ElRules,
+    ) -> ClassId {
+        body_ids.sort_unstable();
+        body_ids.dedup();
+        if let Some(&existing) = self.by_union_existential.get(&(role, body_ids.clone())) {
+            return existing;
+        }
+        let marker = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        for &body in &body_ids {
+            rules.existential_triggers.push(ExistentialTrigger {
+                role,
+                body,
+                head: marker,
+            });
+        }
+        self.by_union_existential.insert((role, body_ids), marker);
         marker
     }
 
@@ -2708,30 +2754,24 @@ fn lower_sub_class_of(
                             salvageable = false;
                             break;
                         };
-                        // Allocate one marker for this existential
-                        // operand. If the body is `Or(C1, ..., Cn)`
-                        // we emit one trigger `∃R.Ci ⊑ marker` per
-                        // operand, all sharing the marker so any
-                        // operand satisfies it.
+                        // Allocate one marker for this existential operand.
+                        // A singleton body `∃R.C` shares the singleton
+                        // `by_existential` marker (correct — every `∃R.C`
+                        // genuinely means the same thing). A disjunctive body
+                        // `∃R.(C1 ⊔ … ⊔ Cn)` gets a FRESH dedicated union marker
+                        // (`by_union_existential`) with `∃R.Ci ⊑ marker` for each
+                        // alternative — it must NOT reuse a singleton `∃R.Ci`
+                        // marker, or the other alternatives' triggers would
+                        // corrupt that singleton (unsound FP). See
+                        // `introduce_union_existential_marker`.
                         let marker = if body_ids.len() == 1 {
                             tseitin.introduce_existential_marker(role.role_id(), body_ids[0], rules)
                         } else {
-                            let primary = tseitin.introduce_existential_marker(
+                            tseitin.introduce_union_existential_marker(
                                 role.role_id(),
-                                body_ids[0],
+                                body_ids,
                                 rules,
-                            );
-                            // Reuse the same marker for the alternative
-                            // bodies — emit additional triggers tying
-                            // each alternative ∃R.Cj to the same marker.
-                            for &alt_body in &body_ids[1..] {
-                                rules.existential_triggers.push(ExistentialTrigger {
-                                    role: role.role_id(),
-                                    body: alt_body,
-                                    head: primary,
-                                });
-                            }
-                            primary
+                            )
                         };
                         bodies.push(marker);
                     }

@@ -244,3 +244,48 @@ Ontology(
         "Inverse domain + disjoint clash test FAILED: expected inconsistent."
     );
 }
+
+/// Diagnostic test: verify 3-hop chain actually fires.
+/// R1(a,b) + R2(b,c) + R3(c,d) → S(a,d). Domain(S,C). a:D. Disjoint(C,D) → clash.
+#[test]
+fn chain3_fires_diagnostic() {
+    let src = r"
+Prefix(:=<http://chain3-diag/>)
+Ontology(
+  SubObjectPropertyOf(ObjectPropertyChain(:R1 :R2 :R3) :S)
+  ObjectPropertyDomain(:S :C)
+  DisjointClasses(:C :D)
+  ClassAssertion(:D :a)
+  ObjectPropertyAssertion(:R1 :a :b)
+  ObjectPropertyAssertion(:R2 :b :c)
+  ObjectPropertyAssertion(:R3 :c :d)
+)
+";
+    let onto = parse_ofn(src);
+    let found = sat_inconsistent(&onto);
+    assert!(
+        found,
+        "3-hop chain diagnostic FAILED: R1(a,b)+R2(b,c)+R3(c,d) should fire S(a,d) → clash"
+    );
+}
+
+/// Diagnostic: Man+Woman co-occurrence via domain rules → clash.
+#[test]
+fn brother_and_aunt_clash_diagnostic() {
+    let src = r"
+Prefix(:=<http://brother-aunt/>)
+Ontology(
+  ObjectPropertyDomain(:isBrotherOf :Man)
+  ObjectPropertyDomain(:isAuntInLawOf :Woman)
+  DisjointClasses(:Man :Woman)
+  ObjectPropertyAssertion(:isBrotherOf :diana :somebody)
+  ObjectPropertyAssertion(:isAuntInLawOf :diana :somebody2)
+)
+";
+    let onto = parse_ofn(src);
+    let found = sat_inconsistent(&onto);
+    assert!(
+        found,
+        "brother+aunt-in-law clash FAILED: diana should get both Man and Woman via domain"
+    );
+}

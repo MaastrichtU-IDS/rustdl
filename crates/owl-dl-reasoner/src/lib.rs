@@ -41,6 +41,7 @@
 //! Datatypes are scaffolded but not wired into reasoning yet.
 
 mod abox_check;
+pub mod abox_saturation;
 mod classify;
 pub mod justify;
 mod model_cache;
@@ -59,6 +60,25 @@ pub use realize::{
     is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
     realize_internal, realize_saturation_only, realize_saturation_only_internal,
 };
+
+/// Run the standalone `ABox` consequence-based saturator on `ontology` and return
+/// `true` iff a disjoint-class clash was detected under named-only semantics.
+///
+/// This is a sound but incomplete inconsistency check: it can only derive clashes
+/// that are reachable through named individuals and named edges — it does NOT
+/// generate anonymous witnesses for existential restrictions. See
+/// [`abox_saturation::saturate_abox_consistency`] for the diagnostic details.
+///
+/// # Errors
+///
+/// Returns a [`ReasonError`] if the ontology cannot be converted.
+pub fn abox_sat_inconsistent<A: horned_owl::model::ForIRI>(
+    o: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<bool, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(o)?;
+    let result = abox_saturation::saturate_abox_consistency(&internal);
+    Ok(result.clash)
+}
 
 /// Compute a sparse summary of the signature-locality partition
 /// (see [`docs/module-extraction-plan.md`]). Counts and the

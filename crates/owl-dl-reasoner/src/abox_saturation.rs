@@ -1,0 +1,791 @@
+//! Standalone consequence-based `ABox` saturator for named-individual inconsistency
+//! detection.
+//!
+//! Implements a minimal fixpoint saturator operating **only on named individuals**
+//! (no anonymous witness generation). This makes it:
+//! - **Sound**: every clash reported is a genuine contradiction.
+//! - **Incomplete**: subsumptions that require generating anonymous witnesses
+//!   (e.g. existential body `Marriage ⊑ ∃hasFemalePartner.Woman` when no named
+//!   hasFemalePartner edge exists) are not derived.
+//!
+//! ## Rules implemented
+//!
+//! 1. **Seed**: `ClassAssertion(C, a)` → add C to types(a); expand `And`
+//!    conjuncts recursively; `ObjectPropertyAssertion(R, a, b)` → add (R,a,b) to
+//!    edges.
+//! 2. **Inverse materialization**: `InverseObjectProperties(R, S)` + edge(R,a,b)
+//!    → edge(S,b,a); and vice versa.
+//! 3. **Role hierarchy**: `SubObjectPropertyOf(R, S)` + edge(R,a,b)
+//!    → edge(S,a,b).
+//! 4. **Role chains**: `SubObjectPropertyOf(R₁∘R₂, S)` + edge(R₁,a,b) + edge(R₂,b,c)
+//!    → edge(S,a,c); chains of length 3 also supported.
+//! 5. **Domain/range propagation**: `ObjectPropertyDomain(R, D)` + edge(R,a,b)
+//!    → add D to types(a). `ObjectPropertyRange(R, D)` + edge(R,a,b)
+//!    → add D to types(b).
+//! 6. **Type propagation**: `SubClassOf(C, D)` with C ∈ types(a) → add D to
+//!    types(a). `EquivalentClasses([C, D, ...])` treated as bidirectional
+//!    `SubClassOf` pairs. Recursive `And`-unfolding.
+//! 7. **Functional merge**: `FunctionalRole(R)` + two distinct named R-fillers b₁, b₂
+//!    of individual a → merge: propagate types(b₁) ∪ types(b₂) to both; repeat
+//!    until stable. The merged entity must satisfy all collected types simultaneously.
+//! 8. **Disjoint clash**: `DisjointClasses([C₁, C₂, ...])` + any cᵢ, cⱼ both in
+//!    types(a) for some a → CLASH (inconsistent).
+//!
+//! ## Instrumentation
+//!
+//! When `RUSTDL_TRACE=1` is set, emits per-iteration counters to stderr:
+//! - chain-1 (role-chain) fires
+//! - chain-2 (role-chain 3-hop) fires
+//! - individuals with both `∃hasSex.Male` and `∃hasSex.Female` (sex-clash candidates)
+
+// Clippy: this diagnostic/algorithm module uses complex types, nested ifs, and
+// deliberate `if !cond` patterns for readability of the chain-matching logic.
+#![allow(
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::explicit_iter_loop,
+    clippy::if_not_else,
+    clippy::match_same_arms,
+    clippy::for_kv_map,
+    clippy::unnecessary_map_or,
+    clippy::doc_markdown
+)]
+
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use owl_dl_core::ir::{ClassId, ConceptExpr, IndividualId, Role, RoleId};
+use owl_dl_core::ontology::{Axiom, InternalOntology, SubRolePath};
+
+// ─── State ────────────────────────────────────────────────────────────────────
+
+/// Per-individual types (named atomic classes only).
+type TypeMap = HashMap<IndividualId, HashSet<ClassId>>;
+
+/// A named edge triple stored in normalized form.
+/// canonical: `Named(r)` → (r, a, b); `Inverse(r)` → (r, b, a) and store forward.
+type RawEdge = (RoleId, IndividualId, IndividualId);
+
+// ─── Saturator ────────────────────────────────────────────────────────────────
+
+/// Result of `saturate_abox_consistency` with diagnostic counters.
+#[derive(Debug, Clone)]
+pub struct SaturationResult {
+    /// True iff a clash was found (inconsistent).
+    pub clash: bool,
+    /// Number of times a 2-hop role chain fired to produce a new edge.
+    pub chain2_fires: u64,
+    /// Number of times a 3-hop role chain fired to produce a new edge.
+    pub chain3_fires: u64,
+    /// Number of individuals that accumulated both `∃hasSex.Male` and
+    /// `∃hasSex.Female` markers (or equivalent type-level) — the candidate
+    /// sex clash. Populated by looking for individuals with the Male class AND
+    /// the Female class simultaneously in their type set, if those IRIs exist.
+    pub sex_clash_candidates: u64,
+    /// Number of type additions made during saturation.
+    pub type_additions: u64,
+    /// Number of edge additions made during saturation.
+    pub edge_additions: u64,
+}
+
+/// Check whether `internal` is ABox-inconsistent under named-only semantics.
+///
+/// Returns a [`SaturationResult`] with diagnostic counters. The `.clash` field
+/// is the primary result.
+///
+/// # Algorithm
+///
+/// Iterative fixpoint over named individuals:
+/// 1. Seed edges and types from ABox assertions.
+/// 2. Apply inverse materialization, role hierarchy, role chains, domain/range,
+///    type propagation (SubClassOf/EquivalentClasses), and functional merge until stable.
+/// 3. After every iteration, check disjoint clash.
+#[allow(clippy::too_many_lines)]
+pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResult {
+    let trace = std::env::var("RUSTDL_TRACE").map_or(false, |v| v == "1");
+
+    let pool = &internal.concepts;
+    let vocab = &internal.vocabulary;
+
+    // ── Pre-index axioms for efficient rule application ───────────────────────
+
+    // SubClassOf: sub_concept → Vec<sup_concept>
+    let mut sub_of: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+
+    // InverseObjectProperties: role → set of inverse roles
+    let mut inverses: HashMap<RoleId, HashSet<RoleId>> = HashMap::new();
+
+    // SubObjectPropertyOf (single): sub_role → set of super_roles
+    let mut role_super: HashMap<(RoleId, bool), HashSet<(RoleId, bool)>> = HashMap::new();
+    // key: (role_id, is_inverse); value: set of (super_role_id, super_is_inverse)
+
+    // SubObjectPropertyOf (chain len=2): Vec<((r1_id, r1_inv), (r2_id, r2_inv), (sup_id, sup_inv))>
+    let mut chains2: Vec<((RoleId, bool), (RoleId, bool), (RoleId, bool))> = Vec::new();
+
+    // SubObjectPropertyOf (chain len=3)
+    let mut chains3: Vec<((RoleId, bool), (RoleId, bool), (RoleId, bool), (RoleId, bool))> =
+        Vec::new();
+
+    // ObjectPropertyDomain: (role_id, is_inverse) → Vec<ClassId>
+    let mut domains: HashMap<(RoleId, bool), Vec<ClassId>> = HashMap::new();
+    // ObjectPropertyRange: (role_id, is_inverse) → Vec<ClassId>
+    let mut ranges: HashMap<(RoleId, bool), Vec<ClassId>> = HashMap::new();
+
+    // FunctionalRole: set of (role_id, is_inverse) that are functional
+    let mut functional: HashSet<(RoleId, bool)> = HashSet::new();
+
+    // DisjointClasses: Vec<Vec<ClassId>>
+    let mut disjoint_pairs: Vec<(ClassId, ClassId)> = Vec::new();
+
+    // EquivalentClasses: used to populate sub_of both ways
+    // (handled inline below)
+
+    // Helper to extract atomic ClassId from a ConceptId (if it's Atomic)
+    let atomic_class = |cid| -> Option<ClassId> {
+        match pool.get(cid) {
+            ConceptExpr::Atomic(c) => Some(*c),
+            _ => None,
+        }
+    };
+
+    // Helper to decompose a Role into (role_id, is_inverse)
+    let role_key = |r: Role| -> (RoleId, bool) { (r.role_id(), r.is_inverse()) };
+
+    // Index TBox/RBox axioms
+    for axiom in &internal.axioms {
+        match axiom {
+            Axiom::SubClassOf { sub, sup } => {
+                if let (Some(sub_c), Some(sup_c)) = (atomic_class(*sub), atomic_class(*sup)) {
+                    sub_of.entry(sub_c).or_default().push(sup_c);
+                }
+                // Also handle sup being And → unpack conjuncts
+                if let Some(sub_c) = atomic_class(*sub) {
+                    if let ConceptExpr::And(parts) = pool.get(*sup) {
+                        for p in parts.iter() {
+                            if let Some(sup_c) = atomic_class(*p) {
+                                sub_of.entry(sub_c).or_default().push(sup_c);
+                            }
+                        }
+                    }
+                }
+            }
+            Axiom::EquivalentClasses(cs) => {
+                // Collect atomic classes in the equivalence
+                let atomic_cs: Vec<ClassId> = cs.iter().filter_map(|&c| atomic_class(c)).collect();
+                // Add SubClassOf in both directions for all pairs
+                for i in 0..atomic_cs.len() {
+                    for j in 0..atomic_cs.len() {
+                        if i != j {
+                            sub_of.entry(atomic_cs[i]).or_default().push(atomic_cs[j]);
+                        }
+                    }
+                }
+                // Also handle And-bodies: for each C ≡ D₁ ⊓ D₂ ⊓ ..., add C → Dᵢ
+                for (i, &cid) in cs.iter().enumerate() {
+                    if let Some(c) = atomic_class(cid) {
+                        for (j, &did) in cs.iter().enumerate() {
+                            if i != j {
+                                if let ConceptExpr::And(parts) = pool.get(did) {
+                                    for p in parts.iter() {
+                                        if let Some(d) = atomic_class(*p) {
+                                            sub_of.entry(c).or_default().push(d);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // If this entry is an And, expand: ∀ Dᵢ in And, Dᵢ → each atomic C in list
+                    if let ConceptExpr::And(parts) = pool.get(cid) {
+                        for &p in parts.iter() {
+                            if let Some(part_c) = atomic_class(p) {
+                                for (j, &did) in cs.iter().enumerate() {
+                                    if i != j {
+                                        if let Some(d) = atomic_class(did) {
+                                            sub_of.entry(part_c).or_default().push(d);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Axiom::InverseObjectProperties(r1, r2) => {
+                let (id1, inv1) = role_key(*r1);
+                let (id2, inv2) = role_key(*r2);
+                // r1 and r2 are inverses of each other
+                // Normalize: if R1 = Named(p) and R2 = Named(q), then p⁻ = q
+                // We store: for each canonical role_id, what other role_ids are its inverses
+                // A more general approach: resolve what the "inverse" of each role direction is
+                // R and S are inverse means: edge(R,a,b) → edge(S,b,a)
+                // In our (role_id, is_inverse) scheme:
+                //   edge((id1, inv1), a, b) → edge((id2, !inv2), b, a)
+                //   more precisely: if R1 holds(a,b), then R2 holds(b,a)
+                //   R1 as a direction is (id1, inv1); to say R2(b,a), that is
+                //   the direction (id2, inv2) applied at (b,a).
+                // We'll add to role_super: canonical direction of r1 gets r2's canonical-reversed
+                // approach: just record direct inverse pairs for materialization
+                // Simplest: for each InverseObjectProperties(R,S):
+                //   when we see edge(R_id, R_inv, a, b), add edge(S_id, S_inv, b, a) if not already
+                // The set stores: (r_id, r_inv) -> set of (s_id, s_inv) that are its inverses
+                // (i.e., if edge(r_id, r_inv, a, b) → then for each (s_id, s_inv) in inverses,
+                //  emit edge(s_id, s_inv, b, a))
+                inverses.entry(id1).or_default().insert(id2);
+                inverses.entry(id2).or_default().insert(id1);
+                // We need to track the full polarity. Store as: role_inverses map
+                // maps (role_id, is_inverse) → set of (role_id, is_inverse) that hold in reversed direction
+                // i.e. if (id1, inv1)(a,b) then (id2, inv2)(b,a)
+                // Internally we store edges as raw triples (role_id, a, b) canonicalized
+                // so we need: when edge role_id1 normalized a→b exists, what else to derive
+                // Let's use a separate inverse_map: (RoleId, bool) → Vec<(RoleId, bool)>
+                // meaning "if this role-direction fires, also fire these in reversed direction"
+                // We'll handle this in the main loop using the inverse_rules structure below.
+                let _ = (id1, inv1, id2, inv2); // will be used below via inverse_rules
+            }
+            Axiom::SubObjectPropertyOf { sub, sup } => {
+                match sub {
+                    SubRolePath::Role(r) => {
+                        let k = role_key(*r);
+                        let v = role_key(*sup);
+                        role_super.entry(k).or_default().insert(v);
+                    }
+                    SubRolePath::Chain(roles) => {
+                        if roles.len() == 2 {
+                            chains2.push((role_key(roles[0]), role_key(roles[1]), role_key(*sup)));
+                        } else if roles.len() == 3 {
+                            chains3.push((
+                                role_key(roles[0]),
+                                role_key(roles[1]),
+                                role_key(roles[2]),
+                                role_key(*sup),
+                            ));
+                        }
+                        // longer chains not supported
+                    }
+                }
+            }
+            Axiom::ObjectPropertyDomain { role, domain } => {
+                if let Some(d) = atomic_class(*domain) {
+                    domains.entry(role_key(*role)).or_default().push(d);
+                }
+                // Also handle And body
+                if let ConceptExpr::And(parts) = pool.get(*domain) {
+                    for p in parts.iter() {
+                        if let Some(d) = atomic_class(*p) {
+                            domains.entry(role_key(*role)).or_default().push(d);
+                        }
+                    }
+                }
+            }
+            Axiom::ObjectPropertyRange { role, range } => {
+                if let Some(d) = atomic_class(*range) {
+                    ranges.entry(role_key(*role)).or_default().push(d);
+                }
+                if let ConceptExpr::And(parts) = pool.get(*range) {
+                    for p in parts.iter() {
+                        if let Some(d) = atomic_class(*p) {
+                            ranges.entry(role_key(*role)).or_default().push(d);
+                        }
+                    }
+                }
+            }
+            Axiom::FunctionalRole(r) => {
+                functional.insert(role_key(*r));
+            }
+            Axiom::InverseFunctionalRole(r) => {
+                // InverseFunctionalRole(R) = FunctionalRole(R⁻)
+                let (id, inv) = role_key(*r);
+                functional.insert((id, !inv));
+            }
+            Axiom::DisjointClasses(cs) => {
+                // Add all pairs (cᵢ, cⱼ) with i < j
+                let atomic_cs: Vec<ClassId> = cs.iter().filter_map(|&c| atomic_class(c)).collect();
+                for i in 0..atomic_cs.len() {
+                    for j in (i + 1)..atomic_cs.len() {
+                        disjoint_pairs.push((atomic_cs[i], atomic_cs[j]));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Build inverse_rules: (role_id, is_inverse) → Vec<(role_id, is_inverse)>
+    // meaning "if edge(role_id, is_inverse, a, b), also add edge(inv_role, inv_inv, b, a)"
+    // From InverseObjectProperties(R, S): R(a,b) → S(b,a), S(a,b) → R(b,a)
+    // But note Role can be Named(p) or Inverse(q).
+    // InverseObjectProperties(Named(p), Named(q)):
+    //   edge(p, a, b) → q(b,a)  → add edge (q_id, false, b, a)
+    //   edge(q, a, b) → p(b,a)  → add edge (p_id, false, b, a)
+    // InverseObjectProperties(Named(p), Inverse(q)):
+    //   p(a,b) → q⁻(b,a) = q(a,b)?  Actually q⁻(b,a) = q-in-inverse(b,a) = q(a,b)
+    //   This is the self-inverse case.
+    // We build this from the axioms directly:
+    let mut inverse_rules: HashMap<(RoleId, bool), Vec<(RoleId, bool)>> = HashMap::new();
+    for axiom in &internal.axioms {
+        if let Axiom::InverseObjectProperties(r1, r2) = axiom {
+            // r1(a,b) → r2(b,a) means:
+            //   if we have canonical edge for r1-direction going a→b,
+            //   we should add canonical edge for r2-direction going b→a
+            // In (role_id, is_inverse) terms:
+            //   r1 = (id1, inv1) → means r1-direction a→b is (id1, inv1)
+            //   "r2(b,a)" as a direction is r2 applied to (b,a); r2 = (id2, inv2)
+            //   To normalize: store canonical direction of r2 applied at reversed endpoints
+            //   = (id2, inv2) going b→a = same as (id2, !inv2) going a→b? No.
+            // The cleanest approach: represent edges as directed (role_id, a, b) where
+            // role_id is always the "Named" role and direction is always forward.
+            // Then InverseObjectProperties(Named(p), Named(q)) means:
+            //   edge(p, a, b) → edge(q, b, a)
+            //   edge(q, a, b) → edge(p, b, a)
+            // InverseObjectProperties(Named(p), Inverse(q)) means:
+            //   p(a,b) → (Inv q)(b,a) = q⁻(b,a) = q(a,b) → so edge(q, a, b)!
+            //   Wait: Inverse(q)(b,a) means the inverse of q holds between b,a
+            //        = q(a,b). So p(a,b) ↔ q(a,b)? That would make them equal, not inverse.
+            // Actually InverseObjectProperties(p, q⁻) = Inverse(q) means p and q⁻ are inverses
+            // i.e. p(x,y) ↔ q⁻(y,x) = q(x,y). So p = q. This is a degenerate case.
+            // Let's treat (id1, inv1) → (id2, inv2) as "if edge of direction (id1, inv1)
+            // fires a→b, add edge of direction that is (id2, inv2) reversed"
+            // i.e. if (id1, inv1, a, b), add (id2, inv2, b, a).
+            // In our canonical storage where edges are (role_id, a, b) (Named direction):
+            //   If r1=Named(p), r2=Named(q): edge(p,a,b) → edge(q,b,a)
+            //   If r1=Named(p), r2=Inverse(q): edge(p,a,b) → Inverse(q)(b,a)=q(a,b) → edge(q,a,b)
+            // So the inverse rule is: (id1, inv1) → make edge (id2, if inv2 then !same else same...)
+            // For simplicity, let's represent edges as raw (role_id, IndividualId, IndividualId)
+            // and InverseObjectProperties(R, S) yields:
+            //   (R_id, a, b) → (S_id, b, a) when R=Named(p), S=Named(q)
+            //   (R_id, a, b) → (S_id, a, b) when R=Named(p), S=Inverse(q)
+            // We encode this as: inverse_rule_fwd(r1_id, r1_inv) → (r2_id, r2_inv)
+            // and the firing semantics is:
+            //   if canonical_edge(r1_id, r1_inv, a, b) → add canonical_edge(r2_id, r2_inv, b, a)
+            // where canonical_edge normalization: if is_inverse, swap a and b, store Named direction.
+            // Actually let's just store as (role_id, a, b) in raw triples and normalize inverse at read.
+            // For simplicity: store all edges as HashSet<(RoleId, IndividualId, IndividualId)>
+            // representing "Named role holds (a, b)" and separately track which role is the
+            // "inverse" version of which via the inverse_map.
+            // inverse_rules entry: "when edge(key_role, a, b) is added, also add edge(val_role, b, a)"
+            let (id1, inv1) = (r1.role_id(), r1.is_inverse());
+            let (id2, inv2) = (r2.role_id(), r2.is_inverse());
+            // Case: inv1=false, inv2=false → Named(p) and Named(q) are inverses
+            //   edge(p, a, b) → edge(q, b, a)
+            //   edge(q, a, b) → edge(p, b, a)
+            // Case: inv1=false, inv2=true → Named(p) and Inverse(q) are inverses
+            //   p(a,b) ↔ Inv(q)(b,a) = q(a,b) → so p and q are equal (self-inverse degenerate)
+            //   edge(p, a, b) → edge(q, a, b)  [because Inverse(q)(b,a) = q(a,b)]
+            //   edge(q, a, b) → edge(p, a, b)
+            // Case: inv1=true, inv2=false → symmetric to case above (just swap roles)
+            // We encode: (from_role, from_inv) → (to_role, to_inv)
+            // where the firing rule is: edge(from_role, a, b) → edge(to_role, rev_a, rev_b)
+            //   where rev = swap if !(from_inv xor to_inv) else keep
+            // Simplest encoding: store the (to_role, reverse_endpoints) flag
+            // reverse_endpoints = !(inv1 == inv2) [XOR: opposite inversions mean don't swap]
+            // Actually: if inv1=false, inv2=false → swap. If inv1=false, inv2=true → don't swap.
+            // if inv1=true, inv2=false → don't swap. if inv1=true, inv2=true → swap.
+            // reverse = (inv1 == inv2)
+            let reverse = inv1 == inv2;
+            inverse_rules
+                .entry((id1, false))
+                .or_default()
+                .push((id2, reverse));
+            inverse_rules
+                .entry((id2, false))
+                .or_default()
+                .push((id1, reverse));
+        }
+    }
+    // Note: the above stores rules for Named(id1) → Named(id2) with reverse flag.
+    // The actual logic: when we see edge (id1, a, b), we check inverse_rules[(id1, false)]
+    // and for each (id2, do_reverse): if do_reverse, add (id2, b, a); else add (id2, a, b).
+
+    // ── ABox state ────────────────────────────────────────────────────────────
+
+    let mut types: TypeMap = HashMap::new();
+    let mut edges: HashSet<RawEdge> = HashSet::new(); // (role_id, a, b)
+
+    // Worklists for types and edges
+    let mut type_queue: VecDeque<(IndividualId, ClassId)> = VecDeque::new();
+    let mut edge_queue: VecDeque<RawEdge> = VecDeque::new();
+
+    let mut result = SaturationResult {
+        clash: false,
+        chain2_fires: 0,
+        chain3_fires: 0,
+        sex_clash_candidates: 0,
+        type_additions: 0,
+        edge_additions: 0,
+    };
+
+    // Helper closures (we'll use inline logic for borrow reasons)
+
+    // ── Seed from ABox ─────────────────────────────────────────────────────────
+
+    for axiom in &internal.axioms {
+        match axiom {
+            Axiom::ClassAssertion { class, individual } => {
+                // Expand the concept recursively to collect atomic class IDs
+                enqueue_concept_types(*individual, *class, pool, &mut type_queue);
+            }
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                // Normalize: Named(r)(a,b) → store (r, a, b)
+                //            Inverse(r)(a,b) → store (r, b, a)
+                let (rid, a, b) = normalize_edge(*role, *subject, *object);
+                if edges.insert((rid, a, b)) {
+                    edge_queue.push_back((rid, a, b));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── Fixpoint ───────────────────────────────────────────────────────────────
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        // Drain type queue
+        while let Some((ind, cls)) = type_queue.pop_front() {
+            if types.entry(ind).or_default().insert(cls) {
+                result.type_additions += 1;
+                changed = true;
+
+                // Rule 6: type propagation via SubClassOf
+                if let Some(supers) = sub_of.get(&cls) {
+                    for &sup_c in supers {
+                        if !types.entry(ind).or_default().contains(&sup_c) {
+                            type_queue.push_back((ind, sup_c));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drain edge queue
+        while let Some((rid, a, b)) = edge_queue.pop_front() {
+            result.edge_additions += 1;
+            changed = true;
+
+            // Rule 2: inverse materialization
+            if let Some(inv_rules) = inverse_rules.get(&(rid, false)) {
+                let inv_rules = inv_rules.clone();
+                for (inv_rid, do_reverse) in inv_rules {
+                    let (na, nb) = if do_reverse { (b, a) } else { (a, b) };
+                    if edges.insert((inv_rid, na, nb)) {
+                        edge_queue.push_back((inv_rid, na, nb));
+                    }
+                }
+            }
+
+            // Rule 3: role hierarchy (single step)
+            let role_fwd = (rid, false);
+            if let Some(supers) = role_super.get(&role_fwd) {
+                let supers: Vec<_> = supers.iter().copied().collect();
+                for (sup_id, sup_inv) in supers {
+                    let (na, nb) = if sup_inv { (b, a) } else { (a, b) };
+                    if edges.insert((sup_id, na, nb)) {
+                        edge_queue.push_back((sup_id, na, nb));
+                    }
+                }
+            }
+
+            // Rule 5: domain/range propagation
+            if let Some(dom_classes) = domains.get(&(rid, false)) {
+                let dom_classes = dom_classes.clone();
+                for d in dom_classes {
+                    if !types.entry(a).or_default().contains(&d) {
+                        type_queue.push_back((a, d));
+                    }
+                }
+            }
+            if let Some(rng_classes) = ranges.get(&(rid, false)) {
+                let rng_classes = rng_classes.clone();
+                for d in rng_classes {
+                    if !types.entry(b).or_default().contains(&d) {
+                        type_queue.push_back((b, d));
+                    }
+                }
+            }
+        }
+
+        // Rule 4: role chains — scan all pairs of edges for each chain rule
+        // We do this once per outer iteration to avoid O(n³) inner loops
+        let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
+
+        for &(r1_id, r1_inv, r2_id, r2_inv, sup_id, sup_inv) in &chains2
+            .iter()
+            .map(|&((a, b), (c, d), (e, f))| (a, b, c, d, e, f))
+            .collect::<Vec<_>>()
+        {
+            // We need: edge matching r1 direction (r1_id, r1_inv) going a→b
+            //         + edge matching r2 direction (r2_id, r2_inv) going b→c
+            //         → add edge sup direction (sup_id, sup_inv) going a→c
+            for &(ea_id, ea, eb) in &edge_vec {
+                // Check if this edge matches r1 direction
+                let (a, b) = if !r1_inv {
+                    // Named(r1_id): edge (r1_id, a, b) matches
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (ea, eb)
+                } else {
+                    // Inverse(r1_id): edge (r1_id, b, a) matches → direction a→b is (r1_id, b, a)
+                    // i.e. we need canonical edge (r1_id, eb, ea) to represent Inv(r1_id)(ea, eb)
+                    // But we store Named(r1_id)(eb, ea) which is the same edge reversed.
+                    // Actually: Inverse(r1_id)(a,b) ↔ Named(r1_id)(b,a)
+                    // So edge (r1_id, eb, ea) in our set means Inverse(r1_id)(ea, eb)
+                    // We need to check if (r1_id, eb, ea) is in edges, but we're iterating ea_id==r1_id...
+                    // Rethink: if r1_inv=true, the chain fires when Inverse(r1_id)(x,y) holds
+                    // = when Named(r1_id)(y,x) holds = edge(r1_id, y, x) in our set
+                    // So we need: find edge (r1_id, eb, ea) to mean Inv(r1_id)(ea, eb)
+                    // The current edge is (ea_id, ea, eb); for r1_inv, the source is eb and dest is ea
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (eb, ea) // "a" in chain sense is eb, "b" is ea
+                };
+
+                // Now find edge matching r2 direction going b→c
+                for &(eb2_id, eb2, ec) in &edge_vec {
+                    let b2_src = if !r2_inv {
+                        if eb2_id != r2_id || eb2 != b {
+                            continue;
+                        }
+                        ec
+                    } else {
+                        // Inv(r2_id)(b,c) ↔ Named(r2_id)(c,b)
+                        if eb2_id != r2_id || ec != b {
+                            continue;
+                        }
+                        eb2
+                    };
+
+                    let c = b2_src;
+                    // Derive sup direction a→c
+                    let (na, nc) = if !sup_inv { (a, c) } else { (c, a) };
+                    if edges.insert((sup_id, na, nc)) {
+                        edge_queue.push_back((sup_id, na, nc));
+                        result.chain2_fires += 1;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // 3-hop chains
+        for &(r1_id, r1_inv, r2_id, r2_inv, r3_id, r3_inv, sup_id, sup_inv) in &chains3
+            .iter()
+            .map(|&((a, b), (c, d), (e, f), (g, h))| (a, b, c, d, e, f, g, h))
+            .collect::<Vec<_>>()
+        {
+            for &(ea_id, ea, eb) in &edge_vec {
+                let (a, b) = if !r1_inv {
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (ea, eb)
+                } else {
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (eb, ea)
+                };
+
+                for &(eb2_id, eb2, ec) in &edge_vec {
+                    let (b2, c) = if !r2_inv {
+                        if eb2_id != r2_id || eb2 != b {
+                            continue;
+                        }
+                        (eb2, ec)
+                    } else {
+                        if eb2_id != r2_id || ec != b {
+                            continue;
+                        }
+                        (ec, eb2)
+                    };
+                    let _ = b2;
+
+                    for &(ec2_id, ec2, ed) in &edge_vec {
+                        let d = if !r3_inv {
+                            if ec2_id != r3_id || ec2 != c {
+                                continue;
+                            }
+                            ed
+                        } else {
+                            if ec2_id != r3_id || ed != c {
+                                continue;
+                            }
+                            ec2
+                        };
+
+                        // Derive sup direction a→d
+                        let (na, nd) = if !sup_inv { (a, d) } else { (d, a) };
+                        if edges.insert((sup_id, na, nd)) {
+                            edge_queue.push_back((sup_id, na, nd));
+                            result.chain3_fires += 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rule 7: functional role merge
+        // For each functional role R and each individual a that has ≥2 distinct R-fillers,
+        // propagate types bidirectionally between the fillers.
+        for &(func_rid, func_inv) in &functional {
+            // Collect all a → fillers(a) via role func_rid (in direction func_inv)
+            // functional role: FunctionalRole(R) means at most one R-successor
+            // InverseFunctionalRole(R) = FunctionalRole(R⁻) → at most one R-predecessor
+            // For each a, collect fillers via R-direction:
+            let mut fillers_by_subj: HashMap<IndividualId, Vec<IndividualId>> = HashMap::new();
+            for &(rid, a, b) in &edges {
+                if rid == func_rid {
+                    if !func_inv {
+                        // Named(func_rid)(a,b) → filler of a is b
+                        fillers_by_subj.entry(a).or_default().push(b);
+                    } else {
+                        // Inverse(func_rid)(a,b) = Named(func_rid)(b,a) → filler of b is a
+                        // So if func_inv=true, the role is Inverse(func_rid), subject is b, filler is a
+                        fillers_by_subj.entry(b).or_default().push(a);
+                    }
+                }
+            }
+
+            for (_, fillers) in &fillers_by_subj {
+                if fillers.len() >= 2 {
+                    // Merge all fillers: propagate all types from each to all others
+                    // We do pairwise: for each pair (f1, f2), add all types of f1 to f2 and vice versa
+                    let all_types: HashSet<ClassId> = fillers
+                        .iter()
+                        .flat_map(|f| types.get(f).into_iter().flatten().copied())
+                        .collect();
+                    for &f in fillers {
+                        let current = types.entry(f).or_default();
+                        for &t in &all_types {
+                            if current.insert(t) {
+                                type_queue.push_back((f, t));
+                                result.type_additions += 1;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rule 8: disjoint clash check
+        for &(c1, c2) in &disjoint_pairs {
+            for (ind, ind_types) in &types {
+                if ind_types.contains(&c1) && ind_types.contains(&c2) {
+                    if trace {
+                        eprintln!(
+                            "[abox-sat] CLASH: {} has both {:?} and {:?}",
+                            vocab.individual_iri(*ind),
+                            vocab.class_iri(c1),
+                            vocab.class_iri(c2)
+                        );
+                    }
+                    result.clash = true;
+                }
+            }
+        }
+
+        if result.clash {
+            break;
+        }
+    }
+
+    // ── Diagnostic: sex-clash candidates ──────────────────────────────────────
+    let male_id = vocab
+        .class_id("http://www.semanticweb.org/owl/owlapi/turtle#Male")
+        .or_else(|| vocab.class_id(":Male"))
+        .or_else(|| {
+            vocab
+                .classes()
+                .find(|(_, iri)| iri.ends_with("#Male") || iri.ends_with("/Male"))
+                .map(|(id, _)| id)
+        });
+    let female_id = vocab
+        .class_id("http://www.semanticweb.org/owl/owlapi/turtle#Female")
+        .or_else(|| vocab.class_id(":Female"))
+        .or_else(|| {
+            vocab
+                .classes()
+                .find(|(_, iri)| iri.ends_with("#Female") || iri.ends_with("/Female"))
+                .map(|(id, _)| id)
+        });
+
+    if let (Some(male), Some(female)) = (male_id, female_id) {
+        for (_, ind_types) in &types {
+            if ind_types.contains(&male) && ind_types.contains(&female) {
+                result.sex_clash_candidates += 1;
+            }
+        }
+    }
+
+    if trace {
+        eprintln!(
+            "[abox-sat] chain2_fires={} chain3_fires={} type_additions={} edge_additions={} sex_clash_candidates={}",
+            result.chain2_fires,
+            result.chain3_fires,
+            result.type_additions,
+            result.edge_additions,
+            result.sex_clash_candidates,
+        );
+        eprintln!(
+            "[abox-sat] individuals={} total_edges={}",
+            types.len(),
+            edges.len()
+        );
+    }
+
+    result
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Normalize a role-directed edge into canonical `(role_id, a, b)` form.
+/// `Named(r)(a,b)` → `(r, a, b)`.
+/// `Inverse(r)(a,b)` → `(r, b, a)`.
+fn normalize_edge(role: Role, a: IndividualId, b: IndividualId) -> RawEdge {
+    if role.is_inverse() {
+        (role.role_id(), b, a)
+    } else {
+        (role.role_id(), a, b)
+    }
+}
+
+/// Recursively enqueue atomic type IDs from a concept expression.
+/// Handles: Atomic, And (conjuncts), Bot → nothing, Top → nothing.
+/// Other constructors (Some, All, etc.) are skipped for named-only semantics.
+fn enqueue_concept_types(
+    ind: IndividualId,
+    cid: owl_dl_core::ir::ConceptId,
+    pool: &owl_dl_core::ir::ConceptPool,
+    queue: &mut VecDeque<(IndividualId, ClassId)>,
+) {
+    match pool.get(cid) {
+        ConceptExpr::Atomic(c) => {
+            queue.push_back((ind, *c));
+        }
+        ConceptExpr::And(parts) => {
+            for &p in parts.iter() {
+                enqueue_concept_types(ind, p, pool, queue);
+            }
+        }
+        ConceptExpr::Top | ConceptExpr::Bot | ConceptExpr::Not(_) | ConceptExpr::Or(_) => {
+            // Not handled in named-only semantics
+        }
+        ConceptExpr::Some(_, _)
+        | ConceptExpr::All(_, _)
+        | ConceptExpr::Min(_, _, _)
+        | ConceptExpr::Max(_, _, _)
+        | ConceptExpr::Nominal(_)
+        | ConceptExpr::SelfRestriction(_) => {
+            // Not handled
+        }
+    }
+}

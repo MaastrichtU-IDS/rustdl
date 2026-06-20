@@ -2866,6 +2866,22 @@ fn lower_sub_class_of(
             if role.is_inverse() {
                 return;
             }
+            // `∃R.⊤ ⊑ C` is exactly the domain axiom domain(R) ⊒ C (semantically
+            // identical to `ObjectPropertyDomain(R, C)`): anything with an
+            // R-successor is a C. Route it to the role-domain mechanism (which
+            // fires on any R-marker/edge), NOT the existential-trigger path: a
+            // `Top` body has no `atomic_or_tseitin_body` representation, so
+            // `existential_body_alternatives(Top)` returns `None` and the trigger
+            // — and the entire domain inference — was silently DROPPED (SWEET /
+            // OBO express domains in this GCI form; cost 300+ MISSED on
+            // ore_ont_13621/14450). Sound EL completeness fix: the domain rule is
+            // already complete (cf. the `ObjectPropertyDomain` arm).
+            if matches!(pool.get(*body), ConceptExpr::Top) {
+                for head in atomic_operands_on_right(sup, pool) {
+                    rules.role_domains.entry(role.role_id()).or_default().push(head);
+                }
+                return;
+            }
             let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin) else {
                 return;
             };

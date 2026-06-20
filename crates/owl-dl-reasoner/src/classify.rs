@@ -1081,7 +1081,7 @@ pub fn classify_top_down_with_timeout<A: ForIRI>(
 /// corpus ontologies. See
 /// `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`
 /// performance contract.
-fn has_abox_axioms(internal: &owl_dl_core::ontology::InternalOntology) -> bool {
+pub(crate) fn has_abox_axioms(internal: &owl_dl_core::ontology::InternalOntology) -> bool {
     internal.axioms.iter().any(|ax| {
         matches!(
             ax,

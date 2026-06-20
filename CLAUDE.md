@@ -626,6 +626,31 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   SROIQ(D) completeness — all ~0 corpus presence. Spec:
   `docs/superpowers/specs/2026-06-17-first-class-data-properties-design.md`.
 
+- **ABox-saturation consistency pre-check (2026-06-20): `RUSTDL_ABOX_SATURATION`
+  defaults ON** (`=0` opts out). Closes rustdl's last open *correctness* gap —
+  **family** is HermiT/Konclude-inconsistent (<1s) but rustdl previously reported
+  `consistent` (the wedge's `∃`-witness generation stalls at 508 individuals).
+  `crates/owl-dl-reasoner/src/abox_saturation.rs` runs a sound, terminating,
+  **consequence-based fixpoint over NAMED individuals only** (no witness
+  generation ⇒ finite) as a pre-check in `is_consistent`, before the hybrid path:
+  seed asserted types/edges → type propagation (`⊑`/`≡`/domain/range) → role-edge
+  propagation (property hierarchy, **inverse materialization**, role chains incl.
+  3-hop) → **functional/`≤1` merge of `∃R`-as-type markers** (reaches family's
+  `∃hasSex.Male ⊓ ∃hasSex.Female` → `Male⊓Female` clash) → disjoint/⊥ clash. A
+  derived clash ⇒ `inconsistent`; **no clash ⇒ no verdict, falls through to the
+  hybrid path unchanged** (under-approximate: `∀`-driven / `≤n>1`-choice /
+  disjunctive inconsistencies are not handled here — a MISS at worst, never an FP).
+  **Sound by construction** (every derived type/edge/merge is entailed).
+  `has_abox_axioms`-guarded ⇒ ABox-free inputs skip it (zero cost on
+  galen/ore/etc.; EL classify byte-identical). Whole-corpus bake-off (2026-06-20):
+  **family detected inconsistent in 1.6s, FP=0/MISSED=0 byte-identical corpus-wide.**
+  A second integration variant (A-gated, backward/inverse propagation *inside* the
+  EL saturator, `RUSTDL_ABOX_SAT_GATED`) tied B on every axis; B was chosen for
+  isolation (separate module, zero classification risk by construction); the
+  A-gated branch (`feat/abox-sat-A-gated`) is kept for a future bake-off with
+  inverse-aware *classification* work. Spec:
+  `docs/superpowers/specs/2026-06-20-abox-saturation-consistency-design.md`.
+
 When changing the saturation/wedge engines or caches, the failure mode that
 matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cache-project-complete.md` and `docs/abox-consistency-check-handoff.md` for
 current engine state, characterized MISSED, open levers, and dead-ends;

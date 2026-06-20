@@ -5601,3 +5601,624 @@ Ontology(<http://rustdl.test/test>\n\
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ABox saturation for consistency (Variant A-gated)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Standalone consequence-based fixpoint over **named individuals only**.
+// This function is ENTIRELY SEPARATE from the EL classification path (`saturate` /
+// `saturate_with_config` / `WorklistEngine`). It shares no hot-loop state
+// with those functions — byte-identical EL classification is guaranteed by
+// construction (this fn is unreachable from `saturate()`).
+//
+// The algorithm is a direct port of Variant B (`abox_saturation.rs` on branch
+// `feat/abox-sat-B-standalone`); the only difference is the module boundary
+// (here in-crate rather than in `owl-dl-reasoner`).
+//
+// # Soundness
+// Every derived type/edge/merge is entailed. A reported clash is a real
+// inconsistency. Incomplete on ∀-driven / ≤n-choice / disjunctive paths —
+// those fall through to the existing consistency_wedge / tableau path.
+//
+// # Termination
+// Named individuals form a fixed, finite set; ∃-as-type-marker adds no
+// witnesses; type/edge sets are finite ⟹ fixpoint terminates.
+//
+// Gated by `RUSTDL_ABOX_SAT_GATED=1` in `owl-dl-reasoner/src/lib.rs`.
+
+// Allow complex types / nested ifs / deliberate if-not-else patterns that are
+// idiomatic for a low-level fixpoint rule-engine.
+// `items_after_test_module`: this function lives after `mod tests` by design —
+// it is a new public API added after the existing test suite, and reordering
+// several thousand lines of stable code is not justified.
+#[allow(
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::explicit_iter_loop,
+    clippy::if_not_else,
+    clippy::match_same_arms,
+    clippy::too_many_lines,
+    clippy::doc_markdown,
+    clippy::for_kv_map,
+    clippy::items_after_test_module
+)]
+/// Check whether `internal` is ABox-inconsistent under named-only (non-generating)
+/// semantics.
+///
+/// Returns `true` iff a clash was found (the ontology is inconsistent). Returns
+/// `false` when no clash is detected — the ontology MAY still be inconsistent via
+/// paths requiring anonymous-witness generation; callers should fall through to
+/// the full consistency engine.
+///
+/// # Rules
+/// 1. Seed: `ClassAssertion` / `ObjectPropertyAssertion`.
+/// 2. Inverse materialization.
+/// 3. Role hierarchy (single-role `SubObjectPropertyOf`).
+/// 4. Role chains (length 2 + 3) with inverse support.
+/// 5. Domain / range propagation.
+/// 6. Type propagation (`SubClassOf` / `EquivalentClasses`).
+/// 7. Functional/`≤1` marker-based merge: `Functional(R)` + two `∃R`-markers on the
+///    same individual → if the fillers are disjoint, CLASH.
+/// 8. Disjoint clash detection.
+pub fn saturate_abox_for_consistency(internal: &InternalOntology) -> bool {
+    let trace = std::env::var("RUSTDL_TRACE").as_deref() == Ok("1");
+
+    let pool = &internal.concepts;
+    let vocab = &internal.vocabulary;
+
+    // ── Type aliases (local) ──────────────────────────────────────────────────
+    // Per-individual types (atomic class IDs).
+    type TypeMap = HashMap<IndividualId, HashSet<ClassId>>;
+    // A canonical directed edge triple (role_id, source, target).
+    // `Inverse(r)(a,b)` is stored as `(r, b, a)`.
+    type RawEdge = (RoleId, IndividualId, IndividualId);
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Extract atomic ClassId from a ConceptId (Atomic variant only).
+    let atomic_class = |cid: ConceptId| -> Option<ClassId> {
+        match pool.get(cid) {
+            ConceptExpr::Atomic(c) => Some(*c),
+            _ => None,
+        }
+    };
+
+    // Decompose a Role into (role_id, is_inverse).
+    let role_key = |r: Role| -> (RoleId, bool) { (r.role_id(), r.is_inverse()) };
+
+    // Normalize a role-directed edge into canonical (role_id, a, b) form.
+    // Named(r)(a,b) → (r, a, b).  Inverse(r)(a,b) → (r, b, a).
+    let normalize_edge = |role: Role, a: IndividualId, b: IndividualId| -> RawEdge {
+        if role.is_inverse() {
+            (role.role_id(), b, a)
+        } else {
+            (role.role_id(), a, b)
+        }
+    };
+
+    // Recursively enqueue atomic type IDs from a concept expression.
+    // Handles Atomic and And (conjuncts). Skips everything else.
+    fn enqueue_concept_types(
+        ind: IndividualId,
+        cid: ConceptId,
+        pool: &ConceptPool,
+        queue: &mut VecDeque<(IndividualId, ClassId)>,
+    ) {
+        match pool.get(cid) {
+            ConceptExpr::Atomic(c) => {
+                queue.push_back((ind, *c));
+            }
+            ConceptExpr::And(parts) => {
+                for &p in parts.iter() {
+                    enqueue_concept_types(ind, p, pool, queue);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Extract `∃R.C` markers (Named R with atomic C) from a concept expression.
+    // Recursively descends into And-bodies; does NOT descend into Some/All/Not/Or.
+    fn collect_existentials(
+        cid: ConceptId,
+        pool: &ConceptPool,
+        out: &mut Vec<(RoleId, ClassId)>,
+    ) {
+        let mut stack = vec![cid];
+        while let Some(cur) = stack.pop() {
+            match pool.get(cur) {
+                ConceptExpr::Some(r, filler) => {
+                    if !r.is_inverse() {
+                        if let ConceptExpr::Atomic(c) = pool.get(*filler) {
+                            out.push((r.role_id(), *c));
+                        }
+                    }
+                }
+                ConceptExpr::And(parts) => {
+                    for &p in parts.iter() {
+                        stack.push(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ── Pre-index axioms ───────────────────────────────────────────────────────
+
+    // SubClassOf: sub_class → Vec<sup_class> (atomic→atomic)
+    let mut sub_of: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+
+    // Existential markers: class A → Vec<(role_id, filler_class)>
+    // Filled from A ⊑ ... ⊓ ∃R.C ... (Named R, atomic C)
+    let mut existential_of: HashMap<ClassId, Vec<(RoleId, ClassId)>> = HashMap::new();
+
+    // InverseObjectProperties: (role_id, is_inverse=false) → Vec<(role_id, do_reverse)>
+    // Meaning: if canonical edge (src_role_id, a, b) fires, also emit
+    //   canonical edge (dst_role_id, b, a) if do_reverse, else (dst_role_id, a, b).
+    let mut inverse_rules: HashMap<(RoleId, bool), Vec<(RoleId, bool)>> = HashMap::new();
+
+    // SubObjectPropertyOf (single): (sub_role_id, sub_inv) → set of (sup_role_id, sup_inv)
+    let mut role_super_local: HashMap<(RoleId, bool), HashSet<(RoleId, bool)>> = HashMap::new();
+
+    // Role chains, length 2.
+    let mut chains2: Vec<((RoleId, bool), (RoleId, bool), (RoleId, bool))> = Vec::new();
+
+    // Role chains, length 3.
+    let mut chains3: Vec<((RoleId, bool), (RoleId, bool), (RoleId, bool), (RoleId, bool))> =
+        Vec::new();
+
+    // Domain: (role_id, is_inverse) → Vec<ClassId>
+    let mut domains: HashMap<(RoleId, bool), Vec<ClassId>> = HashMap::new();
+    // Range:  (role_id, is_inverse) → Vec<ClassId>
+    let mut ranges: HashMap<(RoleId, bool), Vec<ClassId>> = HashMap::new();
+
+    // Functional roles: (role_id, is_inverse)
+    let mut functional: HashSet<(RoleId, bool)> = HashSet::new();
+
+    // Disjoint pairs (atomic).
+    let mut disjoint_pairs: Vec<(ClassId, ClassId)> = Vec::new();
+
+    for axiom in &internal.axioms {
+        match axiom {
+            Axiom::SubClassOf { sub, sup } => {
+                // Atomic → atomic
+                if let (Some(sub_c), Some(sup_c)) = (atomic_class(*sub), atomic_class(*sup)) {
+                    sub_of.entry(sub_c).or_default().push(sup_c);
+                }
+                // Atomic → And (unpack atomic conjuncts + ∃ markers)
+                if let Some(sub_c) = atomic_class(*sub) {
+                    if let ConceptExpr::And(parts) = pool.get(*sup) {
+                        for p in parts.iter() {
+                            if let Some(sup_c) = atomic_class(*p) {
+                                sub_of.entry(sub_c).or_default().push(sup_c);
+                            }
+                        }
+                    }
+                    let mut exs = Vec::new();
+                    collect_existentials(*sup, pool, &mut exs);
+                    if !exs.is_empty() {
+                        existential_of.entry(sub_c).or_default().extend(exs);
+                    }
+                }
+            }
+            Axiom::EquivalentClasses(cs) => {
+                // Collect atomic members and add sub_of in both directions.
+                let atomic_cs: Vec<ClassId> =
+                    cs.iter().filter_map(|&c| atomic_class(c)).collect();
+                for i in 0..atomic_cs.len() {
+                    for j in 0..atomic_cs.len() {
+                        if i != j {
+                            sub_of.entry(atomic_cs[i]).or_default().push(atomic_cs[j]);
+                        }
+                    }
+                }
+                // For each atomic C ≡ D1 ⊓ D2 ⊓ ..., add C → each atomic Dᵢ and
+                // the ∃-markers from the And-body.
+                for (i, &cid) in cs.iter().enumerate() {
+                    if let Some(c) = atomic_class(cid) {
+                        for (j, &did) in cs.iter().enumerate() {
+                            if i != j {
+                                if let ConceptExpr::And(parts) = pool.get(did) {
+                                    for p in parts.iter() {
+                                        if let Some(d) = atomic_class(*p) {
+                                            sub_of.entry(c).or_default().push(d);
+                                        }
+                                    }
+                                }
+                                let mut exs = Vec::new();
+                                collect_existentials(did, pool, &mut exs);
+                                if !exs.is_empty() {
+                                    existential_of.entry(c).or_default().extend(exs);
+                                }
+                            }
+                        }
+                    }
+                    // NOTE: deliberately do NOT add reverse (conjunct → atomic A), because
+                    // a single conjunct does NOT imply A — all conjuncts must hold.
+                }
+            }
+            Axiom::InverseObjectProperties(r1, r2) => {
+                let (id1, inv1) = role_key(*r1);
+                let (id2, inv2) = role_key(*r2);
+                // The rule: if edge (id1, a, b) in canonical direction exists,
+                // also emit edge (id2, ?, ?) where ? depends on inversions.
+                // reverse = (inv1 == inv2): when both inversions match we swap;
+                // when they differ the direction cancels.
+                let reverse = inv1 == inv2;
+                inverse_rules
+                    .entry((id1, false))
+                    .or_default()
+                    .push((id2, reverse));
+                inverse_rules
+                    .entry((id2, false))
+                    .or_default()
+                    .push((id1, reverse));
+            }
+            Axiom::SubObjectPropertyOf { sub, sup } => {
+                match sub {
+                    SubRolePath::Role(r) => {
+                        let k = role_key(*r);
+                        let v = role_key(*sup);
+                        role_super_local.entry(k).or_default().insert(v);
+                    }
+                    SubRolePath::Chain(roles) if roles.len() == 2 => {
+                        chains2.push((role_key(roles[0]), role_key(roles[1]), role_key(*sup)));
+                    }
+                    SubRolePath::Chain(roles) if roles.len() == 3 => {
+                        chains3.push((
+                            role_key(roles[0]),
+                            role_key(roles[1]),
+                            role_key(roles[2]),
+                            role_key(*sup),
+                        ));
+                    }
+                    SubRolePath::Chain(_) => {} // longer chains not supported
+                }
+            }
+            Axiom::ObjectPropertyDomain { role, domain } => {
+                let key = role_key(*role);
+                if let Some(d) = atomic_class(*domain) {
+                    domains.entry(key).or_default().push(d);
+                }
+                if let ConceptExpr::And(parts) = pool.get(*domain) {
+                    for p in parts.iter() {
+                        if let Some(d) = atomic_class(*p) {
+                            domains.entry(key).or_default().push(d);
+                        }
+                    }
+                }
+            }
+            Axiom::ObjectPropertyRange { role, range } => {
+                let key = role_key(*role);
+                if let Some(d) = atomic_class(*range) {
+                    ranges.entry(key).or_default().push(d);
+                }
+                if let ConceptExpr::And(parts) = pool.get(*range) {
+                    for p in parts.iter() {
+                        if let Some(d) = atomic_class(*p) {
+                            ranges.entry(key).or_default().push(d);
+                        }
+                    }
+                }
+            }
+            Axiom::FunctionalRole(r) => {
+                functional.insert(role_key(*r));
+            }
+            Axiom::InverseFunctionalRole(r) => {
+                // InverseFunctionalRole(R) = FunctionalRole(R⁻)
+                let (id, inv) = role_key(*r);
+                functional.insert((id, !inv));
+            }
+            Axiom::DisjointClasses(cs) => {
+                let atomic_cs: Vec<ClassId> =
+                    cs.iter().filter_map(|&c| atomic_class(c)).collect();
+                for i in 0..atomic_cs.len() {
+                    for j in (i + 1)..atomic_cs.len() {
+                        disjoint_pairs.push((atomic_cs[i], atomic_cs[j]));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── ABox state ─────────────────────────────────────────────────────────────
+
+    let mut types: TypeMap = HashMap::new();
+    let mut edges: HashSet<RawEdge> = HashSet::new();
+
+    // Existential markers: (individual, role_id) → set of filler ClassIds.
+    // Individual X has marker (R, C) if X has some type A with A ⊑ ∃R.C.
+    let mut existential_markers: HashMap<(IndividualId, RoleId), HashSet<ClassId>> =
+        HashMap::new();
+
+    let mut type_queue: VecDeque<(IndividualId, ClassId)> = VecDeque::new();
+    let mut edge_queue: VecDeque<RawEdge> = VecDeque::new();
+
+    // ── Seed from ABox ─────────────────────────────────────────────────────────
+
+    for axiom in &internal.axioms {
+        match axiom {
+            Axiom::ClassAssertion { class, individual } => {
+                enqueue_concept_types(*individual, *class, pool, &mut type_queue);
+            }
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } => {
+                let (rid, a, b) = normalize_edge(*role, *subject, *object);
+                if edges.insert((rid, a, b)) {
+                    edge_queue.push_back((rid, a, b));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── Fixpoint ───────────────────────────────────────────────────────────────
+
+    let mut clash = false;
+    let mut changed = true;
+
+    while changed && !clash {
+        changed = false;
+
+        // Drain type queue
+        while let Some((ind, cls)) = type_queue.pop_front() {
+            if types.entry(ind).or_default().insert(cls) {
+                changed = true;
+
+                // Rule 6: type propagation via SubClassOf
+                if let Some(supers) = sub_of.get(&cls) {
+                    for &sup_c in supers {
+                        if !types.entry(ind).or_default().contains(&sup_c) {
+                            type_queue.push_back((ind, sup_c));
+                        }
+                    }
+                }
+
+                // Rule 7a: existential markers
+                if let Some(exs) = existential_of.get(&cls) {
+                    for &(role_id, filler_cls) in exs {
+                        existential_markers
+                            .entry((ind, role_id))
+                            .or_default()
+                            .insert(filler_cls);
+                    }
+                }
+            }
+        }
+
+        // Drain edge queue
+        while let Some((rid, a, b)) = edge_queue.pop_front() {
+            changed = true;
+
+            // Rule 2: inverse materialization
+            if let Some(inv_rules) = inverse_rules.get(&(rid, false)) {
+                let inv_rules = inv_rules.clone();
+                for (inv_rid, do_reverse) in inv_rules {
+                    let (na, nb) = if do_reverse { (b, a) } else { (a, b) };
+                    if edges.insert((inv_rid, na, nb)) {
+                        edge_queue.push_back((inv_rid, na, nb));
+                    }
+                }
+            }
+
+            // Rule 3: role hierarchy
+            let role_fwd = (rid, false);
+            if let Some(supers) = role_super_local.get(&role_fwd) {
+                let supers: Vec<_> = supers.iter().copied().collect();
+                for (sup_id, sup_inv) in supers {
+                    let (na, nb) = if sup_inv { (b, a) } else { (a, b) };
+                    if edges.insert((sup_id, na, nb)) {
+                        edge_queue.push_back((sup_id, na, nb));
+                    }
+                }
+            }
+
+            // Rule 5: domain propagation
+            if let Some(dom_classes) = domains.get(&(rid, false)) {
+                let dom_classes = dom_classes.clone();
+                for d in dom_classes {
+                    if !types.entry(a).or_default().contains(&d) {
+                        type_queue.push_back((a, d));
+                    }
+                }
+            }
+            // Rule 5: range propagation
+            if let Some(rng_classes) = ranges.get(&(rid, false)) {
+                let rng_classes = rng_classes.clone();
+                for d in rng_classes {
+                    if !types.entry(b).or_default().contains(&d) {
+                        type_queue.push_back((b, d));
+                    }
+                }
+            }
+        }
+
+        // Rule 4: role chains — scan all edges per chain rule
+        let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
+
+        // 2-hop chains
+        for &((r1_id, r1_inv), (r2_id, r2_inv), (sup_id, sup_inv)) in &chains2 {
+            for &(ea_id, ea, eb) in &edge_vec {
+                // Match first leg r1
+                let (a, b) = if !r1_inv {
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (ea, eb)
+                } else {
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (eb, ea)
+                };
+
+                // Match second leg r2 using b as middle node
+                for &(eb2_id, eb2, ec) in &edge_vec {
+                    let c = if !r2_inv {
+                        if eb2_id != r2_id || eb2 != b {
+                            continue;
+                        }
+                        ec
+                    } else {
+                        if eb2_id != r2_id || ec != b {
+                            continue;
+                        }
+                        eb2
+                    };
+
+                    let (na, nc) = if !sup_inv { (a, c) } else { (c, a) };
+                    if edges.insert((sup_id, na, nc)) {
+                        edge_queue.push_back((sup_id, na, nc));
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // 3-hop chains
+        for &((r1_id, r1_inv), (r2_id, r2_inv), (r3_id, r3_inv), (sup_id, sup_inv)) in &chains3 {
+            for &(ea_id, ea, eb) in &edge_vec {
+                let (a, b) = if !r1_inv {
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (ea, eb)
+                } else {
+                    if ea_id != r1_id {
+                        continue;
+                    }
+                    (eb, ea)
+                };
+
+                for &(eb2_id, eb2, ec) in &edge_vec {
+                    let c = if !r2_inv {
+                        if eb2_id != r2_id || eb2 != b {
+                            continue;
+                        }
+                        ec
+                    } else {
+                        if eb2_id != r2_id || ec != b {
+                            continue;
+                        }
+                        eb2
+                    };
+
+                    for &(ec2_id, ec2, ed) in &edge_vec {
+                        let d = if !r3_inv {
+                            if ec2_id != r3_id || ec2 != c {
+                                continue;
+                            }
+                            ed
+                        } else {
+                            if ec2_id != r3_id || ed != c {
+                                continue;
+                            }
+                            ec2
+                        };
+
+                        let (na, nd) = if !sup_inv { (a, d) } else { (d, a) };
+                        if edges.insert((sup_id, na, nd)) {
+                            edge_queue.push_back((sup_id, na, nd));
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rule 7: functional role merge — propagate types between fillers
+        for &(func_rid, func_inv) in &functional {
+            let mut fillers_by_subj: HashMap<IndividualId, Vec<IndividualId>> = HashMap::new();
+            for &(rid, a, b) in &edges {
+                if rid == func_rid {
+                    if !func_inv {
+                        fillers_by_subj.entry(a).or_default().push(b);
+                    } else {
+                        fillers_by_subj.entry(b).or_default().push(a);
+                    }
+                }
+            }
+            for (_, fillers) in &fillers_by_subj {
+                if fillers.len() >= 2 {
+                    let all_types: HashSet<ClassId> = fillers
+                        .iter()
+                        .flat_map(|f| types.get(f).into_iter().flatten().copied())
+                        .collect();
+                    for &f in fillers {
+                        let current = types.entry(f).or_default();
+                        for &t in &all_types {
+                            if current.insert(t) {
+                                type_queue.push_back((f, t));
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rule 7b: functional existential-marker clash.
+        // If individual X has markers (R, C1) and (R, C2) for Functional(R) and
+        // DisjointClasses(C1, C2) → the single R-successor must be both → CLASH.
+        for (&(ind, role_id), fillers) in &existential_markers {
+            if !functional.contains(&(role_id, false)) {
+                continue;
+            }
+            let filler_vec: Vec<ClassId> = fillers.iter().copied().collect();
+            for i in 0..filler_vec.len() {
+                for j in (i + 1)..filler_vec.len() {
+                    let (f1, f2) = (filler_vec[i], filler_vec[j]);
+                    if disjoint_pairs
+                        .iter()
+                        .any(|&(d1, d2)| (d1 == f1 && d2 == f2) || (d1 == f2 && d2 == f1))
+                    {
+                        if trace {
+                            eprintln!(
+                                "[abox-sat-gated] FUNCTIONAL-MARKER CLASH: {} has ∃{}.{} ∩ ∃{}.{} \
+                                 with Functional + Disjoint",
+                                vocab.individual_iri(ind),
+                                vocab.role_iri(role_id),
+                                vocab.class_iri(f1),
+                                vocab.role_iri(role_id),
+                                vocab.class_iri(f2),
+                            );
+                        }
+                        clash = true;
+                    }
+                }
+            }
+        }
+
+        // Rule 8: disjoint clash
+        if !clash {
+            for &(c1, c2) in &disjoint_pairs {
+                for (ind, ind_types) in &types {
+                    if ind_types.contains(&c1) && ind_types.contains(&c2) {
+                        if trace {
+                            eprintln!(
+                                "[abox-sat-gated] CLASH: {} has both {} and {}",
+                                vocab.individual_iri(*ind),
+                                vocab.class_iri(c1),
+                                vocab.class_iri(c2),
+                            );
+                        }
+                        clash = true;
+                        break;
+                    }
+                }
+                if clash {
+                    break;
+                }
+            }
+        }
+    }
+
+    clash
+}

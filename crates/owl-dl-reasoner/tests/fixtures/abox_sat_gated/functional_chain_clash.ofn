@@ -1,0 +1,26 @@
+Prefix(:=<http://example.org/func-chain-clash#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+Ontology(<http://example.org/func-chain-clash>
+
+  Declaration(Class(:Parent))
+  Declaration(Class(:Male))
+  Declaration(Class(:Female))
+  Declaration(ObjectProperty(:hasSex))
+  Declaration(ObjectProperty(:isParentOf))
+  Declaration(ObjectProperty(:isChildOf))
+  Declaration(NamedIndividual(:pat))
+  Declaration(NamedIndividual(:child))
+
+  DisjointClasses(:Male :Female)
+  FunctionalObjectProperty(:hasSex)
+  InverseObjectProperties(:isParentOf :isChildOf)
+
+  SubClassOf(:Parent ObjectIntersectionOf(
+    ObjectSomeValuesFrom(:hasSex :Male)
+    ObjectSomeValuesFrom(:hasSex :Female)))
+
+  ClassAssertion(:Parent :pat)
+)

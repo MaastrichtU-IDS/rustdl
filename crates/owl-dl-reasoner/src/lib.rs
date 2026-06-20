@@ -902,6 +902,24 @@ pub fn abox_check_enabled() -> bool {
     std::env::var_os("RUSTDL_ABOX_CHECK").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Whether the Variant A-gated ABox-saturation consistency pre-check is enabled.
+///
+/// When `RUSTDL_ABOX_SAT_GATED=1` the consequence-based named-individual
+/// fixpoint (inverse materialization + role chains + functional-marker merge)
+/// is run before the consistency wedge. A clash immediately returns inconsistent.
+///
+/// **Default OFF** (`=0` or unset). Flip to `=1` after the whole-corpus
+/// bake-off validates the variant. Sound by construction (reported clashes are
+/// real; misses fall through to the existing path). The check is skipped on
+/// ABox-free inputs (no cost on galen/ore/etc.).
+///
+/// See `docs/superpowers/specs/2026-06-20-abox-saturation-consistency-design.md`
+/// (Variant A-gated).
+#[must_use]
+pub fn abox_sat_gated_enabled() -> bool {
+    std::env::var_os("RUSTDL_ABOX_SAT_GATED").is_some_and(|v| v == "1")
+}
+
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
 /// build during classification. **Distinct from `--pair-timeout-ms`**:
 /// the cache build is one-shot per class at classify-start, and a
@@ -2115,6 +2133,30 @@ pub fn is_consistent_with_stats<A: ForIRI>(
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {
+    // Variant A-gated: consequence-based ABox-saturation pre-check.
+    // Runs BEFORE PreparedOntology::from_internal (which consumes `internal`),
+    // so we operate on the un-mutated input.  Gated by RUSTDL_ABOX_SAT_GATED=1
+    // and skipped on ABox-free inputs (no cost on galen/ore/etc.).
+    if abox_sat_gated_enabled() && internal_has_abox(&internal) {
+        let t0 = std::time::Instant::now();
+        let clash = owl_dl_saturation::saturate_abox_for_consistency(&internal);
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!(
+                "abox_sat_gated: clash={} in {:.3}s",
+                clash,
+                t0.elapsed().as_secs_f64()
+            );
+        }
+        if clash {
+            return Ok((
+                false,
+                QueryStats {
+                    answered_by_saturation: false,
+                    pure_el_mode: false,
+                },
+            ));
+        }
+    }
     let prepared = PreparedOntology::from_internal(internal)?;
     // Sound pre-check: a positive verdict short-circuits the tableau.
     if let abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {

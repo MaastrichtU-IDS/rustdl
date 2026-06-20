@@ -1,0 +1,25 @@
+Prefix(:=<http://example.org/fp-smoke#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+Ontology(<http://example.org/fp-smoke>
+
+  Declaration(Class(:A))
+  Declaration(Class(:B))
+  Declaration(Class(:C))
+  Declaration(ObjectProperty(:r))
+  Declaration(ObjectProperty(:s))
+  Declaration(ObjectProperty(:t))
+  Declaration(NamedIndividual(:x))
+  Declaration(NamedIndividual(:y))
+  Declaration(NamedIndividual(:z))
+
+  InverseObjectProperties(:r :s)
+  SubObjectPropertyOf(ObjectPropertyChain(:r :s) :t)
+  SubClassOf(:A :B)
+
+  ClassAssertion(:A :x)
+  ObjectPropertyAssertion(:r :x :y)
+  ObjectPropertyAssertion(:r :y :z)
+)

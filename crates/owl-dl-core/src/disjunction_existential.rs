@@ -40,13 +40,37 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
     // supers (e.g. the disjunctive-data-property-domain GCI).
     let mut triples: Vec<(ConceptId, Role, ClassId)> = Vec::new();
     let mut bare: Vec<(ConceptId, ClassId)> = Vec::new();
+    // Disjunctive object-property domain/range: `domain(R) = D₁ ⊔ … ⊔ Dₙ` with all
+    // disjuncts sharing a common told-subsumer C ⟹ `domain(R) ⊑ C`, so
+    // `ObjectPropertyDomain(R, C)` is entailed (sound, weaker). The saturator's
+    // Pass-1 domain/range handler only registers ATOMIC domains, so it drops the
+    // disjunctive form entirely — costing the whole `∃R / ∃R.Self → domain` chain
+    // (olia ore_ont_4827: domain(hasCase) = Adjective ⊔ Article ⊔ Noun ⊔ Numeral ⊔
+    // PronounOrDeterminer, all ⊑ MorphosyntacticCategory transitively). `(role, C)`.
+    let mut dom_ranges: Vec<(Role, ClassId, bool)> = Vec::new(); // (role, C, is_range)
     for ax in &onto.axioms {
-        let Axiom::SubClassOf { sub, sup } = ax else {
-            continue;
-        };
-        collect_from_sup(*sub, *sup, &onto.concepts, &told, &mut triples, &mut bare);
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                collect_from_sup(*sub, *sup, &onto.concepts, &told, &mut triples, &mut bare);
+            }
+            Axiom::ObjectPropertyDomain { role, domain }
+                if matches!(onto.concepts.get(*domain), ConceptExpr::Or(_)) =>
+            {
+                for c in minimal_common_subsumers(*domain, &onto.concepts, &told) {
+                    dom_ranges.push((*role, c, false));
+                }
+            }
+            Axiom::ObjectPropertyRange { role, range }
+                if matches!(onto.concepts.get(*range), ConceptExpr::Or(_)) =>
+            {
+                for c in minimal_common_subsumers(*range, &onto.concepts, &told) {
+                    dom_ranges.push((*role, c, true));
+                }
+            }
+            _ => {}
+        }
     }
-    if triples.is_empty() && bare.is_empty() {
+    if triples.is_empty() && bare.is_empty() && dom_ranges.is_empty() {
         return;
     }
     // Phase 2 (mutable borrow): intern the derived existentials + push.
@@ -66,6 +90,15 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
             continue;
         }
         onto.axioms.push(Axiom::SubClassOf { sub, sup });
+    }
+    // Derived atomic domain/range from a disjunctive one (sound under-approx).
+    for (role, c, is_range) in dom_ranges {
+        let cls = onto.concepts.atomic(c);
+        if is_range {
+            onto.axioms.push(Axiom::ObjectPropertyRange { role, range: cls });
+        } else {
+            onto.axioms.push(Axiom::ObjectPropertyDomain { role, domain: cls });
+        }
     }
 }
 
@@ -152,15 +185,20 @@ fn minimal_common_subsumers(
         }
     }
     // Keep only minimal elements: drop `C` if some other common `C'` is
-    // told-below `C` (the saturator recovers the weaker supers from the
-    // minimal ones, so emitting the whole chain is redundant).
+    // STRICTLY told-below `C` (the saturator recovers the weaker supers from the
+    // minimal ones, so emitting the whole chain is redundant). "Strictly" — the
+    // `&& !is_told_sub(c, other)` guard — is load-bearing: without it, two
+    // mutually-told-sub (i.e. told-EQUIVALENT) common subsumers each count as
+    // "below" the other, so BOTH are dropped and the whole set can collapse to
+    // empty (olia ore_ont_4827: `MorphosyntacticCategory ≡ Word`, both common
+    // subsumers of every disjunct, were dropped — losing the domain entirely).
     common
         .iter()
         .copied()
         .filter(|&c| {
-            !common
-                .iter()
-                .any(|&other| other != c && told.is_told_sub(other, c))
+            !common.iter().any(|&other| {
+                other != c && told.is_told_sub(other, c) && !told.is_told_sub(c, other)
+            })
         })
         .collect()
 }

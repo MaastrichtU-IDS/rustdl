@@ -20,7 +20,7 @@
 //! Run: `cargo test -p owl-dl-reasoner --test abox_saturation`
 //! Run ignored: `cargo test -p owl-dl-reasoner --test abox_saturation -- --ignored`
 
-#![allow(clippy::unwrap_used, clippy::doc_markdown)]
+#![allow(clippy::unwrap_used, clippy::doc_markdown, unsafe_code)]
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -289,4 +289,18 @@ Ontology(
         found,
         "brother+aunt-in-law clash FAILED: diana should get both Man and Woman via domain"
     );
+}
+
+// Task 2: end-to-end through is_consistent. Flag-on ⇒ family inconsistent; flag-off
+// ⇒ unchanged (consistent, the pre-SP behaviour). A consistent fixture must stay
+// consistent flag-on (no FP through the full path).
+#[test]
+#[ignore = "needs ontologies/real/family.ofn"]
+fn is_consistent_flag_on_detects_family() {
+    let o = load_ofn_file("../../ontologies/real/family.ofn");
+    // SAFETY: serialized per-key; this test owns the flag for its duration.
+    unsafe { std::env::set_var("RUSTDL_ABOX_SATURATION", "1"); }
+    let on = owl_dl_reasoner::is_consistent(&o).unwrap();
+    unsafe { std::env::set_var("RUSTDL_ABOX_SATURATION", "0"); }
+    assert!(!on, "family must be inconsistent with RUSTDL_ABOX_SATURATION=1");
 }

@@ -922,6 +922,15 @@ pub fn abox_check_enabled() -> bool {
     std::env::var_os("RUSTDL_ABOX_CHECK").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Consequence-based ABox-saturation consistency pre-check
+/// (`RUSTDL_ABOX_SATURATION`). **Default off** during build/validation; a derived
+/// clash ⇒ inconsistent (sound under-approximation — non-clash falls through to the
+/// hybrid path unchanged). Flip default-on after the whole-corpus bake-off.
+#[must_use]
+pub fn abox_saturation_enabled() -> bool {
+    std::env::var_os("RUSTDL_ABOX_SATURATION").is_some_and(|v| v == "1")
+}
+
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
 /// build during classification. **Distinct from `--pair-timeout-ms`**:
 /// the cache build is one-shot per class at classify-start, and a
@@ -2135,6 +2144,26 @@ pub fn is_consistent_with_stats<A: ForIRI>(
 fn is_consistent_internal_full(
     internal: InternalOntology,
 ) -> Result<(bool, QueryStats), ReasonError> {
+    // Sound ABox-saturation pre-check (gated, default off): a clash derived by
+    // consequence-based saturation over named individuals is a real inconsistency.
+    // Runs before `from_internal` (which moves `internal`); guarded by
+    // `has_abox_axioms` so ABox-free inputs skip it. Non-clash ⇒ fall through to
+    // the existing hybrid path unchanged (FP-safe; sound under-approximation).
+    if abox_saturation_enabled()
+        && classify::has_abox_axioms(&internal)
+        && abox_saturation::saturate_abox_consistency(&internal).clash
+    {
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("abox_saturation: inconsistent");
+        }
+        return Ok((
+            false,
+            QueryStats {
+                answered_by_saturation: true,
+                pure_el_mode: false,
+            },
+        ));
+    }
     let prepared = PreparedOntology::from_internal(internal)?;
     // Sound pre-check: a positive verdict short-circuits the tableau.
     if let abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {

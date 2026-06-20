@@ -923,12 +923,14 @@ pub fn abox_check_enabled() -> bool {
 }
 
 /// Consequence-based ABox-saturation consistency pre-check
-/// (`RUSTDL_ABOX_SATURATION`). **Default off** during build/validation; a derived
-/// clash ⇒ inconsistent (sound under-approximation — non-clash falls through to the
-/// hybrid path unchanged). Flip default-on after the whole-corpus bake-off.
+/// (`RUSTDL_ABOX_SATURATION`). **Default on** (set `=0` or empty to disable); a
+/// derived clash ⇒ inconsistent (sound under-approximation — non-clash falls
+/// through to the hybrid path unchanged). Closes the family inconsistency gap;
+/// `has_abox_axioms`-guarded so ABox-free inputs skip it (zero cost). Whole-corpus
+/// bake-off (2026-06-20): FP=0/MISSED=0 byte-identical, zero classify cost.
 #[must_use]
 pub fn abox_saturation_enabled() -> bool {
-    std::env::var_os("RUSTDL_ABOX_SATURATION").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_ABOX_SATURATION").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache

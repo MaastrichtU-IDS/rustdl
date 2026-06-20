@@ -43,6 +43,32 @@ type Binding = Vec<(Var, HNode)>;
 /// clausifier bodies are 1–3 vars; this guards pathological inputs.
 const MAX_BODY_VARS: usize = 8;
 
+/// EXPERIMENT (corpus-wide profile): process-global counters aggregated across
+/// ALL wedge engine instances in a classify run, to profile backjump headroom
+/// (BACKJUMPS/BRANCHES) and cache headroom (CI_UNSAT/UNSAT_EXHAUST = sound
+/// per-label-cache potential) per fixture.
+pub mod profile {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    pub static BRANCHES: AtomicU64 = AtomicU64::new(0);
+    pub static BACKJUMPS: AtomicU64 = AtomicU64::new(0);
+    pub static UNSAT_EXHAUST: AtomicU64 = AtomicU64::new(0);
+    pub static CI_UNSAT: AtomicU64 = AtomicU64::new(0);
+    pub fn reset() {
+        for a in [&BRANCHES, &BACKJUMPS, &UNSAT_EXHAUST, &CI_UNSAT] {
+            a.store(0, Ordering::Relaxed);
+        }
+    }
+    #[must_use]
+    pub fn snapshot() -> (u64, u64, u64, u64) {
+        (
+            BRANCHES.load(Ordering::Relaxed),
+            BACKJUMPS.load(Ordering::Relaxed),
+            UNSAT_EXHAUST.load(Ordering::Relaxed),
+            CI_UNSAT.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// Defensive cap on the Horn-fixpoint inner loop during branching
 /// search. Anywhere blocking bounds the graph, so a real fixpoint is
 /// reached well under this; hitting it yields `Stalled`, not `Unsat`.
@@ -386,6 +412,9 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// EXPERIMENT (L1 P0): disjunction decisions where backjumping FIRED
+    /// (clash didn't depend on this decision). 0 ⇒ bjgap≈1.
+    pub backjumps: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -699,7 +728,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             block_index: None,
-            nn_taint_disabled: false,
+            nn_taint_disabled: std::env::var_os("RUSTDL_NN_TAINT_DISABLED").is_some(),
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
@@ -743,7 +772,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             block_index: None,
-            nn_taint_disabled: false,
+            nn_taint_disabled: std::env::var_os("RUSTDL_NN_TAINT_DISABLED").is_some(),
             snapshot_origin: vec![false],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
@@ -1617,7 +1646,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             block_index: None,
-            nn_taint_disabled: false,
+            nn_taint_disabled: std::env::var_os("RUSTDL_NN_TAINT_DISABLED").is_some(),
             snapshot_origin: vec![false; n],
             snapshot_backprop_aborted: false,
             lazy_replay_state: None,
@@ -1709,6 +1738,7 @@ impl<'c> HyperEngine<'c> {
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
+                profile::BRANCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return HyperResult::Sat,
@@ -1720,6 +1750,8 @@ impl<'c> HyperEngine<'c> {
                             // clash — backjump: propagate the child's
                             // dep-set up, skipping the remaining
                             // disjuncts (and this whole decision).
+                            self.stats.backjumps += 1;
+                            profile::BACKJUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             self.clash_deps = child_deps;
                             return HyperResult::Unsat;
                         }
@@ -1737,6 +1769,13 @@ impl<'c> HyperEngine<'c> {
             // Every disjunct failed with `d` in its clash deps: the
             // decision is exhausted, so drop `d` from the propagated set.
             self.clash_deps = combined.remove(d);
+            {
+                use std::sync::atomic::Ordering::Relaxed;
+                profile::UNSAT_EXHAUST.fetch_add(1, Relaxed);
+                if self.clash_deps == DepSet::EMPTY {
+                    profile::CI_UNSAT.fetch_add(1, Relaxed);
+                }
+            }
             return HyperResult::Unsat;
         }
         // `≤n` merge branching (H3c): merge one pair of the violating

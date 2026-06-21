@@ -97,6 +97,7 @@ print(f"{len(result.classes)} classes; {len(result.unsatisfiable)} unsat")
 print(result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup"))
 ok = rustdl.is_consistent("ontology.ofn")
 edges = rustdl.materialize_inferred_property_assertions("ontology.ofn")  # inferred object property assertions
+data_edges = rustdl.materialize_inferred_data_property_assertions("ontology.ofn")  # inferred data property assertions
 ```
 
 ## Build & test
@@ -115,7 +116,7 @@ rustdl classify  ontology.ofn               # full class hierarchy (default)
 rustdl consistent ontology.ofn
 rustdl subclass  ontology.ofn <sub> <sup>
 rustdl instances ontology.ofn <class>
-rustdl realize   ontology.ofn [--properties] # per-individual types (+ inferred object property assertions)
+rustdl realize   ontology.ofn [--properties] # per-individual types (+ inferred object & data property assertions)
 rustdl justify   ontology.ofn <query…>      # minimal responsible-axiom set (why it holds)
 rustdl justify --laconic ontology.ofn <query…>  # pinpoint the responsible PART of each axiom
 rustdl repair    ontology.ofn <query…>      # minimal axiom removals to break an entailment

@@ -248,6 +248,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   individuals, reusing the ABox saturator's derived edges (sound under-approximation: no
   anonymous-witness / disjunctive edges; errors on inconsistency). See
   `docs/superpowers/specs/2026-06-21-inferred-property-assertions-design.md`.
+  `materialize_data_property_assertions` (reasoner) / `materialize_inferred_data_property_assertions`
+  (Python) surface inferred DATA property assertions (5-tuple subject/property/lexical/datatype/lang)
+  via a structural sub-data-property + equivalent-data-property closure (sound; under-approx: no
+  SameIndividual / class-axiom-derived). Folded into `realize --properties`. See
+  `docs/superpowers/specs/2026-06-21-inferred-data-property-assertions-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

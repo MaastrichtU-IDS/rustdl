@@ -88,6 +88,26 @@ pub(crate) fn materialize_inferred_data_property_assertions(
     owl_dl_reasoner::materialize_data_property_assertions(&ontology).map_err(reason_error_to_py)
 }
 
+/// Returns every inferred object property subsumption `(sub, sup)` over named object
+/// properties (told + equivalent + inverse closure). Raises if inconsistent.
+#[pyfunction]
+pub(crate) fn materialize_inferred_subobjectproperty_axioms(
+    path: &str,
+) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::materialize_subobjectproperty_axioms(&ontology).map_err(reason_error_to_py)
+}
+
+/// Returns every inferred data property subsumption `(sub, sup)` over named data
+/// properties (told + equivalent closure). Raises if inconsistent.
+#[pyfunction]
+pub(crate) fn materialize_inferred_subdataproperty_axioms(
+    path: &str,
+) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::materialize_subdataproperty_axioms(&ontology).map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(materialize_inferred_subclass_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(materialize_inferred_class_assertions, m)?)?;
@@ -97,6 +117,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         materialize_inferred_data_property_assertions,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        materialize_inferred_subobjectproperty_axioms,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        materialize_inferred_subdataproperty_axioms,
         m
     )?)?;
     Ok(())

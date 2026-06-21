@@ -26,6 +26,15 @@ from rustdl._native import (
     UnknownClassError as UnknownClassError,
     materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
     materialize_inferred_class_assertions as materialize_inferred_class_assertions,
+    materialize_inferred_property_assertions as materialize_inferred_property_assertions,
+    materialize_inferred_data_property_assertions as materialize_inferred_data_property_assertions,
+    materialize_inferred_subobjectproperty_axioms as materialize_inferred_subobjectproperty_axioms,
+    materialize_inferred_subdataproperty_axioms as materialize_inferred_subdataproperty_axioms,
+    materialize_existential_successors as materialize_existential_successors,
+    justify as justify,
+    justify_all as justify_all,
+    diagnose as diagnose,
+    repair as repair,
 )
 
 from . import examples as examples
@@ -110,6 +119,49 @@ def classify_bytes(data, *, format, per_pair_timeout_ms=1000, saturation_only=Fa
     )
 
 
+def debug(path):
+    """One-call ontology diagnosis. Returns a JSON-serializable dict.
+
+    Consistent ontology with unsatisfiable classes:
+        {"consistent": True, "unsatisfiable": [iri, ...],
+         "roots": [{"iri": str, "justification": [axiom, ...],
+                    "repairs": [[axiom, ...], ...], "derives": [iri, ...]}, ...],
+         "derived": [{"iri": str, "roots": [iri, ...]}, ...]}
+
+    Inconsistent ontology:
+        {"consistent": False, "unsatisfiable": [], "roots": [], "derived": [],
+         "inconsistency": {"justification": [axiom, ...], "repairs": [[axiom, ...], ...]}}
+
+    Composes diagnose / justify / repair. Read-only; sound by construction."""
+    consistent, roots, derived = diagnose(path)
+    if not consistent:
+        return {
+            "consistent": False,
+            "unsatisfiable": [],
+            "roots": [],
+            "derived": [],
+            "inconsistency": {
+                "justification": justify(path, ["inconsistent"]),
+                "repairs": repair(path, ["inconsistent"], 10),
+            },
+        }
+    root_objs = [
+        {
+            "iri": r,
+            "justification": justify(path, ["unsat", r]),
+            "repairs": repair(path, ["unsat", r], 10),
+            "derives": [d for (d, rs) in derived if r in rs],
+        }
+        for r in roots
+    ]
+    return {
+        "consistent": True,
+        "unsatisfiable": list(roots) + [d for (d, _) in derived],
+        "roots": root_objs,
+        "derived": [{"iri": d, "roots": rs} for (d, rs) in derived],
+    }
+
+
 __all__ = [
     "__version__",
     "examples",
@@ -129,4 +181,14 @@ __all__ = [
     "UnknownClassError",
     "materialize_inferred_subclass_axioms",
     "materialize_inferred_class_assertions",
+    "materialize_inferred_property_assertions",
+    "materialize_inferred_data_property_assertions",
+    "materialize_inferred_subobjectproperty_axioms",
+    "materialize_inferred_subdataproperty_axioms",
+    "materialize_existential_successors",
+    "justify",
+    "justify_all",
+    "diagnose",
+    "repair",
+    "debug",
 ]

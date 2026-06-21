@@ -269,6 +269,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   (lifted from the CLI). The `materialize_*` re-exports were also fixed — they were registered
   in `_native` but missing from `__init__.py`. See
   `docs/superpowers/specs/2026-06-21-python-debugging-surface-design.md`.
+  The Python package is typed (PEP 561): `python/rustdl/py.typed` + a hand-written
+  `__init__.pyi` covering the full surface (functions, the `Classification` class,
+  exceptions, and `debug()` TypedDicts). `tests/python/test_stubs.py` guards stub↔`__all__`
+  drift. See `docs/superpowers/specs/2026-06-21-python-type-stubs-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

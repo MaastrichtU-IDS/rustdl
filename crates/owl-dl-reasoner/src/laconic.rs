@@ -4,26 +4,21 @@
 //! laconic justification is a set of genuine consequences of the ontology that
 //! explains the entailment. Read-only; FP=0 untouched.
 
-use std::collections::BTreeSet;
-// Imports below are consumed by the driver wired up in Task 3.
-#[allow(unused_imports)] // wired into the driver in Task 3; allow removed there
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use horned_owl::model::{ClassExpression, Component, ForIRI, SubClassOf};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
-use crate::justify::{Entailment, Justification};
-#[allow(unused_imports)] // wired into the driver in Task 3; allow removed there
 use crate::justify::{
-    find_all_justifications, find_one_justification, logical_axioms, quickxplain,
+    Entailment, Justification, find_all_justifications, find_one_justification, logical_axioms,
+    quickxplain,
 };
 
 /// Decompose a superclass expression into top-level fragments, each of which the
 /// original superclass is subsumed by (so `C ⊑ sup` entails `C ⊑ fragment`).
 /// Splits conjunctions and recurses into existential fillers; everything else is
 /// atomic (returned as-is).
-#[allow(dead_code)] // wired into the driver in Task 3; allow removed there
 fn split_sup<A: ForIRI>(sup: &ClassExpression<A>) -> Vec<ClassExpression<A>> {
     use ClassExpression as CE;
     match sup {
@@ -42,7 +37,6 @@ fn split_sup<A: ForIRI>(sup: &ClassExpression<A>) -> Vec<ClassExpression<A>> {
 /// Weaken a single axiom into a set of fragments, each ENTAILED BY the axiom.
 /// An axiom with no applicable operator returns `vec![axiom.clone()]` (passes
 /// through unchanged).
-#[allow(dead_code)] // wired into the driver in Task 3; allow removed there
 fn weaken<A: ForIRI>(axiom: &Component<A>) -> Vec<Component<A>> {
     match axiom {
         // C ⊑ sup  →  one fragment per split of sup (LHS kept whole — splitting it
@@ -106,23 +100,83 @@ fn weaken<A: ForIRI>(axiom: &Component<A>) -> Vec<Component<A>> {
     .collect()
 }
 
-/// Laconic justification for `q` (one). Filled in by Task 3.
+/// Build the laconic version of one regular justification: weaken its axioms,
+/// keep the rest of the ontology as background, and re-minimize via `QuickXplain`.
+fn laconic_from<A: ForIRI>(
+    onto: &SetOntology<A>,
+    q: &Entailment,
+    j_axioms: &[Component<A>],
+    fragment: crate::classify::FragmentClassification,
+    minimal_guaranteed: bool,
+) -> Result<Justification<A>, ReasonError> {
+    let (nonlogical, logical) = logical_axioms(onto);
+    let j_set: HashSet<Component<A>> = j_axioms.iter().cloned().collect();
+
+    // background = non-logical fixed + every logical axiom NOT in this justification.
+    let mut background = nonlogical;
+    for ax in logical {
+        if !j_set.contains(&ax) {
+            background.push(ax);
+        }
+    }
+
+    // candidates = the union of the weakenings of the justification's axioms.
+    let candidates: Vec<Component<A>> = j_axioms
+        .iter()
+        .flat_map(weaken)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let laconic = quickxplain(&background, &candidates, q)?;
+    Ok(Justification {
+        axioms: laconic,
+        fragment,
+        minimal_guaranteed,
+    })
+}
+
+/// Laconic justification for `q` (one), or `None` if `q` is not entailed.
+///
+/// # Errors
+/// Propagates [`ReasonError`].
 pub fn find_laconic_justification<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
 ) -> Result<Option<Justification<A>>, ReasonError> {
-    let _ = (onto, q);
-    Ok(None)
+    let Some(j) = find_one_justification(onto, q)? else {
+        return Ok(None);
+    };
+    Ok(Some(laconic_from(
+        onto,
+        q,
+        &j.axioms,
+        j.fragment,
+        j.minimal_guaranteed,
+    )?))
 }
 
-/// All laconic justifications for `q` (capped). Filled in by Task 3.
+/// All laconic justifications for `q` (one per regular justification, capped by
+/// `max`), de-duplicated by fragment set.
+///
+/// # Errors
+/// Propagates [`ReasonError`].
 pub fn find_all_laconic_justifications<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
     max: usize,
 ) -> Result<Vec<Justification<A>>, ReasonError> {
-    let _ = (onto, q, max);
-    Ok(Vec::new())
+    let regular = find_all_justifications(onto, q, max)?;
+    let mut out = Vec::new();
+    let mut seen: HashSet<BTreeSet<Component<A>>> = HashSet::new();
+    for j in regular {
+        let lac = laconic_from(onto, q, &j.axioms, j.fragment, j.minimal_guaranteed)?;
+        let key: BTreeSet<Component<A>> = lac.axioms.iter().cloned().collect();
+        if seen.insert(key) {
+            out.push(lac);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

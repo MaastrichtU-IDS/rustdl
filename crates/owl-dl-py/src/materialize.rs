@@ -108,6 +108,20 @@ pub(crate) fn materialize_inferred_subdataproperty_axioms(
     owl_dl_reasoner::materialize_subdataproperty_axioms(&ontology).map_err(reason_error_to_py)
 }
 
+/// Returns the entailed existential successors of named individuals as 4-tuples
+/// `(subject, property, witness_blank_id, filler_class)` — one per entailed
+/// `a : exists R.C`. NOTE: a blank-node REPRESENTATION of entailed existential
+/// restrictions, NOT entailed ground triples (the specific witness is model-relative).
+/// Raises if the ontology is inconsistent.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn materialize_existential_successors(
+    path: &str,
+) -> PyResult<Vec<(String, String, String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::materialize_existential_successors(&ontology).map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(materialize_inferred_subclass_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(materialize_inferred_class_assertions, m)?)?;
@@ -127,5 +141,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         materialize_inferred_subdataproperty_axioms,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(materialize_existential_successors, m)?)?;
     Ok(())
 }

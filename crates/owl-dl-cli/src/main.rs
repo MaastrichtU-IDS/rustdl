@@ -253,6 +253,22 @@ enum Command {
         #[arg(long)]
         verify_proof: bool,
     },
+    /// Diagnose a broken ontology: partition unsatisfiable classes into ROOT
+    /// (genuine causes) and DERIVED (collateral), justify the roots, and on an
+    /// inconsistent ontology report the responsible axioms.
+    Diagnose {
+        /// Path to the ontology (.ofn / .owx / .owl / .rdf).
+        file: PathBuf,
+        /// Print ALL minimal justifications per root (capped by --max), not just one.
+        #[arg(long)]
+        all: bool,
+        /// Cap on the number of justifications printed with --all.
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+        /// Gloss each axiom with the rdfs:label of the entities it mentions.
+        #[arg(long)]
+        labels: bool,
+    },
     /// Hypertableau Phase H2b wall probe: run the hyperresolution
     /// engine's concept-satisfiability decision once per named class
     /// and report timing + branching. NOTE: a *performance probe*,
@@ -961,6 +977,105 @@ fn main() -> Result<()> {
                 }
                 ProveEntailmentResult::NotEntailed => {
                     println!("NOT entailed: {sub} SubClassOf {sup} does not hold in this ontology");
+                }
+            }
+        }
+        Command::Diagnose {
+            file,
+            all,
+            max,
+            labels,
+        } => {
+            use owl_dl_reasoner::justify::{
+                Entailment, component_entities, find_all_justifications, find_one_justification,
+            };
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
+            let label_map = labels.then(|| build_label_map(&onto));
+
+            // Shared renderer for a justification (mirrors the `justify` handler).
+            let render = |j: &owl_dl_reasoner::justify::Justification<RcStr>, indent: &str| {
+                let note = if j.minimal_guaranteed {
+                    format!("minimal ({})", j.fragment)
+                } else {
+                    format!("entailing; minimality NOT guaranteed ({})", j.fragment)
+                };
+                println!("{indent}justification ({} axioms) — {note}", j.axioms.len());
+                for ax in &j.axioms {
+                    println!("{indent}  {}", ax.as_manchester_with_prefixes(&pm));
+                    if let Some(lm) = &label_map {
+                        let glosses: Vec<String> = component_entities(ax)
+                            .into_iter()
+                            .filter_map(|iri| {
+                                lm.get(&iri)
+                                    .map(|l| format!("{} = \"{l}\"", local_name(&iri)))
+                            })
+                            .collect();
+                        if !glosses.is_empty() {
+                            println!("{indent}      label: {}", glosses.join("; "));
+                        }
+                    }
+                }
+            };
+
+            // Render either one or all justifications for an entailment.
+            let render_q = |q: &Entailment, indent: &str| -> anyhow::Result<()> {
+                if all {
+                    let js = find_all_justifications(&onto, q, max)
+                        .context("find_all_justifications")?;
+                    if js.is_empty() {
+                        println!("{indent}(no justification found)");
+                    }
+                    for j in &js {
+                        render(j, indent);
+                    }
+                } else {
+                    match find_one_justification(&onto, q).context("find_one_justification")? {
+                        Some(j) => render(&j, indent),
+                        None => println!("{indent}(no justification found)"),
+                    }
+                }
+                Ok(())
+            };
+
+            let d = owl_dl_reasoner::diagnose(&onto).context("diagnose")?;
+            println!("# diagnose: {}", file.display());
+
+            if !d.consistent {
+                println!("# consistency: INCONSISTENT");
+                println!("## responsible axioms:");
+                render_q(&Entailment::Inconsistent, "  ")?;
+                return Ok(());
+            }
+
+            println!("# consistency: consistent");
+            if d.all_unsat.is_empty() {
+                println!("# coherent: no unsatisfiable classes");
+                return Ok(());
+            }
+            println!(
+                "# unsatisfiable: {}  ({} root, {} derived)",
+                d.all_unsat.len(),
+                d.roots.len(),
+                d.derived.len()
+            );
+
+            println!("\n## ROOT unsatisfiable classes (fix these first)");
+            for r in &d.roots {
+                println!("ROOT  {r}");
+                render_q(&Entailment::Unsatisfiable { class: r.clone() }, "  ")?;
+                if let Some(deps) = d.root_derives.get(r)
+                    && !deps.is_empty()
+                {
+                    println!("  derives: {}", deps.join(", "));
+                }
+            }
+
+            if !d.derived.is_empty() {
+                println!(
+                    "\n## DERIVED unsatisfiable classes (likely resolve once roots are fixed)"
+                );
+                for dc in &d.derived {
+                    println!("DERIVED {}   <= {}", dc.iri, dc.roots.join(", "));
                 }
             }
         }

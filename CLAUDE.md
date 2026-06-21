@@ -242,7 +242,13 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `PreparedOntology::from_internal` snapshots the post-NNF/absorb/ABox-seed state
   **once** so the O(n²) pairwise classify loop reuses it across pairs; the loop
   runs in parallel via rayon. `is_subclass_of` reduces to satisfiability of
-  `sub ⊓ ¬sup`. Phase 4b (commit e31439c) added a `FragmentClassification`
+  `sub ⊓ ¬sup`.
+  `materialize_object_property_assertions` (reasoner) / `materialize_inferred_property_assertions`
+  (Python) / `realize --properties` (CLI) surface inferred OBJECT property assertions over named
+  individuals, reusing the ABox saturator's derived edges (sound under-approximation: no
+  anonymous-witness / disjunctive edges; errors on inconsistency). See
+  `docs/superpowers/specs/2026-06-21-inferred-property-assertions-design.md`.
+  Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether
   `trust_sat` is sound by construction or by composition (corpus-validated).

@@ -88,3 +88,52 @@ fn not_entailed_nothing_to_repair() {
     assert!(!r.entailed);
     assert!(r.repairs.is_empty());
 }
+
+type Rc = std::rc::Rc<str>;
+
+// Real fixture: every repair of a pizza unsat class must verify (make it
+// satisfiable). Ignored by default (corpus + SHOIN justify cost).
+#[test]
+#[ignore = "reads the curated corpus (ontologies/real/pizza.ofn)"]
+fn repair_pizza_unsat_verifies() {
+    let p = std::path::Path::new("../../ontologies/real/pizza.ofn");
+    if !p.exists() {
+        eprintln!("skip pizza.ofn (not present)");
+        return;
+    }
+    let onto = read_ofn_fixture(p);
+    let q = Entailment::Unsatisfiable {
+        class: "http://www.co-ode.org/ontologies/pizza/pizza.owl#IceCream".to_string(),
+    };
+    let r = find_repairs(&onto, &q, 10).expect("repair");
+    assert!(
+        r.entailed && !r.repairs.is_empty(),
+        "IceCream unsat → repairs exist"
+    );
+    let (fixed, logical) = logical_axioms(&onto);
+    for rep in &r.repairs {
+        let kept: Vec<_> = logical
+            .iter()
+            .filter(|a| !rep.remove.contains(a))
+            .cloned()
+            .collect();
+        assert!(
+            !entails(&ontology_from(&fixed, &kept), &q).expect("entails"),
+            "every reported repair must break IceCream's unsatisfiability"
+        );
+    }
+    eprintln!(
+        "pizza IceCream: {} repair(s), complete={}",
+        r.repairs.len(),
+        r.complete
+    );
+}
+
+fn read_ofn_fixture(p: &std::path::Path) -> SetOntology<Rc> {
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(p).expect("open fixture"));
+    let (o, _): (SetOntology<Rc>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+    o
+}

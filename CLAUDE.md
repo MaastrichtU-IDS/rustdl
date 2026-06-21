@@ -514,6 +514,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   disjoint; LHS + cardinality deliberately not weakened), re-minimized via
   QuickXplain — sound by construction (every fragment is entailed by an original
   axiom). See `docs/superpowers/specs/2026-06-21-laconic-justifications-design.md`.
+  `repair` lists minimal axiom-removal sets (Reiter diagnoses = minimal hitting sets
+  over all justifications) to break an unwanted entailment; every repair is verified
+  by removal (sound even when the justification set is incomplete). See
+  `docs/superpowers/specs/2026-06-21-repair-suggestions-design.md`.
 
 ## Soundness contract (important)
 

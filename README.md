@@ -107,6 +107,7 @@ rustdl instances ontology.ofn <class>
 rustdl realize   ontology.ofn               # per-individual most-specific types
 rustdl justify   ontology.ofn <query…>      # minimal responsible-axiom set (why it holds)
 rustdl justify --laconic ontology.ofn <query…>  # pinpoint the responsible PART of each axiom
+rustdl repair    ontology.ofn <query…>      # minimal axiom removals to break an entailment
 rustdl prove     ontology.ofn <sub> <sup>   # step-level DL proof tree
 rustdl diagnose  ontology.ofn               # root vs derived unsatisfiable classes (where to start fixing)
 rustdl explain   ontology.ofn <sub> <sup>   # which engine answered (saturation vs tableau)

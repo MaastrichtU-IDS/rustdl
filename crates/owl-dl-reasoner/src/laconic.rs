@@ -15,21 +15,20 @@ use crate::justify::{
     quickxplain,
 };
 
-/// Decompose a superclass expression into top-level fragments, each of which the
-/// original superclass is subsumed by (so `C ⊑ sup` entails `C ⊑ fragment`).
-/// Splits conjunctions and recurses into existential fillers; everything else is
-/// atomic (returned as-is).
+/// Decompose a superclass expression into top-level fragments whose CONJUNCTION
+/// is EQUIVALENT to the original (so the fragment set, as a whole, preserves every
+/// entailment of `C ⊑ sup`, and each `C ⊑ fragment` is individually entailed).
+///
+/// Only conjunctions are split: `X ⊑ D₁ ⊓ … ⊓ Dₙ` iff `X ⊑ Dᵢ` for all `i`, so
+/// `{C ⊑ D₁, …, C ⊑ Dₙ}` is set-equivalent to `C ⊑ D₁⊓…⊓Dₙ`. Existential-filler
+/// narrowing (`∃r.(D⊓E) → ∃r.D`) is deliberately NOT done: it is a strict
+/// weakening (the split successors need not coincide), so it does NOT preserve the
+/// original's entailment and would let the candidate set fail `QuickXplain`'s
+/// precondition. Everything else is atomic (returned as-is).
 fn split_sup<A: ForIRI>(sup: &ClassExpression<A>) -> Vec<ClassExpression<A>> {
     use ClassExpression as CE;
     match sup {
         CE::ObjectIntersectionOf(cs) => cs.iter().flat_map(split_sup).collect(),
-        CE::ObjectSomeValuesFrom { ope, bce } => split_sup(bce)
-            .into_iter()
-            .map(|f| CE::ObjectSomeValuesFrom {
-                ope: ope.clone(),
-                bce: Box::new(f),
-            })
-            .collect(),
         other => vec![other.clone()],
     }
 }
@@ -100,8 +99,16 @@ fn weaken<A: ForIRI>(axiom: &Component<A>) -> Vec<Component<A>> {
     .collect()
 }
 
-/// Build the laconic version of one regular justification: weaken its axioms,
-/// keep the rest of the ontology as background, and re-minimize via `QuickXplain`.
+/// Build the laconic version of ONE regular justification: weaken that
+/// justification's axioms and re-minimize over the weakenings via `QuickXplain`.
+///
+/// The background is the **non-logical** axioms only (declarations) — NOT the rest
+/// of the ontology's logical axioms. The regular justification `J` is minimal and
+/// `J` alone entails `q`, so we explain `q` using only (weakenings of) `J`'s
+/// axioms. Including other logical axioms would let an alternative derivation in
+/// the background entail `q` on its own, collapsing the result to `∅`. This mirrors
+/// how `find_one_justification` itself calls `quickxplain` (fixed = non-logical,
+/// candidates = the axioms under consideration).
 fn laconic_from<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
@@ -109,16 +116,7 @@ fn laconic_from<A: ForIRI>(
     fragment: crate::classify::FragmentClassification,
     minimal_guaranteed: bool,
 ) -> Result<Justification<A>, ReasonError> {
-    let (nonlogical, logical) = logical_axioms(onto);
-    let j_set: HashSet<Component<A>> = j_axioms.iter().cloned().collect();
-
-    // background = non-logical fixed + every logical axiom NOT in this justification.
-    let mut background = nonlogical;
-    for ax in logical {
-        if !j_set.contains(&ax) {
-            background.push(ax);
-        }
-    }
+    let (background, _logical) = logical_axioms(onto);
 
     // candidates = the union of the weakenings of the justification's axioms.
     let candidates: Vec<Component<A>> = j_axioms
@@ -127,6 +125,22 @@ fn laconic_from<A: ForIRI>(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+
+    // Belt-and-suspenders: every supported weakening operator is
+    // entailment-preserving (the fragment set is set-equivalent to `J`), so the
+    // candidate set must still entail `q`. With the ∃-filler narrowing dropped this
+    // can never fire; assert it in debug builds so a future non-preserving operator
+    // is caught immediately rather than silently producing a non-entailing result.
+    #[cfg(debug_assertions)]
+    {
+        let still_entails =
+            crate::justify::entails(&crate::justify::ontology_from(&background, &candidates), q)?;
+        debug_assert!(
+            still_entails,
+            "laconic candidate set must still entail q — a weakening operator is not \
+             entailment-preserving"
+        );
+    }
 
     let laconic = quickxplain(&background, &candidates, q)?;
     Ok(Justification {
@@ -213,9 +227,10 @@ mod weaken_tests {
         assert_eq!(got, want);
     }
 
-    // C ⊑ ∃r.(D ⊓ E)  →  {C ⊑ ∃r.D, C ⊑ ∃r.E}
+    // C ⊑ ∃r.(D ⊓ E)  →  PASSES THROUGH unchanged (∃-filler narrowing is NOT
+    // entailment-preserving, so it is deliberately not performed).
     #[test]
-    fn existential_filler_splits() {
+    fn existential_filler_not_split() {
         let b = b();
         let some = |f: ClassExpression<Rc>| ClassExpression::ObjectSomeValuesFrom {
             ope: b.object_property("urn:r").into(),
@@ -228,39 +243,27 @@ mod weaken_tests {
                 cls(&b, "urn:E"),
             ])),
         );
-        let got: BTreeSet<Component<Rc>> = weaken(&ax).into_iter().collect();
-        let want: BTreeSet<Component<Rc>> = [
-            sc(cls(&b, "urn:C"), some(cls(&b, "urn:D"))),
-            sc(cls(&b, "urn:C"), some(cls(&b, "urn:E"))),
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(got, want);
+        assert_eq!(weaken(&ax), vec![ax.clone()]);
     }
 
-    // Nested: C ⊑ F ⊓ ∃r.(G ⊓ H)  →  {C⊑F, C⊑∃r.G, C⊑∃r.H}
+    // Nested: C ⊑ F ⊓ ∃r.(G ⊓ H)  →  {C⊑F, C⊑∃r.(G⊓H)}  (top-level conjuncts split;
+    // the existential conjunct is kept WHOLE, not narrowed).
     #[test]
-    fn nested_splits() {
+    fn nested_splits_conjuncts_only() {
         let b = b();
         let some = |f: ClassExpression<Rc>| ClassExpression::ObjectSomeValuesFrom {
             ope: b.object_property("urn:r").into(),
             bce: Box::new(f),
         };
+        let inner = ClassExpression::ObjectIntersectionOf(vec![cls(&b, "urn:G"), cls(&b, "urn:H")]);
         let ax = sc(
             cls(&b, "urn:C"),
-            ClassExpression::ObjectIntersectionOf(vec![
-                cls(&b, "urn:F"),
-                some(ClassExpression::ObjectIntersectionOf(vec![
-                    cls(&b, "urn:G"),
-                    cls(&b, "urn:H"),
-                ])),
-            ]),
+            ClassExpression::ObjectIntersectionOf(vec![cls(&b, "urn:F"), some(inner.clone())]),
         );
         let got: BTreeSet<Component<Rc>> = weaken(&ax).into_iter().collect();
         let want: BTreeSet<Component<Rc>> = [
             sc(cls(&b, "urn:C"), cls(&b, "urn:F")),
-            sc(cls(&b, "urn:C"), some(cls(&b, "urn:G"))),
-            sc(cls(&b, "urn:C"), some(cls(&b, "urn:H"))),
+            sc(cls(&b, "urn:C"), some(inner)),
         ]
         .into_iter()
         .collect();

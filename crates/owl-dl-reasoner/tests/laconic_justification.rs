@@ -68,6 +68,48 @@ fn laconic_equivalence_picks_one_direction_and_conjunct() {
     assert_eq!(lac.axioms, vec![want]);
 }
 
+// REGRESSION (background bug): q derivable TWO ways — A ⊑ B⊓D and A ⊑ C⊓D, both via
+// the D conjunct. Whichever `find_one` returns, the OTHER derivation is in the
+// ontology; the buggy `background = O\J` let it entail A⊑D alone → empty laconic.
+// With `background = declarations only`, laconic must be exactly {A ⊑ D} either way.
+#[test]
+fn laconic_background_does_not_leak_other_derivations() {
+    let b = Build::new_rc();
+    let cls = |iri: &str| CE::Class(b.class(iri));
+    let mut o = SetOntology::new();
+    for c in ["urn:A", "urn:B", "urn:C", "urn:D"] {
+        o.insert(DeclareClass(b.class(c)));
+    }
+    o.insert(SubClassOf {
+        sub: cls("urn:A"),
+        sup: CE::ObjectIntersectionOf(vec![cls("urn:B"), cls("urn:D")]),
+    });
+    o.insert(SubClassOf {
+        sub: cls("urn:A"),
+        sup: CE::ObjectIntersectionOf(vec![cls("urn:C"), cls("urn:D")]),
+    });
+    let q = Entailment::SubClassOf {
+        sub: "urn:A".to_string(),
+        sup: "urn:D".to_string(),
+    };
+    let lac = find_laconic_justification(&o, &q)
+        .expect("laconic")
+        .expect("entailed");
+    assert!(
+        !lac.axioms.is_empty(),
+        "background must not leak the other derivation → empty"
+    );
+    let want = Component::SubClassOf(SubClassOf {
+        sub: cls("urn:A"),
+        sup: cls("urn:D"),
+    });
+    assert_eq!(
+        lac.axioms,
+        vec![want],
+        "laconic must weaken to exactly A ⊑ D"
+    );
+}
+
 // A ⊑ B, query A ⊑ Z (Z declared but unrelated) → not entailed → None.
 #[test]
 fn laconic_not_entailed_is_none() {

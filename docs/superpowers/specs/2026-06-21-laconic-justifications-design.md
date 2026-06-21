@@ -53,15 +53,21 @@ justification, background); the CLI formats. Each is independently testable.
 ```
 1. J ← regular justification(s) of q          (existing find_one / find_all)
 2. for each axiom a ∈ J: fragments(a) ← weaken(a)   [entailed weaker pieces]
-3. background ← all logical axioms NOT in J (kept whole) + the non-logical fixed set
+3. background ← the non-logical fixed set (DECLARATIONS ONLY)
 4. candidates ← ⋃ fragments(a) for a ∈ J
 5. laconic ← quickxplain(background, candidates, q)  [minimal responsible fragments]
 ```
 
-Step 4's candidate set is equivalent-or-weaker than `J` (the full weakening of
-`C ⊑ B ⊓ D` is `{C ⊑ B, C ⊑ D}`, whose conjunction is equivalent to the original),
-so `background ∪ candidates ⊨ q` holds — QuickXplain's precondition is met, and it
-returns the minimal fragment set.
+**Background = declarations only (not the rest of the ontology).** `J` is a minimal
+regular justification, so `J` alone (with declarations) entails `q`; we explain `q`
+using only weakenings of `J`'s axioms. Putting the *other* logical axioms in the
+background would let an alternative derivation entail `q` on its own, collapsing the
+laconic result to `∅`. This also mirrors how `find_one_justification` itself calls
+`quickxplain` (fixed = non-logical declarations, candidates = the axioms under
+consideration). Every supported weakening operator is **entailment-preserving** (the
+fragment set is *set-equivalent* to `J` — see below), so `background ∪ candidates ⊨
+q` holds and QuickXplain's precondition is met. A debug-only assertion re-checks this
+invariant so any future non-preserving operator is caught immediately.
 
 For `find_all_laconic_justifications`, apply steps 2–5 to each regular justification
 returned by `find_all_justifications` (cap by `max`), de-duplicating identical
@@ -72,26 +78,38 @@ laconic results.
 Each operator emits only fragments **entailed by** the original axiom (the soundness
 contract). `weaken` recurses structurally.
 
-| Axiom (input) | Weakens to | Sound because |
-|---|---|---|
-| `C ⊑ D₁ ⊓ … ⊓ Dₙ` | `{ C ⊑ Dᵢ }` | `D₁⊓…⊓Dₙ ⊑ Dᵢ` |
-| `C ⊑ ∃r.(D₁ ⊓ … ⊓ Dₙ)` | `{ C ⊑ ∃r.Dᵢ }` | `∃r.(⊓Dⱼ) ⊑ ∃r.Dᵢ` |
-| `C ≡ D` | `{ C ⊑ D, D ⊑ C }` | equivalence ⇒ both subsumptions |
-| `C ≡ D₁ ⊓ … ⊓ Dₙ` | `{ C ⊑ Dᵢ } ∪ { (D₁⊓…⊓Dₙ) ⊑ C }` | as above + the ⊒ direction (kept whole) |
-| `DisjointClasses(C₁ … Cₙ)`, n>2 | pairwise `DisjointClasses(Cᵢ, Cⱼ)` | each pair entailed |
-| `EquivalentClasses(C₁ … Cₙ)`, n>2 | pairwise `EquivalentClasses(Cᵢ, Cⱼ)` | each pair entailed |
-| nested `⊓` / `∃` on the RHS | recurse the above | composition of entailments |
+The operators are **entailment-preserving**: for each, the *set* of fragments is
+set-equivalent to the original axiom (not merely individually entailed by it). This
+is what guarantees the candidate set still entails `q`.
 
-An axiom with no applicable operator (e.g. a plain `C ⊑ D`, a domain/range axiom, a
-property axiom) **passes through unchanged** — it is its own only fragment.
+| Axiom (input) | Weakens to | Set-equivalent because |
+|---|---|---|
+| `C ⊑ D₁ ⊓ … ⊓ Dₙ` | `{ C ⊑ Dᵢ }` | `X ⊑ D₁⊓…⊓Dₙ` iff `X ⊑ Dᵢ` for all `i` |
+| `C ≡ D₁ ⊓ … ⊓ Dₙ` (general equiv) | all ordered pairs `Cᵢ ⊑ split(Cⱼ)` | equivalence ⇒ pairwise subsumptions; conjunction split as above |
+| `DisjointClasses(C₁ … Cₙ)`, n>2 | pairwise `DisjointClasses(Cᵢ, Cⱼ)` | n-ary disjointness ≡ all pairwise disjoint |
+| nested `⊓` on the RHS | recurse the conjunction split | composition |
+
+`weaken` for `EquivalentClasses(C₁ … Cₙ)` emits, for every ordered pair `(i, j)`,
+`Cᵢ ⊑ f` for each conjunction-split fragment `f` of `Cⱼ` — so `C ≡ D` →
+`{C ⊑ D, D ⊑ C}` and `C ≡ D⊓E` → `{C ⊑ D, C ⊑ E, (D⊓E) ⊑ C}` uniformly.
+
+An axiom with no applicable operator (a plain `C ⊑ D`, a `DisjointUnion`, a
+domain/range or property axiom) **passes through unchanged** — it is its own only
+fragment.
 
 **Deliberately NOT weakened in v1 (a sound subset of Horridge's operators):**
+- **Existential-filler narrowing** (`∃r.(D⊓E) → ∃r.D`). Although each narrowed
+  fragment is *individually* entailed by the original, the fragment **set** is NOT
+  set-equivalent to it (`{C⊑∃r.D, C⊑∃r.E}` is strictly weaker than `C⊑∃r.(D⊓E)` —
+  the successors need not coincide). A non-set-equivalent operator can make the
+  candidate set fail to entail `q`, violating QuickXplain's precondition. So
+  `split_sup` splits conjunctions ONLY; existential fillers are atomic. (A future v2
+  could re-introduce narrowing behind a real precondition-check fallback.)
 - The **LHS** of a subsumption. Dropping a left conjunct *strengthens* the axiom
   (`C₁ ⊑ D` is stronger than `C₁ ⊓ C₂ ⊑ D`), which is **not entailed** by the
   original — so LHS splitting would be unsound. LHS stays whole.
 - **Cardinality weakening** (`≥3 r.C → ≥1 r.C`), `∀`-fillers, property-hierarchy
-  weakening, datatype-range weakening. These are sound in principle but deferred to
-  keep v1 bounded.
+  weakening, datatype-range weakening. Sound in principle but deferred.
 
 Consequence: the result is **laconic (structural)** — sound and minimal among the
 supported weakenings, but not provably maximally-weak. This limitation is stated in

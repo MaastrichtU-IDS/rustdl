@@ -509,6 +509,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   its consistency verdict tracks `classify`'s view (fast pre-checks, not the slow
   main-tableau `is_consistent`), so it is classify-speed (see
   `docs/superpowers/specs/2026-06-21-diagnose-root-derived-unsat-design.md`).
+  `justify --laconic` weakens each justification axiom to its responsible fragment
+  (sound structural weakening: RHS-conjunction / ∃-filler / equivalence / pairwise
+  disjoint; LHS + cardinality deliberately not weakened), re-minimized via
+  QuickXplain — sound by construction (every fragment is entailed by an original
+  axiom). See `docs/superpowers/specs/2026-06-21-laconic-justifications-design.md`.
 
 ## Soundness contract (important)
 

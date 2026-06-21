@@ -74,5 +74,8 @@ pub(crate) fn reason_error_to_py(err: ReasonError) -> PyErr {
         ReasonError::RoleChainUnsupported => {
             UnsupportedAxiomError::new_err("role chain longer than length 2 (unsupported)")
         }
+        ReasonError::Inconsistent => {
+            RustdlError::new_err("ontology is inconsistent; every assertion is trivially entailed")
+        }
     }
 }

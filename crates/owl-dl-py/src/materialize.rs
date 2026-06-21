@@ -61,8 +61,25 @@ pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<
     Ok(out)
 }
 
+/// Returns every inferred object property assertion `(subject, property, object)`
+/// entailed over named individuals (asserted + derived via property hierarchy /
+/// inverse / symmetric / role chains / transitivity). Sound under-approximation
+/// (no anonymous-witness or disjunctive-derived edges). Raises if the ontology is
+/// inconsistent.
+#[pyfunction]
+pub(crate) fn materialize_inferred_property_assertions(
+    path: &str,
+) -> PyResult<Vec<(String, String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::materialize_object_property_assertions(&ontology).map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(materialize_inferred_subclass_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(materialize_inferred_class_assertions, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        materialize_inferred_property_assertions,
+        m
+    )?)?;
     Ok(())
 }

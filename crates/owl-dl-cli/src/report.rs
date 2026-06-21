@@ -16,39 +16,33 @@ use owl_dl_reasoner::justify::{Entailment, component_entities, find_one_justific
 use std::collections::HashMap;
 
 /// One root unsatisfiable class with its explanation and fixes.
-// wired into the report command in Task 5; allow removed there
-#[allow(unreachable_pub)]
-pub struct RootEntry {
-    pub iri: String,
-    pub justification: Vec<Component<RcStr>>,
-    pub repairs: Vec<Vec<Component<RcStr>>>,
-    pub derives: Vec<String>,
+pub(crate) struct RootEntry {
+    pub(crate) iri: String,
+    pub(crate) justification: Vec<Component<RcStr>>,
+    pub(crate) repairs: Vec<Vec<Component<RcStr>>>,
+    pub(crate) derives: Vec<String>,
 }
 
 /// The inconsistency explanation (when the whole ontology is inconsistent).
-// wired into the report command in Task 5; allow removed there
-#[allow(unreachable_pub)]
-pub struct Section {
-    pub justification: Vec<Component<RcStr>>,
-    pub repairs: Vec<Vec<Component<RcStr>>>,
+pub(crate) struct Section {
+    pub(crate) justification: Vec<Component<RcStr>>,
+    pub(crate) repairs: Vec<Vec<Component<RcStr>>>,
 }
 
 /// Everything the HTML renderer needs — assembled by `build_report`.
-// wired into the report command in Task 5; allow removed there
-#[allow(unreachable_pub)]
-pub struct Report {
-    pub ontology_path: String,
-    pub class_count: usize,
-    pub consistent: bool,
-    pub fragment: String,
-    pub inconsistency: Option<Section>,
-    pub roots: Vec<RootEntry>,
-    pub derived: Vec<(String, Vec<String>)>,
-    pub n_unsat: usize,
-    pub n_root: usize,
-    pub n_derived: usize,
-    pub repairs_complete: bool,
-    pub truncated_roots: usize,
+pub(crate) struct Report {
+    pub(crate) ontology_path: String,
+    pub(crate) class_count: usize,
+    pub(crate) consistent: bool,
+    pub(crate) fragment: String,
+    pub(crate) inconsistency: Option<Section>,
+    pub(crate) roots: Vec<RootEntry>,
+    pub(crate) derived: Vec<(String, Vec<String>)>,
+    pub(crate) n_unsat: usize,
+    pub(crate) n_root: usize,
+    pub(crate) n_derived: usize,
+    pub(crate) repairs_complete: bool,
+    pub(crate) truncated_roots: usize,
 }
 
 /// HTML-escape text for safe, faithful embedding as element content.
@@ -83,8 +77,6 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase}.derived-cls{borde
 .foot{color:var(--muted);font-size:12px;margin-top:36px;border-top:1px solid var(--line);padding-top:10px}
 ";
 
-// wired into the report command in Task 5; allow removed there
-#[allow(dead_code)]
 fn ax_html(
     ax: &Component<RcStr>,
     pm: &PrefixMapping,
@@ -116,8 +108,6 @@ fn ax_html(
     s
 }
 
-// wired into the report command in Task 5; allow removed there
-#[allow(dead_code)]
 fn repairs_html(
     repairs: &[Vec<Component<RcStr>>],
     pm: &PrefixMapping,
@@ -142,10 +132,7 @@ fn repairs_html(
 }
 
 /// Render the full self-contained HTML document for `report`.
-// wired into the report command in Task 5; allow removed there
-#[allow(dead_code)]
-#[allow(unreachable_pub)]
-pub fn render_html(
+pub(crate) fn render_html(
     report: &Report,
     pm: &PrefixMapping,
     labels: Option<&HashMap<String, String>>,
@@ -274,9 +261,7 @@ pub fn render_html(
 
 /// Assemble a [`Report`] by running diagnose + per-root justify + per-root repair.
 /// Read-only; no new reasoning of its own.
-#[allow(dead_code)]
-#[allow(unreachable_pub)] // wired into the report command in Task 5; allow removed there
-pub fn build_report(
+pub(crate) fn build_report(
     onto: &SetOntology<RcStr>,
     ontology_path: String,
     max_roots: usize,

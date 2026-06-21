@@ -289,6 +289,21 @@ enum Command {
         #[arg(long)]
         labels: bool,
     },
+    /// Generate a self-contained HTML debugging report (consistency, root/derived
+    /// unsatisfiable classes, justifications, and repair suggestions).
+    Report {
+        /// Path to the ontology (.ofn / .owx / .owl / .rdf).
+        file: PathBuf,
+        /// Write the HTML to this file (default: stdout).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Gloss each axiom with the rdfs:label of the entities it mentions.
+        #[arg(long)]
+        labels: bool,
+        /// Maximum number of root classes given full justify+repair detail.
+        #[arg(long, default_value_t = 50)]
+        max_roots: usize,
+    },
     /// Hypertableau Phase H2b wall probe: run the hyperresolution
     /// engine's concept-satisfiability decision once per named class
     /// and report timing + branching. NOTE: a *performance probe*,
@@ -1173,6 +1188,25 @@ fn main() -> Result<()> {
                 for dc in &d.derived {
                     println!("DERIVED {}   <= {}", dc.iri, dc.roots.join(", "));
                 }
+            }
+        }
+        Command::Report {
+            file,
+            output,
+            labels,
+            max_roots,
+        } => {
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
+            let label_map = labels.then(|| build_label_map(&onto));
+            let report = report::build_report(&onto, file.display().to_string(), max_roots)?;
+            let html = report::render_html(&report, &pm, label_map.as_ref());
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, html)
+                        .with_context(|| format!("writing report to {}", path.display()))?;
+                    eprintln!("report written to {}", path.display());
+                }
+                None => println!("{html}"),
             }
         }
         Command::TboxStats { file } => {

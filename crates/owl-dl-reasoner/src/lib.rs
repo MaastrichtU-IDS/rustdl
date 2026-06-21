@@ -86,6 +86,43 @@ pub fn abox_sat_inconsistent<A: horned_owl::model::ForIRI>(
     Ok(result.clash)
 }
 
+/// Materialize the inferred OBJECT property assertions entailed over **named
+/// individuals** — `(subject_iri, property_iri, object_iri)` triples, the full
+/// entailed closure (asserted + derived via sub-property hierarchy / inverse /
+/// symmetric / role chains / transitivity). Sound under-approximation: omits edges
+/// to anonymous existential witnesses and disjunctive-derived edges. Read-only.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] if the ontology is inconsistent (everything is
+/// vacuously entailed); [`ReasonError::Conversion`] on lowering failure.
+pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<Vec<(String, String, String)>, ReasonError> {
+    let internal = owl_dl_core::convert::convert_ontology(onto)?;
+    let result = abox_saturation::saturate_abox_consistency(&internal);
+    if result.clash {
+        return Err(ReasonError::Inconsistent);
+    }
+    let vocab = &internal.vocabulary;
+    const TOP: &str = "http://www.w3.org/2002/07/owl#topObjectProperty";
+    const BOT: &str = "http://www.w3.org/2002/07/owl#bottomObjectProperty";
+    let mut out: Vec<(String, String, String)> = result
+        .edges
+        .iter()
+        .map(|&(rid, a, b)| {
+            (
+                vocab.individual_iri(a).to_string(),
+                vocab.role_iri(rid).to_string(),
+                vocab.individual_iri(b).to_string(),
+            )
+        })
+        .filter(|(_, p, _)| p != TOP && p != BOT)
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// Compute a sparse summary of the signature-locality partition
 /// (see [`docs/module-extraction-plan.md`]). Counts and the
 /// largest-component-size are the diagnostics most useful for
@@ -1979,6 +2016,11 @@ pub enum ReasonError {
         "role chain sub-property axiom outside supported fragment (only length-2 named-role chains are implemented)"
     )]
     RoleChainUnsupported,
+
+    /// The ontology is inconsistent — every assertion is vacuously entailed, so
+    /// enumerating (e.g. property assertions) is meaningless.
+    #[error("ontology is inconsistent; every assertion is trivially entailed")]
+    Inconsistent,
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.

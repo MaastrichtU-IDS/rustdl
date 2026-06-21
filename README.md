@@ -98,6 +98,8 @@ print(result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup"))
 ok = rustdl.is_consistent("ontology.ofn")
 edges = rustdl.materialize_inferred_property_assertions("ontology.ofn")  # inferred object property assertions
 data_edges = rustdl.materialize_inferred_data_property_assertions("ontology.ofn")  # inferred data property assertions
+sub_obj = rustdl.materialize_inferred_subobjectproperty_axioms("ontology.ofn")  # object property hierarchy
+sub_dat = rustdl.materialize_inferred_subdataproperty_axioms("ontology.ofn")    # data property hierarchy
 ```
 
 ## Build & test

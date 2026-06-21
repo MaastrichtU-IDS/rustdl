@@ -253,6 +253,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   via a structural sub-data-property + equivalent-data-property closure (sound; under-approx: no
   SameIndividual / class-axiom-derived). Folded into `realize --properties`. See
   `docs/superpowers/specs/2026-06-21-inferred-data-property-assertions-design.md`.
+  `materialize_sub{object,data}property_axioms` (reasoner) /
+  `materialize_inferred_sub{object,data}property_axioms` (Python) return the inferred named
+  property-subsumption closure (object: told + equivalent + inverse; data: told + equivalent),
+  structural + sound. See `docs/superpowers/specs/2026-06-21-inferred-subproperty-axioms-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

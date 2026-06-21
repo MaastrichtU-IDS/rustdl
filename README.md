@@ -1,310 +1,127 @@
 # rustdl
 
-A sound, performant OWL 2 DL (SROIQ) reasoner in Rust. Hybrid
-saturation-+-tableau architecture in the style of
-[Konclude](http://www.derivo.de/produkte/konclude/), with a hypertableau
-wedge accelerator after the [HermiT](http://www.hermit-reasoner.com/)
-playbook.
-
-**Status — 0.1 release (2026-06-04):** sound classifier (FP=0 across 9
-corpus closure-diff fixtures), sound consistency check (ABox + datatype
-patterns), competitive perf:
-
-- **Beats HermiT on every measured workload** — the original
-  `outperform-hermit-plan.md` target has been comprehensively met.
-- **Wins outright vs Konclude on Horn-fragment workloads** — GALEN
-  0.49 s vs Konclude 2.03 s (0.24×); notgalen 0.78 s vs 2.20 s (0.35×);
-  alehif 0.16 s vs 2.11 s (0.08×).
-- **3.1× Konclude on ORE-10908** (5.35 s vs 1.73 s) — under the ≤5×
-  Konclude-class target.
-- **Tableau-family gaps remain** vs Konclude's pseudo-model classifier
-  on ore-15672 (16.6×) and sio-stripped (13.6×). See [the perf
-  doc](docs/perf-2026-06-04-konclude-vs-rustdl.md) for the full
-  9-ontology head-to-head.
-
-Public API (`owl-dl-reasoner`): `is_class_satisfiable`, `is_consistent`,
-`is_subclass_of`, `is_instance_of`, `instances_of`, `classify`, `realize`.
-CLI (`rustdl`) exposes each as a subcommand. `owl-dl-bench` is a separate
-binary with `classify` / `synthetic-el` / `corpus` for harness work.
-
-## Architecture
-
-Konclude-style hybrid:
-
-- A consequence-based **saturation** engine handles the EL-ish subset cheaply
-  (`crates/owl-dl-saturation`).
-- A **tableau** engine handles the rest of SROIQ (`crates/owl-dl-tableau`).
-- A hybrid **orchestrator** decides per query whether saturation suffices
-  (`crates/owl-dl-reasoner`).
-- A shared **IR** with structural sharing (`crates/owl-dl-core`).
-- **Datatypes** in a separate crate so concrete domains can grow independently
-  (`crates/owl-dl-datatypes`).
-
-Parsing and the OWL model come from
+A **sound** OWL 2 DL (SROIQ) reasoner in Rust. Konclude-style hybrid: a
+consequence-based **saturation** engine handles the EL-ish fragment, a
+**tableau** + hypertableau **wedge** handles the rest of SROIQ, and an
+orchestrator picks per query. Parsing and the OWL model come from
 [`horned-owl`](https://github.com/phillord/horned-owl).
+
+## Status (v0.3.9)
+
+A working classifier, consistency checker, and instance reasoner for SROIQ(D)
+with first-class data properties. The defining property is **soundness**: every
+reported subsumption is a genuine entailment.
+
+- **FP = 0 at scale.** Verified against the Konclude ∩ HermiT oracle across all
+  201 diffed ORE-2015 pilot ontologies *and* the curated corpus — rustdl asserts
+  nothing that neither complete reasoner does.
+- **Fastest on EL.** rustdl's saturation kernel beats whelk-rs (1.4–1.9×) and ELK
+  (4.5×) on galen/notgalen, deriving a sound *superset* of their closures.
+- **Competitive on DL, not the speed leader.** After recent work, most DL
+  ontologies classify within ~10–50× of Konclude (the mature C++ tableau, which
+  wins on speed); HermiT is slower still and itself DNFs on a hard tail.
+  **wine** is rustdl's one DNF (combinatorial nominal+disjunction).
+- Detects the **family** inconsistency (a consequence-based ABox-saturation
+  pre-check) that the per-pair tableau alone misses.
+
+Full head-to-head (5 reasoners × 2 corpora):
+[`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md).
+
+**Completeness is partial** — the default classifier is empirically near-complete
+across the measured corpus but not *provably* complete in general (it trusts the
+wedge's `Sat` verdicts; see the soundness contract in `CLAUDE.md` and
+[`docs/fragment-completeness.md`](docs/fragment-completeness.md)). The hard residual
+is the engineering-maturity gap to Konclude's optimized tableau, not a missing
+technique.
 
 ## Coverage
 
-**Fully supported (sound + complete on the fragment, validated against
-Konclude closure-diff on 9 corpus fixtures):**
+**Supported (sound; complete on the fragment, oracle-validated):**
 
-- SROIQ object-property reasoning: role hierarchies; transitive,
-  symmetric, asymmetric, irreflexive, functional, inverse-functional
-  characteristics; inverse roles; named-role chains up to length 2.
-- Class expressions: intersection, union, complement, nominals (`{a}`),
-  existential / universal restrictions, qualified-cardinality (`≥n R.C`,
-  `≤n R.C`).
-- DisjointClasses, EquivalentClasses, DisjointUnion.
-- ABox: ClassAssertion, ObjectPropertyAssertion,
-  NegativeObjectPropertyAssertion, SameIndividual, DifferentIndividuals.
-- ABox consistency check (Phase A1, 7 sound clash patterns — direct-Bot
-  assertion, disjoint types per individual, NegOPA-vs-OPA with role
-  hierarchy, SameAs∩DifferentFrom, Functional + two distinct witnesses,
-  Asymmetric / Irreflexive violations, domain/range disjointness).
+- SROIQ object-property reasoning — role hierarchies; transitive, symmetric,
+  asymmetric, irreflexive, functional, inverse-functional; inverse roles; role
+  chains (longer chains decomposed to 2-leg cascades).
+- Class expressions — intersection, union, complement, nominals (`{a}`),
+  existential / universal restrictions, qualified cardinality (`≥n R.C`, `≤n R.C`).
+- `DisjointClasses`, `EquivalentClasses`, `DisjointUnion`.
+- ABox — `ClassAssertion`, `ObjectPropertyAssertion`,
+  `NegativeObjectPropertyAssertion`, `SameIndividual`, `DifferentIndividuals`;
+  consistency via an ABox-saturation pre-check + clash-pattern checks.
+- **Data properties are first-class** (default-on) — data-property axioms lower to
+  the object fragment; concrete domains cover integer / float / decimal / date /
+  dateTime / string value-membership, faceted ranges, `DataOneOf`, and bounded
+  data cardinality.
 
-**Sound under-approximation (silently dropped at parse time, no error):**
+**Sound under-approximation (silently dropped, never an error):** data ranges /
+nested composites outside the recognized set; positives depending on them may be
+missed, never falsely asserted.
 
-- Data properties and data axioms NOT matched by D4/D5 preprocessing.
-  Soundness invariant: every reported subsumption holds; positives that
-  depend on dropped data axioms may be missed.
+**Unsupported (errors):** `HasKey`. SWRL rules are skipped (see `convert.rs`).
 
-**Recognized data-axiom patterns (preprocessed into TBox by D4/D5):**
+## Crates
 
-- `FunctionalDataProperty(dp) + ≥n dp` (n≥2) → derives `C ⊑ ⊥`.
-- `≥n dp` together with `≤m dp` where n > m → derives `C ⊑ ⊥`.
-- `DataPropertyDomain(dp, D) + C ⊑ ∃dp.…` → derives `C ⊑ D`.
-- `SubDataPropertyOf` transitivity closure.
-- Intersection-equivalence propagation across data-cardinality bounds.
-- Integer-range facet intersection (xsd:integer with
-  `minInclusive` / `maxInclusive` / `minExclusive` / `maxExclusive`)
-  — derives `C ⊑ ⊥` on empty intersection.
-
-**Unsupported (errors — file an issue if these block you):**
-
-- `HasKey`.
-- SWRL rules (silently skipped — see
-  [`crates/owl-dl-core/src/convert.rs`](crates/owl-dl-core/src/convert.rs)
-  for the rationale).
-- Role chains of length > 2.
-
-## Soundness
-
-rustdl's classifier is **sound** by construction and by regression: every
-reported subsumption is a genuine entailment. FP=0 vs Konclude is verified
-on 9 corpus closure-diff fixtures (`alehif`, `ore-10908-sroiq`,
-`ore-15672-shoin`, `shoiq-knowledge`, `sio`, `sio-stripped`, `ro`,
-`sulo`, plus `galen` / `notgalen` for the Horn fragment). The tests live
-in [`crates/owl-dl-reasoner/tests/konclude_closure_diff.rs`](crates/owl-dl-reasoner/tests/konclude_closure_diff.rs)
-and gate every release.
-
-Completeness is partial — see [`docs/fragment-completeness.md`](docs/fragment-completeness.md)
-for the precise envelope. The default-mode classifier is empirically
-near-complete across the measured corpus but not provably complete in
-general. Under-approximation modes (`--saturation-only`,
-`--pair-timeout-ms`) are sound-but-incomplete by design.
-
-## Workspace layout
-
-Seven publishable crates: `owl-dl-core` (IR + normalization),
-`owl-dl-saturation` (EL closure), `owl-dl-tableau` (SROIQ tableau +
-hypertableau wedge), `owl-dl-datatypes` (concrete-domain preprocessing),
-`owl-dl-reasoner` (orchestrator + public API), `owl-dl-cli` (`rustdl`
-binary), `owl-dl-bench` (ORE corpus benchmark harness). Plus `xtask`
-for build automation (corpus fetch, license inventory).
+`owl-dl-core` (IR + normalization), `owl-dl-saturation` (EL closure),
+`owl-dl-tableau` (SROIQ tableau + hypertableau wedge), `owl-dl-datatypes`
+(concrete domains), `owl-dl-reasoner` (orchestrator + public API), `owl-dl-cli`
+(`rustdl` binary), `owl-dl-bench` (corpus/benchmark harness), `owl-dl-py` (Python
+bindings). `xtask` holds build automation.
 
 ## Install
 
-As a library (other crates):
 ```sh
-cargo add owl-dl-reasoner
+cargo add owl-dl-reasoner                                              # library
+cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # CLI
+pip install rustdl                                                     # Python 3.10+ (ABI3)
 ```
-
-As the CLI binary:
-```sh
-cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli
-```
-
-From Python (PyPI):
-```sh
-pip install rustdl
-```
-
-Quick Python example:
 
 ```python
 import rustdl
-
-# Classify an ontology (OFN, OWX, or RDF/XML — format auto-detected from extension)
-result = rustdl.classify("ontology.ofn")
-
+result = rustdl.classify("ontology.ofn")   # OFN / OWX / RDF-XML (auto-detected)
 print(f"{len(result.classes)} classes; {len(result.unsatisfiable)} unsat")
-print(result.is_subclass("http://example.org/Sub", "http://example.org/Sup"))
-
-# Other queries
+print(result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup"))
 ok = rustdl.is_consistent("ontology.ofn")
-instances = rustdl.instances_of("ontology.ofn", "http://example.org/Person")
-realization = rustdl.realize("ontology.ofn")  # dict[individual_iri, [most_specific_type, ...]]
-
-# Inference materialization (useful for writing inferred ontologies back to disk)
-sub_axioms = rustdl.materialize_inferred_subclass_axioms("ontology.ofn")
-type_axioms = rustdl.materialize_inferred_class_assertions("ontology.ofn")
 ```
 
-Supports Python 3.10+. ABI3 wheel — one wheel per platform for all 3.10–3.13.
-
-Or build from source — see [Quick start](#quick-start).
-
-## Quick start
+## Build & test
 
 ```sh
-# Build everything
-cargo build --workspace --release
-
-# Run lint and format checks
+cargo build --workspace --release     # Rust 1.88+, edition 2024
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-# Run tests
 cargo test --workspace
 ```
 
-Requires Rust 1.88+.
-
-## Using `rustdl`
+## CLI
 
 ```sh
-# Full classification (sound + complete; the default)
-./target/release/rustdl classify path/to/ontology.ofn
-
-# Same with a per-pair tableau deadline — sound under-approximation
-# that's robust against pathological SROIQ inputs. Pairs that exceed
-# the budget default to "not subsumed".
-./target/release/rustdl classify --pair-timeout-ms 200 path/to/ontology.ofn
-
-# Tip: on nominal-heavy ontologies (e.g. the W3C wine ontology) the
-# engines never terminate on the hard pairs — they only burn the full
-# budget and time out without finding anything. A *low* deadline is then
-# much faster at no completeness cost. Measured on wine: 412 s -> 55 s
-# (7.5x), byte-identical hierarchy, MISSED=0 vs HermiT. Only pizza-class
-# ontologies genuinely need the larger 1000 ms default.
-./target/release/rustdl classify --pair-timeout-ms 25 path/to/wine.ofn
-
-# Saturation-only mode — skips every tableau probe. Closure-only
-# under-approximation: every reported subsumption holds, but
-# subsumptions that need tableau reasoning are missed. Dramatically
-# faster on mostly-EL inputs:
-#
-#                   default       --saturation-only
-#   sulo-stripped   0.04 s        < 0.01 s
-#   pizza           3.48 s        0.03 s
-#   sio-stripped    28.1 s        0.22 s
-#
-# See docs/perf-2026-06-04-konclude-vs-rustdl.md for the current
-# 9-ontology head-to-head vs Konclude.
-./target/release/rustdl classify --saturation-only path/to/ontology.ofn
-
-# Other queries
-./target/release/rustdl consistent path/to/ontology.ofn
-./target/release/rustdl sat        path/to/ontology.ofn <class-iri>
-./target/release/rustdl subclass   path/to/ontology.ofn <sub-iri> <sup-iri>
-./target/release/rustdl instance   path/to/ontology.ofn <class-iri> <individual-iri>
-./target/release/rustdl instances  path/to/ontology.ofn <class-iri>
-./target/release/rustdl realize    path/to/ontology.ofn
-
-# --saturation-only is accepted by every "does X hold?" query —
-# skips the tableau probe and answers from the EL closure only.
-# Sound under-approximation; missed positives are possible but no
-# false positives. Useful when the default would DNF or take too
-# long on a SROIQ-heavy ABox.
-./target/release/rustdl subclass  --saturation-only path/to/ontology.ofn <sub> <sup>
-./target/release/rustdl instance  --saturation-only path/to/ontology.ofn <cls> <ind>
-./target/release/rustdl instances --saturation-only path/to/ontology.ofn <cls>
-./target/release/rustdl realize   --saturation-only path/to/ontology.ofn
+rustdl classify  ontology.ofn               # full class hierarchy (default)
+rustdl consistent ontology.ofn
+rustdl subclass  ontology.ofn <sub> <sup>
+rustdl instances ontology.ofn <class>
+rustdl realize   ontology.ofn               # per-individual most-specific types
+rustdl justify   ontology.ofn <query…>      # minimal responsible-axiom set (why it holds)
+rustdl prove     ontology.ofn <sub> <sup>   # step-level DL proof tree
+rustdl explain   ontology.ofn <sub> <sup>   # which engine answered (saturation vs tableau)
 ```
 
-Diagnostic env knobs:
-
-- `RUSTDL_COUNTERS=1` — dump per-rule call counts to stderr on
-  `TableauContext::drop`. Requires `--features counters` at build time.
-- `RUSTDL_TRACE=1` — one stderr line per `search`/`branch` decision
-  for understanding what the tableau is doing on a single probe.
-  Off-path is one atomic load; safe to ship enabled.
-
-## Benchmarking
-
-[`scripts/bench-rustdl-modes.sh`](scripts/bench-rustdl-modes.sh)
-runs the real-ontology corpus across all three `classify` modes
-(default, `--pair-timeout-ms`, `--saturation-only`) and produces
-a comparison table + TSV under `bench-results/`. Env vars:
-
-```sh
-REPS=5 PAIR_TIMEOUT_MS=200 WALL_CAP_S=600 \
-  scripts/bench-rustdl-modes.sh
-```
-
-`docs/perf-2026-05-24-new-server.md` §8 has the head-to-head
-against HermiT / Pellet / Konclude using the ROBOT-docker
-harness.
-
-## Architecture roadmap
-
-[`docs/architecture-roadmap.md`](docs/architecture-roadmap.md)
-consolidates the multi-week levers needed to close the default-
-mode gap to HermiT on SROIQ-heavy inputs (lazy unfolding, deep
-model caching, real ⊥-locality module extraction, etc.) and
-records the architectural attempts that have already been
-measured to dead-end.
+Sound under-approximation modes (every reported subsumption still holds; positives
+may be missed): `--saturation-only` (skip the tableau, EL-closure only) and
+`--pair-timeout-ms N` (per-pair tableau deadline; cut pairs default to "not
+subsumed" — robust on pathological SROIQ inputs). Diagnostics: `RUSTDL_TRACE=1`
+(one stderr line per search/branch decision); `RUSTDL_COUNTERS=1` with
+`--features counters` (per-rule call counts).
 
 ## Licensing
 
-This project is dual-licensed under [Apache-2.0](LICENSE-APACHE) **OR**
-[MIT](LICENSE-MIT) at your option.
+Dual-licensed [Apache-2.0](LICENSE-APACHE) **OR** [MIT](LICENSE-MIT). `horned-owl`
+is LGPL-3.0; binaries that statically link it inherit LGPL-3.0 obligations for that
+portion (see [`NOTICE`](NOTICE)). Contributions are accepted under the same dual
+license; no separate CLA.
 
-`rustdl` depends on `horned-owl` (LGPL-3.0). Our own source code remains
-permissively licensed; binaries that statically link `horned-owl` inherit
-LGPL-3.0 obligations for the `horned-owl` portion (right-to-relink, source
-disclosure). See [`NOTICE`](NOTICE) for details. In practice this is satisfied
-automatically for open-source distributions because cargo + GitHub make the
-underlying sources available.
+## More
 
-Contributions are licensed under the same dual-license terms; submitting a
-pull request constitutes acceptance of this. We do not require a separate CLA.
-
-## Roadmap
-
-| Phase | Deliverable | Estimate |
-|------:|-------------|---------:|
-| 0 | Workspace scaffold, IR with structural sharing, told-subsumer tables | ~3 weeks |
-| 1 | NNF, structural transformation, absorption | 4-6 weeks |
-| 2 | Correct ALC tableau, differential-tested vs HermiT | 8-10 weeks |
-| 3 | ALCHIQ + minimal datatypes (boolean / integer-range / string-equality) | 8-10 weeks |
-| 4 | Optimization stack (anywhere blocking, backjumping, caching) | 10-12 weeks |
-| 5 | Nominals (O), complex role hierarchies (R) — full SROIQ | 8-10 weeks |
-| 6 | Saturation engine + hybrid orchestration | 8-10 weeks |
-| 7 | Full datatypes / concrete domains | 4-6 weeks |
-| 8 | ABox, realization, queries | 8-10 weeks |
-| 9+ | Optional: hypertableau rewriting, OWLlink server | — |
-
-Total target: ~24-36 months to ORE-competitive performance.
-
-## Real-ontology corpus
-
-A small set of public ontologies (SIO, SULO, family, pizza, RO, GO) lives
-outside the repo and is pulled on demand:
-
-```sh
-./scripts/fetch-real-ontologies.sh
-./target/release/owl-dl-bench corpus ontologies/real --repeats 5
-```
-
-See [`docs/real-ontology-corpus.md`](docs/real-ontology-corpus.md)
-for sources, formats, the ROBOT-based conversion, and how to add
-new entries. Files land in `ontologies/real/` which is gitignored.
-
-## References
-
-- Strategy v2: [`docs/owl-dl-reasoner-rust-strategy-v2.md`](docs/owl-dl-reasoner-rust-strategy-v2.md)
-- Strategy v1 (kept for diff): [`docs/owl-dl-reasoner-rust-strategy.md`](docs/owl-dl-reasoner-rust-strategy.md)
-- Performance plan: [`docs/outperform-hermit-plan.md`](docs/outperform-hermit-plan.md)
-- Latest perf snapshot: [`docs/perf-2026-05-24-new-server.md`](docs/perf-2026-05-24-new-server.md)
-- Real-ontology corpus: [`docs/real-ontology-corpus.md`](docs/real-ontology-corpus.md)
+- Reasoner comparison: [`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md)
+- Perf vs Konclude/HermiT: [`docs/perf-2026-06-08-konclude-vs-rustdl.md`](docs/perf-2026-06-08-konclude-vs-rustdl.md)
+- Completeness envelope: [`docs/fragment-completeness.md`](docs/fragment-completeness.md)
+- Strategy: [`docs/owl-dl-reasoner-rust-strategy-v2.md`](docs/owl-dl-reasoner-rust-strategy-v2.md)
+- Engineering notes & soundness contract: [`CLAUDE.md`](CLAUDE.md)

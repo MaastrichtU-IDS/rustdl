@@ -26,6 +26,7 @@ from rustdl._native import (
     UnknownClassError as UnknownClassError,
     materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
     materialize_inferred_class_assertions as materialize_inferred_class_assertions,
+    materialize_inferred_object_property_assertions as materialize_inferred_object_property_assertions,
 )
 
 from . import examples as examples
@@ -129,4 +130,5 @@ __all__ = [
     "UnknownClassError",
     "materialize_inferred_subclass_axioms",
     "materialize_inferred_class_assertions",
+    "materialize_inferred_object_property_assertions",
 ]

@@ -61,8 +61,27 @@ pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<
     Ok(out)
 }
 
+/// Returns every (source, property, target) IRI triple `(s, p, o)` such
+/// that `ObjectPropertyAssertion(p s o)` is entailed between named
+/// individuals `s`/`o` over a named object property `p` (asserted
+/// assertions included — they are entailed). Inferred via the named-only
+/// `ABox` saturator: inverse, role-hierarchy, role-chain, and
+/// transitivity inference. Sound and complete for the named-edge fragment
+/// (assertions that need anonymous witnesses are out of scope).
+#[pyfunction]
+pub(crate) fn materialize_inferred_object_property_assertions(
+    path: &str,
+) -> PyResult<Vec<(String, String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::materialize_object_property_assertions(&ontology).map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(materialize_inferred_subclass_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(materialize_inferred_class_assertions, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        materialize_inferred_object_property_assertions,
+        m
+    )?)?;
     Ok(())
 }

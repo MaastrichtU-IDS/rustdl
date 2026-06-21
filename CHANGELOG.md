@@ -4,6 +4,24 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Object-property assertion materialization.**
+  `rustdl.materialize_inferred_object_property_assertions(path)` returns every
+  entailed `(source, property, target)` IRI triple between named individuals —
+  the materialized object-property closure under **inverse**, **role-hierarchy**,
+  **role-chain**, and **transitivity** inference (asserted assertions included).
+  Computed by the named-only ABox saturator (a single saturation pass, sound and
+  complete for the named-edge fragment; assertions requiring anonymous witnesses
+  are out of scope). The reasoner crate gains
+  `owl_dl_reasoner::materialize_object_property_assertions`, and the saturator now
+  applies `TransitiveObjectProperty` and exposes its edge closure
+  (`SaturationResult::edges`). Rounds out the inference-materialization trio next
+  to `materialize_inferred_subclass_axioms` /
+  `materialize_inferred_class_assertions`.
+
 ## [0.3.1] — 2026-06-05
 
 ### Added

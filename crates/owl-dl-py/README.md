@@ -138,15 +138,20 @@ class IRIs.
 ### Inference materialization
 
 ```python
-rustdl.materialize_inferred_subclass_axioms(path)   # -> list[tuple[str, str]]
-rustdl.materialize_inferred_class_assertions(path)  # -> list[tuple[str, str]]
+rustdl.materialize_inferred_subclass_axioms(path)              # -> list[tuple[str, str]]
+rustdl.materialize_inferred_class_assertions(path)             # -> list[tuple[str, str]]
+rustdl.materialize_inferred_object_property_assertions(path)   # -> list[tuple[str, str, str]]
 ```
 
 `materialize_inferred_subclass_axioms` yields `(sub, sup)` pairs for every
 entailed subsumption (excluding reflexive, `owl:Thing`/`owl:Nothing`, and
 unsatisfiable classes). `materialize_inferred_class_assertions` yields
-`(class, individual)` pairs. Useful for writing an inferred ontology back to
-disk.
+`(class, individual)` pairs. `materialize_inferred_object_property_assertions`
+yields `(source, property, target)` triples for every entailed object-property
+assertion between named individuals — inverse, role-hierarchy, role-chain, and
+transitivity inference (sound and complete for the named-edge fragment;
+assertions that need anonymous witnesses are out of scope). All three are useful
+for writing an inferred ontology back to disk.
 
 ### Errors
 

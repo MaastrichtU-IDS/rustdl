@@ -89,6 +89,12 @@ pub struct SaturationResult {
     pub type_additions: u64,
     /// Number of edge additions made during saturation.
     pub edge_additions: u64,
+    /// Every named object-property edge in the saturated ABox, in
+    /// canonical `(role_id, source, target)` form (inverse edges
+    /// normalized to their forward role). This is the materialized
+    /// object-property assertion closure under named-only semantics —
+    /// inverse, role-hierarchy, role-chain, and transitivity inference.
+    pub edges: Vec<(RoleId, IndividualId, IndividualId)>,
 }
 
 /// Check whether `internal` is ABox-inconsistent under named-only semantics.
@@ -312,6 +318,13 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                     }
                 }
             }
+            Axiom::TransitiveRole(r) => {
+                // Transitive(R) ≡ R∘R ⊑ R. Feed it through the existing
+                // length-2 chain machinery, which fixpoints to the full
+                // transitive closure over named edges.
+                let k = role_key(*r);
+                chains2.push((k, k, k));
+            }
             Axiom::ObjectPropertyDomain { role, domain } => {
                 if let Some(d) = atomic_class(*domain) {
                     domains.entry(role_key(*role)).or_default().push(d);
@@ -466,6 +479,7 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         sex_clash_candidates: 0,
         type_additions: 0,
         edge_additions: 0,
+        edges: Vec::new(),
     };
 
     // Helper closures (we'll use inline logic for borrow reasons)
@@ -877,6 +891,7 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         );
     }
 
+    result.edges = edges.into_iter().collect();
     result
 }
 

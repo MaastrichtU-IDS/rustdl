@@ -595,6 +595,61 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
     })
 }
 
+/// Materialize the entailed object-property assertions between named
+/// individuals: returns each `(source, property, target)` such that the
+/// ontology entails `ObjectPropertyAssertion(property source target)` for
+/// named individuals `source`/`target` and a named object property
+/// `property`. Asserted assertions are included (they are entailed).
+///
+/// Computed by the named-only `ABox` saturator
+/// ([`crate::abox_saturation::saturate_abox_consistency`]): it seeds the
+/// asserted edges and applies **inverse**, **role-hierarchy**,
+/// **role-chain**, and **transitivity** inference to a fixpoint, then the
+/// canonical `(role, source, target)` edge set is decoded back to IRIs.
+///
+/// This is **sound** and **complete for the named-edge fragment** — every
+/// triple returned is genuinely entailed, and every entailed assertion
+/// derivable without inventing anonymous witnesses is found. Assertions
+/// that depend on existentials onto unnamed individuals or on
+/// disjunctive/cardinality reasoning are out of scope (a documented
+/// under-approximation, consistent with the saturator's contract).
+/// `owl:topObjectProperty` / `owl:bottomObjectProperty` edges are
+/// excluded. The result is **unordered**.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn materialize_object_property_assertions<A: ForIRI>(
+    ontology: &SetOntology<A>,
+) -> Result<Vec<(String, String, String)>, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    let saturated = crate::abox_saturation::saturate_abox_consistency(&internal);
+    let vocab = &internal.vocabulary;
+    let mut out: Vec<(String, String, String)> = Vec::with_capacity(saturated.edges.len());
+    for (role, src, tgt) in saturated.edges {
+        let prop = vocab.role_iri(role);
+        if is_builtin_object_property(prop) {
+            continue;
+        }
+        out.push((
+            vocab.individual_iri(src).to_owned(),
+            prop.to_owned(),
+            vocab.individual_iri(tgt).to_owned(),
+        ));
+    }
+    Ok(out)
+}
+
+/// `owl:topObjectProperty` / `owl:bottomObjectProperty` — built-ins that
+/// are never useful materialization targets.
+fn is_builtin_object_property(iri: &str) -> bool {
+    matches!(
+        iri,
+        "http://www.w3.org/2002/07/owl#topObjectProperty"
+            | "http://www.w3.org/2002/07/owl#bottomObjectProperty"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,6 +683,54 @@ Ontology(<http://rustdl.test/test>\n\
             is_instance_of(&onto, "http://rustdl.test/A", "http://rustdl.test/alice")
                 .expect("verdict")
         );
+    }
+
+    #[test]
+    fn materialize_object_property_assertions_subprop_and_transitivity() {
+        // hasFather ⊑ hasParent ⊑ hasAncestor, hasAncestor transitive,
+        // hasFather(alice, bob), hasParent(bob, carol).
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(ObjectProperty(:hasFather))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(ObjectProperty(:hasAncestor))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    Declaration(NamedIndividual(:bob))\n\
+    Declaration(NamedIndividual(:carol))\n\
+    SubObjectPropertyOf(:hasFather :hasParent)\n\
+    SubObjectPropertyOf(:hasParent :hasAncestor)\n\
+    TransitiveObjectProperty(:hasAncestor)\n\
+    ObjectPropertyAssertion(:hasFather :alice :bob)\n\
+    ObjectPropertyAssertion(:hasParent :bob :carol)\n\
+)\n"
+        ));
+        let got: std::collections::HashSet<(String, String, String)> =
+            materialize_object_property_assertions(&onto)
+                .expect("materialize")
+                .into_iter()
+                .collect();
+        let t = |s: &str, p: &str, o: &str| {
+            (
+                format!("http://rustdl.test/{s}"),
+                format!("http://rustdl.test/{p}"),
+                format!("http://rustdl.test/{o}"),
+            )
+        };
+        // Asserted + sub-property + transitivity-derived edges.
+        for triple in [
+            t("alice", "hasFather", "bob"),
+            t("alice", "hasParent", "bob"),
+            t("alice", "hasAncestor", "bob"),
+            t("bob", "hasParent", "carol"),
+            t("bob", "hasAncestor", "carol"),
+            t("alice", "hasAncestor", "carol"), // transitivity
+        ] {
+            assert!(got.contains(&triple), "missing entailed edge: {triple:?}");
+        }
+        // No spurious reverse / cross edges.
+        assert!(!got.contains(&t("bob", "hasFather", "alice")));
+        assert!(!got.contains(&t("alice", "hasFather", "carol")));
     }
 
     #[test]

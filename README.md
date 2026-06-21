@@ -148,6 +148,7 @@ realization = rustdl.realize("ontology.ofn")  # dict[individual_iri, [most_speci
 # Inference materialization (useful for writing inferred ontologies back to disk)
 sub_axioms = rustdl.materialize_inferred_subclass_axioms("ontology.ofn")
 type_axioms = rustdl.materialize_inferred_class_assertions("ontology.ofn")
+prop_axioms = rustdl.materialize_inferred_object_property_assertions("ontology.ofn")
 ```
 
 Supports Python 3.10+. ABI3 wheel — one wheel per platform for all 3.10–3.13.

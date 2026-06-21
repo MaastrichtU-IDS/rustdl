@@ -123,6 +123,101 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
     Ok(out)
 }
 
+/// Materialize the inferred DATA property assertions entailed over **named
+/// individuals** — `(subject_iri, property_iri, lexical, datatype_iri, lang)`
+/// 5-tuples (the full entailed closure under sub-data-property hierarchy and
+/// equivalent-data-properties). Sound; complete for that fragment. Under-
+/// approximate: omits `SameIndividual` folding and class-axiom-derived assertions
+/// (e.g. `DataHasValue`). Read-only.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] if the ontology is inconsistent;
+/// [`ReasonError::Conversion`] on lowering failure.
+#[allow(clippy::type_complexity)]
+pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<Vec<(String, String, String, String, String)>, ReasonError> {
+    use horned_owl::model::{Component as C, Individual, Literal};
+    use std::collections::BTreeSet;
+
+    const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+    const LANG_STRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
+
+    let internal = owl_dl_core::convert::convert_ontology(onto)?;
+    if abox_saturation::saturate_abox_consistency(&internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
+
+    let mut asserted: Vec<(String, String, (String, String, String))> = Vec::new();
+    let mut hierarchy: Vec<(String, String)> = Vec::new();
+    for ac in onto {
+        match &ac.component {
+            C::DataPropertyAssertion(ax) => {
+                let Individual::Named(ni) = &ax.from else {
+                    continue;
+                };
+                let subj = ni.0.as_ref().to_string();
+                let dp = ax.dp.0.as_ref().to_string();
+                let value = match &ax.to {
+                    Literal::Simple { literal } => {
+                        (literal.clone(), XSD_STRING.to_string(), String::new())
+                    }
+                    Literal::Language { literal, lang } => {
+                        (literal.clone(), LANG_STRING.to_string(), lang.clone())
+                    }
+                    Literal::Datatype {
+                        literal,
+                        datatype_iri,
+                    } => (
+                        literal.clone(),
+                        datatype_iri.as_ref().to_string(),
+                        String::new(),
+                    ),
+                };
+                asserted.push((subj, dp, value));
+            }
+            C::SubDataPropertyOf(ax) => {
+                hierarchy.push((ax.sub.0.as_ref().to_string(), ax.sup.0.as_ref().to_string()));
+            }
+            C::EquivalentDataProperties(ax) => {
+                let dps: Vec<String> = ax.0.iter().map(|d| d.0.as_ref().to_string()).collect();
+                for (i, di) in dps.iter().enumerate() {
+                    for (j, dj) in dps.iter().enumerate() {
+                        if i != j {
+                            hierarchy.push((di.clone(), dj.clone()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let closure = |dp: &str| -> BTreeSet<String> {
+        let mut set = BTreeSet::new();
+        set.insert(dp.to_string());
+        let mut stack = vec![dp.to_string()];
+        while let Some(cur) = stack.pop() {
+            for (s, sup) in &hierarchy {
+                if s == &cur && set.insert(sup.clone()) {
+                    stack.push(sup.clone());
+                }
+            }
+        }
+        set
+    };
+
+    let mut out: Vec<(String, String, String, String, String)> = Vec::new();
+    for (subj, dp, (lex, dt, lang)) in &asserted {
+        for sup in closure(dp) {
+            out.push((subj.clone(), sup, lex.clone(), dt.clone(), lang.clone()));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// Compute a sparse summary of the signature-locality partition
 /// (see [`docs/module-extraction-plan.md`]). Counts and the
 /// largest-component-size are the diagnostics most useful for

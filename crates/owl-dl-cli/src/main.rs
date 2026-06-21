@@ -170,6 +170,9 @@ enum Command {
         /// `classify --saturation-only` flag.
         #[arg(long)]
         saturation_only: bool,
+        /// Also print inferred object property assertions (subject<TAB>property<TAB>object).
+        #[arg(long)]
+        properties: bool,
     },
     /// Decide SUB ⊑ SUP and report which engine (EL saturation or
     /// tableau) produced the verdict. Useful for understanding
@@ -856,6 +859,7 @@ fn main() -> Result<()> {
         Command::Realize {
             file,
             saturation_only,
+            properties,
         } => {
             let onto = parse_ofn(&file)?;
             let r = if saturation_only {
@@ -864,6 +868,19 @@ fn main() -> Result<()> {
                 realize(&onto).context("realize")?
             };
             print_realization(&r);
+            if properties {
+                match owl_dl_reasoner::materialize_object_property_assertions(&onto) {
+                    Ok(triples) => {
+                        println!("# inferred object property assertions");
+                        for (s, p, o2) in triples {
+                            println!("{s}\t{p}\t{o2}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("# object property assertions unavailable: {e}");
+                    }
+                }
+            }
         }
         Command::Explain { file, sub, sup } => {
             let onto = parse_ofn(&file)?;

@@ -89,6 +89,12 @@ pub struct SaturationResult {
     pub type_additions: u64,
     /// Number of edge additions made during saturation.
     pub edge_additions: u64,
+    /// The full set of derived role edges `(role_id, subject, object)` over named
+    /// individuals at fixpoint (asserted + propagated via hierarchy/inverse/symmetric/
+    /// chains/transitivity). Empty when a clash was found. Sound: every edge is
+    /// entailed. Used by `materialize_object_property_assertions`; ignored by the
+    /// consistency pre-check.
+    pub edges: Vec<(RoleId, IndividualId, IndividualId)>,
 }
 
 /// Check whether `internal` is ABox-inconsistent under named-only semantics.
@@ -466,6 +472,7 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         sex_clash_candidates: 0,
         type_additions: 0,
         edge_additions: 0,
+        edges: Vec::new(),
     };
 
     // Helper closures (we'll use inline logic for borrow reasons)
@@ -875,6 +882,13 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             types.len(),
             edges.len()
         );
+    }
+
+    // Expose the derived edge set on the normal (non-clash) return path. On a
+    // clash, leave `edges` empty (the `Vec::new()` default) — matching the
+    // documented "empty when a clash was found" contract.
+    if !result.clash {
+        result.edges = edges.iter().copied().collect();
     }
 
     result

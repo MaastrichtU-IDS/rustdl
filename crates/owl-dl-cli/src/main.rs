@@ -234,6 +234,9 @@ enum Command {
         /// Gloss each axiom with the rdfs:label of the entities it mentions.
         #[arg(long)]
         labels: bool,
+        /// Weaken each justification axiom to its responsible fragment (laconic).
+        #[arg(long)]
+        laconic: bool,
     },
     /// Print a step-level DL proof tree for `SUB ⊑ SUP`.
     ///
@@ -857,6 +860,7 @@ fn main() -> Result<()> {
             all,
             max,
             labels,
+            laconic,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             let q = parse_justify_query(&query)?;
@@ -867,7 +871,20 @@ fn main() -> Result<()> {
                 } else {
                     format!("entailing; minimality NOT guaranteed ({})", j.fragment)
                 };
-                println!("# justification ({} axioms) — {note}", j.axioms.len());
+                let note = if laconic {
+                    format!(
+                        "fragments sound; minimal among supported weakenings ({})",
+                        j.fragment
+                    )
+                } else {
+                    note
+                };
+                let kind = if laconic {
+                    "laconic justification (structural)"
+                } else {
+                    "justification"
+                };
+                println!("# {kind} ({} axioms) — {note}", j.axioms.len());
                 for ax in &j.axioms {
                     println!("  {}", ax.as_manchester_with_prefixes(&pm));
                     if let Some(lm) = &label_map {
@@ -885,8 +902,13 @@ fn main() -> Result<()> {
                 }
             };
             if all {
-                let js = owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
-                    .context("find_all_justifications")?;
+                let js = if laconic {
+                    owl_dl_reasoner::find_all_laconic_justifications(&onto, &q, max)
+                        .context("find_all_laconic_justifications")?
+                } else {
+                    owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
+                        .context("find_all_justifications")?
+                };
                 if js.is_empty() {
                     println!("not entailed (no justification)");
                 } else {
@@ -896,9 +918,14 @@ fn main() -> Result<()> {
                     }
                 }
             } else {
-                match owl_dl_reasoner::justify::find_one_justification(&onto, &q)
-                    .context("find_one_justification")?
-                {
+                let one = if laconic {
+                    owl_dl_reasoner::find_laconic_justification(&onto, &q)
+                        .context("find_laconic_justification")?
+                } else {
+                    owl_dl_reasoner::justify::find_one_justification(&onto, &q)
+                        .context("find_one_justification")?
+                };
+                match one {
                     Some(j) => render(&j),
                     None => println!("not entailed (no justification)"),
                 }

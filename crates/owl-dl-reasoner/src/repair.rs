@@ -10,7 +10,6 @@ use horned_owl::model::{Component, ForIRI};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
-#[allow(unused_imports)] // used by find_repairs in Task 3
 use crate::justify::{Entailment, entails, find_all_justifications, logical_axioms, ontology_from};
 
 /// Cap on justifications discovered for repair (independent of the user-facing
@@ -40,18 +39,58 @@ pub struct Repairs<A: ForIRI> {
     pub dropped_unverified: usize,
 }
 
-/// Compute repairs for `q` in `onto`. Filled in by Task 3.
+/// Compute verified minimal repairs for `q` in `onto`.
 pub fn find_repairs<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
     max: usize,
 ) -> Result<Repairs<A>, ReasonError> {
-    let _ = (onto, q, max, REPAIR_JUSTIFICATION_CAP);
+    // All justifications (generous internal cap, independent of the repair `max`).
+    let justifications = find_all_justifications(onto, q, REPAIR_JUSTIFICATION_CAP)?;
+    if justifications.is_empty() {
+        return Ok(Repairs {
+            entailed: false,
+            repairs: Vec::new(),
+            complete: true,
+            dropped_unverified: 0,
+        });
+    }
+    let complete = justifications.iter().all(|j| j.minimal_guaranteed);
+
+    // Hitting sets over the justification axiom-sets.
+    let j_sets: Vec<BTreeSet<Component<A>>> = justifications
+        .iter()
+        .map(|j| j.axioms.iter().cloned().collect())
+        .collect();
+    let mut candidates = minimal_hitting_sets(&j_sets);
+    // Smallest repairs first, deterministic.
+    candidates.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+
+    // Verify each candidate by removing it and re-checking the entailment.
+    let (fixed, logical) = logical_axioms(onto);
+    let mut repairs = Vec::new();
+    let mut dropped_unverified = 0usize;
+    for h in candidates {
+        if repairs.len() >= max {
+            break;
+        }
+        let kept: Vec<Component<A>> = logical.iter().filter(|a| !h.contains(a)).cloned().collect();
+        let reduced = ontology_from(&fixed, &kept);
+        if entails(&reduced, q)? {
+            // An unfound justification survives — not a real repair.
+            dropped_unverified += 1;
+            continue;
+        }
+        repairs.push(Repair {
+            remove: h.into_iter().collect(),
+        });
+    }
+
     Ok(Repairs {
-        entailed: false,
-        repairs: Vec::new(),
-        complete: true,
-        dropped_unverified: 0,
+        entailed: true,
+        repairs,
+        complete,
+        dropped_unverified,
     })
 }
 
@@ -59,7 +98,6 @@ pub fn find_repairs<A: ForIRI>(
 /// the ⊆-minimal sets that intersect every justification. These are the minimal
 /// repairs. Cheap for the small justification sets seen in practice; the
 /// dominated-branch prune below bounds the search.
-#[allow(dead_code)] // wired into find_repairs in Task 3; allow removed there
 fn minimal_hitting_sets<A: ForIRI>(
     justifications: &[BTreeSet<Component<A>>],
 ) -> Vec<BTreeSet<Component<A>>> {

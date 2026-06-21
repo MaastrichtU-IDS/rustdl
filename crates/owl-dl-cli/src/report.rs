@@ -33,3 +33,30 @@ pub struct Report {
     pub repairs_complete: bool,
     pub truncated_roots: usize,
 }
+
+/// HTML-escape text for safe, faithful embedding as element content.
+/// `&` first (so it doesn't double-escape the entities it introduces).
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    #[test]
+    fn escapes_markup_chars() {
+        assert_eq!(
+            html_escape(r#"a < b & "c" > d"#),
+            "a &lt; b &amp; &quot;c&quot; &gt; d"
+        );
+    }
+
+    #[test]
+    fn plain_text_unchanged() {
+        assert_eq!(html_escape("PolarBear ⊑ Animal"), "PolarBear ⊑ Animal");
+    }
+}

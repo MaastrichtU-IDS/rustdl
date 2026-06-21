@@ -42,3 +42,30 @@ fn root_and_derived_cascade() {
     let all: std::collections::BTreeSet<String> = d.all_unsat.iter().cloned().collect();
     assert_eq!(union, all);
 }
+
+// An ABox clash makes the ontology inconsistent: diagnose reports it, partition empty.
+#[test]
+fn inconsistent_ontology_flagged() {
+    let b = b();
+    let mut o = SetOntology::new();
+    use horned_owl::model::ClassExpression as CE;
+    // A DisjointWith B ; individual i is both A and B → inconsistent.
+    o.insert(horned_owl::model::DisjointClasses(vec![
+        CE::Class(b.class("urn:A")),
+        CE::Class(b.class("urn:B")),
+    ]));
+    o.insert(horned_owl::model::ClassAssertion {
+        ce: CE::Class(b.class("urn:A")),
+        i: b.named_individual("urn:i").into(),
+    });
+    o.insert(horned_owl::model::ClassAssertion {
+        ce: CE::Class(b.class("urn:B")),
+        i: b.named_individual("urn:i").into(),
+    });
+
+    let d = diagnose(&o).expect("diagnose");
+    assert!(!d.consistent, "ontology must be flagged inconsistent");
+    assert!(d.roots.is_empty());
+    assert!(d.derived.is_empty());
+    assert!(d.all_unsat.is_empty());
+}

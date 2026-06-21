@@ -4,6 +4,46 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] — 2026-06-21
+
+> Note: the changelog was not maintained for 0.3.2–0.3.9; this entry covers the
+> user-facing additions landing in 0.3.10. See `CLAUDE.md` and
+> `docs/superpowers/specs/` for the full engineering record of intermediate work.
+
+### Added
+
+- **Explanation & debugging suite** — rustdl is now an ontology-*debugging* tool, a
+  niche the fast reasoners (Konclude has no built-in justification/explanation) don't
+  serve. All sound by construction; read-only (FP=0 untouched).
+  - `rustdl justify --laconic` — weakens each justification axiom to its responsible
+    *fragment* (Horridge-style laconic justifications, sound structural weakening).
+  - `rustdl diagnose` — partitions unsatisfiable classes into **root** causes vs
+    **derived** collateral, and justifies the roots ("where to start fixing");
+    detects global inconsistency too.
+  - `rustdl repair` — minimal axiom-removal sets to break an unwanted entailment
+    (Reiter diagnoses = minimal hitting sets over all justifications), each **verified**.
+  - `rustdl report` — a self-contained HTML debugging report (summary + diagnose
+    roots/derived + per-root justification + repairs), no external resources.
+- **Inference materialization** (Python + reasoner API):
+  - `materialize_inferred_property_assertions` — inferred **object** property
+    assertions over named individuals (hierarchy / inverse / symmetric / role chains /
+    transitivity); also CLI `rustdl realize --properties`.
+  - `materialize_inferred_data_property_assertions` — inferred **data** property
+    assertions (5-tuple incl. datatype + language tag).
+  - `materialize_inferred_subobjectproperty_axioms` /
+    `materialize_inferred_subdataproperty_axioms` — the inferred property-hierarchy
+    closure (object: told + equivalent + inverse; data: told + equivalent).
+  - `materialize_existential_successors` — a blank-node representation of named
+    individuals' entailed existential successors (one row per entailed `a : ∃R.C`;
+    *not* entailed ground triples — witnesses are model-relative).
+
+### Fixed
+
+- **family inconsistency** is now detected (a consequence-based ABox-saturation
+  pre-check) — the last open correctness gap.
+
+[0.3.10]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.3.10
+
 ## [0.3.1] — 2026-06-05
 
 ### Added

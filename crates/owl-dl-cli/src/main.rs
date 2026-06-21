@@ -238,6 +238,21 @@ enum Command {
         #[arg(long)]
         laconic: bool,
     },
+    /// Suggest minimal axiom removals to break an unwanted entailment.
+    Repair {
+        /// Path to the ontology (.ofn / .owx / .owl / .rdf).
+        file: PathBuf,
+        /// Query (same forms as `justify`): `unsat C` | `subclass S T` |
+        /// `inconsistent` | `instance I C` | … (see `justify --help`).
+        #[arg(num_args = 1..)]
+        query: Vec<String>,
+        /// Cap on the number of repairs printed (smallest first).
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+        /// Gloss each axiom with the rdfs:label of the entities it mentions.
+        #[arg(long)]
+        labels: bool,
+    },
     /// Print a step-level DL proof tree for `SUB ⊑ SUP`.
     ///
     /// For entailments in the EL saturation fragment, prints a complete
@@ -929,6 +944,58 @@ fn main() -> Result<()> {
                     Some(j) => render(&j),
                     None => println!("not entailed (no justification)"),
                 }
+            }
+        }
+        Command::Repair {
+            file,
+            query,
+            max,
+            labels,
+        } => {
+            use owl_dl_reasoner::justify::component_entities;
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
+            let q = parse_justify_query(&query)?;
+            let label_map = labels.then(|| build_label_map(&onto));
+            let r = owl_dl_reasoner::find_repairs(&onto, &q, max).context("find_repairs")?;
+
+            if !r.entailed {
+                println!("not entailed; nothing to repair");
+                return Ok(());
+            }
+            if r.repairs.is_empty() {
+                println!("entailed, but no verifiable axiom removal found");
+                return Ok(());
+            }
+
+            let completeness = if r.complete {
+                "complete"
+            } else {
+                "w.r.t. found justifications (completeness not guaranteed)"
+            };
+            println!("# {} minimal repair(s) — {completeness}", r.repairs.len());
+            for (i, rep) in r.repairs.iter().enumerate() {
+                println!("repair {} (remove {} axiom(s)):", i + 1, rep.remove.len());
+                for ax in &rep.remove {
+                    println!("  {}", ax.as_manchester_with_prefixes(&pm));
+                    if let Some(lm) = &label_map {
+                        let glosses: Vec<String> = component_entities(ax)
+                            .into_iter()
+                            .filter_map(|iri| {
+                                lm.get(&iri)
+                                    .map(|l| format!("{} = \"{l}\"", local_name(&iri)))
+                            })
+                            .collect();
+                        if !glosses.is_empty() {
+                            println!("      label: {}", glosses.join("; "));
+                        }
+                    }
+                }
+            }
+            if r.dropped_unverified > 0 {
+                println!(
+                    "# note: {} candidate(s) dropped (failed verification — justification set may be incomplete)",
+                    r.dropped_unverified
+                );
             }
         }
         Command::Prove {

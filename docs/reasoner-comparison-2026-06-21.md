@@ -29,6 +29,12 @@ rustdl wins the kernel on galen/notgalen and is more complete; whelk-rs wins at 
 52k-class scale. ELK ~2–4× slower and on out-of-EL input **rejects (pizza) or silently
 drops non-EL axioms (wine/sio)** — not a sound general DL reasoner.
 
+> **"+N rustdl-only sound pairs"** = subsumptions rustdl's closure contains that
+> whelk-rs's does not (0 the other way → strict superset). They are genuine
+> entailments (oracle-confirmed, not false positives): rustdl adds EL++ rules
+> (functional-role witness-merge) on top of base ELK, so it derives functional-role
+> subsumptions whelk-rs misses. go-basic has no functional roles → identical closures.
+
 ## 2 · DL reasoners — custom corpus (full classification wall)
 
 rustdl & Konclude current HEAD; HermiT reasoning-ms from `perf-2026-06-08` (stable).

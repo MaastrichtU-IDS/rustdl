@@ -83,6 +83,122 @@ pub enum Entailment {
     },
 }
 
+/// Parse a literal argument of the form `"lex"^^<dt>`, `"lex"^^xsd:type`, or
+/// `"lex"` (bare string).
+///
+/// Returns `(lexical, datatype_iri)`.
+#[must_use]
+pub fn parse_literal_arg(s: &str) -> (String, String) {
+    const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+    if let Some(pos) = s.find("^^") {
+        let lex_raw = &s[..pos];
+        let dt_raw = &s[pos + 2..];
+        // Strip surrounding double-quotes from the lexical part.
+        let lex = lex_raw.trim_matches('"').to_string();
+        // Strip surrounding <> (IRI form) or expand xsd: prefix.
+        let dt = if dt_raw.starts_with('<') && dt_raw.ends_with('>') {
+            dt_raw[1..dt_raw.len() - 1].to_string()
+        } else if let Some(local) = dt_raw.strip_prefix("xsd:") {
+            format!("{XSD}{local}")
+        } else {
+            dt_raw.to_string()
+        };
+        (lex, dt)
+    } else {
+        // No datatype: strip surrounding double-quotes, default to xsd:string.
+        let lex = s.trim_matches('"').to_string();
+        (lex, format!("{XSD}string"))
+    }
+}
+
+/// Parse a justify/repair query (the CLI's positional `<query…>` words) into an
+/// [`Entailment`].
+///
+/// # Errors
+/// Returns a human-readable usage/error string when the query form is not
+/// recognized or has the wrong arity.
+pub fn parse_query(parts: &[String]) -> Result<Entailment, String> {
+    let kind = parts.first().map_or("", String::as_str);
+    Ok(match (kind, parts.len()) {
+        ("subclass", 3) => Entailment::SubClassOf {
+            sub: parts[1].clone(),
+            sup: parts[2].clone(),
+        },
+        ("equivalent", 3) => Entailment::EquivalentClasses {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("disjoint", 3) => Entailment::DisjointClasses {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("unsat", 2) => Entailment::Unsatisfiable {
+            class: parts[1].clone(),
+        },
+        ("instance", 3) => Entailment::InstanceOf {
+            individual: parts[1].clone(),
+            class: parts[2].clone(),
+        },
+        ("inconsistent", 1) => Entailment::Inconsistent,
+        ("subproperty", 3) => Entailment::SubObjectProperty {
+            sub: parts[1].clone(),
+            sup: parts[2].clone(),
+        },
+        ("equiv-property", 3) => Entailment::EquivalentObjectProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("disjoint-property", 3) => Entailment::DisjointObjectProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("property", 4) => Entailment::ObjectPropertyAssertion {
+            source: parts[1].clone(),
+            prop: parts[2].clone(),
+            target: parts[3].clone(),
+        },
+        ("same", 3) => Entailment::SameIndividual {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("different", 3) => Entailment::DifferentIndividuals {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("subdata-property", 3) => Entailment::SubDataProperty {
+            sub: parts[1].clone(),
+            sup: parts[2].clone(),
+        },
+        ("equiv-data-property", 3) => Entailment::EquivalentDataProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("disjoint-data-property", 3) => Entailment::DisjointDataProperties {
+            a: parts[1].clone(),
+            b: parts[2].clone(),
+        },
+        ("data-value", 4) => {
+            let (value_lexical, value_datatype) = parse_literal_arg(&parts[3]);
+            Entailment::DataPropertyValue {
+                source: parts[1].clone(),
+                prop: parts[2].clone(),
+                value_lexical,
+                value_datatype,
+            }
+        }
+        _ => {
+            return Err(
+                "usage: justify <file> (subclass S T | equivalent A B | disjoint A B | unsat C | \
+                 instance I C | inconsistent | subproperty P Q | equiv-property P Q | \
+                 disjoint-property P Q | property A P B | same A B | different A B | \
+                 subdata-property DP DQ | equiv-data-property DP DQ | \
+                 disjoint-data-property DP DQ | data-value A DP V)"
+                    .to_string(),
+            );
+        }
+    })
+}
+
 const PROBE_IRI: &str = "urn:rustdl-justify-probe";
 const PROBE_A: &str = "urn:rustdl-justify-probe-a";
 const PROBE_B: &str = "urn:rustdl-justify-probe-b";

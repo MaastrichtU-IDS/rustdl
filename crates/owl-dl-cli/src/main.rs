@@ -880,6 +880,17 @@ fn main() -> Result<()> {
                         eprintln!("# object property assertions unavailable: {e}");
                     }
                 }
+                match owl_dl_reasoner::materialize_data_property_assertions(&onto) {
+                    Ok(triples) => {
+                        println!("# inferred data property assertions");
+                        for (s, p, lex, dt, lang) in triples {
+                            println!("{s}\t{p}\t{lex}\t{dt}\t{lang}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("# data property assertions unavailable: {e}");
+                    }
+                }
             }
         }
         Command::Explain { file, sub, sup } => {

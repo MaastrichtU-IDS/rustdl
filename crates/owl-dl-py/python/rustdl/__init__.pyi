@@ -1,0 +1,184 @@
+"""Type stubs for rustdl — sound OWL 2 DL (SROIQ) reasoner. See __init__.py."""
+
+from typing import TypedDict
+
+from . import examples as examples
+
+__version__: str
+
+# ── result types ────────────────────────────────────────────────────────────
+
+class Classification:
+    """Result of `classify` — the computed subsumption hierarchy."""
+
+    @property
+    def classes(self) -> list[str]:
+        """Every declared class IRI."""
+        ...
+    @property
+    def unsatisfiable(self) -> list[str]:
+        """Classes proved equivalent to owl:Nothing."""
+        ...
+    @property
+    def inconsistent(self) -> bool:
+        """True iff the ontology is inconsistent (every class unsatisfiable)."""
+        ...
+    @property
+    def timed_out_pairs(self) -> int:
+        """Number of subsumption pairs that hit the per-pair timeout."""
+        ...
+    @property
+    def complete(self) -> bool:
+        """True iff no pair timed out (the hierarchy is exact)."""
+        ...
+    def is_subclass(self, sub: str, sup: str) -> bool:
+        """True iff `sub ⊑ sup` is entailed."""
+        ...
+    def equivalent_classes(self, cls: str) -> list[str]:
+        """Classes equivalent to `cls`."""
+        ...
+    def direct_subsumers(self, cls: str) -> list[str]:
+        """Direct (Hasse-parent) super-classes of `cls`."""
+        ...
+    def subclasses_of(self, cls: str) -> list[str]:
+        """All D with D ⊑ cls (reflexive + proper)."""
+        ...
+    def superclasses_of(self, cls: str) -> list[str]:
+        """All D with cls ⊑ D (reflexive + proper)."""
+        ...
+    def __repr__(self) -> str: ...
+
+class IncompleteClassificationWarning(UserWarning):
+    """Emitted when classification hit the per-pair timeout (sound but possibly
+    incomplete)."""
+
+class RootReport(TypedDict):
+    iri: str
+    justification: list[str]
+    repairs: list[list[str]]
+    derives: list[str]
+
+class DerivedReport(TypedDict):
+    iri: str
+    roots: list[str]
+
+class InconsistencyReport(TypedDict):
+    justification: list[str]
+    repairs: list[list[str]]
+
+class DebugReport(TypedDict, total=False):
+    consistent: bool
+    unsatisfiable: list[str]
+    roots: list[RootReport]
+    derived: list[DerivedReport]
+    inconsistency: InconsistencyReport
+
+# ── exceptions ──────────────────────────────────────────────────────────────
+
+class RustdlError(Exception):
+    """Base exception for all rustdl errors."""
+
+class ParseError(RustdlError):
+    """OWL parser failure."""
+
+class UnsupportedAxiomError(RustdlError):
+    """An axiom uses a construct rustdl does not support."""
+
+class UnknownClassError(RustdlError):
+    """A queried IRI is not a declared class in the ontology."""
+
+# ── core reasoning ──────────────────────────────────────────────────────────
+
+def classify(
+    path: str, *, per_pair_timeout_ms: int = 1000, saturation_only: bool = False
+) -> Classification:
+    """Classify the ontology at `path` (format auto-detected)."""
+    ...
+
+def classify_bytes(
+    data: bytes, *, format: str, per_pair_timeout_ms: int = 1000, saturation_only: bool = False
+) -> Classification:
+    """Like `classify`, from in-memory bytes with explicit `format`."""
+    ...
+
+def is_consistent(path: str) -> bool:
+    """True iff the ontology is consistent."""
+    ...
+
+def is_class_satisfiable(path: str, class_iri: str) -> bool:
+    """True iff `class_iri` is satisfiable (not ⊑ ⊥)."""
+    ...
+
+def is_subclass_of(path: str, sub: str, sup: str) -> bool:
+    """True iff `sub ⊑ sup` is entailed."""
+    ...
+
+def is_instance_of(path: str, class_iri: str, individual_iri: str) -> bool:
+    """True iff `individual_iri` is an instance of `class_iri`."""
+    ...
+
+def instances_of(path: str, class_iri: str) -> list[str]:
+    """Named individuals entailed to be instances of `class_iri`."""
+    ...
+
+def realize(path: str) -> dict[str, list[str]]:
+    """Map each named individual to its most-specific entailed types."""
+    ...
+
+# ── inference materialization ───────────────────────────────────────────────
+
+def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:
+    """Every entailed (sub, sup) class-subsumption pair."""
+    ...
+
+def materialize_inferred_class_assertions(path: str) -> list[tuple[str, str]]:
+    """Every entailed (class, individual) most-specific class assertion."""
+    ...
+
+def materialize_inferred_property_assertions(path: str) -> list[tuple[str, str, str]]:
+    """Inferred object property assertions (subject, property, object) over named
+    individuals."""
+    ...
+
+def materialize_inferred_data_property_assertions(
+    path: str,
+) -> list[tuple[str, str, str, str, str]]:
+    """Inferred data property assertions (subject, property, lexical, datatype, lang)."""
+    ...
+
+def materialize_inferred_subobjectproperty_axioms(path: str) -> list[tuple[str, str]]:
+    """Inferred object property subsumption pairs (sub, sup)."""
+    ...
+
+def materialize_inferred_subdataproperty_axioms(path: str) -> list[tuple[str, str]]:
+    """Inferred data property subsumption pairs (sub, sup)."""
+    ...
+
+def materialize_existential_successors(path: str) -> list[tuple[str, str, str, str]]:
+    """Entailed existential successors as (subject, property, witness_blank, filler_class)
+    — a blank-node representation of entailed `a : ∃R.C` (not ground triples)."""
+    ...
+
+# ── explanation & debugging ─────────────────────────────────────────────────
+
+def justify(path: str, query: list[str]) -> list[str]:
+    """One minimal justification (Manchester axioms) for `query`
+    (e.g. ["unsat", c] / ["subclass", s, t] / ["inconsistent"])."""
+    ...
+
+def justify_all(path: str, query: list[str], max: int = 10) -> list[list[str]]:
+    """Up to `max` minimal justifications for `query`."""
+    ...
+
+def diagnose(path: str) -> tuple[bool, list[str], list[tuple[str, list[str]]]]:
+    """(consistent, root_unsat_iris, [(derived_iri, [root_iri, ...]), ...])."""
+    ...
+
+def repair(path: str, query: list[str], max: int = 10) -> list[list[str]]:
+    """Minimal axiom-removal sets (Manchester) that break `query`."""
+    ...
+
+def debug(path: str) -> DebugReport:
+    """One-call ontology diagnosis: consistency + root/derived unsat +
+    per-root justifications + repairs."""
+    ...

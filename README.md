@@ -23,6 +23,12 @@ reported subsumption is a genuine entailment.
   **wine** is rustdl's one DNF (combinatorial nominal+disjunction).
 - Detects the **family** inconsistency (a consequence-based ABox-saturation
   pre-check) that the per-pair tableau alone misses.
+- **Explains its answers.** `justify` returns a minimal responsible-axiom set for
+  any entailment and `prove` prints a step-level proof tree — built-in CLI commands.
+  **Konclude** (the DL speed leader) has **no built-in justification or explanation
+  facility** (its interface is classification / consistency / realization / SPARQL
+  only), so the fastest reasoner can tell you *that* a subsumption holds but not
+  *why*. rustdl does both.
 
 Full head-to-head (5 reasoners × 2 corpora):
 [`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md).

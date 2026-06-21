@@ -257,6 +257,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `materialize_inferred_sub{object,data}property_axioms` (Python) return the inferred named
   property-subsumption closure (object: told + equivalent + inverse; data: told + equivalent),
   structural + sound. See `docs/superpowers/specs/2026-06-21-inferred-subproperty-axioms-design.md`.
+  `materialize_existential_successors` (reasoner + Python) returns a blank-node
+  representation of named individuals' entailed existential successors — one
+  `(subject, property, witness_blank, filler_class)` row per entailed `a : ∃R.C`
+  (told-exists over realized types, 1-step). NOTE: a representation of entailed
+  existentials, NOT entailed ground triples (witnesses are model-relative). See
+  `docs/superpowers/specs/2026-06-21-existential-successors-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

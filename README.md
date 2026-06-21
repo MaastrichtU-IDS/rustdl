@@ -100,6 +100,7 @@ edges = rustdl.materialize_inferred_property_assertions("ontology.ofn")  # infer
 data_edges = rustdl.materialize_inferred_data_property_assertions("ontology.ofn")  # inferred data property assertions
 sub_obj = rustdl.materialize_inferred_subobjectproperty_axioms("ontology.ofn")  # object property hierarchy
 sub_dat = rustdl.materialize_inferred_subdataproperty_axioms("ontology.ofn")    # data property hierarchy
+succ = rustdl.materialize_existential_successors("ontology.ofn")  # entailed exists-successors (blank-node witnesses)
 ```
 
 ## Build & test

@@ -74,11 +74,29 @@ pub(crate) fn materialize_inferred_property_assertions(
     owl_dl_reasoner::materialize_object_property_assertions(&ontology).map_err(reason_error_to_py)
 }
 
+/// Returns every inferred data property assertion as a 5-tuple
+/// `(subject, property, lexical, datatype, lang)` entailed over named individuals
+/// (asserted + derived via sub-data-property hierarchy / equivalent-data-properties).
+/// `lang` is "" except for language-tagged literals. Sound under-approximation
+/// (no `SameIndividual` / class-axiom-derived assertions). Raises if inconsistent.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn materialize_inferred_data_property_assertions(
+    path: &str,
+) -> PyResult<Vec<(String, String, String, String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::materialize_data_property_assertions(&ontology).map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(materialize_inferred_subclass_axioms, m)?)?;
     m.add_function(wrap_pyfunction!(materialize_inferred_class_assertions, m)?)?;
     m.add_function(wrap_pyfunction!(
         materialize_inferred_property_assertions,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        materialize_inferred_data_property_assertions,
         m
     )?)?;
     Ok(())

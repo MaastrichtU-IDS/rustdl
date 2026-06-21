@@ -69,3 +69,65 @@ fn inconsistent_ontology_flagged() {
     assert!(d.derived.is_empty());
     assert!(d.all_unsat.is_empty());
 }
+
+use owl_dl_reasoner::classify;
+
+// Conservation invariant on real fixtures: roots ∪ derived == classified-unsat.
+// Ignored by default (reads the curated corpus); run with `-- --ignored`.
+#[test]
+#[ignore = "reads the curated corpus (ontologies/real/*.ofn)"]
+fn corpus_conservation_invariant() {
+    // cwd at test runtime is the crate dir; the corpus lives at the workspace
+    // root (verified pattern, see real_ontology_corpus.rs uses `../../`).
+    for path in [
+        "../../ontologies/real/sio.ofn",
+        "../../ontologies/real/wine.ofn",
+    ] {
+        let p = std::path::Path::new(path);
+        if !p.exists() {
+            eprintln!("skip {path} (not present)");
+            continue;
+        }
+        let onto = read_ofn_fixture(p);
+        let classification = classify(&onto).expect("classify");
+        let classified: std::collections::BTreeSet<String> = classification
+            .unsatisfiable_classes()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let d = diagnose(&onto).expect("diagnose");
+        if !d.consistent {
+            eprintln!("{path}: inconsistent — partition deliberately empty, skipping conservation");
+            continue;
+        }
+        let mut union: std::collections::BTreeSet<String> = d.roots.iter().cloned().collect();
+        union.extend(d.derived.iter().map(|x| x.iri.clone()));
+        assert_eq!(
+            union, classified,
+            "{path}: roots ∪ derived must equal the classified unsat set"
+        );
+        if !classified.is_empty() {
+            assert!(
+                !d.roots.is_empty(),
+                "{path}: unsat classes present but no root reported"
+            );
+        }
+        eprintln!(
+            "{path}: OK — {} unsat ({} root, {} derived)",
+            classified.len(),
+            d.roots.len(),
+            d.derived.len()
+        );
+    }
+}
+
+// Read a .ofn fixture into a SetOntology (verified pattern, see classify_inverse_domain.rs).
+fn read_ofn_fixture(p: &std::path::Path) -> SetOntology<Rc> {
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(p).expect("open fixture"));
+    let (o, _): (SetOntology<Rc>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+    o
+}

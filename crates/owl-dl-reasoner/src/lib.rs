@@ -218,6 +218,111 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     Ok(out)
 }
 
+/// Materialize the entailed existential successors of named individuals as a
+/// blank-node representation: one row `(subject_iri, property_iri,
+/// witness_blank_id, filler_class_iri)` per entailed `a : ∃R.C`.
+///
+/// NOTE: these are NOT entailed ground triples — a specific witness edge
+/// `a R _:x` is not entailed (witnesses differ across models); what is entailed is
+/// `a : ∃R.C`. Each row represents one such entailed existential, with a fresh
+/// deterministic blank node. Sound by construction (`a:X` from `realize` +
+/// told `X ⊑ ∃R.C`). Under-approximate: told `∃` only, simple named role + named
+/// class filler, 1-step (no recursion). Read-only.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] if inconsistent; [`ReasonError::Conversion`].
+#[allow(clippy::type_complexity)]
+pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
+    onto: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<Vec<(String, String, String, String)>, ReasonError> {
+    use horned_owl::model::{
+        ClassExpression as CE, Component as C, ForIRI, ObjectPropertyExpression as OPE,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let internal = owl_dl_core::convert::convert_ontology(onto)?;
+    if abox_saturation::saturate_abox_consistency(&internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
+
+    // Collect told (R, C) from a superclass expression (top-level + conjuncts).
+    fn collect_exists<A: ForIRI>(sup: &CE<A>, out: &mut BTreeSet<(String, String)>) {
+        match sup {
+            CE::ObjectIntersectionOf(cs) => {
+                for c in cs {
+                    collect_exists(c, out);
+                }
+            }
+            CE::ObjectSomeValuesFrom { ope, bce } => {
+                if let (OPE::ObjectProperty(r), CE::Class(c)) = (ope, &**bce) {
+                    out.insert((r.0.as_ref().to_string(), c.0.as_ref().to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // told-∃ index: X_iri → {(R_iri, C_iri)}.
+    let mut told: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
+    for ac in onto {
+        match &ac.component {
+            C::SubClassOf(ax) => {
+                if let CE::Class(x) = &ax.sub {
+                    let mut set = BTreeSet::new();
+                    collect_exists(&ax.sup, &mut set);
+                    if !set.is_empty() {
+                        told.entry(x.0.as_ref().to_string())
+                            .or_default()
+                            .extend(set);
+                    }
+                }
+            }
+            C::EquivalentClasses(ax) => {
+                for (i, mi) in ax.0.iter().enumerate() {
+                    if let CE::Class(x) = mi {
+                        let mut set = BTreeSet::new();
+                        for (j, mj) in ax.0.iter().enumerate() {
+                            if i != j {
+                                collect_exists(mj, &mut set);
+                            }
+                        }
+                        if !set.is_empty() {
+                            told.entry(x.0.as_ref().to_string())
+                                .or_default()
+                                .extend(set);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if told.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let realization = realize(onto)?;
+    // Distinct (a, R, C) with a:X entailed and X ⊑ ∃R.C told.
+    let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
+    for a in realization.individuals() {
+        for x in realization.entailed_types(a) {
+            if let Some(rcs) = told.get(x) {
+                for (r, c) in rcs {
+                    triples.insert((a.clone(), r.clone(), c.clone()));
+                }
+            }
+        }
+    }
+
+    // One stable blank id per distinct (a,R,C), in sorted order.
+    let out: Vec<(String, String, String, String)> = triples
+        .into_iter()
+        .enumerate()
+        .map(|(i, (a, r, c))| (a, r, format!("_:b{i}"), c))
+        .collect();
+    Ok(out)
+}
+
 /// Materialize the inferred OBJECT property-subsumption axioms `(sub, sup)` over
 /// named object properties (told + equivalent + inverse closure, transitively
 /// closed). Sound; complete for the named simple-subsumption fragment (role chains,

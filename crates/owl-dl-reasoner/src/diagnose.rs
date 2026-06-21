@@ -37,17 +37,40 @@ pub struct Diagnosis {
 
 /// Diagnose `onto`: consistency, then the root/derived unsatisfiability partition.
 ///
-/// Read-only over classification; never mutates the ontology.
+/// Read-only over classification; never mutates the ontology. On an inconsistent
+/// ontology returns `consistent: false` with empty partition (the caller should
+/// justify the inconsistency directly).
 pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonError> {
-    // Filled in by Task 4.
-    let _ = onto;
-    Ok(Diagnosis {
-        consistent: true,
-        roots: Vec::new(),
-        derived: Vec::new(),
-        all_unsat: Vec::new(),
-        root_derives: BTreeMap::new(),
-    })
+    if !crate::is_consistent(onto)? {
+        return Ok(Diagnosis {
+            consistent: false,
+            roots: Vec::new(),
+            derived: Vec::new(),
+            all_unsat: Vec::new(),
+            root_derives: BTreeMap::new(),
+        });
+    }
+
+    let classification = crate::classify::classify(onto)?;
+    let unsat: BTreeSet<String> = classification
+        .unsatisfiable_classes()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    if unsat.is_empty() {
+        return Ok(Diagnosis {
+            consistent: true,
+            roots: Vec::new(),
+            derived: Vec::new(),
+            all_unsat: Vec::new(),
+            root_derives: BTreeMap::new(),
+        });
+    }
+
+    let logical = crate::justify::logical_axioms(onto).1;
+    let edges = build_dep_edges(&unsat, &logical);
+    Ok(partition(&unsat, &edges))
 }
 
 /// Collect the named classes that occur in *unsat-forcing* positions of `ce`.
@@ -62,7 +85,6 @@ pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonErr
 /// deliberately NOT recursed: its filler being `⊥` does not force the parent
 /// `⊥`. Omitting such an edge only ever over-reports roots (safe); including a
 /// spurious one would hide a root (the dangerous failure we avoid).
-#[allow(dead_code)] // wired into diagnose() in Task 4; allow removed there
 fn unsat_forcing_classes<A: ForIRI>(ce: &ClassExpression<A>, out: &mut BTreeSet<String>) {
     use ClassExpression as CE;
     match ce {
@@ -88,7 +110,6 @@ fn unsat_forcing_classes<A: ForIRI>(ce: &ClassExpression<A>, out: &mut BTreeSet<
 /// unsatisfiability is *forced* by `D`'s (an edge `C → D`). Only `SubClassOf`
 /// (named-class LHS) and `EquivalentClasses` axioms contribute; only targets in
 /// `unsat` are kept; self-edges are dropped.
-#[allow(dead_code)] // wired into diagnose() in Task 4; allow removed there
 fn build_dep_edges<A: ForIRI>(
     unsat: &BTreeSet<String>,
     logical: &[Component<A>],
@@ -139,7 +160,6 @@ fn build_dep_edges<A: ForIRI>(
 }
 
 /// Forward-reachable set of `start` (including `start`) over `edges`.
-#[allow(dead_code)] // wired into diagnose() in Task 4; allow removed there
 fn reachable(start: &str, edges: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet<String> {
     let mut seen = BTreeSet::new();
     let mut stack = vec![start.to_string()];
@@ -163,7 +183,6 @@ fn reachable(start: &str, edges: &BTreeMap<String, BTreeSet<String>>) -> BTreeSe
 /// (i.e. `C`'s reachable set is contained in its strongly-connected component —
 /// `C` is a sink-SCC member, depending on nothing strictly more root). Cycle
 /// members with no outside dependency are therefore all roots.
-#[allow(dead_code)] // wired into diagnose() in Task 4; allow removed there
 fn partition(unsat: &BTreeSet<String>, edges: &BTreeMap<String, BTreeSet<String>>) -> Diagnosis {
     // Precompute forward reachability for every unsat node.
     let reach: BTreeMap<String, BTreeSet<String>> = unsat

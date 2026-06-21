@@ -504,6 +504,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 - **`crates/owl-dl-cli`** (`rustdl` binary) and **`crates/owl-dl-bench`**
   (`owl-dl-bench`: `classify`/`sat`/`synthetic-el`/`corpus`/`compare-whelk`).
   `xtask/` holds build automation (corpus fetch, license inventory).
+  `diagnose` partitions unsatisfiable classes into root (causes) vs derived
+  (collateral) via a stingy structural dependency graph and justifies the roots;
+  its consistency verdict tracks `classify`'s view (fast pre-checks, not the slow
+  main-tableau `is_consistent`), so it is classify-speed (see
+  `docs/superpowers/specs/2026-06-21-diagnose-root-derived-unsat-design.md`).
 
 ## Soundness contract (important)
 

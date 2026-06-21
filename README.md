@@ -23,12 +23,22 @@ reported subsumption is a genuine entailment.
   **wine** is rustdl's one DNF (combinatorial nominal+disjunction).
 - Detects the **family** inconsistency (a consequence-based ABox-saturation
   pre-check) that the per-pair tableau alone misses.
-- **Explains its answers.** `justify` returns a minimal responsible-axiom set for
-  any entailment and `prove` prints a step-level proof tree — built-in CLI commands.
-  **Konclude** (the DL speed leader) has **no built-in justification or explanation
-  facility** (its interface is classification / consistency / realization / SPARQL
-  only), so the fastest reasoner can tell you *that* a subsumption holds but not
-  *why*. rustdl does both.
+- **Explains *and* debugs — a full suite.** Built-in CLI commands turn rustdl into
+  an ontology-debugging tool, not just a classifier:
+  - `justify` — a minimal responsible-axiom set for any entailment (`--laconic`
+    weakens each axiom to its responsible *fragment*).
+  - `prove` — a step-level proof tree.
+  - `diagnose` — partitions unsatisfiable classes into **root** causes vs **derived**
+    collateral ("where to start fixing").
+  - `repair` — minimal axiom-removal sets to *break* an unwanted entailment, each
+    verified.
+  - `report` — a self-contained HTML debugging report combining all of the above.
+
+  Every result is **sound by construction** (justifications and repairs are verified
+  against the reasoner). **Konclude** (the DL speed leader) has **no built-in
+  justification or explanation facility** at all (its interface is classification /
+  consistency / realization / SPARQL only) — so the fastest reasoner tells you *that*
+  a subsumption holds but not *why*, or *how to fix* a broken ontology. rustdl does.
 
 Full head-to-head (5 reasoners × 2 corpora):
 [`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md).

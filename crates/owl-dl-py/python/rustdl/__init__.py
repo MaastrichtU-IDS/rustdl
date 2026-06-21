@@ -37,6 +37,13 @@ from rustdl._native import (
     repair as repair,
 )
 
+from ._results import (
+    Diagnosis as Diagnosis,
+    Root as Root,
+    Derived as Derived,
+    Inconsistency as Inconsistency,
+)
+
 from . import examples as examples
 
 
@@ -120,46 +127,44 @@ def classify_bytes(data, *, format, per_pair_timeout_ms=1000, saturation_only=Fa
 
 
 def debug(path):
-    """One-call ontology diagnosis. Returns a JSON-serializable dict.
+    """One-call ontology diagnosis → a Diagnosis result object.
 
-    Consistent ontology with unsatisfiable classes:
-        {"consistent": True, "unsatisfiable": [iri, ...],
-         "roots": [{"iri": str, "justification": [axiom, ...],
-                    "repairs": [[axiom, ...], ...], "derives": [iri, ...]}, ...],
-         "derived": [{"iri": str, "roots": [iri, ...]}, ...]}
+    Supports attribute access (d.consistent, d.roots[0].justification,
+    d.inconsistency.repairs) AND legacy dict access
+    (d["roots"][0]["justification"], dict(d), iteration). For JSON use
+    json.dumps(d.to_dict()).
 
-    Inconsistent ontology:
-        {"consistent": False, "unsatisfiable": [], "roots": [], "derived": [],
-         "inconsistency": {"justification": [axiom, ...], "repairs": [[axiom, ...], ...]}}
-
-    Composes diagnose / justify / repair. Read-only; sound by construction."""
+    Consistent ontology → Diagnosis(consistent=True, unsatisfiable=..., roots=[Root...],
+    derived=[Derived...], inconsistency=None). Inconsistent → consistent=False, empties,
+    inconsistency=Inconsistency(...). Read-only; sound by construction."""
     consistent, roots, derived = diagnose(path)
     if not consistent:
-        return {
-            "consistent": False,
-            "unsatisfiable": [],
-            "roots": [],
-            "derived": [],
-            "inconsistency": {
-                "justification": justify(path, ["inconsistent"]),
-                "repairs": repair(path, ["inconsistent"], 10),
-            },
-        }
-    root_objs = [
-        {
-            "iri": r,
-            "justification": justify(path, ["unsat", r]),
-            "repairs": repair(path, ["unsat", r], 10),
-            "derives": [d for (d, rs) in derived if r in rs],
-        }
+        return Diagnosis(
+            consistent=False,
+            unsatisfiable=(),
+            roots=(),
+            derived=(),
+            inconsistency=Inconsistency(
+                justification=tuple(justify(path, ["inconsistent"])),
+                repairs=tuple(tuple(r) for r in repair(path, ["inconsistent"], 10)),
+            ),
+        )
+    root_objs = tuple(
+        Root(
+            iri=r,
+            justification=tuple(justify(path, ["unsat", r])),
+            repairs=tuple(tuple(x) for x in repair(path, ["unsat", r], 10)),
+            derives=tuple(d for (d, rs) in derived if r in rs),
+        )
         for r in roots
-    ]
-    return {
-        "consistent": True,
-        "unsatisfiable": list(roots) + [d for (d, _) in derived],
-        "roots": root_objs,
-        "derived": [{"iri": d, "roots": rs} for (d, rs) in derived],
-    }
+    )
+    return Diagnosis(
+        consistent=True,
+        unsatisfiable=tuple(list(roots) + [d for (d, _) in derived]),
+        roots=root_objs,
+        derived=tuple(Derived(iri=d, roots=tuple(rs)) for (d, rs) in derived),
+        inconsistency=None,
+    )
 
 
 __all__ = [
@@ -191,4 +196,8 @@ __all__ = [
     "diagnose",
     "repair",
     "debug",
+    "Diagnosis",
+    "Root",
+    "Derived",
+    "Inconsistency",
 ]

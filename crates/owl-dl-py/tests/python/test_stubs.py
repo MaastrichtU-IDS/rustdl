@@ -33,6 +33,5 @@ def test_every_public_name_is_stubbed():
 
 
 def test_stub_names_are_real():
-    helpers = {"RootReport", "DerivedReport", "InconsistencyReport", "DebugReport"}
-    for name in _stub_declared_names() - helpers - {"examples"}:
+    for name in _stub_declared_names() - {"examples"}:
         assert hasattr(rustdl, name), f"stub declares {name!r} but rustdl has no such attr"

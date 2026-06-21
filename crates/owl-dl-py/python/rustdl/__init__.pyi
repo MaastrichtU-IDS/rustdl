@@ -1,6 +1,7 @@
 """Type stubs for rustdl — sound OWL 2 DL (SROIQ) reasoner. See __init__.py."""
 
-from typing import TypedDict
+from collections.abc import Mapping
+from typing import Optional
 
 from . import examples as examples
 
@@ -52,26 +53,30 @@ class IncompleteClassificationWarning(UserWarning):
     """Emitted when classification hit the per-pair timeout (sound but possibly
     incomplete)."""
 
-class RootReport(TypedDict):
+class Root(Mapping[str, object]):
     iri: str
-    justification: list[str]
-    repairs: list[list[str]]
-    derives: list[str]
+    justification: tuple[str, ...]
+    repairs: tuple[tuple[str, ...], ...]
+    derives: tuple[str, ...]
+    def to_dict(self) -> dict: ...
 
-class DerivedReport(TypedDict):
+class Derived(Mapping[str, object]):
     iri: str
-    roots: list[str]
+    roots: tuple[str, ...]
+    def to_dict(self) -> dict: ...
 
-class InconsistencyReport(TypedDict):
-    justification: list[str]
-    repairs: list[list[str]]
+class Inconsistency(Mapping[str, object]):
+    justification: tuple[str, ...]
+    repairs: tuple[tuple[str, ...], ...]
+    def to_dict(self) -> dict: ...
 
-class DebugReport(TypedDict, total=False):
+class Diagnosis(Mapping[str, object]):
     consistent: bool
-    unsatisfiable: list[str]
-    roots: list[RootReport]
-    derived: list[DerivedReport]
-    inconsistency: InconsistencyReport
+    unsatisfiable: tuple[str, ...]
+    roots: tuple[Root, ...]
+    derived: tuple[Derived, ...]
+    inconsistency: Optional[Inconsistency]
+    def to_dict(self) -> dict: ...
 
 # ── exceptions ──────────────────────────────────────────────────────────────
 
@@ -178,7 +183,7 @@ def repair(path: str, query: list[str], max: int = 10) -> list[list[str]]:
     """Minimal axiom-removal sets (Manchester) that break `query`."""
     ...
 
-def debug(path: str) -> DebugReport:
+def debug(path: str) -> Diagnosis:
     """One-call ontology diagnosis: consistency + root/derived unsat +
     per-root justifications + repairs."""
     ...

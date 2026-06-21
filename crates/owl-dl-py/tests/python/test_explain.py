@@ -59,18 +59,24 @@ def test_repair(tmp_path):
 def test_debug_consistent_with_unsat(tmp_path):
     p = _write(tmp_path, BROKEN)
     d = rustdl.debug(p)
+    assert isinstance(d, rustdl.Diagnosis)
+    # attribute API
+    assert d.consistent is True
+    assert "urn:Bad" in d.unsatisfiable
+    bad = next(r for r in d.roots if r.iri == "urn:Bad")
+    assert bad.justification and bad.repairs
+    assert "urn:SubBad" in bad.derives
+    # back-compat dict API
     assert d["consistent"] is True
-    assert "urn:Bad" in d["unsatisfiable"]
-    bad = next(r for r in d["roots"] if r["iri"] == "urn:Bad")
-    assert bad["justification"] and bad["repairs"]
-    assert "urn:SubBad" in bad["derives"]
+    assert any(r["iri"] == "urn:Bad" for r in d["roots"])
 
 
 def test_debug_coherent(tmp_path):
     p = _write(tmp_path, "Prefix(:=<urn:>)\nOntology(Declaration(Class(:A)))\n")
     d = rustdl.debug(p)
-    assert d["consistent"] is True
-    assert d["unsatisfiable"] == []
+    assert d.consistent is True
+    assert d.unsatisfiable == ()
+    assert d["unsatisfiable"] == ()
 
 
 def test_materialize_property_assertions(tmp_path):

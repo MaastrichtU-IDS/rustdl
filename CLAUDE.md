@@ -273,6 +273,9 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `__init__.pyi` covering the full surface (functions, the `Classification` class,
   exceptions, and `debug()` TypedDicts). `tests/python/test_stubs.py` guards stub↔`__all__`
   drift. See `docs/superpowers/specs/2026-06-21-python-type-stubs-design.md`.
+  `rustdl.debug()` returns a `Diagnosis` dataclass (with `Root`/`Derived`/`Inconsistency`) —
+  attribute access + `Mapping` dict-compat + `to_dict()`. See
+  `docs/superpowers/specs/2026-06-21-python-result-objects-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

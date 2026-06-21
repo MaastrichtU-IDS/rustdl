@@ -36,6 +36,8 @@ All notable changes to rustdl are documented here. Format is based on
   - `materialize_existential_successors` — a blank-node representation of named
     individuals' entailed existential successors (one row per entailed `a : ∃R.C`;
     *not* entailed ground triples — witnesses are model-relative).
+- `rustdl.debug()` now returns a typed `Diagnosis` result object (attribute access +
+  dict-compatible `Mapping`; `to_dict()` for JSON).
 
 ### Fixed
 

@@ -10,6 +10,7 @@ use horned_owl::model::{Component, ForIRI};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
+#[allow(unused_imports)] // used by find_repairs in Task 3
 use crate::justify::{Entailment, entails, find_all_justifications, logical_axioms, ontology_from};
 
 /// Cap on justifications discovered for repair (independent of the user-facing
@@ -52,4 +53,124 @@ pub fn find_repairs<A: ForIRI>(
         complete: true,
         dropped_unverified: 0,
     })
+}
+
+/// Enumerate the minimal hitting sets (minimal transversals) over `justifications`:
+/// the ⊆-minimal sets that intersect every justification. These are the minimal
+/// repairs. Cheap for the small justification sets seen in practice; the
+/// dominated-branch prune below bounds the search.
+#[allow(dead_code)] // wired into find_repairs in Task 3; allow removed there
+fn minimal_hitting_sets<A: ForIRI>(
+    justifications: &[BTreeSet<Component<A>>],
+) -> Vec<BTreeSet<Component<A>>> {
+    let mut results: Vec<BTreeSet<Component<A>>> = Vec::new();
+    if justifications.is_empty() {
+        return results;
+    }
+    let mut seen: std::collections::HashSet<BTreeSet<Component<A>>> =
+        std::collections::HashSet::new();
+    let mut worklist: Vec<BTreeSet<Component<A>>> = vec![BTreeSet::new()];
+
+    while let Some(h) = worklist.pop() {
+        if !seen.insert(h.clone()) {
+            continue;
+        }
+        // Prune: if some known minimal repair is already ⊆ h, h can't be minimal.
+        if results.iter().any(|r| r.is_subset(&h)) {
+            continue;
+        }
+        // First justification not hit by h.
+        match justifications.iter().find(|j| j.is_disjoint(&h)) {
+            None => {
+                // h hits all → it is a minimal hitting set (prune above guaranteed
+                // no subset already present). Drop any existing superset of h.
+                results.retain(|r| !h.is_subset(r));
+                results.push(h);
+            }
+            Some(ju) => {
+                for a in ju {
+                    let mut next = h.clone();
+                    next.insert(a.clone());
+                    worklist.push(next);
+                }
+            }
+        }
+    }
+    results
+}
+
+#[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)] // verbatim Task-2 test bodies; single-elem sets
+mod mhs_tests {
+    use super::*;
+    use horned_owl::model::ClassExpression as CE;
+    use horned_owl::model::{Build, SubClassOf};
+
+    type Rc = std::rc::Rc<str>;
+
+    // Build a distinct dummy axiom per label so sets compare by content.
+    fn ax(b: &Build<Rc>, name: &str) -> Component<Rc> {
+        Component::SubClassOf(SubClassOf {
+            sub: CE::Class(b.class(format!("urn:{name}sub").as_str())),
+            sup: CE::Class(b.class(format!("urn:{name}sup").as_str())),
+        })
+    }
+    fn set(items: &[Component<Rc>]) -> BTreeSet<Component<Rc>> {
+        items.iter().cloned().collect()
+    }
+
+    // One justification {a, b}: minimal hitting sets are {a} and {b}.
+    #[test]
+    fn single_justification_each_axiom_is_a_repair() {
+        let b = Build::new_rc();
+        let (a, c) = (ax(&b, "a"), ax(&b, "b"));
+        let js = vec![set(&[a.clone(), c.clone()])];
+        let mhs = minimal_hitting_sets(&js);
+        let got: BTreeSet<BTreeSet<Component<Rc>>> = mhs.into_iter().collect();
+        let want: BTreeSet<BTreeSet<Component<Rc>>> = [set(&[a]), set(&[c])].into_iter().collect();
+        assert_eq!(got, want);
+    }
+
+    // Two disjoint justifications {a},{b}: the only hitting set is {a,b}.
+    #[test]
+    fn disjoint_justifications_need_both() {
+        let b = Build::new_rc();
+        let (a, c) = (ax(&b, "a"), ax(&b, "b"));
+        let js = vec![set(&[a.clone()]), set(&[c.clone()])];
+        let mhs = minimal_hitting_sets(&js);
+        assert_eq!(mhs, vec![set(&[a, c])]);
+    }
+
+    // Overlapping {a,b},{a,c}: shared {a} and {b,c} are both minimal transversals;
+    // neither is a subset of the other.
+    #[test]
+    fn overlapping_justifications_share_repair() {
+        let b = Build::new_rc();
+        let (a, c, d) = (ax(&b, "a"), ax(&b, "b"), ax(&b, "c"));
+        let js = vec![set(&[a.clone(), c.clone()]), set(&[a.clone(), d.clone()])];
+        let mhs: BTreeSet<BTreeSet<Component<Rc>>> =
+            minimal_hitting_sets(&js).into_iter().collect();
+        assert!(
+            mhs.contains(&set(&[a.clone()])),
+            "shared axiom {{a}} must be a repair"
+        );
+        assert!(
+            mhs.contains(&set(&[c, d])),
+            "{{b,c}} is also a minimal transversal"
+        );
+        for x in &mhs {
+            for y in &mhs {
+                if x != y {
+                    assert!(!x.is_subset(y), "no repair may be a superset of another");
+                }
+            }
+        }
+    }
+
+    // No justifications → no hitting sets.
+    #[test]
+    fn empty_justifications_no_repairs() {
+        let js: Vec<BTreeSet<Component<Rc>>> = Vec::new();
+        assert!(minimal_hitting_sets(&js).is_empty());
+    }
 }

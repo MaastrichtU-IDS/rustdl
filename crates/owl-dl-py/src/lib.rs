@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 
 mod classify;
 mod errors;
+mod explain;
 mod load;
 mod materialize;
 mod queries;
@@ -19,5 +20,6 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     classify::register(m)?;
     queries::register(m)?;
     materialize::register(m)?;
+    explain::register(m)?;
     Ok(())
 }

@@ -9,8 +9,8 @@ docker; HermiT/ELK custom timings from `perf-2026-06-08` / `whelk-rs-investigati
 
 **One-line story.** rustdl is **sound at scale** (FP=0 across all 201 ORE-pilot
 ontologies it diffs + the curated corpus) and **fastest on EL** (beats whelk-rs and
-ELK on galen/notgalen). On DL it is sound + near-complete and — after this session's
-fixes — within **~10–50×** of Konclude on most onts (was 100–800× in June), with
+ELK on galen/notgalen). On DL it is sound + near-complete and within **~10–50×** of
+Konclude on most onts, with
 **wine the lone DNF**. Konclude (mature C++ tableau) leads DL speed (median 18 ms on
 ORE); HermiT is correct but slow (seconds) and itself DNFs on 9 ORE onts; ELK is
 EL-only (rejects / silently drops non-EL).
@@ -47,18 +47,18 @@ All times in **milliseconds** (wall, full classification) so rows compare direct
 | bibtex | EL | 10 ✓ | 0 | — | noise floor |
 | sulo | — | 10 ✓ | 2 | — | |
 | alehif | Horn | 70 ✓ | 1 | — | |
-| ore-15672 | SHOIN | **70 ✓** | 5 | 1,654 | **was 29,000 / 809× (June) → 70** (blocked-⊔ fix) |
+| ore-15672 | SHOIN | **70 ✓** | 5 | 1,654 | blocked-⊔ fix |
 | ro | EL+ | 80 ✓ | 1 | DNF | HermiT DNFs |
 | galen | Horn | 220 ✓ | 16 | 1,144 | rustdl complete < HermiT reasoning |
 | ore-10908 | SROIQ | 220 ✓ | 23 | 10,345 | rustdl ~10× Konclude; 47× < HermiT |
 | notgalen | Horn | 270 ✓ | 20 | 1,306 | |
-| sio | SROIQ | 720 ✓ | 60 | ~57,000 | **was 32,000 / 136× (June) → 720** (SROIQ sweep-gate) |
+| sio | SROIQ | 720 ✓ | 60 | ~57,000 | SROIQ sweep-gate |
 | pizza | SHOIN | 4,600 | 18 | 268 | ~250× Konclude; a few timeout-pairs |
 | wine | SHOIN(D) | **DNF (>200,000)** | 36 | 6,390 | **the lone DNF** — combinatorial nominal+disjunction (NO-GO'd) |
-| family | SROIQ | **1,600 ✓** | 900 | 9,344 | **inconsistency now detected** (ABox-saturation pre-check) |
+| family | SROIQ | **1,600 ✓** | 900 | 9,344 | **inconsistency detected** (ABox-saturation pre-check) |
 
-rustdl is sound + complete on every row except wine; most DL onts are now **~10–50×
-Konclude** (down from 100–800× in June). Konclude leads on speed; HermiT is correct
+rustdl is sound + complete on every row except wine; most DL onts are within **~10–50×
+Konclude**. Konclude leads on speed; HermiT is correct
 but 10²–10³× slower than Konclude and DNFs on ro/wine.
 
 ## 3 · ORE-2015 pilot — 233 ontologies, oracle-validated
@@ -69,13 +69,12 @@ but 10²–10³× slower than Konclude and DNFs on ro/wine.
 | **hard-tail DNF** | **0** | 9 (>120 s) | 16 (>300 s) |
 | classification time | median **18 ms**, max 5.4 s | JVM + seconds (coarse) | most < 2 s |
 | **FP_strict** (asserts what NEITHER oracle does) | — | — | **0 / 201 diffed** |
-| completeness (silent MISSED) | complete | complete | 273 pairs (16 onts); ~80% closed this session |
+| completeness (silent MISSED) | complete | complete | 273 pairs (16 onts) |
 
-**rustdl asserts zero subsumptions neither complete reasoner does** (a latent FP,
-hidden by a DNF, was found & fixed this session). Notable: **even mature HermiT DNFs
-on 9 of 233** — the hard-SROIQ tail is intrinsic to the tableau approach (HermiT hits
-it too, smaller than rustdl's 16), not a rustdl-specific failing; only Konclude's
-optimized engine clears all in ms.
+**rustdl asserts zero subsumptions neither complete reasoner does.** Notable: **even
+mature HermiT DNFs on 9 of 233** — the hard-SROIQ tail is intrinsic to the tableau
+approach (HermiT hits it too, smaller than rustdl's 16), not a rustdl-specific
+failing; only Konclude's optimized engine clears all in ms.
 
 ## 4 · Coverage & limitations
 
@@ -91,5 +90,4 @@ optimized engine clears all in ms.
 Sources: current re-measurement (rustdl HEAD + native Konclude); HermiT-ORE via
 ROBOT-docker; `docs/perf-2026-06-08-konclude-vs-rustdl.md`,
 `docs/superpowers/specs/2026-06-16-whelk-rs-investigation.md`,
-`/data/dumontier/ore-run/pilot/*/{diff.json,kon.log}`. rustdl rows for
-sio/ore-15672/family supersede the June figures (this session's fixes).
+`/data/dumontier/ore-run/pilot/*/{diff.json,kon.log}`.

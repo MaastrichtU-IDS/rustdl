@@ -17,11 +17,13 @@ EL-only (rejects / silently drops non-EL).
 
 ## 1 · EL reasoners — canonical EL benchmarks (saturation kernel)
 
+Saturation-kernel time, all in **milliseconds**.
+
 | ontology | classes | rustdl `saturate()` | whelk-rs | ELK | notes |
 |---|--:|--:|--:|--:|---|
-| galen | 2,748 | **189 ms** | 356 ms | 847 ms | rustdl 1.9× whelk / 4.5× ELK; **+17 rustdl-only** sound pairs |
-| notgalen | 3,087 | **251 ms** | 354 ms | 1,022 ms | rustdl 1.4× whelk; +27 rustdl-only |
-| go-basic | 51,967 | 2.3 s | **1.3 s** | — | whelk 1.7× faster at scale; **identical closure** (357,043) |
+| galen | 2,748 | **189** | 356 | 847 | rustdl 1.9× whelk / 4.5× ELK; **+17 rustdl-only** sound pairs |
+| notgalen | 3,087 | **251** | 354 | 1,022 | rustdl 1.4× whelk; +27 rustdl-only |
+| go-basic | 51,967 | 2,300 | **1,300** | — | whelk 1.7× faster at scale; **identical closure** (357,043) |
 
 rustdl wins the kernel on galen/notgalen and is more complete; whelk-rs wins at the
 52k-class scale. ELK ~2–4× slower and on out-of-EL input **rejects (pizza) or silently
@@ -32,20 +34,22 @@ drops non-EL axioms (wine/sio)** — not a sound general DL reasoner.
 rustdl & Konclude current HEAD; HermiT reasoning-ms from `perf-2026-06-08` (stable).
 "✓" = complete & sound vs the oracle.
 
+All times in **milliseconds** (wall, full classification) so rows compare directly.
+
 | ontology | frag | rustdl (now) | Konclude | HermiT | notes |
 |---|---|--:|--:|--:|---|
-| bibtex | EL | 0.01 s ✓ | 0 ms | — | noise floor |
-| sulo | — | 0.01 s ✓ | 2 ms | — | |
-| alehif | Horn | 0.07 s ✓ | 1 ms | — | |
-| ore-15672 | SHOIN | **0.07 s ✓** | 5 ms | 1,654 ms | **was 29 s / 809× (June) → 0.07 s** (blocked-⊔ fix) |
-| ro | EL+ | 0.08 s ✓ | 1 ms | DNF | HermiT DNFs |
-| galen | Horn | 0.22 s ✓ | 16 ms | 1,144 ms | rustdl complete < HermiT reasoning |
-| ore-10908 | SROIQ | 0.22 s ✓ | 23 ms | 10,345 ms | rustdl ~10× Konclude; 47× < HermiT |
-| notgalen | Horn | 0.27 s ✓ | 20 ms | 1,306 ms | |
-| sio | SROIQ | 0.72 s ✓ | 60 ms | ~57,000 ms | **was 32 s / 136× (June) → 0.72 s** (SROIQ sweep-gate) |
-| pizza | SHOIN | 4.6 s | 18 ms | 268 ms | ~250× Konclude; a few timeout-pairs |
-| wine | SHOIN(D) | **DNF >200 s** | 36 ms | 6,390 ms | **the lone DNF** — combinatorial nominal+disjunction (NO-GO'd) |
-| family | SROIQ | **1.6 s ✓** | 0.9 s | 9,344 ms | **inconsistency now detected** (ABox-saturation pre-check) |
+| bibtex | EL | 10 ✓ | 0 | — | noise floor |
+| sulo | — | 10 ✓ | 2 | — | |
+| alehif | Horn | 70 ✓ | 1 | — | |
+| ore-15672 | SHOIN | **70 ✓** | 5 | 1,654 | **was 29,000 / 809× (June) → 70** (blocked-⊔ fix) |
+| ro | EL+ | 80 ✓ | 1 | DNF | HermiT DNFs |
+| galen | Horn | 220 ✓ | 16 | 1,144 | rustdl complete < HermiT reasoning |
+| ore-10908 | SROIQ | 220 ✓ | 23 | 10,345 | rustdl ~10× Konclude; 47× < HermiT |
+| notgalen | Horn | 270 ✓ | 20 | 1,306 | |
+| sio | SROIQ | 720 ✓ | 60 | ~57,000 | **was 32,000 / 136× (June) → 720** (SROIQ sweep-gate) |
+| pizza | SHOIN | 4,600 | 18 | 268 | ~250× Konclude; a few timeout-pairs |
+| wine | SHOIN(D) | **DNF (>200,000)** | 36 | 6,390 | **the lone DNF** — combinatorial nominal+disjunction (NO-GO'd) |
+| family | SROIQ | **1,600 ✓** | 900 | 9,344 | **inconsistency now detected** (ABox-saturation pre-check) |
 
 rustdl is sound + complete on every row except wine; most DL onts are now **~10–50×
 Konclude** (down from 100–800× in June). Konclude leads on speed; HermiT is correct

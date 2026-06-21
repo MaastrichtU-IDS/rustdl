@@ -8,24 +8,28 @@ use pyo3::prelude::*;
 use crate::errors::reason_error_to_py;
 use crate::load;
 
+/// True iff the ontology at `path` is consistent.
 #[pyfunction]
 pub(crate) fn is_consistent(path: &str) -> PyResult<bool> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::is_consistent(&ontology).map_err(reason_error_to_py)
 }
 
+/// True iff `class_iri` is satisfiable (not ⊑ ⊥).
 #[pyfunction]
 pub(crate) fn is_class_satisfiable(path: &str, class_iri: &str) -> PyResult<bool> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::is_class_satisfiable(&ontology, class_iri).map_err(reason_error_to_py)
 }
 
+/// True iff `sub ⊑ sup` is entailed.
 #[pyfunction]
 pub(crate) fn is_subclass_of(path: &str, sub: &str, sup: &str) -> PyResult<bool> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::is_subclass_of(&ontology, sub, sup).map_err(reason_error_to_py)
 }
 
+/// True iff `individual_iri` is an instance of `class_iri`.
 #[pyfunction]
 pub(crate) fn is_instance_of(path: &str, class_iri: &str, individual_iri: &str) -> PyResult<bool> {
     let ontology = load::load_path(path)?;
@@ -33,12 +37,14 @@ pub(crate) fn is_instance_of(path: &str, class_iri: &str, individual_iri: &str) 
         .map_err(reason_error_to_py)
 }
 
+/// Named individuals entailed to be instances of `class_iri`.
 #[pyfunction]
 pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<Vec<String>> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::instances_of(&ontology, class_iri).map_err(reason_error_to_py)
 }
 
+/// Map each named individual to its most-specific entailed types.
 #[pyfunction]
 pub(crate) fn realize(path: &str) -> PyResult<HashMap<String, Vec<String>>> {
     let ontology = load::load_path(path)?;

@@ -48,6 +48,7 @@ pub mod justify;
 pub mod laconic;
 mod model_cache;
 mod realize;
+pub mod repair;
 mod union_find;
 
 pub use classify::{
@@ -58,6 +59,7 @@ pub use classify::{
 };
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
 pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
+pub use repair::{Repair, Repairs, find_repairs};
 pub use realize::{
     Realization, instances_of, instances_of_internal, instances_of_saturation_only,
     instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,

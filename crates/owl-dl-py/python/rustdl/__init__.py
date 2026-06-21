@@ -26,6 +26,10 @@ from rustdl._native import (
     UnknownClassError as UnknownClassError,
     materialize_inferred_subclass_axioms as materialize_inferred_subclass_axioms,
     materialize_inferred_class_assertions as materialize_inferred_class_assertions,
+    explain as explain,
+    explain_unsatisfiable as explain_unsatisfiable,
+    explain_inconsistency as explain_inconsistency,
+    explain_instance as explain_instance,
 )
 
 from . import examples as examples
@@ -129,4 +133,8 @@ __all__ = [
     "UnknownClassError",
     "materialize_inferred_subclass_axioms",
     "materialize_inferred_class_assertions",
+    "explain",
+    "explain_unsatisfiable",
+    "explain_inconsistency",
+    "explain_instance",
 ]

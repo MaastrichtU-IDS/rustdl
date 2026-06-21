@@ -4,6 +4,19 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Python bindings for explanation / justification.** `rustdl.explain(path, sub, sup)`
+  returns the minimal responsible-axiom set(s) — *justifications* — for an entailed
+  `SubClassOf`, each rendered as Manchester-syntax axiom strings (`[]` if not entailed).
+  `all=True` returns up to `max` justifications (Reiter Hitting-Set Tree). Companions:
+  `explain_unsatisfiable(path, class)`, `explain_inconsistency(path)`,
+  `explain_instance(path, individual, class)`. Black-box over the existing reasoner
+  (`owl_dl_reasoner::justify`); no engine changes. Implements the previously deferred
+  `rustdl.explain` roadmap item.
+
 ## [0.3.1] — 2026-06-05
 
 ### Added

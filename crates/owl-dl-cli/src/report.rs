@@ -7,10 +7,12 @@
 // regardless of wiring; do NOT remove in Task 5.
 #![allow(clippy::format_push_string)]
 
+use anyhow::Context;
 use horned_owl::curie::PrefixMapping;
 use horned_owl::io::omn::AsManchester;
 use horned_owl::model::{Component, RcStr};
-use owl_dl_reasoner::justify::component_entities;
+use horned_owl::ontology::set::SetOntology;
+use owl_dl_reasoner::justify::{Entailment, component_entities, find_one_justification};
 use std::collections::HashMap;
 
 /// One root unsatisfiable class with its explanation and fixes.
@@ -270,6 +272,94 @@ pub fn render_html(
     h
 }
 
+/// Assemble a [`Report`] by running diagnose + per-root justify + per-root repair.
+/// Read-only; no new reasoning of its own.
+#[allow(dead_code)]
+#[allow(unreachable_pub)] // wired into the report command in Task 5; allow removed there
+pub fn build_report(
+    onto: &SetOntology<RcStr>,
+    ontology_path: String,
+    max_roots: usize,
+) -> anyhow::Result<Report> {
+    let classification = owl_dl_reasoner::classify(onto).context("classify")?;
+    let class_count = classification.classes().len();
+    let fragment = format!("{}", classification.stats().fragment);
+
+    let diag = owl_dl_reasoner::diagnose(onto).context("diagnose")?;
+
+    // Inconsistent: one section (justify + repair the inconsistency).
+    if !diag.consistent {
+        let q = Entailment::Inconsistent;
+        let justification = find_one_justification(onto, &q)
+            .context("justify inconsistency")?
+            .map(|j| j.axioms)
+            .unwrap_or_default();
+        let rep = owl_dl_reasoner::find_repairs(onto, &q, 10).context("repair inconsistency")?;
+        let repairs = rep.repairs.into_iter().map(|r| r.remove).collect();
+        return Ok(Report {
+            ontology_path,
+            class_count,
+            consistent: false,
+            fragment,
+            inconsistency: Some(Section {
+                justification,
+                repairs,
+            }),
+            roots: Vec::new(),
+            derived: Vec::new(),
+            n_unsat: class_count,
+            n_root: 0,
+            n_derived: 0,
+            repairs_complete: rep.complete,
+            truncated_roots: 0,
+        });
+    }
+
+    // Consistent: per-root justify + repair (capped at max_roots).
+    let n_root = diag.roots.len();
+    let n_derived = diag.derived.len();
+    let n_unsat = diag.all_unsat.len();
+    let truncated_roots = n_root.saturating_sub(max_roots);
+    let mut repairs_complete = true;
+    let mut roots = Vec::new();
+    for iri in diag.roots.iter().take(max_roots) {
+        let q = Entailment::Unsatisfiable { class: iri.clone() };
+        let justification = find_one_justification(onto, &q)
+            .context("justify root")?
+            .map(|j| j.axioms)
+            .unwrap_or_default();
+        let rep = owl_dl_reasoner::find_repairs(onto, &q, 10).context("repair root")?;
+        repairs_complete &= rep.complete;
+        let derives = diag.root_derives.get(iri).cloned().unwrap_or_default();
+        roots.push(RootEntry {
+            iri: iri.clone(),
+            justification,
+            repairs: rep.repairs.into_iter().map(|r| r.remove).collect(),
+            derives,
+        });
+    }
+    let derived = diag
+        .derived
+        .iter()
+        .map(|d| (d.iri.clone(), d.roots.clone()))
+        .collect();
+
+    Ok(Report {
+        ontology_path,
+        class_count,
+        consistent: true,
+        fragment,
+        inconsistency: None,
+        roots,
+        derived,
+        n_unsat,
+        n_root,
+        n_derived,
+        repairs_complete,
+        truncated_roots,
+    })
+}
+
 #[cfg(test)]
 mod escape_tests {
     use super::*;
@@ -377,5 +467,46 @@ mod render_tests {
         let html = render_html(&report, &prefixes(), None);
         assert!(html.contains("urn:a&lt;b"), "root IRI must be escaped");
         assert!(!html.contains("urn:a<b"), "raw < must not leak into markup");
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+    use horned_owl::model::{
+        Build, ClassExpression as CE, DeclareClass, MutableOntology, SubClassOf,
+    };
+    use horned_owl::ontology::set::SetOntology;
+
+    // Bad ⊑ A ⊓ ¬A (root), SubBad ⊑ Bad (derived) → report names both.
+    #[test]
+    fn build_report_on_broken_ontology() {
+        let b = Build::new_rc();
+        let cls = |iri: &str| CE::Class(b.class(iri));
+        let mut o = SetOntology::new();
+        for c in ["urn:A", "urn:Bad", "urn:SubBad"] {
+            o.insert(DeclareClass(b.class(c)));
+        }
+        o.insert(SubClassOf {
+            sub: cls("urn:Bad"),
+            sup: CE::ObjectIntersectionOf(vec![
+                cls("urn:A"),
+                CE::ObjectComplementOf(Box::new(cls("urn:A"))),
+            ]),
+        });
+        o.insert(SubClassOf {
+            sub: cls("urn:SubBad"),
+            sup: cls("urn:Bad"),
+        });
+
+        let report = build_report(&o, "broken.ofn".into(), 50).expect("build_report");
+        assert!(report.consistent);
+        assert_eq!(report.n_root, 1);
+        assert!(report.roots.iter().any(|r| r.iri == "urn:Bad"));
+        assert!(
+            !report.roots[0].justification.is_empty(),
+            "root has a justification"
+        );
+        assert!(report.derived.iter().any(|(d, _)| d == "urn:SubBad"));
     }
 }

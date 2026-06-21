@@ -70,18 +70,73 @@ fn inconsistent_ontology_flagged() {
     assert!(d.all_unsat.is_empty());
 }
 
+// TBox global inconsistency (⊤ ⊑ ⊥): classify reports all classes unsat without
+// flagging; the all-classes-unsat guard must escalate to `is_consistent` and
+// report INCONSISTENT.
+#[test]
+fn tbox_global_inconsistency_flagged() {
+    let b = b();
+    let mut o = SetOntology::new();
+    use horned_owl::model::ClassExpression as CE;
+    // ⊤ ⊑ A ⊓ ¬A  → every class unsatisfiable; ontology inconsistent.
+    o.insert(horned_owl::model::SubClassOf {
+        sub: CE::Class(b.class("http://www.w3.org/2002/07/owl#Thing")),
+        sup: CE::ObjectIntersectionOf(vec![
+            CE::Class(b.class("urn:A")),
+            CE::ObjectComplementOf(Box::new(CE::Class(b.class("urn:A")))),
+        ]),
+    });
+
+    let d = diagnose(&o).expect("diagnose");
+    assert!(
+        !d.consistent,
+        "⊤ ⊑ ⊥ ontology must be flagged inconsistent (all-classes-unsat guard)"
+    );
+    assert!(d.roots.is_empty() && d.derived.is_empty());
+}
+
+// A single class made empty (A ⊑ A ⊓ ¬A) is CONSISTENT (⊤ still satisfiable) even
+// though every declared class is unsat. The all-classes-unsat guard must NOT
+// false-flag it: `is_consistent` is the authoritative tiebreak → consistent, with
+// A reported as a root.
+#[test]
+fn all_classes_empty_but_consistent_not_flagged() {
+    let b = b();
+    let mut o = SetOntology::new();
+    use horned_owl::model::ClassExpression as CE;
+    o.insert(horned_owl::model::SubClassOf {
+        sub: CE::Class(b.class("urn:A")),
+        sup: CE::ObjectIntersectionOf(vec![
+            CE::Class(b.class("urn:A")),
+            CE::ObjectComplementOf(Box::new(CE::Class(b.class("urn:A")))),
+        ]),
+    });
+
+    let d = diagnose(&o).expect("diagnose");
+    assert!(
+        d.consistent,
+        "{{A ⊑ ⊥}} is consistent (⊤ satisfiable); guard must not false-flag"
+    );
+    assert_eq!(d.roots, vec!["urn:A".to_string()]);
+    assert!(d.derived.is_empty());
+}
+
 use owl_dl_reasoner::classify;
 
 // Conservation invariant on real fixtures: roots ∪ derived == classified-unsat.
-// Ignored by default (reads the curated corpus); run with `-- --ignored`.
+// pizza has designed-in unsatisfiable classes, so it exercises the partition on
+// REAL data (not just the synthetic cascade). Ignored by default (reads the
+// curated corpus); run with `-- --ignored`.
 #[test]
 #[ignore = "reads the curated corpus (ontologies/real/*.ofn)"]
 fn corpus_conservation_invariant() {
     // cwd at test runtime is the crate dir; the corpus lives at the workspace
     // root (verified pattern, see real_ontology_corpus.rs uses `../../`).
+    // pizza FIRST: it has unsat classes, so the partition is genuinely exercised.
+    let mut exercised_nonempty = false;
     for path in [
+        "../../ontologies/real/pizza.ofn",
         "../../ontologies/real/sio.ofn",
-        "../../ontologies/real/wine.ofn",
     ] {
         let p = std::path::Path::new(path);
         if !p.exists() {
@@ -108,6 +163,7 @@ fn corpus_conservation_invariant() {
             "{path}: roots ∪ derived must equal the classified unsat set"
         );
         if !classified.is_empty() {
+            exercised_nonempty = true;
             assert!(
                 !d.roots.is_empty(),
                 "{path}: unsat classes present but no root reported"
@@ -120,6 +176,26 @@ fn corpus_conservation_invariant() {
             d.derived.len()
         );
     }
+    assert!(
+        exercised_nonempty,
+        "conservation test was vacuous — no fixture with unsat classes ran (is pizza present?)"
+    );
+}
+
+// family is HermiT/Konclude-inconsistent; the ABox-saturation pre-check must flag
+// it WITHOUT the slow classify/is_consistent path. Ignored (reads the corpus).
+#[test]
+#[ignore = "reads the curated corpus (ontologies/real/family.ofn)"]
+fn family_inconsistency_flagged() {
+    let p = std::path::Path::new("../../ontologies/real/family.ofn");
+    if !p.exists() {
+        eprintln!("skip family.ofn (not present)");
+        return;
+    }
+    let onto = read_ofn_fixture(p);
+    let d = diagnose(&onto).expect("diagnose");
+    assert!(!d.consistent, "family must be flagged inconsistent");
+    assert!(d.roots.is_empty() && d.derived.is_empty());
 }
 
 // Read a .ofn fixture into a SetOntology (verified pattern, see classify_inverse_domain.rs).

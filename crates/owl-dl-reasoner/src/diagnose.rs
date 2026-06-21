@@ -35,28 +35,78 @@ pub struct Diagnosis {
     pub root_derives: BTreeMap<String, Vec<String>>,
 }
 
+/// An empty `Diagnosis` for an ontology found inconsistent (caller justifies the
+/// inconsistency directly).
+fn inconsistent_diagnosis() -> Diagnosis {
+    Diagnosis {
+        consistent: false,
+        roots: Vec::new(),
+        derived: Vec::new(),
+        all_unsat: Vec::new(),
+        root_derives: BTreeMap::new(),
+    }
+}
+
 /// Diagnose `onto`: consistency, then the root/derived unsatisfiability partition.
 ///
 /// Read-only over classification; never mutates the ontology. On an inconsistent
-/// ontology returns `consistent: false` with empty partition (the caller should
+/// ontology returns `consistent: false` with an empty partition (the caller should
 /// justify the inconsistency directly).
+///
+/// **Consistency verdict tracks `classify`'s view, not the slow main-tableau
+/// `is_consistent`.** This is both faster and more faithful: the unsat set and the
+/// inconsistency verdict come from the same engine, so `diagnose` always agrees
+/// with what `rustdl classify` shows the user. Inconsistency is detected by three
+/// cheap, sound signals, in order: (1) the `ABox`-saturation pre-check (catches
+/// family-style `ABox` clashes), (2) `classify`'s own `inconsistent` flag (its
+/// `abox_check` patterns), and (3) a definitive `is_consistent` tiebreak invoked
+/// *only* when every declared class is unsatisfiable — the signature of pure-TBox
+/// global inconsistency (`⊤ ⊑ ⊥`), which `classify` reports as "all classes unsat"
+/// without flagging. The slow `is_consistent` path therefore never runs on a
+/// normal ontology (it is gated behind all-classes-unsat, and is itself fast on
+/// the inconsistent inputs that gate triggers on). An ontology that `classify`
+/// itself fails to flag inconsistent gets a partition — honest, since `classify`
+/// would surface those same classes.
 pub fn diagnose<A: ForIRI>(onto: &SetOntology<A>) -> Result<Diagnosis, ReasonError> {
-    if !crate::is_consistent(onto)? {
-        return Ok(Diagnosis {
-            consistent: false,
-            roots: Vec::new(),
-            derived: Vec::new(),
-            all_unsat: Vec::new(),
-            root_derives: BTreeMap::new(),
-        });
+    // Single conversion, shared by the pre-check and the classifier.
+    let internal = owl_dl_core::convert::convert_ontology(onto)?;
+
+    // (1) Sound ABox-saturation inconsistency pre-check — a consequence-based
+    // clash over named individuals is a real inconsistency (catches family-style
+    // cases `classify`'s own `abox_check` misses). ABox-free inputs skip it.
+    if crate::abox_saturation_enabled()
+        && crate::classify::has_abox_axioms(&internal)
+        && crate::abox_saturation::saturate_abox_consistency(&internal).clash
+    {
+        return Ok(inconsistent_diagnosis());
     }
 
-    let classification = crate::classify::classify(onto)?;
+    // Classify via the top-down path (the one that runs `abox_check` and sets the
+    // inconsistent flag) on the already-lowered ontology — fast on consistent input.
+    let classification = crate::classify::classify_top_down_internal(&internal, None, None)?;
+
+    // (2) `classify`'s own inconsistency verdict (its `abox_check` patterns).
+    if classification.stats().inconsistent {
+        return Ok(inconsistent_diagnosis());
+    }
+
     let unsat: BTreeSet<String> = classification
         .unsatisfiable_classes()
         .into_iter()
         .map(str::to_string)
         .collect();
+
+    // (3) Pure-TBox global-inconsistency guard. If EVERY declared class is
+    // unsatisfiable, the ontology is likely globally inconsistent (`⊤ ⊑ ⊥`), which
+    // `classify` does not flag. Get the authoritative verdict from `is_consistent`
+    // — sound, and bounded: it is fast on inconsistent inputs (a clash is found
+    // quickly), and this gate excludes the consistent ontologies on which
+    // `is_consistent` is slow. The rare consistent-but-all-classes-empty ontology
+    // correctly falls through to a partition (verdict: consistent).
+    let n_declared = classification.classes().len();
+    if n_declared > 0 && unsat.len() == n_declared && !crate::is_consistent(onto)? {
+        return Ok(inconsistent_diagnosis());
+    }
 
     if unsat.is_empty() {
         return Ok(Diagnosis {

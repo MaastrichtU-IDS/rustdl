@@ -48,21 +48,36 @@ formats results. They can be tested independently.
 
 ## Algorithm
 
+**Consistency verdict tracks `classify`'s view, not the slow main-tableau
+`is_consistent`.** This is both faster and more faithful: the unsat set and the
+inconsistency verdict come from the same engine, so `diagnose` always agrees with
+what `rustdl classify` shows the user. An ontology `classify` itself fails to flag
+inconsistent gets a partition — honest, because `classify` would surface those same
+classes. Inconsistency is detected by three cheap, sound signals, in order: (a) the
+ABox-saturation pre-check (catches family-style ABox clashes `classify`'s own
+`abox_check` misses), (b) `classify`'s own `inconsistent` flag, and (c) a definitive
+`is_consistent` tiebreak invoked **only** when every declared class is unsatisfiable
+— the signature of pure-TBox global inconsistency (`⊤ ⊑ ⊥`), which `classify` reports
+as "all classes unsat" without flagging. The slow `is_consistent` path therefore
+never runs on a normal ontology (it is gated behind all-classes-unsat, and is itself
+fast on the inconsistent inputs that gate triggers on).
+
 ```
-1. parse → convert
-2. consistency check
-   ├─ INCONSISTENT → justify the inconsistency (reuse the shipped path), print
-   │                 the responsible axioms. Done.
-   └─ CONSISTENT → continue
-3. classify → unsatisfiable set U (the named classes C with C ⊑ ⊥)
-   ├─ U empty → print "coherent: no unsatisfiable classes." Done.
+1. parse → convert (once)
+2. ABox-saturation inconsistency pre-check (signal a)
+   └─ clash → INCONSISTENT → justify the inconsistency, print. Done.
+3. classify (top-down path, sets the inconsistent flag) → unsat set U
+   ├─ classify flagged inconsistent (signal b) → INCONSISTENT → justify, print. Done.
    └─ continue
-4. build the structural dependency graph G over U (edge C→D means "C depends on D")
-5. partition U:
+4. all-classes-unsat guard (signal c): if |U| == #declared classes, run is_consistent
+   └─ inconsistent → INCONSISTENT → justify, print. Done.
+5. U empty → print "coherent: no unsatisfiable classes." Done.
+6. build the structural dependency graph G over U (edge C→D means "C depends on D")
+7. partition U:
    - ROOT    = unsat class with NO outgoing edge to another unsat class
    - DERIVED = unsat class with ≥1 outgoing edge
-6. justify each ROOT (find-one by default; --all opt-in), print the minimal axiom set
-7. for each DERIVED class, report the root(s) it transitively reaches in G
+8. justify each ROOT (find-one by default; --all opt-in), print the minimal axiom set
+9. for each DERIVED class, report the root(s) it transitively reaches in G
 ```
 
 ### The edge set (the soundness crux)

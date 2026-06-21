@@ -40,3 +40,54 @@ fn laconic_drops_superfluous_conjuncts() {
     });
     assert_eq!(lac.axioms, vec![want], "laconic must keep only A ⊑ B");
 }
+
+// C ≡ D ⊓ E ; query C ⊑ D  → laconic exactly {C ⊑ D}.
+#[test]
+fn laconic_equivalence_picks_one_direction_and_conjunct() {
+    let b = Build::new_rc();
+    let cls = |iri: &str| CE::Class(b.class(iri));
+    let mut o = SetOntology::new();
+    for c in ["urn:C", "urn:D", "urn:E"] {
+        o.insert(DeclareClass(b.class(c)));
+    }
+    o.insert(horned_owl::model::EquivalentClasses(vec![
+        cls("urn:C"),
+        CE::ObjectIntersectionOf(vec![cls("urn:D"), cls("urn:E")]),
+    ]));
+    let q = Entailment::SubClassOf {
+        sub: "urn:C".to_string(),
+        sup: "urn:D".to_string(),
+    };
+    let lac = find_laconic_justification(&o, &q)
+        .expect("laconic")
+        .expect("entailed");
+    let want = Component::SubClassOf(SubClassOf {
+        sub: cls("urn:C"),
+        sup: cls("urn:D"),
+    });
+    assert_eq!(lac.axioms, vec![want]);
+}
+
+// A ⊑ B, query A ⊑ Z (Z declared but unrelated) → not entailed → None.
+#[test]
+fn laconic_not_entailed_is_none() {
+    let b = Build::new_rc();
+    let cls = |iri: &str| CE::Class(b.class(iri));
+    let mut o = SetOntology::new();
+    for c in ["urn:A", "urn:B", "urn:Z"] {
+        o.insert(DeclareClass(b.class(c)));
+    }
+    o.insert(SubClassOf {
+        sub: cls("urn:A"),
+        sup: cls("urn:B"),
+    });
+    let q = Entailment::SubClassOf {
+        sub: "urn:A".to_string(),
+        sup: "urn:Z".to_string(),
+    };
+    assert!(
+        find_laconic_justification(&o, &q)
+            .expect("laconic")
+            .is_none()
+    );
+}

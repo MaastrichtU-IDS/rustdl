@@ -518,6 +518,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   over all justifications) to break an unwanted entailment; every repair is verified
   by removal (sound even when the justification set is incomplete). See
   `docs/superpowers/specs/2026-06-21-repair-suggestions-design.md`.
+  `report` generates a self-contained HTML debugging report (summary + diagnose
+  roots/derived + per-root justification + repairs); presentation-only over the
+  shipped reasoner output, read-only, no external resources. See
+  `docs/superpowers/specs/2026-06-21-html-report-design.md`.
 
 ## Soundness contract (important)
 

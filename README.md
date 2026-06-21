@@ -110,6 +110,7 @@ rustdl justify --laconic ontology.ofn <query…>  # pinpoint the responsible PAR
 rustdl repair    ontology.ofn <query…>      # minimal axiom removals to break an entailment
 rustdl prove     ontology.ofn <sub> <sup>   # step-level DL proof tree
 rustdl diagnose  ontology.ofn               # root vs derived unsatisfiable classes (where to start fixing)
+rustdl report    ontology.ofn -o report.html # self-contained HTML debugging report
 rustdl explain   ontology.ofn <sub> <sup>   # which engine answered (saturation vs tableau)
 ```
 

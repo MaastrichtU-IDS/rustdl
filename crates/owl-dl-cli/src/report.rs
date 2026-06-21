@@ -495,3 +495,33 @@ mod build_tests {
         assert!(report.derived.iter().any(|(d, _)| d == "urn:SubBad"));
     }
 }
+
+#[cfg(test)]
+mod corpus_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "reads the curated corpus (ontologies/real/pizza.ofn)"]
+    fn report_on_pizza() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        let p = std::path::Path::new("../../ontologies/real/pizza.ofn");
+        if !p.exists() {
+            eprintln!("skip pizza.ofn (not present)");
+            return;
+        }
+        let mut r = std::io::BufReader::new(std::fs::File::open(p).expect("open pizza.ofn"));
+        let (onto, pm): (horned_owl::ontology::set::SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse");
+        let report = build_report(&onto, "pizza.ofn".into(), 50).expect("build");
+        let html = render_html(&report, &pm, None);
+        assert!(html.starts_with("<!doctype html"));
+        assert!(html.contains("IceCream") || html.contains("CheeseyVegetableTopping"));
+        assert!(!html.contains("<script"));
+        eprintln!(
+            "pizza report: {} bytes, {} root(s)",
+            html.len(),
+            report.n_root
+        );
+    }
+}

@@ -263,6 +263,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   (told-exists over realized types, 1-step). NOTE: a representation of entailed
   existentials, NOT entailed ground triples (witnesses are model-relative). See
   `docs/superpowers/specs/2026-06-21-existential-successors-design.md`.
+  Python now exposes the explanation/debugging suite — `rustdl.justify` / `justify_all` /
+  `diagnose` / `repair` (string/tuple forms) + the one-call `rustdl.debug(path)` (structured
+  dict). The justify/repair query parser is shared via `owl_dl_reasoner::justify::parse_query`
+  (lifted from the CLI). The `materialize_*` re-exports were also fixed — they were registered
+  in `_native` but missing from `__init__.py`. See
+  `docs/superpowers/specs/2026-06-21-python-debugging-surface-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

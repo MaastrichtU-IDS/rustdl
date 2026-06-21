@@ -2,9 +2,20 @@
 //! roots/derived + per-root justification + repairs). Presentation-only over the
 //! shipped reasoner output; runs no new reasoning; read-only.
 
+// Style-only; the `write!`-into-String alternative cascades into `unwrap_used`
+// (warn→error here) at every site. PERMANENT — the verbatim renderer trips this
+// regardless of wiring; do NOT remove in Task 5.
+#![allow(clippy::format_push_string)]
+
+use horned_owl::curie::PrefixMapping;
+use horned_owl::io::omn::AsManchester;
 use horned_owl::model::{Component, RcStr};
+use owl_dl_reasoner::justify::component_entities;
+use std::collections::HashMap;
 
 /// One root unsatisfiable class with its explanation and fixes.
+// wired into the report command in Task 5; allow removed there
+#[allow(unreachable_pub)]
 pub struct RootEntry {
     pub iri: String,
     pub justification: Vec<Component<RcStr>>,
@@ -13,12 +24,16 @@ pub struct RootEntry {
 }
 
 /// The inconsistency explanation (when the whole ontology is inconsistent).
+// wired into the report command in Task 5; allow removed there
+#[allow(unreachable_pub)]
 pub struct Section {
     pub justification: Vec<Component<RcStr>>,
     pub repairs: Vec<Vec<Component<RcStr>>>,
 }
 
 /// Everything the HTML renderer needs — assembled by `build_report`.
+// wired into the report command in Task 5; allow removed there
+#[allow(unreachable_pub)]
 pub struct Report {
     pub ontology_path: String,
     pub class_count: usize,
@@ -43,6 +58,218 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+const REPORT_CSS: &str = r"
+:root{--ink:#1a1a1a;--muted:#6b7280;--line:#e5e7eb;--root:#b91c1c;--derived:#b45309;--fix:#047857;--chip:#f3f4f6}
+body{font:15px/1.55 -apple-system,system-ui,sans-serif;color:var(--ink);max-width:920px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:22px;margin:0 0 2px}.path{color:var(--muted);font:13px ui-monospace,monospace;margin:0 0 18px}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:0 0 26px}
+.stat{border:1px solid var(--line);border-radius:8px;padding:10px 12px}.stat .n{font-size:20px;font-weight:700}
+.stat .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.ok{color:var(--fix)}.bad{color:var(--root)}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:6px;margin:30px 0 12px}
+details{border:1px solid var(--line);border-left:3px solid var(--root);border-radius:0 6px 6px 0;margin:8px 0;padding:0 14px}
+details[open]{padding-bottom:12px}summary{cursor:pointer;padding:11px 0;font-weight:600}
+summary .tag{display:inline-block;font:11px/1 ui-monospace,monospace;background:var(--root);color:#fff;border-radius:4px;padding:3px 6px;margin-right:8px}
+.cls{font:14px ui-monospace,monospace}.block .h{font-size:12px;font-weight:700;text-transform:uppercase;color:var(--muted);margin:10px 0 4px}
+.why .h{color:var(--root)}.fix .h{color:var(--fix)}
+.ax{font:13px ui-monospace,monospace;background:var(--chip);border-radius:5px;padding:5px 9px;margin:3px 0}
+.ax .lbl{color:var(--muted);font-size:11.5px}
+.repair{border:1px solid var(--line);border-radius:6px;padding:6px 10px;margin:6px 0}.repair .cap{font-size:12px;color:var(--fix);font-weight:600;margin-bottom:3px}
+.derives{font-size:12.5px;color:var(--muted);margin-top:8px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}td,th{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-size:12px;text-transform:uppercase}.derived-cls{border-left:3px solid var(--derived)}
+.foot{color:var(--muted);font-size:12px;margin-top:36px;border-top:1px solid var(--line);padding-top:10px}
+";
+
+// wired into the report command in Task 5; allow removed there
+#[allow(dead_code)]
+fn ax_html(
+    ax: &Component<RcStr>,
+    pm: &PrefixMapping,
+    labels: Option<&HashMap<String, String>>,
+) -> String {
+    let man = html_escape(&ax.as_manchester_with_prefixes(pm).to_string());
+    let mut s = format!("<div class=\"ax\">{man}");
+    if let Some(lm) = labels {
+        let glosses: Vec<String> = component_entities(ax)
+            .into_iter()
+            .filter_map(|iri| {
+                lm.get(&iri).map(|l| {
+                    format!(
+                        "{} = \"{}\"",
+                        html_escape(crate::local_name(&iri)),
+                        html_escape(l)
+                    )
+                })
+            })
+            .collect();
+        if !glosses.is_empty() {
+            s.push_str(&format!(
+                "<span class=\"lbl\"> · {}</span>",
+                glosses.join("; ")
+            ));
+        }
+    }
+    s.push_str("</div>");
+    s
+}
+
+// wired into the report command in Task 5; allow removed there
+#[allow(dead_code)]
+fn repairs_html(
+    repairs: &[Vec<Component<RcStr>>],
+    pm: &PrefixMapping,
+    labels: Option<&HashMap<String, String>>,
+) -> String {
+    if repairs.is_empty() {
+        return "<div class=\"derives\">no verifiable repair found</div>".to_string();
+    }
+    let mut s = String::new();
+    for (i, rep) in repairs.iter().enumerate() {
+        s.push_str(&format!(
+            "<div class=\"repair\"><div class=\"cap\">repair {} — remove {} axiom(s)</div>",
+            i + 1,
+            rep.len()
+        ));
+        for ax in rep {
+            s.push_str(&ax_html(ax, pm, labels));
+        }
+        s.push_str("</div>");
+    }
+    s
+}
+
+/// Render the full self-contained HTML document for `report`.
+// wired into the report command in Task 5; allow removed there
+#[allow(dead_code)]
+#[allow(unreachable_pub)]
+pub fn render_html(
+    report: &Report,
+    pm: &PrefixMapping,
+    labels: Option<&HashMap<String, String>>,
+) -> String {
+    let mut h = String::new();
+    h.push_str("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">");
+    h.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+    h.push_str(&format!(
+        "<title>rustdl report — {}</title>",
+        html_escape(&report.ontology_path)
+    ));
+    h.push_str(&format!("<style>{REPORT_CSS}</style></head><body>"));
+
+    h.push_str("<h1>rustdl debugging report</h1>");
+    h.push_str(&format!(
+        "<p class=\"path\">{} · generated by rustdl</p>",
+        html_escape(&report.ontology_path)
+    ));
+
+    let consistency = if report.consistent {
+        "<span class=\"n ok\">consistent</span>"
+    } else {
+        "<span class=\"n bad\">INCONSISTENT</span>"
+    };
+    h.push_str("<div class=\"summary\">");
+    h.push_str(&format!(
+        "<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">classes</div></div>",
+        report.class_count
+    ));
+    h.push_str(&format!(
+        "<div class=\"stat\">{consistency}<div class=\"l\">consistency</div></div>"
+    ));
+    h.push_str(&format!(
+        "<div class=\"stat\"><div class=\"n bad\">{}</div><div class=\"l\">unsatisfiable</div></div>",
+        report.n_unsat
+    ));
+    h.push_str(&format!(
+        "<div class=\"stat\"><div class=\"n\">{} / {}</div><div class=\"l\">root / derived</div></div>",
+        report.n_root, report.n_derived
+    ));
+    h.push_str(&format!(
+        "<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">fragment</div></div>",
+        html_escape(&report.fragment)
+    ));
+    h.push_str("</div>");
+
+    if let Some(sec) = &report.inconsistency {
+        h.push_str("<h2>Inconsistent ontology — responsible axioms</h2>");
+        h.push_str("<div class=\"block why\"><div class=\"h\">Why it is inconsistent (minimal justification)</div>");
+        for ax in &sec.justification {
+            h.push_str(&ax_html(ax, pm, labels));
+        }
+        h.push_str("</div><div class=\"block fix\"><div class=\"h\">How to fix (minimal repairs — remove one set)</div>");
+        h.push_str(&repairs_html(&sec.repairs, pm, labels));
+        h.push_str("</div>");
+    } else if report.n_unsat == 0 {
+        h.push_str(&format!(
+            "<h2>No problems found</h2><p>All {} classes are satisfiable and the ontology is consistent.</p>",
+            report.class_count
+        ));
+    } else {
+        h.push_str("<h2>Root unsatisfiable classes — fix these first</h2>");
+        for root in &report.roots {
+            h.push_str(&format!(
+                "<details><summary><span class=\"tag\">ROOT</span><span class=\"cls\">{}</span></summary>",
+                html_escape(&root.iri)
+            ));
+            h.push_str("<div class=\"block why\"><div class=\"h\">Why it's unsatisfiable (minimal justification)</div>");
+            for ax in &root.justification {
+                h.push_str(&ax_html(ax, pm, labels));
+            }
+            h.push_str("</div><div class=\"block fix\"><div class=\"h\">How to fix (minimal repairs — remove one set)</div>");
+            h.push_str(&repairs_html(&root.repairs, pm, labels));
+            h.push_str("</div>");
+            if !root.derives.is_empty() {
+                let list: Vec<String> = root
+                    .derives
+                    .iter()
+                    .map(|d| format!("<code>{}</code>", html_escape(d)))
+                    .collect();
+                h.push_str(&format!(
+                    "<div class=\"derives\">Causes {} derived class(es): {}</div>",
+                    root.derives.len(),
+                    list.join(", ")
+                ));
+            }
+            h.push_str("</details>");
+        }
+        if report.truncated_roots > 0 {
+            h.push_str(&format!(
+                "<p class=\"derives\">… and {} more root(s) not detailed (raise --max-roots).</p>",
+                report.truncated_roots
+            ));
+        }
+        if !report.derived.is_empty() {
+            h.push_str(
+                "<h2>Derived unsatisfiable classes — likely resolve once roots are fixed</h2>",
+            );
+            h.push_str("<table><tr><th>derived class</th><th>depends on root</th></tr>");
+            for (d, roots) in &report.derived {
+                let rs: Vec<String> = roots
+                    .iter()
+                    .map(|r| format!("<code>{}</code>", html_escape(r)))
+                    .collect();
+                h.push_str(&format!(
+                    "<tr><td class=\"derived-cls cls\">{}</td><td>{}</td></tr>",
+                    html_escape(d),
+                    rs.join(", ")
+                ));
+            }
+            h.push_str("</table>");
+        }
+    }
+
+    let completeness = if report.repairs_complete {
+        "minimal repairs complete"
+    } else {
+        "repairs w.r.t. found justifications (completeness not guaranteed)"
+    };
+    h.push_str(&format!(
+        "<p class=\"foot\">Sound by construction: every justification and repair is verified against the reasoner. {completeness}. Self-contained HTML, no external resources. This report is read-only — it never modifies the ontology.</p>"
+    ));
+    h.push_str("</body></html>");
+    h
+}
+
 #[cfg(test)]
 mod escape_tests {
     use super::*;
@@ -58,5 +285,97 @@ mod escape_tests {
     #[test]
     fn plain_text_unchanged() {
         assert_eq!(html_escape("PolarBear ⊑ Animal"), "PolarBear ⊑ Animal");
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use horned_owl::model::{Build, ClassExpression as CE, SubClassOf};
+
+    fn prefixes() -> horned_owl::curie::PrefixMapping {
+        horned_owl::curie::PrefixMapping::default()
+    }
+    fn sc(b: &Build<RcStr>, s: &str, t: &str) -> Component<RcStr> {
+        Component::SubClassOf(SubClassOf {
+            sub: CE::Class(b.class(s)),
+            sup: CE::Class(b.class(t)),
+        })
+    }
+    fn coherent_report() -> Report {
+        Report {
+            ontology_path: "ex.ofn".into(),
+            class_count: 12,
+            consistent: true,
+            fragment: "EL".into(),
+            inconsistency: None,
+            roots: Vec::new(),
+            derived: Vec::new(),
+            n_unsat: 0,
+            n_root: 0,
+            n_derived: 0,
+            repairs_complete: true,
+            truncated_roots: 0,
+        }
+    }
+
+    #[test]
+    fn coherent_says_no_problems_and_is_self_contained() {
+        let html = render_html(&coherent_report(), &prefixes(), None);
+        assert!(
+            html.starts_with("<!doctype html"),
+            "must be a full document"
+        );
+        assert!(html.contains("<head>") && html.contains("<body>"));
+        assert!(html.to_lowercase().contains("no problems"));
+        assert!(!html.contains("<script"), "no scripts");
+        assert!(!html.contains("<link "), "no external stylesheets");
+        assert!(!html.contains("src="), "no external src");
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "no external URLs"
+        );
+    }
+
+    #[test]
+    fn root_report_shows_why_and_fix() {
+        let b = Build::new_rc();
+        let report = Report {
+            roots: vec![RootEntry {
+                iri: "urn:Bad".into(),
+                justification: vec![sc(&b, "urn:Bad", "urn:A")],
+                repairs: vec![vec![sc(&b, "urn:Bad", "urn:A")]],
+                derives: vec!["urn:SubBad".into()],
+            }],
+            n_unsat: 2,
+            n_root: 1,
+            n_derived: 1,
+            derived: vec![("urn:SubBad".into(), vec!["urn:Bad".into()])],
+            ..coherent_report()
+        };
+        let html = render_html(&report, &prefixes(), None);
+        assert!(html.contains("urn:Bad"), "names the root");
+        assert!(html.to_lowercase().contains("root unsatisfiable"));
+        assert!(html.to_lowercase().contains("repair"));
+        assert!(html.contains("urn:SubBad"), "lists the derived class");
+    }
+
+    #[test]
+    fn escapes_dynamic_text() {
+        let b = Build::new_rc();
+        let report = Report {
+            roots: vec![RootEntry {
+                iri: "urn:a<b".into(),
+                justification: vec![sc(&b, "urn:a<b", "urn:A")],
+                repairs: Vec::new(),
+                derives: Vec::new(),
+            }],
+            n_unsat: 1,
+            n_root: 1,
+            ..coherent_report()
+        };
+        let html = render_html(&report, &prefixes(), None);
+        assert!(html.contains("urn:a&lt;b"), "root IRI must be escaped");
+        assert!(!html.contains("urn:a<b"), "raw < must not leak into markup");
     }
 }

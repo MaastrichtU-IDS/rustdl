@@ -4,7 +4,7 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.11] — 2026-06-22
 
 ### Added
 
@@ -16,6 +16,12 @@ All notable changes to rustdl are documented here. Format is based on
   explanations in Manchester; input completes the symmetry. The reader is the
   conformance-tested `horned_owl::io::omn::reader` from the pinned fork rev (no
   dependency on the upstream PR merging).
+- **Python QA tutorial** (`docs/python-ontology-qa.md`) — an end-to-end "diagnose
+  and fix a broken ontology" walkthrough (classify → `debug()` → justify/repair →
+  fix → read inferred facts), fully Manchester-faced and CI-guarded against rot.
+  Linked from the main and PyPI READMEs.
+
+[0.3.11]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.3.11
 
 ## [0.3.10] — 2026-06-21
 

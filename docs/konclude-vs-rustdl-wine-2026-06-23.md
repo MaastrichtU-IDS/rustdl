@@ -138,6 +138,31 @@ Both are multi-month, architecture-level changes — the branch-count-reduction 
 consistent with everything measured this arc. No action implied beyond recording the
 mechanism; wine stays an accepted, MISSED=0 perf gap on a single nominal-heavy fixture.
 
+## 6. Is the *bounded* Konclude lever (common-disjunct extraction) usable for wine? No.
+
+rustdl has common-subsumer extraction (`disjunction_existential.rs`) but only at EL
+preprocessing — the **wedge's `find_open_disjunction` branches without it**, exactly where
+Konclude's `CCommonDisjunctConceptExtractionPreProcess` applies. That looked like a bounded,
+adoptable lever. But wine's actual disjunction structure (from `clause-stats` + the `.ofn`)
+rules it out for wine:
+
+- 76 disjunctive clauses, dominated by **33 `ObjectOneOf` nominal value-partitions**
+  (`{Moderate,Strong}`, `{Full,Medium}`, …) + 117 `∀` + 34 cardinality; only **2
+  `ObjectUnionOf`** (genuine class ⊔).
+- Wine's cost is the **combinatorial value-assignment** across those nominal partitions over
+  ~206 individuals — *which* value each individual takes. A common subsumer of `{Full,Medium}`
+  (the partition class, e.g. `WineBody`) is already implied, so asserting it deterministically
+  saves nothing; it does not reduce the combinatorial choice that is the actual cost.
+- So common-disjunct extraction would touch only the 2 `ObjectUnionOf` (and genuine-⊔ DL-tail
+  onts — the ≤8-obscure-ont prize), **not wine**.
+
+**Confirmed: there is no *bounded* Konclude-inspired lever for wine.** Wine needs the
+multi-month one — approximated saturation + nominal-node merging to resolve the value-
+partition structure once, + backend reuse so each test doesn't re-explore all individuals'
+value choices. That is the precise (now structurally-scoped, not vague) shape of the wine
+lever: a sound saturation/precompletion over nominals+cardinality, which rustdl's EL-only
+saturator does not provide.
+
 ## Caveats
 
 - Konclude internals here are confirmed from source structure + config + phase timings, not

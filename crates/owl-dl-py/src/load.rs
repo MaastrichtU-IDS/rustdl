@@ -3,6 +3,7 @@
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
+use horned_owl::io::omn::reader::read as read_omn;
 use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::io::rdf::reader::read as read_rdf;
 use horned_owl::model::RcStr;
@@ -14,7 +15,7 @@ use std::path::Path;
 use crate::errors::ParseError;
 
 /// Parse an ontology from a file path. Format is auto-detected from
-/// the file extension (`.ofn` | `.owx` | `.rdf` | `.owl`).
+/// the file extension (`.ofn` | `.owx` | `.rdf` | `.owl` | `.omn`).
 pub(crate) fn load_path(path: &str) -> PyResult<SetOntology<RcStr>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| ParseError::new_err(format!("read {path}: {e}")))?;
@@ -26,9 +27,10 @@ pub(crate) fn load_path(path: &str) -> PyResult<SetOntology<RcStr>> {
         Some("ofn") => "ofn",
         Some("owx") => "owx",
         Some("rdf" | "owl") => "rdf-xml",
+        Some("omn") => "omn",
         Some(other) => {
             return Err(ParseError::new_err(format!(
-                "unknown extension `.{other}` — pass format= explicitly via classify_bytes() or rename file to .ofn / .owx / .rdf"
+                "unknown extension `.{other}` — pass format= explicitly via classify_bytes() or rename file to .ofn / .owx / .rdf / .omn"
             )));
         }
         None => {
@@ -56,9 +58,10 @@ fn parse_with_format(src: &str, format: &str) -> PyResult<SetOntology<RcStr>> {
         // rdf::reader::read returns ConcreteRDFOntology; convert via the
         // From<ConcreteRDFOntology> impl that horned-owl provides for SetOntology.
         "rdf-xml" | "rdf" => read_rdf(&mut reader, cfg).map(|(o, _)| o.into()),
+        "omn" | "manchester" => read_omn(&mut reader, cfg).map(|(o, _): (SetOntology<RcStr>, _)| o),
         other => {
             return Err(ParseError::new_err(format!(
-                "unknown format `{other}` — expected one of: ofn, owx, rdf-xml"
+                "unknown format `{other}` — expected one of: ofn, owx, rdf-xml, omn"
             )));
         }
     };

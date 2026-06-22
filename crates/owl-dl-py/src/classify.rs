@@ -91,7 +91,8 @@ impl PyClassification {
 }
 
 /// `rustdl.classify(path)` — classify the ontology at `path`.
-/// Format auto-detected from the file extension.
+/// Format auto-detected from the file extension
+/// (`.ofn` | `.owx` | `.owl` | `.rdf` | `.omn`).
 #[pyfunction]
 #[pyo3(signature = (path, *, per_pair_timeout_ms=1000, saturation_only=false))]
 pub(crate) fn classify(
@@ -104,6 +105,7 @@ pub(crate) fn classify(
 }
 
 /// `rustdl.classify_bytes(data, format="ofn")` — same but from bytes.
+/// `format` is one of `"ofn"`, `"owx"`, `"rdf-xml"`, `"omn"`.
 #[pyfunction]
 #[pyo3(signature = (data, *, format, per_pair_timeout_ms=1000, saturation_only=false))]
 pub(crate) fn classify_bytes(

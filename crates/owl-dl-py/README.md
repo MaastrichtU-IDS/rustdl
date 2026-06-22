@@ -20,6 +20,11 @@ Wheels are published for CPython 3.10+ on Linux (x86_64, aarch64), macOS
 
 ## Quick start
 
+> Prefer a guided walkthrough? See
+> [**Debugging an ontology with rustdl**](https://github.com/MaastrichtU-IDS/rustdl/blob/main/docs/python-ontology-qa.md)
+> — an end-to-end QA tutorial (classify → `debug()` → justify/repair → fix → read
+> inferred facts).
+
 ```python
 import rustdl
 
@@ -30,7 +35,7 @@ import rustdl
 from rustdl.examples import pizza, PIZZA_NS, SULO_NS
 
 # Classify. Format is auto-detected from the extension:
-# .ofn (OWL Functional), .owx (OWL/XML), .rdf / .owl (RDF/XML).
+# .ofn (OWL Functional), .owx (OWL/XML), .rdf / .owl (RDF/XML), .omn (Manchester).
 result = rustdl.classify(pizza())
 
 print(f"{len(result.classes)} classes, {len(result.unsatisfiable)} unsatisfiable, "

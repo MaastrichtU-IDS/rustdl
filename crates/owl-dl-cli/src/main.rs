@@ -19,6 +19,7 @@ use horned_owl::curie::PrefixMapping;
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::io::omn::AsManchester;
+use horned_owl::io::omn::reader::read as read_omn;
 use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::io::rdf::reader::read as read_rdf;
 use horned_owl::model::{AnnotationSubject, AnnotationValue, Component, RcStr};
@@ -76,7 +77,7 @@ enum Command {
     },
     /// Compute the full class hierarchy of the ontology.
     Classify {
-        /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf —
+        /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf / .omn —
         /// format auto-detected from the extension).
         file: PathBuf,
         /// Per-pair tableau timeout in milliseconds; `0` = unbounded.
@@ -245,7 +246,7 @@ enum Command {
     },
     /// Suggest minimal axiom removals to break an unwanted entailment.
     Repair {
-        /// Path to the ontology (.ofn / .owx / .owl / .rdf).
+        /// Path to the ontology (.ofn / .owx / .owl / .rdf / .omn).
         file: PathBuf,
         /// Query (same forms as `justify`): `unsat C` | `subclass S T` |
         /// `inconsistent` | `instance I C` | … (see `justify --help`).
@@ -265,7 +266,7 @@ enum Command {
     /// For SROIQ entailments (tableau-only), prints the axiom-level
     /// justification with a note that step proofs are unavailable.
     Prove {
-        /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf).
+        /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf / .omn).
         file: PathBuf,
         /// Full IRI of the sub-class.
         sub: String,
@@ -280,7 +281,7 @@ enum Command {
     /// (genuine causes) and DERIVED (collateral), justify the roots, and on an
     /// inconsistent ontology report the responsible axioms.
     Diagnose {
-        /// Path to the ontology (.ofn / .owx / .owl / .rdf).
+        /// Path to the ontology (.ofn / .owx / .owl / .rdf / .omn).
         file: PathBuf,
         /// Print ALL minimal justifications per root (capped by --max), not just one.
         #[arg(long)]
@@ -295,7 +296,7 @@ enum Command {
     /// Generate a self-contained HTML debugging report (consistency, root/derived
     /// unsatisfiable classes, justifications, and repair suggestions).
     Report {
-        /// Path to the ontology (.ofn / .owx / .owl / .rdf).
+        /// Path to the ontology (.ofn / .owx / .owl / .rdf / .omn).
         file: PathBuf,
         /// Write the HTML to this file (default: stdout).
         #[arg(short, long)]
@@ -346,7 +347,7 @@ enum Command {
     },
 }
 
-/// The three ontology serializations the CLI can read.
+/// The ontology serializations the CLI can read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OntFormat {
     /// OWL Functional Syntax (`.ofn`).
@@ -355,6 +356,8 @@ enum OntFormat {
     Owx,
     /// RDF/XML (`.owl`, `.rdf`).
     RdfXml,
+    /// OWL Manchester Syntax (`.omn`).
+    Omn,
 }
 
 /// Detect the ontology serialization from a content sniff, falling back
@@ -382,6 +385,21 @@ fn detect_format(src: &str, ext: Option<&str>) -> OntFormat {
         return OntFormat::Ofn;
     }
 
+    // OWL Manchester Syntax uses colon-form keywords — `Prefix:` /
+    // `Ontology:` document headers or a top-level frame keyword. This is
+    // unambiguous against OFN (which uses the paren form `Prefix(`).
+    if first.starts_with("Prefix:")
+        || first.starts_with("Ontology:")
+        || first.starts_with("Class:")
+        || first.starts_with("ObjectProperty:")
+        || first.starts_with("DataProperty:")
+        || first.starts_with("AnnotationProperty:")
+        || first.starts_with("Individual:")
+        || first.starts_with("Datatype:")
+    {
+        return OntFormat::Omn;
+    }
+
     // XML family: distinguish OWL/XML (`<Ontology>` root) from RDF/XML
     // (`<rdf:RDF>` root) by scanning a short prefix; fall back to the
     // extension for ambiguous XML.
@@ -404,6 +422,7 @@ fn detect_format(src: &str, ext: Option<&str>) -> OntFormat {
     match ext {
         Some("owx") => OntFormat::Owx,
         Some("owl" | "rdf") => OntFormat::RdfXml,
+        Some("omn") => OntFormat::Omn,
         _ => OntFormat::Ofn,
     }
 }
@@ -433,6 +452,9 @@ fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
         OntFormat::Ofn => read_ofn(&mut reader, cfg)
             .map(|(o, _)| o)
             .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display()))?,
+        OntFormat::Omn => read_omn(&mut reader, cfg)
+            .map(|(o, _)| o)
+            .map_err(|e| anyhow::anyhow!("parsing Manchester ontology {}: {e}", path.display()))?,
     };
     Ok(ontology)
 }
@@ -459,6 +481,8 @@ fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)>
             .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display())),
         OntFormat::Ofn => read_ofn(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display())),
+        OntFormat::Omn => read_omn(&mut reader, cfg)
+            .map_err(|e| anyhow::anyhow!("parsing Manchester ontology {}: {e}", path.display())),
     }
 }
 
@@ -1502,7 +1526,63 @@ mod format_detect_tests {
         let src = "garbage that is neither";
         assert_eq!(detect_format(src, Some("owx")), OntFormat::Owx);
         assert_eq!(detect_format(src, Some("rdf")), OntFormat::RdfXml);
+        assert_eq!(detect_format(src, Some("omn")), OntFormat::Omn);
         assert_eq!(detect_format(src, None), OntFormat::Ofn);
+    }
+
+    #[test]
+    fn manchester_prefix_header_is_omn() {
+        // Manchester uses the colon form `Prefix:` — distinct from OFN's
+        // paren form `Prefix(` — so content wins even with a misleading ext.
+        let src = "Prefix: : <urn:pizza#>\nOntology: <urn:pizza>\nClass: Pizza";
+        assert_eq!(detect_format(src, Some("omn")), OntFormat::Omn);
+        assert_eq!(detect_format(src, Some("ofn")), OntFormat::Omn);
+    }
+
+    #[test]
+    fn manchester_bare_class_frame_is_omn() {
+        // A Manchester document may open directly on a frame keyword.
+        let src = "# header\n\nClass: Pizza\n    SubClassOf: Food";
+        assert_eq!(detect_format(src, Some("omn")), OntFormat::Omn);
+    }
+
+    #[test]
+    fn ofn_paren_prefix_not_confused_with_manchester() {
+        // Regression: the OFN paren form must still win over the Manchester
+        // colon sniff (the OFN check runs first and the forms don't collide).
+        let src = "Prefix(:=<urn:#>)\nOntology()";
+        assert_eq!(detect_format(src, Some("omn")), OntFormat::Ofn);
+    }
+}
+
+#[cfg(test)]
+mod manchester_parse_tests {
+    use super::parse_ofn;
+    use horned_owl::model::Component;
+    use std::io::Write;
+
+    /// The Manchester reader (wired via `OntFormat::Omn`) actually parses a
+    /// `.omn` file end-to-end through `parse_ofn` — a content-sniffed
+    /// Manchester source yields the expected `SubClassOf` axiom.
+    #[test]
+    fn parses_manchester_subclass_axiom() {
+        let path = std::env::temp_dir().join("rustdl_omn_parse_subclass_test.omn");
+        let mut f = std::fs::File::create(&path).expect("create temp .omn");
+        write!(
+            f,
+            "Prefix: : <urn:p#>\nOntology: <urn:p>\nClass: Food\nClass: Pizza\n    SubClassOf: Food\n"
+        )
+        .expect("write temp .omn");
+        drop(f);
+        let onto = parse_ofn(&path).expect("parse Manchester ontology");
+        let has_subclass = onto
+            .iter()
+            .any(|ac| matches!(ac.component, Component::SubClassOf(_)));
+        std::fs::remove_file(&path).ok();
+        assert!(
+            has_subclass,
+            "expected a SubClassOf axiom parsed from the Manchester source"
+        );
     }
 }
 

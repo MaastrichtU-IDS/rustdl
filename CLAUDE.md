@@ -556,6 +556,15 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   roots/derived + per-root justification + repairs); presentation-only over the
   shipped reasoner output, read-only, no external resources. See
   `docs/superpowers/specs/2026-06-21-html-report-design.md`.
+  **Manchester (`.omn`) input** is wired (2026-06-22): the CLI (`detect_format`
+  content-sniff: Manchester's colon-form `Prefix:`/`Class:`/… vs OFN's paren
+  `Prefix(`; + extension fallback) and Python (`load.rs` extension /
+  `classify_bytes(format="omn"|"manchester")`) both accept `.omn`, routing to
+  `horned_owl::io::omn::reader::read` (the conformance-tested reader in the
+  **pinned** fork rev — no dependency on the upstream PR merging). Front-end only,
+  no engine change, FP=0 structurally untouched; rustdl now has symmetric
+  Manchester I/O (it already renders explanations in Manchester). See
+  `docs/superpowers/specs/2026-06-22-manchester-input-design.md`.
 
 ## Soundness contract (important)
 

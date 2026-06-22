@@ -92,7 +92,7 @@ pip install rustdl                                                     # Python 
 
 ```python
 import rustdl
-result = rustdl.classify("ontology.ofn")   # OFN / OWX / RDF-XML (auto-detected)
+result = rustdl.classify("ontology.ofn")   # OFN / OWX / RDF-XML / Manchester (.omn) — auto-detected
 print(f"{len(result.classes)} classes; {len(result.unsatisfiable)} unsat")
 print(result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup"))
 ok = rustdl.is_consistent("ontology.ofn")
@@ -103,6 +103,10 @@ sub_dat = rustdl.materialize_inferred_subdataproperty_axioms("ontology.ofn")    
 succ = rustdl.materialize_existential_successors("ontology.ofn")  # entailed exists-successors (blank-node witnesses)
 report = rustdl.debug("ontology.ofn")   # consistency + root/derived unsat + justifications + repairs
 ```
+
+New to the Python API? Walk through
+[**Debugging an ontology with rustdl**](docs/python-ontology-qa.md) — an end-to-end
+QA tutorial (classify → `debug()` → justify/repair → fix → read inferred facts).
 
 ## Build & test
 

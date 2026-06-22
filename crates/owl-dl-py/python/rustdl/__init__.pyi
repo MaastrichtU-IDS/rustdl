@@ -97,13 +97,15 @@ class UnknownClassError(RustdlError):
 def classify(
     path: str, *, per_pair_timeout_ms: int = 1000, saturation_only: bool = False
 ) -> Classification:
-    """Classify the ontology at `path` (format auto-detected)."""
+    """Classify the ontology at `path` (format auto-detected from the
+    extension: ``.ofn`` | ``.owx`` | ``.owl`` | ``.rdf`` | ``.omn``)."""
     ...
 
 def classify_bytes(
     data: bytes, *, format: str, per_pair_timeout_ms: int = 1000, saturation_only: bool = False
 ) -> Classification:
-    """Like `classify`, from in-memory bytes with explicit `format`."""
+    """Like `classify`, from in-memory bytes with explicit `format`
+    (one of ``"ofn"``, ``"owx"``, ``"rdf-xml"``, ``"omn"``)."""
     ...
 
 def is_consistent(path: str) -> bool:

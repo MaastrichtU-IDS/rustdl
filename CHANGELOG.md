@@ -4,6 +4,19 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Manchester syntax (`.omn`) input.** rustdl now *reads* OWL Manchester syntax,
+  not just writes it — `classify`/`debug`/`diagnose`/`justify`/`repair`/`report`
+  accept `.omn` files (CLI auto-detects by content sniff + extension; Python
+  auto-detects by extension, or `classify_bytes(data, format="omn")`). Front-end
+  only — no engine change, FP=0 structurally untouched. rustdl already rendered
+  explanations in Manchester; input completes the symmetry. The reader is the
+  conformance-tested `horned_owl::io::omn::reader` from the pinned fork rev (no
+  dependency on the upstream PR merging).
+
 ## [0.3.10] — 2026-06-21
 
 > Note: the changelog was not maintained for 0.3.2–0.3.9; this entry covers the

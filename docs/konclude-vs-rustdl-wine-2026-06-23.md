@@ -1,5 +1,13 @@
 # How Konclude classifies wine in ~200ms vs rustdl's DNF — instrumentation findings (2026-06-23)
 
+> **CORRECTION (2026-06-23, from the SP0 spike — `docs/sp0-saturation-spike-results-2026-06-23.md`):**
+> §6 below attributed wine's per-pair cost to the nominal value-partitions. That is WRONG.
+> A cheap construct-ablation probe showed removing value-partitions alone (or cardinality
+> alone, or ∀ alone) leaves the matched test DNF; only removing **all three (∀ + ≤n +
+> nominal) jointly** collapses it to EL-instant. Wine's cost is their **joint interaction**,
+> not value-partitions. Consequence: there is no cheap value-partition on-ramp — a saturation
+> that helps wine must soundly cover the joint ∀+≤n+nominal structure (the full hard build).
+
 Goal: understand *mechanistically* why Konclude is ~10,000× faster than rustdl on wine
 (SHOIN, nominal- + disjointness-heavy), and what rustdl does differently. No Konclude
 source available (native binary v0.7.0-1138 from `konclude/konclude:latest`); "instrumented"

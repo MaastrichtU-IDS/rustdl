@@ -4,21 +4,31 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.12] — 2026-06-22
 
 ### Performance
 
-- **Hyperresolution matcher allocation reduction.** `SmallVec` for the hot-loop
-  scratch in the wedge's clause matcher (`hyper.rs`): the per-call / per-recursion
-  buffers in `match_body` / `enumerate_matches` (`role_atoms`, `other_classes`,
-  `targets`), the `Binding` type itself (kills the per-match `clone`), and
-  `eval_order`'s three scratch vectors. Clause bodies and per-node match sets are
-  small, so these now stay inline instead of heap-allocating in the wedge's hot
-  loop. Cumulatively ~5% faster on wedge-heavy SROIQ classification (sio, ore-15516
-  ~−5.5%; some onts more), flat on EL (routes to the saturator, untouched). Sound
-  and complete-preserving by construction (changes allocation, not computation) —
-  closures byte-identical corpus-wide; profiling confirmed allocator self-time on
-  the wedge hot path dropped from ~35% to ~22%.
+Three FP-safe constant-factor wins in the hypertableau **wedge** matcher hot loop
+(found by profiling; each sound and complete-preserving — closures **byte-identical
+corpus-wide**, verified across the whole arc):
+
+- **Matcher allocation reduction (`SmallVec`).** The per-call / per-recursion scratch
+  in the wedge's clause matcher (`hyper.rs`) — `match_body` / `enumerate_matches`
+  buffers (`role_atoms`, `other_classes`, `targets`), the `Binding` type itself (kills
+  the per-match `clone`), and `eval_order`'s scratch — now stays inline instead of
+  heap-allocating. Allocator self-time on the wedge hot path dropped from ~35% to ~1%.
+- **Linear-scan label membership.** `HyperNode::has` was a binary search over a sorted
+  label slice; profiling showed nodes carry only ~5 labels over a universe of hundreds
+  to thousands, so the binary search was mostly branch-misprediction. Replaced with a
+  branch-predictable linear scan + early-exit (labels stay sorted, same result).
+
+Cumulative effect (vs the pre-arc baseline): **~10–19% faster on out-of-EL SROIQ
+classification** (ore-10908 −18.6%, sio −13.9%, ore-15516 −13.2%) and **~2× on the
+matcher-bound `family` inconsistency case** (125s → 63s, verified). Flat on EL
+ontologies (they route to the saturator, untouched). A `FixedBitSet` label
+representation was scoped and rejected by a profiling study (a dense per-node bitset
+would bloat the wedge's frequent node-clones 2–65× on sparse-wide nodes — net-negative;
+see `docs/wedge-label-bitset-p0-results.md`).
 
 ## [0.3.11] — 2026-06-22
 
@@ -37,6 +47,7 @@ All notable changes to rustdl are documented here. Format is based on
   fix → read inferred facts), fully Manchester-faced and CI-guarded against rot.
   Linked from the main and PyPI READMEs.
 
+[0.3.12]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.3.12
 [0.3.11]: https://github.com/MaastrichtU-IDS/rustdl/releases/tag/v0.3.11
 
 ## [0.3.10] — 2026-06-21

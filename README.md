@@ -6,7 +6,7 @@ consequence-based **saturation** engine handles the EL-ish fragment, a
 orchestrator picks per query. Parsing and the OWL model come from
 [`horned-owl`](https://github.com/phillord/horned-owl).
 
-## Status (v0.3.11)
+## Status (v0.3.12)
 
 A working classifier, consistency checker, and instance reasoner for SROIQ(D)
 with first-class data properties. The defining property is **soundness**: every

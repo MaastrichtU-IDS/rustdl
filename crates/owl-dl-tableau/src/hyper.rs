@@ -28,6 +28,7 @@
 use owl_dl_core::RoleHierarchy;
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role};
+use smallvec::SmallVec;
 use std::time::Instant;
 
 /// A match binding: the body's non-`X` successor variables mapped to
@@ -2272,8 +2273,11 @@ impl<'c> HyperEngine<'c> {
     /// or a role with no qualifying successor). This `None`-vs-empty
     /// distinction is the unsupported-vs-no-match boundary.
     fn match_body(&self, ci: usize, node: HNode) -> Option<Vec<Binding>> {
-        let mut role_atoms: Vec<(Role, Var, Var)> = Vec::new();
-        let mut other_classes: Vec<(ClassId, Var)> = Vec::new();
+        // Clause bodies are tiny (a handful of atoms), so these per-call
+        // scratch vectors stay inline — no heap allocation in the common
+        // case (this matcher is the hyperresolution hot loop).
+        let mut role_atoms: SmallVec<[(Role, Var, Var); 4]> = SmallVec::new();
+        let mut other_classes: SmallVec<[(ClassId, Var); 4]> = SmallVec::new();
         let clause = &self.clauses[ci];
         for atom in &clause.body {
             match atom {
@@ -2335,7 +2339,11 @@ impl<'c> HyperEngine<'c> {
         };
         let hier = self.sub_roles.as_ref();
         let src_data = &self.nodes[src.index()];
-        let mut targets: Vec<HNode> = src_data
+        // Innermost recursive hot loop: most nodes have few role-matching
+        // successors, so keep the match set inline to avoid a heap
+        // allocation per recursion frame (profiling: allocator churn here
+        // dominated self-time on wedge-heavy classification).
+        let mut targets: SmallVec<[HNode; 8]> = src_data
             .edges
             .iter()
             .filter(|(er, _)| role_matches(*er, role, hier))

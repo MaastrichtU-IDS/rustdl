@@ -4,6 +4,18 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+
+- **Hyperresolution matcher allocation reduction.** `SmallVec` for the per-call /
+  per-recursion-frame scratch vectors in the wedge's clause matcher (`match_body`,
+  `enumerate_matches` in `hyper.rs`) — clause bodies and per-node match sets are
+  small, so they now stay inline instead of heap-allocating in the hot loop.
+  ~2–5% faster on wedge-heavy SROIQ classification (EL routes to the saturator and
+  is unaffected); sound and complete-preserving by construction (changes allocation,
+  not computation) — closures byte-identical corpus-wide.
+
 ## [0.3.11] — 2026-06-22
 
 ### Added

@@ -117,3 +117,46 @@ jobs:
         with:
           packages-dir: dist
           # No password / API token — PyPI trusted publisher OIDC
+
+  github-release:
+    name: GitHub Release
+    needs: [build-wheels, build-sdist, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: 'wheels-*'
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
+      - name: Extract release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Pull the `## [<version>] …` section, stopping at the next
+          # `## [` heading and dropping the `[x.y.z]:` link-reference line.
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
+            flag && /^## \[/         { flag = 0 }
+            flag && /^\[[0-9]+\.[0-9]+\.[0-9]+\]:/ { next }
+            flag                     { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}. See CHANGELOG.md for details." > release-notes.md
+          fi
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="rustdl ${GITHUB_REF_NAME#v}"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --title "$title" --notes-file release-notes.md
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "$title" --notes-file release-notes.md dist/*
+          fi

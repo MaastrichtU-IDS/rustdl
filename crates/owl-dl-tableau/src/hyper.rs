@@ -208,9 +208,19 @@ struct HyperNode {
 
 impl HyperNode {
     fn has(&self, c: ClassId) -> bool {
-        self.labels
-            .binary_search_by_key(&c.index(), |l| l.index())
-            .is_ok()
+        // Labels are sorted, but the per-node set is tiny (profiled avg
+        // ~5, max ~80), so a branch-predictable linear scan with an
+        // early exit on overshoot beats binary search's mispredicted
+        // `select_unpredictable` here. Same result (membership).
+        for l in &self.labels {
+            if l.index() == c.index() {
+                return true;
+            }
+            if l.index() > c.index() {
+                return false;
+            }
+        }
+        false
     }
 
     /// Insert a class label with its backjumping dep-set; returns true

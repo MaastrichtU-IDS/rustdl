@@ -28,7 +28,7 @@
 use owl_dl_core::RoleHierarchy;
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role};
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 use std::time::Instant;
 
 /// A match binding: the body's non-`X` successor variables mapped to
@@ -37,7 +37,7 @@ use std::time::Instant;
 /// rooted at `X` (each non-`X` var is the target of exactly one role
 /// atom whose source is already bound), so a binding is one complete
 /// homomorphism of the body's variable-tree into the graph.
-type Binding = Vec<(Var, HNode)>;
+type Binding = SmallVec<[(Var, HNode); 4]>;
 
 /// Defensive cap on the number of body variables `match_body` will
 /// bind; bodies above it are treated as unsupported (deferred). Real
@@ -2306,7 +2306,7 @@ impl<'c> HyperEngine<'c> {
         };
 
         let mut out = Vec::new();
-        let mut binding: Binding = Vec::new();
+        let mut binding: Binding = SmallVec::new();
         self.enumerate_matches(node, &plan, 0, &mut binding, &mut out);
         Some(out)
     }
@@ -2774,10 +2774,13 @@ struct MatchPlan<'p> {
 /// it (BFS from `X`). `None` if the variables don't form a tree rooted
 /// at `X` (unbindable source, duplicate target, or more than
 /// [`MAX_BODY_VARS`] vars) — an unsupported shape.
-fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Option<Vec<usize>> {
-    let mut bound: Vec<Var> = vec![X];
-    let mut order = Vec::with_capacity(role_atoms.len());
-    let mut used = vec![false; role_atoms.len()];
+fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Option<SmallVec<[usize; 8]>> {
+    // All three scratch buffers stay inline: bodies have ≤ MAX_BODY_VARS
+    // vars and a handful of role atoms, so this allocates nothing in the
+    // common case (called once per `match_body`, a hot path).
+    let mut bound: SmallVec<[Var; 8]> = smallvec![X];
+    let mut order: SmallVec<[usize; 8]> = SmallVec::with_capacity(role_atoms.len());
+    let mut used: SmallVec<[bool; 8]> = SmallVec::from_elem(false, role_atoms.len());
     while order.len() < role_atoms.len() {
         let mut progressed = false;
         for (i, (_, u, v)) in role_atoms.iter().enumerate() {

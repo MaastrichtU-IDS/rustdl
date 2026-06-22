@@ -8,13 +8,17 @@ All notable changes to rustdl are documented here. Format is based on
 
 ### Performance
 
-- **Hyperresolution matcher allocation reduction.** `SmallVec` for the per-call /
-  per-recursion-frame scratch vectors in the wedge's clause matcher (`match_body`,
-  `enumerate_matches` in `hyper.rs`) — clause bodies and per-node match sets are
-  small, so they now stay inline instead of heap-allocating in the hot loop.
-  ~2–5% faster on wedge-heavy SROIQ classification (EL routes to the saturator and
-  is unaffected); sound and complete-preserving by construction (changes allocation,
-  not computation) — closures byte-identical corpus-wide.
+- **Hyperresolution matcher allocation reduction.** `SmallVec` for the hot-loop
+  scratch in the wedge's clause matcher (`hyper.rs`): the per-call / per-recursion
+  buffers in `match_body` / `enumerate_matches` (`role_atoms`, `other_classes`,
+  `targets`), the `Binding` type itself (kills the per-match `clone`), and
+  `eval_order`'s three scratch vectors. Clause bodies and per-node match sets are
+  small, so these now stay inline instead of heap-allocating in the wedge's hot
+  loop. Cumulatively ~5% faster on wedge-heavy SROIQ classification (sio, ore-15516
+  ~−5.5%; some onts more), flat on EL (routes to the saturator, untouched). Sound
+  and complete-preserving by construction (changes allocation, not computation) —
+  closures byte-identical corpus-wide; profiling confirmed allocator self-time on
+  the wedge hot path dropped from ~35% to ~22%.
 
 ## [0.3.11] — 2026-06-22
 

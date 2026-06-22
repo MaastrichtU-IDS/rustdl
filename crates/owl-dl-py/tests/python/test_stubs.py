@@ -14,7 +14,11 @@ def _stub_declared_names() -> set[str]:
             names.add(node.name)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
-        elif isinstance(node, ast.ImportFrom):
+        elif isinstance(node, ast.ImportFrom) and (node.level or 0) > 0:
+            # Only relative imports re-export public API (e.g.
+            # `from . import examples`). Absolute stdlib/typing imports
+            # (`from collections.abc import Mapping`, `from typing import
+            # Optional`) are annotation helpers, not part of `rustdl`'s surface.
             for a in node.names:
                 names.add(a.asname or a.name)
     return names

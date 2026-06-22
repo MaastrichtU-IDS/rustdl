@@ -26,8 +26,11 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`), build+test on
 linux/macos/windows, and `cargo-deny`. `RUSTFLAGS: -D warnings` is set in CI, so
 **any warning fails the build** — clippy `pedantic` is on workspace-wide (with a
 curated allow-list in the root `Cargo.toml`), and `unwrap_used`/`dbg_macro` are
-warn-level. The push trigger is currently disabled (billing); PRs and
-`workflow_dispatch` still run CI.
+warn-level. Push (to `main`), PRs, and `workflow_dispatch` all trigger CI
+(the 2026-05 billing freeze is resolved). The Python suite
+(`.github/workflows/python-ci.yml`) likewise runs on push as of 2026-06-22 —
+re-enabled after a `test_stubs` regression reached `main` and surfaced only in
+the v0.3.11 release wheel build.
 
 Run the reasoner / benchmarks:
 ```sh

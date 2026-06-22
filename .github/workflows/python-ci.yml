@@ -1,22 +1,22 @@
 name: Python CI
 
 on:
-  # push trigger disabled 2026-05-29 until the org Actions billing is
-  # restored — every recent push has failed with "the job was not
-  # started because recent account payments have failed or your
-  # spending limit needs to be increased." PRs and manual dispatch
-  # still trigger CI normally. Mirror of .github/workflows/ci.yml.
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'crates/owl-dl-py/**'
-  #     - 'crates/owl-dl-core/**'
-  #     - 'crates/owl-dl-saturation/**'
-  #     - 'crates/owl-dl-tableau/**'
-  #     - 'crates/owl-dl-datatypes/**'
-  #     - 'crates/owl-dl-reasoner/**'
-  #     - 'Cargo.toml'
-  #     - '.github/workflows/python-ci.yml'
+  # push trigger re-enabled 2026-06-22 — the Python suite must run on
+  # merges to main, not just PRs/dispatch (a stub-test regression slipped
+  # to main and was first caught only by the v0.3.11 release wheel build,
+  # because this trigger was off). Path-filtered so it fires only when the
+  # Python package or its Rust deps change.
+  push:
+    branches: [main]
+    paths:
+      - 'crates/owl-dl-py/**'
+      - 'crates/owl-dl-core/**'
+      - 'crates/owl-dl-saturation/**'
+      - 'crates/owl-dl-tableau/**'
+      - 'crates/owl-dl-datatypes/**'
+      - 'crates/owl-dl-reasoner/**'
+      - 'Cargo.toml'
+      - '.github/workflows/python-ci.yml'
   pull_request:
     paths:
       - 'crates/owl-dl-py/**'

@@ -221,6 +221,10 @@ struct WorklistEngine {
     /// tracking which non-terminated on 3+ sub-property fan-in (see
     /// T4.5 commit message + docs/phase2a-results.md when written).
     merged_atom_sets: HashMap<(ClassId, RoleId), std::collections::BTreeSet<ClassId>>,
+    /// SP1-increment-2: per-`(sub, R, C)` accumulated atom set of the
+    /// `R`-witnesses provably `⊑ C`, merged under a qualified `≤1 R.C`.
+    merged_atom_sets_qualified:
+        HashMap<(ClassId, RoleId, ClassId), std::collections::BTreeSet<ClassId>>,
     /// Atomic-content map for every allocated synthetic (static AND
     /// runtime). For a synthetic `F` with body `{a, b, ...}` where each
     /// operand may itself be a synthetic, `atomic_content_of[F]` is the
@@ -325,6 +329,7 @@ impl WorklistEngine {
             num_total_classes,
             tseitin_runtime: tseitin,
             merged_atom_sets: HashMap::new(),
+            merged_atom_sets_qualified: HashMap::new(),
             atomic_content_of,
             phase2d_facts_inherited: 0,
             phase2c_sub_role_propagations: 0,
@@ -1622,6 +1627,42 @@ impl WorklistEngine {
                 }
             }
         }
+
+        // SP1-increment-2: qualified `≤1 R.C` witness merge (exact role).
+        // If `X ⊑ ≤1 R.C` and this fact `(X, R, T)` has `T ⊑ C` (`C` in the
+        // target's atomic content), accumulate `T`'s atom set into the
+        // per-`(X,R,C)` merged set; the second C-witness grows it and a merged
+        // synthetic `(X, R, T_merged)` is emitted. Sound: `≤1 R.C` forces all
+        // C-typed R-witnesses to coincide (the qualified analog of the
+        // functional-role merge; ONLY witnesses provably `⊑ C` are merged).
+        if let Some(cs) = self.rules.max1_qualified.get(&(fact.sub, fact.role)) {
+            let cs = cs.clone();
+            let content = self.atomic_content_of_or_self(fact.target);
+            for c in cs {
+                if !content.contains(&c) {
+                    // Witness not provably a `C`-successor — merging would be
+                    // unsound (it may be a distinct non-`C` successor).
+                    continue;
+                }
+                let key = (fact.sub, fact.role, c);
+                let prev = self.merged_atom_sets_qualified.entry(key).or_default();
+                let was_first = prev.is_empty();
+                let grew = !content.is_subset(prev);
+                if grew {
+                    prev.extend(&content);
+                }
+                if was_first || !grew {
+                    continue;
+                }
+                let body: Vec<ClassId> = prev.iter().copied().collect();
+                let synthetic = self.introduce_runtime_synthetic(body);
+                self.push_fact(ExistentialFact {
+                    sub: fact.sub,
+                    role: fact.role,
+                    target: synthetic,
+                });
+            }
+        }
     }
 
     /// Fire all rules triggered by `c` becoming unsatisfiable.
@@ -1809,6 +1850,10 @@ struct ElRules {
     /// Pairwise disjoint atomic-class pairs, decomposed from n-ary
     /// `DisjointClasses` axioms. Read as `A ⊓ B ⊑ ⊥`.
     disjoint_pairs: Vec<(ClassId, ClassId)>,
+    /// SP1-increment-2: told qualified `≤1 R.C` per `(sub, R)` → the list of
+    /// qualifier classes `C`. Drives the qualified-`≤1` witness merge (only
+    /// witnesses provably `⊑ C` coincide). Exact role only (sound under-approx).
+    max1_qualified: std::collections::HashMap<(ClassId, RoleId), Vec<ClassId>>,
     /// Nominal-reasoning support (wine region cluster). For a
     /// **transitive** role `R` and a nominal-key class `NomKey(a)`
     /// (synthetic stand-in for the singleton `{a}`),
@@ -2718,6 +2763,15 @@ fn lower_sub_class_of(
                     sup: key,
                 });
             }
+            // SP1-increment-2: told qualified `≤1 R.C` → record (sub,R)→C so the
+            // qualified-≤1 merge can coincide the C-witnesses at fact time.
+            for (role, c) in qualified_max1_operands_on_right(sup, pool) {
+                rules
+                    .max1_qualified
+                    .entry((*sub_id, role))
+                    .or_default()
+                    .push(c);
+            }
             // Cluster-B lever: a told `∀R.OneOf(S)` (top-level or And operand)
             // seeds `sub ⊑ ForallKey(R,S)` — the same opaque key a defined
             // class's `∀R.OneOf(S)` conjunct lowers to. Sound: `C ⊑ ∀R.OneOf(S)`
@@ -3273,6 +3327,25 @@ fn atomic_classes_with_existential_markers(
 /// under-approximation; qualified / inverse stay dropped). Mirrors the `Max`
 /// arm of `atomic_classes_with_existential_markers` so the seed key and the
 /// defined-class trigger key coincide.
+/// SP1-increment-2: qualified `≤1 R.C` with **atomic** filler `C` (NOT `Top`,
+/// which is the unqualified case), top-level or as an `And` operand. Forward
+/// (non-inverse) roles only. Returns `(R, C)` pairs.
+fn qualified_max1_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(RoleId, ClassId)> {
+    fn one(cid: ConceptId, pool: &ConceptPool) -> Option<(RoleId, ClassId)> {
+        if let ConceptExpr::Max(1, role, inner) = pool.get(cid)
+            && !role.is_inverse()
+            && let ConceptExpr::Atomic(filler) = pool.get(*inner)
+        {
+            return Some((role.role_id(), *filler));
+        }
+        None
+    }
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands.iter().filter_map(|&op| one(op, pool)).collect(),
+        _ => one(c, pool).into_iter().collect(),
+    }
+}
+
 fn unqualified_max_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(u32, RoleId)> {
     let one = |cid: ConceptId| -> Option<(u32, RoleId)> {
         match pool.get(cid) {
@@ -4763,6 +4836,47 @@ Ontology(<http://rustdl.test/forall/test>
             subsumers.is_unsatisfiable(x),
             "∀R.C + ∃R.D + disjoint(C,D) ⟹ X unsatisfiable — the ∀-propagation \
              rule must strengthen the ∃-witness to C⊓D and detect the clash"
+        );
+    }
+
+    /// SP1-increment-2 canary: qualified `≤1 R.C` merge.
+    /// `X ⊑ ≤1 R.C`, `X ⊑ ∃R.(C⊓A)`, `X ⊑ ∃R.(C⊓B)`, `disjoint(A,B)` ⟹ X ⊑ ⊥:
+    /// both ∃-witnesses are `C`, so `≤1 R.C` forces them to coincide → a single
+    /// successor `C⊓A⊓B`; `A`,`B` disjoint → unsat → X unsat. The saturator's
+    /// witness-merge is functional-role-only, so it misses the qualified case.
+    #[test]
+    fn qualified_max1_merge_witness_clash() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/max1/>)
+Ontology(<http://rustdl.test/max1/test>
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:A)) Declaration(Class(:B))
+    Declaration(ObjectProperty(:r))
+    SubClassOf(:X ObjectMaxCardinality(1 :r :C))
+    SubClassOf(:X ObjectSomeValuesFrom(:r ObjectIntersectionOf(:C :A)))
+    SubClassOf(:X ObjectSomeValuesFrom(:r ObjectIntersectionOf(:C :B)))
+    DisjointClasses(:A :B)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let x = internal
+            .vocabulary
+            .class_id("http://rustdl.test/max1/X")
+            .expect("X declared");
+        assert!(
+            subsumers.is_unsatisfiable(x),
+            "≤1 R.C + ∃R.(C⊓A) + ∃R.(C⊓B) + disjoint(A,B) ⟹ X unsat — qualified-≤1 \
+             merge must coincide the two C-witnesses and detect the A⊓B clash"
         );
     }
 

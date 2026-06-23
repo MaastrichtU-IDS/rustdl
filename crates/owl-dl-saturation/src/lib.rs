@@ -241,12 +241,31 @@ struct WorklistEngine {
     /// diagnostics; not consumed by the reasoner output.
     phase2c_sub_role_propagations: u64,
 
+    /// SP-B2a: per-disjunction state for the synthetic-conjunction forced-disjunct.
+    /// Each entry holds the class `C`, its atomic disjuncts `Dᵢ`, and the
+    /// `Sᵢ = C⊓Dᵢ` synthetics created at seed; `fired` guards re-forcing. The hook
+    /// in `process_unsat` recomputes survivors (disjuncts whose `Sᵢ` is not unsat)
+    /// when any `Sᵢ` becomes unsat — one survivor ⟹ force `C⊑Dₖ`, none ⟹ `C⊑⊥`.
+    /// Empty ⇒ no-op (EL/Horn corpus). Complements B1's cheaper told/derived-disjoint
+    /// check; catches deeper `C⊓Dᵢ` unsat (functional-merge, existential, domain, …).
+    b2_disjunctions: Vec<B2Disjunction>,
+    /// Reverse index: synthetic `Sᵢ` class id → its `b2_disjunctions` entry index.
+    b2_synth_to_disj: HashMap<ClassId, usize>,
+
     // --- Proof recording (zero-cost when off) ---
     /// Whether proof recording is active. When `false`, every proof-recording
     /// branch is skipped and `proof_trace` stays `None`.
     record_proofs: bool,
     /// The proof trace, populated only when `record_proofs` is `true`.
     proof_trace: Option<ProofTrace>,
+}
+
+/// SP-B2a per-disjunction state (see `WorklistEngine::b2_disjunctions`).
+struct B2Disjunction {
+    class: ClassId,
+    disjuncts: Box<[ClassId]>,
+    synthetics: Box<[ClassId]>,
+    fired: bool,
 }
 
 impl WorklistEngine {
@@ -328,6 +347,8 @@ impl WorklistEngine {
             atomic_content_of,
             phase2d_facts_inherited: 0,
             phase2c_sub_role_propagations: 0,
+            b2_disjunctions: Vec::new(),
+            b2_synth_to_disj: HashMap::new(),
             record_proofs,
             proof_trace,
         }
@@ -603,6 +624,36 @@ impl WorklistEngine {
                 };
                 if let Some(t) = self.proof_trace.as_mut() {
                     t.record(df, inf);
+                }
+            }
+        }
+        // SP-B2a: create `Sᵢ = C⊓Dᵢ` synthetics for each atomic disjunction (ingested
+        // by B1 into `disjunctions_by_class`) and register the reverse map. The
+        // fixpoint determines each `Sᵢ`'s satisfiability via the existing rules; the
+        // `process_unsat` hook forces the disjunction when an `Sᵢ` becomes unsat.
+        if !self.rules.disjunctions_by_class.is_empty() {
+            let disjunctions: Vec<(ClassId, Vec<Box<[ClassId]>>)> = self
+                .rules
+                .disjunctions_by_class
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            for (c, disjs) in disjunctions {
+                for disj in disjs {
+                    let synthetics: Vec<ClassId> = disj
+                        .iter()
+                        .map(|&di| self.introduce_runtime_synthetic(vec![c, di]))
+                        .collect();
+                    let idx = self.b2_disjunctions.len();
+                    for &s in &synthetics {
+                        self.b2_synth_to_disj.insert(s, idx);
+                    }
+                    self.b2_disjunctions.push(B2Disjunction {
+                        class: c,
+                        disjuncts: disj,
+                        synthetics: synthetics.into_boxed_slice(),
+                        fired: false,
+                    });
                 }
             }
         }
@@ -1715,6 +1766,36 @@ impl WorklistEngine {
                     }
                 }
                 self.enqueue_unsat(fact.sub);
+            }
+        }
+        // SP-B2a: if `c` is a `Sᵢ = C⊓Dᵢ` synthetic that just became unsat, recompute
+        // its disjunction's survivors (disjuncts whose synthetic is not unsat) and
+        // force. `c` is already flagged unsat above, so it counts as excluded here.
+        // Clone the entry's slices first to release the borrow before enqueuing.
+        if let Some(&di) = self.b2_synth_to_disj.get(&c)
+            && !self.b2_disjunctions[di].fired
+        {
+            let synth = self.b2_disjunctions[di].synthetics.clone();
+            let disjuncts = self.b2_disjunctions[di].disjuncts.clone();
+            let class = self.b2_disjunctions[di].class;
+            let mut surv: Option<ClassId> = None;
+            let mut count = 0u32;
+            for (k, &s) in synth.iter().enumerate() {
+                if !self.subsumers.is_unsatisfiable(s) {
+                    count += 1;
+                    surv = disjuncts.get(k).copied();
+                }
+            }
+            match (count, surv) {
+                (0, _) => {
+                    self.b2_disjunctions[di].fired = true;
+                    self.enqueue_unsat(class);
+                }
+                (1, Some(s)) => {
+                    self.b2_disjunctions[di].fired = true;
+                    self.enqueue_subsumer(class, s);
+                }
+                _ => {}
             }
         }
     }
@@ -4444,6 +4525,62 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !subs.is_unsatisfiable(class(&internal, "X")),
             "nominal ⊔ untouched: X satisfiable"
+        );
+    }
+
+    /// SP-B2a differentiator: forced-disjunct via a DEEP (non-disjoint-pair)
+    /// incompatibility. `X⊑A⊔B`, `A⊑∃r.P`, `X⊑∃r.Q`, functional `r`, `Disjoint(P,Q)`
+    /// ⟹ `X⊓A` is unsat via functional-merge (the single `r`-successor is `P⊓Q⊑⊥`),
+    /// so the `Sₐ=X⊓A` synthetic becomes unsat ⟹ force `X⊑B`. B1 cannot force this
+    /// (no subsumer of X is disjoint with A) — exactly what B2a's synthetic test adds.
+    #[test]
+    fn b2_forced_disjunct_via_deep_incompatibility() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    Declaration(Class(:P)) Declaration(Class(:Q))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :P))\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :Q))\n\
+    FunctionalObjectProperty(:r)\n\
+    DisjointClasses(:P :Q)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "B2a: X⊓A unsat via functional-merge ⟹ force X ⊑ B"
+        );
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "X")),
+            "X itself stays satisfiable (only A is excluded)"
+        );
+    }
+
+    /// SP-B2a: both disjuncts deeply incompatible ⟹ class unsat. As above but also
+    /// `B⊑∃r.P2`, `X⊑∃r.Q` functional, `Disjoint(P2,Q)` ⟹ X⊓A and X⊓B both unsat ⟹ X⊑⊥.
+    #[test]
+    fn b2_forced_to_bot_via_deep() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    Declaration(Class(:P)) Declaration(Class(:Q))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :P))\n\
+    SubClassOf(:B ObjectSomeValuesFrom(:r :P))\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :Q))\n\
+    FunctionalObjectProperty(:r)\n\
+    DisjointClasses(:P :Q)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.is_unsatisfiable(class(&internal, "X")),
+            "B2a: both X⊓A and X⊓B unsat ⟹ X ⊑ ⊥"
         );
     }
 

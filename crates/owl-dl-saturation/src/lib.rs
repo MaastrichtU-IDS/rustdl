@@ -4741,6 +4741,82 @@ Ontology(<http://rustdl.test/test>\n\
         );
     }
 
+    /// SP-B2c: union class. `Fruit ≡ NonSweetFruit ⊔ SweetFruit`, both ⊑ `EdibleThing`
+    /// ⟹ `Fruit ⊑ EdibleThing` (#1 common-subsumer) AND `NonSweetFruit ⊑ Fruit`,
+    /// `SweetFruit ⊑ Fruit` (#2 disjunct⊑union, equivalence-only).
+    #[test]
+    fn b2c_union_class_fruit() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Fruit)) Declaration(Class(:NonSweetFruit)) Declaration(Class(:SweetFruit)) Declaration(Class(:EdibleThing))\n\
+    EquivalentClasses(:Fruit ObjectUnionOf(:NonSweetFruit :SweetFruit))\n\
+    SubClassOf(:NonSweetFruit :EdibleThing)\n\
+    SubClassOf(:SweetFruit :EdibleThing)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "Fruit"), class(&internal, "EdibleThing")),
+            "#1: Fruit ⊑ EdibleThing"
+        );
+        assert!(
+            subs.contains(class(&internal, "NonSweetFruit"), class(&internal, "Fruit")),
+            "#2: NonSweetFruit ⊑ Fruit"
+        );
+        assert!(
+            subs.contains(class(&internal, "SweetFruit"), class(&internal, "Fruit")),
+            "#2: SweetFruit ⊑ Fruit"
+        );
+    }
+
+    /// SP-B2c × B2b combine: `NonSweetFruit ⊑ Fruit` (#2) + `ForallAtomicKey`
+    /// monotonicity ⟹ `NonSweetFruitCourse ⊑ FruitCourse`.
+    #[test]
+    fn b2c_union_course_combine() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Fruit)) Declaration(Class(:NonSweetFruit)) Declaration(Class(:SweetFruit))\n\
+    Declaration(Class(:MealCourse)) Declaration(Class(:FruitCourse)) Declaration(Class(:NonSweetFruitCourse))\n\
+    Declaration(ObjectProperty(:hasFood))\n\
+    EquivalentClasses(:Fruit ObjectUnionOf(:NonSweetFruit :SweetFruit))\n\
+    EquivalentClasses(:FruitCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :Fruit)))\n\
+    EquivalentClasses(:NonSweetFruitCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :NonSweetFruit)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(
+                class(&internal, "NonSweetFruitCourse"),
+                class(&internal, "FruitCourse")
+            ),
+            "B2c×B2b: NonSweetFruitCourse ⊑ FruitCourse"
+        );
+    }
+
+    /// SP-B2c negative control: #2 (disjunct⊑X) is EQUIVALENCE-ONLY. A plain
+    /// `SubClassOf(X, A⊔B)` must NOT yield `A⊑X`/`B⊑X` (unsound: `X⊑A⊔B` ⊬ `A⊑X`).
+    #[test]
+    fn b2c_subclassof_or_no_disjunct_to_x() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "A"), class(&internal, "X")),
+            "X⊑A⊔B must NOT give A⊑X"
+        );
+        assert!(
+            !subs.contains(class(&internal, "B"), class(&internal, "X")),
+            "X⊑A⊔B must NOT give B⊑X"
+        );
+    }
+
     /// Cluster-B canary, path (a) (wine residual-9, sugar pattern): a defined
     /// class with a `∀R.OneOf(S)` conjunct. `WhiteNonSweet ≡ White ⊓
     /// ∀hasSugar.{Dry,OffDry}`; a sub `C` that has `C ⊑ White` and inherits a

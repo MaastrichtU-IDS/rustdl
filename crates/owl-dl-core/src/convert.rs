@@ -2155,6 +2155,10 @@ pub fn convert_ontology<A: ForIRI>(
     // saturator a case-split it otherwise drops). Runs on the fully
     // populated IR.
     crate::disjunction_existential::derive_disjunction_existentials(&mut out);
+    // SP-A: forced-disjunct over atomic disjunctions. Runs AFTER
+    // derive_disjunction_existentials so it sees the common-subsumer axioms that
+    // pass adds (richer told tables ⟹ more forcings). Sound; atomic-only.
+    crate::approx_saturation::derive_forced_disjuncts(&mut out);
     // HF3: decompose role chains longer than 2 legs into a cascade of
     // 2-leg chains using fresh auxiliary roles, so both the wedge
     // clausifier (which only encodes 2-leg chains) and the main tableau

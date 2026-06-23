@@ -29,6 +29,7 @@ use owl_dl_core::RoleHierarchy;
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role};
 use smallvec::{SmallVec, smallvec};
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// A match binding: the body's non-`X` successor variables mapped to
@@ -354,6 +355,50 @@ pub enum HyperResult {
     Stalled,
 }
 
+/// Global tally of representative-completion cache hits/lookups across ALL
+/// engines in a process (the per-engine [`SearchStats::repr_cache_hits`] resets
+/// per decide; the reasoner builds one engine per probe, so this aggregate is
+/// how an end-to-end run reports the cache's real reuse). Pure instrumentation.
+pub static REPR_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static REPR_CACHE_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cross-pair representative-blocker cache (option 1 / Konclude representative
+/// cache), gated by `RUSTDL_REPR_BLOCK`. Holds **pair-signatures** (a node's
+/// labels + its parent's labels + incoming role — the HF2 double-blocking key)
+/// of nodes drawn from **confirmed-`Sat` completions**. A node whose pair-sig is
+/// cached is blockable: its required subtree was realised in a genuine model, so
+/// — under the same pairwise-blocking unravelling rustdl already trusts — it need
+/// not be re-expanded in a later pair's search. SOUND because only nodes from a
+/// clash-free model are inserted (never from a failing/partial branch); reuse is
+/// the established double-blocking argument with a persistent witness pool.
+/// Populated across all pairs of a classification so the cheap pairs seed
+/// satisfiable subtrees the expensive (pizza-class) pairs reuse.
+pub static REPR_BLOCK: std::sync::Mutex<Option<std::collections::HashSet<u64>>> =
+    std::sync::Mutex::new(None);
+static REPR_BLOCK_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enable the representative-blocker cache (no-op unless `RUSTDL_REPR_BLOCK` is
+/// set). Idempotent; safe to call per classification.
+pub fn repr_block_enable() {
+    if std::env::var_os("RUSTDL_REPR_BLOCK").is_some()
+        && let Ok(mut g) = REPR_BLOCK.lock()
+    {
+        if g.is_none() {
+            *g = Some(std::collections::HashSet::new());
+        }
+        REPR_BLOCK_ON.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// `(cached_pair_sigs, lookups)` for reporting, or `None` when disabled.
+#[must_use]
+pub fn repr_block_report() -> Option<usize> {
+    REPR_BLOCK
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(std::collections::HashSet::len))
+}
+
 /// Per-run search instrumentation, read after [`HyperEngine::decide`]
 /// to interpret a wall measurement: a `Sat` reached with
 /// `branches_taken == 0` was decided by pure Horn propagation and
@@ -397,6 +442,10 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// Representative-completion cache hits (`RUSTDL_REPR_CACHE`): branch frames
+    /// whose verdict was reused from [`HyperEngine::status_memo`] instead of
+    /// re-searched. Zero when the cache is disabled. See `completion_signature`.
+    pub repr_cache_hits: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -534,6 +583,27 @@ pub struct HyperEngine<'c> {
     /// construction; updated each time a window of [`DIV_WINDOW`]
     /// branches is consumed without triggering a Stalled.
     div_checkpoint: (u64, u64, usize),
+    /// Representative-completion status cache (Konclude principle, increment 2).
+    /// `Some` only when opted in via `RUSTDL_REPR_CACHE`; reset per [`decide`].
+    /// Maps a full-configuration signature ([`Self::completion_signature`]) to
+    /// the proven verdict (`true` = Sat, `false` = Unsat) of the sub-search from
+    /// that configuration. Within a single `decide`, two branch frames that reach
+    /// the byte-identical canonical-node configuration (labels + edges + `≤n`/`≥n`
+    /// + `≠`, modulo backjumping bookkeeping) have the same verdict, so the second
+    /// reuses the first's result instead of re-searching. SOUND because the
+    /// Sat/Unsat outcome is a pure function of that configuration and the (fixed)
+    /// clause set — dep-sets only steer backjumping, not which clashes occur; on
+    /// a cached-`Unsat` hit `clash_deps` is set conservatively to `ALL`.
+    status_memo: Option<HashMap<u64, bool>>,
+    /// Increment 3: incremental re-seeding. When set (via `RUSTDL_INCREMENTAL_FIXPOINT`
+    /// / [`Self::with_incremental_reseed`]), a post-branch [`Self::horn_fixpoint`]
+    /// SKIPS the full graph re-seed and drains only the delta the branch decision
+    /// pushed onto the worklist. SOUND: after `restore` the graph is the parent's
+    /// already-saturated fixpoint, so re-seeding it fires only idempotent no-ops
+    /// (witness-reuse / fire-once / label-present guards) — it derives nothing; the
+    /// new fixpoint is reached by propagating just the delta (semi-naive). This is
+    /// the fix for the pizza re-saturation blow-up (see docs/repr-cache-increment2).
+    incremental_enabled: bool,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -716,6 +786,8 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            status_memo: None,
+            incremental_enabled: false,
         }
     }
 
@@ -760,6 +832,8 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            status_memo: None,
+            incremental_enabled: false,
         }
     }
 
@@ -876,6 +950,23 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_nominals(mut self, start: u32, count: u32) -> Self {
         self.nominals = Some((start, count));
+        self
+    }
+
+    /// Force the representative-completion status cache on for this engine
+    /// regardless of `RUSTDL_REPR_CACHE` (testing / explicit-opt-in). See
+    /// [`Self::completion_signature`].
+    #[must_use]
+    pub fn with_repr_cache(mut self) -> Self {
+        self.status_memo = Some(HashMap::new());
+        self
+    }
+
+    /// Force incremental re-seeding on regardless of `RUSTDL_INCREMENTAL_FIXPOINT`
+    /// (testing / explicit opt-in). See [`Self::incremental_enabled`].
+    #[must_use]
+    pub fn with_incremental_reseed(mut self) -> Self {
+        self.incremental_enabled = true;
         self
     }
 
@@ -1084,6 +1175,22 @@ impl<'c> HyperEngine<'c> {
                     return true;
                 }
             }
+            // Cross-pair representative cache (option 1): block `n` if its
+            // pair-signature was recorded from a confirmed-`Sat` model of an
+            // earlier pair. Same pairwise-blocking unravelling, persistent
+            // witness pool. Consulted only after the in-completion scan misses.
+            if REPR_BLOCK_ON.load(std::sync::atomic::Ordering::Relaxed)
+                && let Some(sig) = self.pair_signature(n)
+                && REPR_BLOCK
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(|s| s.contains(&sig)))
+                    .unwrap_or(false)
+            {
+                self.stats.blocks_fired += 1;
+                REPR_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return true;
+            }
             false
         } else {
             // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
@@ -1112,7 +1219,7 @@ impl<'c> HyperEngine<'c> {
     /// skipped here — use [`HyperEngine::decide`] for branching.
     #[must_use]
     pub fn run(&mut self, max_iters: usize) -> HyperResult {
-        self.horn_fixpoint(max_iters)
+        self.horn_fixpoint(max_iters, true)
     }
 
     /// Saturate under the Horn fragment by a semi-naive event drain:
@@ -1123,46 +1230,56 @@ impl<'c> HyperEngine<'c> {
     /// ([`solve`]). `max_iters` caps total events processed defensively
     /// (anywhere blocking bounds the graph; hitting it yields
     /// `Stalled`). See `docs/hypertableau-seminaive-scoping.md`.
-    fn horn_fixpoint(&mut self, max_iters: usize) -> HyperResult {
+    fn horn_fixpoint(&mut self, max_iters: usize, reseed: bool) -> HyperResult {
         self.stats.fixpoint_passes += 1;
         // Re-seed from scratch (keeps the worklist out of the cloned
         // branch state — seminaive scoping §4). A failed branch may
         // have left stale events; clearing here discards them and the
         // (restored) graph re-seeds correctly.
-        self.worklist.clear();
-        for idx in 0..self.nodes.len() {
-            let n = HNode(u32::try_from(idx).expect("fits u32"));
-            // Skip merged-away (non-canonical) nodes — their facts live
-            // on the representative.
-            if self.resolve(n) != n {
-                continue;
-            }
-            if !self.indexes.empty_body.is_empty() {
-                self.worklist.push(Event::NodeNew(n));
-            }
-            for c in self.nodes[idx].labels.clone() {
-                // Phase 1b.5 lazy expansion guard: skip Event::Label
-                // seeding for snapshot-origin nodes whose label `c`
-                // was pre-captured AND not a new-clause trigger. The
-                // label's effects under the capture-time clause set
-                // are already realized in the snapshot; skipping the
-                // event saves the redundant rule firings (~89% CPU
-                // reduction projected on GALEN per
-                // docs/phase1b5-recon.md).
-                if let Some(ref lazy) = self.lazy_replay_state {
-                    let was_pre_captured = lazy
-                        .pre_capture_labels
-                        .get(idx)
-                        .is_some_and(|pre| pre.binary_search(&c).is_ok());
-                    let is_new_trigger = lazy.new_trigger_atoms.contains(&c.index());
-                    if was_pre_captured && !is_new_trigger {
-                        continue;
-                    }
+        //
+        // Increment 3: when `reseed` is false (a post-branch frame with
+        // incremental re-seeding on) the worklist already holds exactly the
+        // delta the branch decision pushed, and the rest of the graph is the
+        // parent's saturated fixpoint — re-seeding it would fire only idempotent
+        // no-ops. So skip the whole seed pass and drain just the delta. The
+        // branch loop is responsible for clearing stale events before pushing the
+        // delta (`worklist.clear()` after each `restore`).
+        if reseed {
+            self.worklist.clear();
+            for idx in 0..self.nodes.len() {
+                let n = HNode(u32::try_from(idx).expect("fits u32"));
+                // Skip merged-away (non-canonical) nodes — their facts live
+                // on the representative.
+                if self.resolve(n) != n {
+                    continue;
                 }
-                self.worklist.push(Event::Label(n, c));
-            }
-            for (r, m) in self.nodes[idx].edges.clone() {
-                self.worklist.push(Event::Edge(n, r, m));
+                if !self.indexes.empty_body.is_empty() {
+                    self.worklist.push(Event::NodeNew(n));
+                }
+                for c in self.nodes[idx].labels.clone() {
+                    // Phase 1b.5 lazy expansion guard: skip Event::Label
+                    // seeding for snapshot-origin nodes whose label `c`
+                    // was pre-captured AND not a new-clause trigger. The
+                    // label's effects under the capture-time clause set
+                    // are already realized in the snapshot; skipping the
+                    // event saves the redundant rule firings (~89% CPU
+                    // reduction projected on GALEN per
+                    // docs/phase1b5-recon.md).
+                    if let Some(ref lazy) = self.lazy_replay_state {
+                        let was_pre_captured = lazy
+                            .pre_capture_labels
+                            .get(idx)
+                            .is_some_and(|pre| pre.binary_search(&c).is_ok());
+                        let is_new_trigger = lazy.new_trigger_atoms.contains(&c.index());
+                        if was_pre_captured && !is_new_trigger {
+                            continue;
+                        }
+                    }
+                    self.worklist.push(Event::Label(n, c));
+                }
+                for (r, m) in self.nodes[idx].edges.clone() {
+                    self.worklist.push(Event::Edge(n, r, m));
+                }
             }
         }
         let mut steps = 0usize;
@@ -1310,7 +1427,37 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
-        self.solve(max_depth)
+        // Representative-completion status cache (increment 2): opt-in (env or
+        // `with_repr_cache`), fresh map per decide so no verdict leaks across
+        // distinct ontologies/probes (and none leaks across decides on a reused
+        // engine).
+        let want = self.status_memo.is_some() || std::env::var_os("RUSTDL_REPR_CACHE").is_some();
+        self.status_memo = want.then(HashMap::new);
+        if std::env::var_os("RUSTDL_INCREMENTAL_FIXPOINT").is_some() {
+            self.incremental_enabled = true;
+        }
+        repr_block_enable(); // gated by RUSTDL_REPR_BLOCK; idempotent
+        // The root saturation must re-seed the whole graph (nothing is saturated
+        // yet); only post-branch frames drain incrementally.
+        let r = self.solve(max_depth, false);
+        // Representative-blocker cache (option 1): a confirmed `Sat` completion
+        // is a clash-free model — record its nodes' pair-signatures so later
+        // pairs can reuse these satisfiable subtrees as blockers. Only on `Sat`
+        // (never a partial/failed search) ⇒ sound.
+        if r == HyperResult::Sat {
+            self.cache_sat_model();
+        }
+        if want
+            && self.stats.repr_cache_hits > 0
+            && std::env::var_os("RUSTDL_REPR_CACHE_DEBUG").is_some()
+        {
+            eprintln!(
+                "[repr-cache] decide hits={} memo_entries={}",
+                self.stats.repr_cache_hits,
+                self.status_memo.as_ref().map_or(0, HashMap::len),
+            );
+        }
+        r
     }
 
     /// On a successful satisfiability search, return the labels of the
@@ -1341,6 +1488,210 @@ impl<'c> HyperEngine<'c> {
         } else {
             None
         }
+    }
+
+    /// Pair-signature for the cross-pair representative-blocker cache
+    /// ([`REPR_BLOCK`]): an FNV-1a hash of this node's sorted labels, its
+    /// parent's sorted labels, and the incoming role — exactly the HF2
+    /// double-blocking key (node + parent + edge-role). `None` for a root
+    /// (never blocked). Nominal-bearing nodes are excluded (returns `None`) —
+    /// nominal-pinned nodes are not freely reusable (mirrors the
+    /// nominal-exclusion-from-blocking that keeps reuse sound with `{a}`).
+    #[must_use]
+    fn pair_signature(&self, n: HNode) -> Option<u64> {
+        let node = &self.nodes[self.resolve(n).index()];
+        let parent = node.parent?;
+        let role = node.parent_role?;
+        let nominal_start = self.nominals.map_or(u32::MAX, |(start, _)| start);
+        let pnode = &self.nodes[self.resolve(parent).index()];
+        // Exclude nodes carrying a positive nominal on either end of the pair.
+        if node.labels.iter().any(|c| c.index() >= nominal_start)
+            || pnode.labels.iter().any(|c| c.index() >= nominal_start)
+        {
+            return None;
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mix = |v: u64, h: &mut u64| {
+            *h ^= v;
+            *h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        let mut ln: Vec<u32> = node.labels.iter().map(|c| c.index()).collect();
+        ln.sort_unstable();
+        for c in ln {
+            mix(u64::from(c), &mut h);
+        }
+        mix(0x5EFA_2A7E, &mut h); // parent separator
+        let mut lp: Vec<u32> = pnode.labels.iter().map(|c| c.index()).collect();
+        lp.sort_unstable();
+        for c in lp {
+            mix(u64::from(c), &mut h);
+        }
+        mix(
+            u64::from(role_id_index(role) as u32) | 0x1_0000_0000,
+            &mut h,
+        );
+        Some(h)
+    }
+
+    /// Insert every canonical non-root node's [`pair_signature`] into the
+    /// cross-pair representative cache ([`REPR_BLOCK`]). Sound to call ONLY on a
+    /// confirmed `Sat` completion (the graph is then a clash-free model, so each
+    /// node's subtree is genuinely satisfiable). No-op when the cache is off.
+    fn cache_sat_model(&self) {
+        if !REPR_BLOCK_ON.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let Ok(mut guard) = REPR_BLOCK.lock() else {
+            return;
+        };
+        let Some(set) = guard.as_mut() else { return };
+        for idx in 0..self.nodes.len() {
+            let n = HNode(u32::try_from(idx).expect("fits u32"));
+            if self.resolve(n) != n {
+                continue;
+            }
+            if let Some(sig) = self.pair_signature(n) {
+                set.insert(sig);
+            }
+        }
+    }
+
+    /// Sound reuse key for a representative-completion cache (Konclude's
+    /// `CBackendRepresentativeMemoryCache` principle): an FNV-1a hash over this
+    /// node's **deterministic, non-nominal** atomic labels. A label is
+    /// *deterministic* iff its backjumping dep-set is empty (`bits == 0 &&
+    /// !overflow`) — i.e. it was derived by Horn propagation with **no branch
+    /// decision**, so it is context-independent. Two nodes with the same
+    /// deterministic signature have the same satisfiability regardless of the
+    /// branch context, so a cached `Sat`/`Unsat` may be reused soundly.
+    ///
+    /// Nominal class ids (`>= nominals.start`) are excluded — nominal-pinned
+    /// nodes are not freely reusable (mirrors Konclude's
+    /// `excludePositiveNominalConcepts` and rustdl's existing
+    /// nominal-exclusion-from-blocking). Nondeterministic (branch-derived)
+    /// labels are deliberately omitted from the key (Konclude's
+    /// deterministic-vs-nondeterministic concept-set split): they depend on the
+    /// current branch and would make reuse unsound.
+    ///
+    /// This is the load-bearing primitive of the representative cache; the
+    /// cache wiring (consult before expanding a node; populate on a
+    /// deterministic clash / clash-free saturation) is built on top of it.
+    ///
+    /// FNV-1a hash of the **full canonical configuration** — the reuse key for
+    /// the representative-completion status cache ([`Self::status_memo`]). Unlike
+    /// [`Self::deterministic_signature`] (a single node's deterministic core, the
+    /// sound-reuse primitive), this captures the *entire* current completion so a
+    /// memoized Sat/Unsat verdict can be reused soundly **with nominals**: it
+    /// folds, over every canonical node (`resolve(n) == n`) in index order, the
+    /// node index, its sorted labels, sorted resolved edges (direction-aware, so a
+    /// role and its inverse never collide), and sorted `≤n`/`≥n` constraints, then
+    /// the sorted canonical `≠` pairs.
+    ///
+    /// Deliberately EXCLUDES all backjumping bookkeeping (dep-sets, `nn_tainted`,
+    /// `birth_deps`): those steer *how* we backjump, never *which* clashes occur,
+    /// so two frames whose graphs differ only in deps share a verdict. The
+    /// Sat/Unsat outcome is a pure function of this configuration and the fixed
+    /// clause set — the soundness basis for reuse. (A cached `Unsat` carries no
+    /// usable dep-set for the current decision context, so the consumer sets
+    /// `clash_deps = DepSet::ALL` on a hit — sound, just no backjump that step.)
+    #[must_use]
+    fn completion_signature(&self) -> u64 {
+        // Direction-aware role key: `role_id_index` collapses a role and its
+        // inverse to the same id, so fold the direction bit in here.
+        let role_key = |r: Role| -> u32 {
+            match r {
+                Role::Named(x) => x.index() << 1,
+                Role::Inverse(x) => (x.index() << 1) | 1,
+            }
+        };
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mix = |v: u64, h: &mut u64| {
+            *h ^= v;
+            *h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        for idx in 0..self.nodes.len() {
+            let n = HNode(u32::try_from(idx).expect("fits u32"));
+            if self.resolve(n) != n {
+                continue; // merged-away — its facts live on the representative
+            }
+            let node = &self.nodes[idx];
+            mix(u64::from(n.0), &mut h);
+            mix(0xC0DE, &mut h); // node-boundary category marker
+            let mut labels: Vec<u32> = node.labels.iter().map(|c| c.index()).collect();
+            labels.sort_unstable();
+            mix(0x1ABE1, &mut h); // label category marker
+            for c in labels {
+                mix(u64::from(c), &mut h);
+            }
+            let mut edges: Vec<(u32, u32)> = node
+                .edges
+                .iter()
+                .map(|&(r, t)| (role_key(r), self.resolve(t).0))
+                .collect();
+            edges.sort_unstable();
+            mix(0xED6E, &mut h); // edge category marker
+            for (r, t) in edges {
+                mix((u64::from(r) << 32) | u64::from(t), &mut h);
+            }
+            let mut card: Vec<(u32, u32, u32)> = node
+                .at_most
+                .iter()
+                .map(|&(r, q, k)| (role_key(r), q.map_or(u32::MAX, |c| c.index()), k))
+                .chain(node.at_least_done.iter().map(|&(r, q, k)| {
+                    (
+                        role_key(r),
+                        q.map_or(u32::MAX, |c| c.index()),
+                        k | 0x8000_0000,
+                    )
+                }))
+                .collect();
+            card.sort_unstable();
+            for (r, q, k) in card {
+                mix(u64::from(r), &mut h);
+                mix(u64::from(q), &mut h);
+                mix(u64::from(k), &mut h);
+            }
+        }
+        // The `≠` relation (canonical pairs) — affects `≤n` clashes.
+        let mut neq: Vec<(u32, u32)> = self
+            .neq
+            .iter()
+            .map(|&(a, b)| {
+                let (a, b) = (self.resolve(a).0, self.resolve(b).0);
+                if a <= b { (a, b) } else { (b, a) }
+            })
+            .collect();
+        neq.sort_unstable();
+        neq.dedup();
+        mix(0x_DEAD_BEEF, &mut h); // ≠-relation category marker
+        for (a, b) in neq {
+            mix((u64::from(a) << 32) | u64::from(b), &mut h);
+        }
+        h
+    }
+
+    // Increment 3 (per-node subtree-local reuse) consumes this; currently only
+    // the unit test exercises it, so the lib build sees it as unused.
+    #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn deterministic_signature(&self, n: HNode) -> u64 {
+        let node = &self.nodes[self.resolve(n).index()];
+        let nominal_start = self.nominals.map_or(u32::MAX, |(start, _)| start);
+        let mut det: Vec<u32> = node
+            .labels
+            .iter()
+            .zip(node.label_deps.iter())
+            .filter(|(_, d)| d.bits == 0 && !d.overflow) // deterministic only
+            .map(|(c, _)| c.index())
+            .filter(|&c| c < nominal_start) // exclude nominals
+            .collect();
+        det.sort_unstable();
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for c in det {
+            h ^= u64::from(c);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
     }
 
     /// Capture a [`crate::snapshot::GraphSnapshot`] of the current
@@ -1634,6 +1985,8 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            status_memo: None,
+            incremental_enabled: false,
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices
@@ -1665,7 +2018,7 @@ impl<'c> HyperEngine<'c> {
         engine
     }
 
-    fn solve(&mut self, depth: usize) -> HyperResult {
+    fn solve(&mut self, depth: usize, incremental: bool) -> HyperResult {
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
         {
@@ -1696,11 +2049,53 @@ impl<'c> HyperEngine<'c> {
                 );
             }
         }
-        match self.horn_fixpoint(FIXPOINT_ITERS) {
+        // Incremental re-seed only on a post-branch frame AND only when the
+        // feature is enabled; the root frame (incremental=false) always re-seeds.
+        let reseed = !(incremental && self.incremental_enabled);
+        match self.horn_fixpoint(FIXPOINT_ITERS, reseed) {
             HyperResult::Unsat => return HyperResult::Unsat,
             HyperResult::Stalled => return HyperResult::Stalled,
             HyperResult::Sat => {}
         }
+        // Representative-completion status cache (increment 2). The graph is now
+        // saturated (post-fixpoint) and not yet branched: its configuration
+        // signature keys the verdict of the sub-search below. Consult before
+        // branching; populate after. SOUND: see `completion_signature`.
+        let sig = self
+            .status_memo
+            .is_some()
+            .then(|| self.completion_signature());
+        if sig.is_some() {
+            REPR_CACHE_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(s) = sig
+            && let Some(&sat) = self.status_memo.as_ref().and_then(|m| m.get(&s))
+        {
+            self.stats.repr_cache_hits += 1;
+            REPR_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if sat {
+                return HyperResult::Sat;
+            }
+            // Cached Unsat carries no dep-set valid for this decision context;
+            // the conservative `ALL` keeps backjumping sound (it just can't skip
+            // a decision this step). See `completion_signature` doc.
+            self.clash_deps = DepSet::ALL;
+            return HyperResult::Unsat;
+        }
+        let result = self.solve_branch(depth);
+        if let Some(s) = sig
+            && result != HyperResult::Stalled
+            && let Some(memo) = self.status_memo.as_mut()
+        {
+            memo.insert(s, result == HyperResult::Sat);
+        }
+        result
+    }
+
+    /// The post-fixpoint branching tail of [`Self::solve`] (disjunctive-head H2
+    /// then `≤n` merge H3c). Split out so [`Self::solve`] can memoize its verdict
+    /// against the saturated pre-branch configuration ([`Self::status_memo`]).
+    fn solve_branch(&mut self, depth: usize) -> HyperResult {
         // Disjunctive-head branching (H2) with dependency-directed
         // backjumping. The decision level of this frame is `d`; the
         // asserted disjunct inherits the clause body's dep-set ∪ {d}.
@@ -1720,8 +2115,13 @@ impl<'c> HyperEngine<'c> {
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
+                // Incremental re-seed: discard any stale events left by a prior
+                // sibling branch so the only events entering the child fixpoint
+                // are this decision's delta (no-op under the full re-seed path,
+                // which clears the worklist itself).
+                self.worklist.clear();
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
-                match self.solve(depth - 1) {
+                match self.solve(depth - 1, true) {
                     HyperResult::Sat => return HyperResult::Sat,
                     HyperResult::Unsat => {
                         let child_deps = self.clash_deps;
@@ -2027,6 +2427,10 @@ impl<'c> HyperEngine<'c> {
             let saved = self.save();
             self.stats.branches_taken += 1;
             self.stats.merge_branches += 1;
+            // Incremental re-seed: clear stale events before the merges push this
+            // partition's delta (the merges re-push Label/Edge events for the
+            // copied facts). No-op under the full re-seed path.
+            self.worklist.clear();
             let mut clashed = false;
             'blocks: for block in groups.iter() {
                 let rep = block[0];
@@ -2038,7 +2442,7 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             if !clashed {
-                match self.solve(depth - 1) {
+                match self.solve(depth - 1, true) {
                     HyperResult::Sat => return Some(HyperResult::Sat),
                     HyperResult::Unsat => {}
                     HyperResult::Stalled => *any_stalled = true,
@@ -2179,6 +2583,18 @@ impl<'c> HyperEngine<'c> {
             self.nodes[s_i.index()].edges.push((r, t));
             self.nodes[t.index()].preds.push((r, s_i));
             self.worklist.push(Event::Edge(s_i, r, t));
+        }
+        if self.incremental_enabled {
+            // Incremental re-seed: a predecessor `p` whose edge targeted `s_j`
+            // now (via resolve) points at the richer survivor `s_i`; re-fire
+            // `p`'s role clauses against the merged target. Under the full
+            // re-seed path the child frame re-seeds every node anyway, so this
+            // is only needed — and only pushed — when incremental draining must
+            // make the merge delta self-complete. Idempotent (`fire_clause`
+            // re-verifies the body), so it can never add a false clash.
+            for (r, p) in self.nodes[s_j.index()].preds.clone() {
+                self.worklist.push(Event::Edge(p, r, s_i));
+            }
         }
         for c in self.nodes[s_j.index()].at_most.clone() {
             if !self.nodes[s_i.index()].at_most.contains(&c) {
@@ -2876,8 +3292,176 @@ mod tests {
     use owl_dl_core::clause::{Atom, DlClause, X};
     use owl_dl_core::ir::{ClassId, Role, RoleId};
 
+    #[test]
+    fn deterministic_signature_excludes_nondeterministic_and_nominals() {
+        // Empty clause set; manipulate node 0's labels directly.
+        let clauses: Vec<DlClause> = vec![];
+        let mut e = HyperEngine::new(&clauses, ClassId::new(0));
+        e.nominals = Some((100, 10)); // nominal class range [100, 110)
+
+        // Node 0: deterministic A(1), B(2); nondeterministic C(3) (dep on a
+        // branch level); nominal 100.
+        e.nodes[0].labels = vec![
+            ClassId::new(1),
+            ClassId::new(2),
+            ClassId::new(3),
+            ClassId::new(100),
+        ];
+        e.nodes[0].label_deps = vec![
+            DepSet::EMPTY,
+            DepSet::EMPTY,
+            DepSet::singleton(0), // nondeterministic
+            DepSet::EMPTY,
+        ];
+        let sig = e.deterministic_signature(HNode(0));
+
+        // (a) Changing ONLY the nondeterministic label must not change the sig.
+        e.nodes[0].labels[2] = ClassId::new(7);
+        assert_eq!(
+            sig,
+            e.deterministic_signature(HNode(0)),
+            "nondeterministic label leaked into key"
+        );
+
+        // (b) Removing the nominal label must not change the sig (nominals excluded).
+        e.nodes[0].labels = vec![ClassId::new(1), ClassId::new(2), ClassId::new(7)];
+        e.nodes[0].label_deps = vec![DepSet::EMPTY, DepSet::EMPTY, DepSet::singleton(0)];
+        assert_eq!(
+            sig,
+            e.deterministic_signature(HNode(0)),
+            "nominal label leaked into key"
+        );
+
+        // (c) A different node with the SAME deterministic core {1,2} (any
+        // order) has the SAME signature — the reuse property.
+        let mut e2 = HyperEngine::new(&clauses, ClassId::new(0));
+        e2.nominals = Some((100, 10));
+        e2.nodes[0].labels = vec![ClassId::new(2), ClassId::new(1)];
+        e2.nodes[0].label_deps = vec![DepSet::EMPTY, DepSet::EMPTY];
+        assert_eq!(
+            sig,
+            e2.deterministic_signature(HNode(0)),
+            "same deterministic core must hash equal"
+        );
+
+        // (d) A different deterministic core hashes differently.
+        e2.nodes[0].labels = vec![ClassId::new(1), ClassId::new(9)];
+        e2.nodes[0].label_deps = vec![DepSet::EMPTY, DepSet::EMPTY];
+        assert_ne!(sig, e2.deterministic_signature(HNode(0)));
+    }
+
     fn cls(i: u32) -> ClassId {
         ClassId::new(i)
+    }
+
+    /// SOUNDNESS GATE for the representative-completion status cache: enabling it
+    /// must never change a verdict. Runs a battery of disjunctive / cardinality /
+    /// nominal shapes both with and without `with_repr_cache()` and asserts the
+    /// `decide` outcome is byte-identical. (Hit rate is measured separately; this
+    /// test is purely about correctness — a false `Unsat` from the cache would be
+    /// catastrophic, so the parity must hold unconditionally.)
+    #[test]
+    fn repr_cache_preserves_verdict() {
+        let bot = |c: u32| DlClause {
+            body: vec![Atom::Class(cls(c), X)],
+            head: vec![],
+        };
+        let imp = |a: u32, b: u32| DlClause {
+            body: vec![Atom::Class(cls(a), X)],
+            head: vec![Atom::Class(cls(b), X)],
+        };
+        let disj = |a: u32, l: u32, r: u32| DlClause {
+            body: vec![Atom::Class(cls(a), X)],
+            head: vec![Atom::Class(cls(l), X), Atom::Class(cls(r), X)],
+        };
+        // (clauses, root, expected) — a spread of branch-heavy shapes.
+        let cases: Vec<(Vec<DlClause>, u32, HyperResult)> = vec![
+            // Both nested disjuncts fail ⇒ Unsat.
+            (
+                vec![disj(0, 1, 2), disj(1, 3, 4), bot(3), bot(4), bot(2)],
+                0,
+                HyperResult::Unsat,
+            ),
+            // Deep model exists ⇒ Sat.
+            (
+                vec![disj(0, 1, 2), disj(1, 3, 4), bot(3), bot(2)],
+                0,
+                HyperResult::Sat,
+            ),
+            // Two independent disjunctions, both satisfiable ⇒ Sat.
+            (
+                vec![disj(0, 1, 2), disj(0, 3, 4), bot(1), bot(3)],
+                0,
+                HyperResult::Sat,
+            ),
+            // Two independent disjunctions whose only joint choice clashes ⇒ Unsat.
+            (
+                vec![
+                    disj(0, 1, 2),
+                    disj(0, 3, 4),
+                    bot(1),
+                    bot(3),
+                    // remaining joint choice {2,4} clashes
+                    DlClause {
+                        body: vec![Atom::Class(cls(2), X), Atom::Class(cls(4), X)],
+                        head: vec![],
+                    },
+                ],
+                0,
+                HyperResult::Unsat,
+            ),
+            // Horn chain (no branching) ⇒ Sat (cache is a no-op but must not break).
+            (vec![imp(0, 1), imp(1, 2)], 0, HyperResult::Sat),
+        ];
+        for (i, (clauses, root, expected)) in cases.iter().enumerate() {
+            let mut plain = HyperEngine::new(clauses, cls(*root));
+            let mut cached = HyperEngine::new(clauses, cls(*root)).with_repr_cache();
+            let rp = plain.decide(64);
+            let rc = cached.decide(64);
+            assert_eq!(rp, *expected, "case {i}: baseline verdict wrong");
+            assert_eq!(
+                rc, rp,
+                "case {i}: repr-cache changed the verdict ({rp:?} -> {rc:?}) — UNSOUND"
+            );
+        }
+    }
+
+    /// Characterizes the per-completion cache's reuse boundary (the finding that
+    /// motivates the per-NODE key, increment 3). The cache machinery runs and
+    /// POPULATES on every branch frame, but a HIT requires two frames to reach a
+    /// byte-identical *whole-graph* configuration. On disjunction-path search the
+    /// chosen disjunct stays in the node's label set, so different decision paths
+    /// produce different keys — the memo populates but rarely hits. This test
+    /// pins that behavior: the memo is exercised (non-empty) and the verdict is
+    /// correct, documenting WHY a subtree-local (per-node) key is needed to turn
+    /// these populated entries into reuse.
+    #[test]
+    fn repr_cache_populates_even_when_path_branching_prevents_reuse() {
+        let forbid = |x: u32, y: u32| DlClause {
+            body: vec![Atom::Class(cls(x), X), Atom::Class(cls(y), X)],
+            head: vec![],
+        };
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X), Atom::Class(cls(2), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(3), X), Atom::Class(cls(4), X)],
+            },
+            forbid(1, 3),
+            forbid(1, 4),
+            forbid(2, 3),
+            forbid(2, 4),
+        ];
+        let mut cached = HyperEngine::new(&clauses, cls(0)).with_repr_cache();
+        assert_eq!(cached.decide(64), HyperResult::Unsat);
+        // Machinery is live: every explored frame was keyed and stored.
+        assert!(
+            !cached.status_memo.as_ref().unwrap().is_empty(),
+            "status cache should populate as the search explores frames"
+        );
     }
 
     #[test]

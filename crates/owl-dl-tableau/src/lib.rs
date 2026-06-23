@@ -83,7 +83,10 @@ pub use rules::{
     apply_nominal_assignment, apply_nominal_rules, apply_residual_gcis, apply_role_axioms,
     apply_role_chains, apply_role_rules, apply_self_restriction,
 };
-pub use saturate::{SaturationResult, saturate, verify_node_local_clash};
+pub use saturate::{
+    SaturationResult, saturate, struct_measure_report, struct_measure_reset,
+    verify_node_local_clash,
+};
 pub use search::{SearchVerdict, search};
 pub use snapshot::{BackPropRisk, GraphSnapshot, SnapshotNodeId, UnsafeReason};
 pub use trail::{Checkpoint, TableauTrail, TrailEntry};
@@ -218,6 +221,17 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// hot `is_blocked` path pays no per-call env read. See
     /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`.
     anywhere_blocking: bool,
+    /// Incremental saturation: when set, `saturate()` skips the per-call
+    /// `mark_all_dirty` after the first (initial) saturation and relies on the
+    /// per-mutation dirty hooks — extended here with the back-propagation and
+    /// merge-child dirtying the 2026-05-25 attempt lacked. Off ⇒ the legacy
+    /// re-scan-everything behaviour (byte-identical). See `saturate()` and
+    /// `docs/struct-incremental.md`.
+    incremental_enabled: bool,
+    /// Tracks whether the first (full) saturation has run. The initial
+    /// saturation always `mark_all_dirty`s (the seed state must be fully
+    /// scanned once); only post-branch saturations drain incrementally.
+    did_initial_saturate: bool,
     /// Per-rule call counters, populated under `cfg(feature =
     /// "counters")`. Dumped to stderr in `Drop` when
     /// `RUSTDL_COUNTERS=1`. Zero cost in non-counter builds (field
@@ -252,6 +266,8 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            incremental_enabled: struct_incremental_enabled(),
+            did_initial_saturate: false,
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -283,6 +299,8 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            incremental_enabled: struct_incremental_enabled(),
+            did_initial_saturate: false,
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -319,6 +337,8 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            incremental_enabled: struct_incremental_enabled(),
+            did_initial_saturate: false,
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -693,6 +713,21 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         &mut self.graph
     }
 
+    /// Whether incremental saturation is on for this context (see the field).
+    #[must_use]
+    pub fn incremental_enabled(&self) -> bool {
+        self.incremental_enabled
+    }
+
+    /// Record that the initial (full) saturation has happened; returns `true`
+    /// the FIRST time (so the caller knows to `mark_all_dirty` once). Subsequent
+    /// calls return `false`, letting incremental saturations drain only deltas.
+    pub fn mark_initial_saturate_done(&mut self) -> bool {
+        let first = !self.did_initial_saturate;
+        self.did_initial_saturate = true;
+        first
+    }
+
     /// Set the residual-saturation memo on `node`. Called from
     /// [`crate::apply_residual_gcis`] after a full materialisation
     /// pass; lets subsequent calls short-circuit.
@@ -1033,6 +1068,28 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 // triggers, existentials, cardinality, …) must
                 // re-fire after a new label appears.
                 self.graph.set_dirty(node, true);
+                if self.incremental_enabled {
+                    // Back-propagation (incremental only): rules at this node's
+                    // PREDECESSORS read its label set — qualified `≤n` counting
+                    // a qualifier-bearing successor, the EL back-prop shape
+                    // `R(x,y) ∧ C(y) → D(x)`, inverse-role propagation. The full
+                    // `mark_all_dirty` re-scan made this implicit; incremental
+                    // must re-dirty the predecessors explicitly so they re-fire.
+                    // This is the gap that broke the 2026-05-25 persistent-dirty
+                    // attempt (rules not re-firing on nodes affected indirectly,
+                    // notably across a merge — merge moves labels via this same
+                    // path, so it is covered too).
+                    let preds: Vec<NodeId> = self
+                        .graph
+                        .node(node)
+                        .in_edges
+                        .iter()
+                        .map(|&(_, p)| p)
+                        .collect();
+                    for p in preds {
+                        self.graph.set_dirty(p, true);
+                    }
+                }
                 true
             }
         }
@@ -1350,6 +1407,13 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                     prior_parent,
                     prior_parent_role,
                 });
+                if self.incremental_enabled {
+                    // Reparenting changes `nid`'s ancestor chain, hence its
+                    // blocking status (and thus whether its `∃`/`≥n` rules may
+                    // generate). Under `mark_all_dirty` this re-evaluates for
+                    // free; incremental must re-dirty `nid` explicitly.
+                    self.graph.set_dirty(nid, true);
+                }
             }
         }
 
@@ -1974,6 +2038,14 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
 #[must_use]
 pub fn anywhere_blocking_enabled() -> bool {
     std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
+}
+
+/// Whether incremental saturation is enabled for the structural tableau
+/// (`RUSTDL_INCREMENTAL_FIXPOINT`) — `saturate()` then skips the per-call
+/// `mark_all_dirty` after the initial saturation. Read once per context.
+#[must_use]
+pub fn struct_incremental_enabled() -> bool {
+    std::env::var_os("RUSTDL_INCREMENTAL_FIXPOINT").is_some()
 }
 
 #[cfg(test)]

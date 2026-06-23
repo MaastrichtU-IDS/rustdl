@@ -725,6 +725,7 @@ fn main() -> Result<()> {
             // 0 = unbounded; any positive value bounds each pair.
             let timeout =
                 (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            owl_dl_reasoner::struct_measure_reset(); // RUSTDL_STRUCT_MEASURE
             let h = if saturation_only {
                 classify_saturation_only(&onto).context("classify_saturation_only")?
             } else {
@@ -741,6 +742,18 @@ fn main() -> Result<()> {
             };
             print_classification(&h);
             warn_if_incomplete(h.stats().timed_out_pairs, pair_timeout_ms);
+            if let Some((total, distinct)) = owl_dl_reasoner::struct_measure_report() {
+                let redundant = total.saturating_sub(distinct);
+                let pct = if total > 0 {
+                    100.0 * redundant as f64 / total as f64
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "[struct-measure] total_node_scans={total} distinct_label_configs={distinct} \
+                     redundant={redundant} ({pct:.1}% re-saturated)"
+                );
+            }
         }
         Command::Instance {
             file,

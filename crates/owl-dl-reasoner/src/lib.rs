@@ -568,6 +568,7 @@ pub fn clause_deferred_census<A: horned_owl::model::ForIRI>(
 }
 
 pub use owl_dl_tableau::hyper::{HyperResult, SearchStats};
+pub use owl_dl_tableau::{struct_measure_report, struct_measure_reset};
 
 /// Per-class concept-satisfiability result from the hypertableau
 /// engine ([`owl_dl_tableau::hyper`]), for the H2b wall measurement.

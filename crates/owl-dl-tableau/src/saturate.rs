@@ -25,6 +25,64 @@
 
 use crate::TableauContext;
 use crate::graph::{DepSet, NodeId};
+
+/// Structural-engine node-recurrence meter (gated by `RUSTDL_STRUCT_MEASURE`),
+/// the analogue of `hyper::GC_MEASURE`. At every `saturate()` entry — after
+/// `mark_all_dirty` re-arms the whole graph for a full re-scan — it folds each
+/// canonical node's label-set hash into the window: `total` counts node-scans
+/// performed, `distinct` the distinct label configurations. `total - distinct`
+/// is the redundant re-saturation a persistent-dirty / incremental driver could
+/// eliminate. Pure instrumentation; serializes via a global lock.
+static STRUCT_MEASURE: std::sync::Mutex<Option<(u64, std::collections::HashSet<u64>)>> =
+    std::sync::Mutex::new(None);
+/// Fast-path gate so the disabled meter costs an atomic load (not a `Mutex`
+/// lock) on the hot `saturate()` entry.
+static STRUCT_MEASURE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Begin a measurement window (no-op unless `RUSTDL_STRUCT_MEASURE` is set).
+pub fn struct_measure_reset() {
+    if std::env::var_os("RUSTDL_STRUCT_MEASURE").is_some()
+        && let Ok(mut g) = STRUCT_MEASURE.lock()
+    {
+        *g = Some((0, std::collections::HashSet::new()));
+        STRUCT_MEASURE_ON.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Report `(total_node_scans, distinct_label_configs)` for the window, or `None`.
+#[must_use]
+pub fn struct_measure_report() -> Option<(u64, u64)> {
+    STRUCT_MEASURE
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(t, d)| (*t, d.len() as u64)))
+}
+
+fn struct_measure_record(ctx: &TableauContext<'_, '_, '_>) {
+    if !STRUCT_MEASURE_ON.load(std::sync::atomic::Ordering::Relaxed) {
+        return; // disabled — no Mutex lock on the hot path
+    }
+    let Ok(mut guard) = STRUCT_MEASURE.lock() else {
+        return;
+    };
+    let Some((total, distinct)) = guard.as_mut() else {
+        return;
+    };
+    let g = ctx.graph();
+    for idx in 0..g.len() {
+        let node = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
+        let mut labels: Vec<u32> = g.node(node).labels().iter().map(|c| c.index()).collect();
+        labels.sort_unstable();
+        // FNV-1a over the sorted label ids (precise, unlike `label_sig_of`'s bloom).
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for l in labels {
+            h ^= u64::from(l);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        *total += 1;
+        distinct.insert(h);
+    }
+}
 use crate::rules::{
     RuleOutcome, apply_and, apply_concept_rules, apply_deferred_concept_or_rules,
     apply_deferred_or_residuals, apply_exists, apply_forall, apply_max, apply_min,
@@ -74,7 +132,17 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
     // *indirectly* by a merge. The fine-grained worklist inside this
     // saturate() call still saves the bulk of the work; the entry
     // reset is a single boolean write per node.
-    ctx.graph_mut().mark_all_dirty();
+    // Incremental saturation (RUSTDL_INCREMENTAL_FIXPOINT): the initial
+    // saturation always re-scans the whole seeded graph once; subsequent
+    // (post-branch) calls skip `mark_all_dirty` and drain only the deltas the
+    // per-mutation dirty hooks raised — extended with back-propagation
+    // (`add_label`) and merge-child dirtying so nothing is missed. Disabled ⇒
+    // the legacy re-scan-everything behaviour (`mark_initial_saturate_done` is
+    // not consulted, so it stays a no-op).
+    if !ctx.incremental_enabled() || ctx.mark_initial_saturate_done() {
+        ctx.graph_mut().mark_all_dirty();
+    }
+    struct_measure_record(ctx); // node-recurrence meter (RUSTDL_STRUCT_MEASURE)
     for _ in 0..max_iters {
         // Cooperative deadline check. A single saturate() call can
         // generate many nodes (e.g. via chain rule expansion under

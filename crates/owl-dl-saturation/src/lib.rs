@@ -2308,6 +2308,7 @@ fn collect_el_rules_with_provenance(
                 mini_effective.insert(r, union);
             }
         }
+        let mini_forall_atomic = collect_forall_atomic(internal);
         for (ax_idx, ax) in internal.axioms.iter().enumerate() {
             match ax {
                 Axiom::SubClassOf { sub, sup } => {
@@ -2323,6 +2324,7 @@ fn collect_el_rules_with_provenance(
                         &mut mini_rules,
                         &mut mini_tseitin,
                         &mini_effective,
+                        &mini_forall_atomic,
                     );
                     let a_a = mini_rules.atomic_subsumptions.len();
                     let a_c = mini_rules.conjunctive_triggers.len();
@@ -2357,6 +2359,7 @@ fn collect_el_rules_with_provenance(
                                     &mut mini_rules,
                                     &mut mini_tseitin,
                                     &mini_effective,
+                                    &mini_forall_atomic,
                                 );
                                 let a_a = mini_rules.atomic_subsumptions.len();
                                 let a_c = mini_rules.conjunctive_triggers.len();
@@ -2535,6 +2538,9 @@ fn collect_el_rules(
             effective_ranges.insert(r, union);
         }
     }
+    // SP1-increment-1: per-class `∀R.C` (atomic) constraints (see helper).
+    let forall_atomic = collect_forall_atomic(internal);
+
     // Pass 2: lower SubClassOf / EquivalentClasses with effective_ranges
     // available so RHS existential bodies can be Tseitin-folded with
     // their role's range constraint.
@@ -2548,6 +2554,7 @@ fn collect_el_rules(
                     &mut rules,
                     &mut tseitin,
                     &effective_ranges,
+                    &forall_atomic,
                 );
             }
             Axiom::EquivalentClasses(members) => {
@@ -2567,6 +2574,7 @@ fn collect_el_rules(
                                 &mut rules,
                                 &mut tseitin,
                                 &effective_ranges,
+                                &forall_atomic,
                             );
                         }
                     }
@@ -2648,9 +2656,14 @@ fn lower_sub_class_of(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    // SP1-increment-1: per-class `∀R.C` (atomic) constraints, used to
+    // strengthen existential witnesses created for that class.
+    forall_atomic: &HashMap<ClassId, Vec<(RoleId, ClassId)>>,
 ) {
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
+            let forall_for_sub: &[(RoleId, ClassId)] =
+                forall_atomic.get(sub_id).map_or(&[][..], Vec::as_slice);
             // Phase D4 (2026-06-03): `Atomic(C) ⊑ Bot` directly marks
             // C unsatisfiable. Without this branch the saturator's
             // `atomic_operands_on_right(Bot, _)` returns empty and the
@@ -2733,7 +2746,7 @@ fn lower_sub_class_of(
             // synthetic atomic if the body is a compound And, OR if
             // r has a range constraint that needs to be folded in.
             if let Some((role, target)) =
-                atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
+                atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges, forall_for_sub)
             {
                 rules.existential_facts.push(ExistentialFact {
                     sub: *sub_id,
@@ -2745,9 +2758,14 @@ fn lower_sub_class_of(
             // operand of a top-level And on the right.
             if let ConceptExpr::And(operands) = pool.get(sup) {
                 for op in operands {
-                    if let Some((role, target)) =
-                        atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges)
-                    {
+                    if let Some((role, target)) = atomic_existential_rhs(
+                        *op,
+                        pool,
+                        rules,
+                        tseitin,
+                        effective_ranges,
+                        forall_for_sub,
+                    ) {
                         rules.existential_facts.push(ExistentialFact {
                             sub: *sub_id,
                             role,
@@ -2938,12 +2956,52 @@ fn lower_sub_class_of(
 /// Returns `None` for inverse roles, non-atomic bodies, or any other
 /// shape (those are dropped from the EL fragment; the tableau path
 /// still handles them).
+/// SP1-increment-1: collect `X ⊑ ∀R.C` (atomic `C`) per class `X` from told
+/// `SubClassOf` axioms, so existential witnesses for `X` can be strengthened to
+/// `body ⊓ C`. Syntactic (told) only — sound under-approximation.
+fn collect_forall_atomic(internal: &InternalOntology) -> HashMap<ClassId, Vec<(RoleId, ClassId)>> {
+    let mut m: HashMap<ClassId, Vec<(RoleId, ClassId)>> = HashMap::new();
+    for ax in &internal.axioms {
+        if let Axiom::SubClassOf { sub, sup } = ax
+            && let ConceptExpr::Atomic(x) = internal.concepts.get(*sub)
+        {
+            for (role, filler) in forall_atomic_operands_on_right(*sup, &internal.concepts) {
+                m.entry(*x).or_default().push((role, filler));
+            }
+        }
+    }
+    m
+}
+
+/// SP1-increment-1: detect `∀R.C` with **atomic** filler `C` (NOT `OneOf`,
+/// which `forall_oneof_operands_on_right` already handles via `ForallKey`),
+/// top-level or as an `And` operand. Forward (non-inverse) roles only.
+fn forall_atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(RoleId, ClassId)> {
+    fn one(c: ConceptId, pool: &ConceptPool) -> Option<(RoleId, ClassId)> {
+        if let ConceptExpr::All(role, inner) = pool.get(c)
+            && !role.is_inverse()
+            && let ConceptExpr::Atomic(filler) = pool.get(*inner)
+        {
+            return Some((role.role_id(), *filler));
+        }
+        None
+    }
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands.iter().filter_map(|&op| one(op, pool)).collect(),
+        _ => one(c, pool).into_iter().collect(),
+    }
+}
+
 fn atomic_existential_rhs(
     c: ConceptId,
     pool: &ConceptPool,
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
+    // SP1-increment-1: `∀R.C` (atomic) constraints on the existential's
+    // subject, indexed by role — folded into the existential witness as
+    // extra subsumers (`∃R.D ⊓ ∀R.C ⟹ ∃R.(D⊓C)`, sound).
+    forall_atomic_for_sub: &[(RoleId, ClassId)],
 ) -> Option<(RoleId, ClassId)> {
     // Accept both `∃R.body` (Some) and `≥n R.body` (Min with n ≥ 1).
     // Min(n, R, C) implies ∃R.C for n ≥ 1, so lowering Min as Some is
@@ -2968,10 +3026,20 @@ fn atomic_existential_rhs(
     if let ConceptExpr::Nominal(ind) = pool.get(*body) {
         return Some((role.role_id(), tseitin.introduce_nominal(*ind)));
     }
-    let extras = effective_ranges
+    let mut extras: Vec<ClassId> = effective_ranges
         .get(&role.role_id())
-        .map_or(&[][..], Vec::as_slice);
-    let body_id = atomic_or_tseitin_body_with_extras(*body, extras, pool, rules, tseitin)?;
+        .map_or(&[][..], Vec::as_slice)
+        .to_vec();
+    // SP1-increment-1: fold in `∀role.C` filler classes on the subject —
+    // every `role`-successor satisfies `C`, so the `∃role.body` witness
+    // satisfies `body ⊓ C`. Sound (all-model consequence); enables the
+    // `body⊓C ⊑ ⊥` clash detection via the existing existential-unsat rule.
+    for &(fr, c) in forall_atomic_for_sub {
+        if fr == role.role_id() {
+            extras.push(c);
+        }
+    }
+    let body_id = atomic_or_tseitin_body_with_extras(*body, &extras, pool, rules, tseitin)?;
     Some((role.role_id(), body_id))
 }
 
@@ -4654,6 +4722,47 @@ Ontology(<http://rustdl.test/p2ac/test>
             "Phase 2a chained functional supers: the witness-merge rule \
              failed to cascade from r_func to r_super; check that \
              functional_supers_of(r_func) includes r_super."
+        );
+    }
+
+    /// SP1-increment-1 canary: general `∀R.C` propagation.
+    /// `X ⊑ ∃R.D`, `X ⊑ ∀R.C`, `DisjointClasses(C,D)` ⟹ X ⊑ ⊥: the
+    /// ∃-witness must be both `D` (existential) and `C` (universal), but
+    /// `C`,`D` are disjoint, so X has no valid R-successor → unsatisfiable.
+    /// The EL saturator has no ∀-rule, so it misses this without the
+    /// increment.
+    #[test]
+    fn forall_propagation_existential_witness_clash() {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use owl_dl_core::convert::convert_ontology;
+        use std::io::Cursor;
+
+        let src = "\
+Prefix(:=<http://rustdl.test/forall/>)
+Ontology(<http://rustdl.test/forall/test>
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:D))
+    Declaration(ObjectProperty(:r))
+    SubClassOf(:X ObjectSomeValuesFrom(:r :D))
+    SubClassOf(:X ObjectAllValuesFrom(:r :C))
+    DisjointClasses(:C :D)
+)
+";
+        let mut reader = Cursor::new(src);
+        let (set_onto, _): (SetOntology<RcStr>, _) =
+            read(&mut reader, ParserConfiguration::default()).expect("parses");
+        let internal = convert_ontology(&set_onto).expect("lowers");
+        let subsumers = crate::saturate(&internal);
+        let x = internal
+            .vocabulary
+            .class_id("http://rustdl.test/forall/X")
+            .expect("X declared");
+        assert!(
+            subsumers.is_unsatisfiable(x),
+            "∀R.C + ∃R.D + disjoint(C,D) ⟹ X unsatisfiable — the ∀-propagation \
+             rule must strengthen the ∃-witness to C⊓D and detect the clash"
         );
     }
 

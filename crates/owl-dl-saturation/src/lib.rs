@@ -891,6 +891,49 @@ impl WorklistEngine {
                 }
             }
         }
+        // SP-B1: derived-closure forced-disjunct. `c` gained subsumer `d`; recheck
+        // `c`'s effective disjunctions (declared on `c` or on any subsumer of `c`,
+        // since `c⊑g⊑⊔Dᵢ ⟹ c⊑⊔Dᵢ`). A disjunct `Dᵢ` is excluded iff some current
+        // subsumer of `c` is disjoint from it; one survivor ⟹ force it, none ⟹ `c`
+        // unsat. Uses the DERIVED subsumer closure (vs SP-A's told-only) and fires
+        // inside the fixpoint, so forcing one disjunct can force the next. Decisions
+        // are collected first so the immutable borrows (`rules`/`disjoints_by_class`/
+        // `subsumers`) are released before the mutating enqueues. Sound by
+        // construction; no-op when no atomic disjunction exists.
+        if !self.rules.disjunctions_by_class.is_empty() {
+            let mut force_unsat = false;
+            let mut force_subs: Vec<ClassId> = Vec::new();
+            for g in self.supers_of_class(c) {
+                let Some(disjs) = self.rules.disjunctions_by_class.get(&g) else {
+                    continue;
+                };
+                for disj in disjs {
+                    let disj: &[ClassId] = disj;
+                    let mut surv: Option<ClassId> = None;
+                    let mut count = 0u32;
+                    for &di in disj {
+                        let excluded = self.disjoints_by_class[di.index() as usize]
+                            .iter()
+                            .any(|&gg| self.subsumers.contains(c, gg));
+                        if !excluded {
+                            count += 1;
+                            surv = Some(di);
+                        }
+                    }
+                    match (count, surv) {
+                        (0, _) => force_unsat = true,
+                        (1, Some(s)) => force_subs.push(s),
+                        _ => {}
+                    }
+                }
+            }
+            if force_unsat {
+                self.enqueue_unsat(c);
+            }
+            for s in force_subs {
+                self.enqueue_subsumer(c, s);
+            }
+        }
         // Existential trigger firing — target side: for facts whose
         // target is C, a new subsumer D may match a trigger body.
         if let Some(fact_idxs) = Some(self.facts_by_target[c.index() as usize].clone())
@@ -1876,6 +1919,13 @@ struct ElRules {
     /// runtime worklist rule doesn't re-walk `role_super` on every new
     /// existential fact. Empty for roles with no functional ancestor.
     functional_supers_of: Vec<Vec<RoleId>>,
+    /// SP-B1: per-class atomic disjunctions on the RHS. `disjunctions_by_class[C]`
+    /// holds each `[D₁,…,Dₙ]` from a `C ⊑ D₁⊔…⊔Dₙ` axiom whose disjuncts are ALL
+    /// atomic (≥2). The derived-closure forced-disjunct rule (`process_subsumer`)
+    /// excludes any disjunct disjoint with a current subsumer of the class; one
+    /// survivor ⟹ force it, none ⟹ unsat. Sound by construction; atomic-only
+    /// (nominal `⊔` deferred to B3). Empty ⇒ the rule is a no-op (EL/Horn corpus).
+    disjunctions_by_class: HashMap<ClassId, Vec<Box<[ClassId]>>>,
 }
 
 impl ElRules {
@@ -2649,6 +2699,31 @@ fn lower_sub_class_of(
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) {
+    // SP-B1: register an atomic disjunction `C ⊑ D₁⊔…⊔Dₙ` (all `Dᵢ` atomic, n≥2)
+    // for the derived-closure forced-disjunct rule fired in `process_subsumer`.
+    // Runs for both SubClassOf and the EquivalentClasses `P ⊑ Or` direction.
+    // Non-atomic disjunct ⟹ skip the whole disjunction (nominal `⊔` = B3 scope).
+    if let ConceptExpr::Atomic(c) = pool.get(sub)
+        && let ConceptExpr::Or(disjuncts) = pool.get(sup)
+    {
+        let mut atomic: Vec<ClassId> = Vec::with_capacity(disjuncts.len());
+        let mut all_atomic = true;
+        for &d in disjuncts {
+            if let ConceptExpr::Atomic(did) = pool.get(d) {
+                atomic.push(*did);
+            } else {
+                all_atomic = false;
+                break;
+            }
+        }
+        if all_atomic && atomic.len() >= 2 {
+            rules
+                .disjunctions_by_class
+                .entry(*c)
+                .or_default()
+                .push(atomic.into_boxed_slice());
+        }
+    }
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
             // Phase D4 (2026-06-03): `Atomic(C) ⊑ Bot` directly marks
@@ -4228,6 +4303,147 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !subs.contains(class(&internal, "MultiGrape"), class(&internal, "Gamay")),
             "unsound: MultiGrape (∃grape, no ≤1) must NOT be ⊑ Gamay"
+        );
+    }
+
+    /// SP-B1 differentiator: forced-disjunct via a DERIVED (not told) subsumer.
+    /// `X ⊑ A1`, `X ⊑ A2`, `A1 ⊓ A2 ⊑ G` ⟹ the saturator derives `X ⊑ G` via the
+    /// conjunctive trigger (NOT a told subsumption — the LHS is an intersection);
+    /// `X ⊑ A⊔B`, `Disjoint(G,A)` ⟹ B1 forces `X ⊑ B`. SP-A's told-only pass cannot
+    /// (G ∉ told-subsumers(X)) — this is exactly what the derived-closure rule adds.
+    #[test]
+    fn b1_forced_disjunct_via_derived_subsumer() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A1)) Declaration(Class(:A2))\n\
+    Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :A1)\n\
+    SubClassOf(:X :A2)\n\
+    SubClassOf(ObjectIntersectionOf(:A1 :A2) :G)\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    DisjointClasses(:G :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "G")),
+            "precondition: X ⊑ G must be DERIVED via the A1⊓A2 conjunctive trigger"
+        );
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "B1: forced-disjunct via derived subsumer G ⟹ X ⊑ B"
+        );
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "A")),
+            "must NOT force the excluded disjunct A"
+        );
+    }
+
+    /// SP-B1: forced-disjunct via a told subsumer. `X⊑G`, `X⊑A⊔B`, `Disjoint(G,A)`
+    /// ⟹ `X⊑B`.
+    #[test]
+    fn b1_forced_disjunct_via_told_subsumer() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :G)\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    DisjointClasses(:G :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "X ⊑ B"
+        );
+    }
+
+    /// SP-B1: all disjuncts excluded ⟹ class unsat. `X⊑G`, `X⊑A⊔B`,
+    /// `Disjoint(G,A)`, `Disjoint(G,B)` ⟹ X unsatisfiable.
+    #[test]
+    fn b1_forced_to_bot() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :G)\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    DisjointClasses(:G :A)\n\
+    DisjointClasses(:G :B)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.is_unsatisfiable(class(&internal, "X")),
+            "X ⊑ ⊥ (all disjuncts excluded)"
+        );
+    }
+
+    /// SP-B1: inherited disjunction. `X⊑C`, `C⊑A⊔B`, `X⊑G`, `Disjoint(G,A)` ⟹
+    /// `X⊑B` (X inherits C's disjunction, forced by X's own subsumer G).
+    #[test]
+    fn b1_inherited_disjunction() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :C)\n\
+    SubClassOf(:C ObjectUnionOf(:A :B))\n\
+    SubClassOf(:X :G)\n\
+    DisjointClasses(:G :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "inherited: X ⊑ B"
+        );
+    }
+
+    /// SP-B1 negative control: an undetermined disjunction forces nothing.
+    /// `X⊑A⊔B` with no disjointness ⟹ no `X⊑A`/`X⊑B`, X satisfiable.
+    #[test]
+    fn b1_undetermined_forces_nothing() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "A")),
+            "no spurious X ⊑ A"
+        );
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "no spurious X ⊑ B"
+        );
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "X")),
+            "X must stay satisfiable"
+        );
+    }
+
+    /// SP-B1 negative control: nominal `⊔` is NOT ingested (atomic-only scope).
+    /// `X ⊑ {a}⊔{b}` ⟹ B1 registers nothing; X stays satisfiable, no spurious force.
+    #[test]
+    fn b1_nominal_disjunction_not_touched() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    SubClassOf(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "X")),
+            "nominal ⊔ untouched: X satisfiable"
         );
     }
 

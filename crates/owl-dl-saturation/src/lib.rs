@@ -2115,6 +2115,12 @@ struct TseitinAllocator {
     /// holds. Sound: keyed on `(R, exactly-S)` identity (no subset `∀R.S' ⊑
     /// ∀R.S` lattice — under-approximation), non-inverse, `OneOf`-of-nominals.
     forall_key_by_role: HashMap<(RoleId, Vec<IndividualId>), ClassId>,
+    /// SP-B2b: opaque synthetic class per `∀R.Atomic(K)` (the general-∀ analog of
+    /// `forall_key_by_role`). `C ⊑ ForallAtomicKey(R,K)` iff `C ⊑ ∀R.K` is told /
+    /// subsumption-propagated; a defined class's `∀R.K` conjunct lowers to the SAME
+    /// key. Told monotonicity edges `ForallAtomicKey(R,K) ⊑ ForallAtomicKey(R,L)` for
+    /// `K ⊑ L` give `∀R.K ⊑ ∀R.L` (sound, non-inverse). Keyed on `(R, K)` identity.
+    forall_atomic_key_by_role: HashMap<(RoleId, ClassId), ClassId>,
 }
 
 impl TseitinAllocator {
@@ -2127,7 +2133,20 @@ impl TseitinAllocator {
             nominal_by_ind: HashMap::new(),
             max_key_by_role: HashMap::new(),
             forall_key_by_role: HashMap::new(),
+            forall_atomic_key_by_role: HashMap::new(),
         }
+    }
+
+    /// SP-B2b: get-or-allocate the opaque synthetic class for `∀R.Atomic(K)`.
+    /// Keyed on `(R, K)`; mirror of `introduce_forall_key`.
+    fn introduce_forall_atomic_key(&mut self, role: RoleId, k: ClassId) -> ClassId {
+        if let Some(&existing) = self.forall_atomic_key_by_role.get(&(role, k)) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.forall_atomic_key_by_role.insert((role, k), synthetic);
+        synthetic
     }
 
     /// Get-or-allocate the opaque synthetic atomic class standing in for
@@ -2735,6 +2754,35 @@ fn collect_el_rules(
         }
     }
 
+    // SP-B2b: monotonicity edges `ForallAtomicKey(R,K) ⊑ ForallAtomicKey(R,L)` for
+    // every DIRECT told `K ⊑ L` where both `(R,K)` and `(R,L)` are keys (`∀R.K ⊑
+    // ∀R.L`, sound for non-inverse `R`). Direct edges suffice — the saturator's
+    // subsumer transitivity closes chains (`BlandFish⊑Fish⊑Seafood`). Connect
+    // existing keys only (the target marker must be a defined-class body atom to
+    // matter). Sound (told ⊆ entailment); FP=0 by construction.
+    if !tseitin.forall_atomic_key_by_role.is_empty() {
+        let keys = tseitin.forall_atomic_key_by_role.clone();
+        let told_direct: Vec<(ClassId, ClassId)> = rules
+            .atomic_subsumptions
+            .iter()
+            .map(|s| (s.sub, s.sup))
+            .collect();
+        let mut edges: Vec<AtomicSubsumption> = Vec::new();
+        for (k, l) in told_direct {
+            if k == l {
+                continue;
+            }
+            for (&(r, kk), &kc) in &keys {
+                if kk == k
+                    && let Some(&lc) = keys.get(&(r, l))
+                {
+                    edges.push(AtomicSubsumption { sub: kc, sup: lc });
+                }
+            }
+        }
+        rules.atomic_subsumptions.extend(edges);
+    }
+
     let total_classes = tseitin.next_id as usize;
 
     // Phase 2a: collect functional-role declarations and precompute
@@ -2872,6 +2920,17 @@ fn lower_sub_class_of(
                     sup: key,
                 });
             }
+            // SP-B2b: a told `∀R.Atomic(K)` (top-level or And operand) seeds
+            // `sub ⊑ ForallAtomicKey(R,K)` — the same opaque key a defined class's
+            // `∀R.K` conjunct lowers to. Sound; monotonicity edges (seeded below)
+            // give `∀R.K ⊑ ∀R.L` for told `K ⊑ L`.
+            for (role, k) in forall_atomic_operands_on_right(sup, pool) {
+                let key = tseitin.introduce_forall_atomic_key(role, k);
+                rules.atomic_subsumptions.push(AtomicSubsumption {
+                    sub: *sub_id,
+                    sup: key,
+                });
+            }
             // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
             // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
             // `disjoint(X, Y)`. The saturator otherwise drops the `¬Y`
@@ -2972,6 +3031,13 @@ fn lower_sub_class_of(
                         let (role, members) =
                             forall_oneof_members(op, pool).expect("just checked Some");
                         bodies.push(tseitin.introduce_forall_key(role, members));
+                    }
+                    // SP-B2b: a `∀R.Atomic(K)` conjunct of a defined class lowers to
+                    // the opaque `ForallAtomicKey(R,K)` body (matched by the told-`∀`
+                    // seed in `forall_atomic_operands_on_right` + the monotonicity edges).
+                    _ if forall_atomic_member(op, pool).is_some() => {
+                        let (role, k) = forall_atomic_member(op, pool).expect("just checked Some");
+                        bodies.push(tseitin.introduce_forall_atomic_key(role, k));
                     }
                     _ => {
                         salvageable = false;
@@ -3420,6 +3486,34 @@ fn forall_oneof_operands_on_right(
             .filter_map(|&op| forall_oneof_members(op, pool))
             .collect(),
         _ => forall_oneof_members(c, pool).into_iter().collect(),
+    }
+}
+
+/// SP-B2b: `∀R.Atomic(K)` (non-inverse `R`) — the general-∀ filler the saturator
+/// otherwise drops. Mirror of `forall_oneof_members` for an atomic filler.
+fn forall_atomic_member(c: ConceptId, pool: &ConceptPool) -> Option<(RoleId, ClassId)> {
+    let ConceptExpr::All(role, inner) = pool.get(c) else {
+        return None;
+    };
+    if role.is_inverse() {
+        return None;
+    }
+    if let ConceptExpr::Atomic(k) = pool.get(*inner) {
+        Some((role.role_id(), *k))
+    } else {
+        None
+    }
+}
+
+/// SP-B2b: `∀R.Atomic(K)` restrictions that are `c` itself or a top-level `And`
+/// operand of `c`. Mirror of `forall_oneof_operands_on_right`.
+fn forall_atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(RoleId, ClassId)> {
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands
+            .iter()
+            .filter_map(|&op| forall_atomic_member(op, pool))
+            .collect(),
+        _ => forall_atomic_member(c, pool).into_iter().collect(),
     }
 }
 
@@ -4581,6 +4675,69 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             subs.is_unsatisfiable(class(&internal, "X")),
             "B2a: both X⊓A and X⊓B unsat ⟹ X ⊑ ⊥"
+        );
+    }
+
+    /// SP-B2b differentiator: the wine/food Course hierarchy via `ForallAtomicKey`.
+    /// `FishCourse ≡ MealCourse ⊓ ∀hasFood.Fish`, `SeafoodCourse ≡ MealCourse ⊓
+    /// ∀hasFood.Seafood`, `Fish ⊑ Seafood` ⟹ `FishCourse ⊑ SeafoodCourse` via
+    /// ∀-monotonicity (the saturator misses this without B2b). Transitive
+    /// `BlandFishCourse ⊑ FishCourse ⊑ SeafoodCourse` with `BlandFish ⊑ Fish`.
+    #[test]
+    fn b2b_forall_course_hierarchy() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:MealCourse)) Declaration(Class(:FishCourse)) Declaration(Class(:SeafoodCourse)) Declaration(Class(:BlandFishCourse))\n\
+    Declaration(Class(:Fish)) Declaration(Class(:Seafood)) Declaration(Class(:BlandFish))\n\
+    Declaration(ObjectProperty(:hasFood))\n\
+    SubClassOf(:Fish :Seafood)\n\
+    SubClassOf(:BlandFish :Fish)\n\
+    EquivalentClasses(:FishCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :Fish)))\n\
+    EquivalentClasses(:SeafoodCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :Seafood)))\n\
+    EquivalentClasses(:BlandFishCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :BlandFish)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(
+                class(&internal, "FishCourse"),
+                class(&internal, "SeafoodCourse")
+            ),
+            "B2b: FishCourse ⊑ SeafoodCourse via ∀hasFood monotonicity (Fish⊑Seafood)"
+        );
+        assert!(
+            subs.contains(
+                class(&internal, "BlandFishCourse"),
+                class(&internal, "SeafoodCourse")
+            ),
+            "B2b transitive: BlandFishCourse ⊑ SeafoodCourse"
+        );
+    }
+
+    /// SP-B2b negative controls: no spurious ∀-subsumption. Unrelated fillers ⟹
+    /// no Course subsumption; different role ⟹ no subsumption.
+    #[test]
+    fn b2b_forall_no_spurious() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:MealCourse)) Declaration(Class(:CourseA)) Declaration(Class(:CourseB)) Declaration(Class(:CourseC))\n\
+    Declaration(Class(:K)) Declaration(Class(:L))\n\
+    Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+    EquivalentClasses(:CourseA ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:r :K)))\n\
+    EquivalentClasses(:CourseB ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:r :L)))\n\
+    EquivalentClasses(:CourseC ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:s :K)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "CourseA"), class(&internal, "CourseB")),
+            "unrelated K,L (no K⊑L) ⟹ CourseA ⋢ CourseB"
+        );
+        assert!(
+            !subs.contains(class(&internal, "CourseA"), class(&internal, "CourseC")),
+            "different role (r vs s) ⟹ CourseA ⋢ CourseC"
         );
     }
 

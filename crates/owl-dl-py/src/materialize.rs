@@ -48,10 +48,24 @@ pub(crate) fn materialize_inferred_subclass_axioms(path: &str) -> PyResult<Vec<(
 
 /// Returns every (class IRI, individual IRI) pair `(c, i)` such that
 /// `ClassAssertion(c, i)` is entailed.
+///
+/// Each instance check routes through the ABox-seeded hypertableau wedge — a
+/// sound, terminating, and complete decision procedure on nominals + inverse
+/// roles + number restrictions (`SHOIQ`/`SROIQ`). `per_pair_timeout_ms` bounds
+/// each check, mirroring `classify`. The default (100 ms) is FAST: a positive
+/// budget is a sound under-approximation — a timed-out pair is reported "not an
+/// instance", so no spurious assertions, possibly incomplete. Pass `0` for the
+/// complete (unbounded) result, which is safe because the wedge always
+/// terminates (genuine memberships clash well under the default budget).
 #[pyfunction]
-pub(crate) fn materialize_inferred_class_assertions(path: &str) -> PyResult<Vec<(String, String)>> {
+#[pyo3(signature = (path, *, per_pair_timeout_ms=100))]
+pub(crate) fn materialize_inferred_class_assertions(
+    path: &str,
+    per_pair_timeout_ms: Option<u64>,
+) -> PyResult<Vec<(String, String)>> {
     let ontology = load::load_path(path)?;
-    let realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
+    let realization = owl_dl_reasoner::realize_with_timeout(&ontology, per_pair_timeout_ms)
+        .map_err(reason_error_to_py)?;
     let mut out = Vec::new();
     for ind in realization.individuals() {
         for c in realization.most_specific_types(ind) {

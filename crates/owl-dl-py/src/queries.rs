@@ -45,10 +45,21 @@ pub(crate) fn instances_of(path: &str, class_iri: &str) -> PyResult<Vec<String>>
 }
 
 /// Map each named individual to its most-specific entailed types.
+/// Each instance check routes through the ABox-seeded hypertableau wedge — a
+/// sound, terminating, complete decision procedure on `SHOIQ`/`SROIQ`.
+/// `per_pair_timeout_ms` bounds each check, mirroring `classify`. The default
+/// (100 ms) is FAST: a positive budget is a sound under-approximation
+/// (timed-out pairs reported "not an instance", possibly incomplete). Pass `0`
+/// for the complete (unbounded) result (safe — the wedge always terminates).
 #[pyfunction]
-pub(crate) fn realize(path: &str) -> PyResult<HashMap<String, Vec<String>>> {
+#[pyo3(signature = (path, *, per_pair_timeout_ms=100))]
+pub(crate) fn realize(
+    path: &str,
+    per_pair_timeout_ms: Option<u64>,
+) -> PyResult<HashMap<String, Vec<String>>> {
     let ontology = load::load_path(path)?;
-    let rs_realization = owl_dl_reasoner::realize(&ontology).map_err(reason_error_to_py)?;
+    let rs_realization = owl_dl_reasoner::realize_with_timeout(&ontology, per_pair_timeout_ms)
+        .map_err(reason_error_to_py)?;
     Ok(realization_to_dict(&rs_realization))
 }
 

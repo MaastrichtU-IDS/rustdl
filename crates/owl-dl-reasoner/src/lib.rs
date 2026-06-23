@@ -63,7 +63,8 @@ pub use realize::{
     Realization, instances_of, instances_of_internal, instances_of_saturation_only,
     instances_of_saturation_only_internal, is_instance_of, is_instance_of_internal,
     is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
-    realize_internal, realize_saturation_only, realize_saturation_only_internal,
+    realize_internal, realize_internal_with_timeout, realize_saturation_only,
+    realize_saturation_only_internal, realize_with_timeout,
 };
 pub use repair::{Repair, Repairs, find_repairs};
 
@@ -1889,6 +1890,15 @@ pub(crate) struct ConsistencyCache {
     num_classes: u32,
     /// `num_individuals` = the nominal range width (`with_nominals`).
     num_individuals: u32,
+    /// Hierarchy-aware clause indexes + disjoint pairs, built ONCE from
+    /// `clauses`/`sub_roles` and reused across every per-(individual,class)
+    /// realization probe via `new_seeded_with_prebuilt` +
+    /// `with_sub_roles_keep_index`. Previously each probe rebuilt the index
+    /// TWICE (`new_seeded` with `None`, then `with_sub_roles` with the
+    /// hierarchy); now `decide` shares these directly and `decide_instance`
+    /// clones + patches only the single forbid clause's entries.
+    base_indexes: std::sync::Arc<owl_dl_tableau::hyper::ClauseIndexes>,
+    base_disjoint: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
 }
 
 impl ConsistencyCache {
@@ -1972,12 +1982,24 @@ impl ConsistencyCache {
             same_pairs,
         };
 
+        // Build the hierarchy-aware index + disjoint pairs ONCE — the same
+        // (clauses, Some(sub_roles)) inputs the per-probe `with_sub_roles`
+        // rebuild used — and share across all probes.
+        let base_indexes = std::sync::Arc::new(owl_dl_tableau::hyper::build_clause_indexes(
+            &clauses,
+            Some(&sub_roles),
+        ));
+        let base_disjoint =
+            std::sync::Arc::new(owl_dl_tableau::hyper::build_disjoint_pairs(&clauses));
+
         Self {
             clauses,
             seed,
             sub_roles,
             num_classes,
             num_individuals,
+            base_indexes,
+            base_disjoint,
         }
     }
 
@@ -1990,10 +2012,170 @@ impl ConsistencyCache {
         &self,
         deadline: Option<std::time::Instant>,
     ) -> owl_dl_tableau::hyper::HyperResult {
+        // Base consistency: no extra clause, so share the prebuilt index +
+        // disjoint set directly (no clone, no rebuild).
+        self.run(
+            &self.clauses,
+            self.base_indexes.clone(),
+            self.base_disjoint.clone(),
+            deadline,
+        )
+    }
+
+    /// Pseudo-model for realization: run the base `ABox` consistency wedge ONCE
+    /// and, if consistent, return per-individual atomic-class type sets from
+    /// the witness completion. `types[i]` is the set of class ids individual
+    /// `i` carries in that model; a class **absent** from `types[i]` is a sound
+    /// non-membership witness (there is a model in which `i` is not in it), so
+    /// the per-pair instance probe can be skipped for it. `None` when the `ABox`
+    /// is inconsistent or the wedge is undetermined (caller falls back).
+    pub(crate) fn base_model_types(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<std::collections::HashSet<u32>>> {
+        use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
+        let mut engine = HyperEngine::new_seeded_with_prebuilt(
+            &self.clauses,
+            &self.seed,
+            self.base_indexes.clone(),
+            self.base_disjoint.clone(),
+        )
+        .with_sub_roles_keep_index(self.sub_roles.clone())
+        .with_nominals(self.num_classes, self.num_individuals);
+        if hyper_double_block_enabled() {
+            engine = engine.with_double_blocking();
+        }
+        if hyper_precise_card_deps_enabled() {
+            engine = engine.with_precise_card_deps();
+        }
+        if crate::adaptive_budget_enabled() {
+            engine = engine.with_adaptive_budget();
+        }
+        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+            HyperResult::Sat => Some(
+                (0..self.num_individuals)
+                    .map(|i| {
+                        engine
+                            .seeded_individual_labels(i, self.num_classes)
+                            .into_iter()
+                            .collect()
+                    })
+                    .collect(),
+            ),
+            HyperResult::Unsat | HyperResult::Stalled => None,
+        }
+    }
+
+    /// Instance check via the ABox-seeded wedge: decide whether
+    /// `KB ⊨ class_id(individual)`.
+    ///
+    /// Reduction: `KB ⊨ C(a)` iff `KB ∪ {a : ¬C}` is inconsistent. For an
+    /// atomic class `C` and the named individual `a` (whose nominal node is
+    /// `{a}`), `a : ¬C` is the ⊥-headed clause `{a}(X) ⊓ C(X) → ⊥` — it
+    /// clashes exactly when the KB forces `C` at `a`'s node. The same
+    /// NN-rule hyper engine as [`Self::decide`] then runs over the `ABox` seed:
+    /// it is sound and terminating on nominals + inverse roles + number
+    /// restrictions (HF2 double-blocking + HF3 `≥n`/`≠` + HF4 NN-rule), the
+    /// fragment on which the older subset-blocking tableau does not halt.
+    ///
+    /// Verdict: `Unsat` ⟹ `a` is provably an instance of `C`; `Sat` ⟹ not
+    /// an instance (sound under HF5 trust-Sat, the same trust level as
+    /// `classify`); `Stalled` ⟹ undetermined (caller falls back).
+    pub(crate) fn decide_instance(
+        &self,
+        class_id: owl_dl_core::ir::ClassId,
+        individual: owl_dl_core::ir::IndividualId,
+        deadline: Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult {
+        use owl_dl_core::clause::{Atom, DlClause, X};
+        use owl_dl_core::ir::ClassId;
+        let nominal = ClassId::new(self.num_classes + individual.index());
+        let mut clauses = self.clauses.clone();
+        let forbid_idx = clauses.len(); // logical index of the appended clause
+        clauses.push(DlClause {
+            body: vec![Atom::Class(class_id, X), Atom::Class(nominal, X)],
+            head: vec![],
+        });
+        // Patch the prebuilt index for this one forbid clause instead of
+        // rebuilding from scratch. The clause is Horn (empty head) with two
+        // `Class(_, X)` body atoms, so `build_clause_indexes` would push
+        // `forbid_idx` to the `x_trigger` bucket of each — replicate exactly.
+        // Its ⊥-head + two distinct same-var class atoms also form a disjoint
+        // pair (`build_disjoint_pairs`).
+        let mut idx = (*self.base_indexes).clone();
+        let cmax = class_id.index().max(nominal.index()) as usize;
+        if idx.x_trigger.len() <= cmax {
+            idx.x_trigger.resize(cmax + 1, Vec::new());
+        }
+        idx.x_trigger[class_id.index() as usize].push(forbid_idx);
+        idx.x_trigger[nominal.index() as usize].push(forbid_idx);
+        let mut disjoint = (*self.base_disjoint).clone();
+        let (lo, hi) = (
+            class_id.index().min(nominal.index()),
+            class_id.index().max(nominal.index()),
+        );
+        disjoint.insert((lo, hi));
+        self.run(
+            &clauses,
+            std::sync::Arc::new(idx),
+            std::sync::Arc::new(disjoint),
+            deadline,
+        )
+    }
+
+    /// Class ids (in vocabulary index space, `< num_classes`) that occur in
+    /// some clause **head** — i.e. are positively *derivable*. A class that
+    /// appears in no head can only be a member of an individual if it was
+    /// asserted (and assertions are injected as `{a} ⊑ C` clauses, so their
+    /// `C` *does* occur in a head). Hence realization need only instance-check
+    /// candidate classes: a non-candidate is never newly entailed, so skipping
+    /// it is completeness-preserving and avoids the costly tableau probe on
+    /// primitive leaf classes (e.g. `A ⊑ B` with `A` never on a head).
+    pub(crate) fn candidate_classes(&self) -> std::collections::HashSet<u32> {
+        use owl_dl_core::clause::Atom;
+        let mut out = std::collections::HashSet::new();
+        let mut note = |c: owl_dl_core::ir::ClassId| {
+            if c.index() < self.num_classes {
+                out.insert(c.index());
+            }
+        };
+        // Only `Class(C, v)` heads matter: a named individual is in atomic
+        // `C` iff `C` is derived *at its own node*, which happens only via a
+        // `Class` head atom. `Exists`/`AtLeast`/`AtMost` heads place their
+        // qualifier class on a generated/constrained successor, not the named
+        // node, so a class occurring *only* as an existential/cardinality
+        // qualifier is never a named individual's type and needs no probe.
+        // (∀R.C is clausified to `… ∧ R(x,y) → Class(C,y)`, a `Class` head, so
+        // value-restriction-derived memberships on named fillers are kept.)
+        for clause in &self.clauses {
+            for atom in &clause.head {
+                if let Atom::Class(c, _) = *atom {
+                    note(c);
+                }
+            }
+        }
+        out
+    }
+
+    /// Configure and run the NN-rule hyper engine on `clauses` against the
+    /// shared `ABox` seed. Shared by [`Self::decide`] and
+    /// [`Self::decide_instance`] so both apply identical engine options.
+    fn run(
+        &self,
+        clauses: &[owl_dl_core::clause::DlClause],
+        indexes: std::sync::Arc<owl_dl_tableau::hyper::ClauseIndexes>,
+        disjoint: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+        deadline: Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult {
         use owl_dl_tableau::hyper::HyperEngine;
-        let mut engine = HyperEngine::new_seeded(&self.clauses, &self.seed)
-            .with_sub_roles(self.sub_roles.clone())
-            .with_nominals(self.num_classes, self.num_individuals);
+        // Reuse the hierarchy-aware prebuilt index (built once in `build`).
+        // `with_sub_roles_keep_index` sets the hierarchy WITHOUT rebuilding the
+        // index — the index already reflects it — avoiding the double rebuild
+        // (`new_seeded` + `with_sub_roles`) that the previous per-probe path did.
+        let mut engine =
+            HyperEngine::new_seeded_with_prebuilt(clauses, &self.seed, indexes, disjoint)
+                .with_sub_roles_keep_index(self.sub_roles.clone())
+                .with_nominals(self.num_classes, self.num_individuals);
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
@@ -3248,6 +3430,43 @@ impl PreparedOntology {
         deadline: Option<std::time::Instant>,
     ) -> Option<owl_dl_tableau::hyper::HyperResult> {
         self.consistency.as_ref().map(|c| c.decide(deadline))
+    }
+
+    /// Instance check via the ABox-seeded NN-rule wedge (the terminating,
+    /// SROIQ-complete path). `None` when the wedge is disabled or the input
+    /// has no `ABox`; otherwise the three-valued
+    /// [`owl_dl_tableau::hyper::HyperResult`] for `KB ⊨ class_id(individual)`
+    /// (`Unsat` = instance, `Sat` = not, `Stalled` = undetermined). See
+    /// [`ConsistencyCache::decide_instance`].
+    pub(crate) fn instance_check_wedge(
+        &self,
+        class_id: owl_dl_core::ir::ClassId,
+        individual: owl_dl_core::ir::IndividualId,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<owl_dl_tableau::hyper::HyperResult> {
+        self.consistency
+            .as_ref()
+            .map(|c| c.decide_instance(class_id, individual, deadline))
+    }
+
+    /// Realization candidate classes (clause-head class ids) from the
+    /// ABox-seeded wedge, or `None` when the wedge is unavailable. See
+    /// [`ConsistencyCache::candidate_classes`].
+    pub(crate) fn realize_candidate_classes(&self) -> Option<std::collections::HashSet<u32>> {
+        self.consistency
+            .as_ref()
+            .map(ConsistencyCache::candidate_classes)
+    }
+
+    /// Per-individual pseudo-model type sets (from one `ABox` consistency model),
+    /// or `None` when unavailable. See [`ConsistencyCache::base_model_types`].
+    pub(crate) fn realize_base_model_types(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<std::collections::HashSet<u32>>> {
+        self.consistency
+            .as_ref()
+            .and_then(|c| c.base_model_types(deadline))
     }
 
     /// Lazy accessor for the `ABox` consistency check verdict.

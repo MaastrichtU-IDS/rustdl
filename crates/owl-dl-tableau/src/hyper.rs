@@ -1694,6 +1694,25 @@ impl<'c> HyperEngine<'c> {
         h
     }
 
+    /// Atomic class ids (`< num_classes`, i.e. excluding nominal classes)
+    /// labelling the seeded individual `individual_index` in this completion.
+    /// Soundly callable only after a `Sat` decide on a `new_seeded*` engine:
+    /// the completion IS a witness model, so a class `D ∉` this set is a sound
+    /// **non-membership** witness for that individual (there is a model in which
+    /// it is not a `D`) — the pseudo-model realization shortcut. Merges are
+    /// resolved through the union-find so the canonical (post-merge) labels are
+    /// read.
+    #[must_use]
+    pub fn seeded_individual_labels(&self, individual_index: u32, num_classes: u32) -> Vec<u32> {
+        let rep = self.resolve(HNode(individual_index));
+        self.nodes[rep.index()]
+            .labels
+            .iter()
+            .map(|c| c.index())
+            .filter(|&c| c < num_classes)
+            .collect()
+    }
+
     /// Capture a [`crate::snapshot::GraphSnapshot`] of the current
     /// completion graph. Soundly callable only after [`Self::decide`]
     /// (or [`Self::decide_with_deadline`]) has returned
@@ -1940,6 +1959,38 @@ impl<'c> HyperEngine<'c> {
     /// `decide`, not by `merge`'s return.
     #[must_use]
     pub fn new_seeded(clauses: &'c [DlClause], seed: &AboxSeed) -> Self {
+        Self::new_seeded_impl(
+            clauses,
+            seed,
+            std::sync::Arc::new(build_clause_indexes(clauses, None)),
+            std::sync::Arc::new(build_disjoint_pairs(clauses)),
+        )
+    }
+
+    /// Like [`Self::new_seeded`] but reuses caller-supplied prebuilt
+    /// `ClauseIndexes` + disjoint-pair set (shared via `Arc`) instead of
+    /// rebuilding them per call — the seeded analogue of
+    /// [`Self::new_with_prebuilt`]. The indexes MUST correspond to `clauses`
+    /// (same slice, same role hierarchy passed to `build_clause_indexes`);
+    /// pair with [`Self::with_sub_roles_keep_index`] so the index is not
+    /// rebuilt again. Used by the realization wedge to amortize index
+    /// construction across the per-(individual,class) instance checks.
+    #[must_use]
+    pub fn new_seeded_with_prebuilt(
+        clauses: &'c [DlClause],
+        seed: &AboxSeed,
+        indexes: std::sync::Arc<ClauseIndexes>,
+        disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+    ) -> Self {
+        Self::new_seeded_impl(clauses, seed, indexes, disjoint_pairs)
+    }
+
+    fn new_seeded_impl(
+        clauses: &'c [DlClause],
+        seed: &AboxSeed,
+        indexes: std::sync::Arc<ClauseIndexes>,
+        disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+    ) -> Self {
         let n = seed.num_individuals as usize;
         if n == 0 {
             // Degenerate: no individuals. Fall back to a single root so
@@ -1964,12 +2015,12 @@ impl<'c> HyperEngine<'c> {
             .collect();
         let mut engine = Self {
             clauses,
-            disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
+            disjoint_pairs,
             nodes,
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
-            indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
+            indexes,
             worklist: Vec::new(),
             representative,
             sub_roles: None,

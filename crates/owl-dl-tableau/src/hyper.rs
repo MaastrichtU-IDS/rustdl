@@ -468,6 +468,15 @@ pub struct HyperEngine<'c> {
     /// is distinct only via `are_neq && !labels_disjoint`. Sound by
     /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
     precise_card_deps: bool,
+    /// Opt-in (`RUSTDL_PRECISE_MERGE_DEPS`, via [`Self::with_precise_merge_deps`]):
+    /// the ≤n merge rule does dependency-directed backjumping (precise merge
+    /// causation) instead of reporting `DepSet::ALL`. Default OFF.
+    precise_merge_deps: bool,
+    /// Per-`solve_at_most`-call flag: set true when the precise path encounters a
+    /// `≠`/merge-taint it cannot attribute, forcing the conservative `DepSet::ALL`
+    /// fallback at partition exhaustion. Reset at each `solve_at_most` entry.
+    #[allow(dead_code)]
+    merge_precise_declined: bool, // read in Tasks 2-3
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -709,6 +718,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            precise_merge_deps: false,
+            merge_precise_declined: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -753,6 +764,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            precise_merge_deps: false,
+            merge_precise_declined: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -783,6 +796,13 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// Enable precise ≤n merge-causation backjumping. See [`Self::precise_merge_deps`].
+    #[must_use]
+    pub fn with_precise_merge_deps(mut self) -> Self {
+        self.precise_merge_deps = true;
+        self
+    }
+
     /// Opt into adaptive early-cut of diverging searches (Lever #1). Off by default
     /// (preserves deadline-only behavior + test calibration).
     #[must_use]
@@ -802,6 +822,11 @@ impl<'c> HyperEngine<'c> {
     fn with_nn_taint_disabled(mut self) -> Self {
         self.nn_taint_disabled = true;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn precise_merge_deps_for_test(&self) -> bool {
+        self.precise_merge_deps
     }
 
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
@@ -1627,6 +1652,8 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            precise_merge_deps: false,
+            merge_precise_declined: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
@@ -4776,5 +4803,19 @@ mod tests {
              decision via the derive_role_edge birth_deps fold so backjumping \
              cannot prune Q. A false Unsat here = the dep-fold regressed."
         );
+    }
+
+    #[test]
+    fn precise_merge_deps_builder_sets_flag_and_off_is_default() {
+        let a = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![],
+        }];
+        // Default OFF: a plain engine has precise_merge_deps == false; builder flips it.
+        let off = HyperEngine::new(&clauses, a);
+        assert!(!off.precise_merge_deps_for_test());
+        let on = HyperEngine::new(&clauses, a).with_precise_merge_deps();
+        assert!(on.precise_merge_deps_for_test());
     }
 }

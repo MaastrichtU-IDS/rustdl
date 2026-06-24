@@ -65,6 +65,35 @@ ground-up reasoner rewrite repeatedly assessed as not-worth-it for one fixture's
 - Wine stays an accepted perf gap (`--pair-timeout-ms`, MISSED=0). `main` pristine; the full research
   record (specs, plans, 4 gate verdicts, the FP diagnosis) is on `feat/build-once-redesign`.
 
+## Corpus extension — is det-resolution a PERF lever on the *terminating* SROIQ fixtures? (NO)
+
+Follow-up (option 1): the wine result is a wall-DNF case. Does the same deterministic look-ahead
+collapse ⊔ points on the SROIQ fixtures that DO terminate (where a branch cut → wall win)?
+Per-class sweep, `RUSTDL_DET_LOOKAHEAD_PROBE=1`, 5 s/class (`tests/det_corpus_gate.rs`, throwaway):
+
+| fixture | wall (hist.) | classes | ⊔ points (total) | collapse ratio | det-resolution |
+|---|---|---|---|---|---|
+| ore-15672 | fast | 82 | 119 | 0.14 | little branching to prune |
+| ore-10908 | ~5 s | 692 | 1833 | **0.995** | effective — but already fast |
+| sio | ~32 s | 1585 | 2376 | **0.000** | useless (nondeterministic) |
+| wine | DNF | 137 | ~18k/class | 0.18–0.34 | useless |
+
+**The catch-22, confirmed corpus-wide:** deterministic resolution collapses disjunctions *exactly
+where they are already cheap* (ore-10908: 99.5%, but the fixture is already ~5 s with only 1833 ⊔
+points — pruning saves negligible wall) and *fails exactly where the wall is* (sio 32 s → 0% collapse;
+wine DNF → 18–34%). No fixture has **both** a wall **and** collapsible disjunctions. The walls are made
+of irreducibly-nondeterministic ⊔ choices (value-partitions / genuine choice) that no deterministic
+closure resolves.
+
+**NO-GO for the build-once deterministic-expansion cache as a corpus perf mechanism.** ore-10908
+clears the 70% bar numerically, but the bar was a proxy for "a fixture where pruning wins wall" — which
+does not exist. (5th convergent NO-GO.) **Positive characterization retained:** the probe cleanly
+partitions the corpus's disjunctions into *deterministic* (ore-10908, structurally determined) vs
+*genuinely nondeterministic* (sio/wine) — and shows Konclude's deterministic-expansion edge is NOT the
+source of its sio/wine speed either (those are 0%/low-collapse). Konclude's sio/wine win must come from
+its other mechanisms (nominal architecture + the combination), reinforcing that no single edge is the
+lever.
+
 ## Method note
 
 Four cheap viability gates this session, each catching a multi-month dead-end *before* building it

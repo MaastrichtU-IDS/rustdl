@@ -5162,4 +5162,102 @@ mod tests {
             "decline flag must be set when are_neq fires in merge_with_cause"
         );
     }
+
+    /// Architectural evidence that `precise_merge_deps` enables dependency-
+    /// directed backjumping past an independent disjunction above a ≤n clash.
+    ///
+    /// # Shape
+    ///
+    /// ```text
+    /// A ⊑ D1 ⊔ D2          (irrelevant top-level disjunction; decision d_disj)
+    /// A ⊑ ∃R.B
+    /// A ⊑ ∃R.C
+    /// A ⊑ ≤1 R              (forces a merge of the two R-successors; decision d_merge)
+    /// B ⊓ C ⊑ E             (3-body head-non-empty → NOT in disjoint_pairs)
+    /// E → ⊥                 (1-body empty-head, also NOT in disjoint_pairs)
+    /// ```
+    ///
+    /// The `B ⊓ C ⊑ E` / `E ⊑ ⊥` indirection ensures `forced_distinct_exceeds`
+    /// cannot short-circuit via `disjoint_pairs` (which only registers **2-body
+    /// empty-head** clauses).  After the ≤1-merge the Horn fixpoint derives E on
+    /// the merged node, then clashes — but that clash depends on the merge
+    /// decision only, not on the disjunction choice.
+    ///
+    /// # Expected branch counts
+    ///
+    /// OFF (`precise_merge_deps = false`):
+    ///
+    ///   - Branch 1: assert D1.
+    ///   - Branch 2: merge-partition.  Clash returns `DepSet::ALL` ⟹ disjunction
+    ///     decision bit is in ALL ⟹ no backjump.
+    ///   - Branch 3: restore, assert D2.
+    ///   - Branch 4: merge-partition again.
+    ///
+    ///   Total: 4 branches.
+    ///
+    /// ON (`precise_merge_deps = true`):
+    ///
+    ///   - Branch 1: assert D1.
+    ///   - Branch 2: merge-partition.  Clash deps contain the merge decision
+    ///     only; `solve_at_most` strips it ⟹ returns deps not containing the
+    ///     disjunction decision ⟹ backjump past D2.
+    ///
+    ///   Total: 2 branches.
+    #[test]
+    fn precise_merge_deps_backjumps_past_independent_disjunction() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c, d1, d2, e) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5));
+        let clauses = vec![
+            // A ⊑ D1 ⊔ D2  (irrelevant disjunction — independent of the ≤1 clash)
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            // A ⊑ ∃R.B
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            // A ⊑ ∃R.C
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            // A ⊑ ≤1 R
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+            // B ⊓ C ⊑ E  (non-empty head ⟹ NOT registered in disjoint_pairs;
+            //              forced_distinct_exceeds does NOT fire on B/C)
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+                head: vec![Atom::Class(e, X)],
+            },
+            // E ⊑ ⊥  (1-body empty-head ⟹ also NOT in disjoint_pairs)
+            DlClause {
+                body: vec![Atom::Class(e, X)],
+                head: vec![],
+            },
+        ];
+
+        let mut off_eng = HyperEngine::new(&clauses, a);
+        let off_res = off_eng.decide(64);
+        let off_stats = off_eng.stats();
+
+        let mut on_eng = HyperEngine::new(&clauses, a).with_precise_merge_deps();
+        let on_res = on_eng.decide(64);
+        let on_stats = on_eng.stats();
+
+        assert_eq!(off_res, HyperResult::Unsat, "baseline: ≤1 clash is Unsat");
+        assert_eq!(on_res, HyperResult::Unsat, "verdict must be preserved ON");
+
+        assert!(
+            on_stats.branches_taken < off_stats.branches_taken,
+            "precise_merge_deps must backjump past the independent ⊔: \
+             expected on.branches < off.branches, got off={} on={}",
+            off_stats.branches_taken,
+            on_stats.branches_taken,
+        );
+    }
 }

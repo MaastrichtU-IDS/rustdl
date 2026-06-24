@@ -409,6 +409,7 @@ pub struct SearchStats {
 /// per-class told-disjoints, both indexed by [`ClassId::index()`]. Used to
 /// prune ⊔ disjuncts incompatible with a node's label. NOT a production
 /// type — gated by `RUSTDL_SAT_GUIDE`.
+#[derive(Clone)]
 pub struct SatGuide {
     pub subsumers: Vec<Vec<ClassId>>,
     pub disjoint: Vec<Vec<ClassId>>,

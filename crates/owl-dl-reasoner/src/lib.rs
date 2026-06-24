@@ -1546,6 +1546,11 @@ pub(crate) struct HyperCache {
     /// not just ABox-seeded nodes. Without this, classify misses subsumptions
     /// derivable only via an inverse-domain triggered on a generated successor.
     sub_roles: RoleHierarchy,
+    /// Optional saturation-derived guide for ⊔-disjunct pruning.
+    /// `Some` when `RUSTDL_SAT_GUIDE=1`, `None` otherwise (default).
+    /// When present, attached to every per-query `HyperEngine` via
+    /// `with_sat_guide`. Default OFF → byte-identical to current behavior.
+    sat_guide: Option<owl_dl_tableau::hyper::SatGuide>,
 }
 
 impl HyperCache {
@@ -1631,6 +1636,28 @@ impl HyperCache {
         let base_indexes = std::sync::Arc::new(base_indexes_inner);
         let base_disjoint_pairs =
             std::sync::Arc::new(owl_dl_tableau::hyper::build_disjoint_pairs(&clauses));
+        // Build the saturation guide when RUSTDL_SAT_GUIDE=1 (default OFF).
+        // Uses the pre-clone `internal` (which was mutated by clausification
+        // above); both saturate and build_told_tables accept a shared reference.
+        let sat_guide = if std::env::var("RUSTDL_SAT_GUIDE").as_deref() == Ok("1") {
+            let closure = owl_dl_saturation::saturate(&internal);
+            let told = owl_dl_core::told::build_told_tables(&internal);
+            let n = internal.vocabulary.num_classes();
+            let mut subsumers: Vec<Vec<owl_dl_core::ir::ClassId>> = vec![vec![]; n];
+            let mut disjoint: Vec<Vec<owl_dl_core::ir::ClassId>> = vec![vec![]; n];
+            for (id, _) in internal.vocabulary.classes() {
+                subsumers[id.index() as usize] = closure.subsumers_of(id);
+                let mut dj: Vec<owl_dl_core::ir::ClassId> = told.disjoints_of(id).to_vec();
+                dj.sort_by_key(|c| c.index());
+                disjoint[id.index() as usize] = dj;
+            }
+            Some(owl_dl_tableau::hyper::SatGuide {
+                subsumers,
+                disjoint,
+            })
+        } else {
+            None
+        };
         Self {
             clauses,
             sup_neg,
@@ -1638,6 +1665,7 @@ impl HyperCache {
             base_indexes,
             base_disjoint_pairs,
             sub_roles,
+            sat_guide,
         }
     }
 
@@ -1706,6 +1734,9 @@ impl HyperCache {
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
+        if let Some(g) = self.sat_guide.as_ref() {
+            engine = engine.with_sat_guide(g.clone());
+        }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
@@ -1743,6 +1774,9 @@ impl HyperCache {
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
+        }
+        if let Some(g) = self.sat_guide.as_ref() {
+            engine = engine.with_sat_guide(g.clone());
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
@@ -1798,6 +1832,9 @@ impl HyperCache {
         );
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles_keep_index(self.sub_roles.clone());
+        }
+        if let Some(g) = self.sat_guide.as_ref() {
+            engine = engine.with_sat_guide(g.clone());
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();

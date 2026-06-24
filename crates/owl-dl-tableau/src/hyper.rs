@@ -1734,6 +1734,37 @@ impl<'c> HyperEngine<'c> {
                 return HyperResult::Stalled;
             }
             self.track_depth(depth);
+            // Read-only deterministic look-ahead: for each free disjunct,
+            // probe whether asserting it immediately causes a Horn clash.
+            // The probe is strictly counting-only — save/restore plus a
+            // clash_deps reset guarantee no state leaks to the real search.
+            if self.det_lookahead_probe {
+                self.stats.det_or_points += 1;
+                let head_len = self.clauses[ci].head.len();
+                let mut survivors = 0u32;
+                let saved_clash_deps = self.clash_deps;
+                for k in 0..head_len {
+                    if self.head_atom_satisfied(ci, k, node, &binding) {
+                        continue;
+                    }
+                    let head_atom = self.clauses[ci].head[k];
+                    let saved = self.save();
+                    let _ = self.apply_head_atom(head_atom, node, &binding, DepSet::EMPTY);
+                    let killed = matches!(self.horn_fixpoint(FIXPOINT_ITERS), HyperResult::Unsat);
+                    self.restore(saved);
+                    if killed {
+                        self.stats.det_disjuncts_killed += 1;
+                    } else {
+                        survivors += 1;
+                    }
+                }
+                if survivors <= 1 {
+                    self.stats.det_or_points_collapsed += 1;
+                }
+                // Reset clash_deps so the probe's look-ahead Unsat result
+                // does not pollute the real branching loop below.
+                self.clash_deps = saved_clash_deps;
+            }
             let d = u32::try_from(self.init_depth - depth).unwrap_or(u32::MAX);
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
@@ -1888,51 +1919,42 @@ impl<'c> HyperEngine<'c> {
         None
     }
 
+    /// True iff head disjunct `k` of clause `ci` already holds at
+    /// the given binding (class label present, or `∃` witness found).
+    fn head_atom_satisfied(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
+        let resolve = |v: Var| resolve_var(v, xnode, binding);
+        match &self.clauses[ci].head[k] {
+            Atom::Class(c, v) => resolve(*v).is_some_and(|t| self.nodes[t.index()].has(*c)),
+            Atom::Exists(role, cls, v) => resolve(*v).is_some_and(|src| {
+                self.nodes[src.index()].edges.iter().any(|(er, t)| {
+                    role_matches(*er, *role, self.sub_roles.as_ref())
+                        && self.nodes[t.index()].has(*cls)
+                })
+            }),
+            Atom::AtMost(role, qual, n, v) => {
+                // Satisfied (no branch needed) if this `≤n` is
+                // already *asserted* on the node — we committed to
+                // this disjunct, and enforcement is now
+                // `find_open_at_most`'s job — or if it trivially
+                // holds (≤n matching successors already).
+                resolve(*v).is_some_and(|src| {
+                    self.nodes[src.index()]
+                        .at_most
+                        .contains(&(*role, *qual, *n))
+                        || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize
+                })
+            }
+            // TODO(HF3): `≥n` generation not yet enforced — never
+            // counts as already-satisfied (sound for `Unsat`: an
+            // unenforced `≥n` only weakens the theory).
+            Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => false,
+        }
+    }
+
     /// True iff some head disjunct of clause `ci` already holds at
     /// the given binding (class label present, or `∃` witness found).
     fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
-        let resolve = |v: Var| resolve_var(v, xnode, binding);
-        for head in &self.clauses[ci].head {
-            match head {
-                Atom::Class(c, v) => {
-                    if let Some(t) = resolve(*v)
-                        && self.nodes[t.index()].has(*c)
-                    {
-                        return true;
-                    }
-                }
-                Atom::Exists(role, cls, v) => {
-                    if let Some(src) = resolve(*v)
-                        && self.nodes[src.index()].edges.iter().any(|(er, t)| {
-                            role_matches(*er, *role, self.sub_roles.as_ref())
-                                && self.nodes[t.index()].has(*cls)
-                        })
-                    {
-                        return true;
-                    }
-                }
-                Atom::AtMost(role, qual, n, v) => {
-                    // Satisfied (no branch needed) if this `≤n` is
-                    // already *asserted* on the node — we committed to
-                    // this disjunct, and enforcement is now
-                    // `find_open_at_most`'s job — or if it trivially
-                    // holds (≤n matching successors already).
-                    if let Some(src) = resolve(*v)
-                        && (self.nodes[src.index()]
-                            .at_most
-                            .contains(&(*role, *qual, *n))
-                            || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize)
-                    {
-                        return true;
-                    }
-                }
-                // TODO(HF3): `≥n` generation not yet enforced — never
-                // counts as already-satisfied (sound for `Unsat`: an
-                // unenforced `≥n` only weakens the theory).
-                Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => {}
-            }
-        }
-        false
+        (0..self.clauses[ci].head.len()).any(|k| self.head_atom_satisfied(ci, k, xnode, binding))
     }
 
     /// The *distinct* (representative-resolved) `role`-successors of
@@ -4814,5 +4836,37 @@ mod tests {
         assert!(!off.det_lookahead_probe_for_test());
         let on = HyperEngine::new(&clauses, a).with_det_lookahead_probe();
         assert!(on.det_lookahead_probe_for_test());
+    }
+
+    #[test]
+    fn det_lookahead_probe_counts_kill_and_preserves_verdict() {
+        // A ⊑ (D1 ⊔ D2); A ⊓ D1 ⊑ ⊥ (body {A,D1} → empty head).
+        // At the ⊔ point on a node labelled A, asserting D1 then
+        // horn_fixpoint clashes (D1 killed); D2 survives.
+        // Probe ON must count det_disjuncts_killed>=1 and a collapse,
+        // and the verdict must equal OFF.
+        let a = cls(0);
+        let (d1, d2) = (cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Class(d1, X)],
+                head: vec![],
+            }, // A ⊓ D1 ⊑ ⊥
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let mut on_eng = HyperEngine::new(&clauses, a).with_det_lookahead_probe();
+        let on = on_eng.decide(64);
+        assert_eq!(on, off, "probe changed the verdict — NOT read-only");
+        assert_eq!(off, HyperResult::Sat, "A is Sat via D2");
+        let s = on_eng.stats();
+        assert!(
+            s.det_disjuncts_killed >= 1,
+            "D1 must be killed by Horn look-ahead"
+        );
+        assert!(s.det_or_points >= 1 && s.det_or_points_collapsed >= 1);
     }
 }

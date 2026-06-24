@@ -575,8 +575,7 @@ pub struct HyperEngine<'c> {
     div_checkpoint: (u64, u64, usize),
     /// Throwaway SP-B gate guide (`RUSTDL_SAT_GUIDE`). `None` ⟹ flag-OFF,
     /// behavior byte-identical to production.
-    #[allow(dead_code)]
-    sat_guide: Option<SatGuide>, // read in Task 3 (the ⊔ filter)
+    sat_guide: Option<SatGuide>, // SP-B live-disjunct filter
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -1767,9 +1766,49 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            // SP-B gate: prune head disjuncts incompatible with the node's
+            // label per the saturation guide. Only named-class disjuncts are
+            // filterable; ∃/≤n disjuncts stay live. Pruning is sound (a pruned
+            // disjunct's class is told-disjoint with a derived subsumer of a
+            // label class — a real clash), so an empty live set is a genuine
+            // local clash.
+            let live: Vec<usize> = if let Some(guide) = self.sat_guide.as_ref() {
+                self.stats.disj_points_seen += 1;
+                let mut keep = Vec::with_capacity(head_len);
+                for k in 0..head_len {
+                    let dead = match self.clauses[ci].head[k] {
+                        Atom::Class(dk, v) => {
+                            // resolve to the target node; filter on THAT node's label
+                            match resolve_var(v, node, &binding) {
+                                Some(t) => guide.is_dead(dk, &self.nodes[t.index()].labels),
+                                None => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if dead {
+                        self.stats.disj_disjuncts_pruned += 1;
+                    } else {
+                        keep.push(k);
+                    }
+                }
+                if keep.len() == 1 {
+                    self.stats.disj_forced_single += 1;
+                }
+                keep
+            } else {
+                (0..head_len).collect()
+            };
+            if live.is_empty() {
+                // every disjunct pruned ⟹ this binding is unsatisfiable.
+                // Conservative deps: the clause body's dep-set (sound — an
+                // over-approx only weakens backjumping, never the verdict).
+                self.clash_deps = body_deps;
+                return HyperResult::Unsat;
+            }
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
-            for k in 0..head_len {
+            for &k in &live {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
@@ -3571,6 +3610,63 @@ mod tests {
         assert_eq!(e.decide(64), HyperResult::Sat);
         assert!(e.root_labels().contains(&cls(1)));
         assert!(!e.root_labels().contains(&cls(2)));
+    }
+
+    /// SP-B live-disjunct filter: `A ⊑ B ⊔ D` where the guide marks `D` dead
+    /// at a node labelled `A` (A's subsumer G is told-disjoint with D). The
+    /// filter prunes D, leaving only B live; the search reaches Sat in a single
+    /// branch and reports `disj_forced_single >= 1`, `disj_disjuncts_pruned >= 1`.
+    /// The same clause set WITHOUT a guide also reaches Sat (verdict preserved).
+    #[test]
+    fn sat_guide_forces_single_live_disjunct() {
+        // cls(0) = A (root seed), cls(1) = B (live disjunct), cls(3) = D (dead disjunct)
+        // cls(2) = G (derived subsumer of A, told-disjoint with D)
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(cls(0), X)],
+            head: vec![Atom::Class(cls(1), X), Atom::Class(cls(3), X)],
+        }];
+
+        // Build guide: subsumers[A=0] = {A=0, G=2}; disjoint[D=3] = {G=2}
+        // => D is dead at label {A}: A's subsumer G is disjoint with D.
+        // B=1 has no disjointness entry => live.
+        let guide = SatGuide {
+            subsumers: vec![
+                vec![cls(0), cls(2)], // subsumers[A=0]: A itself + G
+                vec![cls(1)],         // subsumers[B=1]
+                vec![cls(2)],         // subsumers[G=2]
+                vec![cls(3)],         // subsumers[D=3]
+            ],
+            disjoint: vec![
+                vec![],       // disjoint[A=0]
+                vec![],       // disjoint[B=1]
+                vec![cls(3)], // disjoint[G=2]: G ⊥ D
+                vec![cls(2)], // disjoint[D=3]: D ⊥ G
+            ],
+        };
+
+        // With guide: D is pruned, B is the single live disjunct => Sat
+        let mut e = HyperEngine::new(&clauses, cls(0)).with_sat_guide(guide);
+        let verdict = e.decide(64);
+        let stats = e.stats();
+        assert_eq!(verdict, HyperResult::Sat, "with guide: must reach Sat");
+        assert!(
+            stats.disj_forced_single >= 1,
+            "with guide: disj_forced_single must be >= 1, got {}",
+            stats.disj_forced_single
+        );
+        assert!(
+            stats.disj_disjuncts_pruned >= 1,
+            "with guide: disj_disjuncts_pruned must be >= 1, got {}",
+            stats.disj_disjuncts_pruned
+        );
+
+        // Without guide: both disjuncts are live, first (B) taken => also Sat
+        let mut e2 = HyperEngine::new(&clauses, cls(0));
+        assert_eq!(
+            e2.decide(64),
+            HyperResult::Sat,
+            "without guide: must also reach Sat"
+        );
     }
 
     /// `A ⊑ B ⊔ C`, `B ⊑ ⊥`: the first disjunct clashes, the search

@@ -475,8 +475,8 @@ pub struct HyperEngine<'c> {
     /// Per-`solve_at_most`-call flag: set true when the precise path encounters a
     /// `≠`/merge-taint it cannot attribute, forcing the conservative `DepSet::ALL`
     /// fallback at partition exhaustion. Reset at each `solve_at_most` entry.
-    #[allow(dead_code)]
-    merge_precise_declined: bool, // read in Tasks 2-3
+    #[allow(dead_code)] // written here (Task 2 `are_neq` path); read in Task 3 `solve_at_most`
+    merge_precise_declined: bool,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -827,6 +827,32 @@ impl<'c> HyperEngine<'c> {
     #[cfg(test)]
     pub(crate) fn precise_merge_deps_for_test(&self) -> bool {
         self.precise_merge_deps
+    }
+
+    #[cfg(test)]
+    pub(crate) fn merge_with_cause_for_test(&mut self, i: HNode, j: HNode, c: DepSet) -> bool {
+        self.merge_with_cause(i, j, c)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn node_at_most_tainted_for_test(&self, n: HNode) -> bool {
+        self.nodes[self.resolve(n).index()].at_most_tainted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn node_at_most_dep_for_test(&self, n: HNode) -> DepSet {
+        self.nodes[self.resolve(n).index()].at_most_dep
+    }
+
+    /// Create two fresh nodes where `sj` carries a `≤1` `at_most` entry
+    /// with a non-empty `at_most_dep`. Returns `(si, sj)`.
+    #[cfg(test)]
+    pub(crate) fn make_two_succs_with_atmost_for_test(&mut self, role: Role) -> (HNode, HNode) {
+        let si = self.new_node();
+        let sj = self.new_node();
+        self.nodes[sj.index()].at_most.push((role, None, 1));
+        self.nodes[sj.index()].at_most_dep = DepSet::EMPTY.insert(7);
+        (si, sj)
     }
 
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
@@ -2162,6 +2188,7 @@ impl<'c> HyperEngine<'c> {
             // ≠ violated — merging is impossible. Conservative deps
             // (precise `≠`/merge provenance isn't tracked).
             self.clash_deps = DepSet::ALL;
+            self.merge_precise_declined = true; // ≠-provenance untracked
             return true;
         }
         self.representative[s_j.index()] = s_i;
@@ -2213,12 +2240,22 @@ impl<'c> HyperEngine<'c> {
             }
         }
         if !self.nodes[s_j.index()].at_most.is_empty() {
-            // A merge-inherited `≤n`: its causation dep isn't tracked, so taint
-            // `s_i` — `card_clash_deps` falls back to `DepSet::ALL` for it.
             let sj_dep = self.nodes[s_j.index()].at_most_dep;
+            let precise = self.precise_merge_deps;
             let ni = &mut self.nodes[s_i.index()];
-            ni.at_most_tainted = true;
-            ni.at_most_dep = ni.at_most_dep.union(sj_dep);
+            if precise && cause_deps != DepSet::EMPTY {
+                // Precise path: causation IS tracked (cause_deps carries the ≤n
+                // decision level), so fold it into at_most_dep and do NOT taint.
+                // The taint exists only because causation was untracked; with a
+                // non-empty cause_deps it IS tracked, so card_clash_deps can remain
+                // precise rather than falling back to DepSet::ALL.
+                ni.at_most_dep = ni.at_most_dep.union(sj_dep).union(cause_deps);
+            } else {
+                // Conservative path (untracked causation): taint → card_clash_deps
+                // falls back to DepSet::ALL.
+                ni.at_most_tainted = true;
+                ni.at_most_dep = ni.at_most_dep.union(sj_dep);
+            }
         }
         // Propagate the NN-merge taint: if either node carried an
         // under-dep'd NN-merge-inherited label, the survivor does too
@@ -4817,5 +4854,32 @@ mod tests {
         assert!(!off.precise_merge_deps_for_test());
         let on = HyperEngine::new(&clauses, a).with_precise_merge_deps();
         assert!(on.precise_merge_deps_for_test());
+    }
+
+    #[test]
+    fn precise_merge_fold_avoids_taint_on_clean_merge() {
+        // Two mergeable successors of a node, ≤1 forces a merge. With a non-empty
+        // cause and precise mode, the merge-inherited ≤n must fold the cause into
+        // at_most_dep WITHOUT setting at_most_tainted (the taint exists only because
+        // causation was untracked). White-box: drive merge_with_cause directly.
+        let role = Role::Named(RoleId::new(0));
+        let a = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![],
+        }];
+        let mut eng = HyperEngine::new(&clauses, a).with_precise_merge_deps();
+        let (si, sj) = eng.make_two_succs_with_atmost_for_test(role); // helper above
+        let cause = DepSet::EMPTY.insert(3); // {d=3}
+        let clashed = eng.merge_with_cause_for_test(si, sj, cause);
+        assert!(!clashed);
+        assert!(
+            !eng.node_at_most_tainted_for_test(si),
+            "clean precise merge must NOT taint"
+        );
+        assert!(
+            eng.node_at_most_dep_for_test(si).contains(3),
+            "cause folded into at_most_dep"
+        );
     }
 }

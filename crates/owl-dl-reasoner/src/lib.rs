@@ -1185,10 +1185,13 @@ pub fn hyper_precise_card_deps_enabled() -> bool {
     std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
-/// `RUSTDL_MRV_ORDERING` (default OFF until the corpus gate flips it). See the MRV spec.
+/// `RUSTDL_MRV_ORDERING` (default ON as of 2026-06-23). Most-constrained-⊔-first
+/// ordering of `find_open_disjunction`; verdict-invariant (reordering only).
+/// Flipped default-ON after the corpus FP gate passed: FP=0/MISSED=0 byte-identical
+/// across all 10 oracled fixtures, no wall regression, wine collapse sound. `=0` opts out.
 #[must_use]
 pub fn hyper_mrv_ordering_enabled() -> bool {
-    std::env::var_os("RUSTDL_MRV_ORDERING").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_MRV_ORDERING").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`

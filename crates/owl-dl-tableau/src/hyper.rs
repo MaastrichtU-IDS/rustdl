@@ -1831,7 +1831,7 @@ impl<'c> HyperEngine<'c> {
             // partitions (hence the Sat/Unsat outcome) is identical; only
             // the order-redundancy is removed. See
             // `docs/wedge-cardinality-clash-precheck.md`.
-            return self.solve_at_most(&succs, n as usize, depth);
+            return self.solve_at_most(node, &succs, n as usize, depth);
         }
         HyperResult::Sat
     }
@@ -2038,22 +2038,61 @@ impl<'c> HyperEngine<'c> {
     /// (restricted-growth order, so each partition is generated exactly
     /// once), merging the partition, and recursing. Returns `Sat` on the
     /// first partition that completes a model (state kept), `Stalled` if
-    /// some partition hit the depth bound and none succeeded, else `Unsat`
-    /// with conservative `DepSet::ALL` deps. This site keeps `DepSet::ALL`
-    /// (NOT the `card_clash_deps` over-approx): partition-exhaustion Unsat can
-    /// depend on decisions reached by the deeper `solve(depth-1)` / inverse
-    /// back-propagation that the local `succs`/`parent` dep set need not cover,
-    /// so narrowing here is not provably sound. See `card_clash_deps`.
-    fn solve_at_most(&mut self, succs: &[HNode], n: usize, depth: usize) -> HyperResult {
+    /// some partition hit the depth bound and none succeeded, else `Unsat`.
+    ///
+    /// With `precise_merge_deps` ON: dependency-directed backjumping mirrors
+    /// the `⊔` rule. `d` is the decision level of this frame; each merge is
+    /// stamped with `cause = at_most_dep ∪ {d}` so that any later clash
+    /// arising from merge-copied labels inherits the decision. At exhaustion
+    /// the `d` bit is stripped from the accumulated `combined` dep-set (it is
+    /// local to this frame). A child that returns `Unsat` without `d` in its
+    /// dep-set means this `≤n` decision was irrelevant — backjump immediately.
+    /// If `merge_precise_declined` was set (a `≠`-clash with untracked
+    /// provenance), fall back to `DepSet::ALL`.
+    ///
+    /// With `precise_merge_deps` OFF (default): `cause = EMPTY`, the backjump
+    /// branch is never taken, and exhaustion always yields `DepSet::ALL` —
+    /// byte-identical to the pre-Task-3 behaviour.
+    fn solve_at_most(
+        &mut self,
+        node: HNode,
+        succs: &[HNode],
+        n: usize,
+        depth: usize,
+    ) -> HyperResult {
+        self.merge_precise_declined = false;
+        let precise = self.precise_merge_deps;
+        let d = u32::try_from(self.init_depth - depth).unwrap_or(u32::MAX);
+        let at_most_dep = self.nodes[self.resolve(node).index()].at_most_dep;
+        let cause = if precise {
+            at_most_dep.insert(d)
+        } else {
+            DepSet::EMPTY
+        };
         let mut groups: Vec<Vec<HNode>> = Vec::with_capacity(n);
         let mut any_stalled = false;
-        if let Some(sat) = self.partition_rec(succs, 0, &mut groups, n, depth, &mut any_stalled) {
-            return sat; // Sat — completed model kept (no restore).
+        let mut combined = DepSet::EMPTY;
+        if let Some(sat) = self.partition_rec(
+            succs,
+            0,
+            &mut groups,
+            n,
+            depth,
+            &mut any_stalled,
+            cause,
+            d,
+            &mut combined,
+        ) {
+            return sat; // Sat or backjump-Unsat — state/clash_deps already set.
         }
         if any_stalled {
             return HyperResult::Stalled;
         }
-        self.clash_deps = DepSet::ALL;
+        if precise && !self.merge_precise_declined {
+            self.clash_deps = combined.remove(d);
+        } else {
+            self.clash_deps = DepSet::ALL;
+        }
         HyperResult::Unsat
     }
 
@@ -2061,10 +2100,22 @@ impl<'c> HyperEngine<'c> {
     /// Assigns `succs[idx]` to each existing block it is mergeable with
     /// (no `must_be_distinct` member), or opens a new block while under
     /// the `n` cap. At a complete assignment it merges each block into its
-    /// first member and recurses via [`Self::solve`]. Returns `Some(Sat)`
-    /// to short-circuit the whole enumeration (model found, state kept);
-    /// `None` to keep enumerating (sets `*any_stalled` on a depth-bound
-    /// hit). Every branch is restored before the next partition.
+    /// first member (using `merge_with_cause(rep, other, cause)` so merge-
+    /// copied labels inherit the `≤n` decision dep) and recurses via
+    /// [`Self::solve`].
+    ///
+    /// Returns `Some(Sat)` to short-circuit the whole enumeration (model
+    /// found, state kept); `Some(Unsat)` on a dependency-directed backjump
+    /// (child's deps don't contain `d` ⇒ this decision was irrelevant,
+    /// `clash_deps` already propagated); `None` to keep enumerating (sets
+    /// `*any_stalled` on a depth-bound hit). Every branch is restored before
+    /// the next partition (except the `Some(Sat)` path).
+    ///
+    /// `cause`, `d`, and `combined` are threaded from [`Self::solve_at_most`]
+    /// for the backjumping bookkeeping. On the flag-OFF path `cause == EMPTY`
+    /// and the backjump branch is never taken — byte-identical to the prior
+    /// behaviour.
+    #[allow(clippy::too_many_arguments)]
     fn partition_rec(
         &mut self,
         succs: &[HNode],
@@ -2073,10 +2124,14 @@ impl<'c> HyperEngine<'c> {
         n: usize,
         depth: usize,
         any_stalled: &mut bool,
+        cause: DepSet,
+        d: u32,
+        combined: &mut DepSet,
     ) -> Option<HyperResult> {
         if idx == succs.len() {
             // Complete partition (≤ n blocks). Merge each block into its
-            // representative, then continue the search one level down.
+            // representative (with causation dep), then continue the search
+            // one level down.
             let saved = self.save();
             self.stats.branches_taken += 1;
             self.stats.merge_branches += 1;
@@ -2084,16 +2139,34 @@ impl<'c> HyperEngine<'c> {
             'blocks: for block in groups.iter() {
                 let rep = block[0];
                 for &other in &block[1..] {
-                    if self.merge(rep, other) {
+                    if self.merge_with_cause(rep, other, cause) {
                         clashed = true; // defensive: pre-pruned by must_be_distinct
                         break 'blocks;
                     }
                 }
             }
-            if !clashed {
+            if clashed {
+                // Merge-time clash: fold its deps into combined.
+                *combined = combined.union(self.clash_deps);
+            } else {
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return Some(HyperResult::Sat),
-                    HyperResult::Unsat => {}
+                    HyperResult::Unsat => {
+                        let child = self.clash_deps;
+                        if self.precise_merge_deps
+                            && !self.merge_precise_declined
+                            && !child.contains(d)
+                        {
+                            // Dependency-directed backjump: this ≤n decision
+                            // was not responsible for the clash — propagate
+                            // the child's dep-set up and short-circuit the
+                            // remaining partition enumeration.
+                            self.clash_deps = child;
+                            self.restore(saved);
+                            return Some(HyperResult::Unsat);
+                        }
+                        *combined = combined.union(child);
+                    }
                     HyperResult::Stalled => *any_stalled = true,
                 }
             }
@@ -2105,7 +2178,17 @@ impl<'c> HyperEngine<'c> {
             // Mergeable with this block iff distinct from no member.
             if groups[gi].iter().all(|&m| !self.must_be_distinct(s, m)) {
                 groups[gi].push(s);
-                let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled);
+                let r = self.partition_rec(
+                    succs,
+                    idx + 1,
+                    groups,
+                    n,
+                    depth,
+                    any_stalled,
+                    cause,
+                    d,
+                    combined,
+                );
                 groups[gi].pop();
                 if r.is_some() {
                     return r;
@@ -2114,7 +2197,17 @@ impl<'c> HyperEngine<'c> {
         }
         if groups.len() < n {
             groups.push(vec![s]);
-            let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled);
+            let r = self.partition_rec(
+                succs,
+                idx + 1,
+                groups,
+                n,
+                depth,
+                any_stalled,
+                cause,
+                d,
+                combined,
+            );
             groups.pop();
             if r.is_some() {
                 return r;
@@ -4881,5 +4974,78 @@ mod tests {
             eng.node_at_most_dep_for_test(si).contains(3),
             "cause folded into at_most_dep"
         );
+    }
+
+    /// Verdict-preservation guardrail for `solve_at_most` / `partition_rec`
+    /// backjumping (Task 3). The ontology forces two `R`-successors that are
+    /// disjoint-labelled (B⊓C⊑⊥), so the `≤1 R` constraint has no satisfying
+    /// merge — the class is Unsat. The extra `A⊑D1⊔D2` disjunction adds a
+    /// decision that the `≤1` clash is independent of; with `precise_merge_deps`
+    /// ON the backjump can prune it, but the verdict must stay Unsat.
+    #[test]
+    fn precise_merge_deps_preserves_unsat_verdict() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c, d1, d2) = (cls(0), cls(1), cls(2), cls(3), cls(4));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let on = HyperEngine::new(&clauses, a)
+            .with_precise_merge_deps()
+            .decide(64);
+        assert_eq!(
+            off,
+            HyperResult::Unsat,
+            "baseline: ≤1 R with two disjoint-labelled R-succs is Unsat"
+        );
+        assert_eq!(on, off, "precise-merge-deps changed the verdict — UNSOUND");
+    }
+
+    /// Companion Sat case: same shape but B/C are NOT disjoint, so the two
+    /// R-successors merge to satisfy `≤1 R` ⇒ Sat. Pins that the backjumping
+    /// path never flips a Sat to a spurious Unsat.
+    #[test]
+    fn precise_merge_deps_preserves_sat_verdict() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let on = HyperEngine::new(&clauses, a)
+            .with_precise_merge_deps()
+            .decide(64);
+        assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
+        assert_eq!(on, off, "precise-merge-deps changed the verdict — UNSOUND");
     }
 }

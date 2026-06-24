@@ -471,8 +471,6 @@ pub struct HyperEngine<'c> {
     /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
-    // TODO(mrv): remove this allow when Task 2 reads the field in find_open_disjunction.
-    #[allow(dead_code)]
     mrv_ordering: bool,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
@@ -824,6 +822,12 @@ impl<'c> HyperEngine<'c> {
     #[cfg(test)]
     pub(crate) fn mrv_ordering_for_test(&self) -> bool {
         self.mrv_ordering
+    }
+
+    /// Test-only wrapper around [`Self::find_open_disjunction`].
+    #[cfg(test)]
+    pub(crate) fn find_open_disjunction_for_test(&mut self) -> Option<(usize, HNode, Binding)> {
+        self.find_open_disjunction()
     }
 
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
@@ -1842,6 +1846,39 @@ impl<'c> HyperEngine<'c> {
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
+        if self.mrv_ordering {
+            let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
+            for idx in 0..self.nodes.len() {
+                let node = HNode(u32::try_from(idx).expect("fits u32"));
+                if self.is_blocked(node) {
+                    continue;
+                }
+                for ci in 0..self.clauses.len() {
+                    if self.clauses[ci].is_horn() {
+                        continue;
+                    }
+                    let Some(bindings) = self.match_body(ci, node) else {
+                        continue;
+                    };
+                    for binding in bindings {
+                        if self.any_head_satisfied(ci, node, &binding) {
+                            continue;
+                        }
+                        let live = (0..self.clauses[ci].head.len())
+                            .filter(|&k| !self.head_atom_satisfied(ci, k, node, &binding))
+                            .count();
+                        let better = match &best {
+                            None => true,
+                            Some((b, _)) => live < *b,
+                        };
+                        if better {
+                            best = Some((live, (ci, node, binding)));
+                        }
+                    }
+                }
+            }
+            return best.map(|(_, cand)| cand);
+        }
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             // A directly-blocked node gets NO rule applied — including the ⊔
@@ -4781,9 +4818,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mrv_ordering_picks_fewest_live_disjunct_clause() {
+        // Root node labelled A. Two open disjunctive clauses:
+        //   clause0: A -> d1 ⊔ d2 ⊔ d3   (3 live disjuncts)
+        //   clause1: A -> e1 ⊔ e2        (2 live disjuncts)
+        // MRV-OFF: find_open_disjunction returns clause0 (first). MRV-ON: returns clause1 (2<3).
+        let (a, d1, d2, d3, e1, e2) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X), Atom::Class(d3, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(e1, X), Atom::Class(e2, X)],
+            },
+        ];
+        // OFF: first-open = clause index 0
+        let mut off = HyperEngine::new(&clauses, a);
+        off.horn_fixpoint(FIXPOINT_ITERS);
+        assert_eq!(
+            off.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
+            Some(0)
+        );
+        // ON: MRV = clause index 1 (fewer live disjuncts)
+        let mut on = HyperEngine::new(&clauses, a).with_mrv_ordering();
+        on.horn_fixpoint(FIXPOINT_ITERS);
+        assert_eq!(
+            on.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
+            Some(1)
+        );
+    }
+
     /// Scaffold test: `mrv_ordering` defaults to `false`; `with_mrv_ordering` flips it.
-    /// Default OFF is required — the flag is inert until Task 2 wires it into
-    /// `find_open_disjunction`.
     #[test]
     fn mrv_ordering_builder_and_default() {
         let a = cls(0);

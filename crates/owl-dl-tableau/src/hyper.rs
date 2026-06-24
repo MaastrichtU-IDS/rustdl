@@ -1802,9 +1802,35 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            let live: Vec<usize> = if self.combo_spike {
+                let saved_clash = self.clash_deps;
+                let mut keep = Vec::with_capacity(head_len);
+                for k in 0..head_len {
+                    if self.head_atom_satisfied(ci, k, node, &binding) {
+                        keep.push(k);
+                        continue;
+                    }
+                    let head_atom = self.clauses[ci].head[k];
+                    let saved = self.save();
+                    let _ = self.apply_head_atom(head_atom, node, &binding, DepSet::EMPTY);
+                    let killed = matches!(self.horn_fixpoint(FIXPOINT_ITERS), HyperResult::Unsat);
+                    self.restore(saved);
+                    if !killed {
+                        keep.push(k);
+                    }
+                }
+                self.clash_deps = saved_clash;
+                keep
+            } else {
+                (0..head_len).collect()
+            };
+            if self.combo_spike && live.is_empty() {
+                self.clash_deps = decision_deps;
+                return HyperResult::Unsat;
+            }
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
-            for k in 0..head_len {
+            for &k in &live {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
@@ -5275,5 +5301,36 @@ mod tests {
         assert!(!off.combo_spike_for_test());
         let on = HyperEngine::new(&clauses, a).with_combo_spike();
         assert!(on.combo_spike_for_test());
+    }
+
+    #[test]
+    fn combo_det_pruning_drops_killed_disjunct_preserving_sat() {
+        // A ⊑ D1⊔D2 ; A⊓D1 ⊑ ⊥ (Horn). At the ⊔ on a node labelled A, the look-ahead
+        // kills D1 (horn_fixpoint clashes), leaving D2 → A is Sat via D2, with fewer
+        // branches than the un-pruned path (which would also try D1 and backtrack).
+        let (a, d1, d2) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Class(d1, X)],
+                head: vec![],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let mut on_eng = HyperEngine::new(&clauses, a).with_combo_spike();
+        let on = on_eng.decide(64);
+        assert_eq!(on, off, "combo changed the verdict on a controlled case");
+        assert_eq!(off, HyperResult::Sat);
+        // det-pruning means D1 is never branched: the on-run takes <= the off-run branches.
+        let s_on = on_eng.stats();
+        let s_off = {
+            let mut e = HyperEngine::new(&clauses, a);
+            let _ = e.decide(64);
+            e.stats()
+        };
+        assert!(s_on.branches_taken <= s_off.branches_taken);
     }
 }

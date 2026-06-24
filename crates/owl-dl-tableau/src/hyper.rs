@@ -397,6 +397,45 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// Gate instrumentation (`RUSTDL_SAT_GUIDE`): ⊔ branch points the
+    /// solver reached; disjuncts pruned dead by the saturation guide;
+    /// ⊔ points the guide collapsed to a single live disjunct.
+    pub disj_points_seen: u64,
+    pub disj_disjuncts_pruned: u64,
+    pub disj_forced_single: u64,
+}
+
+/// Throwaway SP-B viability-gate guide: per-class derived subsumers and
+/// per-class told-disjoints, both indexed by [`ClassId::index()`]. Used to
+/// prune ⊔ disjuncts incompatible with a node's label. NOT a production
+/// type — gated by `RUSTDL_SAT_GUIDE`.
+pub struct SatGuide {
+    pub subsumers: Vec<Vec<ClassId>>,
+    pub disjoint: Vec<Vec<ClassId>>,
+}
+
+impl SatGuide {
+    /// True iff `disjunct` is incompatible with `label`: some class `C` in
+    /// `label` has a derived subsumer `G` told-disjoint with `disjunct`.
+    pub fn is_dead(&self, disjunct: ClassId, label: &[ClassId]) -> bool {
+        let di = disjunct.index() as usize;
+        if di >= self.disjoint.len() {
+            return false;
+        }
+        let dj = &self.disjoint[di];
+        for c in label {
+            let ci = c.index() as usize;
+            if ci >= self.subsumers.len() {
+                continue;
+            }
+            for g in &self.subsumers[ci] {
+                if dj.binary_search_by_key(&g.index(), |x| x.index()).is_ok() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -2886,6 +2925,33 @@ mod tests {
         assert!(!is_diverging(5000, 1000, true)); // progressing (restores ≪ branches)
         assert!(!is_diverging(5000, 4990, false)); // depth not saturated → not (yet) diverging
         assert!(!is_diverging(0, 0, true)); // empty window
+    }
+
+    #[test]
+    fn sat_guide_is_dead_detects_disjoint_via_derived_subsumer() {
+        // classes 0..4. Node label = {0}. 0's derived subsumers = {0, 2}.
+        // 2 is told-disjoint with 3. So disjunct 3 is dead at label {0};
+        // disjunct 1 (no disjointness) is live.
+        let c = |i: u32| ClassId::new(i);
+        let guide = SatGuide {
+            subsumers: vec![
+                vec![c(0), c(2)], // subsumers[0]
+                vec![c(1)],       // subsumers[1]
+                vec![c(2)],       // subsumers[2]
+                vec![c(3)],       // subsumers[3]
+            ],
+            disjoint: vec![
+                vec![],     // disjoint[0]
+                vec![],     // disjoint[1]
+                vec![c(3)], // disjoint[2]  (2 ⟂ 3)
+                vec![c(2)], // disjoint[3]  (3 ⟂ 2)
+            ],
+        };
+        let label = [c(0)];
+        assert!(guide.is_dead(c(3), &label), "3 dead: 0's subsumer 2 ⟂ 3");
+        assert!(!guide.is_dead(c(1), &label), "1 live: no disjointness");
+        // out-of-range disjunct is conservatively live
+        assert!(!guide.is_dead(c(99), &label));
     }
 
     #[test]

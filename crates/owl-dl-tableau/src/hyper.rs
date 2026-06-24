@@ -855,6 +855,23 @@ impl<'c> HyperEngine<'c> {
         (si, sj)
     }
 
+    /// Expose `add_neq` for white-box tests that need to inject a `≠` edge
+    /// between two fresh nodes and then verify `merge_with_cause` declines.
+    #[cfg(test)]
+    pub(crate) fn add_neq_for_test(&mut self, a: HNode, b: HNode) {
+        self.add_neq(a, b);
+    }
+
+    /// Read the per-`solve_at_most` decline flag set when `merge_with_cause`
+    /// hits a `≠` edge it cannot attribute precisely. Used by white-box tests
+    /// to verify the FP-hole guard fires correctly without running a full
+    /// `decide()` search (the guard is structurally unreachable via `decide()`
+    /// — see `precise_merge_deps_declines_when_neq_participates`).
+    #[cfg(test)]
+    pub(crate) fn merge_precise_declined_for_test(&self) -> bool {
+        self.merge_precise_declined
+    }
+
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
     /// dependency set (used only at the `forced_distinct_exceeds` pre-check site,
     /// where the clash is "`>n` pairwise-must-distinct successors of `parent`"
@@ -5047,5 +5064,102 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-merge-deps changed the verdict — UNSOUND");
+    }
+
+    /// FP-hole guard: `≠`-provenance is untracked, so the precise path must
+    /// decline to `DepSet::ALL` whenever a `≠` edge participates — never
+    /// produce a spurious backjump that suppresses a valid clash.
+    ///
+    /// # Which path this test exercises
+    ///
+    /// **Part 1 (black-box, verdict-preservation):** the shape `A ⊑ ∃R.B`,
+    /// `A ⊑ ∃R.C`, `B⊓C ⊑ ⊥`, `A ⊑ ≤1 R` is caught by the
+    /// **`forced_distinct_exceeds` pre-check** (hyper.rs:1816), NOT by
+    /// `partition_rec`/`merge_with_cause`. `build_disjoint_pairs` registers
+    /// the `B∧C→⊥` clause; the two R-successors labelled B and C are
+    /// `labels_disjoint` ⟹ `must_be_distinct` ⟹ the greedy clique
+    /// (size 2 > n=1) fires before `solve_at_most` is entered. The
+    /// `precise_merge_deps` flag is therefore never consulted in this branch.
+    /// The assertion `on == off` is still meaningful: it pins that the flag
+    /// cannot accidentally suppress the pre-check's Unsat verdict.
+    ///
+    /// **Why `merge_precise_declined` is structurally unreachable via
+    /// `decide()`:** `partition_rec` only places two nodes in the same group
+    /// when `!must_be_distinct(s, m)` for every existing group member
+    /// (line 2179). Since `are_neq ⊆ must_be_distinct`, any `are_neq` pair
+    /// is excluded from co-grouping, so `merge_with_cause` is never called on
+    /// a `≠` pair during a real search. The line-2143 "defensive: pre-pruned"
+    /// comment confirms this is unreachable by construction. Adding a
+    /// third successor or alternative clause shapes does not change this
+    /// invariant — once the grouping filter is in place, `are_neq` nodes
+    /// never share a block.
+    ///
+    /// **Part 2 (white-box, FP-hole guard):** directly injects a `≠` edge via
+    /// `add_neq_for_test` and calls `merge_with_cause_for_test` to verify the
+    /// guard at line 2280–2284 fires: clashed == true, `clash_deps == ALL`,
+    /// and `merge_precise_declined` is set. This is the only way to exercise
+    /// the decline path since `decide()` cannot reach it.
+    #[test]
+    fn precise_merge_deps_declines_when_neq_participates() {
+        let role = Role::Named(RoleId::new(0));
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+
+        // --- Part 1: black-box verdict-preservation ---
+        // `B⊓C⊑⊥` (2-body empty-head clause) → disjoint pair in
+        // `build_disjoint_pairs`.  Two R-successors labelled B and C are
+        // `labels_disjoint` ⟹ `forced_distinct_exceeds` fires (pre-check,
+        // not `partition_rec`).  Flag ON or OFF, the verdict must be Unsat.
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Exists(role, c, X)],
+            },
+            // B ⊓ C ⊑ ⊥  (2-body empty-head → registered in disjoint_pairs)
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::AtMost(role, None, 1, X)],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let on = HyperEngine::new(&clauses, a)
+            .with_precise_merge_deps()
+            .decide(64);
+        assert_eq!(
+            off,
+            HyperResult::Unsat,
+            "≥2 disjoint-labelled R-succs under ≤1 R ⇒ Unsat"
+        );
+        assert_eq!(on, off, "≠-participating precise merge must preserve Unsat");
+
+        // --- Part 2: white-box — directly trigger the `are_neq` decline ---
+        // Construct an engine with two fresh nodes, inject `are_neq`, then
+        // call `merge_with_cause_for_test` to verify the guard fires.
+        let stub_clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![],
+        }];
+        let mut eng = HyperEngine::new(&stub_clauses, a).with_precise_merge_deps();
+        assert!(!eng.merge_precise_declined_for_test(), "flag starts false");
+        let (si, sj) = eng.make_two_succs_with_atmost_for_test(role);
+        eng.add_neq_for_test(si, sj); // inject ≠ edge
+        let clashed = eng.merge_with_cause_for_test(si, sj, DepSet::EMPTY.insert(5));
+        assert!(clashed, "merge_with_cause must clash when are_neq");
+        assert_eq!(
+            eng.clash_deps,
+            DepSet::ALL,
+            "≠-provenance untracked ⟹ conservative DepSet::ALL"
+        );
+        assert!(
+            eng.merge_precise_declined_for_test(),
+            "decline flag must be set when are_neq fires in merge_with_cause"
+        );
     }
 }

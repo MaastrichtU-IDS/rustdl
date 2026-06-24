@@ -810,9 +810,11 @@ impl<'c> HyperEngine<'c> {
 
     /// Enable the throwaway Phase-0 combination spike (`RUSTDL_COMBO_SPIKE`).
     /// Default OFF. See [`Self::combo_spike`].
+    /// Also forces `precise_merge_deps` so the aggressive ≤n backjump runs under combo.
     #[must_use]
     pub fn with_combo_spike(mut self) -> Self {
         self.combo_spike = true;
+        self.precise_merge_deps = true;
         self
     }
 
@@ -1934,6 +1936,40 @@ impl<'c> HyperEngine<'c> {
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
+        // Under the combo spike: collect ALL open candidates and return the one
+        // with the fewest not-already-satisfied disjuncts (cheap-MRV). The live
+        // count uses `head_atom_satisfied` only — NO `horn_fixpoint` (that is
+        // det-pruning, applied later in `solve`). Ties broken by first encounter.
+        if self.combo_spike {
+            let mut best: Option<(usize, (usize, HNode, Binding))> = None;
+            for idx in 0..self.nodes.len() {
+                let node = HNode(u32::try_from(idx).expect("fits u32"));
+                if self.is_blocked(node) {
+                    continue;
+                }
+                for ci in 0..self.clauses.len() {
+                    if self.clauses[ci].is_horn() {
+                        continue;
+                    }
+                    let Some(bindings) = self.match_body(ci, node) else {
+                        continue;
+                    };
+                    for binding in bindings {
+                        if self.any_head_satisfied(ci, node, &binding) {
+                            continue;
+                        }
+                        // Cheap live count — head_atom_satisfied only, NO horn_fixpoint.
+                        let live = (0..self.clauses[ci].head.len())
+                            .filter(|&k| !self.head_atom_satisfied(ci, k, node, &binding))
+                            .count();
+                        if best.is_none() || matches!(&best, Some((b, _)) if live < *b) {
+                            best = Some((live, (ci, node, binding)));
+                        }
+                    }
+                }
+            }
+            return best.map(|(_, cand)| cand);
+        }
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             // A directly-blocked node gets NO rule applied — including the ⊔
@@ -5301,6 +5337,59 @@ mod tests {
         assert!(!off.combo_spike_for_test());
         let on = HyperEngine::new(&clauses, a).with_combo_spike();
         assert!(on.combo_spike_for_test());
+        // Part (b): with_combo_spike also forces precise_merge_deps.
+        assert!(
+            on.precise_merge_deps_for_test(),
+            "combo must force precise_merge_deps"
+        );
+    }
+
+    #[test]
+    fn combo_mrv_picks_fewest_live_disjunct_clause() {
+        // Shape: two open ⊔ clauses on the root node (labelled A).
+        //   clause 0 (index 0): A → D1 | D2 | D3   (3 live disjuncts)
+        //   clause 1 (index 1): A → E1 | E2         (2 live disjuncts)
+        // No Horn clauses — both clauses are open from the initial state.
+        //
+        // OFF (first-open): find_open_disjunction returns the first open candidate in
+        // scan order → clause 0 (ci=0), because clause 0 appears before clause 1.
+        //
+        // ON (combo MRV): find_open_disjunction returns the candidate minimising live
+        // count → clause 1 (ci=1, 2 < 3).
+        //
+        // This is the direct "which clause was chosen" assertion the brief prefers —
+        // `find_open_disjunction` is accessible from the same-file test module.
+        let (a, d1, d2, d3, e1, e2) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5));
+        let clauses = vec![
+            // clause 0: A → D1 | D2 | D3  (3 live disjuncts, listed first)
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X), Atom::Class(d3, X)],
+            },
+            // clause 1: A → E1 | E2  (2 live disjuncts, listed second)
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(e1, X), Atom::Class(e2, X)],
+            },
+        ];
+
+        // OFF: first-open scan returns clause 0 (ci=0).
+        let mut off_eng = HyperEngine::new(&clauses, a);
+        let off_chosen = off_eng.find_open_disjunction().map(|(ci, _, _)| ci);
+        assert_eq!(
+            off_chosen,
+            Some(0),
+            "OFF must pick the first open clause (ci=0)"
+        );
+
+        // ON (combo MRV): picks the clause with fewer live disjuncts → clause 1 (ci=1).
+        let mut on_eng = HyperEngine::new(&clauses, a).with_combo_spike();
+        let on_chosen = on_eng.find_open_disjunction().map(|(ci, _, _)| ci);
+        assert_eq!(
+            on_chosen,
+            Some(1),
+            "ON (MRV) must pick the 2-disjunct clause (ci=1)"
+        );
     }
 
     #[test]

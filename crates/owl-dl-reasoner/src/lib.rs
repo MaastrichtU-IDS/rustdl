@@ -1014,6 +1014,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
             }
+            if hyper_det_lookahead_probe_enabled() {
+                engine = engine.with_det_lookahead_probe();
+            }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
             }
@@ -1180,6 +1183,12 @@ pub fn unsat_via_labels_enabled() -> bool {
 #[must_use]
 pub fn hyper_precise_card_deps_enabled() -> bool {
     std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// `RUSTDL_DET_LOOKAHEAD_PROBE` (default OFF — throwaway research gate). Read-only
+/// deterministic look-ahead at ⊔ points; counts only.
+pub fn hyper_det_lookahead_probe_enabled() -> bool {
+    std::env::var_os("RUSTDL_DET_LOOKAHEAD_PROBE").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -1712,6 +1721,9 @@ impl HyperCache {
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
         }
+        if hyper_det_lookahead_probe_enabled() {
+            engine = engine.with_det_lookahead_probe();
+        }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
@@ -1749,6 +1761,9 @@ impl HyperCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_det_lookahead_probe_enabled() {
+            engine = engine.with_det_lookahead_probe();
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1804,6 +1819,9 @@ impl HyperCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_det_lookahead_probe_enabled() {
+            engine = engine.with_det_lookahead_probe();
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1998,6 +2016,9 @@ impl ConsistencyCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_det_lookahead_probe_enabled() {
+            engine = engine.with_det_lookahead_probe();
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -4406,6 +4427,9 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             }
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
+            }
+            if hyper_det_lookahead_probe_enabled() {
+                engine = engine.with_det_lookahead_probe();
             }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();

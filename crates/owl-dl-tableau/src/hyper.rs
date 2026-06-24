@@ -397,6 +397,12 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// Deterministic-look-ahead probe (`RUSTDL_DET_LOOKAHEAD_PROBE`): ⊔ points
+    /// reached; free disjuncts killed by a Horn-fixpoint look-ahead; ⊔ points
+    /// the look-ahead collapses to ≤1 surviving disjunct.
+    pub det_or_points: u64,
+    pub det_disjuncts_killed: u64,
+    pub det_or_points_collapsed: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -468,6 +474,9 @@ pub struct HyperEngine<'c> {
     /// is distinct only via `are_neq && !labels_disjoint`. Sound by
     /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
     precise_card_deps: bool,
+    /// Opt-in (`RUSTDL_DET_LOOKAHEAD_PROBE`): read-only deterministic-closure
+    /// look-ahead at ⊔ points (counts only; does not change the search). Default OFF.
+    det_lookahead_probe: bool,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -709,6 +718,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            det_lookahead_probe: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -753,6 +763,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            det_lookahead_probe: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -783,6 +794,14 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// Opt into deterministic-lookahead probe at ⊔ points (read-only,
+    /// counts only; does not change the search).
+    #[must_use]
+    pub fn with_det_lookahead_probe(mut self) -> Self {
+        self.det_lookahead_probe = true;
+        self
+    }
+
     /// Opt into adaptive early-cut of diverging searches (Lever #1). Off by default
     /// (preserves deadline-only behavior + test calibration).
     #[must_use]
@@ -802,6 +821,11 @@ impl<'c> HyperEngine<'c> {
     fn with_nn_taint_disabled(mut self) -> Self {
         self.nn_taint_disabled = true;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn det_lookahead_probe_for_test(&self) -> bool {
+        self.det_lookahead_probe
     }
 
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
@@ -1627,6 +1651,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            det_lookahead_probe: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
@@ -4776,5 +4801,18 @@ mod tests {
              decision via the derive_role_edge birth_deps fold so backjumping \
              cannot prune Q. A false Unsat here = the dep-fold regressed."
         );
+    }
+
+    #[test]
+    fn det_lookahead_probe_builder_sets_flag_and_off_is_default() {
+        let a = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![],
+        }];
+        let off = HyperEngine::new(&clauses, a);
+        assert!(!off.det_lookahead_probe_for_test());
+        let on = HyperEngine::new(&clauses, a).with_det_lookahead_probe();
+        assert!(on.det_lookahead_probe_for_test());
     }
 }

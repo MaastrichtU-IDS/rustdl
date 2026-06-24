@@ -403,6 +403,12 @@ pub struct SearchStats {
     pub disj_points_seen: u64,
     pub disj_disjuncts_pruned: u64,
     pub disj_forced_single: u64,
+    /// Head-atom composition at guided ⊔ points: how many disjuncts were
+    /// named classes (filterable) vs ∃/≤n (the `_ => false` arm, unfilterable).
+    /// Discriminates "true negative" (class atoms common, none dead) from
+    /// "mechanism too narrow" (⊔ disjuncts are mostly ∃/≤n).
+    pub disj_class_atoms: u64,
+    pub disj_nonclass_atoms: u64,
 }
 
 /// Throwaway SP-B viability-gate guide: per-class derived subsumers and
@@ -1777,15 +1783,16 @@ impl<'c> HyperEngine<'c> {
                 self.stats.disj_points_seen += 1;
                 let mut keep = Vec::with_capacity(head_len);
                 for k in 0..head_len {
-                    let dead = match self.clauses[ci].head[k] {
-                        Atom::Class(dk, v) => {
-                            // resolve to the target node; filter on THAT node's label
-                            match resolve_var(v, node, &binding) {
-                                Some(t) => guide.is_dead(dk, &self.nodes[t.index()].labels),
-                                None => false,
-                            }
+                    let dead = if let Atom::Class(dk, v) = self.clauses[ci].head[k] {
+                        // resolve to the target node; filter on THAT node's label
+                        self.stats.disj_class_atoms += 1;
+                        match resolve_var(v, node, &binding) {
+                            Some(t) => guide.is_dead(dk, &self.nodes[t.index()].labels),
+                            None => false,
                         }
-                        _ => false,
+                    } else {
+                        self.stats.disj_nonclass_atoms += 1;
+                        false
                     };
                     if dead {
                         self.stats.disj_disjuncts_pruned += 1;

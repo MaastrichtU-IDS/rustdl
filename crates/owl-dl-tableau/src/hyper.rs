@@ -472,6 +472,9 @@ pub struct HyperEngine<'c> {
     /// the ≤n merge rule does dependency-directed backjumping (precise merge
     /// causation) instead of reporting `DepSet::ALL`. Default OFF.
     precise_merge_deps: bool,
+    /// Throwaway Phase-0 combination spike (`RUSTDL_COMBO_SPIKE`): det-pruning +
+    /// cheap-MRV + forced precise backjump at the ⊔ path. Default OFF.
+    combo_spike: bool,
     /// Per-`solve_at_most`-call flag: set true when the precise path encounters a
     /// `≠`/merge-taint it cannot attribute, forcing the conservative `DepSet::ALL`
     /// fallback at partition exhaustion. Reset at each `solve_at_most` entry.
@@ -719,6 +722,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             precise_merge_deps: false,
+            combo_spike: false,
             merge_precise_declined: false,
             block_index: None,
             nn_taint_disabled: false,
@@ -765,6 +769,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             precise_merge_deps: false,
+            combo_spike: false,
             merge_precise_declined: false,
             block_index: None,
             nn_taint_disabled: false,
@@ -803,6 +808,14 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// Enable the throwaway Phase-0 combination spike (`RUSTDL_COMBO_SPIKE`).
+    /// Default OFF. See [`Self::combo_spike`].
+    #[must_use]
+    pub fn with_combo_spike(mut self) -> Self {
+        self.combo_spike = true;
+        self
+    }
+
     /// Opt into adaptive early-cut of diverging searches (Lever #1). Off by default
     /// (preserves deadline-only behavior + test calibration).
     #[must_use]
@@ -827,6 +840,11 @@ impl<'c> HyperEngine<'c> {
     #[cfg(test)]
     pub(crate) fn precise_merge_deps_for_test(&self) -> bool {
         self.precise_merge_deps
+    }
+
+    #[cfg(test)]
+    pub(crate) fn combo_spike_for_test(&self) -> bool {
+        self.combo_spike
     }
 
     #[cfg(test)]
@@ -1696,6 +1714,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             precise_merge_deps: false,
+            combo_spike: false,
             merge_precise_declined: false,
             block_index: None,
             nn_taint_disabled: false,
@@ -1933,51 +1952,35 @@ impl<'c> HyperEngine<'c> {
         None
     }
 
+    /// True iff head atom `k` of clause `ci` already holds at the given binding.
+    /// Per-head helper extracted from [`Self::any_head_satisfied`] for Tasks 2–3.
+    fn head_atom_satisfied(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
+        let resolve = |v: Var| resolve_var(v, xnode, binding);
+        match &self.clauses[ci].head[k] {
+            Atom::Class(c, v) => {
+                matches!(resolve(*v), Some(t) if self.nodes[t.index()].has(*c))
+            }
+            Atom::Exists(role, cls, v) => {
+                matches!(resolve(*v), Some(src) if self.nodes[src.index()].edges.iter().any(|(er, t)| {
+                    role_matches(*er, *role, self.sub_roles.as_ref()) && self.nodes[t.index()].has(*cls)
+                }))
+            }
+            Atom::AtMost(role, qual, n, v) => {
+                matches!(resolve(*v), Some(src) if
+                    self.nodes[src.index()].at_most.contains(&(*role, *qual, *n))
+                    || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize)
+            }
+            // TODO(HF3): `≥n` generation not yet enforced — never
+            // counts as already-satisfied (sound for `Unsat`: an
+            // unenforced `≥n` only weakens the theory).
+            Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => false,
+        }
+    }
+
     /// True iff some head disjunct of clause `ci` already holds at
     /// the given binding (class label present, or `∃` witness found).
     fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
-        let resolve = |v: Var| resolve_var(v, xnode, binding);
-        for head in &self.clauses[ci].head {
-            match head {
-                Atom::Class(c, v) => {
-                    if let Some(t) = resolve(*v)
-                        && self.nodes[t.index()].has(*c)
-                    {
-                        return true;
-                    }
-                }
-                Atom::Exists(role, cls, v) => {
-                    if let Some(src) = resolve(*v)
-                        && self.nodes[src.index()].edges.iter().any(|(er, t)| {
-                            role_matches(*er, *role, self.sub_roles.as_ref())
-                                && self.nodes[t.index()].has(*cls)
-                        })
-                    {
-                        return true;
-                    }
-                }
-                Atom::AtMost(role, qual, n, v) => {
-                    // Satisfied (no branch needed) if this `≤n` is
-                    // already *asserted* on the node — we committed to
-                    // this disjunct, and enforcement is now
-                    // `find_open_at_most`'s job — or if it trivially
-                    // holds (≤n matching successors already).
-                    if let Some(src) = resolve(*v)
-                        && (self.nodes[src.index()]
-                            .at_most
-                            .contains(&(*role, *qual, *n))
-                            || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize)
-                    {
-                        return true;
-                    }
-                }
-                // TODO(HF3): `≥n` generation not yet enforced — never
-                // counts as already-satisfied (sound for `Unsat`: an
-                // unenforced `≥n` only weakens the theory).
-                Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => {}
-            }
-        }
-        false
+        (0..self.clauses[ci].head.len()).any(|k| self.head_atom_satisfied(ci, k, xnode, binding))
     }
 
     /// The *distinct* (representative-resolved) `role`-successors of
@@ -5259,5 +5262,18 @@ mod tests {
             off_stats.branches_taken,
             on_stats.branches_taken,
         );
+    }
+
+    #[test]
+    fn combo_spike_builder_and_head_atom_satisfied() {
+        let a = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![],
+        }];
+        let off = HyperEngine::new(&clauses, a);
+        assert!(!off.combo_spike_for_test());
+        let on = HyperEngine::new(&clauses, a).with_combo_spike();
+        assert!(on.combo_spike_for_test());
     }
 }

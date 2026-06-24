@@ -83,6 +83,60 @@ here.**
   the at_most_dep). That is the deeper multi-month build, now with a concrete FP target to
   reproduce against (wine's 26 spurious-unsat classes).
 
+## FP localization (build-step-0 for the deeper per-fact-dep-graph build)
+
+Per-class `sat_class_probe` sweep of all 137 wine named classes, flag-OFF vs flag-ON
+(`tests/precise_merge_fp_diag.rs`, throwaway; adaptive-budget OFF, 30 s/class):
+
+- **Flag-OFF: 0 unsat.** (Confirms flag-OFF wine has no spurious unsat — FP=0 baseline.)
+- **Flag-ON: 56 unsat**, including **`vin:Wine` and `food#Wine` themselves**. Because the
+  root `Wine` concept becomes unsatisfiable, all 55 wine-type subclasses
+  (AlsatianWine, RedWine, Chardonnay, …) cascade to unsat.
+
+**The FP is catastrophic, not a corner case:** the precise ≤n backjump makes the *root*
+`Wine` concept unsat. `Wine`'s own structure is the classic wine pattern — `≤1 hasColor`
+/ `≤1 hasSugar` / `≤1 hasBody` cardinality over nominal value-partitions
+(`∃hasColor.{Red,White,Rosé}` + `∀hasColor.WineColor`, etc.). So the lost-dependency path is
+the **≤n-merge of value-partition successors interacting with the nominal identification and
+the `∀`-range propagation** — exactly the *indirect* clash channels (clash arises via a
+`∀`-propagated label or a nominal merge on a node other than the ≤n survivor) that the three
+direct causation channels (label fold / birth_deps / copied-edge) do not widen by `d`.
+
+**Consequence for the per-fact-dep-graph build:** the dependency graph must track merge
+causation through **nominal identification (`CMERGEDIndividual`)** and **∀-range
+propagation (`CMERGEDLINK`/`CMERGEDCONCEPT`)**, not just the ≤n survivor's labels/at_most_dep.
+Concrete FP reproduction: `sat(vin:Wine)` returns Unsat under
+`RUSTDL_PRECISE_MERGE_DEPS=1`, Sat under flag-OFF.
+
+## Viability probe — would an FP-SAFE precise backjump even collapse wine's wall? (NO)
+
+Before committing months to the per-fact dependency-graph re-architecture (whose sole
+purpose is to make precise ≤n backjumping FP-safe), a cheap probe of the load-bearing
+assumption. The per-class sweep verdicts give the OFF→ON transition on wine's 137 classes:
+
+| OFF | → ON | count | meaning |
+|---|---|---|---|
+| Stalled (DNF) | Unsat | 44 | spurious (oracle: wine 0 unsat) |
+| Stalled | Stalled | 32 | still DNF |
+| Stalled | Sat | **1** | genuine sound crack |
+| Sat | Unsat | 12 | spurious (verdict flip) |
+| Sat | Sat | 48 | preserved |
+
+**Of the 77 hard (DNF-flag-OFF) wine classes, precise ≤n backjumping cracks exactly 1
+soundly.** The 44 Stalled→Unsat "terminations" that make the flag *look* like it helps the
+wall are precisely the FP a sound (per-fact-graph) version would NOT produce — they revert
+to Stalled. So a perfectly FP-safe precise backjump would leave ~76/77 hard wine classes
+DNF: **no wall collapse.**
+
+**Conclusion: the per-fact dependency graph is NOT worth the multi-month build for wine.**
+Its only purpose is to make precise ≤n backjumping sound; this probe shows sound precise ≤n
+backjumping does not collapse wine's wall (1/77). This independently re-confirms the SP-B
+finding and [[wine-wall-bjgap1-genuine]]: wine's wall is disjunctive-branching / nominal-
+architecture, NOT ≤n-merge backjumping. Precise merge-causation — however soundly
+implemented — is not the lever. Caveat: 30 s/class deadline (Stalled ≠ proven-nonterminating)
+and per-class probe (not full classify); but all 56 ON-unsat are oracle-confirmed spurious,
+and the 1/77 sound-crack ratio is robust to the deadline.
+
 ## Method note
 
 The gate was decisive because it ran the corpus oracle with the flag ON — not because the

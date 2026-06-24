@@ -573,6 +573,10 @@ pub struct HyperEngine<'c> {
     /// construction; updated each time a window of [`DIV_WINDOW`]
     /// branches is consumed without triggering a Stalled.
     div_checkpoint: (u64, u64, usize),
+    /// Throwaway SP-B gate guide (`RUSTDL_SAT_GUIDE`). `None` ⟹ flag-OFF,
+    /// behavior byte-identical to production.
+    #[allow(dead_code)]
+    sat_guide: Option<SatGuide>, // read in Task 3 (the ⊔ filter)
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -755,6 +759,7 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            sat_guide: None,
         }
     }
 
@@ -799,6 +804,7 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            sat_guide: None,
         }
     }
 
@@ -943,6 +949,14 @@ impl<'c> HyperEngine<'c> {
         // this call is the first moment both clauses and the hierarchy are in scope.
         self.indexes = std::sync::Arc::new(build_clause_indexes(self.clauses, Some(&hierarchy)));
         self.sub_roles = Some(hierarchy);
+        self
+    }
+
+    /// Supply the throwaway SP-B saturation guide for disjunction filtering.
+    /// Used only when `RUSTDL_SAT_GUIDE` is enabled; otherwise unused.
+    #[must_use]
+    pub fn with_sat_guide(mut self, guide: SatGuide) -> Self {
+        self.sat_guide = Some(guide);
         self
     }
 
@@ -1673,6 +1687,7 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            sat_guide: None,
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices

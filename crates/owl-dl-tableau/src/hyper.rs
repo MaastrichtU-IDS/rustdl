@@ -814,7 +814,10 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_combo_spike(mut self) -> Self {
         self.combo_spike = true;
-        self.precise_merge_deps = true;
+        // Disentangling knob (throwaway): RUSTDL_COMBO_NO_PRECISE=1 runs the SOUND
+        // subset (det-pruning + MRV + sound ⊔ backjump) without the unsound ≤n
+        // precise backjump, to test whether the collapse needs the unsound lever.
+        self.precise_merge_deps = std::env::var_os("RUSTDL_COMBO_NO_PRECISE").is_none();
         self
     }
 
@@ -1804,7 +1807,11 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
-            let live: Vec<usize> = if self.combo_spike {
+            // Disentangling knob (throwaway): RUSTDL_COMBO_NO_DETPRUNE=1 disables
+            // det-pruning (keeps MRV) to isolate which lever causes the wine FP.
+            let det_prune_on =
+                self.combo_spike && std::env::var_os("RUSTDL_COMBO_NO_DETPRUNE").is_none();
+            let live: Vec<usize> = if det_prune_on {
                 let saved_clash = self.clash_deps;
                 let mut keep = Vec::with_capacity(head_len);
                 for k in 0..head_len {
@@ -1826,7 +1833,7 @@ impl<'c> HyperEngine<'c> {
             } else {
                 (0..head_len).collect()
             };
-            if self.combo_spike && live.is_empty() {
+            if det_prune_on && live.is_empty() {
                 self.clash_deps = decision_deps;
                 return HyperResult::Unsat;
             }
@@ -1940,7 +1947,9 @@ impl<'c> HyperEngine<'c> {
         // with the fewest not-already-satisfied disjuncts (cheap-MRV). The live
         // count uses `head_atom_satisfied` only — NO `horn_fixpoint` (that is
         // det-pruning, applied later in `solve`). Ties broken by first encounter.
-        if self.combo_spike {
+        // Disentangling knob (throwaway): RUSTDL_COMBO_NO_MRV=1 disables MRV
+        // (reverts to first-open) to isolate which lever causes the wine FP.
+        if self.combo_spike && std::env::var_os("RUSTDL_COMBO_NO_MRV").is_none() {
             let mut best: Option<(usize, (usize, HNode, Binding))> = None;
             for idx in 0..self.nodes.len() {
                 let node = HNode(u32::try_from(idx).expect("fits u32"));

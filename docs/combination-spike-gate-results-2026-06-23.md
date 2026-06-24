@@ -1,11 +1,28 @@
 # Phase-0 combination spike — RESULTS + VERDICT — 2026-06-23
 
-**Verdict: GO** (the first GO of the build-once arc). The combination of **sound** levers —
-deterministic-look-ahead **pruning** + cheap-**MRV** ⊔ ordering + the shipped **sound ⊔
-backjump** — collapses a hard wine model from its ~67k-branch DNF thrash to a **correct
-(`Sat`) answer in single-digit seconds**. The spike also identifies the architecture
-precisely: **det-pruning + MRV + sound ⊔ backjump are the levers; the precise ≤n backjump is
-the WRONG, unsound lever and must be dropped.**
+**Verdict: GO RETRACTED → diagnosing.** The initial GO was REFUTED by the wine full-closure FP
+gate: the "sound" combo (det-pruning + MRV, precise OFF) produces **FP=232 on wine**
+(rustdl_closure=885 vs konclude 653; 232 spurious SUBSUMPTIONS; MISSED=0; unsat rustdl=0) —
+det-pruning DROPS LIVE DISJUNCTS on wine's nominal/cardinality pairs (sat(C⊓¬D) wrongly clashes).
+FP=0 on pizza/bibtex but FP=232 on wine ⟹ det-pruning's failed-literal soundness has the
+nominal-context hole (deterministic Horn closure is branch-dependent under nominals+merge). The
+~70×/2.3s collapse was real PERFORMANCE but achieved UNSOUNDLY. **The GO was presented prematurely
+(on pizza/bibtex + 2 probes, before the wine capstone). The performance signal stands; the
+soundness claim does not. Now disentangling which lever FPs and whether it is fundamental
+(nominal-context) or a recoverable implementation leak.** See the "FP REFUTATION + diagnostics"
+section at the end.
+
+---
+
+## (Superseded) initial GO writeup
+
+The combination of levers — deterministic-look-ahead **pruning** + cheap-**MRV** ⊔ ordering +
+the shipped **sound ⊔ backjump** — collapses a hard wine model from its ~67k-branch DNF thrash to
+a `Sat` answer in single-digit seconds (Alsatian⊓¬American 867 br / 2.3 s; SweetWine 10856 / 24 s).
+The precise ≤n backjump (forced on) caused a spurious-Unsat collapse; dropping it gave the correct
+per-probe verdict. **BUT the full-wine closure FP gate (below) shows the precise-OFF combo is STILL
+FP-unsound on wine (FP=232) — the per-probe Sat verdicts were not representative of the full
+classify.** Read the FP-refutation section as the operative verdict.
 
 ## What was measured
 
@@ -73,3 +90,49 @@ amortized configuration holds the wine collapse and does not regress the corpus.
 
 Throwaway spike code (`spike/combo-rewrite-gate`) does not merge; only this verdict lands on
 `feat/build-once-redesign`.
+
+---
+
+## FP REFUTATION + diagnostics (THE OPERATIVE VERDICT — supersedes the GO writeup above)
+
+The initial GO was presented on pizza/bibtex FP=0 + 2 individual `Sat` probes, before the full
+wine closure-diff landed. The wine capstone refuted it: **FP=232** (rustdl 885 vs konclude 653,
+MISSED=0, unsat rustdl=0) — 232 spurious subsumptions (`sat(C⊓¬D)` wrongly clashing).
+
+**Disentangling** (throwaway sub-flags `RUSTDL_COMBO_NO_DETPRUNE` / `RUSTDL_COMBO_NO_MRV`; wine
+closure-diff at `RUSTDL_TEST_PAIR_MS=25` — spurious subsumptions complete fast, so a tight
+deadline reproduces the FP in ~56 s):
+
+| config (25 ms) | wine FP | verdict |
+|---|---|---|
+| full combo (det-pruning + MRV) | 156 | unsound |
+| **det-pruning only** | **7** | **unsound (the culprit)** |
+| **MRV only** | **0** (653=653, MISSED=0) | **sound** |
+
+**Root cause of det-pruning's unsoundness:** `horn_fixpoint` is *deterministic* — it does NOT
+perform the ≤n **merge** / nominal-identification (branching moves `solve_at_most` makes). On
+wine's `≤1`+nominal-value-partition pattern the look-ahead sees ">n successors" and **clashes**
+where the real search would **merge and proceed**, reading a *merge-resolvable* clash as "`Dₖ`
+dead" and **dropping a live disjunct**. Fundamental to the look-ahead's determinism on the
+≤n/nominal fragment (FP=0 on pizza/bibtex, which lack it). MRV *amplifies* it ~22× (7 → 156).
+
+**The corrected, SOUND result — MRV alone:**
+
+| model | OFF | **MRV-only (sound)** |
+|---|---|---|
+| sat(Alsatian⊓¬American) | 66683 / 60 s DNF | **1227 br / 1.2 s / Sat** |
+| sat(SweetWine) | 67459 / 60 s DNF | **12366 br / 15.6 s / Sat** |
+
+MRV alone collapses the hard models 5–54× to the correct `Sat`, **FP=0/MISSED=0 on the full wine
+closure (653=653)**. The full combo's collapse (867 / 10856) is barely better than MRV-only
+(1227 / 12366) — **det-pruning added ~nothing to the collapse and all of the unsoundness.**
+
+**OPERATIVE VERDICT: GO via MRV (sound variable ordering); DROP det-pruning (unsound +
+~unnecessary, and there is no amortization to build — MRV has no look-ahead).** MRV is sound by a
+stronger argument than det-pruning ever had — reordering which open ⊔ to branch first is
+verdict-invariant (same search space, better order), no nominal-context hole — *and* it is
+empirically FP=0/MISSED=0 on wine. **First build phase: promote MRV to a sound wedge feature
+(cheap per-branch most-constrained-⊔ scan, no look-ahead), gated on full-corpus FP=0 +
+no-regression** (the build-phase proof; not yet run — soundness-by-construction + FP=0-on-wine is
+strong, but the corpus-wide gate is the proof, per this session's repeated lesson). The
+"amortized deterministic-expansion" path in the GO writeup above is moot: MRV needs no look-ahead.

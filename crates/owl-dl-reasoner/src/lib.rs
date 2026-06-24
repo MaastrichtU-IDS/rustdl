@@ -1014,6 +1014,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
             }
+            if hyper_mrv_ordering_enabled() {
+                engine = engine.with_mrv_ordering();
+            }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
             }
@@ -1180,6 +1183,15 @@ pub fn unsat_via_labels_enabled() -> bool {
 #[must_use]
 pub fn hyper_precise_card_deps_enabled() -> bool {
     std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// `RUSTDL_MRV_ORDERING` (default ON as of 2026-06-23). Most-constrained-⊔-first
+/// ordering of `find_open_disjunction`; verdict-invariant (reordering only).
+/// Flipped default-ON after the corpus FP gate passed: FP=0/MISSED=0 byte-identical
+/// across all 10 oracled fixtures, no wall regression, wine collapse sound. `=0` opts out.
+#[must_use]
+pub fn hyper_mrv_ordering_enabled() -> bool {
+    std::env::var_os("RUSTDL_MRV_ORDERING").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -1712,6 +1724,9 @@ impl HyperCache {
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
         }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
+        }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
@@ -1749,6 +1764,9 @@ impl HyperCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1804,6 +1822,9 @@ impl HyperCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1998,6 +2019,9 @@ impl ConsistencyCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -4406,6 +4430,9 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             }
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
+            }
+            if hyper_mrv_ordering_enabled() {
+                engine = engine.with_mrv_ordering();
             }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();

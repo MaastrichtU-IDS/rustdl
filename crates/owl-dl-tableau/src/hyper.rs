@@ -404,7 +404,7 @@ pub struct SearchStats {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
-              nn_taint_disabled) — orthogonal toggles, not a state enum"
+              mrv_ordering, nn_taint_disabled) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
@@ -468,6 +468,10 @@ pub struct HyperEngine<'c> {
     /// is distinct only via `are_neq && !labels_disjoint`. Sound by
     /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
     precise_card_deps: bool,
+    /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open
+    /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
+    /// Verdict-invariant (reordering only). See the MRV spec.
+    mrv_ordering: bool,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -709,6 +713,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            mrv_ordering: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -753,6 +758,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            mrv_ordering: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -783,6 +789,14 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
+    /// Opt into MRV (most-constrained-variable) ordering of open disjunctions.
+    /// See [`Self::mrv_ordering`].
+    #[must_use]
+    pub fn with_mrv_ordering(mut self) -> Self {
+        self.mrv_ordering = true;
+        self
+    }
+
     /// Opt into adaptive early-cut of diverging searches (Lever #1). Off by default
     /// (preserves deadline-only behavior + test calibration).
     #[must_use]
@@ -802,6 +816,18 @@ impl<'c> HyperEngine<'c> {
     fn with_nn_taint_disabled(mut self) -> Self {
         self.nn_taint_disabled = true;
         self
+    }
+
+    /// Test-only accessor for [`Self::mrv_ordering`].
+    #[cfg(test)]
+    pub(crate) fn mrv_ordering_for_test(&self) -> bool {
+        self.mrv_ordering
+    }
+
+    /// Test-only wrapper around [`Self::find_open_disjunction`].
+    #[cfg(test)]
+    pub(crate) fn find_open_disjunction_for_test(&mut self) -> Option<(usize, HNode, Binding)> {
+        self.find_open_disjunction()
     }
 
     /// Sound over-approximation of a **structural** `≤n` cardinality clash's
@@ -1627,6 +1653,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            mrv_ordering: false,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
@@ -1819,6 +1846,39 @@ impl<'c> HyperEngine<'c> {
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
+        if self.mrv_ordering {
+            let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
+            for idx in 0..self.nodes.len() {
+                let node = HNode(u32::try_from(idx).expect("fits u32"));
+                if self.is_blocked(node) {
+                    continue;
+                }
+                for ci in 0..self.clauses.len() {
+                    if self.clauses[ci].is_horn() {
+                        continue;
+                    }
+                    let Some(bindings) = self.match_body(ci, node) else {
+                        continue;
+                    };
+                    for binding in bindings {
+                        if self.any_head_satisfied(ci, node, &binding) {
+                            continue;
+                        }
+                        let live = (0..self.clauses[ci].head.len())
+                            .filter(|&k| !self.head_atom_satisfied(ci, k, node, &binding))
+                            .count();
+                        let better = match &best {
+                            None => true,
+                            Some((b, _)) => live < *b,
+                        };
+                        if better {
+                            best = Some((live, (ci, node, binding)));
+                        }
+                    }
+                }
+            }
+            return best.map(|(_, cand)| cand);
+        }
         for idx in 0..self.nodes.len() {
             let node = HNode(u32::try_from(idx).expect("fits u32"));
             // A directly-blocked node gets NO rule applied — including the ⊔
@@ -1865,49 +1925,29 @@ impl<'c> HyperEngine<'c> {
 
     /// True iff some head disjunct of clause `ci` already holds at
     /// the given binding (class label present, or `∃` witness found).
-    fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
+    /// True iff head atom `k` of clause `ci` is already satisfied at the given binding.
+    /// Extracted from [`Self::any_head_satisfied`] to allow per-atom inspection (e.g.
+    /// counting live disjuncts for MRV ordering in Task 2).
+    fn head_atom_satisfied(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
         let resolve = |v: Var| resolve_var(v, xnode, binding);
-        for head in &self.clauses[ci].head {
-            match head {
-                Atom::Class(c, v) => {
-                    if let Some(t) = resolve(*v)
-                        && self.nodes[t.index()].has(*c)
-                    {
-                        return true;
-                    }
-                }
-                Atom::Exists(role, cls, v) => {
-                    if let Some(src) = resolve(*v)
-                        && self.nodes[src.index()].edges.iter().any(|(er, t)| {
-                            role_matches(*er, *role, self.sub_roles.as_ref())
-                                && self.nodes[t.index()].has(*cls)
-                        })
-                    {
-                        return true;
-                    }
-                }
-                Atom::AtMost(role, qual, n, v) => {
-                    // Satisfied (no branch needed) if this `≤n` is
-                    // already *asserted* on the node — we committed to
-                    // this disjunct, and enforcement is now
-                    // `find_open_at_most`'s job — or if it trivially
-                    // holds (≤n matching successors already).
-                    if let Some(src) = resolve(*v)
-                        && (self.nodes[src.index()]
-                            .at_most
-                            .contains(&(*role, *qual, *n))
-                            || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize)
-                    {
-                        return true;
-                    }
-                }
-                // TODO(HF3): `≥n` generation not yet enforced — never
-                // counts as already-satisfied (sound for `Unsat`: an
-                // unenforced `≥n` only weakens the theory).
-                Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => {}
-            }
+        match &self.clauses[ci].head[k] {
+            Atom::Class(c, v) => matches!(resolve(*v), Some(t) if self.nodes[t.index()].has(*c)),
+            Atom::Exists(role, cls, v) => matches!(resolve(*v), Some(src) if
+            self.nodes[src.index()].edges.iter().any(|(er, t)| {
+                role_matches(*er, *role, self.sub_roles.as_ref()) && self.nodes[t.index()].has(*cls)
+            })),
+            Atom::AtMost(role, qual, n, v) => matches!(resolve(*v), Some(src) if
+                self.nodes[src.index()].at_most.contains(&(*role, *qual, *n))
+                || self.distinct_role_succ(src, *role, *qual).len() <= *n as usize),
+            // TODO(HF3): `≥n` generation not yet enforced — never counts as satisfied.
+            Atom::AtLeast(..) | Atom::Equal(..) | Atom::Role(..) => false,
         }
-        false
+    }
+
+    /// True iff some head disjunct of clause `ci` already holds at
+    /// the given binding (class label present, or `∃` witness found).
+    fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
+        (0..self.clauses[ci].head.len()).any(|k| self.head_atom_satisfied(ci, k, xnode, binding))
     }
 
     /// The *distinct* (representative-resolved) `role`-successors of
@@ -4775,6 +4815,55 @@ mod tests {
             "Q is clash-free; the chain-edge clash under P must carry the P \
              decision via the derive_role_edge birth_deps fold so backjumping \
              cannot prune Q. A false Unsat here = the dep-fold regressed."
+        );
+    }
+
+    #[test]
+    fn mrv_ordering_picks_fewest_live_disjunct_clause() {
+        // Root node labelled A. Two open disjunctive clauses:
+        //   clause0: A -> d1 ⊔ d2 ⊔ d3   (3 live disjuncts)
+        //   clause1: A -> e1 ⊔ e2        (2 live disjuncts)
+        // MRV-OFF: find_open_disjunction returns clause0 (first). MRV-ON: returns clause1 (2<3).
+        let (a, d1, d2, d3, e1, e2) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(d1, X), Atom::Class(d2, X), Atom::Class(d3, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(e1, X), Atom::Class(e2, X)],
+            },
+        ];
+        // OFF: first-open = clause index 0
+        let mut off = HyperEngine::new(&clauses, a);
+        off.horn_fixpoint(FIXPOINT_ITERS);
+        assert_eq!(
+            off.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
+            Some(0)
+        );
+        // ON: MRV = clause index 1 (fewer live disjuncts)
+        let mut on = HyperEngine::new(&clauses, a).with_mrv_ordering();
+        on.horn_fixpoint(FIXPOINT_ITERS);
+        assert_eq!(
+            on.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
+            Some(1)
+        );
+    }
+
+    /// Scaffold test: `mrv_ordering` defaults to `false`; `with_mrv_ordering` flips it.
+    #[test]
+    fn mrv_ordering_builder_and_default() {
+        let a = cls(0);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![],
+        }];
+        assert!(!HyperEngine::new(&clauses, a).mrv_ordering_for_test());
+        assert!(
+            HyperEngine::new(&clauses, a)
+                .with_mrv_ordering()
+                .mrv_ordering_for_test()
         );
     }
 }

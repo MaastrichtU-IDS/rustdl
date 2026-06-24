@@ -83,6 +83,31 @@ here.**
   the at_most_dep). That is the deeper multi-month build, now with a concrete FP target to
   reproduce against (wine's 26 spurious-unsat classes).
 
+## FP localization (build-step-0 for the deeper per-fact-dep-graph build)
+
+Per-class `sat_class_probe` sweep of all 137 wine named classes, flag-OFF vs flag-ON
+(`tests/precise_merge_fp_diag.rs`, throwaway; adaptive-budget OFF, 30 s/class):
+
+- **Flag-OFF: 0 unsat.** (Confirms flag-OFF wine has no spurious unsat — FP=0 baseline.)
+- **Flag-ON: 56 unsat**, including **`vin:Wine` and `food#Wine` themselves**. Because the
+  root `Wine` concept becomes unsatisfiable, all 55 wine-type subclasses
+  (AlsatianWine, RedWine, Chardonnay, …) cascade to unsat.
+
+**The FP is catastrophic, not a corner case:** the precise ≤n backjump makes the *root*
+`Wine` concept unsat. `Wine`'s own structure is the classic wine pattern — `≤1 hasColor`
+/ `≤1 hasSugar` / `≤1 hasBody` cardinality over nominal value-partitions
+(`∃hasColor.{Red,White,Rosé}` + `∀hasColor.WineColor`, etc.). So the lost-dependency path is
+the **≤n-merge of value-partition successors interacting with the nominal identification and
+the `∀`-range propagation** — exactly the *indirect* clash channels (clash arises via a
+`∀`-propagated label or a nominal merge on a node other than the ≤n survivor) that the three
+direct causation channels (label fold / birth_deps / copied-edge) do not widen by `d`.
+
+**Consequence for the per-fact-dep-graph build:** the dependency graph must track merge
+causation through **nominal identification (`CMERGEDIndividual`)** and **∀-range
+propagation (`CMERGEDLINK`/`CMERGEDCONCEPT`)**, not just the ≤n survivor's labels/at_most_dep.
+Concrete FP reproduction: `sat(vin:Wine)` returns Unsat under
+`RUSTDL_PRECISE_MERGE_DEPS=1`, Sat under flag-OFF.
+
 ## Method note
 
 The gate was decisive because it ran the corpus oracle with the flag ON — not because the

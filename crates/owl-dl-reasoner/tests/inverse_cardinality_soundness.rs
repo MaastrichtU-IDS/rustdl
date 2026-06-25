@@ -29,7 +29,7 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use std::io::Cursor;
 
-const SRC: &str = r#"Prefix(:=<http://ex/>)
+const SRC: &str = r"Prefix(:=<http://ex/>)
 Ontology(<http://ex/cardfp>
 Declaration(Class(:C500)) Declaration(Class(:C501)) Declaration(Class(:C512))
 Declaration(Class(:C532)) Declaration(Class(:Probe))
@@ -40,7 +40,7 @@ SubClassOf(:C500 ObjectMinCardinality(2 :s :C501))
 SubClassOf(:C501 :C512)
 SubClassOf(:C501 ObjectExactCardinality(2 :r :C500))
 SubClassOf(:C512 ObjectExactCardinality(2 :r :C532))
-)"#;
+)";
 
 fn onto() -> SetOntology<RcStr> {
     let mut r = Cursor::new(SRC);

@@ -595,7 +595,10 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         let mut direct: HashMap<owl_dl_core::ClassId, Vec<ConceptId>> = HashMap::new();
         for rule in &tbox.concept_rules {
             if matches!(self.pool.get(rule.conclusion), ConceptExpr::Atomic(_)) {
-                direct.entry(rule.trigger).or_default().push(rule.conclusion);
+                direct
+                    .entry(rule.trigger)
+                    .or_default()
+                    .push(rule.conclusion);
             }
         }
         // Transitive closure via BFS over atomic super -> its ClassId -> direct.

@@ -957,12 +957,9 @@ fn anytime_global_sweep() {
 #[test]
 #[ignore = "single-ontology ORE diff; needs ORE_ONE_INPUT + ORE_ONE_ORACLE"]
 fn ore_one_closure_matches_oracle() {
-    let input = match std::env::var("ORE_ONE_INPUT") {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!("SKIP: ORE_ONE_INPUT not set");
-            return;
-        }
+    let Ok(input) = std::env::var("ORE_ONE_INPUT") else {
+        eprintln!("SKIP: ORE_ONE_INPUT not set");
+        return;
     };
     let oracle = std::env::var("ORE_ONE_ORACLE").expect("ORE_ONE_ORACLE");
     let stem = Path::new(&input)
@@ -990,12 +987,9 @@ fn ore_one_closure_matches_oracle() {
 #[test]
 #[ignore = "at-scale ORE sweep; needs ORE_INPUT_DIR + ORE_ORACLE_DIR"]
 fn ore_dir_closure_matches_oracle() {
-    let input_dir = match std::env::var("ORE_INPUT_DIR") {
-        Ok(d) => d,
-        Err(_) => {
-            eprintln!("SKIP: ORE_INPUT_DIR not set");
-            return;
-        }
+    let Ok(input_dir) = std::env::var("ORE_INPUT_DIR") else {
+        eprintln!("SKIP: ORE_INPUT_DIR not set");
+        return;
     };
     let oracle_dir = std::env::var("ORE_ORACLE_DIR").unwrap_or_else(|_| input_dir.clone());
     let pair_ms = test_pair_ms();
@@ -1010,7 +1004,13 @@ fn ore_dir_closure_matches_oracle() {
         .collect();
     entries.sort();
     for input in entries {
-        let stem = input.file_stem().and_then(|s| s.to_str()).unwrap().to_owned();
+        let Some(stem) = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
         let oracle = Path::new(&oracle_dir).join(format!("{stem}-classified.owx"));
         if oracle.exists() {
             pairs.push((stem, input, oracle));
@@ -1040,7 +1040,7 @@ fn ore_dir_closure_matches_oracle() {
             }
             Err(_) => eprintln!("--- {stem} --- SKIP (panic: parse/classify error)"),
         }
-        if done % 10 == 0 {
+        if done.is_multiple_of(10) {
             eprintln!(
                 "[progress] {done}/{} done, running FP total={total_fp}",
                 pairs.len()

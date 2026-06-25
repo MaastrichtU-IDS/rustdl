@@ -30,8 +30,9 @@ fn iri(local: &str) -> String {
 }
 
 fn load() -> SetOntology<RcStr> {
-    let src = std::fs::read_to_string(OFN_PATH)
-        .unwrap_or_else(|e| panic!("read {OFN_PATH}: {e} (run ./scripts/fetch-real-ontologies.sh)"));
+    let src = std::fs::read_to_string(OFN_PATH).unwrap_or_else(|e| {
+        panic!("read {OFN_PATH}: {e} (run ./scripts/fetch-real-ontologies.sh)")
+    });
     let mut r = Cursor::new(src.into_bytes());
     let (ont, _) = read_ofn(&mut r, ParserConfiguration::default()).expect("parse");
     ont
@@ -57,7 +58,11 @@ fn print_report(label: &str, verdict: &str, n_branches: u64, records: &[ClashRec
     );
     println!(
         "  bjgap REAL   : min={} median={} p90={} max={} mean={:.2}",
-        r.bjgap_real.min, r.bjgap_real.median, r.bjgap_real.p90, r.bjgap_real.max, r.bjgap_real.mean
+        r.bjgap_real.min,
+        r.bjgap_real.median,
+        r.bjgap_real.p90,
+        r.bjgap_real.max,
+        r.bjgap_real.mean
     );
     println!(
         "  bjgap SHADOW : min={} median={} p90={} max={} mean={:.2}",
@@ -79,7 +84,16 @@ fn probe_sat(label: &str, local: &str, depth: usize, t: Option<Duration>) {
         .expect("probe ok")
         .expect("IRI resolves");
     println!("  [{label}] wall_ms={wall_ms:.0}");
-    print_report(label, &format!("{result:?}"), stats.branches_taken, &stats.clash_records);
+    println!(
+        "  BRANCH SPLIT: total={} disj={} merge={} max_depth={}",
+        stats.branches_taken, stats.disj_branches, stats.merge_branches, stats.max_branch_depth
+    );
+    print_report(
+        label,
+        &format!("{result:?}"),
+        stats.branches_taken,
+        &stats.clash_records,
+    );
 }
 
 fn probe_pair(label: &str, sub: &str, sup: &str, depth: usize, t: Option<Duration>) {
@@ -89,7 +103,16 @@ fn probe_pair(label: &str, sub: &str, sup: &str, depth: usize, t: Option<Duratio
             .expect("probe ok")
             .expect("IRIs resolve");
     println!("  [{label}] wall_ms={wall_ms:.0}");
-    print_report(label, &format!("{result:?}"), stats.branches_taken, &stats.clash_records);
+    println!(
+        "  BRANCH SPLIT: total={} disj={} merge={} max_depth={}",
+        stats.branches_taken, stats.disj_branches, stats.merge_branches, stats.max_branch_depth
+    );
+    print_report(
+        label,
+        &format!("{result:?}"),
+        stats.branches_taken,
+        &stats.clash_records,
+    );
 }
 
 /// The gate. Set RUSTDL_SHADOW_DEP_PROBE=1 and RUSTDL_ADAPTIVE_BUDGET=0 externally.

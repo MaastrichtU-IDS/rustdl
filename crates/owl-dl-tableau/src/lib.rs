@@ -50,6 +50,7 @@ pub mod replay;
 mod rules;
 mod saturate;
 mod search;
+pub mod shadow_measures;
 pub mod snapshot;
 mod trail;
 

@@ -1740,9 +1740,34 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            // THROWAWAY value-ordering spike (RUSTDL_VALUE_ORDER): det-look-ahead
+            // SCORES each disjunct (horn_fixpoint clash → "clashing"); branch
+            // NON-clashing first, clashing last. NO DROP — every k is included,
+            // just reordered ⟹ verdict-invariant (sound), reclaiming det-pruning's
+            // deterministic signal without its unsoundness. Measures SweetWine residual.
+            let order: Vec<usize> = if std::env::var_os("RUSTDL_VALUE_ORDER").is_some() {
+                let saved_clash = self.clash_deps;
+                let (mut surviving, mut clashing) = (Vec::new(), Vec::new());
+                for k in 0..head_len {
+                    let head_atom = self.clauses[ci].head[k];
+                    let saved = self.save();
+                    let _ = self.apply_head_atom(head_atom, node, &binding, DepSet::EMPTY);
+                    let killed = matches!(self.horn_fixpoint(FIXPOINT_ITERS), HyperResult::Unsat);
+                    self.restore(saved);
+                    if killed {
+                        clashing.push(k);
+                    } else {
+                        surviving.push(k);
+                    }
+                }
+                self.clash_deps = saved_clash;
+                surviving.into_iter().chain(clashing).collect()
+            } else {
+                (0..head_len).collect()
+            };
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
-            for k in 0..head_len {
+            for &k in &order {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;

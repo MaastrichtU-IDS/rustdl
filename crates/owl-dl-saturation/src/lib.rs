@@ -61,6 +61,7 @@
 //! tableau on the misses.
 
 pub mod proof;
+pub mod seed_sat;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -141,6 +142,51 @@ pub fn saturate_with_config(
     (engine.subsumers, trace)
 }
 
+/// Build and fully run the base saturation engine, reserving one extra synthetic
+/// class id `X` (above the Tseitin universe) that carries no axioms in the base.
+///
+/// Returns `(engine, X)`.  The returned engine is the fully-saturated base; the
+/// caller can clone it, inject seed facts for `X` into the clone, run it to
+/// fixpoint, and read `is_unsat_class(X)` for a per-call "is ⊓seed unsat?"
+/// query without mutating the base.
+///
+/// **Reserved-id approach:** `collect_el_rules` returns
+/// `tseitin.next_id == num_total_classes`, so a naïve `reserved_x = ClassId::new(
+/// num_total_classes)` would alias the *first runtime synthetic* allocated inside
+/// the engine (e.g. by Phase-2a functional-role witness-merge).  We bump
+/// `tseitin.next_id` by 1 before handing it to `WorklistEngine::new`, so `X` =
+/// `old_next_id` and any runtime synthetics start at `old_next_id + 1`.  The
+/// engine is sized at `num_total_classes + 1` so `X`'s index is within bounds of
+/// every per-class Vec and bitset.
+pub(crate) fn build_run_engine_with_reserved(
+    internal: &InternalOntology,
+) -> (WorklistEngine, ClassId) {
+    let n = internal.vocabulary.num_classes();
+    let role_super_map = build_role_super(internal);
+    let (rules, mut tseitin, num_total_classes, maybe_trace) =
+        collect_el_rules_with_provenance(internal, &role_super_map, false);
+    let role_super = freeze_role_super(&role_super_map);
+    // Reserve one id above the static Tseitin universe for the seed query class X.
+    // Bumping next_id ensures runtime synthetics start above X (no aliasing).
+    let reserved_x = ClassId::new(u32::try_from(num_total_classes).expect("fits u32"));
+    tseitin.next_id = u32::try_from(num_total_classes)
+        .expect("fits u32")
+        .checked_add(1)
+        .expect("synthetic id overflow");
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes + 1, // size all per-class Vecs/bitsets to include X
+        rules,
+        tseitin,
+        role_super,
+        false,
+        maybe_trace,
+    );
+    engine.seed(internal);
+    engine.run();
+    (engine, reserved_x)
+}
+
 /// Worklist-driven saturation engine. Maintains the running closure
 /// plus three event queues; each iteration pops one event, derives
 /// its direct consequents, and pushes new events for anything that
@@ -158,6 +204,7 @@ pub fn saturate_with_config(
 ///   only re-checks the triggers that could possibly fire.
 /// - `disjoints_by_class[A] = {B : (A,B) or (B,A) is disjoint}`
 ///   — disjoint-pair lookup keyed on either operand.
+#[derive(Clone)]
 struct WorklistEngine {
     subsumers: Subsumers,
     /// Reverse index: `subsumed_by[D]` is the bitset of classes
@@ -261,6 +308,7 @@ struct WorklistEngine {
 }
 
 /// SP-B2a per-disjunction state (see `WorklistEngine::b2_disjunctions`).
+#[derive(Clone)]
 struct B2Disjunction {
     class: ClassId,
     disjuncts: Box<[ClassId]>,
@@ -672,6 +720,30 @@ impl WorklistEngine {
                 break;
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Seed-sat API hooks (used by `seed_sat.rs`).
+    // -----------------------------------------------------------------------
+
+    /// Enqueue `c ⊑ d` as a starting fact, exactly as `seed` does for told
+    /// subsumptions.  Used by the seed-sat API.
+    pub(crate) fn inject_subsumer(&mut self, c: ClassId, d: ClassId) {
+        self.todo_subsumer.push_back((c, d));
+    }
+
+    /// Enqueue `c ⊑ ∃role.target` as a starting existential fact.
+    pub(crate) fn inject_existential(&mut self, c: ClassId, role: RoleId, target: ClassId) {
+        self.push_fact(ExistentialFact {
+            sub: c,
+            role,
+            target,
+        });
+    }
+
+    /// True iff saturation has proved `c ⊑ ⊥`.
+    pub(crate) fn is_unsat_class(&self, c: ClassId) -> bool {
+        self.subsumers.is_unsatisfiable(c)
     }
 
     /// Insert a derived `(C, D)` subsumer edge — no-op if already
@@ -1915,7 +1987,7 @@ impl Subsumers {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ElRules {
     /// Direct named-to-named `A ⊑ B` facts.
     atomic_subsumptions: Vec<AtomicSubsumption>,
@@ -2074,7 +2146,7 @@ struct ExistentialTrigger {
 /// `num_original_classes` and never collide with user-declared
 /// class ids; they don't leak into the public `Subsumers` API
 /// because callers iterate over `0..num_classes` only.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TseitinAllocator {
     next_id: u32,
     by_body: HashMap<Vec<ClassId>, ClassId>,

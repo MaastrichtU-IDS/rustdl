@@ -1184,7 +1184,7 @@ pub fn unsat_via_labels_enabled() -> bool {
 /// Precise (sound over-approx) `≤n`-cardinality clash deps
 /// (`RUSTDL_PRECISE_CARD_DEPS`). At the `forced_distinct_exceeds` pre-check site
 /// replaces the conservative `DepSet::ALL` with `parent.at_most_dep ∪ ⋃(birth ∪
-/// label of succs) ∪ parent(birth ∪ label)` — a provable superset of the clash's
+/// label of supcs) ∪ parent(birth ∪ label)` — a provable superset of the clash's
 /// true deps (sound by construction; see `card_clash_deps`), guarded by the
 /// own-successor / `≠`-only / merge-taint fallbacks. Unblocks dependency-directed
 /// backjumping on cardinality clashes (wine MISSED 34→31, −25% wall, FP=0;
@@ -1196,6 +1196,20 @@ pub fn unsat_via_labels_enabled() -> bool {
 #[must_use]
 pub fn hyper_precise_card_deps_enabled() -> bool {
     std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Read-only shadow precise-dependency probe (`RUSTDL_SHADOW_DEP_PROBE`).
+/// When set, the wedge `sat_class_probe` and `decide_pair_probe` probes maintain a
+/// shadow dep layer that never collapses to `DepSet::ALL` due to taints and record
+/// `(real, shadow)` dep-set snapshots at every clash into
+/// [`SearchStats::clash_records`]. **Default OFF.**
+///
+/// **Read-only invariant**: enabling this MUST NOT change any verdict,
+/// `branches_taken`, `restores`, or `max_branch_depth`. See
+/// [`owl_dl_tableau::hyper::HyperEngine::with_shadow_dep_probe`].
+#[must_use]
+pub fn hyper_shadow_dep_probe_enabled() -> bool {
+    std::env::var_os("RUSTDL_SHADOW_DEP_PROBE").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// `RUSTDL_MRV_ORDERING` (default ON as of 2026-06-23). Most-constrained-⊔-first
@@ -1800,6 +1814,9 @@ impl HyperCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
+        if crate::hyper_shadow_dep_probe_enabled() {
+            engine = engine.with_shadow_dep_probe(true);
+        }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
     }
@@ -1843,6 +1860,9 @@ impl HyperCache {
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::hyper_shadow_dep_probe_enabled() {
+            engine = engine.with_shadow_dep_probe(true);
         }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())

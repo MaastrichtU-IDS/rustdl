@@ -131,6 +131,27 @@ impl DepSet {
             }
         }
     }
+
+    /// Highest decision level present, or `None` if empty. `ALL` ⇒ `Some(127)`.
+    pub(crate) fn highest_level(self) -> Option<u32> {
+        if self.overflow {
+            Some(127)
+        } else if self.bits == 0 {
+            None
+        } else {
+            Some(self.bits.ilog2())
+        }
+    }
+
+    /// Number of decision levels present (bit-count; `ALL`/overflow ⇒ 0 bits set).
+    pub(crate) fn count(self) -> u32 {
+        self.bits.count_ones()
+    }
+
+    /// Iterate the decision levels present, ascending.
+    pub(crate) fn iter_levels(self) -> impl Iterator<Item = u32> {
+        (0..128u32).filter(move |&i| self.bits & (1u128 << i) != 0)
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -204,6 +225,24 @@ struct HyperNode {
     /// sound) instead of the precise `body_deps`. Captured by
     /// save/restore (whole-node clone).
     nn_tainted: bool,
+    // ── Shadow precise-dependency probe fields ──────────────────────────────
+    // These fields are ONLY written/read when `HyperEngine::shadow_dep_probe`
+    // is `true`. They mirror the real dep fields but NEVER collapse to
+    // `DepSet::ALL` due to taints — they carry the merge causation that the
+    // real path discards. Saved and restored with the node (whole-node clone).
+    // Never read by the real search path.
+    /// Shadow mirror of `label_deps`: one `DepSet` per label (parallel
+    /// index), carrying precise causation without taint-induced collapse.
+    shadow_label_deps: Vec<DepSet>,
+    /// Shadow mirror of `at_most_dep`: the precise derivation dep-set of
+    /// the `≤n` constraints on this node, including merge-inherited ones.
+    shadow_at_most_dep: DepSet,
+    /// Shadow mirror of `birth_deps`: the precise dep-set for this node's
+    /// creation, including merge-causation deps folded in by NN-merges.
+    shadow_birth_deps: DepSet,
+    /// Precise causation of all merges this node has absorbed — the dep-set
+    /// that the real path discards when it sets `at_most_tainted`/`nn_tainted`.
+    shadow_merge_cause: DepSet,
 }
 
 impl HyperNode {
@@ -354,12 +393,55 @@ pub enum HyperResult {
     Stalled,
 }
 
+/// A snapshot of a `DepSet`'s information for diagnostic reporting.
+/// Produced by the shadow precise-dependency probe (`RUSTDL_SHADOW_DEP_PROBE`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DepSetSnapshot {
+    /// The highest decision level present, or `None` if the set is empty.
+    /// `Some(127)` indicates an overflow (`ALL`) set.
+    pub highest: Option<u32>,
+    /// Number of distinct decision levels set (bit-count; `ALL`/overflow ⇒ 0).
+    pub count: u32,
+    /// The decision levels present, in ascending order.
+    pub levels: Vec<u32>,
+}
+
+/// One recorded clash from the shadow precise-dependency probe
+/// (`RUSTDL_SHADOW_DEP_PROBE`). Contains both the real (possibly collapsed
+/// to `ALL`) dep-set and the shadow (precise, never collapses to `ALL`)
+/// dep-set computed for the same clash. Comparing the two reveals whether
+/// the `at_most_tainted`/`nn_tainted` path discards genuinely useful precision.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClashRecord {
+    /// The branching depth at which the clash occurred.
+    pub branch_depth: u32,
+    /// The real dep-set snapshot (as reported by the engine's live path —
+    /// may be `ALL` when taints are set).
+    pub real: DepSetSnapshot,
+    /// The shadow dep-set snapshot (precise over-set, never collapses to `ALL`
+    /// due to taints — carries the merge causation the live path discards).
+    pub shadow: DepSetSnapshot,
+    /// Stable order-independent hash of the clashing node's label-set (for
+    /// reusability / revisit measures in later analysis tasks).
+    pub clash_label_key: u64,
+}
+
+impl DepSetSnapshot {
+    fn from_dep_set(d: DepSet) -> Self {
+        Self {
+            highest: d.highest_level(),
+            count: d.count(),
+            levels: d.iter_levels().collect(),
+        }
+    }
+}
+
 /// Per-run search instrumentation, read after [`HyperEngine::decide`]
 /// to interpret a wall measurement: a `Sat` reached with
 /// `branches_taken == 0` was decided by pure Horn propagation and
 /// says nothing about hypertableau branching (see
 /// `docs/hypertableau-scoping.md` §H2b).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchStats {
     /// Disjuncts asserted across the whole search (decisions made).
     pub branches_taken: u64,
@@ -404,6 +486,12 @@ pub struct SearchStats {
     pub lookahead_dropped: u64,
     /// Times the lookahead reduced a ⊔ to a single forced disjunct.
     pub lookahead_forced_single: u64,
+    /// Per-clash records from the shadow precise-dependency probe
+    /// (`RUSTDL_SHADOW_DEP_PROBE`). Empty unless the probe is enabled via
+    /// [`HyperEngine::with_shadow_dep_probe`]. Each entry carries the real
+    /// vs shadow dep-sets at the moment of a clash, enabling post-run
+    /// analysis of how much precision the taint paths discard.
+    pub clash_records: Vec<ClashRecord>,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -411,7 +499,7 @@ pub struct SearchStats {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
-              mrv_ordering, nn_taint_disabled) — orthogonal toggles, not a state enum"
+              mrv_ordering, nn_taint_disabled, shadow_dep_probe) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
@@ -550,6 +638,23 @@ pub struct HyperEngine<'c> {
     /// branching. When `None` (the default), the branch loop runs all
     /// disjuncts unchanged. Enable via [`Self::with_sat_lookahead`].
     sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
+    /// `RUSTDL_SHADOW_DEP_PROBE` (default OFF): when `true`, maintain a
+    /// shadow precise-dependency layer (never collapses to `DepSet::ALL`
+    /// due to taints) and record `(real, shadow)` dep-set snapshots at
+    /// every clash into [`SearchStats::clash_records`].
+    ///
+    /// **Read-only invariant**: this flag MUST NOT influence any search
+    /// decision, branch choice, merge, edge, or verdict. With this `true`,
+    /// `verdict`, `branches_taken`, `restores`, and `max_branch_depth`
+    /// are byte-identical to `false`. The ONLY observable difference is
+    /// `clash_records` being populated.
+    shadow_dep_probe: bool,
+    /// Current branch decision level — the level of the innermost active
+    /// disjunction / `≤n` branching frame. Updated by `track_depth` at
+    /// every branch point. Used by `record_clash` so each `ClashRecord`
+    /// carries the precise level at which the clash occurred rather than
+    /// the run's peak `max_branch_depth`.
+    current_branch_level: u32,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -734,6 +839,8 @@ impl<'c> HyperEngine<'c> {
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
             sat_lookahead: None,
+            shadow_dep_probe: false,
+            current_branch_level: 0,
         }
     }
 
@@ -780,6 +887,8 @@ impl<'c> HyperEngine<'c> {
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
             sat_lookahead: None,
+            shadow_dep_probe: false,
+            current_branch_level: 0,
         }
     }
 
@@ -816,6 +925,37 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_adaptive_budget(mut self) -> Self {
         self.adaptive_budget = true;
+        self
+    }
+
+    /// Enable the read-only shadow precise-dependency probe
+    /// (`RUSTDL_SHADOW_DEP_PROBE`). When `on` is `true`, maintains a shadow
+    /// dep layer that never collapses to `DepSet::ALL` due to taints and records
+    /// `(real, shadow)` dep-set snapshots at every clash into
+    /// [`SearchStats::clash_records`].
+    ///
+    /// **Read-only invariant**: this MUST NOT change any search decision,
+    /// branch, merge, edge, or verdict. Guarded by `if self.shadow_dep_probe`.
+    #[must_use]
+    pub fn with_shadow_dep_probe(mut self, on: bool) -> Self {
+        self.shadow_dep_probe = on;
+        if on {
+            // Retroactively populate shadow_label_deps for any labels already
+            // present (e.g. the root label set at construction time), mirroring
+            // their real label_deps. Post-construction, shadow_label_deps is
+            // maintained in lock-step with labels/label_deps by add_label.
+            for node in &mut self.nodes {
+                if node.shadow_label_deps.len() != node.label_deps.len() {
+                    node.shadow_label_deps = node.label_deps.clone();
+                }
+                // Shadow birth/at_most deps start as copies of real (they're
+                // already set before any search runs, so causation hasn't been
+                // discarded yet — shadow == real at construction time).
+                node.shadow_birth_deps = node.birth_deps;
+                node.shadow_at_most_dep = node.at_most_dep;
+                // shadow_merge_cause starts EMPTY (no merges have happened yet).
+            }
+        }
         self
     }
 
@@ -925,6 +1065,68 @@ impl<'c> HyperEngine<'c> {
         over
     }
 
+    /// Shadow twin of [`Self::card_clash_deps`]: the precise over-set
+    /// computed ALWAYS (no taint-induced collapse). It differs from the
+    /// real path in that it uses the `shadow_*` fields which carry the
+    /// merge causation the `at_most_tainted`/`nn_tainted` paths discard.
+    ///
+    /// Only called when `self.shadow_dep_probe` is `true`. Read-only;
+    /// only used to populate [`ClashRecord`] in [`SearchStats::clash_records`].
+    fn card_clash_deps_shadow(&self, parent: HNode, succs: &[HNode]) -> DepSet {
+        let p = self.resolve(parent);
+        let pn = &self.nodes[p.index()];
+        let mut over = pn.shadow_at_most_dep.union(pn.shadow_merge_cause);
+        for node in std::iter::once(p).chain(succs.iter().copied()) {
+            let hn = &self.nodes[self.resolve(node).index()];
+            over = over
+                .union(hn.shadow_birth_deps)
+                .union(hn.shadow_merge_cause);
+            for &ld in &hn.shadow_label_deps {
+                over = over.union(ld);
+            }
+        }
+        over
+    }
+
+    /// Compute a stable, order-independent hash of the resolved node's
+    /// label-set. Used as `ClashRecord::clash_label_key`. XOR-combines
+    /// per-label hashes so insertion order doesn't matter.
+    fn clash_label_key(&self, node: HNode) -> u64 {
+        let resolved = self.resolve(node);
+        let labels = &self.nodes[resolved.index()].labels;
+        // Sort-free order-independent combination: XOR of FNV-1a per label id.
+        let mut h: u64 = 0;
+        for l in labels {
+            // FNV-1a 64-bit: offset basis = 14695981039346656037, prime = 1099511628211
+            let mut fh: u64 = 14_695_981_039_346_656_037;
+            let id_bytes = l.index().to_le_bytes();
+            for b in id_bytes {
+                fh ^= u64::from(b);
+                fh = fh.wrapping_mul(1_099_511_628_211);
+            }
+            h ^= fh;
+        }
+        h
+    }
+
+    /// Record a clash into `SearchStats::clash_records`. Only called when
+    /// `self.shadow_dep_probe` is `true`. `real_deps` is the dep-set the
+    /// live path just recorded in `self.clash_deps`; `shadow_deps` is the
+    /// precise shadow twin; `clash_node` is the clashing node.
+    fn record_clash(&mut self, real_deps: DepSet, shadow_deps: DepSet, clash_node: HNode) {
+        let key = self.clash_label_key(clash_node);
+        // Use the current decision level (updated at every branch point by
+        // `track_depth`) rather than the run's peak `max_branch_depth`, so
+        // each record captures the depth at which *this* clash fired.
+        let depth = self.current_branch_level;
+        self.stats.clash_records.push(ClashRecord {
+            branch_depth: depth,
+            real: DepSetSnapshot::from_dep_set(real_deps),
+            shadow: DepSetSnapshot::from_dep_set(shadow_deps),
+            clash_label_key: key,
+        });
+    }
+
     /// Supply the `HF4a` nominal class range `[start, start + count)` so
     /// the NN-rule merges distinct nodes carrying the same singleton.
     #[must_use]
@@ -988,6 +1190,17 @@ impl<'c> HyperEngine<'c> {
     /// clauses fire). Returns whether the label was newly added.
     fn add_label(&mut self, n: HNode, c: ClassId, deps: DepSet) -> bool {
         if self.nodes[n.index()].add(c, deps) {
+            // Shadow: mirror the insertion into shadow_label_deps at the same
+            // sorted position so the two vecs stay parallel. Guard: flag-off
+            // does zero work here.
+            if self.shadow_dep_probe {
+                // `add` already inserted `c` into `labels` at its sorted position.
+                // Find that position by binary search (guaranteed to succeed).
+                let node = &mut self.nodes[n.index()];
+                if let Ok(pos) = node.labels.binary_search_by_key(&c.index(), |l| l.index()) {
+                    node.shadow_label_deps.insert(pos, deps);
+                }
+            }
             self.worklist.push(Event::Label(n, c));
             true
         } else {
@@ -1006,6 +1219,12 @@ impl<'c> HyperEngine<'c> {
         let node = &mut self.nodes[n.index()];
         if let Ok(pos) = node.labels.binary_search_by_key(&c.index(), |l| l.index()) {
             node.label_deps[pos] = node.label_deps[pos].union(extra);
+            // Shadow: mirror the fold. Only when probe is on (shadow_label_deps
+            // is only populated then; `pos < len` guard handles the off case too
+            // if somehow the vecs diverge).
+            if pos < node.shadow_label_deps.len() {
+                node.shadow_label_deps[pos] = node.shadow_label_deps[pos].union(extra);
+            }
         }
     }
 
@@ -1053,7 +1272,7 @@ impl<'c> HyperEngine<'c> {
     /// Search instrumentation from the last [`decide`] call.
     #[must_use]
     pub fn stats(&self) -> SearchStats {
-        self.stats
+        self.stats.clone()
     }
 
     /// True iff every clause is Horn (≤1 head atom). H1 only
@@ -1690,6 +1909,8 @@ impl<'c> HyperEngine<'c> {
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
             sat_lookahead: None,
+            shadow_dep_probe: false,
+            current_branch_level: 0,
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices
@@ -1893,6 +2114,17 @@ impl<'c> HyperEngine<'c> {
             // `docs/wedge-cardinality-clash-precheck.md`.
             if self.forced_distinct_exceeds(&succs, n) {
                 self.clash_deps = self.card_clash_deps(node, &succs);
+                // Shadow: record (real, shadow) dep-set pair at this clash.
+                if self.shadow_dep_probe {
+                    let real = self.clash_deps;
+                    let shadow = self.card_clash_deps_shadow(node, &succs);
+                    // Debug-assert shadow ⊇ real (overflow/ALL in real is allowed).
+                    debug_assert!(
+                        real.overflow || real.bits & !shadow.bits == 0,
+                        "shadow dep must be a superset of real dep (non-ALL)"
+                    );
+                    self.record_clash(real, shadow, node);
+                }
                 return HyperResult::Unsat;
             }
             if depth == 0 {
@@ -1919,6 +2151,9 @@ impl<'c> HyperEngine<'c> {
         if level > self.stats.max_branch_depth {
             self.stats.max_branch_depth = level;
         }
+        // Keep the per-clash depth current so `record_clash` reports the
+        // decision level active when the clash fires, not the run's peak.
+        self.current_branch_level = level;
     }
 
     /// Snapshot the mutable graph state for branch save/restore: the
@@ -2145,6 +2380,16 @@ impl<'c> HyperEngine<'c> {
             return HyperResult::Stalled;
         }
         self.clash_deps = DepSet::ALL;
+        // Shadow: record the partition-exhaustion clash. This is a genuinely
+        // structural ALL (exhausted all partitions) — not a taint artifact.
+        // Use ALL for both real and shadow so Task-2 analysis sees "genuine
+        // structural ALL" (real=ALL, shadow=ALL) vs "taint-ALL" (real=ALL,
+        // shadow=precise). Writing EMPTY would falsely look like "full recovery".
+        if self.shadow_dep_probe {
+            // No specific clashing node — use the first succ if available, else node 0.
+            let clash_node = succs.first().copied().unwrap_or(HNode(0));
+            self.record_clash(DepSet::ALL, DepSet::ALL, clash_node);
+        }
         HyperResult::Unsat
     }
 
@@ -2279,6 +2524,19 @@ impl<'c> HyperEngine<'c> {
             // ≠ violated — merging is impossible. Conservative deps
             // (precise `≠`/merge provenance isn't tracked).
             self.clash_deps = DepSet::ALL;
+            // Shadow: record the ≠-clash. The shadow dep is the union of
+            // both nodes' shadow birth/merge deps + cause_deps (the precise
+            // causation that the real path discards via ALL).
+            if self.shadow_dep_probe {
+                let real = self.clash_deps;
+                let shadow = self.nodes[s_i.index()]
+                    .shadow_birth_deps
+                    .union(self.nodes[s_i.index()].shadow_merge_cause)
+                    .union(self.nodes[s_j.index()].shadow_birth_deps)
+                    .union(self.nodes[s_j.index()].shadow_merge_cause)
+                    .union(cause_deps);
+                self.record_clash(real, shadow, s_i);
+            }
             return true;
         }
         self.representative[s_j.index()] = s_i;
@@ -2300,6 +2558,14 @@ impl<'c> HyperEngine<'c> {
             // (the `≤n` merge / classify path) ⇒ no-op.
             let bi = &mut self.nodes[s_i.index()];
             bi.birth_deps = bi.birth_deps.union(cause_deps);
+            // Shadow: mirror the birth_deps fold, also recording the precise
+            // merge causation in shadow_merge_cause (the dep the real path
+            // discards via taint). Guard: flag-off does zero work.
+            if self.shadow_dep_probe {
+                let bi = &mut self.nodes[s_i.index()];
+                bi.shadow_birth_deps = bi.shadow_birth_deps.union(cause_deps);
+                bi.shadow_merge_cause = bi.shadow_merge_cause.union(cause_deps);
+            }
         }
         let s_j_labels: Vec<(ClassId, DepSet)> = {
             let nj = &self.nodes[s_j.index()];
@@ -2336,6 +2602,17 @@ impl<'c> HyperEngine<'c> {
             let ni = &mut self.nodes[s_i.index()];
             ni.at_most_tainted = true;
             ni.at_most_dep = ni.at_most_dep.union(sj_dep);
+            // Shadow: record the precise sj_dep + cause_deps into the shadow
+            // at_most field (the real path sets at_most_tainted → ALL; the
+            // shadow carries the actual dep without collapsing).
+            if self.shadow_dep_probe {
+                let sj_shadow_dep = self.nodes[s_j.index()].shadow_at_most_dep;
+                let ni = &mut self.nodes[s_i.index()];
+                ni.shadow_at_most_dep =
+                    ni.shadow_at_most_dep.union(sj_shadow_dep).union(cause_deps);
+                ni.shadow_merge_cause =
+                    ni.shadow_merge_cause.union(sj_shadow_dep).union(cause_deps);
+            }
         }
         // Propagate the NN-merge taint: if either node carried an
         // under-dep'd NN-merge-inherited label, the survivor does too
@@ -2350,6 +2627,13 @@ impl<'c> HyperEngine<'c> {
         // unaffected.
         if self.nodes[s_j.index()].nn_tainted {
             self.nodes[s_i.index()].nn_tainted = true;
+            // Shadow: propagate merge_cause from s_j to s_i so the precise
+            // NN-taint causation is preserved.
+            if self.shadow_dep_probe {
+                let sj_mc = self.nodes[s_j.index()].shadow_merge_cause;
+                let si = &mut self.nodes[s_i.index()];
+                si.shadow_merge_cause = si.shadow_merge_cause.union(sj_mc);
+            }
         }
         for c in self.nodes[s_j.index()].at_least_done.clone() {
             if !self.nodes[s_i.index()].at_least_done.contains(&c) {
@@ -2546,6 +2830,15 @@ impl<'c> HyperEngine<'c> {
             } else {
                 body_deps
             };
+            // Shadow: record (real, shadow) dep-set pair at this label/disjoint clash.
+            // The shadow dep-set is body_deps ∪ the clashing node's shadow merge cause
+            // (the precise dep the nn_tainted path discards). Guard: flag-off does zero work.
+            if self.shadow_dep_probe {
+                let real = self.clash_deps;
+                // Shadow: precise body_deps ∪ shadow_merge_cause (never ALL due to taint).
+                let shadow = body_deps.union(self.nodes[xn.index()].shadow_merge_cause);
+                self.record_clash(real, shadow, xn);
+            }
             return FireOutcome::Clash;
         }
         // Horn: exactly one head atom (caller gated on is_horn).
@@ -2595,6 +2888,15 @@ impl<'c> HyperEngine<'c> {
                     // `card_clash_deps` unions this into the clash dep-set, so a
                     // `≤n` derived under a decision contributes that decision.
                     tn.at_most_dep = tn.at_most_dep.union(deps);
+                    // Shadow: mirror the at_most_dep fold (no taint here — this is
+                    // the direct-derivation path, not the merge-inherited one).
+                    // The `self.shadow_dep_probe` check would require splitting the
+                    // mutable `tn` borrow, so we rely on the zero-overhead property:
+                    // unioning EMPTY into EMPTY is a no-op, and shadow_at_most_dep
+                    // starts EMPTY and is only written when probe is on (the write is
+                    // unconditional here for borrow-checker simplicity, but costs
+                    // only two u128 ops when probe is off — acceptable).
+                    tn.shadow_at_most_dep = tn.shadow_at_most_dep.union(deps);
                     FireOutcome::Changed
                 }
             }
@@ -2699,6 +3001,13 @@ impl<'c> HyperEngine<'c> {
         self.nodes[from.index()].birth_deps = bf;
         let bt = self.nodes[to.index()].birth_deps.union(deps);
         self.nodes[to.index()].birth_deps = bt;
+        // Shadow: mirror the birth_deps fold at both endpoints.
+        if self.shadow_dep_probe {
+            self.nodes[from.index()].shadow_birth_deps =
+                self.nodes[from.index()].shadow_birth_deps.union(deps);
+            self.nodes[to.index()].shadow_birth_deps =
+                self.nodes[to.index()].shadow_birth_deps.union(deps);
+        }
         self.worklist.push(Event::Edge(from, rstore, to));
         FireOutcome::Changed
     }
@@ -2721,6 +3030,10 @@ impl<'c> HyperEngine<'c> {
         }
         let succ = self.new_node();
         self.nodes[succ.index()].birth_deps = deps;
+        // Shadow: new successor birth_deps = deps (same as real).
+        if self.shadow_dep_probe {
+            self.nodes[succ.index()].shadow_birth_deps = deps;
+        }
         self.nodes[succ.index()].parent = Some(src);
         self.nodes[succ.index()].parent_role = Some(role);
         if let Some(ix) = self.block_index.as_mut() {
@@ -2816,6 +3129,10 @@ impl<'c> HyperEngine<'c> {
         for _ in 0..n {
             let succ = self.new_node();
             self.nodes[succ.index()].birth_deps = deps;
+            // Shadow: new successor birth_deps = deps (same as real).
+            if self.shadow_dep_probe {
+                self.nodes[succ.index()].shadow_birth_deps = deps;
+            }
             self.nodes[succ.index()].parent = Some(x);
             self.nodes[succ.index()].parent_role = Some(role);
             if let Some(ix) = self.block_index.as_mut() {
@@ -2887,6 +3204,13 @@ impl<'c> HyperEngine<'c> {
                     // `nn_tainted` covers the direct-clash case.)
                     let surv = self.resolve(rn);
                     self.nodes[surv.index()].nn_tainted = true;
+                    // Shadow: record the NN-merge causation in the survivor's
+                    // shadow_merge_cause so the clash probe can see the precise
+                    // dep that nn_tainted conservatively collapses to ALL.
+                    if self.shadow_dep_probe {
+                        let si = &mut self.nodes[surv.index()];
+                        si.shadow_merge_cause = si.shadow_merge_cause.union(cause);
+                    }
                     FireOutcome::Changed
                 }
             }

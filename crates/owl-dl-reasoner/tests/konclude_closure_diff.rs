@@ -948,3 +948,109 @@ fn anytime_global_sweep() {
         .unwrap_or_else(|e| panic!("write CSV to {}: {e}", csv_path.display()));
     println!("wrote {}", csv_path.display());
 }
+
+/// Single (input, oracle) diff driven by env — for wall-capped subprocess use
+/// in the at-scale ORE sweep (one process per ontology so an OS-level timeout
+/// can bound each without stalling the whole corpus). Prints a `RESULT` line.
+///
+/// Env: `ORE_ONE_INPUT`, `ORE_ONE_ORACLE`, `RUSTDL_TEST_PAIR_MS` (default 200).
+#[test]
+#[ignore = "single-ontology ORE diff; needs ORE_ONE_INPUT + ORE_ONE_ORACLE"]
+fn ore_one_closure_matches_oracle() {
+    let Ok(input) = std::env::var("ORE_ONE_INPUT") else {
+        eprintln!("SKIP: ORE_ONE_INPUT not set");
+        return;
+    };
+    let oracle = std::env::var("ORE_ONE_ORACLE").expect("ORE_ONE_ORACLE");
+    let stem = Path::new(&input)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_owned();
+    let (r, k, fp, m) =
+        diff_corpus_ontology(&stem, Path::new(&input), Path::new(&oracle), test_pair_ms());
+    println!("RESULT\t{stem}\trustdl={r}\tkonclude={k}\tFP={fp}\tMISSED={m}");
+}
+
+/// Generic at-scale FP sweep over a directory of (input, oracle) pairs.
+///
+/// Drives the *same* trusted closure-diff (`diff_corpus_ontology`) used by the
+/// per-fixture tests over an arbitrary corpus — built for the ORE 2015 sweep.
+///
+/// Env:
+/// - `ORE_INPUT_DIR`  — dir of `<stem>.ofn` (OWL functional syntax) inputs.
+/// - `ORE_ORACLE_DIR` — dir of `<stem>-classified.owx` oracle classifications.
+/// - `RUSTDL_TEST_PAIR_MS` — per-pair tableau budget (default 200).
+///
+/// For every input whose oracle exists, prints one diff line and accumulates
+/// FP/MISSED, then asserts the corpus-wide FP total is 0 (the soundness gate).
+#[test]
+#[ignore = "at-scale ORE sweep; needs ORE_INPUT_DIR + ORE_ORACLE_DIR"]
+fn ore_dir_closure_matches_oracle() {
+    let Ok(input_dir) = std::env::var("ORE_INPUT_DIR") else {
+        eprintln!("SKIP: ORE_INPUT_DIR not set");
+        return;
+    };
+    let oracle_dir = std::env::var("ORE_ORACLE_DIR").unwrap_or_else(|_| input_dir.clone());
+    let pair_ms = test_pair_ms();
+
+    // Collect (stem, input, oracle) for every input with a matching oracle.
+    let mut pairs: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(&input_dir)
+        .unwrap_or_else(|e| panic!("read_dir {input_dir}: {e}"))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ofn"))
+        .collect();
+    entries.sort();
+    for input in entries {
+        let Some(stem) = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let oracle = Path::new(&oracle_dir).join(format!("{stem}-classified.owx"));
+        if oracle.exists() {
+            pairs.push((stem, input, oracle));
+        }
+    }
+    eprintln!(
+        "### ORE sweep: {} pairs, per-pair budget {pair_ms} ms ###",
+        pairs.len()
+    );
+
+    let mut total_fp = 0usize;
+    let mut fp_onts: Vec<String> = Vec::new();
+    let mut done = 0usize;
+    for (stem, input, oracle) in &pairs {
+        // Guard the oracle parse + classify so one bad ontology doesn't abort
+        // the whole sweep; a panic is recorded as a skip, not a pass.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            diff_corpus_ontology(stem, input, oracle, pair_ms)
+        }));
+        done += 1;
+        match res {
+            Ok((_r, _k, fp, _m)) => {
+                if fp > 0 {
+                    total_fp += fp;
+                    fp_onts.push(format!("{stem} (FP={fp})"));
+                }
+            }
+            Err(_) => eprintln!("--- {stem} --- SKIP (panic: parse/classify error)"),
+        }
+        if done.is_multiple_of(10) {
+            eprintln!(
+                "[progress] {done}/{} done, running FP total={total_fp}",
+                pairs.len()
+            );
+        }
+    }
+
+    eprintln!("### ORE sweep complete: {done} ontologies, total FP={total_fp} ###");
+    if !fp_onts.is_empty() {
+        eprintln!("FP ontologies: {}", fp_onts.join(", "));
+    }
+    assert_eq!(total_fp, 0, "ORE sweep found {total_fp} false positives");
+}

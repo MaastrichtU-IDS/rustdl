@@ -32,15 +32,20 @@ fn load() -> SetOntology<RcStr> {
         .0
 }
 
-fn probe(local: &str, seed: bool, depth: usize, t: Option<Duration>) {
+fn probe(local: &str, mode: u8, depth: usize, t: Option<Duration>) {
     let ont = load();
     let iri = format!("{WINE}{local}");
+    let name = match mode {
+        0 => "none",
+        1 => "real-subsumers",
+        _ => "GARBAGE-control",
+    };
     let (result, stats, wall_ms, n_seeded) =
-        owl_dl_reasoner::seed_probe(&ont, &iri, seed, depth, t)
+        owl_dl_reasoner::seed_probe(&ont, &iri, mode, depth, t)
             .expect("probe ok")
             .expect("IRI resolves");
     println!(
-        "  sat({local}) seed={seed} (n_seeded={n_seeded}): result={result:?} wall_ms={wall_ms:.0} \
+        "  sat({local}) seed={name} (n_seeded={n_seeded}): result={result:?} wall_ms={wall_ms:.0} \
          branches={} (disj={} merge={}) restores={} max_depth={}",
         stats.branches_taken,
         stats.disj_branches,
@@ -50,22 +55,26 @@ fn probe(local: &str, seed: bool, depth: usize, t: Option<Duration>) {
     );
 }
 
+/// Control gate: none vs real-subsumers vs GARBAGE (same count of non-subsumers).
+/// If GARBAGE collapses too ⇒ the win is MRV-reorder / root-label-count, not
+/// saturation knowledge. If only real-subsumers collapses ⇒ the seed is the lever.
+/// Also run with RUSTDL_MRV_ORDERING=0 to confirm the collapse isn't MRV-dependent.
 #[test]
-#[ignore = "viability probe; RUSTDL_ADAPTIVE_BUDGET=0 --ignored --nocapture"]
+#[ignore = "viability control; RUSTDL_ADAPTIVE_BUDGET=0 --ignored --nocapture"]
 fn wine_seed_collapse_probe() {
     let child = std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024 * 1024)
         .spawn(|| {
             let t = Some(Duration::from_secs(60));
             let depth = 256usize;
-            // Fast contrast classes first.
             println!("\n===== SweetWine =====");
-            probe("SweetWine", false, depth, t);
-            probe("SweetWine", true, depth, t);
-            // The wall.
+            probe("SweetWine", 0, depth, t);
+            probe("SweetWine", 1, depth, t);
+            probe("SweetWine", 2, depth, t);
             println!("\n===== Zinfandel (the 952k-branch wall) =====");
-            probe("Zinfandel", false, depth, t);
-            probe("Zinfandel", true, depth, t);
+            probe("Zinfandel", 0, depth, t);
+            probe("Zinfandel", 1, depth, t);
+            probe("Zinfandel", 2, depth, t);
         })
         .expect("spawn");
     child.join().expect("probe thread");

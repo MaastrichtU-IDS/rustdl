@@ -1094,10 +1094,13 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
 pub fn seed_probe<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     class_iri: &str,
-    seed: bool,
+    seed_mode: u8,
     depth: usize,
     timeout: Option<std::time::Duration>,
 ) -> Result<Option<(HyperResult, SearchStats, f64, usize)>, ReasonError> {
+    // seed_mode: 0 = none (baseline); 1 = real named saturated subsumers;
+    // 2 = garbage control (same COUNT of named NON-subsumers — isolates
+    // "saturation knowledge" from "more root labels / MRV reorder").
     use owl_dl_core::clause::{Atom, DlClause, X};
     use owl_dl_tableau::hyper::HyperEngine;
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
@@ -1116,20 +1119,34 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
         head: vec![Atom::Class(c, X)],
     });
     let mut n_seeded = 0usize;
-    if seed {
-        // Seed ONLY named (non-synthetic) subsumers. The saturator's closure
+    if seed_mode != 0 {
+        // Seed ONLY named (non-synthetic) classes. The saturator's closure
         // includes synthetic ids (NomKey/ForallKey/DKey/Tseitin) ≥ num_classes
         // whose semantics the wedge does NOT share — forcing those onto the root
         // is a cross-engine mismatch (spurious clash = FP). Named subsumers are
-        // genuinely entailed in BOTH engines, so seeding them is sound (verdict-
-        // preserving) — the only honest test of whether saturation collapses the
-        // model search.
+        // genuinely entailed in BOTH engines, so seeding them is sound.
         let n_named = internal.vocabulary.num_classes();
         let subs = owl_dl_saturation::saturate(&internal);
-        for d in subs.subsumers_of(c) {
-            if d == c || (d.index() as usize) >= n_named {
-                continue;
-            }
+        let real: Vec<owl_dl_core::ir::ClassId> = subs
+            .subsumers_of(c)
+            .into_iter()
+            .filter(|&d| d != c && (d.index() as usize) < n_named)
+            .collect();
+        let to_seed: Vec<owl_dl_core::ir::ClassId> = if seed_mode == 1 {
+            real
+        } else {
+            // Garbage control: the same count of named NON-subsumers.
+            let count = real.len();
+            let real_set: std::collections::HashSet<_> = real.iter().copied().collect();
+            internal
+                .vocabulary
+                .classes()
+                .map(|(id, _)| id)
+                .filter(|&d| d != c && !real_set.contains(&d))
+                .take(count)
+                .collect()
+        };
+        for d in to_seed {
             clauses.push(DlClause {
                 body: vec![Atom::Class(cache.fresh_q, X)],
                 head: vec![Atom::Class(d, X)],

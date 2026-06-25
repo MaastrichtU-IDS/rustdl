@@ -818,13 +818,18 @@ pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         if n == 0 {
             continue;
         }
-        // Existing R-witnesses carrying `body`. Collect into a Vec
-        // (deduped: an edge that loops or that we'd otherwise count
-        // twice for some reason gets counted once).
+        // Existing R-witnesses carrying `body` — OR a told *subclass* of `body`
+        // (e.g. `C ⊑ D` ⟹ a `C`-neighbour witnesses `≥n R.D`). Without the
+        // told-subclass check, a freshly generated `≥m R.C` successor — whose
+        // `D` super-label has not yet propagated — is missed here, a redundant
+        // `R.D` successor is created, and a later `≤k R.D` (with `C ⊑ D`) then
+        // spuriously clashes on the extra pairwise-distinct witness. That is the
+        // inverse-role + qualified-cardinality unsoundness; `node_entails_filler`
+        // is sound (an atomic told subsumption holds in every model).
         let mut existing: Vec<NodeId> = Vec::new();
         for (seen, neighbour) in ctx.graph().node(node).neighbours() {
             if ctx.edge_satisfies(seen, role)
-                && ctx.graph().node(neighbour).has_label(body)
+                && ctx.node_entails_filler(neighbour, body)
                 && !existing.contains(&neighbour)
             {
                 existing.push(neighbour);

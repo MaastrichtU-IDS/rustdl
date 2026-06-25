@@ -218,6 +218,15 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// hot `is_blocked` path pays no per-call env read. See
     /// `docs/superpowers/plans/2026-06-15-anywhere-pairwise-blocking.md`.
     anywhere_blocking: bool,
+    /// Memoised transitive told-subsumer closure over **atomic** classes:
+    /// `trigger ClassId → sorted atomic-super ConceptIds` reachable through
+    /// chains of `ConceptRule`s whose conclusion is itself `Atomic(_)`. Built
+    /// lazily once from [`Self::tbox`]. Used by [`apply_min`](crate::rules::apply_min)
+    /// so that a `≥n R.C` count recognises an existing `R`-neighbour carrying a
+    /// told *sub*class of `C` as a witness — preventing a redundant successor
+    /// that would otherwise make a `≤m R.D` (with `C ⊑ D`) spuriously clash
+    /// (inverse-role + qualified-cardinality soundness fix).
+    told_super_closure: std::cell::OnceCell<HashMap<owl_dl_core::ClassId, Vec<ConceptId>>>,
     /// Per-rule call counters, populated under `cfg(feature =
     /// "counters")`. Dumped to stderr in `Drop` when
     /// `RUSTDL_COUNTERS=1`. Zero cost in non-counter builds (field
@@ -252,6 +261,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -283,6 +293,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -319,6 +330,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             decision_labels: Vec::new(),
             dkey_ranges: HashMap::new(),
             anywhere_blocking: anywhere_blocking_enabled(),
+            told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
         }
@@ -537,6 +549,78 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     #[must_use]
     pub fn tbox(&self) -> Option<&AbsorbedTBox> {
         self.tbox
+    }
+
+    /// True iff `node`'s label set entails the atomic filler `body` either
+    /// directly (`body ∈ L(node)`) or through the told-subsumer closure (some
+    /// `Atomic(C) ∈ L(node)` with `C ⊑* body` via atomic `ConceptRule`s).
+    ///
+    /// Soundness: an atomic `ConceptRule` (`trigger ClassId → Atomic super`) is
+    /// an unconditional told subsumption, so a node carrying `C` is in every
+    /// model also a `body` when `C ⊑* body`. Counting it as a `≥n R.body`
+    /// witness therefore never over-counts; it only avoids generating a
+    /// redundant successor that a later `≤m R.body` would clash on.
+    #[must_use]
+    pub fn node_entails_filler(&self, node: NodeId, body: ConceptId) -> bool {
+        let labels = &self.graph.node(node).labels;
+        if labels.binary_search(&body).is_ok() {
+            return true;
+        }
+        let closure = self
+            .told_super_closure
+            .get_or_init(|| self.build_told_super_closure());
+        if closure.is_empty() {
+            return false;
+        }
+        for &l in labels {
+            if let owl_dl_core::ConceptExpr::Atomic(cls) = self.pool.get(l)
+                && let Some(supers) = closure.get(cls)
+                && supers.binary_search(&body).is_ok()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Build the transitive told-subsumer closure over atomic classes from the
+    /// `TBox`'s atomic `ConceptRule`s. `trigger → sorted [atomic super ConceptId]`.
+    fn build_told_super_closure(&self) -> HashMap<owl_dl_core::ClassId, Vec<ConceptId>> {
+        use owl_dl_core::ConceptExpr;
+        let mut closure: HashMap<owl_dl_core::ClassId, Vec<ConceptId>> = HashMap::new();
+        let Some(tbox) = self.tbox else {
+            return closure;
+        };
+        // Direct atomic told-supers: trigger ClassId -> [Atomic super ConceptId].
+        let mut direct: HashMap<owl_dl_core::ClassId, Vec<ConceptId>> = HashMap::new();
+        for rule in &tbox.concept_rules {
+            if matches!(self.pool.get(rule.conclusion), ConceptExpr::Atomic(_)) {
+                direct.entry(rule.trigger).or_default().push(rule.conclusion);
+            }
+        }
+        // Transitive closure via BFS over atomic super -> its ClassId -> direct.
+        for (&trigger, seeds) in &direct {
+            let mut seen: Vec<ConceptId> = Vec::new();
+            let mut stack: Vec<ConceptId> = seeds.clone();
+            while let Some(c) = stack.pop() {
+                if seen.contains(&c) {
+                    continue;
+                }
+                seen.push(c);
+                if let ConceptExpr::Atomic(super_cls) = self.pool.get(c)
+                    && let Some(next) = direct.get(super_cls)
+                {
+                    for &n in next {
+                        if !seen.contains(&n) {
+                            stack.push(n);
+                        }
+                    }
+                }
+            }
+            seen.sort_unstable();
+            closure.insert(trigger, seen);
+        }
+        closure
     }
 
     #[must_use]

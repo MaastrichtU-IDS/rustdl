@@ -1385,6 +1385,37 @@ pub fn label_cache_timeout_ms() -> u64 {
         .unwrap_or(DEFAULT_MS)
 }
 
+pub(crate) const LABEL_CACHE_FLOOR_MS: u64 = 1000;
+pub(crate) const LABEL_CACHE_CEILING_MS: u64 = 30_000;
+
+/// Adaptive per-class label-cache build deadline (build-once tuning, 2026-06-25).
+/// `env_override` (`RUSTDL_LABEL_CACHE_TIMEOUT_MS`) always wins — incl. `0` (unbounded).
+/// Else `n × per_pair` (the refute-the-row break-even: labeling C is worth it iff its
+/// `sat` costs less than refuting C's ~n pairs at the per-pair cap), clamped to
+/// [floor, ceiling]. `per_pair == None` (unbounded refutations) → base = ceiling.
+/// See docs/superpowers/specs/2026-06-25-adaptive-label-cache-deadline-design.md.
+pub(crate) fn adaptive_label_cache_ms(
+    n: usize,
+    per_pair: Option<std::time::Duration>,
+    env_override: Option<u64>,
+) -> u64 {
+    if let Some(v) = env_override {
+        return v;
+    }
+    let base = per_pair.map_or(LABEL_CACHE_CEILING_MS, |d| {
+        u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+    });
+    (n as u64)
+        .saturating_mul(base)
+        .clamp(LABEL_CACHE_FLOOR_MS, LABEL_CACHE_CEILING_MS)
+}
+
+pub(crate) fn label_cache_env_override() -> Option<u64> {
+    std::env::var("RUSTDL_LABEL_CACHE_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+}
+
 /// Minimum wedge wall-time threshold (in milliseconds) below which a
 /// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
 /// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured
@@ -5747,6 +5778,33 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             counting.is_empty(),
             "value-membership must not be counting; got {counting:?}"
         );
+    }
+
+    #[test]
+    fn adaptive_label_cache_ms_branches() {
+        use std::time::Duration;
+        // env override always wins (incl. 0 = unbounded sentinel)
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_millis(200)), Some(7777)),
+            7777
+        );
+        assert_eq!(adaptive_label_cache_ms(137, None, Some(0)), 0);
+        // n × per_pair, clamped to [1000, 30000]
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_millis(200)), None),
+            27_400
+        ); // 137*200
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_secs(1)), None),
+            30_000
+        ); // 137000→ceiling
+        assert_eq!(
+            adaptive_label_cache_ms(2, Some(Duration::from_millis(200)), None),
+            1_000
+        ); // 400→floor
+        // None per_pair → base = ceiling, then ×n clamps to ceiling
+        assert_eq!(adaptive_label_cache_ms(137, None, None), 30_000);
+        assert_eq!(adaptive_label_cache_ms(1, None, None), 30_000); // 1*30000=30000
     }
 }
 

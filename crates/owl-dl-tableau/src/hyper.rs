@@ -397,6 +397,13 @@ pub struct SearchStats {
     /// Label-vector equality / subset comparisons inside `is_blocked`.
     /// The expensive per-call cost (linear in label-set size).
     pub block_compares: u64,
+    /// Times the lookahead was called (incremented once per disjunct
+    /// candidate when `sat_lookahead` is `Some`).
+    pub lookahead_calls: u64,
+    /// Disjuncts proved dead by the lookahead and dropped.
+    pub lookahead_dropped: u64,
+    /// Times the lookahead reduced a ⊔ to a single forced disjunct.
+    pub lookahead_forced_single: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -538,6 +545,11 @@ pub struct HyperEngine<'c> {
     /// construction; updated each time a window of [`DIV_WINDOW`]
     /// branches is consumed without triggering a Stalled.
     div_checkpoint: (u64, u64, usize),
+    /// `RUSTDL_SAT_LOOKAHEAD` (default OFF): at each ⊔ choice point,
+    /// call the seed-saturator to drop disjuncts proved dead before
+    /// branching. When `None` (the default), the branch loop runs all
+    /// disjuncts unchanged. Enable via [`Self::with_sat_lookahead`].
+    sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -721,6 +733,7 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            sat_lookahead: None,
         }
     }
 
@@ -766,6 +779,7 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            sat_lookahead: None,
         }
     }
 
@@ -802,6 +816,20 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_adaptive_budget(mut self) -> Self {
         self.adaptive_budget = true;
+        self
+    }
+
+    /// Attach a pre-built seed-saturator for the ⊔ failed-literal look-ahead.
+    /// When set, each ⊔ branch loop calls `sat.seed_unsat` on each candidate
+    /// disjunct and drops those proved dead before branching. Default: `None`
+    /// (flag `RUSTDL_SAT_LOOKAHEAD`, default OFF). See [`SearchStats`] counters
+    /// `lookahead_calls`, `lookahead_dropped`, `lookahead_forced_single`.
+    #[must_use]
+    pub fn with_sat_lookahead(
+        mut self,
+        s: std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>,
+    ) -> Self {
+        self.sat_lookahead = Some(s);
         self
     }
 
@@ -1661,6 +1689,7 @@ impl<'c> HyperEngine<'c> {
             lazy_replay_state: None,
             adaptive_budget: false,
             div_checkpoint: (0, 0, 0),
+            sat_lookahead: None,
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices
@@ -1690,6 +1719,70 @@ impl<'c> HyperEngine<'c> {
             let _ = engine.merge(HNode(a), HNode(b));
         }
         engine
+    }
+
+    /// Compute the live (non-dead) disjunct indices for clause `ci` at `node`,
+    /// using the seed-saturator to drop disjuncts proved unsatisfiable.
+    ///
+    /// Each disjunct `Dk` in `ci`'s head is tested by building a seed that
+    /// combines the node's current atomic labels with the atom `Dk` (a `Class`
+    /// atom on var `X`) or an existential `Exists` atom on var `X`.  Only
+    /// atoms bound to the home variable `X` are seeded (anything else is left
+    /// in the live set — conservative/sound under-seeding).
+    ///
+    /// Returns `(0..head_len).collect()` when no lookahead saturator is set.
+    fn lookahead_live_disjuncts(
+        &mut self,
+        sat: &owl_dl_saturation::seed_sat::SeedSaturator,
+        ci: usize,
+        node: HNode,
+    ) -> Vec<usize> {
+        let head_len = self.clauses[ci].head.len();
+        let rep = self.resolve(node);
+        // Base seed: atomic labels of the resolved node.
+        let atomic_base: Vec<owl_dl_core::ir::ClassId> = self.nodes[rep.index()].labels.clone();
+        // Base existential seed: non-inverse outgoing edges with atomic targets.
+        let mut exists_base: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ClassId)> = Vec::new();
+        let edges: Vec<(Role, HNode)> = self.nodes[rep.index()].edges.clone();
+        for (role, tgt) in edges {
+            if role.is_inverse() {
+                continue; // conservative: skip inverse edges
+            }
+            let tgt_rep = self.resolve(tgt);
+            for &cls in &self.nodes[tgt_rep.index()].labels.clone() {
+                exists_base.push((role.role_id(), cls));
+            }
+        }
+
+        let mut live = Vec::with_capacity(head_len);
+        for k in 0..head_len {
+            self.stats.lookahead_calls += 1;
+            let mut atomic_k = atomic_base.clone();
+            let mut exists_k = exists_base.clone();
+            // Only seed atoms that are on the home variable X (soundness guard).
+            match &self.clauses[ci].head[k] {
+                Atom::Class(cls, v) if *v == X => {
+                    atomic_k.push(*cls);
+                }
+                Atom::Exists(role, cls, v) if *v == X && !role.is_inverse() => {
+                    exists_k.push((role.role_id(), *cls));
+                }
+                _ => {
+                    // Any other atom shape: leave it live (conservative).
+                    live.push(k);
+                    continue;
+                }
+            }
+            if sat.seed_unsat(&atomic_k, &exists_k) {
+                self.stats.lookahead_dropped += 1;
+            } else {
+                live.push(k);
+            }
+        }
+        if live.len() == 1 {
+            self.stats.lookahead_forced_single += 1;
+        }
+        live
     }
 
     fn solve(&mut self, depth: usize) -> HyperResult {
@@ -1740,9 +1833,20 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            let live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
+                self.lookahead_live_disjuncts(&sat, ci, node)
+            } else {
+                (0..head_len).collect()
+            };
+            // If the lookahead proved ALL disjuncts dead, treat it as a clash
+            // on this branch (same as if every branch returned Unsat).
+            if live.is_empty() {
+                self.clash_deps = body_deps;
+                return HyperResult::Unsat;
+            }
             let mut any_stalled = false;
             let mut combined = DepSet::EMPTY;
-            for k in 0..head_len {
+            for k in live {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;

@@ -964,6 +964,16 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     // canonicalization on the *same* role is an edge case — TODO HF3.)
     let sub_role_hierarchy = build_role_hierarchy(&internal);
 
+    // Sat-lookahead: build once, share across all pairs via Arc.
+    let probe_sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>> =
+        if hyper_sat_lookahead_enabled() {
+            Some(std::sync::Arc::new(
+                owl_dl_saturation::seed_sat::build_base(&internal),
+            ))
+        } else {
+            None
+        };
+
     let mut probe = HyperSubProbe {
         results: Vec::new(),
         pairs_tested: 0,
@@ -1016,6 +1026,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             }
             if hyper_mrv_ordering_enabled() {
                 engine = engine.with_mrv_ordering();
+            }
+            if let Some(sat) = probe_sat_lookahead.clone() {
+                engine = engine.with_sat_lookahead(sat);
             }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
@@ -1192,6 +1205,16 @@ pub fn hyper_precise_card_deps_enabled() -> bool {
 #[must_use]
 pub fn hyper_mrv_ordering_enabled() -> bool {
     std::env::var_os("RUSTDL_MRV_ORDERING").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// `RUSTDL_SAT_LOOKAHEAD` (default **OFF**): at each ⊔ choice point, call
+/// the seed-saturator to drop disjuncts proved dead before branching.
+/// Flag-OFF path is byte-identical to pre-lookahead. Instrumented via
+/// [`owl_dl_tableau::hyper::SearchStats`] counters `lookahead_calls`,
+/// `lookahead_dropped`, `lookahead_forced_single`.
+#[must_use]
+pub fn hyper_sat_lookahead_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_LOOKAHEAD").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -1589,6 +1612,10 @@ pub(crate) struct HyperCache {
     /// not just ABox-seeded nodes. Without this, classify misses subsumptions
     /// derivable only via an inverse-domain triggered on a generated successor.
     sub_roles: RoleHierarchy,
+    /// Pre-built seed-saturator for the ⊔ look-ahead gate
+    /// (`RUSTDL_SAT_LOOKAHEAD`, default OFF). `None` when the flag is off
+    /// (zero build cost). Shared via `Arc::clone` across all per-pair probes.
+    sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
 }
 
 impl HyperCache {
@@ -1674,6 +1701,14 @@ impl HyperCache {
         let base_indexes = std::sync::Arc::new(base_indexes_inner);
         let base_disjoint_pairs =
             std::sync::Arc::new(owl_dl_tableau::hyper::build_disjoint_pairs(&clauses));
+        // Build the seed-saturator once when the lookahead flag is on.
+        let sat_lookahead = if hyper_sat_lookahead_enabled() {
+            Some(std::sync::Arc::new(
+                owl_dl_saturation::seed_sat::build_base(&internal),
+            ))
+        } else {
+            None
+        };
         Self {
             clauses,
             sup_neg,
@@ -1681,6 +1716,7 @@ impl HyperCache {
             base_indexes,
             base_disjoint_pairs,
             sub_roles,
+            sat_lookahead,
         }
     }
 
@@ -1758,6 +1794,9 @@ impl HyperCache {
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
         }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
+        }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
@@ -1798,6 +1837,9 @@ impl HyperCache {
         }
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1856,6 +1898,9 @@ impl HyperCache {
         }
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1940,6 +1985,9 @@ pub(crate) struct ConsistencyCache {
     num_classes: u32,
     /// `num_individuals` = the nominal range width (`with_nominals`).
     num_individuals: u32,
+    /// Pre-built seed-saturator for the ⊔ look-ahead gate
+    /// (`RUSTDL_SAT_LOOKAHEAD`, default OFF). `None` when the flag is off.
+    sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
 }
 
 impl ConsistencyCache {
@@ -2023,12 +2071,21 @@ impl ConsistencyCache {
             same_pairs,
         };
 
+        let sat_lookahead = if hyper_sat_lookahead_enabled() {
+            Some(std::sync::Arc::new(
+                owl_dl_saturation::seed_sat::build_base(&internal),
+            ))
+        } else {
+            None
+        };
+
         Self {
             clauses,
             seed,
             sub_roles,
             num_classes,
             num_individuals,
+            sat_lookahead,
         }
     }
 
@@ -2053,6 +2110,9 @@ impl ConsistencyCache {
         }
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -4464,6 +4524,9 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             }
             if hyper_mrv_ordering_enabled() {
                 engine = engine.with_mrv_ordering();
+            }
+            if let Some(sat) = cache.sat_lookahead.clone() {
+                engine = engine.with_sat_lookahead(sat);
             }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();

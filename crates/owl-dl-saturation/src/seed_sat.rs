@@ -38,14 +38,32 @@ impl SeedSaturator {
     /// Clones the base engine per call.  For each `aᵢ` in `atomic_seed`
     /// injects `X ⊑ aᵢ`; for each `(rⱼ, cⱼ)` in `exists_seed` injects
     /// `X ⊑ ∃rⱼ.cⱼ`.  Then runs to fixpoint and reads `X ⊑ ⊥`.
+    ///
+    /// **Out-of-universe ids are silently skipped.**  The tableau caller can
+    /// pass `ClassId`s for complement classes or decision-specific Tseitin
+    /// synthetics whose `.index()` is ≥ `reserved_x.index()`.  Those ids lie
+    /// outside the saturator's class universe (no rules exist for them), so
+    /// injecting them would panic on a bitset bounds check.  Dropping them is a
+    /// sound under-approximation: the saturator can only derive ⊥ *less* often,
+    /// never producing a spurious unsatisfiability verdict.
     #[must_use]
     pub fn seed_unsat(&self, atomic_seed: &[ClassId], exists_seed: &[(RoleId, ClassId)]) -> bool {
         let mut e = self.base.clone();
         let x = self.reserved_x;
+        let universe = self.reserved_x.index();
         for &a in atomic_seed {
+            // Skip ids that lie outside the saturator's class universe.
+            if a.index() >= universe {
+                continue;
+            }
             e.inject_subsumer(x, a);
         }
         for &(r, c) in exists_seed {
+            // Skip existentials whose filler class is out of universe.
+            // (Roles are a separate id space — we do NOT filter on role id.)
+            if c.index() >= universe {
+                continue;
+            }
             e.inject_existential(x, r, c);
         }
         e.run();
@@ -205,6 +223,52 @@ Ontology(<http://rustdl.test/test>\n\
             !sat.seed_unsat(&[ids.a, ids.c], &[]),
             "A ⊓ C must be satisfiable (no disjointness)"
         );
+    }
+
+    /// Out-of-universe seed elements must be silently skipped, not panic.
+    ///
+    /// The tableau (the real caller) can pass `ClassId`s for complement classes
+    /// and runtime Tseitin synthetics whose indices are ≥ `reserved_x.index()`.
+    /// Those ids are unknown to the saturator's bitsets (sized only for the
+    /// saturator's class universe).  Calling `inject_subsumer` with such an id
+    /// would panic with a fixedbitset out-of-bounds error.
+    ///
+    /// The guard silently drops out-of-universe ids (sound under-approximation:
+    /// dropping a constraint from the seed can only make the saturator derive ⊥
+    /// *less* often — a MISS, never an FP).
+    ///
+    /// This test:
+    ///   1. Verifies no panic when an out-of-range atomic seed is present.
+    ///   2. Verifies in-universe reasoning is preserved when mixed with OOU ids:
+    ///      `seed_unsat(&[a, b, OOU], &[])` still returns `true` (A⊓B disjoint).
+    ///   3. Verifies `seed_unsat(&[a, OOU], &[])` returns `false` (A alone sat).
+    ///   4. Verifies out-of-universe existential filler is also silently skipped.
+    #[test]
+    fn out_of_universe_seed_is_silently_skipped() {
+        let (internal, ids) = build_disjoint_ab();
+        let sat = build_base(&internal);
+
+        // Pick an id guaranteed to be far outside the saturator universe.
+        let oou = ClassId::new(10_000);
+
+        // Must not panic; OOU element contributes nothing → satisfiable.
+        assert!(
+            !sat.seed_unsat(&[ids.a, oou], &[]),
+            "A + OOU id must be satisfiable (OOU dropped)"
+        );
+
+        // Mixed: in-universe disjoint pair + OOU; disjoint reasoning still fires.
+        assert!(
+            sat.seed_unsat(&[ids.a, ids.b, oou], &[]),
+            "A ⊓ B ⊓ OOU must be unsat (A⊓B disjoint; OOU dropped)"
+        );
+
+        // OOU as existential filler must also not panic.
+        // Role id is irrelevant when the filler is filtered (inject is skipped);
+        // use RoleId::new(0) as a harmless placeholder.
+        let dummy_role = owl_dl_core::ir::RoleId::new(0);
+        let _ = sat.seed_unsat(&[ids.a], &[(dummy_role, oou)]);
+        // Reaching here without panic is the assertion.
     }
 
     /// ForallKey-driven clash: D ⊑ ∃r.K with r functional; K ⊓ A = ⊥.

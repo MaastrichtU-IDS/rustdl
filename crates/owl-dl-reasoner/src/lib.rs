@@ -1081,6 +1081,79 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
 /// # Errors
 ///
 /// See [`ReasonError`].
+/// SP1→SP2 viability probe: `sat(class)` with the wedge root optionally SEEDED with
+/// the class's complete all-model saturated subsumer set (`owl_dl_saturation::saturate`).
+/// Tests the load-bearing coupled-saturation assumption: does seeding the wedge from the
+/// (closure-complete) saturation collapse the disjunctive model-search branch count?
+/// `seed=false` reproduces the unseeded baseline; `seed=true` adds `Q → D` for every
+/// saturated subsumer `D` of `class`. Adding entailed subsumers is sound (cannot FP).
+/// Returns `Ok(None)` if `class_iri` is not a named class.
+///
+/// # Errors
+/// See [`ReasonError`].
+pub fn seed_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    class_iri: &str,
+    seed: bool,
+    depth: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<(HyperResult, SearchStats, f64, usize)>, ReasonError> {
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_tableau::hyper::HyperEngine;
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let cache = HyperCache::build(&internal);
+    let Some(c) = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == class_iri)
+        .map(|(id, _)| id)
+    else {
+        return Ok(None);
+    };
+    let mut clauses = cache.clauses.clone();
+    clauses.push(DlClause {
+        body: vec![Atom::Class(cache.fresh_q, X)],
+        head: vec![Atom::Class(c, X)],
+    });
+    let mut n_seeded = 0usize;
+    if seed {
+        // Seed ONLY named (non-synthetic) subsumers. The saturator's closure
+        // includes synthetic ids (NomKey/ForallKey/DKey/Tseitin) ≥ num_classes
+        // whose semantics the wedge does NOT share — forcing those onto the root
+        // is a cross-engine mismatch (spurious clash = FP). Named subsumers are
+        // genuinely entailed in BOTH engines, so seeding them is sound (verdict-
+        // preserving) — the only honest test of whether saturation collapses the
+        // model search.
+        let n_named = internal.vocabulary.num_classes();
+        let subs = owl_dl_saturation::saturate(&internal);
+        for d in subs.subsumers_of(c) {
+            if d == c || (d.index() as usize) >= n_named {
+                continue;
+            }
+            clauses.push(DlClause {
+                body: vec![Atom::Class(cache.fresh_q, X)],
+                head: vec![Atom::Class(d, X)],
+            });
+            n_seeded += 1;
+        }
+    }
+    let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+    if hyper_double_block_enabled() {
+        engine = engine.with_double_blocking();
+    }
+    if hyper_precise_card_deps_enabled() {
+        engine = engine.with_precise_card_deps();
+    }
+    if hyper_mrv_ordering_enabled() {
+        engine = engine.with_mrv_ordering();
+    }
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    let start = std::time::Instant::now();
+    let result = engine.decide_with_deadline(depth, deadline);
+    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok(Some((result, engine.stats(), wall_ms, n_seeded)))
+}
+
 pub fn decide_pair_probe<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,

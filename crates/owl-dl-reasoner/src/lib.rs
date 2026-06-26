@@ -1909,7 +1909,7 @@ pub(crate) struct HyperCache {
     /// `None` when `RUSTDL_SAT_SEED` is off (built in the same flag-gated block).
     /// Used by `decide_with_stats` and `classify_labels` to seed `Q → ∃R.target`.
     exists_seed: Option<Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>>,
-    /// VALUE-DERIVED TYPE DISJOINTNESS (`RUSTDL_VALUE_TYPE_DISJOINT`, experiment):
+    /// VALUE-DERIVED TYPE DISJOINTNESS (`RUSTDL_VALUE_TYPE_DISJOINT`, **default ON**; `=0` to disable):
     /// pairs `(T1, T2)` of named classes that force DIFFERENT `DifferentIndividuals`-
     /// distinct nominal values on the SAME functional role (`T1 ⊑ ∃R.{v1}`,
     /// `T2 ⊑ ∃R.{v2}`, `R` functional, `v1≠v2` ⟹ `T1⊓T2 ⊑ ⊥`). Seeded as
@@ -1918,7 +1918,7 @@ pub(crate) struct HyperCache {
     /// Sound by construction (functionality + asserted distinctness). `None`
     /// when the flag is off. See docs/stage4-foodpairing-probe-refuted-2026-06-26.md.
     value_disjoint: Option<Vec<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId)>>,
-    /// TAUTOLOGY-SKIP (`RUSTDL_TAUTOLOGY_SKIP`, default OFF): unordered index pairs
+    /// TAUTOLOGY-SKIP (`RUSTDL_TAUTOLOGY_SKIP`, **default ON**; `=0` to disable): unordered index pairs
     /// `(a,b)` of a complement pair `b ≡ ¬a` (from `EquivalentClasses(B, ¬A)`), so
     /// the wedge skips the tautological binary disjunction `a ⊔ ¬a` (e.g.
     /// `ConsumableThing ⊔ NonConsumableThing`). Threaded into each engine via
@@ -2016,7 +2016,8 @@ impl HyperCache {
         // pair up named classes that force different DifferentIndividuals-distinct
         // nominal values on the same functional role. See struct-field docs.
         let value_disjoint: Option<Vec<(ClassId, ClassId)>> =
-            if std::env::var_os("RUSTDL_VALUE_TYPE_DISJOINT").is_some()
+            if std::env::var_os("RUSTDL_VALUE_TYPE_DISJOINT")
+                .is_none_or(|v| v != "0" && !v.is_empty())
                 && let Some(exists) = exists_seed.as_ref()
             {
                 use owl_dl_core::ir::RoleId;
@@ -2100,38 +2101,40 @@ impl HyperCache {
             };
         // TAUTOLOGY-SKIP: complement pairs `b ≡ ¬a` from EquivalentClasses(B, ¬A),
         // so the wedge skips the tautological `a ⊔ ¬a` binary disjunction.
-        let tautology_pairs: Option<std::collections::HashSet<(u32, u32)>> =
-            if std::env::var_os("RUSTDL_TAUTOLOGY_SKIP").is_some() {
-                use owl_dl_core::ir::ConceptExpr;
-                use owl_dl_core::ontology::Axiom;
-                let mut pairs: std::collections::HashSet<(u32, u32)> =
-                    std::collections::HashSet::new();
-                for ax in &internal.axioms {
-                    if let Axiom::EquivalentClasses(members) = ax {
-                        let mut atomic_b: Option<ClassId> = None;
-                        let mut not_a: Option<ClassId> = None;
-                        for &m in members {
-                            match internal.concepts.get(m) {
-                                ConceptExpr::Atomic(id) => atomic_b = atomic_b.or(Some(*id)),
-                                ConceptExpr::Not(inner) => {
-                                    if let ConceptExpr::Atomic(a) = internal.concepts.get(*inner) {
-                                        not_a = Some(*a);
-                                    }
+        let tautology_pairs: Option<std::collections::HashSet<(u32, u32)>> = if std::env::var_os(
+            "RUSTDL_TAUTOLOGY_SKIP",
+        )
+        .is_none_or(|v| v != "0" && !v.is_empty())
+        {
+            use owl_dl_core::ir::ConceptExpr;
+            use owl_dl_core::ontology::Axiom;
+            let mut pairs: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+            for ax in &internal.axioms {
+                if let Axiom::EquivalentClasses(members) = ax {
+                    let mut atomic_b: Option<ClassId> = None;
+                    let mut not_a: Option<ClassId> = None;
+                    for &m in members {
+                        match internal.concepts.get(m) {
+                            ConceptExpr::Atomic(id) => atomic_b = atomic_b.or(Some(*id)),
+                            ConceptExpr::Not(inner) => {
+                                if let ConceptExpr::Atomic(a) = internal.concepts.get(*inner) {
+                                    not_a = Some(*a);
                                 }
-                                _ => {}
                             }
-                        }
-                        if let (Some(b), Some(a)) = (atomic_b, not_a) {
-                            // b ≡ ¬a ⟹ a ⊔ b = ⊤ (mutually exhaustive)
-                            pairs.insert((a.index(), b.index()));
-                            pairs.insert((b.index(), a.index()));
+                            _ => {}
                         }
                     }
+                    if let (Some(b), Some(a)) = (atomic_b, not_a) {
+                        // b ≡ ¬a ⟹ a ⊔ b = ⊤ (mutually exhaustive)
+                        pairs.insert((a.index(), b.index()));
+                        pairs.insert((b.index(), a.index()));
+                    }
                 }
-                Some(pairs)
-            } else {
-                None
-            };
+            }
+            Some(pairs)
+        } else {
+            None
+        };
         let mut complements: std::collections::HashMap<ClassId, ClassId> =
             std::collections::HashMap::new();
         let sup_neg = build_sup_neg_map(

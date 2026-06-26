@@ -1171,6 +1171,163 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
     Ok(Some((result, engine.stats(), wall_ms, n_seeded)))
 }
 
+/// Probe whether class `class_iri` is unsatisfiable, optionally seeding the
+/// wedge root with the saturation's derived knowledge.
+///
+/// `mode`:
+/// - `0` — no seed (baseline: class label only).
+/// - `1` — named-subsumer seed (same as SP2 [`seed_probe`] mode 1): the
+///   saturation's named subsumers of `c` are pushed as `Q → D` clauses.
+/// - `2` — named-subsumer + ∃-seed: mode 1 plus each derived existential fact
+///   `(c, r, tgt)` from the saturation is translated and seeded as
+///   `Q(x) → ∃r.D(x)`. `NomKey` targets are translated to the wedge nominal id
+///   (`num_named + a.index()`); named targets are seeded directly; Tseitin/DKey
+///   targets are dropped (sound under-approximation).
+/// - `3` — garbage-∃ control: mode 1 plus the **same count** of deterministic,
+///   in-vocabulary `∃R.D` clauses whose `(R, D)` is NOT among `c`'s real
+///   translated facts. Isolates "more ∃ clauses / MRV reorder" from real knowledge.
+///
+/// Returns `(verdict, stats, wall_ms, n_exists_seeded)` where `n_exists_seeded`
+/// is the number of ∃-clauses added (0 for modes 0 and 1; same count for modes
+/// 2 and 3 so the controller can assert they match).
+///
+/// Returns `Ok(None)` when `class_iri` is not found in the ontology.
+pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    class_iri: &str,
+    mode: u8,
+    depth: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<(HyperResult, SearchStats, f64, usize)>, ReasonError> {
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_core::ir::Role;
+    use owl_dl_tableau::hyper::HyperEngine;
+
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let cache = HyperCache::build(&internal);
+
+    // Look up the class id.
+    let Some(c) = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == class_iri)
+        .map(|(id, _)| id)
+    else {
+        return Ok(None);
+    };
+
+    // Clone the base clause set and inject the Q → C root.
+    let mut clauses = cache.clauses.clone();
+    clauses.push(DlClause {
+        body: vec![Atom::Class(cache.fresh_q, X)],
+        head: vec![Atom::Class(c, X)],
+    });
+
+    // Saturate once to get subsumers + ∃-facts + NomKey map.
+    let (subs, facts, nom_to_ind) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let n_named = internal.vocabulary.num_classes();
+
+    // Named-subsumer seed (modes 1, 2, 3) — identical to seed_probe mode 1.
+    if mode != 0 {
+        for d in subs.subsumers_of(c) {
+            if d != c && (d.index() as usize) < n_named {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X)],
+                    head: vec![Atom::Class(d, X)],
+                });
+            }
+        }
+    }
+
+    // Translate the derived ∃-facts of c: produce the real set used by mode 2.
+    // Mode 3 also needs this count, so we build the translated list in all cases
+    // where mode ≥ 2, then either use it directly (mode 2) or ignore the
+    // content but use the count for the garbage control (mode 3).
+    let mut n_exists_seeded = 0usize;
+
+    if mode == 2 || mode == 3 {
+        // Collect all translated (role, translated_target) pairs for c's facts.
+        let n_named_u32 = u32::try_from(n_named).expect("num_named fits u32");
+        let translated: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ClassId)> = facts
+            .iter()
+            .filter(|&&(s, _, _)| s == c)
+            .filter_map(|&(_, r, tgt)| {
+                if (tgt.index() as usize) < n_named {
+                    // Named target — seed directly.
+                    Some((r, tgt))
+                } else if let Some(&ind) = nom_to_ind.get(&tgt) {
+                    // NomKey → wedge nominal id: same formula as the clausifier.
+                    let wedge_nominal = owl_dl_core::ir::ClassId::new(n_named_u32 + ind.index());
+                    Some((r, wedge_nominal))
+                } else {
+                    // Tseitin / DKey — drop (sound under-approximation).
+                    None
+                }
+            })
+            .collect();
+
+        if mode == 2 {
+            // Real ∃-seed.
+            for (r, tgt) in &translated {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X)],
+                    head: vec![Atom::Exists(Role::named(*r), *tgt, X)],
+                });
+                n_exists_seeded += 1;
+            }
+        } else {
+            // Mode 3: garbage control — same count, deterministic in-vocab
+            // (R, D) pairs NOT among c's real translated facts.
+            type RdPair = (owl_dl_core::ir::RoleId, owl_dl_core::ir::ClassId);
+            let real_set: std::collections::HashSet<RdPair> = translated.iter().copied().collect();
+            let target_count = translated.len();
+            let roles: Vec<owl_dl_core::ir::RoleId> =
+                internal.vocabulary.roles().map(|(id, _)| id).collect();
+            let named_classes: Vec<owl_dl_core::ir::ClassId> = internal
+                .vocabulary
+                .classes()
+                .filter(|(id, _)| (id.index() as usize) < n_named)
+                .map(|(id, _)| id)
+                .collect();
+            // Build a deterministic stream of (R, D) pairs not in the real set.
+            let mut garbage: Vec<DlClause> = Vec::new();
+            'outer: for &r in &roles {
+                for &d in &named_classes {
+                    if garbage.len() >= target_count {
+                        break 'outer;
+                    }
+                    if !real_set.contains(&(r, d)) {
+                        garbage.push(DlClause {
+                            body: vec![Atom::Class(cache.fresh_q, X)],
+                            head: vec![Atom::Exists(Role::named(r), d, X)],
+                        });
+                    }
+                }
+            }
+            n_exists_seeded = garbage.len();
+            clauses.extend(garbage);
+        }
+    }
+
+    // Build engine with full index rebuild (seed clauses must be indexed).
+    let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+    if hyper_double_block_enabled() {
+        engine = engine.with_double_blocking();
+    }
+    if hyper_precise_card_deps_enabled() {
+        engine = engine.with_precise_card_deps();
+    }
+    if hyper_mrv_ordering_enabled() {
+        engine = engine.with_mrv_ordering();
+    }
+
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    let start = std::time::Instant::now();
+    let result = engine.decide_with_deadline(depth, deadline);
+    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok(Some((result, engine.stats(), wall_ms, n_exists_seeded)))
+}
+
 pub fn decide_pair_probe<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,
@@ -6274,5 +6431,141 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             !seeded.contains(&a),
             "A's table must NOT contain A itself (d != c filter)"
         );
+    }
+}
+
+/// Precompletion probe tests.
+///
+/// Inline (not in `tests/`) because `precompletion_probe` depends on
+/// `pub(crate)` helpers (`HyperCache`, `test_env_lock`).
+///
+/// Fixture: `C ⊑ ∃r.{a}` — an `ObjectHasValue`, lowered by the converter to
+/// `C ⊑ ∃r.NomKey(a)`. After saturation the derived ∃-fact `(C, r, NomKey(a))`
+/// must translate to the wedge nominal class id `num_named + a.index()`.
+#[cfg(test)]
+mod precompletion_probe_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    struct CExistsNominalIds {
+        c: owl_dl_core::ir::ClassId,
+        r: owl_dl_core::ir::RoleId,
+        a: owl_dl_core::ir::IndividualId,
+    }
+
+    /// Build a minimal ontology: class C, object property r, individual a,
+    /// with the axiom `SubClassOf(C ObjectHasValue(r a))`.
+    fn build_c_exists_nominal_a() -> (InternalOntology, CExistsNominalIds) {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a))\n\
+             SubClassOf(:C ObjectHasValue(:r :a))\n\
+             )\n"
+        );
+        let onto = parse(&src);
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("C⊑∃r.{a} converts");
+        let c = internal
+            .vocabulary
+            .classes()
+            .find(|(_, iri)| *iri == "http://rustdl.test/C")
+            .map(|(id, _)| id)
+            .expect("class C present");
+        let r = internal
+            .vocabulary
+            .roles()
+            .find(|(_, iri)| *iri == "http://rustdl.test/r")
+            .map(|(id, _)| id)
+            .expect("role r present");
+        let a = internal
+            .vocabulary
+            .individuals()
+            .find(|(_, iri)| *iri == "http://rustdl.test/a")
+            .map(|(id, _)| id)
+            .expect("individual a present");
+        (internal, CExistsNominalIds { c, r, a })
+    }
+
+    /// The derived ∃-fact `(C, r, NomKey(a))` must:
+    /// 1. Be present in the saturation's `seen_facts` output.
+    /// 2. Have its `NomKey` target map back to individual `a` via `nom_to_ind`.
+    /// 3. Translate to wedge nominal id `= num_named + a.index()` (≥ `num_named`).
+    #[test]
+    fn precompletion_translates_nomkey_to_wedge_nominal() {
+        let (internal, ids) = build_c_exists_nominal_a();
+        let (_subs, facts, nom_to_ind) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+        let n_named = u32::try_from(internal.vocabulary.num_classes()).expect("fits u32");
+        // Find the (C, r, NomKey) fact.
+        let (_, _, tgt) = facts
+            .iter()
+            .copied()
+            .find(|&(s, r, _)| s == ids.c && r == ids.r)
+            .expect("derived ∃-fact (C, r, NomKey(a)) must be present");
+        // The target must be a NomKey (≥ n_named) and map back to individual a.
+        assert!(
+            tgt.index() >= n_named,
+            "NomKey target id must be ≥ num_named (synthetic region)"
+        );
+        let ind = nom_to_ind
+            .get(&tgt)
+            .copied()
+            .expect("target must be a NomKey (in nom_to_ind)");
+        assert_eq!(ind, ids.a, "NomKey maps back to individual a");
+        // Wedge nominal id is the same formula the clausifier uses.
+        let wedge_nominal = owl_dl_core::ir::ClassId::new(n_named + ind.index());
+        assert!(
+            wedge_nominal.index() >= n_named,
+            "wedge nominal id is in the nominal region (≥ num_named)"
+        );
+    }
+
+    /// Mode 2 (real ∃-seed) and mode 3 (garbage control) must seed exactly the
+    /// same number of ∃-clauses so the controller can use them as a matched pair.
+    /// Mode 1 (named-only) should seed 0 ∃-clauses.
+    #[test]
+    fn precompletion_mode2_mode3_exists_counts_match() {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a))\n\
+             SubClassOf(:C ObjectHasValue(:r :a))\n\
+             )\n"
+        );
+        let onto = parse(&src);
+        let m1 = precompletion_probe(&onto, "http://rustdl.test/C", 1, 8, None)
+            .expect("no error")
+            .expect("class found")
+            .3;
+        let m2 = precompletion_probe(&onto, "http://rustdl.test/C", 2, 8, None)
+            .expect("no error")
+            .expect("class found")
+            .3;
+        let m3 = precompletion_probe(&onto, "http://rustdl.test/C", 3, 8, None)
+            .expect("no error")
+            .expect("class found")
+            .3;
+        assert_eq!(m1, 0, "mode 1 (named-only) seeds no ∃-clauses");
+        assert!(
+            m2 >= 1,
+            "mode 2 seeds at least one ∃-fact (the ∃r.{{a}} axiom)"
+        );
+        assert_eq!(m2, m3, "mode 3 control must seed the same count as mode 2");
     }
 }

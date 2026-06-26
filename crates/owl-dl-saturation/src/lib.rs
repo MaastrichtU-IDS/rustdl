@@ -109,6 +109,45 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
     saturate_with_config(internal, &SaturateConfig::default()).0
 }
 
+/// Like [`saturate`] but also returns every derived existential fact
+/// `(sub, role, target)` and the `NomKey → individual` reverse map, so a
+/// caller can seed a tableau with the saturation's deterministic ∃-structure.
+///
+/// Sorted by `(sub, role, target)` for determinism.
+/// The `nominal_to_ind` map lets the caller convert a `NomKey` synthetic
+/// target back to the original [`IndividualId`], which in turn gives the
+/// wedge's nominal class id as `ClassId::new(num_named + ind.index())`.
+#[must_use]
+#[allow(clippy::type_complexity)]
+pub fn saturate_with_exists_facts(
+    internal: &InternalOntology,
+) -> (
+    Subsumers,
+    Vec<(ClassId, RoleId, ClassId)>,
+    std::collections::HashMap<ClassId, IndividualId>,
+) {
+    let n = internal.vocabulary.num_classes();
+    let role_super_map = build_role_super(internal);
+    let (rules, tseitin, num_total_classes, maybe_trace) =
+        collect_el_rules_with_provenance(internal, &role_super_map, false);
+    let role_super = freeze_role_super(&role_super_map);
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes,
+        rules,
+        tseitin,
+        role_super,
+        false,
+        maybe_trace,
+    );
+    engine.seed(internal);
+    engine.run();
+    let mut facts: Vec<(ClassId, RoleId, ClassId)> = engine.seen_facts.iter().copied().collect();
+    facts.sort_unstable_by_key(|&(s, r, t)| (s.index(), r.index(), t.index()));
+    let nom = engine.rules.nominal_to_ind.clone();
+    (engine.subsumers, facts, nom)
+}
+
 /// Like [`saturate`] but also supports optional proof recording.
 ///
 /// Returns `(Subsumers, Some(ProofTrace))` when `cfg.record_proofs` is `true`,

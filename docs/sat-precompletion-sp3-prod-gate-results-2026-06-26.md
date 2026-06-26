@@ -62,3 +62,24 @@ with no measured regression.
 `main` untouched. The remaining headroom toward Konclude's ~114 ms is the residual ~1731
 genuinely-too-slow misses (the SP1 saturation increments — richer ∀/≤n/nominal closure → more
 ∃-facts/class — would convert more, now with a measured payoff path).
+
+## Stage-1 addendum (2026-06-26): tight cap × ∃-seed → wine 3.2 s, sound
+
+The ~1731 timed-out pairs default to correct-not-subsumed (wine's positives are ALL
+saturation-derived: saturation=653, tableau=0), so a tighter `--pair-timeout-ms` lowers the
+wall with MISSED=0 preserved. Measured (seed ON):
+
+| cap | wall | misses | closure-diff |
+|---|---|---|---|
+| 25 ms | 27.4 s | 1731 | 653=653 FP=0 MISSED=0 |
+| 5 ms | 7.6 s | 2361 | — |
+| **1 ms** | **3.2 s** | 2468 | **653=653 FP=0 MISSED=0 (verified, 3.04 s)** |
+
+(Misses rise as the cap tightens because the adaptive label-cache deadline scales with the
+cap — `n × per_pair`; the wall still falls because both the label-cache build and the capped
+refutations shrink.) **Net: wine 49 s → 3.2 s (~15×), sound (653=653, FP=0/MISSED=0).** The
+1 ms cap is wine-appropriate (sound only because saturation carries every wine subsumption);
+not a universal default — the adaptive per-ontology cap handles pizza-class fixtures that
+need a larger budget. Residual gap to Konclude's 114 ms (~28×) = the 137 per-class label
+builds + the 2468 capped refutations → Stage-3 build-once/KPSet (one global pseudo-model +
+known/possible subsumers) is the lever.

@@ -1918,6 +1918,13 @@ pub(crate) struct HyperCache {
     /// Sound by construction (functionality + asserted distinctness). `None`
     /// when the flag is off. See docs/stage4-foodpairing-probe-refuted-2026-06-26.md.
     value_disjoint: Option<Vec<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId)>>,
+    /// TAUTOLOGY-SKIP (`RUSTDL_TAUTOLOGY_SKIP`, default OFF): unordered index pairs
+    /// `(a,b)` of a complement pair `b ≡ ¬a` (from `EquivalentClasses(B, ¬A)`), so
+    /// the wedge skips the tautological binary disjunction `a ⊔ ¬a` (e.g.
+    /// `ConsumableThing ⊔ NonConsumableThing`). Threaded into each engine via
+    /// `with_tautology_skip`. Sound (FP=0: skip removes an obligation; MISSED=0: an
+    /// OPEN `a ⊔ ¬a` has unconstrained polarity ⇒ any model extends). `None` when off.
+    tautology_pairs: Option<std::collections::HashSet<(u32, u32)>>,
 }
 
 impl HyperCache {
@@ -2091,6 +2098,40 @@ impl HyperCache {
             } else {
                 None
             };
+        // TAUTOLOGY-SKIP: complement pairs `b ≡ ¬a` from EquivalentClasses(B, ¬A),
+        // so the wedge skips the tautological `a ⊔ ¬a` binary disjunction.
+        let tautology_pairs: Option<std::collections::HashSet<(u32, u32)>> =
+            if std::env::var_os("RUSTDL_TAUTOLOGY_SKIP").is_some() {
+                use owl_dl_core::ir::ConceptExpr;
+                use owl_dl_core::ontology::Axiom;
+                let mut pairs: std::collections::HashSet<(u32, u32)> =
+                    std::collections::HashSet::new();
+                for ax in &internal.axioms {
+                    if let Axiom::EquivalentClasses(members) = ax {
+                        let mut atomic_b: Option<ClassId> = None;
+                        let mut not_a: Option<ClassId> = None;
+                        for &m in members {
+                            match internal.concepts.get(m) {
+                                ConceptExpr::Atomic(id) => atomic_b = atomic_b.or(Some(*id)),
+                                ConceptExpr::Not(inner) => {
+                                    if let ConceptExpr::Atomic(a) = internal.concepts.get(*inner) {
+                                        not_a = Some(*a);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let (Some(b), Some(a)) = (atomic_b, not_a) {
+                            // b ≡ ¬a ⟹ a ⊔ b = ⊤ (mutually exhaustive)
+                            pairs.insert((a.index(), b.index()));
+                            pairs.insert((b.index(), a.index()));
+                        }
+                    }
+                }
+                Some(pairs)
+            } else {
+                None
+            };
         let mut complements: std::collections::HashMap<ClassId, ClassId> =
             std::collections::HashMap::new();
         let sup_neg = build_sup_neg_map(
@@ -2164,6 +2205,7 @@ impl HyperCache {
             sat_seed,
             exists_seed,
             value_disjoint,
+            tautology_pairs,
         }
     }
 
@@ -2298,6 +2340,9 @@ impl HyperCache {
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
         }
+        if let Some(p) = &self.tautology_pairs {
+            engine = engine.with_tautology_skip(p.clone());
+        }
         if let Some(sat) = self.sat_lookahead.clone() {
             engine = engine.with_sat_lookahead(sat);
         }
@@ -2354,6 +2399,9 @@ impl HyperCache {
         }
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
+        }
+        if let Some(p) = &self.tautology_pairs {
+            engine = engine.with_tautology_skip(p.clone());
         }
         if let Some(sat) = self.sat_lookahead.clone() {
             engine = engine.with_sat_lookahead(sat);
@@ -2474,6 +2522,9 @@ impl HyperCache {
         }
         if hyper_mrv_ordering_enabled() {
             engine = engine.with_mrv_ordering();
+        }
+        if let Some(p) = &self.tautology_pairs {
+            engine = engine.with_tautology_skip(p.clone());
         }
         if let Some(sat) = self.sat_lookahead.clone() {
             engine = engine.with_sat_lookahead(sat);

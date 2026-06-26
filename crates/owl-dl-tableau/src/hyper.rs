@@ -567,6 +567,13 @@ pub struct HyperEngine<'c> {
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
     mrv_ordering: bool,
+    /// TAUTOLOGY-SKIP (`RUSTDL_TAUTOLOGY_SKIP`, default OFF): unordered `(a,b)` index
+    /// pairs of a complement pair `b ≡ ¬a` (mutually exhaustive). `find_open_disjunction`
+    /// skips a binary disjunction whose two `Class` disjuncts are such a pair — it is a
+    /// tautology `a ⊔ ¬a`, vacuously satisfied, so not branching it is sound (FP=0:
+    /// removes an obligation; MISSED=0: an OPEN such disjunction means the polarity is
+    /// unconstrained, so any model extends to satisfy it). See the tautology-skip design.
+    tautology_pairs: Option<std::collections::HashSet<(u32, u32)>>,
     /// HF2-double-blocking performance index: nodes partitioned by
     /// `parent_role`. Skipping incompatible candidates without scanning
     /// the full nodes vec cuts `is_blocked` cost from O(n) to
@@ -831,6 +838,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             mrv_ordering: false,
+            tautology_pairs: None,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -879,6 +887,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             mrv_ordering: false,
+            tautology_pairs: None,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false],
@@ -909,6 +918,15 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_precise_card_deps(mut self) -> Self {
         self.precise_card_deps = true;
+        self
+    }
+
+    /// Opt into tautology-skip: a complement-pair index set `{(a,b) : b ≡ ¬a}`.
+    /// `find_open_disjunction` skips binary `a ⊔ ¬a` disjunctions. See
+    /// [`Self::tautology_pairs`].
+    #[must_use]
+    pub fn with_tautology_skip(mut self, pairs: std::collections::HashSet<(u32, u32)>) -> Self {
+        self.tautology_pairs = Some(pairs);
         self
     }
 
@@ -1901,6 +1919,7 @@ impl<'c> HyperEngine<'c> {
             double_blocking: false,
             precise_card_deps: false,
             mrv_ordering: false,
+            tautology_pairs: None,
             block_index: None,
             nn_taint_disabled: false,
             snapshot_origin: vec![false; n],
@@ -2184,6 +2203,18 @@ impl<'c> HyperEngine<'c> {
     /// some node-binding and **none** of whose head disjuncts is
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
+    /// TAUTOLOGY-SKIP: true iff clause `ci`'s head is exactly a binary complement
+    /// pair `a ⊔ ¬a` (registered in `tautology_pairs`) — a tautology, sound to skip.
+    fn is_tautology_clause(&self, ci: usize) -> bool {
+        let Some(pairs) = &self.tautology_pairs else {
+            return false;
+        };
+        let head = &self.clauses[ci].head;
+        head.len() == 2
+            && matches!((&head[0], &head[1]),
+                (Atom::Class(a, _), Atom::Class(b, _)) if pairs.contains(&(a.index(), b.index())))
+    }
+
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
         if self.mrv_ordering {
             let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
@@ -2194,6 +2225,9 @@ impl<'c> HyperEngine<'c> {
                 }
                 for ci in 0..self.clauses.len() {
                     if self.clauses[ci].is_horn() {
+                        continue;
+                    }
+                    if self.is_tautology_clause(ci) {
                         continue;
                     }
                     let Some(bindings) = self.match_body(ci, node) else {
@@ -2247,6 +2281,9 @@ impl<'c> HyperEngine<'c> {
             }
             for ci in 0..self.clauses.len() {
                 if self.clauses[ci].is_horn() {
+                    continue;
+                }
+                if self.is_tautology_clause(ci) {
                     continue;
                 }
                 let Some(bindings) = self.match_body(ci, node) else {

@@ -2007,6 +2007,11 @@ impl<'c> HyperEngine<'c> {
     }
 
     fn solve(&mut self, depth: usize) -> HyperResult {
+        // STAGE-4 probe: per-thread label-keyed Unsat memo (RUSTDL_UNSAT_MEMO).
+        thread_local! {
+            static UNSAT_MEMO: std::cell::RefCell<std::collections::HashSet<u64>> =
+                std::cell::RefCell::new(std::collections::HashSet::new());
+        }
         if let Some(dl) = self.deadline
             && Instant::now() >= dl
         {
@@ -2136,6 +2141,32 @@ impl<'c> HyperEngine<'c> {
                     );
                 }
             }
+            // STAGE-4 label-keyed Unsat memo PROTOTYPE (RUSTDL_UNSAT_MEMO): cache
+            // node label-sets that resolved Unsat; short-circuit on revisit. Tests
+            // whether label-keyed caching is sound (wine FP=0 ⇒ contexts verdict-
+            // irrelevant ⇒ engine lever) or the reuse-trap (FP>0). Throwaway probe.
+            let memo_key: Option<u64> = if std::env::var_os("RUSTDL_UNSAT_MEMO").is_some() {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let rep = self.resolve(node);
+                let mut labels: Vec<u32> = self.nodes[rep.index()]
+                    .labels
+                    .iter()
+                    .map(|c| c.index())
+                    .collect();
+                labels.sort_unstable();
+                let mut h = DefaultHasher::new();
+                labels.hash(&mut h);
+                Some(h.finish())
+            } else {
+                None
+            };
+            if let Some(k) = memo_key
+                && UNSAT_MEMO.with(|m| m.borrow().contains(&k))
+            {
+                self.clash_deps = body_deps;
+                return HyperResult::Unsat;
+            }
             let live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
                 self.lookahead_live_disjuncts(&sat, ci, node)
             } else {
@@ -2145,6 +2176,9 @@ impl<'c> HyperEngine<'c> {
             // on this branch (same as if every branch returned Unsat).
             if live.is_empty() {
                 self.clash_deps = body_deps;
+                if let Some(k) = memo_key {
+                    UNSAT_MEMO.with(|m| m.borrow_mut().insert(k));
+                }
                 return HyperResult::Unsat;
             }
             let mut any_stalled = false;
@@ -2182,6 +2216,9 @@ impl<'c> HyperEngine<'c> {
             // Every disjunct failed with `d` in its clash deps: the
             // decision is exhausted, so drop `d` from the propagated set.
             self.clash_deps = combined.remove(d);
+            if let Some(k) = memo_key {
+                UNSAT_MEMO.with(|m| m.borrow_mut().insert(k));
+            }
             return HyperResult::Unsat;
         }
         // `≤n` merge branching (H3c): merge one pair of the violating

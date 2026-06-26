@@ -113,3 +113,36 @@ rustdl's wedge re-derives them. **The deep engine is therefore a from-scratch Ko
 SROIQ tableau** (integrated nominal/merge representation + sound completion-graph reuse under
 applicability conditions), not a bolt-on to the wedge — a large, correctness-critical,
 multi-sub-project program. Characterization complete; this is the scoped engine target.
+
+## Part 4 — UNSAT-memo prototype: payoff PROVEN, label-key unsound (the engine target)
+
+Prototyped a label-keyed Unsat memo in the wedge ⊔ loop (cache node label-sets that resolve
+Unsat; short-circuit on revisit), `RUSTDL_UNSAT_MEMO`. On sat(Gamay) [genuinely-hard]:
+
+| | branches | wall | verdict |
+|---|---|---|---|
+| no memo | 451 175 | 30 s | Stalled |
+| **label-keyed Unsat memo** | **43** | **3 ms** | **Unsat (SPURIOUS — Gamay is SAT)** |
+
+**Two conclusions, both demonstrated (not assumed):**
+1. **The memoization payoff is real and ms-class** — 451k → 43 branches (4 orders of magnitude).
+   The 70-state redundancy IS exploitable for speed.
+2. **Label-keyed reuse is UNSOUND** — it returned Unsat for a satisfiable class (the reuse-trap,
+   concretely demonstrated post-∃-seed): a label-set cached Unsat in one context, short-circuited
+   in a context where it is satisfiable.
+
+## The engine target (conclusive)
+
+The engine's core requirement is now precisely scoped and proof-backed: **a representation in
+which a node's unsat applicability conditions are SPARSE**, so the demonstrated 451k→43 collapse
+becomes *sound*. SP-0 showed rustdl's dependency chains are genuinely dense *in its current
+representation* (every clash depends on the full nominal-merge context) ⇒ sound reuse keyed on
+those deps gets ~0. Konclude reaches ms on exactly these classes because its integrated
+nominal/merge representation keeps the applicability conditions sparse ⇒ its completion-graph
+reuse is sound and collapses the search. **That representation — sparse-dependency integrated
+nominal handling enabling sound state reuse — is the from-scratch engine.** It is not a wedge
+bolt-on (the wedge's dense deps are the problem); it is a multi-sub-project core rebuild, now
+with a concrete target (sparse unsat-applicability-conditions) and a proof-of-payoff (the
+43-branch collapse). The probes (`RUSTDL_TREE_LOG` / `RUSTDL_REVISIT_PROBE` / `RUSTDL_UNSAT_MEMO`)
+live on `feat/stage4-engine-characterization` as throwaway diagnostics; `main` has the banked
+∃-seed win.

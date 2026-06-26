@@ -6762,4 +6762,59 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             "C seeds ∃r.{{a}} translated to wedge nominal id {wedge_nominal:?}"
         );
     }
+
+    /// STAGE-4 characterization (ignored): deadline-narrow wine's hard classes.
+    /// One 30 s-budget pass per class (∃-seed default-ON); record verdict + time;
+    /// derive NoVerdict counts at 2 s / 10 s / 30 s. Shrinks "19@2s" to the real
+    /// genuinely-hard N (advisor: deadline-starved ≠ truly-hard).
+    #[test]
+    #[ignore = "Stage-4 diagnostic; run with --ignored --nocapture (slow, ~10min)"]
+    fn stage4_deadline_narrow_wine() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        let src =
+            std::fs::read_to_string("/data/dumontier/rustdl/ontologies/real/wine.ofn").unwrap();
+        let (ont, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = read_ofn(
+            &mut std::io::Cursor::new(src.into_bytes()),
+            Default::default(),
+        )
+        .unwrap();
+        let internal = owl_dl_core::convert::convert_ontology(&ont).unwrap();
+        let cache = HyperCache::build(&internal); // ∃-seed default-ON
+        let n = internal.vocabulary.num_classes();
+        // For each class: 30s-budget label, record (NoVerdict?, elapsed_ms).
+        let mut times: Vec<(bool, u128)> = Vec::with_capacity(n);
+        for ci in 0..n {
+            let c = owl_dl_core::ir::ClassId::new(u32::try_from(ci).unwrap());
+            let t0 = std::time::Instant::now();
+            let dl = Some(t0 + std::time::Duration::from_secs(30));
+            let nov = matches!(cache.classify_labels(c, dl), LabelOracle::NoVerdict);
+            times.push((nov, t0.elapsed().as_millis()));
+        }
+        let nov30 = times.iter().filter(|(nov, _)| *nov).count();
+        // A class would be NoVerdict@D if it's NoVerdict@30s OR its label-time > D.
+        let nov_at = |ms: u128| times.iter().filter(|(nov, t)| *nov || *t > ms).count();
+        println!(
+            "wine NoVerdict classes: @2s={} @10s={} @30s={} (of {n})",
+            nov_at(2000),
+            nov_at(10000),
+            nov30
+        );
+        // List the genuinely-hard (NoVerdict@30s) class IRIs.
+        let hard: Vec<&str> = (0..n)
+            .filter(|&i| times[i].0)
+            .filter_map(|i| {
+                let id = owl_dl_core::ir::ClassId::new(u32::try_from(i).unwrap());
+                internal
+                    .vocabulary
+                    .classes()
+                    .find(|(c, _)| *c == id)
+                    .map(|(_, iri)| iri)
+            })
+            .map(|iri| iri.rsplit('#').next().unwrap_or(iri))
+            .collect();
+        println!("genuinely-hard@30s ({}): {hard:?}", hard.len());
+    }
 }

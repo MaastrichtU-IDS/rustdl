@@ -2260,6 +2260,151 @@ impl<'c> HyperEngine<'c> {
                     );
                 }
             }
+            // STAGE-4 mechanism-ID probe (RUSTDL_CARD_COUPLE_PROBE): at each ⊔
+            // decision, is the branching node COUPLED to a cardinality (`≤n`/`=n`)
+            // constraint? Necessary condition for algebraic ≤n-over-nominal
+            // feasibility to prune the branch at the frontier. node_card =
+            // label triggers an AtMost/Equal-head clause; node_atmost = node has
+            // a materialized `≤n`; node_or_succ = either, on the node or a direct
+            // successor. Small fraction ⇒ ⊔ branching is decoupled from
+            // cardinality ⇒ algebraic cardinality cannot collapse wine.
+            if std::env::var_os("RUSTDL_CARD_COUPLE_PROBE").is_some() {
+                use std::cell::RefCell;
+                thread_local! {
+                    static CC: RefCell<(
+                        Option<std::collections::HashSet<usize>>,
+                        u64, u64, u64, u64,
+                    )> = const { RefCell::new((None, 0, 0, 0, 0)) };
+                }
+                let rep = self.resolve(node);
+                CC.with(|cc| {
+                    let mut cc = cc.borrow_mut();
+                    if cc.0.is_none() {
+                        let mut set = std::collections::HashSet::new();
+                        for cl in self.clauses {
+                            if cl
+                                .head
+                                .iter()
+                                .any(|a| matches!(a, Atom::AtMost(..) | Atom::Equal(..)))
+                            {
+                                for a in &cl.body {
+                                    if let Atom::Class(c, _) = a {
+                                        set.insert(c.index() as usize);
+                                    }
+                                }
+                                for a in &cl.head {
+                                    if let Atom::AtMost(_, Some(q), _, _) = a {
+                                        set.insert(q.index() as usize);
+                                    }
+                                }
+                            }
+                        }
+                        cc.0 = Some(set);
+                    }
+                    let set = cc.0.as_ref().expect("built");
+                    let node_card = self.nodes[rep.index()]
+                        .labels
+                        .iter()
+                        .any(|c| set.contains(&(c.index() as usize)));
+                    let node_atmost = !self.nodes[rep.index()].at_most.is_empty();
+                    let succ_card = self.nodes[rep.index()].edges.iter().any(|(_, t)| {
+                        let tr = self.resolve(*t);
+                        !self.nodes[tr.index()].at_most.is_empty()
+                            || self.nodes[tr.index()]
+                                .labels
+                                .iter()
+                                .any(|c| set.contains(&(c.index() as usize)))
+                    });
+                    cc.1 += 1;
+                    if node_card {
+                        cc.2 += 1;
+                    }
+                    if node_atmost {
+                        cc.3 += 1;
+                    }
+                    if node_card || succ_card {
+                        cc.4 += 1;
+                    }
+                    if cc.1 % 50_000 == 0 {
+                        eprintln!(
+                            "CARDCOUPLE: total={} node_card={} node_atmost={} node_or_succ_card={}",
+                            cc.1, cc.2, cc.3, cc.4
+                        );
+                    }
+                });
+            }
+            // STAGE-4 WOULD-PRUNE probe (RUSTDL_WOULDPRUNE_PROBE): 1-step
+            // look-ahead at each ⊔ point. For each disjunct: apply → fixpoint →
+            // classify horn-killed (fixpoint Unsat) vs arith-killed (open `≤n`
+            // with `forced_distinct_exceeds` — the existing algebraic clash check,
+            // moved to the frontier). `collapse_horn` = ⊔ points reduced to ≤1
+            // survivor by Horn alone (re-derives the prior FC NO-GO's ~9%);
+            // `collapse_aug` adds arithmetic ≤n; `marginal` = the extra collapse
+            // algebraic cardinality buys over Horn. Read-only (save/restore);
+            // measures PRUNE POTENTIAL, not wall (the discriminator the prior
+            // wall-only FC NO-GO lacked). Capped at 20k probed ⊔ points.
+            if std::env::var_os("RUSTDL_WOULDPRUNE_PROBE").is_some() {
+                use std::cell::RefCell;
+                thread_local! {
+                    // (probed, collapse_horn, collapse_aug, sum_disj,
+                    //  horn_killed, arith_marginal_killed, done)
+                    static WP: RefCell<(u64, u64, u64, u64, u64, u64, bool)> =
+                        const { RefCell::new((0, 0, 0, 0, 0, 0, false)) };
+                }
+                let done = WP.with(|w| w.borrow().6);
+                if !done {
+                    let mut survivors_horn = 0u64;
+                    let mut survivors_aug = 0u64;
+                    let mut hk = 0u64;
+                    let mut am = 0u64;
+                    for k in 0..head_len {
+                        let head_atom = self.clauses[ci].head[k];
+                        let saved = self.save();
+                        let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
+                        let horn_killed =
+                            matches!(self.horn_fixpoint(FIXPOINT_ITERS), HyperResult::Unsat);
+                        let arith_killed = !horn_killed
+                            && self.find_open_at_most().is_some_and(|(_, succs, n)| {
+                                self.forced_distinct_exceeds(&succs, n)
+                            });
+                        self.restore(saved);
+                        if !horn_killed {
+                            survivors_horn += 1;
+                        }
+                        if !horn_killed && !arith_killed {
+                            survivors_aug += 1;
+                        }
+                        if horn_killed {
+                            hk += 1;
+                        }
+                        if arith_killed {
+                            am += 1;
+                        }
+                    }
+                    WP.with(|w| {
+                        let mut w = w.borrow_mut();
+                        w.0 += 1;
+                        if survivors_horn <= 1 {
+                            w.1 += 1;
+                        }
+                        if survivors_aug <= 1 {
+                            w.2 += 1;
+                        }
+                        w.3 += u64::try_from(head_len).unwrap_or(0);
+                        w.4 += hk;
+                        w.5 += am;
+                        if w.0 % 5_000 == 0 || w.0 == 20_000 {
+                            eprintln!(
+                                "WOULDPRUNE: probed={} collapse_horn={} collapse_aug={} marginal={} sum_disj={} horn_killed={} arith_marginal_killed={}",
+                                w.0, w.1, w.2, w.2 - w.1, w.3, w.4, w.5
+                            );
+                        }
+                        if w.0 >= 20_000 {
+                            w.6 = true;
+                        }
+                    });
+                }
+            }
             // STAGE-4 label-keyed Unsat memo PROTOTYPE (RUSTDL_UNSAT_MEMO): cache
             // node label-sets that resolved Unsat; short-circuit on revisit. Tests
             // whether label-keyed caching is sound (wine FP=0 ⇒ contexts verdict-

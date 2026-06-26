@@ -6959,4 +6959,68 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             child.join().expect("thread");
         }
     }
+
+    /// STAGE-4 mechanism-ID gate: run sat(Gamay) with RUSTDL_CARD_COUPLE_PROBE.
+    /// Prints, over all ⊔ decision points, the fraction COUPLED to a cardinality
+    /// constraint (necessary condition for algebraic ≤n-over-nominal feasibility
+    /// to prune them). Large node_or_succ_card fraction ⇒ algebraic cardinality
+    /// is a live mechanism candidate (build the full would-prune predicate);
+    /// small ⇒ ⊔ branching is decoupled from cardinality ⇒ even a from-scratch
+    /// nominal calculus won't collapse wine via algebraic ≤n.
+    #[test]
+    #[ignore = "Stage-4 mechanism-ID gate; --ignored --nocapture"]
+    fn stage4_cardcouple_gamay() {
+        // SAFETY: single ignored test; sets its own diagnostic env vars.
+        unsafe { std::env::set_var("RUSTDL_CARD_COUPLE_PROBE", "1") };
+        unsafe { std::env::set_var("RUSTDL_ADAPTIVE_BUDGET", "0") };
+        run_gamay_probe();
+    }
+
+    /// STAGE-4 would-prune gate: run sat(Gamay) with RUSTDL_WOULDPRUNE_PROBE.
+    /// Prints the 1-step look-ahead collapse histogram split horn-only vs
+    /// horn+arithmetic-≤n. `marginal` ≫ 0 ⇒ algebraic cardinality at the ⊔
+    /// frontier prunes materially more than Horn propagation (the prior FC
+    /// NO-GO's ~9%) ⇒ live mechanism. `marginal` ≈ 0 ⇒ algebraic adds nothing
+    /// over Horn ⇒ confirms the FC NO-GO, even a from-scratch algebraic engine
+    /// won't collapse wine.
+    #[test]
+    #[ignore = "Stage-4 would-prune gate; --ignored --nocapture"]
+    fn stage4_wouldprune_gamay() {
+        // SAFETY: single ignored test; sets its own diagnostic env vars.
+        unsafe { std::env::set_var("RUSTDL_WOULDPRUNE_PROBE", "1") };
+        unsafe { std::env::set_var("RUSTDL_ADAPTIVE_BUDGET", "0") };
+        run_gamay_probe();
+    }
+
+    #[cfg(test)]
+    fn run_gamay_probe() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        let child = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024 * 1024)
+            .spawn(|| {
+                let src =
+                    std::fs::read_to_string("/data/dumontier/rustdl/ontologies/real/wine.ofn")
+                        .unwrap();
+                let (ont, _): (
+                    horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+                    _,
+                ) = read_ofn(
+                    &mut std::io::Cursor::new(src.into_bytes()),
+                    Default::default(),
+                )
+                .unwrap();
+                let iri = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/wine#Gamay";
+                let t = Some(std::time::Duration::from_secs(30));
+                let out = crate::sat_class_probe(&ont, iri, 256, t)
+                    .expect("probe ok")
+                    .expect("IRI resolves");
+                let (result, stats, wall_ms) = out;
+                println!(
+                    "sat(Gamay): {result:?} wall={wall_ms:.0}ms branches={} (disj={} merge={})",
+                    stats.branches_taken, stats.disj_branches, stats.merge_branches
+                );
+            })
+            .expect("spawn");
+        child.join().expect("thread");
+    }
 }

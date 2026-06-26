@@ -61,6 +61,7 @@
 //! tableau on the misses.
 
 pub mod proof;
+pub mod seed_sat;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -108,6 +109,45 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
     saturate_with_config(internal, &SaturateConfig::default()).0
 }
 
+/// Like [`saturate`] but also returns every derived existential fact
+/// `(sub, role, target)` and the `NomKey → individual` reverse map, so a
+/// caller can seed a tableau with the saturation's deterministic ∃-structure.
+///
+/// Sorted by `(sub, role, target)` for determinism.
+/// The `nominal_to_ind` map lets the caller convert a `NomKey` synthetic
+/// target back to the original [`IndividualId`], which in turn gives the
+/// wedge's nominal class id as `ClassId::new(num_named + ind.index())`.
+#[must_use]
+#[allow(clippy::type_complexity)]
+pub fn saturate_with_exists_facts(
+    internal: &InternalOntology,
+) -> (
+    Subsumers,
+    Vec<(ClassId, RoleId, ClassId)>,
+    std::collections::HashMap<ClassId, IndividualId>,
+) {
+    let n = internal.vocabulary.num_classes();
+    let role_super_map = build_role_super(internal);
+    let (rules, tseitin, num_total_classes, maybe_trace) =
+        collect_el_rules_with_provenance(internal, &role_super_map, false);
+    let role_super = freeze_role_super(&role_super_map);
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes,
+        rules,
+        tseitin,
+        role_super,
+        false,
+        maybe_trace,
+    );
+    engine.seed(internal);
+    engine.run();
+    let mut facts: Vec<(ClassId, RoleId, ClassId)> = engine.seen_facts.iter().copied().collect();
+    facts.sort_unstable_by_key(|&(s, r, t)| (s.index(), r.index(), t.index()));
+    let nom = engine.rules.nominal_to_ind.clone();
+    (engine.subsumers, facts, nom)
+}
+
 /// Like [`saturate`] but also supports optional proof recording.
 ///
 /// Returns `(Subsumers, Some(ProofTrace))` when `cfg.record_proofs` is `true`,
@@ -141,6 +181,51 @@ pub fn saturate_with_config(
     (engine.subsumers, trace)
 }
 
+/// Build and fully run the base saturation engine, reserving one extra synthetic
+/// class id `X` (above the Tseitin universe) that carries no axioms in the base.
+///
+/// Returns `(engine, X)`.  The returned engine is the fully-saturated base; the
+/// caller can clone it, inject seed facts for `X` into the clone, run it to
+/// fixpoint, and read `is_unsat_class(X)` for a per-call "is ⊓seed unsat?"
+/// query without mutating the base.
+///
+/// **Reserved-id approach:** `collect_el_rules` returns
+/// `tseitin.next_id == num_total_classes`, so a naïve `reserved_x = ClassId::new(
+/// num_total_classes)` would alias the *first runtime synthetic* allocated inside
+/// the engine (e.g. by Phase-2a functional-role witness-merge).  We bump
+/// `tseitin.next_id` by 1 before handing it to `WorklistEngine::new`, so `X` =
+/// `old_next_id` and any runtime synthetics start at `old_next_id + 1`.  The
+/// engine is sized at `num_total_classes + 1` so `X`'s index is within bounds of
+/// every per-class Vec and bitset.
+pub(crate) fn build_run_engine_with_reserved(
+    internal: &InternalOntology,
+) -> (WorklistEngine, ClassId) {
+    let n = internal.vocabulary.num_classes();
+    let role_super_map = build_role_super(internal);
+    let (rules, mut tseitin, num_total_classes, maybe_trace) =
+        collect_el_rules_with_provenance(internal, &role_super_map, false);
+    let role_super = freeze_role_super(&role_super_map);
+    // Reserve one id above the static Tseitin universe for the seed query class X.
+    // Bumping next_id ensures runtime synthetics start above X (no aliasing).
+    let reserved_x = ClassId::new(u32::try_from(num_total_classes).expect("fits u32"));
+    tseitin.next_id = u32::try_from(num_total_classes)
+        .expect("fits u32")
+        .checked_add(1)
+        .expect("synthetic id overflow");
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes + 1, // size all per-class Vecs/bitsets to include X
+        rules,
+        tseitin,
+        role_super,
+        false,
+        maybe_trace,
+    );
+    engine.seed(internal);
+    engine.run();
+    (engine, reserved_x)
+}
+
 /// Worklist-driven saturation engine. Maintains the running closure
 /// plus three event queues; each iteration pops one event, derives
 /// its direct consequents, and pushes new events for anything that
@@ -158,6 +243,7 @@ pub fn saturate_with_config(
 ///   only re-checks the triggers that could possibly fire.
 /// - `disjoints_by_class[A] = {B : (A,B) or (B,A) is disjoint}`
 ///   — disjoint-pair lookup keyed on either operand.
+#[derive(Clone)]
 struct WorklistEngine {
     subsumers: Subsumers,
     /// Reverse index: `subsumed_by[D]` is the bitset of classes
@@ -241,12 +327,32 @@ struct WorklistEngine {
     /// diagnostics; not consumed by the reasoner output.
     phase2c_sub_role_propagations: u64,
 
+    /// SP-B2a: per-disjunction state for the synthetic-conjunction forced-disjunct.
+    /// Each entry holds the class `C`, its atomic disjuncts `Dᵢ`, and the
+    /// `Sᵢ = C⊓Dᵢ` synthetics created at seed; `fired` guards re-forcing. The hook
+    /// in `process_unsat` recomputes survivors (disjuncts whose `Sᵢ` is not unsat)
+    /// when any `Sᵢ` becomes unsat — one survivor ⟹ force `C⊑Dₖ`, none ⟹ `C⊑⊥`.
+    /// Empty ⇒ no-op (EL/Horn corpus). Complements B1's cheaper told/derived-disjoint
+    /// check; catches deeper `C⊓Dᵢ` unsat (functional-merge, existential, domain, …).
+    b2_disjunctions: Vec<B2Disjunction>,
+    /// Reverse index: synthetic `Sᵢ` class id → its `b2_disjunctions` entry index.
+    b2_synth_to_disj: HashMap<ClassId, usize>,
+
     // --- Proof recording (zero-cost when off) ---
     /// Whether proof recording is active. When `false`, every proof-recording
     /// branch is skipped and `proof_trace` stays `None`.
     record_proofs: bool,
     /// The proof trace, populated only when `record_proofs` is `true`.
     proof_trace: Option<ProofTrace>,
+}
+
+/// SP-B2a per-disjunction state (see `WorklistEngine::b2_disjunctions`).
+#[derive(Clone)]
+struct B2Disjunction {
+    class: ClassId,
+    disjuncts: Box<[ClassId]>,
+    synthetics: Box<[ClassId]>,
+    fired: bool,
 }
 
 impl WorklistEngine {
@@ -328,6 +434,8 @@ impl WorklistEngine {
             atomic_content_of,
             phase2d_facts_inherited: 0,
             phase2c_sub_role_propagations: 0,
+            b2_disjunctions: Vec::new(),
+            b2_synth_to_disj: HashMap::new(),
             record_proofs,
             proof_trace,
         }
@@ -606,6 +714,36 @@ impl WorklistEngine {
                 }
             }
         }
+        // SP-B2a: create `Sᵢ = C⊓Dᵢ` synthetics for each atomic disjunction (ingested
+        // by B1 into `disjunctions_by_class`) and register the reverse map. The
+        // fixpoint determines each `Sᵢ`'s satisfiability via the existing rules; the
+        // `process_unsat` hook forces the disjunction when an `Sᵢ` becomes unsat.
+        if !self.rules.disjunctions_by_class.is_empty() {
+            let disjunctions: Vec<(ClassId, Vec<Box<[ClassId]>>)> = self
+                .rules
+                .disjunctions_by_class
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            for (c, disjs) in disjunctions {
+                for disj in disjs {
+                    let synthetics: Vec<ClassId> = disj
+                        .iter()
+                        .map(|&di| self.introduce_runtime_synthetic(vec![c, di]))
+                        .collect();
+                    let idx = self.b2_disjunctions.len();
+                    for &s in &synthetics {
+                        self.b2_synth_to_disj.insert(s, idx);
+                    }
+                    self.b2_disjunctions.push(B2Disjunction {
+                        class: c,
+                        disjuncts: disj,
+                        synthetics: synthetics.into_boxed_slice(),
+                        fired: false,
+                    });
+                }
+            }
+        }
     }
 
     /// Drain queues until all three are empty.
@@ -621,6 +759,30 @@ impl WorklistEngine {
                 break;
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Seed-sat API hooks (used by `seed_sat.rs`).
+    // -----------------------------------------------------------------------
+
+    /// Enqueue `c ⊑ d` as a starting fact, exactly as `seed` does for told
+    /// subsumptions.  Used by the seed-sat API.
+    pub(crate) fn inject_subsumer(&mut self, c: ClassId, d: ClassId) {
+        self.todo_subsumer.push_back((c, d));
+    }
+
+    /// Enqueue `c ⊑ ∃role.target` as a starting existential fact.
+    pub(crate) fn inject_existential(&mut self, c: ClassId, role: RoleId, target: ClassId) {
+        self.push_fact(ExistentialFact {
+            sub: c,
+            role,
+            target,
+        });
+    }
+
+    /// True iff saturation has proved `c ⊑ ⊥`.
+    pub(crate) fn is_unsat_class(&self, c: ClassId) -> bool {
+        self.subsumers.is_unsatisfiable(c)
     }
 
     /// Insert a derived `(C, D)` subsumer edge — no-op if already
@@ -889,6 +1051,49 @@ impl WorklistEngine {
                     self.enqueue_unsat(c);
                     break; // one disjoint clash is enough
                 }
+            }
+        }
+        // SP-B1: derived-closure forced-disjunct. `c` gained subsumer `d`; recheck
+        // `c`'s effective disjunctions (declared on `c` or on any subsumer of `c`,
+        // since `c⊑g⊑⊔Dᵢ ⟹ c⊑⊔Dᵢ`). A disjunct `Dᵢ` is excluded iff some current
+        // subsumer of `c` is disjoint from it; one survivor ⟹ force it, none ⟹ `c`
+        // unsat. Uses the DERIVED subsumer closure (vs SP-A's told-only) and fires
+        // inside the fixpoint, so forcing one disjunct can force the next. Decisions
+        // are collected first so the immutable borrows (`rules`/`disjoints_by_class`/
+        // `subsumers`) are released before the mutating enqueues. Sound by
+        // construction; no-op when no atomic disjunction exists.
+        if !self.rules.disjunctions_by_class.is_empty() {
+            let mut force_unsat = false;
+            let mut force_subs: Vec<ClassId> = Vec::new();
+            for g in self.supers_of_class(c) {
+                let Some(disjs) = self.rules.disjunctions_by_class.get(&g) else {
+                    continue;
+                };
+                for disj in disjs {
+                    let disj: &[ClassId] = disj;
+                    let mut surv: Option<ClassId> = None;
+                    let mut count = 0u32;
+                    for &di in disj {
+                        let excluded = self.disjoints_by_class[di.index() as usize]
+                            .iter()
+                            .any(|&gg| self.subsumers.contains(c, gg));
+                        if !excluded {
+                            count += 1;
+                            surv = Some(di);
+                        }
+                    }
+                    match (count, surv) {
+                        (0, _) => force_unsat = true,
+                        (1, Some(s)) => force_subs.push(s),
+                        _ => {}
+                    }
+                }
+            }
+            if force_unsat {
+                self.enqueue_unsat(c);
+            }
+            for s in force_subs {
+                self.enqueue_subsumer(c, s);
             }
         }
         // Existential trigger firing — target side: for facts whose
@@ -1674,6 +1879,36 @@ impl WorklistEngine {
                 self.enqueue_unsat(fact.sub);
             }
         }
+        // SP-B2a: if `c` is a `Sᵢ = C⊓Dᵢ` synthetic that just became unsat, recompute
+        // its disjunction's survivors (disjuncts whose synthetic is not unsat) and
+        // force. `c` is already flagged unsat above, so it counts as excluded here.
+        // Clone the entry's slices first to release the borrow before enqueuing.
+        if let Some(&di) = self.b2_synth_to_disj.get(&c)
+            && !self.b2_disjunctions[di].fired
+        {
+            let synth = self.b2_disjunctions[di].synthetics.clone();
+            let disjuncts = self.b2_disjunctions[di].disjuncts.clone();
+            let class = self.b2_disjunctions[di].class;
+            let mut surv: Option<ClassId> = None;
+            let mut count = 0u32;
+            for (k, &s) in synth.iter().enumerate() {
+                if !self.subsumers.is_unsatisfiable(s) {
+                    count += 1;
+                    surv = disjuncts.get(k).copied();
+                }
+            }
+            match (count, surv) {
+                (0, _) => {
+                    self.b2_disjunctions[di].fired = true;
+                    self.enqueue_unsat(class);
+                }
+                (1, Some(s)) => {
+                    self.b2_disjunctions[di].fired = true;
+                    self.enqueue_subsumer(class, s);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -1791,7 +2026,7 @@ impl Subsumers {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ElRules {
     /// Direct named-to-named `A ⊑ B` facts.
     atomic_subsumptions: Vec<AtomicSubsumption>,
@@ -1876,6 +2111,13 @@ struct ElRules {
     /// runtime worklist rule doesn't re-walk `role_super` on every new
     /// existential fact. Empty for roles with no functional ancestor.
     functional_supers_of: Vec<Vec<RoleId>>,
+    /// SP-B1: per-class atomic disjunctions on the RHS. `disjunctions_by_class[C]`
+    /// holds each `[D₁,…,Dₙ]` from a `C ⊑ D₁⊔…⊔Dₙ` axiom whose disjuncts are ALL
+    /// atomic (≥2). The derived-closure forced-disjunct rule (`process_subsumer`)
+    /// excludes any disjunct disjoint with a current subsumer of the class; one
+    /// survivor ⟹ force it, none ⟹ unsat. Sound by construction; atomic-only
+    /// (nominal `⊔` deferred to B3). Empty ⇒ the rule is a no-op (EL/Horn corpus).
+    disjunctions_by_class: HashMap<ClassId, Vec<Box<[ClassId]>>>,
 }
 
 impl ElRules {
@@ -1943,7 +2185,7 @@ struct ExistentialTrigger {
 /// `num_original_classes` and never collide with user-declared
 /// class ids; they don't leak into the public `Subsumers` API
 /// because callers iterate over `0..num_classes` only.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TseitinAllocator {
     next_id: u32,
     by_body: HashMap<Vec<ClassId>, ClassId>,
@@ -1984,6 +2226,12 @@ struct TseitinAllocator {
     /// holds. Sound: keyed on `(R, exactly-S)` identity (no subset `∀R.S' ⊑
     /// ∀R.S` lattice — under-approximation), non-inverse, `OneOf`-of-nominals.
     forall_key_by_role: HashMap<(RoleId, Vec<IndividualId>), ClassId>,
+    /// SP-B2b: opaque synthetic class per `∀R.Atomic(K)` (the general-∀ analog of
+    /// `forall_key_by_role`). `C ⊑ ForallAtomicKey(R,K)` iff `C ⊑ ∀R.K` is told /
+    /// subsumption-propagated; a defined class's `∀R.K` conjunct lowers to the SAME
+    /// key. Told monotonicity edges `ForallAtomicKey(R,K) ⊑ ForallAtomicKey(R,L)` for
+    /// `K ⊑ L` give `∀R.K ⊑ ∀R.L` (sound, non-inverse). Keyed on `(R, K)` identity.
+    forall_atomic_key_by_role: HashMap<(RoleId, ClassId), ClassId>,
 }
 
 impl TseitinAllocator {
@@ -1996,7 +2244,20 @@ impl TseitinAllocator {
             nominal_by_ind: HashMap::new(),
             max_key_by_role: HashMap::new(),
             forall_key_by_role: HashMap::new(),
+            forall_atomic_key_by_role: HashMap::new(),
         }
+    }
+
+    /// SP-B2b: get-or-allocate the opaque synthetic class for `∀R.Atomic(K)`.
+    /// Keyed on `(R, K)`; mirror of `introduce_forall_key`.
+    fn introduce_forall_atomic_key(&mut self, role: RoleId, k: ClassId) -> ClassId {
+        if let Some(&existing) = self.forall_atomic_key_by_role.get(&(role, k)) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.forall_atomic_key_by_role.insert((role, k), synthetic);
+        synthetic
     }
 
     /// Get-or-allocate the opaque synthetic atomic class standing in for
@@ -2604,6 +2865,35 @@ fn collect_el_rules(
         }
     }
 
+    // SP-B2b: monotonicity edges `ForallAtomicKey(R,K) ⊑ ForallAtomicKey(R,L)` for
+    // every DIRECT told `K ⊑ L` where both `(R,K)` and `(R,L)` are keys (`∀R.K ⊑
+    // ∀R.L`, sound for non-inverse `R`). Direct edges suffice — the saturator's
+    // subsumer transitivity closes chains (`BlandFish⊑Fish⊑Seafood`). Connect
+    // existing keys only (the target marker must be a defined-class body atom to
+    // matter). Sound (told ⊆ entailment); FP=0 by construction.
+    if !tseitin.forall_atomic_key_by_role.is_empty() {
+        let keys = tseitin.forall_atomic_key_by_role.clone();
+        let told_direct: Vec<(ClassId, ClassId)> = rules
+            .atomic_subsumptions
+            .iter()
+            .map(|s| (s.sub, s.sup))
+            .collect();
+        let mut edges: Vec<AtomicSubsumption> = Vec::new();
+        for (k, l) in told_direct {
+            if k == l {
+                continue;
+            }
+            for (&(r, kk), &kc) in &keys {
+                if kk == k
+                    && let Some(&lc) = keys.get(&(r, l))
+                {
+                    edges.push(AtomicSubsumption { sub: kc, sup: lc });
+                }
+            }
+        }
+        rules.atomic_subsumptions.extend(edges);
+    }
+
     let total_classes = tseitin.next_id as usize;
 
     // Phase 2a: collect functional-role declarations and precompute
@@ -2649,6 +2939,31 @@ fn lower_sub_class_of(
     tseitin: &mut TseitinAllocator,
     effective_ranges: &HashMap<RoleId, Vec<ClassId>>,
 ) {
+    // SP-B1: register an atomic disjunction `C ⊑ D₁⊔…⊔Dₙ` (all `Dᵢ` atomic, n≥2)
+    // for the derived-closure forced-disjunct rule fired in `process_subsumer`.
+    // Runs for both SubClassOf and the EquivalentClasses `P ⊑ Or` direction.
+    // Non-atomic disjunct ⟹ skip the whole disjunction (nominal `⊔` = B3 scope).
+    if let ConceptExpr::Atomic(c) = pool.get(sub)
+        && let ConceptExpr::Or(disjuncts) = pool.get(sup)
+    {
+        let mut atomic: Vec<ClassId> = Vec::with_capacity(disjuncts.len());
+        let mut all_atomic = true;
+        for &d in disjuncts {
+            if let ConceptExpr::Atomic(did) = pool.get(d) {
+                atomic.push(*did);
+            } else {
+                all_atomic = false;
+                break;
+            }
+        }
+        if all_atomic && atomic.len() >= 2 {
+            rules
+                .disjunctions_by_class
+                .entry(*c)
+                .or_default()
+                .push(atomic.into_boxed_slice());
+        }
+    }
     match pool.get(sub) {
         ConceptExpr::Atomic(sub_id) => {
             // Phase D4 (2026-06-03): `Atomic(C) ⊑ Bot` directly marks
@@ -2711,6 +3026,17 @@ fn lower_sub_class_of(
             // is a genuine told (or subsumption-propagated) fact, exact-`S` match.
             for (role, members) in forall_oneof_operands_on_right(sup, pool) {
                 let key = tseitin.introduce_forall_key(role, members);
+                rules.atomic_subsumptions.push(AtomicSubsumption {
+                    sub: *sub_id,
+                    sup: key,
+                });
+            }
+            // SP-B2b: a told `∀R.Atomic(K)` (top-level or And operand) seeds
+            // `sub ⊑ ForallAtomicKey(R,K)` — the same opaque key a defined class's
+            // `∀R.K` conjunct lowers to. Sound; monotonicity edges (seeded below)
+            // give `∀R.K ⊑ ∀R.L` for told `K ⊑ L`.
+            for (role, k) in forall_atomic_operands_on_right(sup, pool) {
+                let key = tseitin.introduce_forall_atomic_key(role, k);
                 rules.atomic_subsumptions.push(AtomicSubsumption {
                     sub: *sub_id,
                     sup: key,
@@ -2816,6 +3142,13 @@ fn lower_sub_class_of(
                         let (role, members) =
                             forall_oneof_members(op, pool).expect("just checked Some");
                         bodies.push(tseitin.introduce_forall_key(role, members));
+                    }
+                    // SP-B2b: a `∀R.Atomic(K)` conjunct of a defined class lowers to
+                    // the opaque `ForallAtomicKey(R,K)` body (matched by the told-`∀`
+                    // seed in `forall_atomic_operands_on_right` + the monotonicity edges).
+                    _ if forall_atomic_member(op, pool).is_some() => {
+                        let (role, k) = forall_atomic_member(op, pool).expect("just checked Some");
+                        bodies.push(tseitin.introduce_forall_atomic_key(role, k));
                     }
                     _ => {
                         salvageable = false;
@@ -3264,6 +3597,34 @@ fn forall_oneof_operands_on_right(
             .filter_map(|&op| forall_oneof_members(op, pool))
             .collect(),
         _ => forall_oneof_members(c, pool).into_iter().collect(),
+    }
+}
+
+/// SP-B2b: `∀R.Atomic(K)` (non-inverse `R`) — the general-∀ filler the saturator
+/// otherwise drops. Mirror of `forall_oneof_members` for an atomic filler.
+fn forall_atomic_member(c: ConceptId, pool: &ConceptPool) -> Option<(RoleId, ClassId)> {
+    let ConceptExpr::All(role, inner) = pool.get(c) else {
+        return None;
+    };
+    if role.is_inverse() {
+        return None;
+    }
+    if let ConceptExpr::Atomic(k) = pool.get(*inner) {
+        Some((role.role_id(), *k))
+    } else {
+        None
+    }
+}
+
+/// SP-B2b: `∀R.Atomic(K)` restrictions that are `c` itself or a top-level `And`
+/// operand of `c`. Mirror of `forall_oneof_operands_on_right`.
+fn forall_atomic_operands_on_right(c: ConceptId, pool: &ConceptPool) -> Vec<(RoleId, ClassId)> {
+    match pool.get(c) {
+        ConceptExpr::And(operands) => operands
+            .iter()
+            .filter_map(|&op| forall_atomic_member(op, pool))
+            .collect(),
+        _ => forall_atomic_member(c, pool).into_iter().collect(),
     }
 }
 
@@ -4228,6 +4589,342 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !subs.contains(class(&internal, "MultiGrape"), class(&internal, "Gamay")),
             "unsound: MultiGrape (∃grape, no ≤1) must NOT be ⊑ Gamay"
+        );
+    }
+
+    /// SP-B1 differentiator: forced-disjunct via a DERIVED (not told) subsumer.
+    /// `X ⊑ A1`, `X ⊑ A2`, `A1 ⊓ A2 ⊑ G` ⟹ the saturator derives `X ⊑ G` via the
+    /// conjunctive trigger (NOT a told subsumption — the LHS is an intersection);
+    /// `X ⊑ A⊔B`, `Disjoint(G,A)` ⟹ B1 forces `X ⊑ B`. SP-A's told-only pass cannot
+    /// (G ∉ told-subsumers(X)) — this is exactly what the derived-closure rule adds.
+    #[test]
+    fn b1_forced_disjunct_via_derived_subsumer() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A1)) Declaration(Class(:A2))\n\
+    Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :A1)\n\
+    SubClassOf(:X :A2)\n\
+    SubClassOf(ObjectIntersectionOf(:A1 :A2) :G)\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    DisjointClasses(:G :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "G")),
+            "precondition: X ⊑ G must be DERIVED via the A1⊓A2 conjunctive trigger"
+        );
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "B1: forced-disjunct via derived subsumer G ⟹ X ⊑ B"
+        );
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "A")),
+            "must NOT force the excluded disjunct A"
+        );
+    }
+
+    /// SP-B1: forced-disjunct via a told subsumer. `X⊑G`, `X⊑A⊔B`, `Disjoint(G,A)`
+    /// ⟹ `X⊑B`.
+    #[test]
+    fn b1_forced_disjunct_via_told_subsumer() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :G)\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    DisjointClasses(:G :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "X ⊑ B"
+        );
+    }
+
+    /// SP-B1: all disjuncts excluded ⟹ class unsat. `X⊑G`, `X⊑A⊔B`,
+    /// `Disjoint(G,A)`, `Disjoint(G,B)` ⟹ X unsatisfiable.
+    #[test]
+    fn b1_forced_to_bot() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :G)\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    DisjointClasses(:G :A)\n\
+    DisjointClasses(:G :B)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.is_unsatisfiable(class(&internal, "X")),
+            "X ⊑ ⊥ (all disjuncts excluded)"
+        );
+    }
+
+    /// SP-B1: inherited disjunction. `X⊑C`, `C⊑A⊔B`, `X⊑G`, `Disjoint(G,A)` ⟹
+    /// `X⊑B` (X inherits C's disjunction, forced by X's own subsumer G).
+    #[test]
+    fn b1_inherited_disjunction() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:G))\n\
+    SubClassOf(:X :C)\n\
+    SubClassOf(:C ObjectUnionOf(:A :B))\n\
+    SubClassOf(:X :G)\n\
+    DisjointClasses(:G :A)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "inherited: X ⊑ B"
+        );
+    }
+
+    /// SP-B1 negative control: an undetermined disjunction forces nothing.
+    /// `X⊑A⊔B` with no disjointness ⟹ no `X⊑A`/`X⊑B`, X satisfiable.
+    #[test]
+    fn b1_undetermined_forces_nothing() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "A")),
+            "no spurious X ⊑ A"
+        );
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "no spurious X ⊑ B"
+        );
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "X")),
+            "X must stay satisfiable"
+        );
+    }
+
+    /// SP-B1 negative control: nominal `⊔` is NOT ingested (atomic-only scope).
+    /// `X ⊑ {a}⊔{b}` ⟹ B1 registers nothing; X stays satisfiable, no spurious force.
+    #[test]
+    fn b1_nominal_disjunction_not_touched() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    SubClassOf(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "X")),
+            "nominal ⊔ untouched: X satisfiable"
+        );
+    }
+
+    /// SP-B2a differentiator: forced-disjunct via a DEEP (non-disjoint-pair)
+    /// incompatibility. `X⊑A⊔B`, `A⊑∃r.P`, `X⊑∃r.Q`, functional `r`, `Disjoint(P,Q)`
+    /// ⟹ `X⊓A` is unsat via functional-merge (the single `r`-successor is `P⊓Q⊑⊥`),
+    /// so the `Sₐ=X⊓A` synthetic becomes unsat ⟹ force `X⊑B`. B1 cannot force this
+    /// (no subsumer of X is disjoint with A) — exactly what B2a's synthetic test adds.
+    #[test]
+    fn b2_forced_disjunct_via_deep_incompatibility() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    Declaration(Class(:P)) Declaration(Class(:Q))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :P))\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :Q))\n\
+    FunctionalObjectProperty(:r)\n\
+    DisjointClasses(:P :Q)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "B")),
+            "B2a: X⊓A unsat via functional-merge ⟹ force X ⊑ B"
+        );
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "X")),
+            "X itself stays satisfiable (only A is excluded)"
+        );
+    }
+
+    /// SP-B2a: both disjuncts deeply incompatible ⟹ class unsat. As above but also
+    /// `B⊑∃r.P2`, `X⊑∃r.Q` functional, `Disjoint(P2,Q)` ⟹ X⊓A and X⊓B both unsat ⟹ X⊑⊥.
+    #[test]
+    fn b2_forced_to_bot_via_deep() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    Declaration(Class(:P)) Declaration(Class(:Q))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :P))\n\
+    SubClassOf(:B ObjectSomeValuesFrom(:r :P))\n\
+    SubClassOf(:X ObjectSomeValuesFrom(:r :Q))\n\
+    FunctionalObjectProperty(:r)\n\
+    DisjointClasses(:P :Q)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.is_unsatisfiable(class(&internal, "X")),
+            "B2a: both X⊓A and X⊓B unsat ⟹ X ⊑ ⊥"
+        );
+    }
+
+    /// SP-B2b differentiator: the wine/food Course hierarchy via `ForallAtomicKey`.
+    /// `FishCourse ≡ MealCourse ⊓ ∀hasFood.Fish`, `SeafoodCourse ≡ MealCourse ⊓
+    /// ∀hasFood.Seafood`, `Fish ⊑ Seafood` ⟹ `FishCourse ⊑ SeafoodCourse` via
+    /// ∀-monotonicity (the saturator misses this without B2b). Transitive
+    /// `BlandFishCourse ⊑ FishCourse ⊑ SeafoodCourse` with `BlandFish ⊑ Fish`.
+    #[test]
+    fn b2b_forall_course_hierarchy() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:MealCourse)) Declaration(Class(:FishCourse)) Declaration(Class(:SeafoodCourse)) Declaration(Class(:BlandFishCourse))\n\
+    Declaration(Class(:Fish)) Declaration(Class(:Seafood)) Declaration(Class(:BlandFish))\n\
+    Declaration(ObjectProperty(:hasFood))\n\
+    SubClassOf(:Fish :Seafood)\n\
+    SubClassOf(:BlandFish :Fish)\n\
+    EquivalentClasses(:FishCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :Fish)))\n\
+    EquivalentClasses(:SeafoodCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :Seafood)))\n\
+    EquivalentClasses(:BlandFishCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :BlandFish)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(
+                class(&internal, "FishCourse"),
+                class(&internal, "SeafoodCourse")
+            ),
+            "B2b: FishCourse ⊑ SeafoodCourse via ∀hasFood monotonicity (Fish⊑Seafood)"
+        );
+        assert!(
+            subs.contains(
+                class(&internal, "BlandFishCourse"),
+                class(&internal, "SeafoodCourse")
+            ),
+            "B2b transitive: BlandFishCourse ⊑ SeafoodCourse"
+        );
+    }
+
+    /// SP-B2b negative controls: no spurious ∀-subsumption. Unrelated fillers ⟹
+    /// no Course subsumption; different role ⟹ no subsumption.
+    #[test]
+    fn b2b_forall_no_spurious() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:MealCourse)) Declaration(Class(:CourseA)) Declaration(Class(:CourseB)) Declaration(Class(:CourseC))\n\
+    Declaration(Class(:K)) Declaration(Class(:L))\n\
+    Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+    EquivalentClasses(:CourseA ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:r :K)))\n\
+    EquivalentClasses(:CourseB ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:r :L)))\n\
+    EquivalentClasses(:CourseC ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:s :K)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "CourseA"), class(&internal, "CourseB")),
+            "unrelated K,L (no K⊑L) ⟹ CourseA ⋢ CourseB"
+        );
+        assert!(
+            !subs.contains(class(&internal, "CourseA"), class(&internal, "CourseC")),
+            "different role (r vs s) ⟹ CourseA ⋢ CourseC"
+        );
+    }
+
+    /// SP-B2c: union class. `Fruit ≡ NonSweetFruit ⊔ SweetFruit`, both ⊑ `EdibleThing`
+    /// ⟹ `Fruit ⊑ EdibleThing` (#1 common-subsumer) AND `NonSweetFruit ⊑ Fruit`,
+    /// `SweetFruit ⊑ Fruit` (#2 disjunct⊑union, equivalence-only).
+    #[test]
+    fn b2c_union_class_fruit() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Fruit)) Declaration(Class(:NonSweetFruit)) Declaration(Class(:SweetFruit)) Declaration(Class(:EdibleThing))\n\
+    EquivalentClasses(:Fruit ObjectUnionOf(:NonSweetFruit :SweetFruit))\n\
+    SubClassOf(:NonSweetFruit :EdibleThing)\n\
+    SubClassOf(:SweetFruit :EdibleThing)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "Fruit"), class(&internal, "EdibleThing")),
+            "#1: Fruit ⊑ EdibleThing"
+        );
+        assert!(
+            subs.contains(class(&internal, "NonSweetFruit"), class(&internal, "Fruit")),
+            "#2: NonSweetFruit ⊑ Fruit"
+        );
+        assert!(
+            subs.contains(class(&internal, "SweetFruit"), class(&internal, "Fruit")),
+            "#2: SweetFruit ⊑ Fruit"
+        );
+    }
+
+    /// SP-B2c × B2b combine: `NonSweetFruit ⊑ Fruit` (#2) + `ForallAtomicKey`
+    /// monotonicity ⟹ `NonSweetFruitCourse ⊑ FruitCourse`.
+    #[test]
+    fn b2c_union_course_combine() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Fruit)) Declaration(Class(:NonSweetFruit)) Declaration(Class(:SweetFruit))\n\
+    Declaration(Class(:MealCourse)) Declaration(Class(:FruitCourse)) Declaration(Class(:NonSweetFruitCourse))\n\
+    Declaration(ObjectProperty(:hasFood))\n\
+    EquivalentClasses(:Fruit ObjectUnionOf(:NonSweetFruit :SweetFruit))\n\
+    EquivalentClasses(:FruitCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :Fruit)))\n\
+    EquivalentClasses(:NonSweetFruitCourse ObjectIntersectionOf(:MealCourse ObjectAllValuesFrom(:hasFood :NonSweetFruit)))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(
+                class(&internal, "NonSweetFruitCourse"),
+                class(&internal, "FruitCourse")
+            ),
+            "B2c×B2b: NonSweetFruitCourse ⊑ FruitCourse"
+        );
+    }
+
+    /// SP-B2c negative control: #2 (disjunct⊑X) is EQUIVALENCE-ONLY. A plain
+    /// `SubClassOf(X, A⊔B)` must NOT yield `A⊑X`/`B⊑X` (unsound: `X⊑A⊔B` ⊬ `A⊑X`).
+    #[test]
+    fn b2c_subclassof_or_no_disjunct_to_x() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:A)) Declaration(Class(:B))\n\
+    SubClassOf(:X ObjectUnionOf(:A :B))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "A"), class(&internal, "X")),
+            "X⊑A⊔B must NOT give A⊑X"
+        );
+        assert!(
+            !subs.contains(class(&internal, "B"), class(&internal, "X")),
+            "X⊑A⊔B must NOT give B⊑X"
         );
     }
 

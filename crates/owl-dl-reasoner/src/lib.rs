@@ -964,6 +964,16 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
     // canonicalization on the *same* role is an edge case — TODO HF3.)
     let sub_role_hierarchy = build_role_hierarchy(&internal);
 
+    // Sat-lookahead: build once, share across all pairs via Arc.
+    let probe_sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>> =
+        if hyper_sat_lookahead_enabled() {
+            Some(std::sync::Arc::new(
+                owl_dl_saturation::seed_sat::build_base(&internal),
+            ))
+        } else {
+            None
+        };
+
     let mut probe = HyperSubProbe {
         results: Vec::new(),
         pairs_tested: 0,
@@ -1013,6 +1023,12 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             }
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
+            }
+            if hyper_mrv_ordering_enabled() {
+                engine = engine.with_mrv_ordering();
+            }
+            if let Some(sat) = probe_sat_lookahead.clone() {
+                engine = engine.with_sat_lookahead(sat);
             }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
@@ -1065,6 +1081,253 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
 /// # Errors
 ///
 /// See [`ReasonError`].
+/// SP1→SP2 viability probe: `sat(class)` with the wedge root optionally SEEDED with
+/// the class's complete all-model saturated subsumer set (`owl_dl_saturation::saturate`).
+/// Tests the load-bearing coupled-saturation assumption: does seeding the wedge from the
+/// (closure-complete) saturation collapse the disjunctive model-search branch count?
+/// `seed=false` reproduces the unseeded baseline; `seed=true` adds `Q → D` for every
+/// saturated subsumer `D` of `class`. Adding entailed subsumers is sound (cannot FP).
+/// Returns `Ok(None)` if `class_iri` is not a named class.
+///
+/// # Errors
+/// See [`ReasonError`].
+pub fn seed_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    class_iri: &str,
+    seed_mode: u8,
+    depth: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<(HyperResult, SearchStats, f64, usize)>, ReasonError> {
+    // seed_mode: 0 = none (baseline); 1 = real named saturated subsumers;
+    // 2 = garbage control (same COUNT of named NON-subsumers — isolates
+    // "saturation knowledge" from "more root labels / MRV reorder").
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_tableau::hyper::HyperEngine;
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let cache = HyperCache::build(&internal);
+    let Some(c) = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == class_iri)
+        .map(|(id, _)| id)
+    else {
+        return Ok(None);
+    };
+    let mut clauses = cache.clauses.clone();
+    clauses.push(DlClause {
+        body: vec![Atom::Class(cache.fresh_q, X)],
+        head: vec![Atom::Class(c, X)],
+    });
+    let mut n_seeded = 0usize;
+    if seed_mode != 0 {
+        // Seed ONLY named (non-synthetic) classes. The saturator's closure
+        // includes synthetic ids (NomKey/ForallKey/DKey/Tseitin) ≥ num_classes
+        // whose semantics the wedge does NOT share — forcing those onto the root
+        // is a cross-engine mismatch (spurious clash = FP). Named subsumers are
+        // genuinely entailed in BOTH engines, so seeding them is sound.
+        let n_named = internal.vocabulary.num_classes();
+        let subs = owl_dl_saturation::saturate(&internal);
+        let real: Vec<owl_dl_core::ir::ClassId> = subs
+            .subsumers_of(c)
+            .into_iter()
+            .filter(|&d| d != c && (d.index() as usize) < n_named)
+            .collect();
+        let to_seed: Vec<owl_dl_core::ir::ClassId> = if seed_mode == 1 {
+            real
+        } else {
+            // Garbage control: the same count of named NON-subsumers.
+            let count = real.len();
+            let real_set: std::collections::HashSet<_> = real.iter().copied().collect();
+            internal
+                .vocabulary
+                .classes()
+                .map(|(id, _)| id)
+                .filter(|&d| d != c && !real_set.contains(&d))
+                .take(count)
+                .collect()
+        };
+        for d in to_seed {
+            clauses.push(DlClause {
+                body: vec![Atom::Class(cache.fresh_q, X)],
+                head: vec![Atom::Class(d, X)],
+            });
+            n_seeded += 1;
+        }
+    }
+    let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+    if hyper_double_block_enabled() {
+        engine = engine.with_double_blocking();
+    }
+    if hyper_precise_card_deps_enabled() {
+        engine = engine.with_precise_card_deps();
+    }
+    if hyper_mrv_ordering_enabled() {
+        engine = engine.with_mrv_ordering();
+    }
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    let start = std::time::Instant::now();
+    let result = engine.decide_with_deadline(depth, deadline);
+    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok(Some((result, engine.stats(), wall_ms, n_seeded)))
+}
+
+/// Probe whether class `class_iri` is unsatisfiable, optionally seeding the
+/// wedge root with the saturation's derived knowledge.
+///
+/// `mode`:
+/// - `0` — no seed (baseline: class label only).
+/// - `1` — named-subsumer seed (same as SP2 [`seed_probe`] mode 1): the
+///   saturation's named subsumers of `c` are pushed as `Q → D` clauses.
+/// - `2` — named-subsumer + ∃-seed: mode 1 plus each derived existential fact
+///   `(c, r, tgt)` from the saturation is translated and seeded as
+///   `Q(x) → ∃r.D(x)`. `NomKey` targets are translated to the wedge nominal id
+///   (`num_named + a.index()`); named targets are seeded directly; Tseitin/DKey
+///   targets are dropped (sound under-approximation).
+/// - `3` — garbage-∃ control: mode 1 plus the **same count** of deterministic,
+///   in-vocabulary `∃R.D` clauses whose `(R, D)` is NOT among `c`'s real
+///   translated facts. Isolates "more ∃ clauses / MRV reorder" from real knowledge.
+///
+/// Returns `(verdict, stats, wall_ms, n_exists_seeded)` where `n_exists_seeded`
+/// is the number of ∃-clauses added (0 for modes 0 and 1; same count for modes
+/// 2 and 3 so the controller can assert they match).
+///
+/// Returns `Ok(None)` when `class_iri` is not found in the ontology.
+pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+    class_iri: &str,
+    mode: u8,
+    depth: usize,
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<(HyperResult, SearchStats, f64, usize)>, ReasonError> {
+    use owl_dl_core::clause::{Atom, DlClause, X};
+    use owl_dl_core::ir::Role;
+    use owl_dl_tableau::hyper::HyperEngine;
+
+    let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let cache = HyperCache::build(&internal);
+
+    // Look up the class id.
+    let Some(c) = internal
+        .vocabulary
+        .classes()
+        .find(|(_, iri)| *iri == class_iri)
+        .map(|(id, _)| id)
+    else {
+        return Ok(None);
+    };
+
+    // Clone the base clause set and inject the Q → C root.
+    let mut clauses = cache.clauses.clone();
+    clauses.push(DlClause {
+        body: vec![Atom::Class(cache.fresh_q, X)],
+        head: vec![Atom::Class(c, X)],
+    });
+
+    // Saturate once to get subsumers + ∃-facts + NomKey map.
+    let (subs, facts, nom_to_ind) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let n_named = internal.vocabulary.num_classes();
+
+    // Named-subsumer seed (modes 1, 2, 3) — identical to seed_probe mode 1.
+    if mode != 0 {
+        for d in subs.subsumers_of(c) {
+            if d != c && (d.index() as usize) < n_named {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X)],
+                    head: vec![Atom::Class(d, X)],
+                });
+            }
+        }
+    }
+
+    // Translate the derived ∃-facts of c: produce the real set used by mode 2.
+    // Mode 3 also needs this count, so we build the translated list in all cases
+    // where mode ≥ 2, then either use it directly (mode 2) or ignore the
+    // content but use the count for the garbage control (mode 3).
+    let mut n_exists_seeded = 0usize;
+
+    if mode == 2 || mode == 3 {
+        // Collect all translated (role, translated_target) pairs for c's facts.
+        let n_named_u32 = u32::try_from(n_named).expect("num_named fits u32");
+        let translated: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ClassId)> = facts
+            .iter()
+            .filter(|&&(s, _, _)| s == c)
+            .filter_map(|&(_, r, tgt)| {
+                if (tgt.index() as usize) < n_named {
+                    // Named target — seed directly.
+                    Some((r, tgt))
+                } else if let Some(&ind) = nom_to_ind.get(&tgt) {
+                    // NomKey → wedge nominal id: same formula as the clausifier.
+                    let wedge_nominal = owl_dl_core::ir::ClassId::new(n_named_u32 + ind.index());
+                    Some((r, wedge_nominal))
+                } else {
+                    // Tseitin / DKey — drop (sound under-approximation).
+                    None
+                }
+            })
+            .collect();
+
+        if mode == 2 {
+            // Real ∃-seed.
+            for (r, tgt) in &translated {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(cache.fresh_q, X)],
+                    head: vec![Atom::Exists(Role::named(*r), *tgt, X)],
+                });
+                n_exists_seeded += 1;
+            }
+        } else {
+            // Mode 3: garbage control — same count, deterministic in-vocab
+            // (R, D) pairs NOT among c's real translated facts.
+            type RdPair = (owl_dl_core::ir::RoleId, owl_dl_core::ir::ClassId);
+            let real_set: std::collections::HashSet<RdPair> = translated.iter().copied().collect();
+            let target_count = translated.len();
+            let roles: Vec<owl_dl_core::ir::RoleId> =
+                internal.vocabulary.roles().map(|(id, _)| id).collect();
+            let named_classes: Vec<owl_dl_core::ir::ClassId> = internal
+                .vocabulary
+                .classes()
+                .filter(|(id, _)| (id.index() as usize) < n_named)
+                .map(|(id, _)| id)
+                .collect();
+            // Build a deterministic stream of (R, D) pairs not in the real set.
+            let mut garbage: Vec<DlClause> = Vec::new();
+            'outer: for &r in &roles {
+                for &d in &named_classes {
+                    if garbage.len() >= target_count {
+                        break 'outer;
+                    }
+                    if !real_set.contains(&(r, d)) {
+                        garbage.push(DlClause {
+                            body: vec![Atom::Class(cache.fresh_q, X)],
+                            head: vec![Atom::Exists(Role::named(r), d, X)],
+                        });
+                    }
+                }
+            }
+            n_exists_seeded = garbage.len();
+            clauses.extend(garbage);
+        }
+    }
+
+    // Build engine with full index rebuild (seed clauses must be indexed).
+    let mut engine = HyperEngine::new(&clauses, cache.fresh_q);
+    if hyper_double_block_enabled() {
+        engine = engine.with_double_blocking();
+    }
+    if hyper_precise_card_deps_enabled() {
+        engine = engine.with_precise_card_deps();
+    }
+    if hyper_mrv_ordering_enabled() {
+        engine = engine.with_mrv_ordering();
+    }
+
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
+    let start = std::time::Instant::now();
+    let result = engine.decide_with_deadline(depth, deadline);
+    let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+    Ok(Some((result, engine.stats(), wall_ms, n_exists_seeded)))
+}
+
 pub fn decide_pair_probe<A: horned_owl::model::ForIRI>(
     ontology: &horned_owl::ontology::set::SetOntology<A>,
     sub_iri: &str,
@@ -1168,7 +1431,7 @@ pub fn unsat_via_labels_enabled() -> bool {
 /// Precise (sound over-approx) `≤n`-cardinality clash deps
 /// (`RUSTDL_PRECISE_CARD_DEPS`). At the `forced_distinct_exceeds` pre-check site
 /// replaces the conservative `DepSet::ALL` with `parent.at_most_dep ∪ ⋃(birth ∪
-/// label of succs) ∪ parent(birth ∪ label)` — a provable superset of the clash's
+/// label of supcs) ∪ parent(birth ∪ label)` — a provable superset of the clash's
 /// true deps (sound by construction; see `card_clash_deps`), guarded by the
 /// own-successor / `≠`-only / merge-taint fallbacks. Unblocks dependency-directed
 /// backjumping on cardinality clashes (wine MISSED 34→31, −25% wall, FP=0;
@@ -1180,6 +1443,57 @@ pub fn unsat_via_labels_enabled() -> bool {
 #[must_use]
 pub fn hyper_precise_card_deps_enabled() -> bool {
     std::env::var_os("RUSTDL_PRECISE_CARD_DEPS").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Read-only shadow precise-dependency probe (`RUSTDL_SHADOW_DEP_PROBE`).
+/// When set, the wedge `sat_class_probe` and `decide_pair_probe` probes maintain a
+/// shadow dep layer that never collapses to `DepSet::ALL` due to taints and record
+/// `(real, shadow)` dep-set snapshots at every clash into
+/// [`SearchStats::clash_records`]. **Default OFF.**
+///
+/// **Read-only invariant**: enabling this MUST NOT change any verdict,
+/// `branches_taken`, `restores`, or `max_branch_depth`. See
+/// [`owl_dl_tableau::hyper::HyperEngine::with_shadow_dep_probe`].
+#[must_use]
+pub fn hyper_shadow_dep_probe_enabled() -> bool {
+    std::env::var_os("RUSTDL_SHADOW_DEP_PROBE").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// `RUSTDL_MRV_ORDERING` (default ON as of 2026-06-23). Most-constrained-⊔-first
+/// ordering of `find_open_disjunction`; verdict-invariant (reordering only).
+/// Flipped default-ON after the corpus FP gate passed: FP=0/MISSED=0 byte-identical
+/// across all 10 oracled fixtures, no wall regression, wine collapse sound. `=0` opts out.
+#[must_use]
+pub fn hyper_mrv_ordering_enabled() -> bool {
+    std::env::var_os("RUSTDL_MRV_ORDERING").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// `RUSTDL_SAT_LOOKAHEAD` (default **OFF**): at each ⊔ choice point, call
+/// the seed-saturator to drop disjuncts proved dead before branching.
+/// Flag-OFF path is byte-identical to pre-lookahead. Instrumented via
+/// [`owl_dl_tableau::hyper::SearchStats`] counters `lookahead_calls`,
+/// `lookahead_dropped`, `lookahead_forced_single`.
+#[must_use]
+pub fn hyper_sat_lookahead_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_LOOKAHEAD").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// SP2 coupled-saturation seed: seed each per-pair wedge call with the
+/// class's named saturated subsumers. Default **OFF** (`RUSTDL_SAT_SEED`;
+/// set to a non-empty non-`"0"` value to enable). When on, `HyperCache::build`
+/// computes a per-named-class table once via `owl_dl_saturation::saturate`,
+/// and `decide_with_stats` seeds `Q → D` for every entry in the table
+/// before the engine runs. Soundness: seeding entailed named subsumers (and
+/// derived ∃-facts) cannot introduce a false `Unsat` (they hold in every
+/// model). Synthetic ids ≥ `num_classes` are filtered — cross-engine semantics
+/// mismatch would be unsound.
+///
+/// **Default ON** as of the SP3 ∃-seed gate (wine 49 s → 3.2 s, ~15×; FP=0 /
+/// MISSED=0 byte-identical corpus-wide). Set `RUSTDL_SAT_SEED=0` to opt out
+/// (restores the pre-seed per-pair behaviour).
+#[must_use]
+pub fn hyper_sat_seed_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_SEED").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -1373,6 +1687,37 @@ pub fn label_cache_timeout_ms() -> u64 {
         .unwrap_or(DEFAULT_MS)
 }
 
+pub(crate) const LABEL_CACHE_FLOOR_MS: u64 = 1000;
+pub(crate) const LABEL_CACHE_CEILING_MS: u64 = 30_000;
+
+/// Adaptive per-class label-cache build deadline (build-once tuning, 2026-06-25).
+/// `env_override` (`RUSTDL_LABEL_CACHE_TIMEOUT_MS`) always wins — incl. `0` (unbounded).
+/// Else `n × per_pair` (the refute-the-row break-even: labeling C is worth it iff its
+/// `sat` costs less than refuting C's ~n pairs at the per-pair cap), clamped to
+/// [floor, ceiling]. `per_pair == None` (unbounded refutations) → base = ceiling.
+/// See docs/superpowers/specs/2026-06-25-adaptive-label-cache-deadline-design.md.
+pub(crate) fn adaptive_label_cache_ms(
+    n: usize,
+    per_pair: Option<std::time::Duration>,
+    env_override: Option<u64>,
+) -> u64 {
+    if let Some(v) = env_override {
+        return v;
+    }
+    let base = per_pair.map_or(LABEL_CACHE_CEILING_MS, |d| {
+        u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+    });
+    (n as u64)
+        .saturating_mul(base)
+        .clamp(LABEL_CACHE_FLOOR_MS, LABEL_CACHE_CEILING_MS)
+}
+
+pub(crate) fn label_cache_env_override() -> Option<u64> {
+    std::env::var("RUSTDL_LABEL_CACHE_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+}
+
 /// Minimum wedge wall-time threshold (in milliseconds) below which a
 /// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
 /// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured
@@ -1546,6 +1891,24 @@ pub(crate) struct HyperCache {
     /// not just ABox-seeded nodes. Without this, classify misses subsumptions
     /// derivable only via an inverse-domain triggered on a generated successor.
     sub_roles: RoleHierarchy,
+    /// Pre-built seed-saturator for the ⊔ look-ahead gate
+    /// (`RUSTDL_SAT_LOOKAHEAD`, default OFF). `None` when the flag is off
+    /// (zero build cost). Shared via `Arc::clone` across all per-pair probes.
+    sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
+    /// SP2: per-named-class table of NAMED saturated subsumers, computed once
+    /// via `owl_dl_saturation::saturate`. `sat_seed[c.index()]` lists every `D`
+    /// with `c ⊑ D` (named, `D != c`, synthetic ids filtered). `None` when
+    /// `RUSTDL_SAT_SEED` is off (zero cost — no `saturate` call). Used by
+    /// `decide_with_stats` to seed the wedge root with `Q → D` for each entry.
+    sat_seed: Option<Vec<Vec<owl_dl_core::ir::ClassId>>>,
+    /// SP3 Phase-2: per-named-class table of derived ∃-facts, computed from
+    /// the same `saturate_with_exists_facts` call that builds `sat_seed`.
+    /// `exists_seed[c.index()]` lists `(Role, target)` pairs translated for the
+    /// wedge: named target → direct `ClassId`; NomKey(a) → `ClassId(n_named + a.index())`;
+    /// Tseitin/DKey → dropped (sound under-approximation).
+    /// `None` when `RUSTDL_SAT_SEED` is off (built in the same flag-gated block).
+    /// Used by `decide_with_stats` and `classify_labels` to seed `Q → ∃R.target`.
+    exists_seed: Option<Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>>,
 }
 
 impl HyperCache {
@@ -1577,6 +1940,62 @@ impl HyperCache {
         // in every model (asserted, no UNA needed) — adding an entailed
         // constraint can only reveal real subsumptions, never create one.
         push_different_individuals_disjoint(&internal, num_classes, &mut clauses);
+        // SP2: build the per-named-class saturated-subsumer table before
+        // `build_sup_neg_map` mutates `internal.concepts` (complement additions
+        // for ¬sup expansions must not pollute the saturation input).
+        // Named subsumers are TBox facts; the complement additions are
+        // clausification artefacts — so computing saturation here gives the
+        // same result as computing it on the original `internal`. The
+        // synthetic-id filter (`< n_named`) is SOUNDNESS-CRITICAL: synthetic
+        // class ids (NomKey/ForallKey/DKey/Tseitin) ≥ `num_classes` share ids
+        // but carry different semantics in the wedge; seeding them would be a
+        // cross-engine mismatch (spurious Unsat = FP).
+        // SP2 + SP3 Phase-2: build both the named-subsumer table (sat_seed) and the
+        // ∃-facts table (exists_seed) from a single `saturate_with_exists_facts` call.
+        // This avoids double-saturation while adding ∃-seed support.
+        // Both tables are `None` when `RUSTDL_SAT_SEED` is off — the flag-off path is
+        // byte-identical to pre-SP3 behaviour (no extra cost, no extra call).
+        let (sat_seed, exists_seed) = if hyper_sat_seed_enabled() {
+            use owl_dl_core::ir::Role;
+            let n_named = internal.vocabulary.num_classes();
+            let n_named_u32 = u32::try_from(n_named).unwrap_or(u32::MAX);
+            let (subs, facts, nom_to_ind) =
+                owl_dl_saturation::saturate_with_exists_facts(&internal);
+            // Named subsumer table (unchanged from SP2).
+            let named: Vec<Vec<ClassId>> = (0..n_named)
+                .map(|ci| {
+                    let c = ClassId::new(u32::try_from(ci).unwrap_or(u32::MAX));
+                    subs.subsumers_of(c)
+                        .into_iter()
+                        .filter(|&d| d != c && (d.index() as usize) < n_named)
+                        .collect()
+                })
+                .collect();
+            // ∃-seed table: translate derived ∃-facts for the wedge.
+            // Named target → direct ClassId; NomKey(a) → ClassId(n_named + a.index());
+            // Tseitin/DKey → drop (sound under-approximation).
+            // Synthetic subjects (si >= n_named) are also dropped.
+            let mut exists: Vec<Vec<(Role, ClassId)>> = vec![Vec::new(); n_named];
+            for (s, r, tgt) in facts {
+                let si = s.index() as usize;
+                if si >= n_named {
+                    continue; // synthetic subject — skip
+                }
+                let translated = if (tgt.index() as usize) < n_named {
+                    Some(tgt)
+                } else if let Some(&ind) = nom_to_ind.get(&tgt) {
+                    Some(ClassId::new(n_named_u32 + ind.index()))
+                } else {
+                    None // Tseitin / DKey — drop
+                };
+                if let Some(t) = translated {
+                    exists[si].push((Role::named(r), t));
+                }
+            }
+            (Some(named), Some(exists))
+        } else {
+            (None, None)
+        };
         let mut complements: std::collections::HashMap<ClassId, ClassId> =
             std::collections::HashMap::new();
         let sup_neg = build_sup_neg_map(
@@ -1631,6 +2050,14 @@ impl HyperCache {
         let base_indexes = std::sync::Arc::new(base_indexes_inner);
         let base_disjoint_pairs =
             std::sync::Arc::new(owl_dl_tableau::hyper::build_disjoint_pairs(&clauses));
+        // Build the seed-saturator once when the lookahead flag is on.
+        let sat_lookahead = if hyper_sat_lookahead_enabled() {
+            Some(std::sync::Arc::new(
+                owl_dl_saturation::seed_sat::build_base(&internal),
+            ))
+        } else {
+            None
+        };
         Self {
             clauses,
             sup_neg,
@@ -1638,7 +2065,26 @@ impl HyperCache {
             base_indexes,
             base_disjoint_pairs,
             sub_roles,
+            sat_lookahead,
+            sat_seed,
+            exists_seed,
         }
+    }
+
+    /// Test accessor: returns the SP2 sat-seed table when the flag is on.
+    /// `None` iff `RUSTDL_SAT_SEED` was off at `build` time.
+    #[cfg(test)]
+    pub(crate) fn sat_seed_for_test(&self) -> Option<&Vec<Vec<owl_dl_core::ir::ClassId>>> {
+        self.sat_seed.as_ref()
+    }
+
+    /// Test accessor: returns the SP3 ∃-seed table when the flag is on.
+    /// `None` iff `RUSTDL_SAT_SEED` was off at `build` time.
+    #[cfg(test)]
+    pub(crate) fn exists_seed_for_test(
+        &self,
+    ) -> Option<&Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>> {
+        self.exists_seed.as_ref()
     }
 
     /// Three-valued subsumption verdict from the hyper engine:
@@ -1685,6 +2131,37 @@ impl HyperCache {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(sub, X)],
         });
+        // SP2: seed the wedge root with the class's named saturated subsumers.
+        // For each `D` in `sat_seed[sub.index()]`, assert `Q → D` so the engine
+        // starts with all entailed named subsumers already on the root node.
+        // This can only collapse branches (the seed is sound), never FP.
+        // Flag-off: `sat_seed` is `None` ⇒ this block is skipped entirely —
+        // byte-identical to the pre-seed behaviour.
+        if let Some(tbl) = &self.sat_seed
+            && let Some(seeds) = tbl.get(sub.index() as usize)
+        {
+            for &d in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Class(d, X)],
+                });
+            }
+        }
+        // SP3 Phase-2: seed the derived ∃-facts for `sub`.
+        // For each `(R, target)` in `exists_seed[sub.index()]`, assert `Q → ∃R.target`
+        // so the engine starts with the saturation-entailed existential successors
+        // already forced at the root. Sound: these ∃-facts are EL-entailed.
+        // Flag-off: `exists_seed` is `None` ⇒ this block is skipped entirely.
+        if let Some(tbl) = &self.exists_seed
+            && let Some(seeds) = tbl.get(sub.index() as usize)
+        {
+            for &(role, target) in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Exists(role, target, X)],
+                });
+            }
+        }
         if let Some(atoms) = self.sup_neg.get(&sup) {
             clauses.push(DlClause {
                 body: vec![Atom::Class(self.fresh_q, X)],
@@ -1712,8 +2189,17 @@ impl HyperCache {
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
         }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
+        }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::hyper_shadow_dep_probe_enabled() {
+            engine = engine.with_shadow_dep_probe(true);
         }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
@@ -1750,8 +2236,17 @@ impl HyperCache {
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
         }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
+        }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
+        }
+        if crate::hyper_shadow_dep_probe_enabled() {
+            engine = engine.with_shadow_dep_probe(true);
         }
         let result = engine.decide_with_deadline(depth, deadline);
         (result, engine.stats())
@@ -1779,6 +2274,35 @@ impl HyperCache {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(c, X)],
         });
+        // SP2.1: seed the label-cache build with `c`'s named saturated subsumers
+        // (the same monotone, sound seed as `decide_with_stats`). This is where the
+        // seed's per-class collapse pays off: `classify_labels(c)` is the per-class
+        // `sat(c)` whose timeout on hard nominal classes produces the ~4638 wine
+        // label-cache misses → per-pair refutations. Seeding lets those sats
+        // terminate within the (adaptive) label-cache deadline, completing the cache.
+        if let Some(tbl) = &self.sat_seed
+            && let Some(seeds) = tbl.get(c.index() as usize)
+        {
+            for &d in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Class(d, X)],
+                });
+            }
+        }
+        // SP3 Phase-2: seed the derived ∃-facts for `c`.
+        // Mirrors the `decide_with_stats` seed site above so label-cache probes
+        // see the same saturation-entailed existential successors.
+        if let Some(tbl) = &self.exists_seed
+            && let Some(seeds) = tbl.get(c.index() as usize)
+        {
+            for &(role, target) in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Exists(role, target, X)],
+                });
+            }
+        }
         // Use `with_sub_roles_keep_index` (NOT `with_sub_roles`) because the
         // amortized `base_indexes` was already built hierarchy-aware in
         // `HyperCache::build` (`build_clause_indexes(.., Some(&sub_roles))`).
@@ -1790,20 +2314,41 @@ impl HyperCache {
         // When SP1.1 is OFF the base_indexes was built without the hierarchy
         // (None) so we must NOT call with_sub_roles_keep_index — the two sites
         // are a matched pair (build gate ↔ classify_labels gate).
-        let mut engine = HyperEngine::new_with_prebuilt(
-            &clauses,
-            self.fresh_q,
-            std::sync::Arc::clone(&self.base_indexes),
-            std::sync::Arc::clone(&self.base_disjoint_pairs),
-        );
-        if crate::classify_same_tier_enabled() {
-            engine = engine.with_sub_roles_keep_index(self.sub_roles.clone());
-        }
+        // When SP2.1/SP3 seed clauses were appended, the amortized `base_indexes`
+        // (built in `HyperCache::build` BEFORE the per-class seed) does NOT index
+        // them, so `new_with_prebuilt` leaves the seed clauses inert (they never
+        // trigger). Rebuild the full index with `new` so the seed fires. When
+        // unseeded (both `sat_seed` and `exists_seed` are None) keep the amortized
+        // path — byte-identical to pre-SP2.1.
+        let mut engine = if self.sat_seed.is_some() || self.exists_seed.is_some() {
+            let mut e = HyperEngine::new(&clauses, self.fresh_q);
+            if crate::classify_same_tier_enabled() {
+                e = e.with_sub_roles(self.sub_roles.clone());
+            }
+            e
+        } else {
+            let mut e = HyperEngine::new_with_prebuilt(
+                &clauses,
+                self.fresh_q,
+                std::sync::Arc::clone(&self.base_indexes),
+                std::sync::Arc::clone(&self.base_disjoint_pairs),
+            );
+            if crate::classify_same_tier_enabled() {
+                e = e.with_sub_roles_keep_index(self.sub_roles.clone());
+            }
+            e
+        };
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -1888,6 +2433,9 @@ pub(crate) struct ConsistencyCache {
     num_classes: u32,
     /// `num_individuals` = the nominal range width (`with_nominals`).
     num_individuals: u32,
+    /// Pre-built seed-saturator for the ⊔ look-ahead gate
+    /// (`RUSTDL_SAT_LOOKAHEAD`, default OFF). `None` when the flag is off.
+    sat_lookahead: Option<std::sync::Arc<owl_dl_saturation::seed_sat::SeedSaturator>>,
 }
 
 impl ConsistencyCache {
@@ -1971,12 +2519,21 @@ impl ConsistencyCache {
             same_pairs,
         };
 
+        let sat_lookahead = if hyper_sat_lookahead_enabled() {
+            Some(std::sync::Arc::new(
+                owl_dl_saturation::seed_sat::build_base(&internal),
+            ))
+        } else {
+            None
+        };
+
         Self {
             clauses,
             seed,
             sub_roles,
             num_classes,
             num_individuals,
+            sat_lookahead,
         }
     }
 
@@ -1998,6 +2555,12 @@ impl ConsistencyCache {
         }
         if hyper_precise_card_deps_enabled() {
             engine = engine.with_precise_card_deps();
+        }
+        if hyper_mrv_ordering_enabled() {
+            engine = engine.with_mrv_ordering();
+        }
+        if let Some(sat) = self.sat_lookahead.clone() {
+            engine = engine.with_sat_lookahead(sat);
         }
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
@@ -4407,6 +4970,12 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             if hyper_precise_card_deps_enabled() {
                 engine = engine.with_precise_card_deps();
             }
+            if hyper_mrv_ordering_enabled() {
+                engine = engine.with_mrv_ordering();
+            }
+            if let Some(sat) = cache.sat_lookahead.clone() {
+                engine = engine.with_sat_lookahead(sat);
+            }
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
             }
@@ -5721,6 +6290,33 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
             "value-membership must not be counting; got {counting:?}"
         );
     }
+
+    #[test]
+    fn adaptive_label_cache_ms_branches() {
+        use std::time::Duration;
+        // env override always wins (incl. 0 = unbounded sentinel)
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_millis(200)), Some(7777)),
+            7777
+        );
+        assert_eq!(adaptive_label_cache_ms(137, None, Some(0)), 0);
+        // n × per_pair, clamped to [1000, 30000]
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_millis(200)), None),
+            27_400
+        ); // 137*200
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_secs(1)), None),
+            30_000
+        ); // 137000→ceiling
+        assert_eq!(
+            adaptive_label_cache_ms(2, Some(Duration::from_millis(200)), None),
+            1_000
+        ); // 400→floor
+        // None per_pair → base = ceiling, then ×n clamps to ceiling
+        assert_eq!(adaptive_label_cache_ms(137, None, None), 30_000);
+        assert_eq!(adaptive_label_cache_ms(1, None, None), 30_000); // 1*30000=30000
+    }
 }
 
 /// Shared serialization lock for tests that mutate the process-wide
@@ -5797,6 +6393,373 @@ mod hyper_trust_sat_min_ms_tests {
             || {
                 assert_eq!(hyper_trust_sat_min_ms(), 0);
             },
+        );
+    }
+}
+
+/// SP2 `sat_seed` wiring tests.
+///
+/// Inline (not in `tests/`) because `HyperCache`, `sat_seed_for_test`, and
+/// `test_env_lock` are all `pub(crate)` / `#[cfg(test)]` — unreachable from
+/// an integration-test crate. Integration tests in `tests/` compile as a
+/// separate crate and can only reach always-compiled `pub` items.
+///
+/// Fixture: a tiny three-class chain A⊑B⊑C parsed via `owl_dl_core::convert`.
+#[cfg(test)]
+mod sat_seed_wiring_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    /// Build an `InternalOntology` with A⊑B and B⊑C.
+    fn build_chain_abc() -> InternalOntology {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+             SubClassOf(:A :B)\n\
+             SubClassOf(:B :C)\n\
+             )\n"
+        );
+        owl_dl_core::convert::convert_ontology(&parse(&src)).expect("chain A⊑B⊑C converts")
+    }
+
+    /// Look up a named class by local name. The prefix `:=<http://rustdl.test/>`
+    /// expands `:A` to `http://rustdl.test/A`.
+    fn class_id_by_local(internal: &InternalOntology, local: &str) -> owl_dl_core::ir::ClassId {
+        let iri = format!("http://rustdl.test/{local}");
+        internal
+            .vocabulary
+            .classes()
+            .find(|(_, i)| *i == iri.as_str())
+            .map_or_else(
+                || panic!("class {local} not found in vocabulary"),
+                |(id, _)| id,
+            )
+    }
+
+    /// Helper: set/clear `RUSTDL_SAT_SEED`, build a `HyperCache`, restore the
+    /// prior env value. Serialised via `test_env_lock` so env mutations from
+    /// concurrent tests don't race.
+    #[allow(unsafe_code)]
+    fn build_cache_with_sat_seed_flag(internal: &InternalOntology, enable: bool) -> HyperCache {
+        let _lock = test_env_lock();
+        let prior = std::env::var_os("RUSTDL_SAT_SEED");
+        // SAFETY: serialized by test_env_lock (one test at a time); restored
+        // before the lock is released.
+        if enable {
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "1") };
+        } else {
+            // Default is now ON, so "off" means explicitly "0" (not unset).
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "0") };
+        }
+        let cache = HyperCache::build(internal);
+        match prior {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_SAT_SEED", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_SAT_SEED") },
+        }
+        cache
+    }
+
+    /// Flag-off ⇒ `sat_seed` is `None` (no table built, zero `saturate` cost).
+    #[test]
+    fn sat_seed_table_none_when_flag_off() {
+        let internal = build_chain_abc();
+        let cache = build_cache_with_sat_seed_flag(&internal, false);
+        assert!(
+            cache.sat_seed_for_test().is_none(),
+            "RUSTDL_SAT_SEED unset ⇒ sat_seed must be None"
+        );
+    }
+
+    /// Flag-on ⇒ table is built; A⊑B⊑C chain ⇒ A's entry contains B and C
+    /// (transitively), and does NOT contain A itself.
+    #[test]
+    fn sat_seed_table_built_when_flag_on() {
+        let internal = build_chain_abc();
+        let a = class_id_by_local(&internal, "A");
+        let b = class_id_by_local(&internal, "B");
+        let c = class_id_by_local(&internal, "C");
+        let cache = build_cache_with_sat_seed_flag(&internal, true);
+        let tbl = cache
+            .sat_seed_for_test()
+            .expect("RUSTDL_SAT_SEED=1 ⇒ table must be Some");
+        let seeded: std::collections::HashSet<owl_dl_core::ir::ClassId> = tbl
+            .get(a.index() as usize)
+            .expect("A has an entry in the table")
+            .iter()
+            .copied()
+            .collect();
+        assert!(seeded.contains(&b), "A⊑B⊑C ⇒ A's table must contain B");
+        assert!(
+            seeded.contains(&c),
+            "A⊑B⊑C ⇒ A's table must contain C (transitive)"
+        );
+        assert!(
+            !seeded.contains(&a),
+            "A's table must NOT contain A itself (d != c filter)"
+        );
+    }
+}
+
+/// Precompletion probe tests.
+///
+/// Inline (not in `tests/`) because `precompletion_probe` depends on
+/// `pub(crate)` helpers (`HyperCache`, `test_env_lock`).
+///
+/// Fixture: `C ⊑ ∃r.{a}` — an `ObjectHasValue`, lowered by the converter to
+/// `C ⊑ ∃r.NomKey(a)`. After saturation the derived ∃-fact `(C, r, NomKey(a))`
+/// must translate to the wedge nominal class id `num_named + a.index()`.
+#[cfg(test)]
+mod precompletion_probe_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    struct CExistsNominalIds {
+        c: owl_dl_core::ir::ClassId,
+        r: owl_dl_core::ir::RoleId,
+        a: owl_dl_core::ir::IndividualId,
+    }
+
+    /// Build a minimal ontology: class C, object property r, individual a,
+    /// with the axiom `SubClassOf(C ObjectHasValue(r a))`.
+    fn build_c_exists_nominal_a() -> (InternalOntology, CExistsNominalIds) {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a))\n\
+             SubClassOf(:C ObjectHasValue(:r :a))\n\
+             )\n"
+        );
+        let onto = parse(&src);
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("C⊑∃r.{a} converts");
+        let c = internal
+            .vocabulary
+            .classes()
+            .find(|(_, iri)| *iri == "http://rustdl.test/C")
+            .map(|(id, _)| id)
+            .expect("class C present");
+        let r = internal
+            .vocabulary
+            .roles()
+            .find(|(_, iri)| *iri == "http://rustdl.test/r")
+            .map(|(id, _)| id)
+            .expect("role r present");
+        let a = internal
+            .vocabulary
+            .individuals()
+            .find(|(_, iri)| *iri == "http://rustdl.test/a")
+            .map(|(id, _)| id)
+            .expect("individual a present");
+        (internal, CExistsNominalIds { c, r, a })
+    }
+
+    /// The derived ∃-fact `(C, r, NomKey(a))` must:
+    /// 1. Be present in the saturation's `seen_facts` output.
+    /// 2. Have its `NomKey` target map back to individual `a` via `nom_to_ind`.
+    /// 3. Translate to wedge nominal id `= num_named + a.index()` (≥ `num_named`).
+    #[test]
+    fn precompletion_translates_nomkey_to_wedge_nominal() {
+        let (internal, ids) = build_c_exists_nominal_a();
+        let (_subs, facts, nom_to_ind) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+        let n_named = u32::try_from(internal.vocabulary.num_classes()).expect("fits u32");
+        // Find the (C, r, NomKey) fact.
+        let (_, _, tgt) = facts
+            .iter()
+            .copied()
+            .find(|&(s, r, _)| s == ids.c && r == ids.r)
+            .expect("derived ∃-fact (C, r, NomKey(a)) must be present");
+        // The target must be a NomKey (≥ n_named) and map back to individual a.
+        assert!(
+            tgt.index() >= n_named,
+            "NomKey target id must be ≥ num_named (synthetic region)"
+        );
+        let ind = nom_to_ind
+            .get(&tgt)
+            .copied()
+            .expect("target must be a NomKey (in nom_to_ind)");
+        assert_eq!(ind, ids.a, "NomKey maps back to individual a");
+        // Wedge nominal id is the same formula the clausifier uses.
+        let wedge_nominal = owl_dl_core::ir::ClassId::new(n_named + ind.index());
+        assert!(
+            wedge_nominal.index() >= n_named,
+            "wedge nominal id is in the nominal region (≥ num_named)"
+        );
+    }
+
+    /// Mode 2 (real ∃-seed) and mode 3 (garbage control) must seed exactly the
+    /// same number of ∃-clauses so the controller can use them as a matched pair.
+    /// Mode 1 (named-only) should seed 0 ∃-clauses.
+    #[test]
+    fn precompletion_mode2_mode3_exists_counts_match() {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a))\n\
+             SubClassOf(:C ObjectHasValue(:r :a))\n\
+             )\n"
+        );
+        let onto = parse(&src);
+        let m1 = precompletion_probe(&onto, "http://rustdl.test/C", 1, 8, None)
+            .expect("no error")
+            .expect("class found")
+            .3;
+        let m2 = precompletion_probe(&onto, "http://rustdl.test/C", 2, 8, None)
+            .expect("no error")
+            .expect("class found")
+            .3;
+        let m3 = precompletion_probe(&onto, "http://rustdl.test/C", 3, 8, None)
+            .expect("no error")
+            .expect("class found")
+            .3;
+        assert_eq!(m1, 0, "mode 1 (named-only) seeds no ∃-clauses");
+        assert!(
+            m2 >= 1,
+            "mode 2 seeds at least one ∃-fact (the ∃r.{{a}} axiom)"
+        );
+        assert_eq!(m2, m3, "mode 3 control must seed the same count as mode 2");
+    }
+}
+
+/// SP3 Phase-2: `exists_seed` wiring tests.
+///
+/// Inline (not in `tests/`) because `HyperCache`, `exists_seed_for_test`, and
+/// `test_env_lock` are all `pub(crate)` / `#[cfg(test)]` — unreachable from an
+/// integration-test crate.
+///
+/// Fixture: `C ⊑ ∃r.{a}` — reused from `precompletion_probe_tests`.
+#[cfg(test)]
+mod exists_seed_wiring_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use owl_dl_core::ir::{ClassId, Role};
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    /// Build the `C ⊑ ∃r.{a}` fixture and return its `InternalOntology` plus ids.
+    fn build_c_exists_nominal_a() -> (
+        InternalOntology,
+        ClassId,
+        owl_dl_core::ir::RoleId,
+        owl_dl_core::ir::IndividualId,
+    ) {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a))\n\
+             SubClassOf(:C ObjectHasValue(:r :a))\n\
+             )\n"
+        );
+        let onto = parse(&src);
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("C⊑∃r.{a} converts");
+        let c = internal
+            .vocabulary
+            .classes()
+            .find(|(_, iri)| *iri == "http://rustdl.test/C")
+            .map(|(id, _)| id)
+            .expect("class C present");
+        let r = internal
+            .vocabulary
+            .roles()
+            .find(|(_, iri)| *iri == "http://rustdl.test/r")
+            .map(|(id, _)| id)
+            .expect("role r present");
+        let a = internal
+            .vocabulary
+            .individuals()
+            .find(|(_, iri)| *iri == "http://rustdl.test/a")
+            .map(|(id, _)| id)
+            .expect("individual a present");
+        (internal, c, r, a)
+    }
+
+    /// Helper: set/clear `RUSTDL_SAT_SEED`, build a `HyperCache`, restore prior.
+    #[allow(unsafe_code)]
+    fn build_cache_with_sat_seed_flag(internal: &InternalOntology, enable: bool) -> HyperCache {
+        let _lock = test_env_lock();
+        let prior = std::env::var_os("RUSTDL_SAT_SEED");
+        // SAFETY: serialized by test_env_lock (one test at a time); restored before release.
+        if enable {
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "1") };
+        } else {
+            // Default is now ON, so "off" means explicitly "0" (not unset).
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "0") };
+        }
+        let cache = HyperCache::build(internal);
+        match prior {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_SAT_SEED", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_SAT_SEED") },
+        }
+        cache
+    }
+
+    /// Flag-off ⇒ `exists_seed` is `None`. Flag-on ⇒ `exists_seed[C]`
+    /// contains `(Role::named(r), wedge_nominal)` where
+    /// `wedge_nominal = num_named + a.index()`.
+    #[test]
+    fn exists_seed_table_built_only_when_flagged() {
+        let (internal, c, r, a) = build_c_exists_nominal_a();
+        let off = build_cache_with_sat_seed_flag(&internal, false);
+        assert!(
+            off.exists_seed_for_test().is_none(),
+            "flag off ⇒ no ∃ table"
+        );
+        let on = build_cache_with_sat_seed_flag(&internal, true);
+        let tbl = on
+            .exists_seed_for_test()
+            .expect("flag on ⇒ ∃ table present");
+        let n_named = u32::try_from(internal.vocabulary.num_classes()).expect("fits u32");
+        let wedge_nominal = ClassId::new(n_named + a.index());
+        let want_role = Role::named(r);
+        assert!(
+            tbl[c.index() as usize]
+                .iter()
+                .any(|&(rr, t)| rr == want_role && t == wedge_nominal),
+            "C seeds ∃r.{{a}} translated to wedge nominal id {wedge_nominal:?}"
         );
     }
 }

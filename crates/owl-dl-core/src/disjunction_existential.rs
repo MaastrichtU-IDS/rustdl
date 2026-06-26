@@ -67,6 +67,36 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
                     dom_ranges.push((*role, c, true));
                 }
             }
+            // SP-B2c: union class `X ≡ D₁⊔…⊔Dₙ` (EquivalentClasses with an atomic
+            // member `X` and an `Or` member). Two sound inferences:
+            //   #1 common-subsumer (`X ⊑ ⊔Dᵢ` direction): `X ⊑ E` for each common
+            //      told-subsumer `E` of the disjuncts.
+            //   #2 disjunct⊑union (`⊔Dᵢ ⊑ X` direction, EQUIVALENCE-ONLY): `Dᵢ ⊑ X`
+            //      for each atomic disjunct (`Dᵢ ⊑ ⊔Dⱼ ≡ X`).
+            // Both fed via `bare` (`SubClassOf(sub, atomic(c))`). `disjunction_
+            // existential` otherwise only sees `SubClassOf`-Or, missing both here.
+            Axiom::EquivalentClasses(members) => {
+                for i in 0..members.len() {
+                    for j in 0..members.len() {
+                        if i == j {
+                            continue;
+                        }
+                        if let (ConceptExpr::Atomic(x), ConceptExpr::Or(disjuncts)) =
+                            (onto.concepts.get(members[i]), onto.concepts.get(members[j]))
+                        {
+                            let x = *x;
+                            for e in minimal_common_subsumers(members[j], &onto.concepts, &told) {
+                                bare.push((members[i], e));
+                            }
+                            for &d in disjuncts {
+                                if matches!(onto.concepts.get(d), ConceptExpr::Atomic(_)) {
+                                    bare.push((d, x));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }

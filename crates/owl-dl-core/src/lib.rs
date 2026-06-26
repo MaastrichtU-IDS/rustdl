@@ -8,6 +8,7 @@
 //! full plan.
 
 pub mod absorb;
+pub mod approx_saturation;
 pub mod clause;
 pub mod convert;
 pub mod convert_back;

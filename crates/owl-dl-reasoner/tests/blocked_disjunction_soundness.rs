@@ -20,16 +20,23 @@
 //! applied), reinforced by the fact that the fix moves the engine toward the
 //! textbook calculus (all rules skip blocked nodes; generation already did).
 //!
-//! Ontology (all named). The disjuncts clash by DIFFERENT paths so the
-//! told-common-subsumer preprocessing cannot compile the `⊔` away into a Horn
-//! fact (that is what makes the wedge actually branch):
+//! Ontology: the disjuncts clash via a `∀s.¬H` + `∃s.H` witness-successor chain,
+//! NOT by self-clash (`¬D`/`¬E`) — this design is deliberately invisible to:
+//!   (a) the SP-A forced-disjunct/common-disjunct preprocessing (no
+//!       `DisjointClasses` / `SubClassOf(C,¬D)`; D and E share no told-subsumer),
+//!   (b) the ∀-less EL saturator (which has no ∀-rule and cannot derive C ⊑ ⊥).
+//! Therefore the wedge is FORCED to branch `D ⊔ E` and materialize the s-successor
+//! to find each clash — exercising exactly the disjunctive-Unsat path this canary
+//! guards.
+//!
 //!   A ⊑ ∃r.C
-//!   C ⊑ ∃r.C                 — cyclic (keeps blocking machinery live)
-//!   C ⊑ D ⊔ E                — disjunction on the generated successor C
-//!   C ⊑ ¬D,  C ⊑ ¬E          — each disjunct self-clashes ⟹ C ⊑ ⊥
-//! Entailment: A ⊑ K for the unrelated K (A needs an r-successor that is the
-//! unsatisfiable C, so A ⊑ ⊥ ⊑ K). The refutation of `A ⊓ ¬K` MUST branch C's
-//! `D ⊔ E`: the D-branch clashes `D ⊓ ¬D`, the E-branch clashes `E ⊓ ¬E`. If the
+//!   C ⊑ ∃r.C                              — cyclic (keeps blocking machinery live)
+//!   C ⊑ D ⊔ E                             — disjunction on the generated successor C
+//!   C ⊑ ∀s.¬H                             — any s-successor of C must NOT be H
+//!   D ⊑ ∃s.H,  E ⊑ ∃s.H                  — each disjunct forces an s-successor that IS H
+//!                                           ⟹ on the D-branch: C's s-successor is H ⊓ ¬H ⊥
+//!                                              on the E-branch: same clash ⟹ C ⊑ ⊥
+//! Entailment: A ⊑ K (A needs an r-successor ∈ C; C ⊑ ⊥; so A ⊑ ⊥ ⊑ K). If the
 //! fix had over-broadly dropped the ⊔ rule, this subsumption would be MISSED. We
 //! assert it is found AND that the ⊔ rule was actually used (`disj_branches`>0).
 
@@ -48,13 +55,16 @@ Ontology(
   Declaration(Class(:C))
   Declaration(Class(:D))
   Declaration(Class(:E))
+  Declaration(Class(:H))
   Declaration(Class(:K))
   Declaration(ObjectProperty(:r))
+  Declaration(ObjectProperty(:s))
   SubClassOf(:A ObjectSomeValuesFrom(:r :C))
   SubClassOf(:C ObjectSomeValuesFrom(:r :C))
   SubClassOf(:C ObjectUnionOf(:D :E))
-  SubClassOf(:C ObjectComplementOf(:D))
-  SubClassOf(:C ObjectComplementOf(:E))
+  SubClassOf(:C ObjectAllValuesFrom(:s ObjectComplementOf(:H)))
+  SubClassOf(:D ObjectSomeValuesFrom(:s :H))
+  SubClassOf(:E ObjectSomeValuesFrom(:s :H))
 )";
 
 fn load() -> SetOntology<RcStr> {

@@ -1134,6 +1134,7 @@ dependencies = [
  "horned-owl",
  "owl-dl-core",
  "owl-dl-datatypes",
+ "owl-dl-saturation",
  "proptest",
  "smallvec",
  "thiserror 2.0.18",

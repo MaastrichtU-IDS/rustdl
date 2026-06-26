@@ -135,7 +135,7 @@ pub enum SyntheticDef {
 /// **First-writer-wins**: when multiple rules could derive the same fact, only the
 /// first one is recorded. This is sound (any valid derivation path is a proof) and
 /// guarantees the DAG is acyclic (premises were derived strictly earlier).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ProofTrace {
     /// Per-fact inference record.
     pub steps: HashMap<DerivedFact, Inference>,

@@ -1218,7 +1218,10 @@ pub(crate) fn classify_top_down_internal(
         // actually returns near its promised deadline even when many label
         // classes stall (e.g. wine). The per-pair budget is still deliberately
         // NOT used here — the Phase-8 independence is preserved.
-        let cache_ms = crate::label_cache_timeout_ms();
+        // Adaptive build-once deadline (2026-06-25): scale to n × per_pair, clamped
+        // [1s,30s]; env RUSTDL_LABEL_CACHE_TIMEOUT_MS overrides (0 = unbounded).
+        let cache_ms =
+            crate::adaptive_label_cache_ms(n, per_pair_timeout, crate::label_cache_env_override());
         let per_class_cache_dur = if cache_ms == 0 {
             None
         } else {

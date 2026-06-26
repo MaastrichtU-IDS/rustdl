@@ -1909,6 +1909,15 @@ pub(crate) struct HyperCache {
     /// `None` when `RUSTDL_SAT_SEED` is off (built in the same flag-gated block).
     /// Used by `decide_with_stats` and `classify_labels` to seed `Q → ∃R.target`.
     exists_seed: Option<Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>>,
+    /// VALUE-DERIVED TYPE DISJOINTNESS (RUSTDL_VALUE_TYPE_DISJOINT, experiment):
+    /// pairs `(T1, T2)` of named classes that force DIFFERENT DifferentIndividuals-
+    /// distinct nominal values on the SAME functional role (`T1 ⊑ ∃R.{v1}`,
+    /// `T2 ⊑ ∃R.{v2}`, `R` functional, `v1≠v2` ⟹ `T1⊓T2 ⊑ ⊥`). Seeded as
+    /// empty-head clauses so the wedge clashes value-incompatible type combos
+    /// (e.g. RedWine⊓WhiteWine) SHALLOWLY at the ⊔ frontier instead of deep.
+    /// Sound by construction (functionality + asserted distinctness). `None`
+    /// when the flag is off. See docs/stage4-foodpairing-probe-refuted-2026-06-26.md.
+    value_disjoint: Option<Vec<(owl_dl_core::ir::ClassId, owl_dl_core::ir::ClassId)>>,
 }
 
 impl HyperCache {
@@ -1996,6 +2005,90 @@ impl HyperCache {
         } else {
             (None, None)
         };
+        // VALUE-DERIVED TYPE DISJOINTNESS (experiment): from the ∃-seed table,
+        // pair up named classes that force different DifferentIndividuals-distinct
+        // nominal values on the same functional role. See struct-field docs.
+        let value_disjoint: Option<Vec<(ClassId, ClassId)>> =
+            if std::env::var_os("RUSTDL_VALUE_TYPE_DISJOINT").is_some()
+                && let Some(exists) = exists_seed.as_ref()
+            {
+                use owl_dl_core::ir::RoleId;
+                use owl_dl_core::ontology::Axiom;
+                let n_named_u32 =
+                    u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
+                let mut functional: std::collections::HashSet<RoleId> =
+                    std::collections::HashSet::new();
+                let mut distinct: std::collections::HashSet<(u32, u32)> =
+                    std::collections::HashSet::new();
+                for ax in &internal.axioms {
+                    match ax {
+                        Axiom::FunctionalRole(role) if !role.is_inverse() => {
+                            functional.insert(role.role_id());
+                        }
+                        Axiom::DifferentIndividuals(inds) => {
+                            for i in 0..inds.len() {
+                                for j in (i + 1)..inds.len() {
+                                    let (a, b) = (inds[i].index(), inds[j].index());
+                                    distinct.insert((a, b));
+                                    distinct.insert((b, a));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // functional role → (value-individual index → classes forcing it)
+                let mut by_role: std::collections::HashMap<
+                    RoleId,
+                    std::collections::HashMap<u32, Vec<ClassId>>,
+                > = std::collections::HashMap::new();
+                for (ci, facts) in exists.iter().enumerate() {
+                    let c = ClassId::new(u32::try_from(ci).unwrap_or(u32::MAX));
+                    for &(role, target) in facts {
+                        if role.is_inverse() || !functional.contains(&role.role_id()) {
+                            continue;
+                        }
+                        if target.index() < n_named_u32 {
+                            continue; // named filler, not a nominal value
+                        }
+                        let ind_idx = target.index() - n_named_u32;
+                        by_role
+                            .entry(role.role_id())
+                            .or_default()
+                            .entry(ind_idx)
+                            .or_default()
+                            .push(c);
+                    }
+                }
+                let mut pairs: Vec<(ClassId, ClassId)> = Vec::new();
+                for by_ind in by_role.values() {
+                    let entries: Vec<(&u32, &Vec<ClassId>)> = by_ind.iter().collect();
+                    for a in 0..entries.len() {
+                        for b in (a + 1)..entries.len() {
+                            if !distinct.contains(&(*entries[a].0, *entries[b].0)) {
+                                continue;
+                            }
+                            for &c1 in entries[a].1 {
+                                for &c2 in entries[b].1 {
+                                    if c1 != c2 {
+                                        pairs.push((c1.min(c2), c1.max(c2)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                pairs.sort_unstable_by_key(|&(a, b)| (a.index(), b.index()));
+                pairs.dedup();
+                eprintln!(
+                    "VALUE_TYPE_DISJOINT: {} pairs from {} functional roles",
+                    pairs.len(),
+                    by_role.len()
+                );
+                Some(pairs)
+            } else {
+                None
+            };
         let mut complements: std::collections::HashMap<ClassId, ClassId> =
             std::collections::HashMap::new();
         let sup_neg = build_sup_neg_map(
@@ -2068,6 +2161,7 @@ impl HyperCache {
             sat_lookahead,
             sat_seed,
             exists_seed,
+            value_disjoint,
         }
     }
 
@@ -2162,6 +2256,16 @@ impl HyperCache {
                 });
             }
         }
+        // VALUE-DERIVED TYPE DISJOINTNESS (experiment): empty-head clashes for
+        // value-incompatible type pairs (shallow pruning of e.g. RedWine⊓WhiteWine).
+        if let Some(pairs) = &self.value_disjoint {
+            for &(a, b) in pairs {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(a, X), Atom::Class(b, X)],
+                    head: vec![],
+                });
+            }
+        }
         if let Some(atoms) = self.sup_neg.get(&sup) {
             clauses.push(DlClause {
                 body: vec![Atom::Class(self.fresh_q, X)],
@@ -2226,6 +2330,16 @@ impl HyperCache {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(c, X)],
         });
+        // VALUE-DERIVED TYPE DISJOINTNESS (experiment): seed empty-head clashes
+        // for value-incompatible type pairs so the wedge prunes them shallowly.
+        if let Some(pairs) = &self.value_disjoint {
+            for &(a, b) in pairs {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(a, X), Atom::Class(b, X)],
+                    head: vec![],
+                });
+            }
+        }
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
@@ -2303,6 +2417,15 @@ impl HyperCache {
                 });
             }
         }
+        // VALUE-DERIVED TYPE DISJOINTNESS (experiment): empty-head clashes.
+        if let Some(pairs) = &self.value_disjoint {
+            for &(a, b) in pairs {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(a, X), Atom::Class(b, X)],
+                    head: vec![],
+                });
+            }
+        }
         // Use `with_sub_roles_keep_index` (NOT `with_sub_roles`) because the
         // amortized `base_indexes` was already built hierarchy-aware in
         // `HyperCache::build` (`build_clause_indexes(.., Some(&sub_roles))`).
@@ -2320,7 +2443,10 @@ impl HyperCache {
         // trigger). Rebuild the full index with `new` so the seed fires. When
         // unseeded (both `sat_seed` and `exists_seed` are None) keep the amortized
         // path — byte-identical to pre-SP2.1.
-        let mut engine = if self.sat_seed.is_some() || self.exists_seed.is_some() {
+        let mut engine = if self.sat_seed.is_some()
+            || self.exists_seed.is_some()
+            || self.value_disjoint.is_some()
+        {
             let mut e = HyperEngine::new(&clauses, self.fresh_q);
             if crate::classify_same_tier_enabled() {
                 e = e.with_sub_roles(self.sub_roles.clone());

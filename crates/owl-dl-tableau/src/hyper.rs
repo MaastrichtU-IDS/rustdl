@@ -2006,6 +2006,125 @@ impl<'c> HyperEngine<'c> {
         live
     }
 
+    /// STAGE-4 minimal-sound-key probe: structural fingerprint of `node` at a
+    /// configurable enrichment `level` (env `RUSTDL_MEMO_KEY`). Monotone in
+    /// information so we can find the *smallest* key at which the Unsat memo
+    /// is sound (Gamay → Sat) while the collapse holds (branches ≪ 451k):
+    ///   0 → own labels only (current label-keyed memo; reuse-trap on wine)
+    ///   1 → + own outgoing edge-roles (role-id, inverse), no neighbour labels
+    ///   2 → + immediate-successor labels & their edge-roles (1 hop)
+    ///   3 → + 2-hop successor structure
+    ///   ≥9 → full reachable descendant subtree (cycle-guarded)
+    /// A small sound level ⇒ sparse deps ⇒ sound state-reuse viable. Needing
+    /// near-full context (or re-explosion once sound) ⇒ dense ⇒ no sound
+    /// re-keying ⇒ the speedup needs a different calculus. Throwaway probe.
+    fn memo_node_key(&self, node: HNode, level: u8) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        if level == 99 {
+            // Whole completion-graph fingerprint (captures ancestor/sibling
+            // context, not just `node`'s subtree). MUST be sound; the question
+            // is whether identical global states recur (collapse) or each is
+            // unique (re-explosion ⇒ dense, no reuse possible).
+            use std::hash::Hash;
+            let mut all: Vec<(usize, Vec<u32>, Vec<(u32, bool, usize)>)> = (0..self.nodes.len())
+                .map(|i| {
+                    let mut labels: Vec<u32> =
+                        self.nodes[i].labels.iter().map(|c| c.index()).collect();
+                    labels.sort_unstable();
+                    let mut edges: Vec<(u32, bool, usize)> = self.nodes[i]
+                        .edges
+                        .iter()
+                        .map(|(r, t)| {
+                            (
+                                r.role_id().index(),
+                                r.is_inverse(),
+                                self.resolve(*t).index(),
+                            )
+                        })
+                        .collect();
+                    edges.sort_unstable();
+                    (i, labels, edges)
+                })
+                .collect();
+            all.sort();
+            all.hash(&mut h);
+            return h.finish();
+        }
+        if level == 0 {
+            self.hash_subtree(
+                node,
+                0,
+                false,
+                &mut h,
+                &mut std::collections::HashSet::new(),
+            );
+        } else {
+            let hop = if level >= 9 {
+                u32::MAX
+            } else {
+                u32::from(level - 1)
+            };
+            self.hash_subtree(
+                node,
+                hop,
+                true,
+                &mut h,
+                &mut std::collections::HashSet::new(),
+            );
+        }
+        h.finish()
+    }
+
+    /// Recursive structural hash: own labels, optionally own edge-roles, then
+    /// recurse into successors up to `hop` levels. `visited` guards cycles and
+    /// shared subgraphs (deterministic: edges/successors hashed in sorted order).
+    fn hash_subtree(
+        &self,
+        node: HNode,
+        hop: u32,
+        with_edges: bool,
+        h: &mut std::collections::hash_map::DefaultHasher,
+        visited: &mut std::collections::HashSet<usize>,
+    ) {
+        use std::hash::Hash;
+        let rep = self.resolve(node);
+        if !visited.insert(rep.index()) {
+            0xC0FF_EE00_u64.hash(h);
+            return;
+        }
+        let mut labels: Vec<u32> = self.nodes[rep.index()]
+            .labels
+            .iter()
+            .map(|c| c.index())
+            .collect();
+        labels.sort_unstable();
+        labels.hash(h);
+        if !with_edges {
+            return;
+        }
+        let mut roles: Vec<(u32, bool)> = self.nodes[rep.index()]
+            .edges
+            .iter()
+            .map(|(r, _)| (r.role_id().index(), r.is_inverse()))
+            .collect();
+        roles.sort_unstable();
+        roles.hash(h);
+        if hop == 0 {
+            return;
+        }
+        let mut succ: Vec<HNode> = self.nodes[rep.index()]
+            .edges
+            .iter()
+            .map(|(_, t)| *t)
+            .collect();
+        succ.sort_by_key(|t| self.resolve(*t).index());
+        for t in succ {
+            self.hash_subtree(t, hop - 1, true, h, visited);
+        }
+    }
+
     fn solve(&mut self, depth: usize) -> HyperResult {
         // STAGE-4 probe: per-thread label-keyed Unsat memo (RUSTDL_UNSAT_MEMO).
         thread_local! {
@@ -2146,18 +2265,13 @@ impl<'c> HyperEngine<'c> {
             // whether label-keyed caching is sound (wine FP=0 ⇒ contexts verdict-
             // irrelevant ⇒ engine lever) or the reuse-trap (FP>0). Throwaway probe.
             let memo_key: Option<u64> = if std::env::var_os("RUSTDL_UNSAT_MEMO").is_some() {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let rep = self.resolve(node);
-                let mut labels: Vec<u32> = self.nodes[rep.index()]
-                    .labels
-                    .iter()
-                    .map(|c| c.index())
-                    .collect();
-                labels.sort_unstable();
-                let mut h = DefaultHasher::new();
-                labels.hash(&mut h);
-                Some(h.finish())
+                // RUSTDL_MEMO_KEY selects the key enrichment level (default 0 =
+                // own-labels-only). See `memo_node_key`.
+                let level: u8 = std::env::var("RUSTDL_MEMO_KEY")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                Some(self.memo_node_key(node, level))
             } else {
                 None
             };

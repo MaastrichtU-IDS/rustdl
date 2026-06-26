@@ -6912,4 +6912,51 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .expect("spawn");
         child.join().expect("thread");
     }
+
+    /// STAGE-4 minimal-sound-key gate: sweep the UNSAT-memo key enrichment
+    /// (RUSTDL_MEMO_KEY ∈ {0,1,2,3,9}) on sat(Gamay). Ground truth = Sat
+    /// (wine ∃-seed classification is MISSED=0/FP=0). For each level print
+    /// (verdict, branches, wall). Smallest level with verdict==Sat AND
+    /// branches ≪ 451k ⇒ SPARSE (sound reuse viable, engine core found).
+    /// Verdict stays Unsat (reuse-trap) or re-explodes/Stalls once sound ⇒
+    /// DENSE (no sound re-keying; needs a different calculus). Each level runs
+    /// in a fresh thread so the per-thread memo resets.
+    #[test]
+    #[ignore = "Stage-4 minimal-sound-key gate; --ignored --nocapture"]
+    fn stage4_minkey_gamay() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        // SAFETY: single ignored test; sets its own diagnostic env vars.
+        unsafe { std::env::set_var("RUSTDL_UNSAT_MEMO", "1") };
+        unsafe { std::env::set_var("RUSTDL_ADAPTIVE_BUDGET", "0") };
+        for level in ["0", "1", "2", "3", "9", "99"] {
+            // SAFETY: set before the worker thread spawns; threads run serially.
+            unsafe { std::env::set_var("RUSTDL_MEMO_KEY", level) };
+            let lvl = level.to_string();
+            let child = std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024 * 1024)
+                .spawn(move || {
+                    let src = std::fs::read_to_string(
+                        "/data/dumontier/rustdl/ontologies/real/wine.ofn",
+                    )
+                    .unwrap();
+                    let (ont, _): (
+                        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+                        _,
+                    ) = read_ofn(&mut std::io::Cursor::new(src.into_bytes()), Default::default())
+                        .unwrap();
+                    let iri = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/wine#Gamay";
+                    let t = Some(std::time::Duration::from_secs(30));
+                    let out = crate::sat_class_probe(&ont, iri, 256, t)
+                        .expect("probe ok")
+                        .expect("IRI resolves");
+                    let (result, stats, wall_ms) = out;
+                    println!(
+                        "MINKEY level={lvl}: {result:?} wall={wall_ms:.0}ms branches={} (disj={} merge={})",
+                        stats.branches_taken, stats.disj_branches, stats.merge_branches
+                    );
+                })
+                .expect("spawn");
+            child.join().expect("thread");
+        }
+    }
 }

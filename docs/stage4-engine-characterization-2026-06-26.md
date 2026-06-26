@@ -75,3 +75,41 @@ genuine core as the documented frontier and the deep engine as a scoped *future*
 a now-justified build. (Engine first-step, if ever pursued: a read-one-tree instrument to
 confirm the precise branch structure before committing — but the ROI on 8 classes/1 fixture
 argues against it.)
+
+## Part 3 — read-one-tree + revisit/context (the mechanism, conclusive)
+
+**Read-one-tree (sat(Gamay), first 60 ⊔ decisions):** branches are almost all **Class
+disjunctions** (arity 2–5, `["Cls","Cls"]` … `["Cls"×5]`), overwhelmingly on the **home node
+(node 0)**, with depth resetting and re-ascending on the same nodes (0/12/13) at identical
+arity/kind signatures — i.e. **re-derivation of a small state set**, not a wide product.
+
+**Revisit + context probe (sat(Gamay), post-∃-seed, 100k ⊔ visits):**
+
+| metric | value |
+|---|---|
+| total ⊔ visits | 100 000 |
+| distinct node **label-sets** | **70** |
+| distinct **label-set + edge/neighbour context** | **81 303** |
+
+**Reading (conclusive):** the wedge re-computes ~70 label-states ~1 400× each — but under
+**81 303 distinct contexts** (successor/edge structure differs almost every visit). So:
+- **Label-keyed memoization is UNSOUND** (same labels, different context = the reuse-trap;
+  the SP-0-era "0 context-independent" violation, **re-confirmed post-∃-seed** — the ∃-seed did
+  NOT make it cacheable).
+- **Sound (label+context) memoization ≈ 19% reuse** (81 303/100k distinct) — marginal, nowhere
+  near the 1 400× needed to collapse it.
+
+## Conclusion — GENUINE; the only path is the from-scratch integrated engine
+
+Every cheaper mechanism is now measured-out on the genuine core:
+- richer saturation — rules (∀/≤1/nominal) already present;
+- dropped-∃ recovery — 1/class, classes seeded-but-uncollapsed;
+- memoization — label-keyed unsound (reuse-trap), context-keyed ~19% (marginal).
+
+The genuine-hard core (8 wine classes) has a **genuinely context-rich disjunctive state
+space** (70 label-configs × ~81k contexts). Konclude resolves this class in ms because its
+**integrated representation** makes these context-rich states efficient/cacheable where
+rustdl's wedge re-derives them. **The deep engine is therefore a from-scratch Konclude-style
+SROIQ tableau** (integrated nominal/merge representation + sound completion-graph reuse under
+applicability conditions), not a bolt-on to the wedge — a large, correctness-critical,
+multi-sub-project program. Characterization complete; this is the scoped engine target.

@@ -2054,6 +2054,88 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
+            // STAGE-4 revisit probe: count distinct node-states vs total ⊔ visits
+            // (post-∃-seed). distinct ≪ total ⇒ re-computation of a tiny state set
+            // ⇒ memoization is the lever; distinct ≈ total ⇒ genuinely huge space.
+            if std::env::var_os("RUSTDL_REVISIT_PROBE").is_some() {
+                use std::cell::RefCell;
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                thread_local! {
+                    static SEEN: RefCell<(std::collections::HashSet<u64>, u64, std::collections::HashSet<u64>)> =
+                        RefCell::new((std::collections::HashSet::new(), 0, std::collections::HashSet::new()));
+                }
+                let rep = self.resolve(node);
+                let mut labels: Vec<u32> = self.nodes[rep.index()]
+                    .labels
+                    .iter()
+                    .map(|c| c.index())
+                    .collect();
+                labels.sort_unstable();
+                let mut h = DefaultHasher::new();
+                labels.hash(&mut h);
+                let key_label = h.finish();
+                // Context key = labels + incoming/outgoing edge structure (role +
+                // resolved-neighbour labels). If distinct(label+ctx) ≈ distinct(label),
+                // the verdict is label-determined ⇒ label-keyed caching is sound.
+                let mut hc = DefaultHasher::new();
+                labels.hash(&mut hc);
+                let mut edges: Vec<(u32, bool, Vec<u32>)> = self.nodes[rep.index()]
+                    .edges
+                    .iter()
+                    .map(|(role, tgt)| {
+                        let tr = self.resolve(*tgt);
+                        let mut tl: Vec<u32> = self.nodes[tr.index()]
+                            .labels
+                            .iter()
+                            .map(|c| c.index())
+                            .collect();
+                        tl.sort_unstable();
+                        (role.role_id().index(), role.is_inverse(), tl)
+                    })
+                    .collect();
+                edges.sort();
+                edges.hash(&mut hc);
+                let key_ctx = hc.finish();
+                SEEN.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.0.insert(key_label);
+                    s.1 += 1;
+                    s.2.insert(key_ctx);
+                    if s.1 % 100_000 == 0 {
+                        eprintln!(
+                            "REVISIT: visits={} distinct_label={} distinct_label+ctx={}",
+                            s.1,
+                            s.0.len(),
+                            s.2.len()
+                        );
+                    }
+                });
+            }
+            // STAGE-4 read-one-tree: env-gated dump of what the ⊔ branches on.
+            if std::env::var_os("RUSTDL_TREE_LOG").is_some() {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static N: AtomicU64 = AtomicU64::new(0);
+                let n = N.fetch_add(1, Ordering::Relaxed);
+                if n < 60 {
+                    let kinds: Vec<&str> = self.clauses[ci]
+                        .head
+                        .iter()
+                        .map(|a| match a {
+                            Atom::Class(..) => "Cls",
+                            Atom::Exists(..) => "Ex",
+                            Atom::AtMost(..) => "≤n",
+                            Atom::AtLeast(..) => "≥n",
+                            Atom::Equal(..) => "=n",
+                            Atom::Role(..) => "Rol",
+                        })
+                        .collect();
+                    eprintln!(
+                        "TREE[{n}] depth={d} node={} arity={head_len} kinds={kinds:?}",
+                        self.resolve(node).index()
+                    );
+                }
+            }
             let live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
                 self.lookahead_live_disjuncts(&sat, ci, node)
             } else {

@@ -1479,8 +1479,8 @@ pub fn hyper_sat_lookahead_enabled() -> bool {
 }
 
 /// SP2 coupled-saturation seed: seed each per-pair wedge call with the
-/// class's named saturated subsumers. Default **OFF** (`RUSTDL_SAT_SEED`;
-/// set to a non-empty non-`"0"` value to enable). When on, `HyperCache::build`
+/// class's named saturated subsumers. Gated by `RUSTDL_SAT_SEED`, **default ON**
+/// (set to `"0"` to disable; see the SP3 note below). When on, `HyperCache::build`
 /// computes a per-named-class table once via `owl_dl_saturation::saturate`,
 /// and `decide_with_stats` seeds `Q → D` for every entry in the table
 /// before the engine runs. Soundness: seeding entailed named subsumers (and

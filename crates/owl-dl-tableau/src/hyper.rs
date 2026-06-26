@@ -2448,8 +2448,20 @@ impl<'c> HyperEngine<'c> {
                             .iter()
                             .map(|c| c.index())
                             .collect();
+                        // Clause body trigger classes — the concept whose expansion
+                        // fires this disjunction. Names which definition is branching
+                        // (food/Course/hasDrink ⇒ food-pairing residual).
+                        let body: Vec<i64> = self.clauses[ci]
+                            .body
+                            .iter()
+                            .map(|a| match a {
+                                Atom::Class(c, _) => i64::from(c.index()),
+                                Atom::Role(r, _, _) => -(i64::from(r.role_id().index()) + 1),
+                                _ => -1000,
+                            })
+                            .collect();
                         eprintln!(
-                            "DISJDUMP[{n}] node={} arity={head_len} survivors={survivors:?} label={label:?}",
+                            "DISJDUMP[{n}] node={} arity={head_len} body={body:?} survivors={survivors:?} label={label:?}",
                             rep.index()
                         );
                     }

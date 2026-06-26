@@ -2924,6 +2924,32 @@ fn collect_el_rules(
         rules.functional_supers_of[r_idx] = supers;
     }
 
+    // M2 (env-gated, default OFF): DifferentIndividuals → NomKey disjointness.
+    // `DifferentIndividuals(a,b)` ⟹ `{a} ⊓ {b} = ⊥` ⟹ `NomKey(a) ⊓ NomKey(b)`
+    // unsat (NomKey is a 1:1 identity representative). Registering the disjoint
+    // pair lets the existing functional/≤1 witness-merge derive `C ⊑ ⊥` on the
+    // nominal value-partition pattern (`≤1 R` over distinct value nominals) —
+    // the saturation-time determinism Konclude has and our class-level saturator
+    // lacked (see docs/stage4-konclude-representation-study-2026-06-26.md).
+    // SOUND: only entailed disjointness is added; never UNA-wide. Lookup-only
+    // (no NomKey allocation), so `total_classes` above is unaffected. Only pairs
+    // for individuals actually used as nominal fillers (those with a NomKey).
+    if std::env::var("RUSTDL_NOMKEY_DIFF").as_deref() == Ok("1") {
+        for ax in &internal.axioms {
+            if let Axiom::DifferentIndividuals(inds) = ax {
+                let keys: Vec<ClassId> = inds
+                    .iter()
+                    .filter_map(|i| tseitin.nominal_by_ind.get(i).copied())
+                    .collect();
+                for i in 0..keys.len() {
+                    for j in (i + 1)..keys.len() {
+                        rules.disjoint_pairs.push((keys[i], keys[j]));
+                    }
+                }
+            }
+        }
+    }
+
     (rules, tseitin, total_classes)
 }
 
@@ -6402,6 +6428,83 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             failures.is_empty(),
             "Faithfulness failures on galen corpus:\n{failures:#?}"
+        );
+    }
+
+    /// M2 canary (negatives-first): `≤1`/functional `r` with two distinct
+    /// nominal fillers must be unsat ONLY when `DifferentIndividuals(a,b)` is
+    /// asserted AND the flag is on. Without the assertion, a and b may be the
+    /// same individual (no UNA) ⇒ NOT unsat. Flag-off ⇒ NOT unsat (byte-identical).
+    static M2_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn m2_src(with_different: bool) -> String {
+        let diff = if with_different {
+            "    DifferentIndividuals(:a :b)\n"
+        } else {
+            ""
+        };
+        format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/m2>\n\
+    Declaration(Class(:C))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:a))\n\
+    Declaration(NamedIndividual(:b))\n\
+    FunctionalObjectProperty(:r)\n\
+    SubClassOf(:C ObjectHasValue(:r :a))\n\
+    SubClassOf(:C ObjectHasValue(:r :b))\n\
+{diff}\
+)\n"
+        )
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn m2_distinct_nominal_fillers_clash_when_flag_on() {
+        let _g = M2_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: serialized by M2_ENV_LOCK; var removed before unlock.
+        unsafe { std::env::set_var("RUSTDL_NOMKEY_DIFF", "1") };
+        let internal = parse_internal(&m2_src(true));
+        let subs = saturate(&internal);
+        let unsat = subs.is_unsatisfiable(class(&internal, "C"));
+        unsafe { std::env::remove_var("RUSTDL_NOMKEY_DIFF") };
+        assert!(
+            unsat,
+            "flag-on + DifferentIndividuals(a,b) + ≤1 r + ∃r.{{a}} ⊓ ∃r.{{b}} ⇒ C unsat"
+        );
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn m2_no_clash_without_different_individuals() {
+        let _g = M2_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: serialized by M2_ENV_LOCK; var removed before unlock.
+        unsafe { std::env::set_var("RUSTDL_NOMKEY_DIFF", "1") };
+        let internal = parse_internal(&m2_src(false));
+        let subs = saturate(&internal);
+        let unsat = subs.is_unsatisfiable(class(&internal, "C"));
+        unsafe { std::env::remove_var("RUSTDL_NOMKEY_DIFF") };
+        assert!(
+            !unsat,
+            "flag-on but NO DifferentIndividuals ⇒ a,b may be same ⇒ C NOT unsat (sound, no UNA)"
+        );
+    }
+
+    #[test]
+    fn m2_no_clash_when_flag_off() {
+        let _g = M2_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Flag off (var absent): byte-identical pre-M2 behaviour.
+        let internal = parse_internal(&m2_src(true));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.is_unsatisfiable(class(&internal, "C")),
+            "flag-off ⇒ DifferentIndividuals not fed to disjoint_pairs ⇒ C NOT unsat"
         );
     }
 }

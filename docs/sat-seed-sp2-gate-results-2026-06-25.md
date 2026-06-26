@@ -59,6 +59,38 @@ The SP1 saturation increments (∀/≤n/nominal — more named subsumers seeded 
 remain the longer arc toward Konclude's 1 ms, now with both a validated sound mechanism AND
 a measured payoff path.
 
+## SP2.1 (label-cache-build seeding) — measured outcome (2026-06-26)
+
+Seeded `classify_labels` (the per-class `sat(c)` label-cache build) with `c`'s named
+subsumers + **rebuilt the trigger index when seeded** (`HyperEngine::new`, not
+`new_with_prebuilt` — the amortized index, built pre-seed, leaves appended seed clauses
+inert; the first cut was a silent no-op, misses identical on/off). Now the seed fires.
+
+**Sound at scale (re-gated with SP2.1):** flag-ON `konclude_closure_diff` FP=0/MISSED=0
+byte-identical — wine 653=653 unsat:0, sio 8904, ore-15672 142, pizza 499, all EL fixtures.
+
+**Wine wall — real but MODEST, not a collapse** (`--pair-timeout-ms 25`):
+| label-cache deadline | misses | label_cache_build | tier_walk | wall |
+|---|---|---|---|---|
+| OFF baseline | 4105 | 6.9 s | 42.5 s | **49.4 s** |
+| seed, 3.4 s (adaptive) | 3476 | 6.5 s | 39.2 s | **45.7 s (−7.5%)** |
+| seed, 5 s | 3365 | 9.1 s | 36.9 s | 46.0 s |
+| seed, 15 s | 2410 | 18.3 s | 31.9 s | 50.3 s |
+| seed, 10 s, adaptive-off | 2919 | 14.1 s | 33.9 s | 48.0 s |
+
+Raising the deadline cuts misses + tier_walk but grows build-cost ~evenly → **net flat**.
+The per-class probe's 21× (Zinfandel) does NOT generalize to a classify collapse: only
+~25–30 of 137 classes are the hard nominal ones, and the **current** saturator's named
+subsumers collapse only ~5 more of them below a tractable deadline. The magnitude is gated
+by **saturation richness**, not the wiring.
+
+**Verdict: SP2+SP2.1 = a SOUND wine lever, validated FP=0/MISSED=0 corpus-wide, delivering
+a modest ~7.5% wine-classify win.** The wine *collapse* requires the **SP1 saturation
+increments** (∀ done, ≤1 done, nominal-interaction next): richer ∀/≤n/nominal closure →
+more named subsumers seeded per class → more hard classes collapse below the deadline →
+the per-class 21× generalizes. That is now the evidence-backed next step with a measured
+per-class payoff target. Default OFF until the increments make the win substantial.
+
 ## Disposition
 
 SP2 (per-pair seed) committed on `feat/sat-seed-sp2` (Task 1 `5b610f2`), `RUSTDL_SAT_SEED`

@@ -2050,6 +2050,22 @@ impl HyperCache {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(c, X)],
         });
+        // SP2.1: seed the label-cache build with `c`'s named saturated subsumers
+        // (the same monotone, sound seed as `decide_with_stats`). This is where the
+        // seed's per-class collapse pays off: `classify_labels(c)` is the per-class
+        // `sat(c)` whose timeout on hard nominal classes produces the ~4638 wine
+        // label-cache misses → per-pair refutations. Seeding lets those sats
+        // terminate within the (adaptive) label-cache deadline, completing the cache.
+        if let Some(tbl) = &self.sat_seed
+            && let Some(seeds) = tbl.get(c.index() as usize)
+        {
+            for &d in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Class(d, X)],
+                });
+            }
+        }
         // Use `with_sub_roles_keep_index` (NOT `with_sub_roles`) because the
         // amortized `base_indexes` was already built hierarchy-aware in
         // `HyperCache::build` (`build_clause_indexes(.., Some(&sub_roles))`).
@@ -2061,15 +2077,30 @@ impl HyperCache {
         // When SP1.1 is OFF the base_indexes was built without the hierarchy
         // (None) so we must NOT call with_sub_roles_keep_index — the two sites
         // are a matched pair (build gate ↔ classify_labels gate).
-        let mut engine = HyperEngine::new_with_prebuilt(
-            &clauses,
-            self.fresh_q,
-            std::sync::Arc::clone(&self.base_indexes),
-            std::sync::Arc::clone(&self.base_disjoint_pairs),
-        );
-        if crate::classify_same_tier_enabled() {
-            engine = engine.with_sub_roles_keep_index(self.sub_roles.clone());
-        }
+        // When SP2.1 seed clauses were appended, the amortized `base_indexes`
+        // (built in `HyperCache::build` BEFORE the per-class seed) does NOT index
+        // them, so `new_with_prebuilt` leaves the seed clauses inert (they never
+        // trigger). Rebuild the full index with `new` so the seed fires. When
+        // unseeded (`sat_seed` is None) keep the amortized path — byte-identical
+        // to pre-SP2.1.
+        let mut engine = if self.sat_seed.is_some() {
+            let mut e = HyperEngine::new(&clauses, self.fresh_q);
+            if crate::classify_same_tier_enabled() {
+                e = e.with_sub_roles(self.sub_roles.clone());
+            }
+            e
+        } else {
+            let mut e = HyperEngine::new_with_prebuilt(
+                &clauses,
+                self.fresh_q,
+                std::sync::Arc::clone(&self.base_indexes),
+                std::sync::Arc::clone(&self.base_disjoint_pairs),
+            );
+            if crate::classify_same_tier_enabled() {
+                e = e.with_sub_roles_keep_index(self.sub_roles.clone());
+            }
+            e
+        };
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
@@ -6177,7 +6208,10 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .vocabulary
             .classes()
             .find(|(_, i)| *i == iri.as_str())
-            .map_or_else(|| panic!("class {local} not found in vocabulary"), |(id, _)| id)
+            .map_or_else(
+                || panic!("class {local} not found in vocabulary"),
+                |(id, _)| id,
+            )
     }
 
     /// Helper: set/clear `RUSTDL_SAT_SEED`, build a `HyperCache`, restore the

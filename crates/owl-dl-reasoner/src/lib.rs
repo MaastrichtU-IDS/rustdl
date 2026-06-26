@@ -1897,6 +1897,14 @@ pub(crate) struct HyperCache {
     /// `RUSTDL_SAT_SEED` is off (zero cost — no `saturate` call). Used by
     /// `decide_with_stats` to seed the wedge root with `Q → D` for each entry.
     sat_seed: Option<Vec<Vec<owl_dl_core::ir::ClassId>>>,
+    /// SP3 Phase-2: per-named-class table of derived ∃-facts, computed from
+    /// the same `saturate_with_exists_facts` call that builds `sat_seed`.
+    /// `exists_seed[c.index()]` lists `(Role, target)` pairs translated for the
+    /// wedge: named target → direct `ClassId`; NomKey(a) → `ClassId(n_named + a.index())`;
+    /// Tseitin/DKey → dropped (sound under-approximation).
+    /// `None` when `RUSTDL_SAT_SEED` is off (built in the same flag-gated block).
+    /// Used by `decide_with_stats` and `classify_labels` to seed `Q → ∃R.target`.
+    exists_seed: Option<Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>>,
 }
 
 impl HyperCache {
@@ -1938,10 +1946,19 @@ impl HyperCache {
         // class ids (NomKey/ForallKey/DKey/Tseitin) ≥ `num_classes` share ids
         // but carry different semantics in the wedge; seeding them would be a
         // cross-engine mismatch (spurious Unsat = FP).
-        let sat_seed = if hyper_sat_seed_enabled() {
+        // SP2 + SP3 Phase-2: build both the named-subsumer table (sat_seed) and the
+        // ∃-facts table (exists_seed) from a single `saturate_with_exists_facts` call.
+        // This avoids double-saturation while adding ∃-seed support.
+        // Both tables are `None` when `RUSTDL_SAT_SEED` is off — the flag-off path is
+        // byte-identical to pre-SP3 behaviour (no extra cost, no extra call).
+        let (sat_seed, exists_seed) = if hyper_sat_seed_enabled() {
+            use owl_dl_core::ir::Role;
             let n_named = internal.vocabulary.num_classes();
-            let subs = owl_dl_saturation::saturate(&internal);
-            let table: Vec<Vec<ClassId>> = (0..n_named)
+            let n_named_u32 = u32::try_from(n_named).unwrap_or(u32::MAX);
+            let (subs, facts, nom_to_ind) =
+                owl_dl_saturation::saturate_with_exists_facts(&internal);
+            // Named subsumer table (unchanged from SP2).
+            let named: Vec<Vec<ClassId>> = (0..n_named)
                 .map(|ci| {
                     let c = ClassId::new(u32::try_from(ci).unwrap_or(u32::MAX));
                     subs.subsumers_of(c)
@@ -1950,9 +1967,30 @@ impl HyperCache {
                         .collect()
                 })
                 .collect();
-            Some(table)
+            // ∃-seed table: translate derived ∃-facts for the wedge.
+            // Named target → direct ClassId; NomKey(a) → ClassId(n_named + a.index());
+            // Tseitin/DKey → drop (sound under-approximation).
+            // Synthetic subjects (si >= n_named) are also dropped.
+            let mut exists: Vec<Vec<(Role, ClassId)>> = vec![Vec::new(); n_named];
+            for (s, r, tgt) in facts {
+                let si = s.index() as usize;
+                if si >= n_named {
+                    continue; // synthetic subject — skip
+                }
+                let translated = if (tgt.index() as usize) < n_named {
+                    Some(tgt)
+                } else if let Some(&ind) = nom_to_ind.get(&tgt) {
+                    Some(ClassId::new(n_named_u32 + ind.index()))
+                } else {
+                    None // Tseitin / DKey — drop
+                };
+                if let Some(t) = translated {
+                    exists[si].push((Role::named(r), t));
+                }
+            }
+            (Some(named), Some(exists))
         } else {
-            None
+            (None, None)
         };
         let mut complements: std::collections::HashMap<ClassId, ClassId> =
             std::collections::HashMap::new();
@@ -2025,6 +2063,7 @@ impl HyperCache {
             sub_roles,
             sat_lookahead,
             sat_seed,
+            exists_seed,
         }
     }
 
@@ -2033,6 +2072,15 @@ impl HyperCache {
     #[cfg(test)]
     pub(crate) fn sat_seed_for_test(&self) -> Option<&Vec<Vec<owl_dl_core::ir::ClassId>>> {
         self.sat_seed.as_ref()
+    }
+
+    /// Test accessor: returns the SP3 ∃-seed table when the flag is on.
+    /// `None` iff `RUSTDL_SAT_SEED` was off at `build` time.
+    #[cfg(test)]
+    pub(crate) fn exists_seed_for_test(
+        &self,
+    ) -> Option<&Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>> {
+        self.exists_seed.as_ref()
     }
 
     /// Three-valued subsumption verdict from the hyper engine:
@@ -2092,6 +2140,21 @@ impl HyperCache {
                 clauses.push(DlClause {
                     body: vec![Atom::Class(self.fresh_q, X)],
                     head: vec![Atom::Class(d, X)],
+                });
+            }
+        }
+        // SP3 Phase-2: seed the derived ∃-facts for `sub`.
+        // For each `(R, target)` in `exists_seed[sub.index()]`, assert `Q → ∃R.target`
+        // so the engine starts with the saturation-entailed existential successors
+        // already forced at the root. Sound: these ∃-facts are EL-entailed.
+        // Flag-off: `exists_seed` is `None` ⇒ this block is skipped entirely.
+        if let Some(tbl) = &self.exists_seed
+            && let Some(seeds) = tbl.get(sub.index() as usize)
+        {
+            for &(role, target) in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Exists(role, target, X)],
                 });
             }
         }
@@ -2223,6 +2286,19 @@ impl HyperCache {
                 });
             }
         }
+        // SP3 Phase-2: seed the derived ∃-facts for `c`.
+        // Mirrors the `decide_with_stats` seed site above so label-cache probes
+        // see the same saturation-entailed existential successors.
+        if let Some(tbl) = &self.exists_seed
+            && let Some(seeds) = tbl.get(c.index() as usize)
+        {
+            for &(role, target) in seeds {
+                clauses.push(DlClause {
+                    body: vec![Atom::Class(self.fresh_q, X)],
+                    head: vec![Atom::Exists(role, target, X)],
+                });
+            }
+        }
         // Use `with_sub_roles_keep_index` (NOT `with_sub_roles`) because the
         // amortized `base_indexes` was already built hierarchy-aware in
         // `HyperCache::build` (`build_clause_indexes(.., Some(&sub_roles))`).
@@ -2234,13 +2310,13 @@ impl HyperCache {
         // When SP1.1 is OFF the base_indexes was built without the hierarchy
         // (None) so we must NOT call with_sub_roles_keep_index — the two sites
         // are a matched pair (build gate ↔ classify_labels gate).
-        // When SP2.1 seed clauses were appended, the amortized `base_indexes`
+        // When SP2.1/SP3 seed clauses were appended, the amortized `base_indexes`
         // (built in `HyperCache::build` BEFORE the per-class seed) does NOT index
         // them, so `new_with_prebuilt` leaves the seed clauses inert (they never
         // trigger). Rebuild the full index with `new` so the seed fires. When
-        // unseeded (`sat_seed` is None) keep the amortized path — byte-identical
-        // to pre-SP2.1.
-        let mut engine = if self.sat_seed.is_some() {
+        // unseeded (both `sat_seed` and `exists_seed` are None) keep the amortized
+        // path — byte-identical to pre-SP2.1.
+        let mut engine = if self.sat_seed.is_some() || self.exists_seed.is_some() {
             let mut e = HyperEngine::new(&clauses, self.fresh_q);
             if crate::classify_same_tier_enabled() {
                 e = e.with_sub_roles(self.sub_roles.clone());
@@ -6567,5 +6643,117 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             "mode 2 seeds at least one ∃-fact (the ∃r.{{a}} axiom)"
         );
         assert_eq!(m2, m3, "mode 3 control must seed the same count as mode 2");
+    }
+}
+
+/// SP3 Phase-2: `exists_seed` wiring tests.
+///
+/// Inline (not in `tests/`) because `HyperCache`, `exists_seed_for_test`, and
+/// `test_env_lock` are all `pub(crate)` / `#[cfg(test)]` — unreachable from an
+/// integration-test crate.
+///
+/// Fixture: `C ⊑ ∃r.{a}` — reused from `precompletion_probe_tests`.
+#[cfg(test)]
+mod exists_seed_wiring_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use owl_dl_core::ir::{ClassId, Role};
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    /// Build the `C ⊑ ∃r.{a}` fixture and return its `InternalOntology` plus ids.
+    fn build_c_exists_nominal_a() -> (
+        InternalOntology,
+        ClassId,
+        owl_dl_core::ir::RoleId,
+        owl_dl_core::ir::IndividualId,
+    ) {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             Declaration(NamedIndividual(:a))\n\
+             SubClassOf(:C ObjectHasValue(:r :a))\n\
+             )\n"
+        );
+        let onto = parse(&src);
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("C⊑∃r.{a} converts");
+        let c = internal
+            .vocabulary
+            .classes()
+            .find(|(_, iri)| *iri == "http://rustdl.test/C")
+            .map(|(id, _)| id)
+            .expect("class C present");
+        let r = internal
+            .vocabulary
+            .roles()
+            .find(|(_, iri)| *iri == "http://rustdl.test/r")
+            .map(|(id, _)| id)
+            .expect("role r present");
+        let a = internal
+            .vocabulary
+            .individuals()
+            .find(|(_, iri)| *iri == "http://rustdl.test/a")
+            .map(|(id, _)| id)
+            .expect("individual a present");
+        (internal, c, r, a)
+    }
+
+    /// Helper: set/clear `RUSTDL_SAT_SEED`, build a `HyperCache`, restore prior.
+    #[allow(unsafe_code)]
+    fn build_cache_with_sat_seed_flag(internal: &InternalOntology, enable: bool) -> HyperCache {
+        let _lock = test_env_lock();
+        let prior = std::env::var_os("RUSTDL_SAT_SEED");
+        // SAFETY: serialized by test_env_lock (one test at a time); restored before release.
+        if enable {
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "1") };
+        } else {
+            unsafe { std::env::remove_var("RUSTDL_SAT_SEED") };
+        }
+        let cache = HyperCache::build(internal);
+        match prior {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_SAT_SEED", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_SAT_SEED") },
+        }
+        cache
+    }
+
+    /// Flag-off ⇒ `exists_seed` is `None`. Flag-on ⇒ `exists_seed[C]`
+    /// contains `(Role::named(r), wedge_nominal)` where
+    /// `wedge_nominal = num_named + a.index()`.
+    #[test]
+    fn exists_seed_table_built_only_when_flagged() {
+        let (internal, c, r, a) = build_c_exists_nominal_a();
+        let off = build_cache_with_sat_seed_flag(&internal, false);
+        assert!(
+            off.exists_seed_for_test().is_none(),
+            "flag off ⇒ no ∃ table"
+        );
+        let on = build_cache_with_sat_seed_flag(&internal, true);
+        let tbl = on
+            .exists_seed_for_test()
+            .expect("flag on ⇒ ∃ table present");
+        let n_named = u32::try_from(internal.vocabulary.num_classes()).expect("fits u32");
+        let wedge_nominal = ClassId::new(n_named + a.index());
+        let want_role = Role::named(r);
+        assert!(
+            tbl[c.index() as usize]
+                .iter()
+                .any(|&(rr, t)| rr == want_role && t == wedge_nominal),
+            "C seeds ∃r.{{a}} translated to wedge nominal id {wedge_nominal:?}"
+        );
     }
 }

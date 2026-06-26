@@ -24,7 +24,9 @@ const WINE: &str = "http://www.w3.org/TR/2003/PR-owl-guide-20031209/wine#";
 fn load() -> SetOntology<RcStr> {
     let src = std::fs::read_to_string(OFN_PATH).unwrap();
     let mut r = Cursor::new(src.into_bytes());
-    read_ofn(&mut r, ParserConfiguration::default()).expect("parse").0
+    read_ofn(&mut r, ParserConfiguration::default())
+        .expect("parse")
+        .0
 }
 
 fn probe(local: &str, mode: u8, depth: usize, t: Option<Duration>) {

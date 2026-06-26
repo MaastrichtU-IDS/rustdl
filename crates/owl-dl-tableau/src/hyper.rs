@@ -2613,6 +2613,20 @@ impl<'c> HyperEngine<'c> {
     /// already satisfied there. A clause with a satisfied disjunct is
     /// not a branch point — skipping it avoids redundant branching.
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
+        // STAGE-4 THROWAWAY (RUSTDL_SKIP_NAMED_BINARY=<thr>): skip branching on
+        // binary disjunctions whose BOTH disjuncts are named classes (id < thr,
+        // e.g. 137 for wine) — the [4,25]-shaped excluded-middle/partition the
+        // recon flagged. Measures whether those branches drive Gamay's explosion
+        // (collapse → tautology-skip is the lever) or not (Tseitin definitions
+        // are the wall). NOT sound (drops obligations); throwaway measurement only.
+        let skip_thr: Option<u32> = std::env::var("RUSTDL_SKIP_NAMED_BINARY")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok());
+        let is_skippable = |head: &[Atom]| -> bool {
+            matches!(skip_thr, Some(thr)
+                if head.len() == 2
+                    && head.iter().all(|a| matches!(a, Atom::Class(c, _) if c.index() < thr)))
+        };
         if self.mrv_ordering {
             let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
             for idx in 0..self.nodes.len() {
@@ -2622,6 +2636,9 @@ impl<'c> HyperEngine<'c> {
                 }
                 for ci in 0..self.clauses.len() {
                     if self.clauses[ci].is_horn() {
+                        continue;
+                    }
+                    if is_skippable(&self.clauses[ci].head) {
                         continue;
                     }
                     let Some(bindings) = self.match_body(ci, node) else {
@@ -2675,6 +2692,9 @@ impl<'c> HyperEngine<'c> {
             }
             for ci in 0..self.clauses.len() {
                 if self.clauses[ci].is_horn() {
+                    continue;
+                }
+                if is_skippable(&self.clauses[ci].head) {
                     continue;
                 }
                 let Some(bindings) = self.match_body(ci, node) else {

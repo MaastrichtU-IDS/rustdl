@@ -2405,6 +2405,56 @@ impl<'c> HyperEngine<'c> {
                     });
                 }
             }
+            // STAGE-4 DISJ_DUMP (RUSTDL_DISJ_DUMP): for the first 25 ⊔ points with
+            // ≥2 Horn-survivors (the hard, non-collapsed choices), print the
+            // surviving disjuncts' Class ids (-1 = non-Class disjunct). Joined with
+            // the VOCAB dump (sat_class_probe), this shows WHAT the open choices are
+            // — named value-classes excludable-in-principle (derivable-but-unused
+            // exclusion ⇒ bounded target) vs genuinely-independent value dimensions
+            // (no single exclusion collapses them ⇒ dense wall).
+            if std::env::var_os("RUSTDL_DISJ_DUMP").is_some() {
+                use std::cell::RefCell;
+                thread_local! {
+                    static DD: RefCell<u64> = const { RefCell::new(0) };
+                }
+                if DD.with(|d| *d.borrow()) < 25 {
+                    let mut survivors: Vec<i64> = Vec::new();
+                    for k in 0..head_len {
+                        let head_atom = self.clauses[ci].head[k];
+                        let saved = self.save();
+                        let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
+                        let horn_killed =
+                            matches!(self.horn_fixpoint(FIXPOINT_ITERS), HyperResult::Unsat);
+                        self.restore(saved);
+                        if !horn_killed {
+                            match head_atom {
+                                Atom::Class(c, _) => survivors.push(i64::from(c.index())),
+                                _ => survivors.push(-1),
+                            }
+                        }
+                    }
+                    if survivors.len() >= 2 {
+                        let n = DD.with(|d| {
+                            *d.borrow_mut() += 1;
+                            *d.borrow()
+                        });
+                        let rep = self.resolve(node);
+                        // Named label members (< 137 in wine = named classes;
+                        // synthetics ≥137). Lets us judge whether a survivor side
+                        // is entailed by the label (derivable-but-unused) or the
+                        // node is bare (genuinely open).
+                        let label: Vec<u32> = self.nodes[rep.index()]
+                            .labels
+                            .iter()
+                            .map(|c| c.index())
+                            .collect();
+                        eprintln!(
+                            "DISJDUMP[{n}] node={} arity={head_len} survivors={survivors:?} label={label:?}",
+                            rep.index()
+                        );
+                    }
+                }
+            }
             // STAGE-4 label-keyed Unsat memo PROTOTYPE (RUSTDL_UNSAT_MEMO): cache
             // node label-sets that resolved Unsat; short-circuit on revisit. Tests
             // whether label-keyed caching is sound (wine FP=0 ⇒ contexts verdict-

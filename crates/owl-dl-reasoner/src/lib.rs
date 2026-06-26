@@ -1372,6 +1372,13 @@ pub fn sat_class_probe<A: horned_owl::model::ForIRI>(
     timeout: Option<std::time::Duration>,
 ) -> Result<Option<(HyperResult, SearchStats, f64)>, ReasonError> {
     let internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    // STAGE-4 DISJ_DUMP: dump the vocabulary (id→IRI) so the wedge's DISJDUMP
+    // survivor ids can be interpreted (named value-classes vs synthetics).
+    if std::env::var_os("RUSTDL_DISJ_DUMP").is_some() {
+        for (id, iri) in internal.vocabulary.classes() {
+            eprintln!("VOCAB {} {}", id.index(), iri);
+        }
+    }
     let cache = HyperCache::build(&internal);
     let Some(c) = internal
         .vocabulary

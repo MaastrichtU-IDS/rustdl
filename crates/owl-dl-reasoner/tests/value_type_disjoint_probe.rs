@@ -1,6 +1,11 @@
-//! Throwaway: measure whether value-derived type-disjointness (RUSTDL_VALUE_TYPE_DISJOINT)
+//! Throwaway: measure whether value-derived type-disjointness (`RUSTDL_VALUE_TYPE_DISJOINT`)
 //! collapses sat(Gamay). Run with `--ignored --nocapture`.
-#![allow(clippy::unwrap_used)]
+#![allow(
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::doc_markdown,
+    clippy::default_trait_access
+)]
 
 #[test]
 #[ignore = "value-type-disjoint Gamay probe; --ignored --nocapture"]

@@ -1909,8 +1909,8 @@ pub(crate) struct HyperCache {
     /// `None` when `RUSTDL_SAT_SEED` is off (built in the same flag-gated block).
     /// Used by `decide_with_stats` and `classify_labels` to seed `Q → ∃R.target`.
     exists_seed: Option<Vec<Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>>>,
-    /// VALUE-DERIVED TYPE DISJOINTNESS (RUSTDL_VALUE_TYPE_DISJOINT, experiment):
-    /// pairs `(T1, T2)` of named classes that force DIFFERENT DifferentIndividuals-
+    /// VALUE-DERIVED TYPE DISJOINTNESS (`RUSTDL_VALUE_TYPE_DISJOINT`, experiment):
+    /// pairs `(T1, T2)` of named classes that force DIFFERENT `DifferentIndividuals`-
     /// distinct nominal values on the SAME functional role (`T1 ⊑ ∃R.{v1}`,
     /// `T2 ⊑ ∃R.{v2}`, `R` functional, `v1≠v2` ⟹ `T1⊓T2 ⊑ ⊥`). Seeded as
     /// empty-head clauses so the wedge clashes value-incompatible type combos
@@ -2080,11 +2080,13 @@ impl HyperCache {
                 }
                 pairs.sort_unstable_by_key(|&(a, b)| (a.index(), b.index()));
                 pairs.dedup();
-                eprintln!(
-                    "VALUE_TYPE_DISJOINT: {} pairs from {} functional roles",
-                    pairs.len(),
-                    by_role.len()
-                );
+                if std::env::var_os("RUSTDL_TRACE").is_some() {
+                    eprintln!(
+                        "VALUE_TYPE_DISJOINT: {} pairs from {} functional roles",
+                        pairs.len(),
+                        by_role.len()
+                    );
+                }
                 Some(pairs)
             } else {
                 None

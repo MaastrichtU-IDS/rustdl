@@ -1483,13 +1483,17 @@ pub fn hyper_sat_lookahead_enabled() -> bool {
 /// set to a non-empty non-`"0"` value to enable). When on, `HyperCache::build`
 /// computes a per-named-class table once via `owl_dl_saturation::saturate`,
 /// and `decide_with_stats` seeds `Q → D` for every entry in the table
-/// before the engine runs. Flag-off path is byte-identical to pre-seed.
-/// Soundness: seeding entailed named subsumers cannot introduce a false
-/// `Unsat` (they are true in every model). Synthetic ids ≥ `num_classes`
-/// are filtered — cross-engine semantics mismatch would be unsound.
+/// before the engine runs. Soundness: seeding entailed named subsumers (and
+/// derived ∃-facts) cannot introduce a false `Unsat` (they hold in every
+/// model). Synthetic ids ≥ `num_classes` are filtered — cross-engine semantics
+/// mismatch would be unsound.
+///
+/// **Default ON** as of the SP3 ∃-seed gate (wine 49 s → 3.2 s, ~15×; FP=0 /
+/// MISSED=0 byte-identical corpus-wide). Set `RUSTDL_SAT_SEED=0` to opt out
+/// (restores the pre-seed per-pair behaviour).
 #[must_use]
 pub fn hyper_sat_seed_enabled() -> bool {
-    std::env::var_os("RUSTDL_SAT_SEED").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_SAT_SEED").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// HF5: whether the wedge is allowed to *trust* the engine's `Sat`
@@ -6459,7 +6463,8 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         if enable {
             unsafe { std::env::set_var("RUSTDL_SAT_SEED", "1") };
         } else {
-            unsafe { std::env::remove_var("RUSTDL_SAT_SEED") };
+            // Default is now ON, so "off" means explicitly "0" (not unset).
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "0") };
         }
         let cache = HyperCache::build(internal);
         match prior {
@@ -6721,7 +6726,8 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         if enable {
             unsafe { std::env::set_var("RUSTDL_SAT_SEED", "1") };
         } else {
-            unsafe { std::env::remove_var("RUSTDL_SAT_SEED") };
+            // Default is now ON, so "off" means explicitly "0" (not unset).
+            unsafe { std::env::set_var("RUSTDL_SAT_SEED", "0") };
         }
         let cache = HyperCache::build(internal);
         match prior {

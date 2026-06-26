@@ -6817,4 +6817,59 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .collect();
         println!("genuinely-hard@30s ({}): {hard:?}", hard.len());
     }
+
+    /// STAGE-4 characterization part 2 (ignored): for the 8 genuinely-hard wine
+    /// classes, count kept vs dropped derived ∃-facts — does a cheap dropped-∃
+    /// recovery path exist for them?
+    #[test]
+    #[ignore = "Stage-4 diagnostic; --ignored --nocapture"]
+    fn stage4_dropped_exists_on_hard8() {
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        const HARD: &[&str] = &[
+            "Burgundy",
+            "Chardonnay",
+            "Gamay",
+            "Meursault",
+            "PinotBlanc",
+            "Port",
+            "Tours",
+            "WhiteBurgundy",
+        ];
+        let src =
+            std::fs::read_to_string("/data/dumontier/rustdl/ontologies/real/wine.ofn").unwrap();
+        let (ont, _): (
+            horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+            _,
+        ) = read_ofn(
+            &mut std::io::Cursor::new(src.into_bytes()),
+            Default::default(),
+        )
+        .unwrap();
+        let internal = owl_dl_core::convert::convert_ontology(&ont).unwrap();
+        let n_named = internal.vocabulary.num_classes();
+        let (_subs, facts, nom) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+        for name in HARD {
+            let cid = internal
+                .vocabulary
+                .classes()
+                .find(|(_, iri)| iri.ends_with(&format!("wine#{name}")))
+                .map(|(id, _)| id);
+            let Some(c) = cid else {
+                println!("{name}: not found");
+                continue;
+            };
+            let (mut kept, mut dropped) = (0u32, 0u32);
+            for &(s, _r, tgt) in &facts {
+                if s != c {
+                    continue;
+                }
+                if (tgt.index() as usize) < n_named || nom.contains_key(&tgt) {
+                    kept += 1;
+                } else {
+                    dropped += 1;
+                }
+            }
+            println!("{name}: kept={kept} dropped={dropped}");
+        }
+    }
 }

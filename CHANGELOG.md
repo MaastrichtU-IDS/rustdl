@@ -4,6 +4,22 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.15] — 2026-06-27
+
+### Performance
+
+- **Restrict the MRV disjunction scan to anchored clauses.**
+  `find_open_disjunction` (the wedge's most-constrained-variable ⊔-scan) used to
+  examine every `(node × non-Horn clause)` pair per call — up to ~35k pairs/call
+  on large ORE ontologies. A disjunctive clause can only be an *open* ⊔ at a node
+  when its X-class atoms are in that node's label, so the scan now iterates a
+  precomputed ascending `(clause, first-X-class anchor)` list and skips an
+  anchored clause via an O(1) `has(anchor)` check (the residual role-only/empty
+  bodies are always scanned). Soundness is termination-only here — MRV's choice
+  is verdict-invariant and no open ⊔ is missed; ascending order keeps the
+  tie-break identical (closures byte-identical, FP=0/MISSED=0 corpus-wide).
+  **sio −12%, ore-15672 −10%, wine@1ms −18%, ore-10908 −5%**; flat on EL.
+
 ## [0.3.14] — 2026-06-27
 
 ### Performance

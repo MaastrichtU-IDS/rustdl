@@ -2924,6 +2924,30 @@ fn collect_el_rules(
         rules.functional_supers_of[r_idx] = supers;
     }
 
+    // NOMINAL-FILLER TYPING (RUSTDL_NOMINAL_TYPING, **default ON**; `=0` to disable):
+    // seed `NomKey(a) ⊑ C` for every `ClassAssertion(C, a)` whose individual `a` is
+    // used as a nominal filler (`∃R.{a}`). Then CR5 derives `∃R.{a} ⊑ ∃R.C`
+    // (object value-membership — the analog of the data D6 lever) — e.g. DMOP's
+    // `C4.5… ⊑ ∃hasHypothesisStructure.{UnivariateDecisionTree}` +
+    // `UnivariateDecisionTree : DecisionTree` ⟹ `… ⊑ ∃hasHypothesisStructure.
+    // DecisionTree`. SOUND: `a:C ⟹ {a}⊑C ⟹ NomKey(a)⊑C` (only adds ENTAILED
+    // subsumptions — FP=0 by construction). Lookup-only (no new ids); subclass
+    // closure inherits via the atomic-subsumption fixpoint. Pure completeness gain
+    // (closes DMOP 31→0; corpus FP=0/MISSED=0 byte-identical).
+    if std::env::var_os("RUSTDL_NOMINAL_TYPING").is_none_or(|v| v != "0" && !v.is_empty()) {
+        for ax in &internal.axioms {
+            if let Axiom::ClassAssertion { class, individual } = ax
+                && let Some(&nomkey) = tseitin.nominal_by_ind.get(individual)
+            {
+                for sup in atomic_operands_on_right(*class, &internal.concepts) {
+                    rules
+                        .atomic_subsumptions
+                        .push(AtomicSubsumption { sub: nomkey, sup });
+                }
+            }
+        }
+    }
+
     (rules, tseitin, total_classes)
 }
 
@@ -3825,6 +3849,29 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .vocabulary
             .class_id(&format!("http://rustdl.test/{local}"))
             .expect("class declared")
+    }
+
+    /// NOMINAL-FILLER TYPING canary (`RUSTDL_NOMINAL_TYPING`, default-ON): a nominal
+    /// filler typed by `ClassAssertion` lifts the existential — `X ⊑ ∃r.{a}`, `a:C`,
+    /// `D ≡ ∃r.C` ⟹ `X ⊑ D` (via `NomKey(a) ⊑ C` + CR5). The DMOP gap pattern.
+    #[test]
+    fn nominal_filler_typing_lifts_existential() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/nt>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:a))\n\
+    ClassAssertion(:C :a)\n\
+    SubClassOf(:X ObjectHasValue(:r :a))\n\
+    EquivalentClasses(:D ObjectSomeValuesFrom(:r :C))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "D")),
+            "X ⊑ ∃r.{{a}} + a:C + D≡∃r.C ⟹ X ⊑ D (nominal-filler typing)"
+        );
     }
 
     #[test]

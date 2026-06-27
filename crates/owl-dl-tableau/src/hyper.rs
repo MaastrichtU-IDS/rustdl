@@ -716,6 +716,15 @@ pub struct ClauseIndexes {
     inverse_first_trigger: Vec<Vec<usize>>,
     /// Clauses with an empty body (`⊤ → …`) — fire at every node.
     empty_body: Vec<usize>,
+    /// NON-Horn (disjunctive) clauses in ascending clause-id order, each paired
+    /// with its FIRST `Atom::Class(c, X)` body atom (its "anchor"), or `None` for
+    /// a role-only / empty body. A disjunctive clause can be an *open* ⊔ at a
+    /// node only if its X-class atoms are in the node's label, so
+    /// `find_open_disjunction` skips an anchored clause with an O(1) `has(anchor)`
+    /// check (the test `match_body` would do before returning empty) and scans
+    /// only this list instead of every clause at every node. Ascending order ⇒
+    /// the MRV first-found tie-break is identical to the old full scan.
+    nonhorn: Vec<(usize, Option<ClassId>)>,
 }
 
 fn role_id_index(r: Role) -> usize {
@@ -792,6 +801,14 @@ pub fn build_clause_indexes(clauses: &[DlClause], sym: Option<&RoleHierarchy>) -
     };
     for (ci, cl) in clauses.iter().enumerate() {
         if !cl.is_horn() {
+            // Record the disjunctive clause with its first X-class anchor (or
+            // `None`) so `find_open_disjunction` scans only this list and skips
+            // anchored clauses absent from a node's label via an O(1) check.
+            let anchor = cl.body.iter().find_map(|a| match a {
+                Atom::Class(c, v) if *v == X => Some(*c),
+                _ => None,
+            });
+            ix.nonhorn.push((ci, anchor));
             continue;
         }
         if cl.body.is_empty() {
@@ -2278,8 +2295,16 @@ impl<'c> HyperEngine<'c> {
                 if self.is_blocked(node) {
                     continue;
                 }
-                for ci in 0..self.clauses.len() {
-                    if self.clauses[ci].is_horn() {
+                // Restricted scan: only the disjunctive clauses, skipping any
+                // whose X-anchor class is absent from this node's label (it would
+                // `match_body`-empty anyway — so no open ⊔ is missed; termination-
+                // preserving). The list is ascending clause-id, so the MRV
+                // first-found tie-break is identical to the old full scan.
+                let nonhorn = std::sync::Arc::clone(&self.indexes);
+                for &(ci, anchor) in &nonhorn.nonhorn {
+                    if let Some(a) = anchor
+                        && !self.nodes[node.index()].has(a)
+                    {
                         continue;
                     }
                     if self.is_tautology_clause(ci) {

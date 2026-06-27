@@ -4,6 +4,35 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.17] — 2026-06-28
+
+### Changed
+
+- **`classify` is now bounded by default — it can't hang on wine-class
+  ontologies.** The Python default ran each pair at 1000 ms with no global
+  bound, so total time grew with the pair count and could hang on combinatorial
+  nominal+cardinality+disjunction inputs. New defaults:
+  - **`per_pair_timeout_ms` 1000 → 100.** Measured completeness floor: at 100 ms
+    the full Konclude-oracle corpus is FP=0/MISSED=0 byte-identical (real corpus
+    28 s → 12.8 s, ~2.2×). 25 ms was rejected — it flakily drops 4–8 real
+    subsumptions on the standard pizza fixture.
+  - **new `global_deadline_ms` = 60000** — bounds the *total* wall (the backstop
+    the per-pair cap can't provide). Each probe is cut at
+    `min(per_pair, remaining global)`.
+
+  Set either bound to `0` to disable it; both `0` = unbounded/complete. Sound at
+  every setting — cut pairs default to "not subsumed" (FP=0); the
+  `IncompleteClassificationWarning` and `Classification.complete` /
+  `.timed_out_pairs` report any incompleteness.
+
+### Added
+
+- `owl_dl_reasoner::classify_with_budget(ontology, per_pair, global)` — public
+  combined per-pair + global-deadline classify entry point.
+- `owl-dl-bench corpus --pair-timeout-ms <N>` — per-pair cap for the corpus
+  harness (it previously ran unbounded and hung on wine-class inputs);
+  `bench-corpus/` fixtures added.
+
 ## [0.3.16] — 2026-06-27
 
 ### Internal

@@ -30,3 +30,7 @@ Cargo.lock.bak
 flamegraph.svg
 perf.data*
 ontologies/external/
+
+# stray root-level test artifacts (oracles / converted inputs)
+/*.owx
+/*-in.ofn

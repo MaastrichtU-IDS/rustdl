@@ -4,6 +4,42 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] — 2026-06-27
+
+All changes below are **sound** — FP=0/MISSED=0 byte-identical against the
+Konclude∩HermiT oracle across the full corpus (wine, galen, notgalen, sio,
+ore-10908, ore-15672, pizza, alehif, ro, sulo, bibtex).
+
+### Performance
+
+- **Coupled-saturation precompletion seed (`RUSTDL_SAT_SEED`, default-ON).** The
+  classify path now seeds the per-class wedge search with the saturator's named
+  subsumers (SP2) and derived existential facts (SP3) — Konclude-style coupled
+  saturation. Collapses wine's hard nominal/disjunctive model builds:
+  **wine classify 49s → 3.2s (~15×)**, sound. Pairs with MRV ⊔-ordering and the
+  adaptive label-cache deadline.
+- **Value-derived type-disjointness + tautology-skip (default-ON).** Types forced
+  to distinct nominal values on a functional role are treated as disjoint, and
+  `a ⊔ ¬a` complement disjunctions are skipped — together they make wine's
+  descriptor value-partition fragment tractable (the 8 previously-hardest classes
+  now resolve in milliseconds).
+- **Label-cache deadline floor 1000ms → 50ms.** The per-class label-build budget
+  is `n × per_pair` (the refute-the-row break-even); the old 1s floor sat above
+  that and over-invested at tight per-pair caps. Lowering it gives **wine
+  −39% at `--pair-timeout-ms 1`** (1.54s → 0.94s). Inactive at the default cap.
+
+### Completeness
+
+Two sound completeness levers (default-ON; pure gains — close real subsumptions,
+never introduce false ones):
+
+- **Nominal-filler typing (`RUSTDL_NOMINAL_TYPING`).** `ClassAssertion(C, a)` now
+  types the nominal filler so `∃R.{a} ⊑ ∃R.C` is derived (object value-membership,
+  the analog of the data D6 lever). DMOP MISSED 31→0.
+- **ObjectOneOf common-subsumer (`RUSTDL_ONEOF_SUBSUMER`).** For an enumerated
+  class `X ≡ ObjectOneOf(a₁…aₙ)`, `X ⊑ C` is seeded when every member `aᵢ` is
+  typed `C` (LHS ⊔-elimination). ORE `ore_ont_5107` MISSED 6→0.
+
 ## [0.3.12] — 2026-06-22
 
 ### Performance

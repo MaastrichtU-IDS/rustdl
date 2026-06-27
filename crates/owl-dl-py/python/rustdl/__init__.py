@@ -70,57 +70,66 @@ Classification.superclasses_of = _superclasses_of  # type: ignore[attr-defined]
 
 
 class IncompleteClassificationWarning(UserWarning):
-    """Raised when classification hit the per-pair timeout, so the
-    returned hierarchy is a sound under-approximation (no false
+    """Raised when classification hit a timeout (per-pair or global), so
+    the returned hierarchy is a sound under-approximation (no false
     subsumptions, but real ones may be missing). Silence with the
-    standard `warnings` module, or pass `per_pair_timeout_ms=0` to
-    classify for the complete (unbounded) result."""
+    standard `warnings` module, or pass `per_pair_timeout_ms=0,
+    global_deadline_ms=0` to classify for the complete (unbounded)
+    result."""
 
 
 def _warn_if_incomplete(result: "Classification") -> "Classification":
     n = result.timed_out_pairs
     if n:
         _warnings.warn(
-            f"{n} class pair(s) exceeded the per-pair timeout and were recorded as "
+            f"{n} class pair(s) exceeded the timeout and were recorded as "
             "'not subsumed' — this classification may be missing real subsumptions. "
-            "It is still sound (no false subsumptions). Pass per_pair_timeout_ms=0 "
-            "for the complete (unbounded) result, or check result.complete / "
-            "result.timed_out_pairs.",
+            "It is still sound (no false subsumptions). Pass per_pair_timeout_ms=0, "
+            "global_deadline_ms=0 for the complete (unbounded) result, or check "
+            "result.complete / result.timed_out_pairs.",
             IncompleteClassificationWarning,
             stacklevel=3,
         )
     return result
 
 
-def classify(path, *, per_pair_timeout_ms=1000, saturation_only=False):
+def classify(
+    path, *, per_pair_timeout_ms=100, global_deadline_ms=60000, saturation_only=False
+):
     """Classify the ontology at `path` (format auto-detected from the
-    extension: .ofn / .owx / .owl / .rdf).
+    extension: .ofn / .owx / .owl / .rdf / .omn).
 
-    `per_pair_timeout_ms` bounds each subsumption test (default 1000;
-    `0` = unbounded/complete). Pairs that exceed the budget are recorded
-    as "not subsumed" — sound, but the result may be incomplete; an
-    `IncompleteClassificationWarning` is emitted when that happens, and
-    `result.complete` / `result.timed_out_pairs` report it.
-    `saturation_only=True` skips the tableau (EL-closure under-
-    approximation; fast)."""
+    Bounded by default so it can't hang on hard (wine-class) ontologies:
+    `per_pair_timeout_ms` bounds each subsumption test (default 100), and
+    `global_deadline_ms` bounds the TOTAL wall (default 60000 = 60s). Set
+    either to `0` to disable that bound; both `0` = unbounded/complete.
+    Pairs cut by a timeout are recorded as "not subsumed" — sound, but the
+    result may be incomplete; an `IncompleteClassificationWarning` is
+    emitted when that happens, and `result.complete` /
+    `result.timed_out_pairs` report it. `saturation_only=True` skips the
+    tableau (EL-closure under-approximation; fast)."""
     return _warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
+            global_deadline_ms=global_deadline_ms,
             saturation_only=saturation_only,
         )
     )
 
 
-def classify_bytes(data, *, format, per_pair_timeout_ms=1000, saturation_only=False):
+def classify_bytes(
+    data, *, format, per_pair_timeout_ms=100, global_deadline_ms=60000, saturation_only=False
+):
     """Like `classify`, but from in-memory `data` with an explicit
-    `format` ("ofn" | "owx" | "rdf-xml"). See `classify` for the
+    `format` ("ofn" | "owx" | "rdf-xml" | "omn"). See `classify` for the
     timeout/completeness semantics."""
     return _warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
             per_pair_timeout_ms=per_pair_timeout_ms,
+            global_deadline_ms=global_deadline_ms,
             saturation_only=saturation_only,
         )
     )

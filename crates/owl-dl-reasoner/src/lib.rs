@@ -54,8 +54,8 @@ mod union_find;
 pub use classify::{
     Classification, ClassificationStats, FragmentClassification, analyze_fragment, classify,
     classify_internal, classify_n2, classify_n2_with_timeout, classify_saturation_only,
-    classify_top_down, classify_top_down_with_timeout, classify_with_global_deadline,
-    classify_with_timeout,
+    classify_top_down, classify_top_down_with_timeout, classify_with_budget,
+    classify_with_global_deadline, classify_with_timeout,
 };
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
 pub use laconic::{find_all_laconic_justifications, find_laconic_justification};

@@ -1,0 +1,769 @@
+Prefix(:=<https://w3id.org/ontostart/pizza/>)
+Prefix(dc:=<http://purl.org/dc/elements/1.1/>)
+Prefix(mod:=<https://w3id.org/mod#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(pav:=<http://purl.org/pav/>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(dcat:=<http://www.w3.org/ns/dcat#>)
+Prefix(foaf:=<http://xmlns.com/foaf/0.1/>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+Prefix(sulo:=<https://w3id.org/sulo/>)
+Prefix(vann:=<http://purl.org/vocab/vann/>)
+Prefix(dcterms:=<http://purl.org/dc/terms/>)
+
+
+Ontology(<https://w3id.org/ontostart/pizza/>
+<https://w3id.org/ontostart/pizza/1.0.1>
+Import(<https://w3id.org/sulo>)
+Import(<https://w3id.org/ontostart/pro>)
+Annotation(dc:creator "https://orcid.org/0000-0000-0000-0000")
+Annotation(dcterms:alternative "pizza")
+Annotation(dcterms:bibliographicCitation "Unpublished")
+Annotation(dcterms:contributor "https://orcid.org/0000-0000-0000-0000")
+Annotation(dcterms:created "2026-05-19T07:37:38.845348+00:00"^^xsd:dateTime)
+Annotation(dcterms:description "An OWL ontology for the pizza domain, built incrementally through the SULO Pizza Tutorial. Covers spatial composition, qualities, quantities, processes, information entities, time, and spatial containment.")
+Annotation(dcterms:issued "2026-05-19"^^xsd:date)
+Annotation(dcterms:language "http://lexvo.org/id/iso639-1/en")
+Annotation(dcterms:license "https://creativecommons.org/licenses/by/4.0/")
+Annotation(dcterms:modified "2026-05-19T07:37:38.845348+00:00"^^xsd:dateTime)
+Annotation(dcterms:publisher "https://github.com/micheldumontier")
+Annotation(dcterms:title "SULO Pizza Tutorial Ontology")
+Annotation(pav:authoredBy "https://orcid.org/0000-0000-0000-0000")
+Annotation(vann:preferredNamespacePrefix "pizza")
+Annotation(vann:preferredNamespaceUri "https://w3id.org/ontostart/pizza/")
+Annotation(rdfs:comment "An OWL ontology for the pizza domain, built incrementally through the SULO Pizza Tutorial. Covers spatial composition, qualities, quantities, processes, information entities, time, and spatial containment.")
+Annotation(rdfs:label "SULO Pizza Tutorial Ontology")
+Annotation(owl:versionInfo "1.0.1")
+Annotation(dcat:accessURL "https://w3id.org/ontostart/pizza/")
+Annotation(foaf:homepage "https://github.com/micheldumontier/ontostart")
+Annotation(mod:definitionProperty "http://www.w3.org/2000/01/rdf-schema#comment")
+Annotation(mod:hasRepresentationLanguage "http://omv.ontoware.org/2005/05/ontology#OWL")
+Annotation(mod:hasSyntax "http://www.w3.org/ns/formats/Turtle")
+Annotation(mod:prefLabelProperty "http://www.w3.org/2000/01/rdf-schema#label")
+Annotation(mod:status "active")
+
+Declaration(Class(:AiryTexture))
+Declaration(Class(:AssemblingThePizza))
+Declaration(Class(:BakerRole))
+Declaration(Class(:BakersYeast))
+Declaration(Class(:BakingDuration))
+Declaration(Class(:BakingEndTime))
+Declaration(Class(:BakingStartTime))
+Declaration(Class(:BakingThePizza))
+Declaration(Class(:BoxedPizza))
+Declaration(Class(:BoxingThePizza))
+Declaration(Class(:Cheese))
+Declaration(Class(:CheeseMelting))
+Declaration(Class(:Cornicione))
+Declaration(Class(:DeliveringThePizza))
+Declaration(Class(:DeliveryDuration))
+Declaration(Class(:DeliveryTime))
+Declaration(Class(:DenseTexture))
+Declaration(Class(:DoughBaking))
+Declaration(Class(:DoughTexture))
+Declaration(Class(:ExpressPizzaDelivery))
+Declaration(Class(:Flour))
+Declaration(Class(:FoodMaterial))
+Declaration(Class(:FourCheesePizza))
+Declaration(Class(:Gorgonzola))
+Declaration(Class(:HotPepper))
+Declaration(Class(:HotPepperPizza))
+Declaration(Class(:MakingEndTime))
+Declaration(Class(:MakingStartTime))
+Declaration(Class(:MakingThePizzaDough))
+Declaration(Class(:Mozzarella))
+Declaration(Class(:Order))
+Declaration(Class(:OrderIdentifier))
+Declaration(Class(:OrderReceivedTime))
+Declaration(Class(:OrderingProcess))
+Declaration(Class(:Parmesan))
+Declaration(Class(:PecorinoRomano))
+Declaration(Class(:Person))
+Declaration(Class(:Pizza))
+Declaration(Class(:PizzaCrust))
+Declaration(Class(:PizzaDeliveryBox))
+Declaration(Class(:PizzaDough))
+Declaration(Class(:PizzaMakingProcess))
+Declaration(Class(:PizzaOven))
+Declaration(Class(:PizzaRecipe))
+Declaration(Class(:PizzaSauce))
+Declaration(Class(:PizzaSlice))
+Declaration(Class(:PlacingPizzaOnTable))
+Declaration(Class(:ProofedDoughRole))
+Declaration(Class(:ProofingTheDough))
+Declaration(Class(:ProofingThePizzaDough_EndPhase))
+Declaration(Class(:ProofingThePizzaDough_StartPhase))
+Declaration(Class(:Salt))
+Declaration(Class(:ScovilleHeatUnit))
+Declaration(Class(:SlicingThePizza))
+Declaration(Class(:Spiciness))
+Declaration(Class(:SpicinessMeasurement))
+Declaration(Class(:SpicyHot))
+Declaration(Class(:SpicyMedium))
+Declaration(Class(:SpicyMild))
+Declaration(Class(:SpicyPizza))
+Declaration(Class(:SpicyPizzaOrder))
+Declaration(Class(:SpicySalami))
+Declaration(Class(:SpicySalamiPizza))
+Declaration(Class(:Sugar))
+Declaration(Class(:Table))
+Declaration(Class(:TraditionalFourCheesePizza))
+Declaration(Class(:UnboxingThePizza))
+Declaration(Class(:UnproofedDoughRole))
+Declaration(Class(:Water))
+Declaration(NamedIndividual(:baking_event_001))
+Declaration(NamedIndividual(:box_containment_role_001))
+Declaration(NamedIndividual(:crust_of_my_pizza))
+Declaration(NamedIndividual(:delivering_event_001))
+Declaration(NamedIndividual(:delivery_box_001))
+Declaration(NamedIndividual(:delivery_duration_001))
+Declaration(NamedIndividual(:fridge_001))
+Declaration(NamedIndividual(:id_001))
+Declaration(NamedIndividual(:item_001))
+Declaration(NamedIndividual(:item_002))
+Declaration(NamedIndividual(:making_001))
+Declaration(NamedIndividual(:making_event_001))
+Declaration(NamedIndividual(:order_001))
+Declaration(NamedIndividual(:order_items_001))
+Declaration(NamedIndividual(:ordering_event_001))
+Declaration(NamedIndividual(:pizza_001))
+Declaration(NamedIndividual(:pizza_boxing_001))
+Declaration(NamedIndividual(:pizza_contained_role_001))
+Declaration(NamedIndividual(:pizza_ontop_position_role_001))
+Declaration(NamedIndividual(:pizza_unboxing_001))
+Declaration(NamedIndividual(:placing_pizza_on_table_001))
+Declaration(NamedIndividual(:recipe_001))
+Declaration(NamedIndividual(:spicy_salami_pizza_001))
+Declaration(NamedIndividual(:t_bake_end_001))
+Declaration(NamedIndividual(:t_bake_start_001))
+Declaration(NamedIndividual(:t_delivery_001))
+Declaration(NamedIndividual(:t_making_end_001))
+Declaration(NamedIndividual(:t_making_start_001))
+Declaration(NamedIndividual(:t_order_received_001))
+Declaration(NamedIndividual(:table_001))
+Declaration(NamedIndividual(:table_surface_role_001))
+Declaration(Datatype(xsd:date))
+
+
+
+
+############################
+#   Classes
+############################
+
+# Class: :AiryTexture (airy texture)
+
+AnnotationAssertion(rdfs:label :AiryTexture "airy texture"@en)
+SubClassOf(:AiryTexture :DoughTexture)
+DisjointClasses(:AiryTexture :DenseTexture)
+
+# Class: :AssemblingThePizza (assembling the pizza)
+
+AnnotationAssertion(rdfs:label :AssemblingThePizza "assembling the pizza"@en)
+SubClassOf(:AssemblingThePizza <https://w3id.org/ontostart/pro/TransformationProcess>)
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(:BakerRole ObjectSomeValuesFrom(sulo:isFeatureOf :Person))))
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/EmergingRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Pizza))))
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/PersistingRole> ObjectSomeValuesFrom(sulo:isFeatureOf owl:Thing))))
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/PersistingRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Cheese))))
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/PersistingRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough))))
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/PersistingRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaSauce))))
+SubClassOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:precedes :BakingThePizza))
+
+# Class: :BakerRole (baker role)
+
+AnnotationAssertion(rdfs:label :BakerRole "baker role"@en)
+SubClassOf(:BakerRole <https://w3id.org/ontostart/pro/AgentRole>)
+
+# Class: :BakersYeast (baker's yeast)
+
+AnnotationAssertion(rdfs:label :BakersYeast "baker's yeast"@en)
+SubClassOf(:BakersYeast :FoodMaterial)
+
+# Class: :BakingDuration (baking duration)
+
+AnnotationAssertion(rdfs:label :BakingDuration "baking duration"@en)
+EquivalentClasses(:BakingDuration ObjectIntersectionOf(sulo:Duration DataSomeValuesFrom(sulo:hasValue DatatypeRestriction(xsd:decimal xsd:minInclusive "8.0"^^xsd:decimal xsd:maxInclusive "15.0"^^xsd:decimal))))
+SubClassOf(:BakingDuration sulo:Duration)
+
+# Class: :BakingEndTime (baking end time)
+
+AnnotationAssertion(rdfs:label :BakingEndTime "baking end time"@en)
+SubClassOf(:BakingEndTime sulo:EndTime)
+
+# Class: :BakingStartTime (baking start time)
+
+AnnotationAssertion(rdfs:label :BakingStartTime "baking start time"@en)
+SubClassOf(:BakingStartTime sulo:StartTime)
+
+# Class: :BakingThePizza (baking the pizza)
+
+AnnotationAssertion(rdfs:label :BakingThePizza "baking the pizza"@en)
+SubClassOf(:BakingThePizza <https://w3id.org/ontostart/pro/DevelopmentalProcess>)
+SubClassOf(:BakingThePizza ObjectSomeValuesFrom(sulo:atTime :BakingEndTime))
+SubClassOf(:BakingThePizza ObjectSomeValuesFrom(sulo:atTime :BakingStartTime))
+SubClassOf(:BakingThePizza ObjectSomeValuesFrom(sulo:hasPart :CheeseMelting))
+SubClassOf(:BakingThePizza ObjectSomeValuesFrom(sulo:hasPart :DoughBaking))
+SubClassOf(:BakingThePizza ObjectSomeValuesFrom(sulo:precedes :SlicingThePizza))
+
+# Class: :BoxedPizza (boxed pizza)
+
+AnnotationAssertion(rdfs:label :BoxedPizza "boxed pizza"@en)
+EquivalentClasses(:BoxedPizza ObjectIntersectionOf(:Pizza ObjectSomeValuesFrom(sulo:isIn :PizzaDeliveryBox)))
+SubClassOf(:BoxedPizza :Pizza)
+
+# Class: :BoxingThePizza (boxing the pizza)
+
+AnnotationAssertion(rdfs:label :BoxingThePizza "boxing the pizza"@en)
+SubClassOf(:BoxingThePizza sulo:Process)
+SubClassOf(:BoxingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ContainedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Pizza))))
+SubClassOf(:BoxingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ContainmentRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDeliveryBox))))
+
+# Class: :Cheese (cheese)
+
+AnnotationAssertion(rdfs:comment :Cheese "A cheese is a food material derived from milk and produced in a wide range of flavors, textures, and forms by coagulation of the milk protein casein.")
+AnnotationAssertion(rdfs:label :Cheese "cheese"@en)
+SubClassOf(:Cheese :FoodMaterial)
+
+# Class: :CheeseMelting (cheese melting)
+
+AnnotationAssertion(rdfs:label :CheeseMelting "cheese melting"@en)
+SubClassOf(:CheeseMelting <https://w3id.org/ontostart/pro/DevelopmentalProcess>)
+SubClassOf(:CheeseMelting ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/DevelopmentRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Cheese))))
+
+# Class: :Cornicione (cornicione)
+
+AnnotationAssertion(rdfs:comment :Cornicione "A cornicione is the outer edge of a pizza crust")
+AnnotationAssertion(rdfs:label :Cornicione "cornicione"@en)
+SubClassOf(:Cornicione :FoodMaterial)
+
+# Class: :DeliveringThePizza (delivering the pizza)
+
+AnnotationAssertion(rdfs:label :DeliveringThePizza "delivering the pizza"@en)
+SubClassOf(:DeliveringThePizza sulo:Process)
+
+# Class: :DeliveryDuration (delivery duration)
+
+AnnotationAssertion(rdfs:label :DeliveryDuration "delivery duration"@en)
+SubClassOf(:DeliveryDuration sulo:Duration)
+
+# Class: :DeliveryTime (delivery time)
+
+AnnotationAssertion(rdfs:label :DeliveryTime "delivery time"@en)
+SubClassOf(:DeliveryTime sulo:TimeInstant)
+
+# Class: :DenseTexture (dense texture)
+
+AnnotationAssertion(rdfs:label :DenseTexture "dense texture"@en)
+SubClassOf(:DenseTexture :DoughTexture)
+
+# Class: :DoughBaking (dough baking)
+
+AnnotationAssertion(rdfs:label :DoughBaking "dough baking"@en)
+SubClassOf(:DoughBaking <https://w3id.org/ontostart/pro/DevelopmentalProcess>)
+SubClassOf(:DoughBaking ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/DevelopmentRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaCrust))))
+SubClassOf(:DoughBaking ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/DevelopmentRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough))))
+
+# Class: :DoughTexture (dough texture)
+
+AnnotationAssertion(rdfs:label :DoughTexture "dough texture"@en)
+SubClassOf(:DoughTexture sulo:Quality)
+
+# Class: :ExpressPizzaDelivery (express pizza delivery)
+
+AnnotationAssertion(rdfs:label :ExpressPizzaDelivery "express pizza delivery"@en)
+EquivalentClasses(:ExpressPizzaDelivery ObjectIntersectionOf(:DeliveringThePizza ObjectSomeValuesFrom(sulo:atTime ObjectIntersectionOf(:DeliveryDuration DataSomeValuesFrom(sulo:hasValue DatatypeRestriction(xsd:decimal xsd:maxInclusive "30.0"^^xsd:decimal))))))
+SubClassOf(:ExpressPizzaDelivery :DeliveringThePizza)
+
+# Class: :Flour (flour)
+
+AnnotationAssertion(rdfs:label :Flour "flour"@en)
+SubClassOf(:Flour :FoodMaterial)
+
+# Class: :FoodMaterial (food material)
+
+AnnotationAssertion(rdfs:comment :FoodMaterial "A food material is a spatial object that is intended for consumption as food.")
+AnnotationAssertion(rdfs:label :FoodMaterial "food material"@en)
+AnnotationAssertion(rdfs:label :FoodMaterial "food material")
+SubClassOf(:FoodMaterial sulo:SpatialObject)
+
+# Class: :FourCheesePizza (four cheese pizza)
+
+AnnotationAssertion(rdfs:comment :FourCheesePizza "A Four Cheese Pizza is a pizza that contains exactly four different types of cheese as toppings.")
+AnnotationAssertion(rdfs:label :FourCheesePizza "four cheese pizza"@en)
+EquivalentClasses(:FourCheesePizza ObjectIntersectionOf(:Pizza ObjectExactCardinality(4 sulo:hasDirectPart :Cheese)))
+SubClassOf(:FourCheesePizza :Pizza)
+
+# Class: :Gorgonzola (gorgonzola)
+
+AnnotationAssertion(rdfs:comment :Gorgonzola "Gorgonzola is a veined Italian blue cheese, made from unskimmed cow's milk.")
+AnnotationAssertion(rdfs:label :Gorgonzola "gorgonzola"@en)
+SubClassOf(:Gorgonzola :Cheese)
+
+# Class: :HotPepper (hot pepper)
+
+AnnotationAssertion(rdfs:label :HotPepper "hot pepper"@en)
+SubClassOf(:HotPepper :FoodMaterial)
+SubClassOf(:HotPepper ObjectSomeValuesFrom(sulo:hasFeature ObjectIntersectionOf(:SpicinessMeasurement ObjectSomeValuesFrom(sulo:hasPart :ScovilleHeatUnit) DataSomeValuesFrom(sulo:hasValue DatatypeRestriction(xsd:integer xsd:minInclusive "500000"^^xsd:integer)))))
+DisjointClasses(:HotPepper :SpicySalami)
+
+# Class: :HotPepperPizza (hot pepper pizza)
+
+AnnotationAssertion(rdfs:label :HotPepperPizza "hot pepper pizza"@en)
+EquivalentClasses(:HotPepperPizza ObjectIntersectionOf(:Pizza ObjectAllValuesFrom(sulo:hasDirectPart :HotPepper) ObjectExactCardinality(1 sulo:hasDirectPart :HotPepper) ObjectExactCardinality(1 sulo:hasDirectPart :PizzaSauce)))
+SubClassOf(:HotPepperPizza :Pizza)
+
+# Class: :MakingEndTime (making end time)
+
+AnnotationAssertion(rdfs:label :MakingEndTime "making end time"@en)
+SubClassOf(:MakingEndTime sulo:EndTime)
+
+# Class: :MakingStartTime (making start time)
+
+AnnotationAssertion(rdfs:label :MakingStartTime "making start time"@en)
+SubClassOf(:MakingStartTime sulo:StartTime)
+
+# Class: :MakingThePizzaDough (making the pizza dough)
+
+AnnotationAssertion(rdfs:label :MakingThePizzaDough "making the pizza dough"@en)
+SubClassOf(:MakingThePizzaDough <https://w3id.org/ontostart/pro/TransformationProcess>)
+SubClassOf(:MakingThePizzaDough ObjectIntersectionOf(<https://w3id.org/ontostart/pro/TransformationProcess> ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(:BakerRole ObjectSomeValuesFrom(sulo:isFeatureOf :Person))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ConsumedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :BakersYeast))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ConsumedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Flour))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ConsumedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Salt))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ConsumedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Sugar))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ConsumedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Water))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/EmergingRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough)))))
+SubClassOf(:MakingThePizzaDough ObjectSomeValuesFrom(sulo:atTime :MakingEndTime))
+SubClassOf(:MakingThePizzaDough ObjectSomeValuesFrom(sulo:atTime :MakingStartTime))
+SubClassOf(:MakingThePizzaDough ObjectSomeValuesFrom(sulo:precedes :ProofingTheDough))
+
+# Class: :Mozzarella (mozzarella)
+
+AnnotationAssertion(rdfs:comment :Mozzarella "Mozzarella is a traditionally southern Italian cheese made from Italian buffalo's milk by the pasta filata method.")
+AnnotationAssertion(rdfs:label :Mozzarella "mozzarella"@en)
+SubClassOf(:Mozzarella :Cheese)
+
+# Class: :Order (order)
+
+AnnotationAssertion(rdfs:label :Order "order"@en)
+SubClassOf(:Order sulo:InformationObject)
+
+# Class: :OrderIdentifier (order identifier)
+
+AnnotationAssertion(rdfs:label :OrderIdentifier "order identifier"@en)
+SubClassOf(:OrderIdentifier sulo:InformationObject)
+
+# Class: :OrderReceivedTime (order received time)
+
+AnnotationAssertion(rdfs:label :OrderReceivedTime "order received time"@en)
+SubClassOf(:OrderReceivedTime sulo:TimeInstant)
+
+# Class: :OrderingProcess (ordering process)
+
+AnnotationAssertion(rdfs:label :OrderingProcess "ordering process"@en)
+SubClassOf(:OrderingProcess sulo:Process)
+SubClassOf(:OrderingProcess ObjectSomeValuesFrom(sulo:precedes :MakingThePizzaDough))
+
+# Class: :Parmesan (parmesan)
+
+AnnotationAssertion(rdfs:comment :Parmesan "Parmesan is a hard, granular cheese named after the producing areas near Parma, Italy.")
+AnnotationAssertion(rdfs:label :Parmesan "parmesan"@en)
+SubClassOf(:Parmesan :Cheese)
+
+# Class: :PecorinoRomano (pecorino romano)
+
+AnnotationAssertion(rdfs:comment :PecorinoRomano "Pecorino Romano is a hard, salty Italian cheese, often used for grating, made out of sheep's milk.")
+AnnotationAssertion(rdfs:label :PecorinoRomano "pecorino romano"@en)
+SubClassOf(:PecorinoRomano :Cheese)
+
+# Class: :Person (person)
+
+AnnotationAssertion(rdfs:label :Person "person"@en)
+SubClassOf(:Person sulo:SpatialObject)
+
+# Class: :Pizza (pizza)
+
+AnnotationAssertion(rdfs:comment :Pizza "A pizza is a food material minimally consisting of a pizza crust (baked dough) and optionally topped with 
+                    tomatoes or tomato sauce, cheese, and often various other ingredients (such as anchovies, mushrooms, onions, olives, 
+                    vegetables, meat, etc.) baked at a high temperature.")
+AnnotationAssertion(rdfs:label :Pizza "pizza"@en)
+SubClassOf(:Pizza :FoodMaterial)
+SubClassOf(:Pizza ObjectExactCardinality(1 sulo:hasDirectPart :PizzaCrust))
+
+# Class: :PizzaCrust (pizza crust)
+
+AnnotationAssertion(rdfs:comment :PizzaCrust "A pizza crust is a food material resulting from the cooking of a dough 
+                    and forms the base of a pizza upon which sauce and toppings are added."@en)
+AnnotationAssertion(rdfs:label :PizzaCrust "pizza crust"@en)
+SubClassOf(:PizzaCrust :FoodMaterial)
+SubClassOf(:PizzaCrust ObjectSomeValuesFrom(sulo:hasDirectPart :Cornicione))
+
+# Class: :PizzaDeliveryBox (pizza delivery box)
+
+AnnotationAssertion(rdfs:label :PizzaDeliveryBox "pizza delivery box"@en)
+SubClassOf(:PizzaDeliveryBox sulo:SpatialObject)
+SubClassOf(:PizzaDeliveryBox ObjectSomeValuesFrom(sulo:hasFeature <https://w3id.org/ontostart/pro/ContainmentRole>))
+
+# Class: :PizzaDough (pizza dough)
+
+AnnotationAssertion(rdfs:label :PizzaDough "pizza dough"@en)
+SubClassOf(:PizzaDough :FoodMaterial)
+
+# Class: :PizzaMakingProcess (pizza making process)
+
+AnnotationAssertion(rdfs:label :PizzaMakingProcess "pizza making process"@en)
+SubClassOf(:PizzaMakingProcess sulo:Process)
+SubClassOf(:PizzaMakingProcess ObjectSomeValuesFrom(sulo:hasPart :SlicingThePizza))
+SubClassOf(:PizzaMakingProcess ObjectSomeValuesFrom(sulo:hasPart ObjectIntersectionOf(:AssemblingThePizza ObjectSomeValuesFrom(sulo:precedes :BakingThePizza))))
+SubClassOf(:PizzaMakingProcess ObjectSomeValuesFrom(sulo:hasPart ObjectIntersectionOf(:BakingThePizza ObjectSomeValuesFrom(sulo:precedes :SlicingThePizza))))
+SubClassOf(:PizzaMakingProcess ObjectSomeValuesFrom(sulo:hasPart ObjectIntersectionOf(:MakingThePizzaDough ObjectSomeValuesFrom(sulo:precedes :ProofingTheDough))))
+SubClassOf(:PizzaMakingProcess ObjectSomeValuesFrom(sulo:hasPart ObjectIntersectionOf(:ProofingTheDough ObjectSomeValuesFrom(sulo:precedes :AssemblingThePizza))))
+
+# Class: :PizzaOven (pizza oven)
+
+AnnotationAssertion(rdfs:label :PizzaOven "pizza oven"@en)
+SubClassOf(:PizzaOven sulo:SpatialObject)
+SubClassOf(:PizzaOven ObjectSomeValuesFrom(sulo:hasFeature <https://w3id.org/ontostart/pro/ContainmentRole>))
+
+# Class: :PizzaRecipe (pizza recipe)
+
+AnnotationAssertion(rdfs:label :PizzaRecipe "pizza recipe"@en)
+EquivalentClasses(:PizzaRecipe ObjectIntersectionOf(sulo:InformationObject ObjectSomeValuesFrom(sulo:refersTo :PizzaMakingProcess)))
+SubClassOf(:PizzaRecipe sulo:InformationObject)
+
+# Class: :PizzaSauce (pizza sauce)
+
+AnnotationAssertion(rdfs:label :PizzaSauce "pizza sauce"@en)
+SubClassOf(:PizzaSauce :FoodMaterial)
+
+# Class: :PizzaSlice (pizza slice)
+
+AnnotationAssertion(rdfs:label :PizzaSlice "pizza slice"@en)
+SubClassOf(:PizzaSlice :FoodMaterial)
+
+# Class: :PlacingPizzaOnTable (placing pizza on table)
+
+AnnotationAssertion(rdfs:label :PlacingPizzaOnTable "placing pizza on table"@en)
+SubClassOf(:PlacingPizzaOnTable sulo:Process)
+SubClassOf(:PlacingPizzaOnTable ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/OnTopPositionRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Pizza))))
+SubClassOf(:PlacingPizzaOnTable ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/SurfacePositionRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Table))))
+
+# Class: :ProofedDoughRole (proofed dough role)
+
+AnnotationAssertion(rdfs:label :ProofedDoughRole "proofed dough role"@en)
+SubClassOf(:ProofedDoughRole sulo:Role)
+DisjointClasses(:ProofedDoughRole :UnproofedDoughRole)
+
+# Class: :ProofingTheDough (proofing the dough)
+
+AnnotationAssertion(rdfs:label :ProofingTheDough "proofing the dough"@en)
+SubClassOf(:ProofingTheDough <https://w3id.org/ontostart/pro/DevelopmentalProcess>)
+SubClassOf(:ProofingTheDough ObjectIntersectionOf(ObjectSomeValuesFrom(sulo:hasPart ObjectIntersectionOf(:ProofingThePizzaDough_EndPhase ObjectSomeValuesFrom(sulo:isPrecededBy :ProofingThePizzaDough_StartPhase))) ObjectSomeValuesFrom(sulo:hasPart ObjectIntersectionOf(:ProofingThePizzaDough_StartPhase ObjectSomeValuesFrom(sulo:precedes :ProofingThePizzaDough_EndPhase)))))
+SubClassOf(:ProofingTheDough ObjectSomeValuesFrom(sulo:precedes :AssemblingThePizza))
+
+# Class: :ProofingThePizzaDough_EndPhase (proofed dough role)
+
+AnnotationAssertion(rdfs:label :ProofingThePizzaDough_EndPhase "proofed dough role"@en)
+SubClassOf(:ProofingThePizzaDough_EndPhase sulo:Process)
+SubClassOf(:ProofingThePizzaDough_EndPhase ObjectIntersectionOf(ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(:AiryTexture ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(:ProofedDoughRole ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough)))))
+
+# Class: :ProofingThePizzaDough_StartPhase (proofed dough role)
+
+AnnotationAssertion(rdfs:label :ProofingThePizzaDough_StartPhase "proofed dough role"@en)
+SubClassOf(:ProofingThePizzaDough_StartPhase sulo:Process)
+SubClassOf(:ProofingThePizzaDough_StartPhase ObjectIntersectionOf(ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(:DenseTexture ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough))) ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(:UnproofedDoughRole ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDough)))))
+
+# Class: :Salt (salt)
+
+AnnotationAssertion(rdfs:label :Salt "salt"@en)
+SubClassOf(:Salt :FoodMaterial)
+
+# Class: :ScovilleHeatUnit (Scoville heat unit)
+
+AnnotationAssertion(rdfs:comment :ScovilleHeatUnit "A unit to measure the spiciness or \"heat\" of chili peppers and substances based on their concentration of capsaicinoids. 
+                    The scale indicates how many times a chili extract must be diluted in sugar water before its heat is undetectable to tasters.")
+AnnotationAssertion(rdfs:label :ScovilleHeatUnit "Scoville heat unit"@en)
+SubClassOf(:ScovilleHeatUnit sulo:Unit)
+
+# Class: :SlicingThePizza (slicing the pizza)
+
+AnnotationAssertion(rdfs:label :SlicingThePizza "slicing the pizza"@en)
+SubClassOf(:SlicingThePizza <https://w3id.org/ontostart/pro/TransformationProcess>)
+SubClassOf(:SlicingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ConsumedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Pizza))))
+SubClassOf(:SlicingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/EmergingRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaSlice))))
+SubClassOf(:SlicingThePizza ObjectSomeValuesFrom(sulo:precedes :DeliveringThePizza))
+
+# Class: :Spiciness (spiciness)
+
+AnnotationAssertion(rdfs:comment :Spiciness "Spiciness is a quality that represents the perceived heat or pungency of a food material.")
+AnnotationAssertion(rdfs:label :Spiciness "spiciness"@en)
+SubClassOf(:Spiciness sulo:Quality)
+
+# Class: :SpicinessMeasurement (spiciness measurement)
+
+AnnotationAssertion(rdfs:label :SpicinessMeasurement "spiciness measurement"@en)
+SubClassOf(:SpicinessMeasurement sulo:Quantity)
+SubClassOf(:SpicinessMeasurement ObjectSomeValuesFrom(sulo:refersTo :Spiciness))
+
+# Class: :SpicyHot (spicy hot)
+
+AnnotationAssertion(rdfs:comment :SpicyHot "A high level of spiciness causing intense heat sensation.")
+AnnotationAssertion(rdfs:label :SpicyHot "spicy hot"@en)
+SubClassOf(:SpicyHot :Spiciness)
+
+# Class: :SpicyMedium (spicy medium)
+
+AnnotationAssertion(rdfs:comment :SpicyMedium "A moderate level of spiciness.")
+AnnotationAssertion(rdfs:label :SpicyMedium "spicy medium"@en)
+SubClassOf(:SpicyMedium :Spiciness)
+
+# Class: :SpicyMild (spicy mild)
+
+AnnotationAssertion(rdfs:comment :SpicyMild "A low level of spiciness with minimal heat sensation.")
+AnnotationAssertion(rdfs:label :SpicyMild "spicy mild"@en)
+SubClassOf(:SpicyMild :Spiciness)
+
+# Class: :SpicyPizza (spicy pizza)
+
+AnnotationAssertion(rdfs:label :SpicyPizza "spicy pizza"@en)
+EquivalentClasses(:SpicyPizza ObjectIntersectionOf(:Pizza ObjectSomeValuesFrom(sulo:hasDirectPart ObjectSomeValuesFrom(sulo:hasFeature ObjectUnionOf(:SpicyHot :SpicyMedium)))))
+EquivalentClasses(:SpicyPizza ObjectIntersectionOf(:Pizza ObjectSomeValuesFrom(sulo:hasPart ObjectSomeValuesFrom(sulo:hasFeature ObjectIntersectionOf(:SpicinessMeasurement DataSomeValuesFrom(sulo:hasValue DatatypeRestriction(xsd:integer xsd:minInclusive "300000"^^xsd:integer)))))))
+SubClassOf(:SpicyPizza :Pizza)
+
+# Class: :SpicyPizzaOrder (order for spicy pizza)
+
+AnnotationAssertion(rdfs:label :SpicyPizzaOrder "order for spicy pizza"@en)
+EquivalentClasses(:SpicyPizzaOrder ObjectIntersectionOf(:Order ObjectSomeValuesFrom(sulo:refersTo :SpicyPizza)))
+SubClassOf(:SpicyPizzaOrder :Order)
+
+# Class: :SpicySalami (spicy salami)
+
+AnnotationAssertion(rdfs:comment :SpicySalami "A salami with a hot or medium spiciness quality.")
+AnnotationAssertion(rdfs:label :SpicySalami "spicy salami"@en)
+SubClassOf(:SpicySalami :FoodMaterial)
+SubClassOf(:SpicySalami ObjectSomeValuesFrom(sulo:hasFeature ObjectUnionOf(:SpicyHot :SpicyMedium)))
+
+# Class: :SpicySalamiPizza (spicy salami pizza)
+
+AnnotationAssertion(rdfs:label :SpicySalamiPizza "spicy salami pizza"@en)
+EquivalentClasses(:SpicySalamiPizza ObjectIntersectionOf(:Pizza ObjectAllValuesFrom(sulo:hasDirectPart ObjectUnionOf(:PizzaSauce :SpicySalami)) ObjectExactCardinality(1 sulo:hasDirectPart :PizzaSauce) ObjectExactCardinality(1 sulo:hasDirectPart :SpicySalami)))
+SubClassOf(:SpicySalamiPizza :Pizza)
+
+# Class: :Sugar (sugar)
+
+AnnotationAssertion(rdfs:label :Sugar "sugar"@en)
+SubClassOf(:Sugar :FoodMaterial)
+
+# Class: :Table (table)
+
+AnnotationAssertion(rdfs:label :Table "table"@en)
+SubClassOf(:Table sulo:SpatialObject)
+SubClassOf(:Table ObjectSomeValuesFrom(sulo:hasFeature <https://w3id.org/ontostart/pro/SurfacePositionRole>))
+
+# Class: :TraditionalFourCheesePizza (traditional four cheese pizza)
+
+AnnotationAssertion(rdfs:comment :TraditionalFourCheesePizza "A Traditional Four Cheese Pizza is a pizza made with mozzarella, gorgonzola, parmesan, and pecorino romano.")
+AnnotationAssertion(rdfs:label :TraditionalFourCheesePizza "traditional four cheese pizza"@en)
+EquivalentClasses(:TraditionalFourCheesePizza ObjectIntersectionOf(:Pizza ObjectAllValuesFrom(sulo:hasDirectPart ObjectUnionOf(:Gorgonzola :Mozzarella :Parmesan :PecorinoRomano)) ObjectExactCardinality(1 sulo:hasDirectPart :Gorgonzola) ObjectExactCardinality(1 sulo:hasDirectPart :Mozzarella) ObjectExactCardinality(1 sulo:hasDirectPart :Parmesan) ObjectExactCardinality(1 sulo:hasDirectPart :PecorinoRomano)))
+SubClassOf(:TraditionalFourCheesePizza :Pizza)
+
+# Class: :UnboxingThePizza (unboxing the pizza)
+
+AnnotationAssertion(rdfs:label :UnboxingThePizza "unboxing the pizza"@en)
+SubClassOf(:UnboxingThePizza sulo:Process)
+SubClassOf(:UnboxingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ContainedRole> ObjectSomeValuesFrom(sulo:isFeatureOf :Pizza))))
+SubClassOf(:UnboxingThePizza ObjectSomeValuesFrom(sulo:hasParticipant ObjectIntersectionOf(<https://w3id.org/ontostart/pro/ContainmentRole> ObjectSomeValuesFrom(sulo:isFeatureOf :PizzaDeliveryBox))))
+
+# Class: :UnproofedDoughRole (unproofed dough role)
+
+AnnotationAssertion(rdfs:label :UnproofedDoughRole "unproofed dough role"@en)
+SubClassOf(:UnproofedDoughRole sulo:Role)
+
+# Class: :Water (water)
+
+AnnotationAssertion(rdfs:label :Water "water"@en)
+SubClassOf(:Water :FoodMaterial)
+
+
+############################
+#   Named Individuals
+############################
+
+# Individual: :baking_event_001 (:baking_event_001)
+
+ClassAssertion(:BakingThePizza :baking_event_001)
+ObjectPropertyAssertion(sulo:atTime :baking_event_001 :t_bake_end_001)
+ObjectPropertyAssertion(sulo:atTime :baking_event_001 :t_bake_start_001)
+ObjectPropertyAssertion(sulo:precedes :baking_event_001 :delivering_event_001)
+
+# Individual: :box_containment_role_001 (:box_containment_role_001)
+
+ClassAssertion(<https://w3id.org/ontostart/pro/ContainmentRole> :box_containment_role_001)
+ObjectPropertyAssertion(sulo:isFeatureOf :box_containment_role_001 :delivery_box_001)
+
+# Individual: :crust_of_my_pizza (:crust_of_my_pizza)
+
+ClassAssertion(:PizzaCrust :crust_of_my_pizza)
+
+# Individual: :delivering_event_001 (:delivering_event_001)
+
+ClassAssertion(:DeliveringThePizza :delivering_event_001)
+ObjectPropertyAssertion(sulo:atTime :delivering_event_001 :delivery_duration_001)
+ObjectPropertyAssertion(sulo:atTime :delivering_event_001 :t_delivery_001)
+
+# Individual: :delivery_box_001 (:delivery_box_001)
+
+ClassAssertion(:PizzaDeliveryBox :delivery_box_001)
+ObjectPropertyAssertion(sulo:contains :delivery_box_001 :pizza_001)
+
+# Individual: :delivery_duration_001 (:delivery_duration_001)
+
+ClassAssertion(:DeliveryDuration :delivery_duration_001)
+DataPropertyAssertion(sulo:hasValue :delivery_duration_001 "25.0"^^xsd:decimal)
+
+# Individual: :fridge_001 (:fridge_001)
+
+ClassAssertion(sulo:SpatialObject :fridge_001)
+ObjectPropertyAssertion(sulo:contains :fridge_001 :delivery_box_001)
+
+# Individual: :id_001 (:id_001)
+
+ClassAssertion(:OrderIdentifier :id_001)
+DataPropertyAssertion(sulo:hasValue :id_001 "ORDER-001")
+
+# Individual: :item_001 (1x Traditional Four Cheese Pizza)
+
+AnnotationAssertion(rdfs:label :item_001 "1x Traditional Four Cheese Pizza")
+ClassAssertion(ObjectSomeValuesFrom(sulo:refersTo :TraditionalFourCheesePizza) :item_001)
+DataPropertyAssertion(sulo:hasValue :item_001 "1"^^xsd:integer)
+
+# Individual: :item_002 (1x Spicy Pizza)
+
+AnnotationAssertion(rdfs:label :item_002 "1x Spicy Pizza")
+ClassAssertion(ObjectSomeValuesFrom(sulo:refersTo :SpicyPizza) :item_002)
+DataPropertyAssertion(sulo:hasValue :item_002 "1"^^xsd:integer)
+
+# Individual: :making_001 (:making_001)
+
+ClassAssertion(:PizzaMakingProcess :making_001)
+
+# Individual: :making_event_001 (:making_event_001)
+
+ClassAssertion(:MakingThePizzaDough :making_event_001)
+ObjectPropertyAssertion(sulo:atTime :making_event_001 :t_making_end_001)
+ObjectPropertyAssertion(sulo:atTime :making_event_001 :t_making_start_001)
+ObjectPropertyAssertion(sulo:precedes :making_event_001 :baking_event_001)
+
+# Individual: :order_001 (Pizza Order #001)
+
+AnnotationAssertion(rdfs:comment :order_001 "Order for a Traditional Four Cheese Pizza and a Spicy Salami Pizza.")
+AnnotationAssertion(rdfs:label :order_001 "Pizza Order #001")
+ClassAssertion(:Order :order_001)
+ObjectPropertyAssertion(sulo:hasPart :order_001 :id_001)
+ObjectPropertyAssertion(sulo:hasPart :order_001 :order_items_001)
+ObjectPropertyAssertion(sulo:refersTo :order_001 :spicy_salami_pizza_001)
+
+# Individual: :order_items_001 (:order_items_001)
+
+ClassAssertion(sulo:Collection :order_items_001)
+ObjectPropertyAssertion(sulo:hasItem :order_items_001 :item_001)
+ObjectPropertyAssertion(sulo:hasItem :order_items_001 :item_002)
+
+# Individual: :ordering_event_001 (:ordering_event_001)
+
+ClassAssertion(:OrderingProcess :ordering_event_001)
+ObjectPropertyAssertion(sulo:atTime :ordering_event_001 :t_order_received_001)
+ObjectPropertyAssertion(sulo:precedes :ordering_event_001 :making_event_001)
+
+# Individual: :pizza_001 (:pizza_001)
+
+ClassAssertion(:TraditionalFourCheesePizza :pizza_001)
+ObjectPropertyAssertion(sulo:hasDirectPart :pizza_001 :crust_of_my_pizza)
+
+# Individual: :pizza_boxing_001 (:pizza_boxing_001)
+
+ClassAssertion(:BoxingThePizza :pizza_boxing_001)
+ObjectPropertyAssertion(sulo:hasParticipant :pizza_boxing_001 :box_containment_role_001)
+ObjectPropertyAssertion(sulo:hasParticipant :pizza_boxing_001 :pizza_contained_role_001)
+ObjectPropertyAssertion(sulo:precedes :pizza_boxing_001 :pizza_unboxing_001)
+
+# Individual: :pizza_contained_role_001 (:pizza_contained_role_001)
+
+ClassAssertion(<https://w3id.org/ontostart/pro/ContainedRole> :pizza_contained_role_001)
+ObjectPropertyAssertion(sulo:isFeatureOf :pizza_contained_role_001 :pizza_001)
+
+# Individual: :pizza_ontop_position_role_001 (:pizza_ontop_position_role_001)
+
+ClassAssertion(<https://w3id.org/ontostart/pro/OnTopPositionRole> :pizza_ontop_position_role_001)
+ObjectPropertyAssertion(sulo:isFeatureOf :pizza_ontop_position_role_001 :pizza_001)
+
+# Individual: :pizza_unboxing_001 (:pizza_unboxing_001)
+
+ClassAssertion(:UnboxingThePizza :pizza_unboxing_001)
+ObjectPropertyAssertion(sulo:hasParticipant :pizza_unboxing_001 :box_containment_role_001)
+ObjectPropertyAssertion(sulo:hasParticipant :pizza_unboxing_001 :pizza_contained_role_001)
+ObjectPropertyAssertion(sulo:precedes :pizza_unboxing_001 :placing_pizza_on_table_001)
+
+# Individual: :placing_pizza_on_table_001 (:placing_pizza_on_table_001)
+
+ClassAssertion(:PlacingPizzaOnTable :placing_pizza_on_table_001)
+ObjectPropertyAssertion(sulo:hasParticipant :placing_pizza_on_table_001 :pizza_ontop_position_role_001)
+ObjectPropertyAssertion(sulo:hasParticipant :placing_pizza_on_table_001 :table_surface_role_001)
+
+# Individual: :recipe_001 (Traditional Neapolitan Pizza Recipe)
+
+AnnotationAssertion(rdfs:label :recipe_001 "Traditional Neapolitan Pizza Recipe")
+ClassAssertion(sulo:InformationObject :recipe_001)
+ObjectPropertyAssertion(sulo:refersTo :recipe_001 :making_001)
+
+# Individual: :spicy_salami_pizza_001 (:spicy_salami_pizza_001)
+
+ClassAssertion(:SpicySalamiPizza :spicy_salami_pizza_001)
+
+# Individual: :t_bake_end_001 (Baking end — order #001)
+
+AnnotationAssertion(rdfs:label :t_bake_end_001 "Baking end — order #001")
+ClassAssertion(:BakingEndTime :t_bake_end_001)
+DataPropertyAssertion(sulo:hasValue :t_bake_end_001 "2026-04-30T17:58:00Z")
+
+# Individual: :t_bake_start_001 (Baking start — order #001)
+
+AnnotationAssertion(rdfs:label :t_bake_start_001 "Baking start — order #001")
+ClassAssertion(:BakingStartTime :t_bake_start_001)
+DataPropertyAssertion(sulo:hasValue :t_bake_start_001 "2026-04-30T17:46:00Z")
+
+# Individual: :t_delivery_001 (Delivery time — order #001)
+
+AnnotationAssertion(rdfs:label :t_delivery_001 "Delivery time — order #001")
+ClassAssertion(:DeliveryTime :t_delivery_001)
+DataPropertyAssertion(sulo:hasValue :t_delivery_001 "2026-04-30T18:23:00Z")
+
+# Individual: :t_making_end_001 (Dough-making end — order #001)
+
+AnnotationAssertion(rdfs:label :t_making_end_001 "Dough-making end — order #001")
+ClassAssertion(:MakingEndTime :t_making_end_001)
+DataPropertyAssertion(sulo:hasValue :t_making_end_001 "2026-04-30T17:46:00Z")
+
+# Individual: :t_making_start_001 (Dough-making start — order #001)
+
+AnnotationAssertion(rdfs:label :t_making_start_001 "Dough-making start — order #001")
+ClassAssertion(:MakingStartTime :t_making_start_001)
+DataPropertyAssertion(sulo:hasValue :t_making_start_001 "2026-04-30T17:01:00Z")
+
+# Individual: :t_order_received_001 (Order received — order #001)
+
+AnnotationAssertion(rdfs:label :t_order_received_001 "Order received — order #001")
+ClassAssertion(:OrderReceivedTime :t_order_received_001)
+DataPropertyAssertion(sulo:hasValue :t_order_received_001 "2026-04-30T17:00:00Z")
+
+# Individual: :table_001 (:table_001)
+
+ClassAssertion(:Table :table_001)
+
+# Individual: :table_surface_role_001 (:table_surface_role_001)
+
+ClassAssertion(<https://w3id.org/ontostart/pro/SurfacePositionRole> :table_surface_role_001)
+ObjectPropertyAssertion(sulo:isFeatureOf :table_surface_role_001 :table_001)
+
+
+DisjointClasses(:Gorgonzola :Mozzarella :Parmesan :PecorinoRomano)
+DisjointClasses(:PizzaDeliveryBox :PizzaOven :Table)
+DisjointClasses(:SpicyHot :SpicyMedium :SpicyMild)
+DifferentIndividuals(:crust_of_my_pizza :delivery_box_001 :fridge_001 :pizza_001)
+)

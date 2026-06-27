@@ -73,7 +73,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::classify;
+use owl_dl_reasoner::{classify, classify_with_timeout};
 
 #[derive(Parser, Debug)]
 #[command(name = "owl-dl-bench", version, about = "rustdl benchmark harness")]
@@ -146,6 +146,14 @@ enum Command {
         /// machine has ~30% variance at the millisecond scale.
         #[arg(long, default_value = "1")]
         repeats: usize,
+        /// Per-pair tableau deadline in milliseconds. Without it the
+        /// classifier runs unbounded and will HANG on a wine-class
+        /// ontology (combinatorial nominal+cardinality+disjunction);
+        /// with it, cut pairs default to "not subsumed" (sound — every
+        /// reported subsumption still holds) so the harness returns a
+        /// bounded result. Mirrors `rustdl classify --pair-timeout-ms`.
+        #[arg(long)]
+        pair_timeout_ms: Option<u64>,
     },
     /// In-process comparison against `whelk-rs` (another EL
     /// reasoner in Rust), running both engines on the same input.
@@ -329,7 +337,8 @@ fn run(cli: Cli) -> Result<()> {
             dir,
             quiet,
             repeats,
-        } => run_corpus(&dir, quiet, repeats)?,
+            pair_timeout_ms,
+        } => run_corpus(&dir, quiet, repeats, pair_timeout_ms)?,
         #[cfg(feature = "whelk-compare")]
         Command::CompareWhelk { file, iters } => run_compare_whelk(&file, iters)?,
     }
@@ -529,7 +538,7 @@ fn run_compare_whelk(path: &Path, iters: usize) -> Result<()> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run_corpus(dir: &Path, quiet: bool, repeats: usize) -> Result<()> {
+fn run_corpus(dir: &Path, quiet: bool, repeats: usize, pair_timeout_ms: Option<u64>) -> Result<()> {
     let repeats = repeats.max(1);
     let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .into_iter()
@@ -567,7 +576,11 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize) -> Result<()> {
         let mut err: Option<String> = None;
         for _ in 0..repeats {
             let start = Instant::now();
-            match classify(&onto).context("classify") {
+            let result = match pair_timeout_ms {
+                Some(ms) => classify_with_timeout(&onto, std::time::Duration::from_millis(ms)),
+                None => classify(&onto),
+            };
+            match result.context("classify") {
                 Ok(h) => {
                     times.push(start.elapsed());
                     if first_stats.is_none() {

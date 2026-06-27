@@ -4,6 +4,17 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.16] — 2026-06-27
+
+### Internal
+
+- **Saturation-only closure-diff mode** (`ORE_ONE_SAT_ONLY=1`) in the
+  `konclude_closure_diff` test harness: computes rustdl's closure from the
+  saturation-only path (a global fixpoint, no per-class wedge) and diffs it
+  against the Konclude oracle. Diagnostic for whether the sound-but-under-
+  approximate saturator is already complete on ontologies whose per-class wedge
+  classify is too slow to finish. Test-only and env-gated; no engine change.
+
 ## [0.3.15] — 2026-06-27
 
 ### Performance

@@ -26,7 +26,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::io::owx::reader::read as read_owx;
 use horned_owl::model::{ClassExpression, Component, EquivalentClasses, RcStr, SubClassOf};
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{Classification, classify_top_down_with_timeout};
+use owl_dl_reasoner::{Classification, classify_saturation_only, classify_top_down_with_timeout};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -267,8 +267,15 @@ fn diff_corpus_ontology(
 ) -> (usize, usize, usize, usize) {
     let onto = load_ofn_fixture(input);
     let start = Instant::now();
-    let c = classify_top_down_with_timeout(&onto, Duration::from_millis(per_pair_ms))
-        .expect("classify");
+    // ORE_ONE_SAT_ONLY=1: compute the rustdl closure from the SATURATION-ONLY path
+    // (global fixpoint, no per-class wedge) instead of the full classifier — used to
+    // measure whether the sound-but-under-approximate saturator is already complete
+    // vs the oracle on onts whose per-class wedge classify is too slow to finish.
+    let c = if std::env::var_os("ORE_ONE_SAT_ONLY").is_some() {
+        classify_saturation_only(&onto).expect("saturation-only classify")
+    } else {
+        classify_top_down_with_timeout(&onto, Duration::from_millis(per_pair_ms)).expect("classify")
+    };
     let wall = start.elapsed();
     let verdict = read_konclude_verdict(truth);
     let rustdl_unsat_count = c.unsatisfiable_classes().len();

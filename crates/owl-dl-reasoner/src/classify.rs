@@ -438,6 +438,30 @@ pub fn classify_with_global_deadline<A: ForIRI>(
     classify_top_down_internal(&internal, None, Some(deadline))
 }
 
+/// Classify with BOTH a per-pair tableau deadline and a global wall-clock
+/// budget — the recommended bounded entry point. Each probe is cut at
+/// `min(per_pair, remaining global)` (see [`effective_deadline`]); `per_pair`
+/// bounds any single pair, `global_budget` bounds the total wall so the run
+/// can't grow with the pair count. Either may be `None` (that bound absent;
+/// both `None` ⇒ the unbounded top-down classify).
+///
+/// **Sound** at every setting: a cut probe defaults to "not subsumed"
+/// (FP=0; the hierarchy may MISS a real subsumption — inspect
+/// [`ClassificationStats`]`::complete` / `timed_out_pairs`).
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn classify_with_budget<A: ForIRI>(
+    ontology: &SetOntology<A>,
+    per_pair_timeout: Option<std::time::Duration>,
+    global_budget: Option<std::time::Duration>,
+) -> Result<Classification, ReasonError> {
+    let internal = convert_ontology(ontology)?;
+    let global_deadline = global_budget.map(|b| Instant::now() + b);
+    classify_top_down_internal(&internal, per_pair_timeout, global_deadline)
+}
+
 /// Naive `n²` pair-sweep classifier. Kept for benchmarking and
 /// regression cross-checks against [`classify`]. On real workloads
 /// it is consistently 2× slower than the default top-down path; new

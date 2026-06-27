@@ -95,14 +95,29 @@ class UnknownClassError(RustdlError):
 # ── core reasoning ──────────────────────────────────────────────────────────
 
 def classify(
-    path: str, *, per_pair_timeout_ms: int = 1000, saturation_only: bool = False
+    path: str,
+    *,
+    per_pair_timeout_ms: int = 100,
+    global_deadline_ms: int = 60000,
+    saturation_only: bool = False,
 ) -> Classification:
     """Classify the ontology at `path` (format auto-detected from the
-    extension: ``.ofn`` | ``.owx`` | ``.owl`` | ``.rdf`` | ``.omn``)."""
+    extension: ``.ofn`` | ``.owx`` | ``.owl`` | ``.rdf`` | ``.omn``).
+
+    Bounded by default: ``per_pair_timeout_ms`` caps each ``sub ⊓ ¬sup``
+    pair and ``global_deadline_ms`` caps the TOTAL wall (the backstop against
+    wine-class hangs). Cutting is sound (no false subsumptions; real ones may
+    be missing — check ``Classification.complete`` / ``.timed_out_pairs``).
+    Set either to ``0`` to disable that bound; both ``0`` ⇒ unbounded/complete."""
     ...
 
 def classify_bytes(
-    data: bytes, *, format: str, per_pair_timeout_ms: int = 1000, saturation_only: bool = False
+    data: bytes,
+    *,
+    format: str,
+    per_pair_timeout_ms: int = 100,
+    global_deadline_ms: int = 60000,
+    saturation_only: bool = False,
 ) -> Classification:
     """Like `classify`, from in-memory bytes with explicit `format`
     (one of ``"ofn"``, ``"owx"``, ``"rdf-xml"``, ``"omn"``)."""

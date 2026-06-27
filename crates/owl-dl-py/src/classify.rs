@@ -1,7 +1,7 @@
 //! `classify` / `classify_bytes` top-level functions + the
 //! `Classification` `PyO3` class that wraps `owl_dl_reasoner::Classification`.
 
-use owl_dl_reasoner::{Classification as RsClassification, classify as rs_classify};
+use owl_dl_reasoner::Classification as RsClassification;
 use pyo3::prelude::*;
 
 use crate::errors::reason_error_to_py;
@@ -51,7 +51,8 @@ impl PyClassification {
     /// True iff classification ran to completion — no pair hit the
     /// timeout. When `False`, the hierarchy may be missing real
     /// subsumptions (see `timed_out_pairs`); re-classify with
-    /// `per_pair_timeout_ms=0` for the complete (unbounded) result.
+    /// `per_pair_timeout_ms=0, global_deadline_ms=0` for the complete
+    /// (unbounded) result.
     #[getter]
     fn complete(&self) -> bool {
         self.inner.stats().timed_out_pairs == 0
@@ -94,46 +95,67 @@ impl PyClassification {
 /// Format auto-detected from the file extension
 /// (`.ofn` | `.owx` | `.owl` | `.rdf` | `.omn`).
 #[pyfunction]
-#[pyo3(signature = (path, *, per_pair_timeout_ms=1000, saturation_only=false))]
+#[pyo3(signature = (path, *, per_pair_timeout_ms=100, global_deadline_ms=60000, saturation_only=false))]
 pub(crate) fn classify(
     path: &str,
     per_pair_timeout_ms: Option<u64>,
+    global_deadline_ms: Option<u64>,
     saturation_only: bool,
 ) -> PyResult<PyClassification> {
     let ontology = load::load_path(path)?;
-    do_classify(&ontology, per_pair_timeout_ms, saturation_only)
+    do_classify(
+        &ontology,
+        per_pair_timeout_ms,
+        global_deadline_ms,
+        saturation_only,
+    )
 }
 
 /// `rustdl.classify_bytes(data, format="ofn")` — same but from bytes.
 /// `format` is one of `"ofn"`, `"owx"`, `"rdf-xml"`, `"omn"`.
 #[pyfunction]
-#[pyo3(signature = (data, *, format, per_pair_timeout_ms=1000, saturation_only=false))]
+#[pyo3(signature = (data, *, format, per_pair_timeout_ms=100, global_deadline_ms=60000, saturation_only=false))]
 pub(crate) fn classify_bytes(
     data: &[u8],
     format: &str,
     per_pair_timeout_ms: Option<u64>,
+    global_deadline_ms: Option<u64>,
     saturation_only: bool,
 ) -> PyResult<PyClassification> {
     let ontology = load::load_bytes(data, format)?;
-    do_classify(&ontology, per_pair_timeout_ms, saturation_only)
+    do_classify(
+        &ontology,
+        per_pair_timeout_ms,
+        global_deadline_ms,
+        saturation_only,
+    )
 }
 
 fn do_classify(
     ontology: &horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
     per_pair_timeout_ms: Option<u64>,
+    global_deadline_ms: Option<u64>,
     saturation_only: bool,
 ) -> PyResult<PyClassification> {
     use std::time::Duration;
-    // `None` or `0` → unbounded (complete); any positive value bounds
-    // each pair (sound under-approximation; check `.complete` after).
-    let bounded = per_pair_timeout_ms.filter(|&ms| ms > 0);
+    // Two independent bounds (`0`/`None` disables that one): `per_pair`
+    // bounds any single `sub ⊓ ¬sup` pair; the global wall-budget bounds the
+    // TOTAL run so it can't grow with the pair count (the backstop against
+    // wine-class hangs). Each probe is cut at min(per_pair, remaining global).
+    // Cutting is a SOUND under-approximation — no false subsumptions; real
+    // ones may be missing (check `.complete` / `.timed_out_pairs`). Both
+    // disabled ⇒ unbounded/complete.
+    let per_pair = per_pair_timeout_ms
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis);
+    let global = global_deadline_ms
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis);
     let inner = if saturation_only {
         owl_dl_reasoner::classify_saturation_only(ontology).map_err(reason_error_to_py)?
-    } else if let Some(ms) = bounded {
-        owl_dl_reasoner::classify_top_down_with_timeout(ontology, Duration::from_millis(ms))
-            .map_err(reason_error_to_py)?
     } else {
-        rs_classify(ontology).map_err(reason_error_to_py)?
+        owl_dl_reasoner::classify_with_budget(ontology, per_pair, global)
+            .map_err(reason_error_to_py)?
     };
     Ok(PyClassification { inner })
 }

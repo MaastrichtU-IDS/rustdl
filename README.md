@@ -6,7 +6,7 @@ consequence-based **saturation** engine handles the EL-ish fragment, a
 orchestrator picks per query. Parsing and the OWL model come from
 [`horned-owl`](https://github.com/phillord/horned-owl).
 
-## Status (v0.3.12)
+## Status (v0.3.16)
 
 A working classifier, consistency checker, and instance reasoner for SROIQ(D)
 with first-class data properties. The defining property is **soundness**: every
@@ -17,10 +17,13 @@ reported subsumption is a genuine entailment.
   nothing that neither complete reasoner does.
 - **Fastest on EL.** rustdl's saturation kernel beats whelk-rs (1.4–1.9×) and ELK
   (4.5×) on galen/notgalen, deriving a sound *superset* of their closures.
-- **Competitive on DL, not the speed leader.** After recent work, most DL
-  ontologies classify within ~10–50× of Konclude (the mature C++ tableau, which
-  wins on speed); HermiT is slower still and itself DNFs on a hard tail.
-  **wine** is rustdl's one DNF (combinatorial nominal+disjunction).
+- **Competitive on DL, not the speed leader.** Most DL ontologies classify
+  within ~10–50× of Konclude (the mature C++ tableau, which wins on speed);
+  HermiT is slower still and itself DNFs on a hard tail. **wine — once rustdl's
+  one DNF (combinatorial nominal+disjunction) — now classifies soundly in ~1.6 s**
+  (a ~30× reduction from the coupled-saturation ∃-seed plus wedge search-ordering
+  work; see the [v0.3.16 snapshot](docs/perf-2026-06-27-bench-snapshot.md)). A
+  residual of ~9 idiosyncratic ORE-pilot ontologies stays hard.
 - Detects the **family** inconsistency (a consequence-based ABox-saturation
   pre-check) that the per-pair tableau alone misses.
 - **Explains *and* debugs — a full suite.** Built-in CLI commands turn rustdl into
@@ -150,6 +153,7 @@ license; no separate CLA.
 
 ## More
 
+- Latest benchmark snapshot: [`docs/perf-2026-06-27-bench-snapshot.md`](docs/perf-2026-06-27-bench-snapshot.md)
 - Reasoner comparison: [`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md)
 - Perf vs Konclude/HermiT: [`docs/perf-2026-06-08-konclude-vs-rustdl.md`](docs/perf-2026-06-08-konclude-vs-rustdl.md)
 - Completeness envelope: [`docs/fragment-completeness.md`](docs/fragment-completeness.md)

@@ -682,6 +682,13 @@ enum Event {
 /// `match_body` no-op (the duplicate-fire cost, bounded by body size).
 #[derive(Debug, Default, Clone)]
 pub struct ClauseIndexes {
+    /// Per-clause (by global clause id) precomputed match plan; `None` ⟹ the
+    /// body shape is unsupported (an equality/inverse-equality atom, or a
+    /// non-tree variable structure) and [`HyperEngine::match_body`] returns
+    /// `None`, exactly as the inline path did. Memoizes the node-INDEPENDENT
+    /// body partition + `eval_order` out of the matcher hot loop (the body is
+    /// immutable, so this is the same value every `(clause, node)` call).
+    match_plans: Vec<Option<ClauseMatchPlan>>,
     /// By class index: clauses with that class as an `X`-body atom.
     pub x_trigger: Vec<Vec<usize>>,
     /// By class index: clauses with that class as a successor-body atom.
@@ -717,6 +724,49 @@ fn role_id_index(r: Role) -> usize {
     }
 }
 
+/// Precomputed, node-independent match metadata for one clause body
+/// (memoized once at index-build, since the body is immutable). Eliminates
+/// the per-`(clause, node)` body re-partition + `eval_order` recompute from
+/// the `match_body` hot path — the matcher is the wedge's #1 hotspot.
+#[derive(Debug, Clone)]
+struct ClauseMatchPlan {
+    /// `Atom::Class(c, X)` atoms — checked against the home node's label.
+    x_classes: SmallVec<[ClassId; 4]>,
+    /// Role atoms `(r, u, v)` (the variable-tree edges).
+    role_atoms: SmallVec<[(Role, Var, Var); 4]>,
+    /// `Atom::Class(c, v)` with `v != X` — successor-class constraints.
+    other_classes: SmallVec<[(ClassId, Var); 4]>,
+    /// Topological evaluation order over `role_atoms` (from `eval_order`).
+    order: SmallVec<[usize; 8]>,
+}
+
+/// Precompute one clause's [`ClauseMatchPlan`], or `None` if its body shape is
+/// unsupported (mirrors the inline classification `match_body` used to do per
+/// call): an equality body atom is unsupported, and a non-tree role-atom
+/// structure makes `eval_order` return `None`.
+fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
+    let mut x_classes: SmallVec<[ClassId; 4]> = SmallVec::new();
+    let mut role_atoms: SmallVec<[(Role, Var, Var); 4]> = SmallVec::new();
+    let mut other_classes: SmallVec<[(ClassId, Var); 4]> = SmallVec::new();
+    for atom in &clause.body {
+        match atom {
+            Atom::Class(c, v) if *v == X => x_classes.push(*c),
+            Atom::Role(r, u, v) => role_atoms.push((*r, *u, *v)),
+            Atom::Class(c, v) => other_classes.push((*c, *v)),
+            // Equality / inverse-equality bodies (and head-only atoms): later
+            // phases — the inline matcher returned `None` here too.
+            _ => return None,
+        }
+    }
+    let order = eval_order(&role_atoms)?;
+    Some(ClauseMatchPlan {
+        x_classes,
+        role_atoms,
+        other_classes,
+        order,
+    })
+}
+
 /// Build the [`ClauseIndexes`] for the Horn clauses. Non-Horn clauses
 /// are branch points handled by `find_open_disjunction`, not indexed.
 ///
@@ -727,6 +777,11 @@ fn role_id_index(r: Role) -> usize {
 /// call [`HyperEngine::with_sub_roles`] afterwards to rebuild with symmetry.
 pub fn build_clause_indexes(clauses: &[DlClause], sym: Option<&RoleHierarchy>) -> ClauseIndexes {
     let mut ix = ClauseIndexes::default();
+    // Per-clause match plan for ALL clauses (by global clause id) — `match_body`
+    // fires on both Horn (`fire_clause`) and non-Horn (`find_open_disjunction`)
+    // clauses, so this is not gated on `is_horn`.
+    ix.match_plans
+        .extend(clauses.iter().map(build_clause_match_plan));
     let push = |v: &mut Vec<Vec<usize>>, key: usize, ci: usize| {
         if key >= v.len() {
             v.resize(key + 1, Vec::new());
@@ -2748,41 +2803,30 @@ impl<'c> HyperEngine<'c> {
     /// or a role with no qualifying successor). This `None`-vs-empty
     /// distinction is the unsupported-vs-no-match boundary.
     fn match_body(&self, ci: usize, node: HNode) -> Option<Vec<Binding>> {
-        // Clause bodies are tiny (a handful of atoms), so these per-call
-        // scratch vectors stay inline — no heap allocation in the common
-        // case (this matcher is the hyperresolution hot loop).
-        let mut role_atoms: SmallVec<[(Role, Var, Var); 4]> = SmallVec::new();
-        let mut other_classes: SmallVec<[(ClassId, Var); 4]> = SmallVec::new();
-        let clause = &self.clauses[ci];
-        for atom in &clause.body {
-            match atom {
-                Atom::Class(c, v) if *v == X => {
-                    if !self.nodes[node.index()].has(*c) {
-                        // X-class absent: shape OK, no match.
-                        return Some(Vec::new());
-                    }
-                }
-                Atom::Role(r, u, v) => role_atoms.push((*r, *u, *v)),
-                Atom::Class(c, v) => other_classes.push((*c, *v)),
-                // Equality / inverse-role bodies: later phases.
-                _ => return None,
+        // The body partition (role/class/X-class atoms) and the variable-tree
+        // evaluation order are node-INDEPENDENT and the body is immutable, so
+        // they are precomputed once at index-build (`build_clause_match_plan`).
+        // `None` ⟹ unsupported body shape (equality atom or non-tree), exactly
+        // as the old inline path returned. This is the matcher hot loop.
+        let plan = self.indexes.match_plans[ci].as_ref()?;
+
+        // X-class atoms are the only node-dependent check: a missing X-class on
+        // the home node means the shape is fine but nothing matches.
+        for &c in &plan.x_classes {
+            if !self.nodes[node.index()].has(c) {
+                return Some(Vec::new());
             }
         }
 
-        // Topological order on the variable-tree: each role atom is
-        // processed only once its source var is already bound. `None`
-        // if the body isn't a tree rooted at `X` (cycle, disconnected,
-        // or a var bound twice) or has too many vars.
-        let order = eval_order(&role_atoms)?;
-        let plan = MatchPlan {
-            role_atoms: &role_atoms,
-            order: &order,
-            other_classes: &other_classes,
+        let mp = MatchPlan {
+            role_atoms: plan.role_atoms.as_slice(),
+            order: plan.order.as_slice(),
+            other_classes: plan.other_classes.as_slice(),
         };
 
         let mut out = Vec::new();
         let mut binding: Binding = SmallVec::new();
-        self.enumerate_matches(node, &plan, 0, &mut binding, &mut out);
+        self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
         Some(out)
     }
 

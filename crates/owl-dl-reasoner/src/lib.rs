@@ -1687,7 +1687,14 @@ pub fn label_cache_timeout_ms() -> u64 {
         .unwrap_or(DEFAULT_MS)
 }
 
-pub(crate) const LABEL_CACHE_FLOOR_MS: u64 = 1000;
+// Floor lowered 1000→50 (perf/label-cache-floor, 2026-06-27): the break-even is
+// `n × per_pair` (label C iff cheaper than refuting C's ~n pairs); a floor ABOVE
+// that is provable over-investment — at a tight per-pair cap (refutation ~free) it
+// forced the label build to over-pay (wine @1ms-cap: floored to 1000ms ⟹ build 1.0s
+// vs the break-even ~137ms ⟹ ~890ms total, −42%). 50ms is a small absolute minimum
+// for degenerate near-zero budgets. Inactive at the default 1000ms cap (n×1000 ≥ 1000
+// for any n ≥ 1 ⟹ the floor never binds there) ⟹ no default-path change.
+pub(crate) const LABEL_CACHE_FLOOR_MS: u64 = 50;
 pub(crate) const LABEL_CACHE_CEILING_MS: u64 = 30_000;
 
 /// Adaptive per-class label-cache build deadline (build-once tuning, 2026-06-25).
@@ -6493,8 +6500,19 @@ xsd:minInclusive \"0\"^^xsd:integer xsd:maxInclusive \"10\"^^xsd:integer)))\n)\n
         ); // 137000→ceiling
         assert_eq!(
             adaptive_label_cache_ms(2, Some(Duration::from_millis(200)), None),
-            1_000
-        ); // 400→floor
+            400
+        ); // 2*200=400, above the 50ms floor (floor lowered 1000→50)
+        // Tight-cap break-even (wine pattern): n×per_pair stays UN-floored so the
+        // label build doesn't over-invest where refutation is ~free.
+        assert_eq!(
+            adaptive_label_cache_ms(137, Some(Duration::from_millis(1)), None),
+            137
+        ); // 137*1=137, above the 50ms floor (was floored to 1000 pre-tune)
+        // Degenerate tiny budget clamps to the 50ms floor.
+        assert_eq!(
+            adaptive_label_cache_ms(10, Some(Duration::from_millis(1)), None),
+            50
+        ); // 10*1=10 → floor 50
         // None per_pair → base = ceiling, then ×n clamps to ceiling
         assert_eq!(adaptive_label_cache_ms(137, None, None), 30_000);
         assert_eq!(adaptive_label_cache_ms(1, None, None), 30_000); // 1*30000=30000

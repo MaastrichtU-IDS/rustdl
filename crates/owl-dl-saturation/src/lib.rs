@@ -2948,6 +2948,98 @@ fn collect_el_rules(
         }
     }
 
+    // LHS-NOMINAL-DISJUNCTION COMMON-SUBSUMER (RUSTDL_ONEOF_SUBSUMER, **default ON**;
+    // `=0` to disable): for an enumerated class `X ⊑ ObjectOneOf(a₁…aₙ)` (lowered to
+    // `X ⊑ Or(Nominal(aᵢ))`), seed `X ⊑ C` for every atomic `C` that EVERY member `aᵢ`
+    // is asserted to (`ClassAssertion(C, aᵢ)`). SOUND: `Xᴵ ⊆ {a₁ᴵ…aₙᴵ}` and each
+    // `aᵢᴵ ∈ Cᴵ` ⟹ `Xᴵ ⊆ Cᴵ` (only ENTAILED subsumptions — FP=0 by construction; this
+    // is LHS `⊔`-elimination, the complement of NOMINAL-FILLER TYPING above). Told-
+    // subsumption closure cascades the rest — e.g. ORE 5107 `Anytime ≡ {h01…h24}`,
+    // each `hᵢ : Hours` ⟹ `Anytime ⊑ Hours`, then `LeisureTime ⊑ Anytime ⊑ Hours`.
+    // FP LANDMINE: the intersection MUST be over ALL n members — a member with NO
+    // asserted type is unconstrained (could be a non-`C`), so it contributes the EMPTY
+    // set and collapses the intersection to ∅ (seed nothing). Guards: all disjuncts
+    // nominal (else `X` is not bounded by the enumeration), n ≥ 1. Under-approx: only
+    // ASSERTED member types (not the derived NomKey closure) — sufficient for the
+    // enumeration pattern; the derived version is deferred.
+    if std::env::var_os("RUSTDL_ONEOF_SUBSUMER").is_none_or(|v| v != "0" && !v.is_empty()) {
+        let pool = &internal.concepts;
+        // member individual → set of atomic asserted types
+        let mut asserted: HashMap<IndividualId, std::collections::HashSet<ClassId>> =
+            HashMap::new();
+        for ax in &internal.axioms {
+            if let Axiom::ClassAssertion { class, individual } = ax {
+                let entry = asserted.entry(*individual).or_default();
+                for sup in atomic_operands_on_right(*class, pool) {
+                    entry.insert(sup);
+                }
+            }
+        }
+        // Recover the nominal members of `sup` iff it is `Or(Nominal …)` (all nominal).
+        let oneof_members = |sup: ConceptId| -> Option<Vec<IndividualId>> {
+            let ConceptExpr::Or(disjuncts) = pool.get(sup) else {
+                return None;
+            };
+            if disjuncts.is_empty() {
+                return None;
+            }
+            let mut inds = Vec::with_capacity(disjuncts.len());
+            for &d in disjuncts {
+                let ConceptExpr::Nominal(ind) = pool.get(d) else {
+                    return None;
+                };
+                inds.push(*ind);
+            }
+            Some(inds)
+        };
+        // For `X ⊑ Or(Nominal …)` seed `X ⊑ c` for every `c` common to all members.
+        let seed_for = |sub: ConceptId, sup: ConceptId, rules: &mut ElRules| {
+            let ConceptExpr::Atomic(x) = pool.get(sub) else {
+                return;
+            };
+            let Some(members) = oneof_members(sup) else {
+                return;
+            };
+            // Intersect asserted types over ALL members (absent member ⟹ ∅).
+            let mut common: Option<std::collections::HashSet<ClassId>> = None;
+            for ind in &members {
+                let types = asserted.get(ind).cloned().unwrap_or_default();
+                common = Some(match common.take() {
+                    None => types,
+                    Some(prev) => prev.intersection(&types).copied().collect(),
+                });
+                if common
+                    .as_ref()
+                    .is_some_and(std::collections::HashSet::is_empty)
+                {
+                    return;
+                }
+            }
+            if let Some(common) = common {
+                for sup in common {
+                    rules
+                        .atomic_subsumptions
+                        .push(AtomicSubsumption { sub: *x, sup });
+                }
+            }
+        };
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubClassOf { sub, sup } => seed_for(*sub, *sup, &mut rules),
+                Axiom::EquivalentClasses(members) => {
+                    for i in 0..members.len() {
+                        for j in 0..members.len() {
+                            if i != j {
+                                seed_for(members[i], members[j], &mut rules);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     (rules, tseitin, total_classes)
 }
 
@@ -3871,6 +3963,106 @@ Ontology(<http://rustdl.test/nt>\n\
         assert!(
             subs.contains(class(&internal, "X"), class(&internal, "D")),
             "X ⊑ ∃r.{{a}} + a:C + D≡∃r.C ⟹ X ⊑ D (nominal-filler typing)"
+        );
+    }
+
+    /// ONEOF-SUBSUMER positive (`RUSTDL_ONEOF_SUBSUMER`, default-ON): every member of
+    /// an enumerated class is typed `C` ⟹ the class is `⊑ C`. The ORE 5107 pattern.
+    #[test]
+    fn oneof_subsumer_all_members_typed() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:C))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    ClassAssertion(:C :a) ClassAssertion(:C :b)\n\
+    EquivalentClasses(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "C")),
+            "X ≡ {{a,b}} + a:C + b:C ⟹ X ⊑ C (oneof-subsumer)"
+        );
+    }
+
+    /// ONEOF-SUBSUMER cascade: a told subclass of the enumerated class inherits the
+    /// seeded subsumption via told-closure (ORE 5107 `LeisureTime ⊑ Anytime ⊑ Hours`).
+    #[test]
+    fn oneof_subsumer_cascades_via_told() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:Y))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    ClassAssertion(:C :a) ClassAssertion(:C :b)\n\
+    EquivalentClasses(:X ObjectOneOf(:a :b))\n\
+    SubClassOf(:Y :X)\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "Y"), class(&internal, "C")),
+            "Y ⊑ X ≡ {{a,b}} + a,b:C ⟹ Y ⊑ C (cascade)"
+        );
+    }
+
+    /// ONEOF-SUBSUMER NEGATIVE (FP landmine): a member with NO asserted type is
+    /// unconstrained ⟹ the intersection collapses to ∅ ⟹ NO subsumption seeded.
+    #[test]
+    fn oneof_subsumer_typeless_member_no_seed() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:C))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    ClassAssertion(:C :a)\n\
+    EquivalentClasses(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "C")),
+            "X ≡ {{a,b}} + a:C only (b typeless) ⟹ X ⊄ C (no FP)"
+        );
+    }
+
+    /// ONEOF-SUBSUMER NEGATIVE: members disagree on type ⟹ NO common subsumer.
+    #[test]
+    fn oneof_subsumer_disagreeing_members_no_seed() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    ClassAssertion(:C :a) ClassAssertion(:D :b)\n\
+    EquivalentClasses(:X ObjectOneOf(:a :b))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "C")),
+            "X ≡ {{a,b}} + a:C + b:D ⟹ X ⊄ C (no FP)"
+        );
+    }
+
+    /// ONEOF-SUBSUMER NEGATIVE: a non-nominal disjunct means `X` is NOT bounded by the
+    /// enumeration ⟹ the all-nominal guard must reject ⟹ NO subsumption seeded.
+    #[test]
+    fn oneof_subsumer_non_nominal_disjunct_no_seed() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/oo>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:E))\n\
+    Declaration(NamedIndividual(:a))\n\
+    ClassAssertion(:C :a)\n\
+    SubClassOf(:X ObjectUnionOf(ObjectOneOf(:a) :E))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "C")),
+            "X ⊑ {{a}} ⊔ E + a:C ⟹ X ⊄ C (non-nominal disjunct, no FP)"
         );
     }
 

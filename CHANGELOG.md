@@ -4,6 +4,22 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] — 2026-06-27
+
+### Performance
+
+- **Precompute per-clause match plan (matcher hot loop).** `match_body` — the
+  wedge's #1 hotspot by profiling — used to re-partition the clause body
+  (role/class/X-class atoms) and re-run the variable-tree `eval_order` on every
+  `(clause, node)` call, even though both depend only on the immutable clause
+  body. Each clause's `(role_atoms, other_classes, X-classes, eval_order)` (or
+  its "unsupported" verdict) is now computed once at index-build and stored in
+  the Arc-shared `ClauseIndexes`. Sound by construction (memoizes immutable
+  clause-derived data — matches and verdicts byte-identical). **ore-10908
+  −8…−11%** (the matcher-heaviest classification), sio −2%; flat on EL and
+  tier-walk-bound workloads. The companion to the v0.3.12 `SmallVec`/membership
+  matcher wins (which cut allocation; this cuts the recompute).
+
 ## [0.3.13] — 2026-06-27
 
 All changes below are **sound** — FP=0/MISSED=0 byte-identical against the

@@ -14,11 +14,14 @@
 //!    conjuncts recursively; `ObjectPropertyAssertion(R, a, b)` → add (R,a,b) to
 //!    edges.
 //! 2. **Inverse materialization**: `InverseObjectProperties(R, S)` + edge(R,a,b)
-//!    → edge(S,b,a); and vice versa.
+//!    → edge(S,b,a); and vice versa. `SymmetricObjectProperty(R)` is the
+//!    self-inverse case `edge(R,a,b)` → `edge(R,b,a)`.
 //! 3. **Role hierarchy**: `SubObjectPropertyOf(R, S)` + edge(R,a,b)
 //!    → edge(S,a,b).
-//! 4. **Role chains**: `SubObjectPropertyOf(R₁∘R₂, S)` + edge(R₁,a,b) + edge(R₂,b,c)
-//!    → edge(S,a,c); chains of length 3 also supported.
+//! 4. **Role chains + transitivity**: `SubObjectPropertyOf(R₁∘R₂, S)` +
+//!    edge(R₁,a,b) + edge(R₂,b,c) → edge(S,a,c) (chains of length 3 too);
+//!    `TransitiveObjectProperty(R)` is the self-chain `R∘R⊑R`, closed to the
+//!    full transitive closure by the fixpoint.
 //! 5. **Domain/range propagation**: `ObjectPropertyDomain(R, D)` + edge(R,a,b)
 //!    → add D to types(a). `ObjectPropertyRange(R, D)` + edge(R,a,b)
 //!    → add D to types(b).
@@ -30,6 +33,11 @@
 //!    until stable. The merged entity must satisfy all collected types simultaneously.
 //! 8. **Disjoint clash**: `DisjointClasses([C₁, C₂, ...])` + any cᵢ, cⱼ both in
 //!    types(a) for some a → CLASH (inconsistent).
+//! 9. **`ObjectHasValue` ground edges**: `a : ∃R.{b}` (asserted or via
+//!    `C ⊑ ∃R.{b}` + `a:C`) → edge(R,a,b) (`b` is a named individual, so this is
+//!    a ground entailment, not an anonymous witness).
+//! 10. **`SameIndividual` folding**: `a ≡ a'` propagates edges and types across
+//!    the union-find equivalence class (`R(a,b)`→`R(a',b)`, `a:C`→`a':C`).
 //!
 //! ## Instrumentation
 //!
@@ -157,6 +165,12 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // key: class A (atomic), value: Vec<(role_id, filler_class_id)>
     let mut existential_of: HashMap<ClassId, Vec<(RoleId, ClassId)>> = HashMap::new();
 
+    // Nominal-filler analog of `existential_of`: `C ⊑ ∃R.{b}` (ObjectHasValue),
+    // where the filler is a NAMED individual `b`. When an individual gets type `C`
+    // the GROUND edge `R(ind, b)` is entailed (not an anonymous witness). Role is
+    // stored with polarity and normalized at use (so `∃R⁻.{b}` works too).
+    let mut has_value_of: HashMap<ClassId, Vec<(Role, IndividualId)>> = HashMap::new();
+
     // EquivalentClasses: used to populate sub_of both ways
     // (handled inline below)
 
@@ -198,6 +212,29 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         }
     };
 
+    // Like `collect_existentials`, but for nominal fillers: `∃R.{b}`
+    // (ObjectHasValue) → `(R, b)`, a ground-edge marker. `R` keeps its polarity
+    // (normalized via `normalize_edge` at use); the filler must be a `Nominal`.
+    let collect_hasvalues = |cid: owl_dl_core::ir::ConceptId,
+                             out: &mut Vec<(Role, IndividualId)>| {
+        let mut stack = vec![cid];
+        while let Some(cur) = stack.pop() {
+            match pool.get(cur) {
+                ConceptExpr::Some(r, filler) => {
+                    if let ConceptExpr::Nominal(b) = pool.get(*filler) {
+                        out.push((*r, *b));
+                    }
+                }
+                ConceptExpr::And(parts) => {
+                    for &p in parts.iter() {
+                        stack.push(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
     // Index TBox/RBox axioms
     for axiom in &internal.axioms {
         match axiom {
@@ -219,6 +256,11 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                     collect_existentials(*sup, &mut exs);
                     if !exs.is_empty() {
                         existential_of.entry(sub_c).or_default().extend(exs);
+                    }
+                    let mut hvs = Vec::new();
+                    collect_hasvalues(*sup, &mut hvs);
+                    if !hvs.is_empty() {
+                        has_value_of.entry(sub_c).or_default().extend(hvs);
                     }
                 }
             }
@@ -253,6 +295,11 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                                 collect_existentials(did, &mut exs);
                                 if !exs.is_empty() {
                                     existential_of.entry(c).or_default().extend(exs);
+                                }
+                                let mut hvs = Vec::new();
+                                collect_hasvalues(did, &mut hvs);
+                                if !hvs.is_empty() {
+                                    has_value_of.entry(c).or_default().extend(hvs);
                                 }
                             }
                         }
@@ -461,6 +508,50 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // The actual logic: when we see edge (id1, a, b), we check inverse_rules[(id1, false)]
     // and for each (id2, do_reverse): if do_reverse, add (id2, b, a); else add (id2, a, b).
 
+    // SymmetricRole(R): R ≡ R⁻, i.e. `edge(R,a,b) ⟹ edge(R,b,a)`. Encode as a
+    // self inverse-rule with reversed endpoints so Rule 2 (inverse materialization)
+    // closes it. `SymmetricRole(Inverse(r))` ⟹ `r` symmetric — same `role_id`.
+    for axiom in &internal.axioms {
+        if let Axiom::SymmetricRole(r) = axiom {
+            inverse_rules
+                .entry((r.role_id(), false))
+                .or_default()
+                .push((r.role_id(), true));
+        }
+    }
+
+    // SameIndividual equivalence classes (union-find). Edges and types propagate
+    // across same-individuals: `a ≡ a2` + `R(a,b)` ⟹ `R(a2,b)`, `R(c,a)` ⟹
+    // `R(c,a2)`, and `a:C` ⟹ `a2:C`. `same_members[i]` is `i`'s full class
+    // (incl. `i`); individuals in no `SameIndividual` axiom are absent ⟹ no cost.
+    let mut uf: HashMap<IndividualId, IndividualId> = HashMap::new();
+    for axiom in &internal.axioms {
+        if let Axiom::SameIndividual(inds) = axiom {
+            for w in inds.windows(2) {
+                let (x, y) = (w[0], w[1]);
+                uf.entry(x).or_insert(x);
+                uf.entry(y).or_insert(y);
+                let (rx, ry) = (uf_find(&uf, x), uf_find(&uf, y));
+                if rx != ry {
+                    uf.insert(rx, ry);
+                }
+            }
+        }
+    }
+    let same_members: HashMap<IndividualId, Vec<IndividualId>> = {
+        let mut by_root: HashMap<IndividualId, Vec<IndividualId>> = HashMap::new();
+        for &m in uf.keys() {
+            by_root.entry(uf_find(&uf, m)).or_default().push(m);
+        }
+        let mut m = HashMap::new();
+        for grp in by_root.values() {
+            for &i in grp {
+                m.insert(i, grp.clone());
+            }
+        }
+        m
+    };
+
     // ── ABox state ────────────────────────────────────────────────────────────
 
     let mut types: TypeMap = HashMap::new();
@@ -495,6 +586,15 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             Axiom::ClassAssertion { class, individual } => {
                 // Expand the concept recursively to collect atomic class IDs
                 enqueue_concept_types(*individual, *class, pool, &mut type_queue);
+                // ObjectHasValue ground edges: `a : ∃R.{b}` ⟹ edge `R(a, b)`.
+                let mut hvs = Vec::new();
+                collect_hasvalues(*class, &mut hvs);
+                for (r, b) in hvs {
+                    let e = normalize_edge(r, *individual, b);
+                    if edges.insert(e) {
+                        edge_queue.push_back(e);
+                    }
+                }
             }
             Axiom::ObjectPropertyAssertion {
                 role,
@@ -561,6 +661,28 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                             .insert(filler_cls);
                     }
                 }
+
+                // Rule 7b: nominal-filler existential (ObjectHasValue) — `A ⊑ ∃R.{b}`,
+                // `ind:A` ⟹ ground edge `R(ind, b)`.
+                if let Some(hvs) = has_value_of.get(&cls) {
+                    let hvs: Vec<(Role, IndividualId)> = hvs.clone();
+                    for (r, b) in hvs {
+                        let e = normalize_edge(r, ind, b);
+                        if edges.insert(e) {
+                            edge_queue.push_back(e);
+                        }
+                    }
+                }
+
+                // Rule 9a: SameIndividual type propagation — `ind ≡ m` ⟹ `m:cls`.
+                if let Some(members) = same_members.get(&ind) {
+                    let members = members.clone();
+                    for m in members {
+                        if m != ind && !types.entry(m).or_default().contains(&cls) {
+                            type_queue.push_back((m, cls));
+                        }
+                    }
+                }
             }
         }
 
@@ -625,6 +747,23 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                 for d in rng_classes {
                     if !types.entry(b).or_default().contains(&d) {
                         type_queue.push_back((b, d));
+                    }
+                }
+            }
+
+            // Rule 9b: SameIndividual edge propagation — `a ≡ a'`, `b ≡ b'`
+            // ⟹ `R(a', b')`. Only fires when an endpoint is in a same-class
+            // (the cross-product otherwise reduces to the original edge).
+            let a_eq = same_members.get(&a);
+            let b_eq = same_members.get(&b);
+            if a_eq.is_some() || b_eq.is_some() {
+                let av: Vec<IndividualId> = a_eq.cloned().unwrap_or_else(|| vec![a]);
+                let bv: Vec<IndividualId> = b_eq.cloned().unwrap_or_else(|| vec![b]);
+                for &na in &av {
+                    for &nb in &bv {
+                        if (na, nb) != (a, b) && edges.insert((rid, na, nb)) {
+                            edge_queue.push_back((rid, na, nb));
+                        }
                     }
                 }
             }
@@ -910,6 +1049,17 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
 /// Normalize a role-directed edge into canonical `(role_id, a, b)` form.
 /// `Named(r)(a,b)` → `(r, a, b)`.
 /// `Inverse(r)(a,b)` → `(r, b, a)`.
+/// Union-find root of `x` (iterative; no path compression — equivalence classes
+/// from `SameIndividual` are tiny). Returns `x` itself when absent/unmerged.
+fn uf_find(uf: &HashMap<IndividualId, IndividualId>, mut x: IndividualId) -> IndividualId {
+    loop {
+        match uf.get(&x).copied() {
+            Some(p) if p != x => x = p,
+            _ => return x,
+        }
+    }
+}
+
 fn normalize_edge(role: Role, a: IndividualId, b: IndividualId) -> RawEdge {
     if role.is_inverse() {
         (role.role_id(), b, a)

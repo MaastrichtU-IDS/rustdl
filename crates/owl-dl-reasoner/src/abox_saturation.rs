@@ -318,6 +318,17 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
                     }
                 }
             }
+            Axiom::TransitiveRole(r) => {
+                // Transitivity is the self-chain `R ∘ R ⊑ R`; registering it as a
+                // length-2 chain lets the Rule-4 fixpoint close the full transitive
+                // closure of `R`-edges — jointly with the role hierarchy, inverse
+                // materialization, and declared chains (a transitive edge can feed
+                // a sub-property/chain rule and vice-versa). The inverse of a
+                // transitive role is transitive too, and is covered by inverse
+                // materialization re-running over the closed forward edges.
+                let k = role_key(*r);
+                chains2.push((k, k, k));
+            }
             Axiom::ObjectPropertyDomain { role, domain } => {
                 if let Some(d) = atomic_class(*domain) {
                     domains.entry(role_key(*role)).or_default().push(d);

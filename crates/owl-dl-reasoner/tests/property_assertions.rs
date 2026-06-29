@@ -126,6 +126,98 @@ fn transitive_with_subproperty_and_inverse() {
     );
 }
 
+/// Issue #26 audit: symmetric roles must materialize the reverse edge.
+#[test]
+fn symmetric_entailed_assertions() {
+    let b = Build::new_rc();
+    let mut o = SetOntology::new();
+    o.insert(DeclareObjectProperty(b.object_property("urn:knows")));
+    o.insert(horned_owl::model::SymmetricObjectProperty(
+        ObjectPropertyExpression::ObjectProperty(b.object_property("urn:knows")),
+    ));
+    for i in ["urn:a", "urn:b"] {
+        o.insert(horned_owl::model::DeclareNamedIndividual(
+            b.named_individual(i),
+        ));
+    }
+    o.insert(opa(&b, "urn:knows", "urn:a", "urn:b"));
+    let got = materialize_object_property_assertions(&o).expect("materialize");
+    let t = |s: &str, x: &str| (s.to_string(), "urn:knows".to_string(), x.to_string());
+    assert!(got.contains(&t("urn:a", "urn:b")), "got: {got:?}");
+    assert!(
+        got.contains(&t("urn:b", "urn:a")),
+        "reverse missing: {got:?}"
+    );
+}
+
+/// Issue #26 audit: `SameIndividual` must fold edges across the equivalence class.
+#[test]
+fn same_individual_edge_folding() {
+    let b = Build::new_rc();
+    let mut o = SetOntology::new();
+    o.insert(DeclareObjectProperty(b.object_property("urn:r")));
+    for i in ["urn:a", "urn:a2", "urn:b"] {
+        o.insert(horned_owl::model::DeclareNamedIndividual(
+            b.named_individual(i),
+        ));
+    }
+    o.insert(horned_owl::model::SameIndividual(vec![
+        horned_owl::model::Individual::Named(b.named_individual("urn:a")),
+        horned_owl::model::Individual::Named(b.named_individual("urn:a2")),
+    ]));
+    o.insert(opa(&b, "urn:r", "urn:a", "urn:b"));
+    let got = materialize_object_property_assertions(&o).expect("materialize");
+    let t = |s: &str, x: &str| (s.to_string(), "urn:r".to_string(), x.to_string());
+    assert!(got.contains(&t("urn:a", "urn:b")), "got: {got:?}");
+    assert!(
+        got.contains(&t("urn:a2", "urn:b")),
+        "same-individual fold missing: {got:?}"
+    );
+}
+
+/// Issue #26 audit: `ObjectHasValue` (nominal filler) yields a ground edge, both
+/// asserted directly and via a `C ⊑ ∃R.{b}` GCI on a typed individual.
+#[test]
+fn object_has_value_ground_edge() {
+    use horned_owl::model::{ClassAssertion, ClassExpression, Individual, SubClassOf};
+    let b = Build::new_rc();
+    let mut o = SetOntology::new();
+    o.insert(DeclareObjectProperty(b.object_property("urn:r")));
+    for i in ["urn:a", "urn:b", "urn:c"] {
+        o.insert(horned_owl::model::DeclareNamedIndividual(
+            b.named_individual(i),
+        ));
+    }
+    o.insert(DeclareClass(b.class("urn:C")));
+    // direct: a : ∃r.{b}
+    o.insert(ClassAssertion {
+        ce: ClassExpression::ObjectHasValue {
+            ope: ObjectPropertyExpression::ObjectProperty(b.object_property("urn:r")),
+            i: Individual::Named(b.named_individual("urn:b")),
+        },
+        i: Individual::Named(b.named_individual("urn:a")),
+    });
+    // via GCI: C ⊑ ∃r.{b} and c : C  ⟹  r(c, b)
+    o.insert(SubClassOf {
+        sub: ClassExpression::Class(b.class("urn:C")),
+        sup: ClassExpression::ObjectHasValue {
+            ope: ObjectPropertyExpression::ObjectProperty(b.object_property("urn:r")),
+            i: Individual::Named(b.named_individual("urn:b")),
+        },
+    });
+    o.insert(ClassAssertion {
+        ce: ClassExpression::Class(b.class("urn:C")),
+        i: Individual::Named(b.named_individual("urn:c")),
+    });
+    let got = materialize_object_property_assertions(&o).expect("materialize");
+    let t = |s: &str| (s.to_string(), "urn:r".to_string(), "urn:b".to_string());
+    assert!(
+        got.contains(&t("urn:a")),
+        "direct HasValue missing: {got:?}"
+    );
+    assert!(got.contains(&t("urn:c")), "GCI HasValue missing: {got:?}");
+}
+
 use owl_dl_reasoner::justify::{Entailment, entails};
 
 #[test]

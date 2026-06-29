@@ -4,6 +4,23 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.18] — 2026-06-29
+
+### Fixed
+
+- **`materialize_inferred_property_assertions` now includes the transitive (and
+  chained) closure of object-property assertions** ([#26]). For
+  `TransitiveObjectProperty(R)` it previously returned only one-step edges
+  (`a→b`, `b→c`) and omitted the composed `a→c`. Root cause: the ABox
+  edge-saturation backing the materializer handled sub-property / inverse /
+  symmetric / declared role-chains but had no transitivity rule. Transitivity is
+  now registered as the self-chain `R ∘ R ⊑ R` and closed in the same fixpoint,
+  so it composes with the hierarchy/inverse/chain rewrites. Sound (every edge is
+  entailed; corpus closure-diff byte-identical, FP=0/MISSED=0) — also closes a
+  completeness gap in the ABox consistency pre-check.
+
+[#26]: https://github.com/MaastrichtU-IDS/rustdl/issues/26
+
 ## [0.3.17] — 2026-06-28
 
 ### Changed

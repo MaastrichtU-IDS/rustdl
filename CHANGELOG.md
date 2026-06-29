@@ -4,6 +4,25 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.19] — 2026-06-29
+
+### Fixed
+
+- **`materialize_inferred_property_assertions` now materializes symmetric,
+  `SameIndividual`, and `ObjectHasValue` entailments** ([#26] audit follow-up to
+  the v0.3.18 transitive-closure fix). The ABox edge-saturator backing the
+  materializer was a consistency-pre-check clash-finder that under-computed these
+  ground entailments while the docstring over-claimed them:
+  - **Symmetric** (`SymmetricObjectProperty(R)`, `a knows b` ⟹ `b knows a`) —
+    was claimed but never implemented, same as transitivity had been.
+  - **`SameIndividual`** (`a≡a'` ⟹ edges/types fold across the class).
+  - **`ObjectHasValue`** (`a : ∃R.{b}`, asserted or via `C ⊑ ∃R.{b}` + `a:C`,
+    ⟹ ground edge `R(a,b)`).
+
+  All sound (corpus closure-diff byte-identical, FP=0/MISSED=0) and they also
+  close matching gaps in the ABox consistency pre-check. Adds the materialize
+  regression coverage the issue noted was missing.
+
 ## [0.3.18] — 2026-06-29
 
 ### Fixed

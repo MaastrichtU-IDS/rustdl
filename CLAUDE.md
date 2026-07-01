@@ -253,8 +253,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `docs/superpowers/specs/2026-06-21-inferred-property-assertions-design.md`.
   `materialize_data_property_assertions` (reasoner) / `materialize_inferred_data_property_assertions`
   (Python) surface inferred DATA property assertions (5-tuple subject/property/lexical/datatype/lang)
-  via a structural sub-data-property + equivalent-data-property closure (sound; under-approx: no
-  SameIndividual / class-axiom-derived). Folded into `realize --properties`. See
+  via a structural sub-data-property + equivalent-data-property + SameIndividual-folding closure
+  (sound; under-approx: no class-axiom-derived, e.g. DataHasValue). SameIndividual folding added
+  2026-07-01, guarded by a HermiT/ROBOT DataPropertyAssertion oracle
+  (`crates/owl-dl-reasoner/tests/materialize_oracle.rs::materialize_data_matches_hermit_oracle`);
+  the oracle fixture deliberately excludes EquivalentDataProperties because HermiT's
+  InferredPropertyAssertionGenerator does not traverse it. Folded into `realize --properties`. See
   `docs/superpowers/specs/2026-06-21-inferred-data-property-assertions-design.md`.
   `materialize_sub{object,data}property_axioms` (reasoner) /
   `materialize_inferred_sub{object,data}property_axioms` (Python) return the inferred named

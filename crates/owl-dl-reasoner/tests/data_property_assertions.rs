@@ -80,6 +80,43 @@ fn equivalent_data_properties() {
 }
 
 #[test]
+fn same_individual_data_folding() {
+    // SameIndividual(a,b), hasAge(a,30) ⇒ hasAge(b,30) (and sub-property closure
+    // for both). HermiT confirms this (materialize_data_matches_hermit_oracle);
+    // this is the docker-free unit guard.
+    use horned_owl::model::SameIndividual;
+    let b = Build::new_rc();
+    let mut o = SetOntology::new();
+    o.insert(DeclareDataProperty(b.data_property("urn:hasAge")));
+    o.insert(DeclareDataProperty(b.data_property("urn:hasMeasurement")));
+    o.insert(DeclareNamedIndividual(b.named_individual("urn:a")));
+    o.insert(DeclareNamedIndividual(b.named_individual("urn:b")));
+    o.insert(subdp(&b, "urn:hasAge", "urn:hasMeasurement"));
+    o.insert(SameIndividual(vec![
+        Individual::Named(b.named_individual("urn:a")),
+        Individual::Named(b.named_individual("urn:b")),
+    ]));
+    o.insert(dpa(&b, "urn:hasAge", "urn:a", "30", XSD_INT));
+
+    let got = materialize_data_property_assertions(&o).expect("materialize");
+    let t = |s: &str, p: &str| {
+        got.iter()
+            .any(|(gs, gp, l, _, _)| gs == s && gp == p && l == "30")
+    };
+    // Folded onto b via SameIndividual, through the sub-property closure too.
+    assert!(
+        t("urn:b", "urn:hasAge"),
+        "b hasAge 30 (folded); got: {got:?}"
+    );
+    assert!(
+        t("urn:b", "urn:hasMeasurement"),
+        "b hasMeasurement 30 (folded + sub); got: {got:?}"
+    );
+    // The original subject still present.
+    assert!(t("urn:a", "urn:hasAge"));
+}
+
+#[test]
 fn language_tag_round_trips() {
     let b = Build::new_rc();
     let mut o = SetOntology::new();

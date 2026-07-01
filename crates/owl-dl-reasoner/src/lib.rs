@@ -125,9 +125,9 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
 
 /// Materialize the inferred DATA property assertions entailed over **named
 /// individuals** — `(subject_iri, property_iri, lexical, datatype_iri, lang)`
-/// 5-tuples (the full entailed closure under sub-data-property hierarchy and
-/// equivalent-data-properties). Sound; complete for that fragment. Under-
-/// approximate: omits `SameIndividual` folding and class-axiom-derived assertions
+/// 5-tuples (the full entailed closure under sub-data-property hierarchy,
+/// equivalent-data-properties, and `SameIndividual` folding). Sound; complete for
+/// that fragment. Under-approximate: omits class-axiom-derived assertions
 /// (e.g. `DataHasValue`). Read-only.
 ///
 /// # Errors
@@ -138,7 +138,26 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     onto: &horned_owl::ontology::set::SetOntology<A>,
 ) -> Result<Vec<(String, String, String, String, String)>, ReasonError> {
     use horned_owl::model::{Component as C, Individual, Literal};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap, HashSet};
+
+    // Iterative union-find over individual IRIs (path-compressing). An individual
+    // absent from `parent` is its own root, so unrelated individuals need no seed.
+    fn uf_find(parent: &mut HashMap<String, String>, x: &str) -> String {
+        let mut root = x.to_string();
+        while let Some(p) = parent.get(&root) {
+            if p == &root {
+                break;
+            }
+            root.clone_from(p);
+        }
+        let mut cur = x.to_string();
+        while cur != root {
+            let next = parent.get(&cur).cloned().unwrap_or_else(|| root.clone());
+            parent.insert(cur.clone(), root.clone());
+            cur = next;
+        }
+        root
+    }
 
     const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
     const LANG_STRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
@@ -150,6 +169,11 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
 
     let mut asserted: Vec<(String, String, (String, String, String))> = Vec::new();
     let mut hierarchy: Vec<(String, String)> = Vec::new();
+    // SameIndividual folding: a data value asserted on `x` holds for every
+    // individual equal to `x`. Build equivalence classes via union-find over
+    // SameIndividual axioms (transitive), then replicate values across each class.
+    let mut parent: HashMap<String, String> = HashMap::new();
+    let mut all_inds: HashSet<String> = HashSet::new();
     for ac in onto {
         match &ac.component {
             C::DataPropertyAssertion(ax) => {
@@ -174,7 +198,26 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
                         String::new(),
                     ),
                 };
+                all_inds.insert(subj.clone());
                 asserted.push((subj, dp, value));
+            }
+            C::SameIndividual(ax) => {
+                let named: Vec<String> =
+                    ax.0.iter()
+                        .filter_map(|i| match i {
+                            Individual::Named(n) => Some(n.0.as_ref().to_string()),
+                            Individual::Anonymous(_) => None,
+                        })
+                        .collect();
+                for w in named.windows(2) {
+                    all_inds.insert(w[0].clone());
+                    all_inds.insert(w[1].clone());
+                    let ra = uf_find(&mut parent, &w[0]);
+                    let rb = uf_find(&mut parent, &w[1]);
+                    if ra != rb {
+                        parent.insert(ra, rb);
+                    }
+                }
             }
             C::SubDataPropertyOf(ax) => {
                 hierarchy.push((ax.sub.0.as_ref().to_string(), ax.sup.0.as_ref().to_string()));
@@ -207,10 +250,25 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
         set
     };
 
+    // Group each individual with its SameIndividual-equivalence class.
+    let mut by_root: HashMap<String, Vec<String>> = HashMap::new();
+    for ind in &all_inds {
+        let r = uf_find(&mut parent, ind);
+        by_root.entry(r).or_default().push(ind.clone());
+    }
+
     let mut out: Vec<(String, String, String, String, String)> = Vec::new();
     for (subj, dp, (lex, dt, lang)) in &asserted {
-        for sup in closure(dp) {
-            out.push((subj.clone(), sup, lex.clone(), dt.clone(), lang.clone()));
+        let root = uf_find(&mut parent, subj);
+        // Members of subj's equivalence class (includes subj); a subject with no
+        // SameIndividual axiom is its own singleton class.
+        let members: &[String] = by_root
+            .get(&root)
+            .map_or(std::slice::from_ref(subj), Vec::as_slice);
+        for m in members {
+            for sup in closure(dp) {
+                out.push((m.clone(), sup, lex.clone(), dt.clone(), lang.clone()));
+            }
         }
     }
     out.sort();

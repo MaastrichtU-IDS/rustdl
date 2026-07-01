@@ -33,7 +33,19 @@
         <ObjectProperty IRI="#knows"/>
     </Declaration>
     <Declaration>
+        <DataProperty IRI="#age"/>
+    </Declaration>
+    <Declaration>
+        <DataProperty IRI="#lifespan"/>
+    </Declaration>
+    <Declaration>
         <NamedIndividual IRI="#alice"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#bob"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#carol"/>
     </Declaration>
     <Declaration>
         <NamedIndividual IRI="#e"/>
@@ -46,6 +58,9 @@
     </Declaration>
     <Declaration>
         <NamedIndividual IRI="#mary"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#robert"/>
     </Declaration>
     <Declaration>
         <NamedIndividual IRI="#s1"/>
@@ -83,6 +98,10 @@
         <Class IRI="#C"/>
         <NamedIndividual IRI="#g"/>
     </ClassAssertion>
+    <SameIndividual>
+        <NamedIndividual IRI="#bob"/>
+        <NamedIndividual IRI="#robert"/>
+    </SameIndividual>
     <ObjectPropertyAssertion>
         <ObjectProperty IRI="#hasAncestor"/>
         <NamedIndividual IRI="#alice"/>
@@ -153,6 +172,36 @@
         <NamedIndividual IRI="#t2"/>
         <NamedIndividual IRI="#t3"/>
     </ObjectPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty IRI="#age"/>
+        <NamedIndividual IRI="#bob"/>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">7</Literal>
+    </DataPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty IRI="#lifespan"/>
+        <NamedIndividual IRI="#bob"/>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">7</Literal>
+    </DataPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty IRI="#age"/>
+        <NamedIndividual IRI="#carol"/>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">42</Literal>
+    </DataPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty IRI="#lifespan"/>
+        <NamedIndividual IRI="#carol"/>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">42</Literal>
+    </DataPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty IRI="#age"/>
+        <NamedIndividual IRI="#robert"/>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">7</Literal>
+    </DataPropertyAssertion>
+    <DataPropertyAssertion>
+        <DataProperty IRI="#lifespan"/>
+        <NamedIndividual IRI="#robert"/>
+        <Literal datatypeIRI="http://www.w3.org/2001/XMLSchema#integer">7</Literal>
+    </DataPropertyAssertion>
     <SubObjectPropertyOf>
         <ObjectProperty IRI="#hasParent"/>
         <ObjectProperty IRI="#hasAncestor"/>
@@ -170,6 +219,10 @@
     <TransitiveObjectProperty>
         <ObjectProperty IRI="#hasAncestor"/>
     </TransitiveObjectProperty>
+    <SubDataPropertyOf>
+        <DataProperty IRI="#age"/>
+        <DataProperty IRI="#lifespan"/>
+    </SubDataPropertyOf>
 </Ontology>
 
 

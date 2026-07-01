@@ -69,10 +69,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Run cargo-deny on the runner, NOT the EmbarkStudios containerized
+      # action: that action's musl container honours our `rust-toolchain.toml`
+      # pin (1.95.0) but has no `1.95.0-*-musl` toolchain installed, so a
+      # cargo-deny-action@v2 tag update (2026-06) started failing setup with
+      # "override toolchain … is not installed". Installing the pinned toolchain
+      # + a cargo-deny binary on the runner honours the pin correctly and dodges
+      # the container. Keep `toolchain:` in sync with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master, pinned
         with:
-          command: check
-          arguments: --workspace
+          toolchain: "1.95.0"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # `--workspace` is a global flag (before the subcommand) in current
+      # cargo-deny; the old containerized action ran an older cargo-deny where
+      # `check --workspace` parsed.
+      - run: cargo deny --workspace check
 
   soundness-diff:
     name: closure-diff soundness net (manual)

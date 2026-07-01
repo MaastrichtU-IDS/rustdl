@@ -82,7 +82,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - run: cargo deny check --workspace
+      # `--workspace` is a global flag (before the subcommand) in current
+      # cargo-deny; the old containerized action ran an older cargo-deny where
+      # `check --workspace` parsed.
+      - run: cargo deny --workspace check
 
   soundness-diff:
     name: closure-diff soundness net (manual)

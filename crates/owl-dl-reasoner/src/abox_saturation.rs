@@ -58,6 +58,7 @@
     clippy::for_kv_map,
     clippy::unnecessary_map_or,
     clippy::doc_markdown,
+    clippy::doc_lazy_continuation,
     clippy::uninlined_format_args
 )]
 

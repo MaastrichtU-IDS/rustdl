@@ -1,4 +1,5 @@
 Prefix(:=<urn:mt#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
 Ontology(<urn:mt>
   Declaration(ObjectProperty(:anc)) TransitiveObjectProperty(:anc)
   Declaration(ObjectProperty(:knows)) SymmetricObjectProperty(:knows)
@@ -20,4 +21,11 @@ Ontology(<urn:mt>
   ClassAssertion(ObjectHasValue(:hv :v) :e)
   SubClassOf(:C ObjectHasValue(:hv :v))
   ClassAssertion(:C :g)
+  Declaration(DataProperty(:age)) Declaration(DataProperty(:lifespan))
+  SubDataPropertyOf(:age :lifespan)
+  Declaration(NamedIndividual(:carol))
+  DataPropertyAssertion(:age :carol "42"^^xsd:integer)
+  Declaration(NamedIndividual(:bob)) Declaration(NamedIndividual(:robert))
+  SameIndividual(:bob :robert)
+  DataPropertyAssertion(:age :bob "7"^^xsd:integer)
 )

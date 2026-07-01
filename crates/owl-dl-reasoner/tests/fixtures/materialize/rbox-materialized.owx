@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="urn:mt"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     ontologyIRI="urn:mt">
+    <Prefix name="owl" IRI="http://www.w3.org/2002/07/owl#"/>
+    <Prefix name="rdf" IRI="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>
+    <Prefix name="xml" IRI="http://www.w3.org/XML/1998/namespace"/>
+    <Prefix name="xsd" IRI="http://www.w3.org/2001/XMLSchema#"/>
+    <Prefix name="rdfs" IRI="http://www.w3.org/2000/01/rdf-schema#"/>
+    <Declaration>
+        <Class IRI="#C"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="#anc"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="#hasAncestor"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="#hasChild"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="#hasParent"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="#hv"/>
+    </Declaration>
+    <Declaration>
+        <ObjectProperty IRI="#knows"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#alice"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#e"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#g"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#john"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#mary"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#s1"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#s2"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#t1"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#t2"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#t3"/>
+    </Declaration>
+    <Declaration>
+        <NamedIndividual IRI="#v"/>
+    </Declaration>
+    <SubClassOf>
+        <Class IRI="#C"/>
+        <ObjectHasValue>
+            <ObjectProperty IRI="#hv"/>
+            <NamedIndividual IRI="#v"/>
+        </ObjectHasValue>
+    </SubClassOf>
+    <ClassAssertion>
+        <ObjectHasValue>
+            <ObjectProperty IRI="#hv"/>
+            <NamedIndividual IRI="#v"/>
+        </ObjectHasValue>
+        <NamedIndividual IRI="#e"/>
+    </ClassAssertion>
+    <ClassAssertion>
+        <Class IRI="#C"/>
+        <NamedIndividual IRI="#g"/>
+    </ClassAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasAncestor"/>
+        <NamedIndividual IRI="#alice"/>
+        <NamedIndividual IRI="#john"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasAncestor"/>
+        <NamedIndividual IRI="#alice"/>
+        <NamedIndividual IRI="#mary"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasParent"/>
+        <NamedIndividual IRI="#alice"/>
+        <NamedIndividual IRI="#mary"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hv"/>
+        <NamedIndividual IRI="#e"/>
+        <NamedIndividual IRI="#v"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hv"/>
+        <NamedIndividual IRI="#g"/>
+        <NamedIndividual IRI="#v"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasChild"/>
+        <NamedIndividual IRI="#john"/>
+        <NamedIndividual IRI="#mary"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasAncestor"/>
+        <NamedIndividual IRI="#mary"/>
+        <NamedIndividual IRI="#john"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasChild"/>
+        <NamedIndividual IRI="#mary"/>
+        <NamedIndividual IRI="#alice"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#hasParent"/>
+        <NamedIndividual IRI="#mary"/>
+        <NamedIndividual IRI="#john"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#knows"/>
+        <NamedIndividual IRI="#s1"/>
+        <NamedIndividual IRI="#s2"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#knows"/>
+        <NamedIndividual IRI="#s2"/>
+        <NamedIndividual IRI="#s1"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#anc"/>
+        <NamedIndividual IRI="#t1"/>
+        <NamedIndividual IRI="#t2"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#anc"/>
+        <NamedIndividual IRI="#t1"/>
+        <NamedIndividual IRI="#t3"/>
+    </ObjectPropertyAssertion>
+    <ObjectPropertyAssertion>
+        <ObjectProperty IRI="#anc"/>
+        <NamedIndividual IRI="#t2"/>
+        <NamedIndividual IRI="#t3"/>
+    </ObjectPropertyAssertion>
+    <SubObjectPropertyOf>
+        <ObjectProperty IRI="#hasParent"/>
+        <ObjectProperty IRI="#hasAncestor"/>
+    </SubObjectPropertyOf>
+    <InverseObjectProperties>
+        <ObjectProperty IRI="#hasChild"/>
+        <ObjectProperty IRI="#hasParent"/>
+    </InverseObjectProperties>
+    <SymmetricObjectProperty>
+        <ObjectProperty IRI="#knows"/>
+    </SymmetricObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="#anc"/>
+    </TransitiveObjectProperty>
+    <TransitiveObjectProperty>
+        <ObjectProperty IRI="#hasAncestor"/>
+    </TransitiveObjectProperty>
+</Ontology>
+
+
+
+<!-- Generated by the OWL API (version 4.5.29) https://github.com/owlcs/owlapi -->
+

@@ -4,6 +4,27 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.20] — 2026-07-01
+
+### Added
+
+- **`entails(ObjectPropertyAssertion)` / `justify property` now confirm RBox-derived
+  edges** ([#28]). The oracle unions the RBox-complete `materialize` edge set
+  (transitivity / symmetry / inverse / `SameIndividual` / `ObjectHasValue`) with the
+  existing NegOPA inconsistency probe — sound by composition (the materialize set was
+  validated FP-free vs HermiT in #26), strictly more complete.
+- **`materialize_data_property_assertions` now folds `SameIndividual`** (`a≡b`,
+  `dp(a,v)` ⟹ `dp(b,v)`), guarded by a new HermiT/ROBOT data-property-assertion
+  oracle (`materialize_data_matches_hermit_oracle`).
+
+### Fixed
+
+- **EL saturator: `ObjectHasSelf` self-loop now propagates super-role range.**
+  `X ⊑ ∃R.Self`, `R ⊑* S`, `range(S)=C` ⟹ `X ⊑ C` (the rule previously read only the
+  direct `range(R)`). Sound — the self-loop successor coincides with `x`, so the range
+  obligation lands on `x` itself. Closes an ORE-2015 completeness gap (`ore_ont_4827`
+  MISSED 79→0); FP=0 / MISSED=0 corpus-wide.
+
 ## [0.3.19] — 2026-06-29
 
 ### Fixed
@@ -39,6 +60,7 @@ All notable changes to rustdl are documented here. Format is based on
   completeness gap in the ABox consistency pre-check.
 
 [#26]: https://github.com/MaastrichtU-IDS/rustdl/issues/26
+[#28]: https://github.com/MaastrichtU-IDS/rustdl/issues/28
 
 ## [0.3.17] — 2026-06-28
 

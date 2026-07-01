@@ -711,6 +711,60 @@ fn justify_object_property_assertion() {
 }
 
 #[test]
+fn justify_object_property_assertion_transitive() {
+    // Issue #28: `anc(a,c)` is entailed purely by RBox transitivity over named
+    // individuals. The old NegOPA-probe oracle returned `false` here; routing
+    // through the RBox-complete `materialize` edge set closes the gap.
+    let o = onto(
+        "Declaration(ObjectProperty(:anc))\n\
+         Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b)) Declaration(NamedIndividual(:c))\n\
+         TransitiveObjectProperty(:anc) ObjectPropertyAssertion(:anc :a :b) ObjectPropertyAssertion(:anc :b :c)",
+    );
+    let q = Entailment::ObjectPropertyAssertion {
+        source: "http://t/a".into(),
+        prop: "http://t/anc".into(),
+        target: "http://t/c".into(),
+    };
+    assert!(
+        entails(&o, &q).unwrap(),
+        "anc(a,c) entailed via transitivity"
+    );
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("anc(a,c) entailed");
+    // Justification is exactly the transitivity axiom + the two ground edges.
+    assert_eq!(j.axioms.len(), 3, "got {:?}", j.axioms);
+    // Negative control: the reverse edge anc(c,a) is not entailed.
+    let nq = Entailment::ObjectPropertyAssertion {
+        source: "http://t/c".into(),
+        prop: "http://t/anc".into(),
+        target: "http://t/a".into(),
+    };
+    assert!(find_one_justification(&o, &nq).unwrap().is_none());
+}
+
+#[test]
+fn justify_object_property_assertion_symmetric() {
+    // Issue #28: `sib(b,a)` entailed by RBox symmetry over named individuals.
+    let o = onto(
+        "Declaration(ObjectProperty(:sib))\n\
+         Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+         SymmetricObjectProperty(:sib) ObjectPropertyAssertion(:sib :a :b)",
+    );
+    let q = Entailment::ObjectPropertyAssertion {
+        source: "http://t/b".into(),
+        prop: "http://t/sib".into(),
+        target: "http://t/a".into(),
+    };
+    assert!(entails(&o, &q).unwrap(), "sib(b,a) entailed via symmetry");
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("sib(b,a) entailed");
+    // Justification is exactly the symmetry axiom + the ground edge.
+    assert_eq!(j.axioms.len(), 2, "got {:?}", j.axioms);
+}
+
+#[test]
 fn justify_same_individual() {
     let o = onto(
         "Declaration(ObjectProperty(:p)) Declaration(NamedIndividual(:x)) \

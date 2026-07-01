@@ -394,6 +394,27 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
             prop,
             target,
         } => {
+            // Union of two sound, monotone oracles (soundness by composition):
+            //   (1) the RBox-complete named-individual edge set from
+            //       `materialize_object_property_assertions` (transitivity /
+            //       symmetry / inverse / SameIndividual folding / ObjectHasValue),
+            //       validated FP-free against the HermiT oracle in #26; and
+            //   (2) the NegOPA inconsistency probe, which still covers edges
+            //       outside that fragment (class-axiom / tableau-derived).
+            // The NegOPA probe alone was incomplete for (1) — see issue #28.
+            match crate::materialize_object_property_assertions(onto) {
+                Ok(edges) => {
+                    if edges
+                        .iter()
+                        .any(|(s, p, t)| s == source && p == prop && t == target)
+                    {
+                        return Ok(true);
+                    }
+                }
+                // Inconsistent ⇒ everything is entailed (matches the probe below).
+                Err(ReasonError::Inconsistent) => return Ok(true),
+                Err(e) => return Err(e),
+            }
             let b: Build<A> = Build::new();
             inconsistent_with(
                 onto,

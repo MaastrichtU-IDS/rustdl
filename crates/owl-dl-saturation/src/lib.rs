@@ -3109,11 +3109,20 @@ fn lower_sub_class_of(
             // lowering, so reading them here is complete. Subclasses inherit via
             // the atomic-subsumption closure (Y ⊑ X ⟹ Y ⊑ domain(R)).
             for r in self_restriction_roles_on_right(sup, pool) {
+                // The self-loop `(x,x) ∈ R` is also an `S`-edge for every super-role
+                // `R ⊑* S`, so `x` lies in `range(S)` for all such `S` — i.e. the
+                // *effective* (super-role-closed) range, not just `range(R)`. Using
+                // `effective_ranges` here closes the ore_ont_4827 pattern
+                // (`ClusivityFeature ⊑ ∃hasClusivity.Self`, `hasClusivity ⊑ hasFeature`,
+                // `range(hasFeature)=Feature` ⟹ `ClusivityFeature ⊑ Feature`). Sound:
+                // the successor coincides with `x`, so the range obligation lands on
+                // `x` itself (unlike general range propagation, deliberately omitted
+                // above — there the range target is a distinct existential body).
                 let heads: Vec<ClassId> = rules
                     .role_domains
                     .get(&r)
                     .into_iter()
-                    .chain(rules.role_ranges.get(&r))
+                    .chain(effective_ranges.get(&r))
                     .flatten()
                     .copied()
                     .collect();

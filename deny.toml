@@ -25,7 +25,15 @@ wildcards = "deny"
 
 [advisories]
 yanked = "deny"
-ignore = []
+# RUSTSEC-2026-0194 / -0195: DoS advisories in `quick-xml` (quadratic attribute
+# scan; unbounded namespace-declaration allocation in `NsReader`) — both trigger
+# only on maliciously-malformed XML. Pulled in transitively via horned-owl's
+# OWX/RDF readers (three quick-xml majors in the tree: 0.26/0.31/0.37); no
+# patched release exists within any dependent's semver range as of 2026-07-02.
+# Low risk here: rustdl parses user-supplied ontology files (not untrusted network
+# input), and the impact is DoS, not memory-unsafety/RCE. Remove once a patched
+# quick-xml propagates through horned-owl (our pinned fork) and the transitive deps.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [sources]
 unknown-registry = "deny"

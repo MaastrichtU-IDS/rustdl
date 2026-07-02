@@ -1571,7 +1571,15 @@ pub(crate) fn classify_top_down_internal(
     // sub-second via direct probe but exceed 200 ms under the
     // top-down classifier's tier-parallel load.
     let sweep_budget = per_pair_timeout.unwrap_or(std::time::Duration::from_millis(200));
+    // Opt-in defined-sup VERIFY mode (RUSTDL_CLASSIFY_DEFINED_SWEEP): for a class
+    // defined via a non-EL body, the wedge's label countermodel is an unreliable
+    // counterexample, so the label prune drops true `cand ⊑ D`. When on, bypass the
+    // label gate for these sups and verify via full tableau (trust_sat=false).
+    // Sound (FP=0): only tableau-confirmed edges added. See classify_defined_sweep_enabled.
+    let defined_verify_mode = crate::classify_defined_sweep_enabled();
+    let defined_set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
     for &sup in &sweep_sups {
+        let sup_verify = defined_verify_mode && defined_set.contains(&sup);
         let sup_id =
             owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));
         // Parallel test of candidate subs. Skip pairs already known via
@@ -1619,12 +1627,59 @@ pub(crate) fn classify_top_down_internal(
                 //     verdicts are unchanged). RUSTDL_LABEL_HEURISTIC=0
                 //     makes the cache all-NoVerdict → full fall-through
                 //     (free opt-out, no new flag needed).
-                let subsumed = match label_cache.get(cand) {
-                    Some(crate::LabelOracle::Sat(labels)) => {
-                        if labels.contains(&sup_id) {
-                            // sup_id ∈ labels: might be coincidence of
-                            // model; verify via subsumes_via_tableau.
-                            local_stats.label_cache_pass_through += 1;
+                let subsumed = if sup_verify {
+                    // VERIFY mode (opt-in): the label countermodel is unreliable for
+                    // this non-EL-defined sup, so skip the label prune and verify with
+                    // the full tableau (trust_sat=false). Sound — only a tableau `unsat`
+                    // yields `true`; a spurious wedge `Sat` times out / returns false
+                    // (a MISS, never an FP).
+                    local_stats.label_cache_misses += 1;
+                    subsumes_via_tableau(
+                        &prepared,
+                        cand_id,
+                        sup_id,
+                        Some(sweep_budget),
+                        global_deadline,
+                        false,
+                        &counting_relevant,
+                        &mut local_stats,
+                    )
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+                } else {
+                    match label_cache.get(cand) {
+                        Some(crate::LabelOracle::Sat(labels)) => {
+                            if labels.contains(&sup_id) {
+                                // sup_id ∈ labels: might be coincidence of
+                                // model; verify via subsumes_via_tableau.
+                                local_stats.label_cache_pass_through += 1;
+                                subsumes_via_tableau(
+                                    &prepared,
+                                    cand_id,
+                                    sup_id,
+                                    Some(sweep_budget),
+                                    global_deadline,
+                                    true,
+                                    &counting_relevant,
+                                    &mut local_stats,
+                                )
+                                .ok()
+                                .flatten()
+                                .unwrap_or(false)
+                            } else {
+                                // sup_id ∉ labels: sound non-subsumption.
+                                local_stats.label_cache_pruned += 1;
+                                false
+                            }
+                        }
+                        Some(crate::LabelOracle::Unsat) => {
+                            // cand is unsatisfiable: vacuously subsumed.
+                            true
+                        }
+                        Some(crate::LabelOracle::NoVerdict) | None => {
+                            // Oracle incomplete — fall through to per-pair.
+                            local_stats.label_cache_misses += 1;
                             subsumes_via_tableau(
                                 &prepared,
                                 cand_id,
@@ -1638,32 +1693,7 @@ pub(crate) fn classify_top_down_internal(
                             .ok()
                             .flatten()
                             .unwrap_or(false)
-                        } else {
-                            // sup_id ∉ labels: sound non-subsumption.
-                            local_stats.label_cache_pruned += 1;
-                            false
                         }
-                    }
-                    Some(crate::LabelOracle::Unsat) => {
-                        // cand is unsatisfiable: vacuously subsumed.
-                        true
-                    }
-                    Some(crate::LabelOracle::NoVerdict) | None => {
-                        // Oracle incomplete — fall through to per-pair.
-                        local_stats.label_cache_misses += 1;
-                        subsumes_via_tableau(
-                            &prepared,
-                            cand_id,
-                            sup_id,
-                            Some(sweep_budget),
-                            global_deadline,
-                            true,
-                            &counting_relevant,
-                            &mut local_stats,
-                        )
-                        .ok()
-                        .flatten()
-                        .unwrap_or(false)
                     }
                 };
                 (cand, subsumed, local_stats)

@@ -1603,6 +1603,24 @@ pub(crate) fn classify_same_tier_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_SAME_TIER").is_some_and(|v| v == "1")
 }
 
+/// Defined-sup sweep VERIFY mode. For a class defined via a non-EL body
+/// (`D ≡ … ⊓ ¬… / ⊔ / ∀ …`), the wedge's label countermodel is an unreliable
+/// counterexample: it can satisfy `cand ⊓ ¬D` only because the wedge is
+/// incomplete on complement/disjunction, so the label-heuristic prune drops a
+/// TRUE `cand ⊑ D`. When enabled, the defined-sup sweep bypasses the label prune
+/// for defined sups and verifies each candidate with the full tableau
+/// (`trust_sat=false`). **Sound (FP=0 by construction)** — only edges a tableau
+/// `unsat` confirms are added; a spurious wedge `Sat` can only MISS, never FP.
+/// DEFAULT OFF — closes complement/disjunction-defined subsumptions the closure-
+/// guided walk can't see (ORE `ore_ont_15167`), but corpus-invisible and can hit
+/// the tableau wall on disjunction-heavy inputs, so it is strictly opt-in at the
+/// caller's per-pair budget. Set `RUSTDL_CLASSIFY_DEFINED_SWEEP=1` to enable. See
+/// `docs/ore-sweep-2026-07-01.md`.
+#[must_use]
+pub(crate) fn classify_defined_sweep_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_DEFINED_SWEEP").is_some_and(|v| v == "1")
+}
+
 /// Lever #1: adaptive early-cut of diverging wedge searches. Default OFF until the
 /// corpus MISSED-unchanged gate confirms it. Set `RUSTDL_ADAPTIVE_BUDGET=1`.
 ///

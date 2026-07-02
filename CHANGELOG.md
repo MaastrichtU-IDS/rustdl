@@ -4,6 +4,20 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Opt-in defined-sup VERIFY sweep** (`RUSTDL_CLASSIFY_DEFINED_SWEEP`, **default
+  OFF**). For a class `D` defined via a non-EL body (`¬`/`⊔`/`∀`), the wedge's
+  label countermodel is an unreliable counterexample, so the label heuristic can
+  prune a true `cand ⊑ D`. When enabled, the defined-sup sweep bypasses the label
+  prune for defined sups and verifies each candidate with the full tableau. Sound
+  (FP=0 by construction — only tableau-confirmed edges). Closes complement/
+  disjunction-defined subsumptions the closure-guided walk can't see
+  (ORE `ore_ont_15167` 42→34 MISSED). Default OFF: corpus-invisible and ~2× wall.
+  See `docs/ore-sweep-2026-07-01.md`.
+
 ## [0.3.20] — 2026-07-01
 
 ### Added

@@ -377,6 +377,32 @@ impl Classification {
             })
             .collect()
     }
+
+    /// `true` iff the reported hierarchy is **guaranteed complete** — no missed
+    /// subsumptions, silent or flagged.
+    ///
+    /// This is the honest calibration contract: `completeness_guaranteed()` ⟹
+    /// `MISSED == 0`. It holds **only** on the provably-complete fragments
+    /// ([`FragmentClassification::PureEl`] — the saturator is complete; or
+    /// [`FragmentClassification::Horn`] — the hyper Horn fixpoint is complete)
+    /// **and** when no per-pair probe timed out.
+    ///
+    /// On `OutOfFragment` inputs it returns `false` even when nothing timed out,
+    /// because the classifier relies on the wedge's `trust_sat` verdicts, which
+    /// are sound but **not proven complete**: a spurious `Sat` on
+    /// complement/disjunction structure can silently miss a subsumption the full
+    /// tableau would find (measured on the ORE corpus — see
+    /// `docs/paper-calibration-decomposition-2026-07-08.md`). A `false` here does
+    /// *not* mean the hierarchy is incomplete — only that completeness is not
+    /// *guaranteed*. Callers needing a proof-carrying hierarchy should treat
+    /// `false` as "verify externally".
+    #[must_use]
+    pub fn completeness_guaranteed(&self) -> bool {
+        matches!(
+            self.stats.fragment,
+            FragmentClassification::PureEl | FragmentClassification::Horn
+        ) && self.stats.timed_out_pairs == 0
+    }
 }
 
 /// Compute the full subsumption hierarchy of `ontology` over every

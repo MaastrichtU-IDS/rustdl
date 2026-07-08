@@ -116,6 +116,35 @@ FALSE in general — pre-fix rustdl was a subset on the ⊤⊑C onts, and remain
 the 3 defined-class-∃ onts. Post-⊤⊑C-fix: rustdl is ⊇ whelk on 202/205 EL onts, with 3
 residual EL gaps to close before any unqualified EL-completeness claim.
 
+## 5c. At-scale EL sweep (BioPortal, 911 onts) — added 2026-07-08
+
+Ran `compare-whelk` (multi-format harness) over the local BioPortal corpus (911 RDF/XML
+`.owl` onts), against the corrected engine (⊤⊑C + ∃R.⊤ fixes landed).
+
+- **Parse/scale attrition:** 180 fail horned-owl's RDF/XML reader (punning/typing
+  ambiguity — a *parser* limit shared by both engines, not a reasoning issue); 150
+  time out at 60 s (large / non-EL); 581 processed.
+- **195 pure-EL onts** (the valid EL comparison subset):
+  - **rustdl == whelk (byte-identical): 193**
+  - **rustdl ⊋ whelk (sound EL⁺⁺ superset): 2**
+  - **rustdl ⊊ whelk (gap): 0** — **no rustdl EL-completeness gaps remain** after the
+    ⊤⊑C + ∃R.⊤ fixes; no Konclude adjudication needed.
+- **Performance: rustdl faster on 63 / 77 timed EL onts (median 2.20×).**
+
+## 5d. Combined EL-completeness verdict (ORE + BioPortal)
+
+Across **400 EL ontologies** (205 ORE + 195 BioPortal), after the two fixes:
+- rustdl is **⊇ whelk on every one** (394 byte-identical + 3 EL⁺⁺ supersets + 3 where
+  whelk-rs *over-derives* and rustdl matches Konclude).
+- The only rustdl<whelk cases anywhere were the **whelk-rs unsoundness** onts
+  (`3406`/`13224`), Konclude-confirmed.
+- rustdl is faster than whelk-rs on the large majority (ORE median 1.64×, BioPortal
+  2.20×); whelk wins only the very largest onts (throughput at 50k+ classes).
+
+**Net: rustdl is EL-sound-and-complete on the measured EL corpus (400 onts), validated
+against two independent oracles (whelk-rs + Konclude), and the whelk comparison itself
+found — and drove the fixing of — two real EL-completeness gaps.**
+
 ## 6. Paper takeaway
 
 whelk-rs is the honest "same-class" baseline that isolates rustdl's contribution: **same

@@ -11,8 +11,6 @@
 //!   stats + timing. Useful as a baseline for the saturation
 //!   engine without leaning on any external corpus.
 
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -170,12 +168,28 @@ enum Command {
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
-    let file =
-        File::open(path).with_context(|| format!("opening ontology file: {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let (ontology, _prefixes) = read(&mut reader, ParserConfiguration::default())
-        .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display()))?;
-    Ok(ontology)
+    use horned_owl::io::owx::reader::read as read_owx;
+    use horned_owl::io::rdf::reader::read as read_rdf;
+    // Content-sniff so the whelk comparison works on OFN (ORE), OWX (pilot
+    // canon), and RDF/XML (BioPortal) alike — both engines share this parse.
+    let src = std::fs::read_to_string(path)
+        .with_context(|| format!("opening ontology file: {}", path.display()))?;
+    let cfg = ParserConfiguration::default();
+    let mut reader = std::io::Cursor::new(src.as_bytes().to_vec());
+    if src.contains("<rdf:RDF") || src.contains("<rdf:Description") {
+        let (o, _): (horned_owl::ontology::set::SetOntology<RcStr>, _) = read_rdf(&mut reader, cfg)
+            .map(|(o, i)| (o.into(), i))
+            .map_err(|e| anyhow::anyhow!("parsing RDF/XML ontology {}: {e}", path.display()))?;
+        Ok(o)
+    } else if src.trim_start().starts_with('<') {
+        let (o, _) = read_owx(&mut reader, cfg)
+            .map_err(|e| anyhow::anyhow!("parsing OWX ontology {}: {e}", path.display()))?;
+        Ok(o)
+    } else {
+        let (o, _) = read(&mut reader, cfg)
+            .map_err(|e| anyhow::anyhow!("parsing OFN ontology {}: {e}", path.display()))?;
+        Ok(o)
+    }
 }
 
 /// Generate a synthetic EL partonomy:

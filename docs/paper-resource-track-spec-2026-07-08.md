@@ -89,8 +89,19 @@ characterization set (GALEN/notgalen/RO/wine/SIO/pizza/ore-*).
 - **Case study** — debug a broken ontology end-to-end with `debug()`/justify/repair (have
   the tutorial `docs/python-ontology-qa.md`; write up). *(C2)*
 
-**To produce:** ELK baseline numbers; the startup/RSS microbench; refresh the 5-reasoner
-head-to-head on native binaries at current HEAD.
+**To produce — status (measured 2026-07-08, `docs/paper-evidence-2026-07-08.md`):**
+- **ELK baseline: DONE** (galen — rustdl `saturate()` 165 ms > ELK reasoning ~1.6 s /
+  classify ~0.4 s; confirms rustdl beats ELK).
+- **Startup/footprint: rustdl side DONE + measured** (trivial 30 ms / 6 MB; galen
+  0.46 s / 28 MB — the embeddability headline). JVM-side RSS **not cleanly isolable under
+  docker** (docker-client `time` ≠ in-container JVM; no `/usr/bin/time`; no cgroup
+  `memory.peak`); bounded by the ROBOT docker wall (galen 5.84 s, ~4 s startup) + the known
+  JVM floor. **Precise JVM RSS deferred to a native-JVM eval host.**
+- **5-reasoner head-to-head:** rustdl's current numbers confirmed (no regression vs the
+  committed controlled comparison `docs/reasoner-comparison-2026-06-21.md`). A fresh
+  controlled multi-reasoner wall refresh belongs on a **native-JVM host** — re-deriving it
+  under docker would be worse methodology (the startup confound §0 warns against). Setup
+  task, not a missing result.
 
 ## 4. Motivating application (the #1 risk — must land)
 

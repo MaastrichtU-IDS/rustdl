@@ -94,12 +94,22 @@ whelk-rs (base ELK, EL-sound-and-complete) is the oracle for the EL closure.
 exercised — its whole point:**
 1. **`⊤ ⊑ NamedClass`** (`ore_ont_11522`): FIXED (commit on `fix/top-subsumes-all-el`;
    `top_subsumers` broadcast). 11522 522 → 1490 = whelk.
-2. **Defined-class conjunctive trigger with an `∃` over a sub-property** — RESIDUAL,
-   3 onts. Pattern: `GOCHE_37527 ≡ ∃GOCHEREL_0000004.CHEBI_37527 ⊓ CHEBI_24431`,
-   `GOCHEREL_0000004 ⊑ RO_0000087`; rustdl's saturator doesn't fire the trigger for
-   many CHEBI subclasses (claims PureEl-complete, isn't). Chemistry (CHEBI/GOCHE) onts.
-   Not yet fixed — needs saturator debugging of why the conjunctive `∃`-over-subproperty
-   trigger misses.
+2. **`∃R.⊤` (ObjectSomeValuesFrom(R, owl:Thing)) on the RHS** — FIXED (`exists_top_filler.rs`).
+   The ⊤ filler has no atomic/Tseitin body, so `A ⊑ ∃R.⊤` made no fact → the domain
+   rule never fired → `A ≡ ∃R.⊤`, `B ≡ ∃R.⊤` didn't give `A ≡ B`. Fix: emit a fact to
+   an opaque ⊤-witness. `ore_ont_7216` 64990 → **74374 = whelk = Konclude** (symdiff 0).
+
+**The other 2 "gaps" (`ore_ont_3406`, `13224`) were NOT rustdl bugs — whelk-rs OVER-DERIVES
+there (unsound port).** Konclude-verified: on `3406`, `CHEBI_100147 ⊑ GOCHE_37527` is
+`False` in Konclude (Konclude closure = rustdl, NOT whelk); whelk-rs incorrectly matches a
+super-property existential to a sub-property in the `GOCHE ≡ ∃subprop.X ⊓ Y` conjunctive
+trigger. So on those onts **rustdl is correct and whelk-rs is unsound** — a notable result
+(measure-first: I verified each disagreement against an independent Konclude oracle rather
+than trusting whelk).
+
+**Post-fix status vs the Konclude oracle: rustdl matches Konclude on all diffed ORE EL onts**
+(⊤⊑C + ∃R.⊤ fixed; 3406/13224 are whelk-unsoundness). The "PureEl ⟹ complete" premise now
+holds on the measured EL corpus.
 
 **Correction to §3:** the "strict superset" claim held on galen/notgalen/go-basic but is
 FALSE in general — pre-fix rustdl was a subset on the ⊤⊑C onts, and remains a subset on

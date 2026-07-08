@@ -2256,6 +2256,14 @@ struct TseitinAllocator {
     /// key. Told monotonicity edges `ForallAtomicKey(R,K) ⊑ ForallAtomicKey(R,L)` for
     /// `K ⊑ L` give `∀R.K ⊑ ∀R.L` (sound, non-inverse). Keyed on `(R, K)` identity.
     forall_atomic_key_by_role: HashMap<(RoleId, ClassId), ClassId>,
+    /// Stable synthetic ⊤-witness class per role, used as the fact target for a
+    /// `∃R.⊤` existential (`ObjectSomeValuesFrom(R, owl:Thing)` on the RHS). ⊤ has
+    /// no `atomic_or_tseitin_body` representation, so `A ⊑ ∃R.⊤` previously created
+    /// no fact — A never got an R-marker, so the domain rule (`∃R.⊤ ⊑ C`, i.e.
+    /// domain(R)=C) never fired on A. The witness is an opaque atom (no subsumers →
+    /// ⊤-equivalent), so it only ever triggers domain(R); sound. Keyed per role so
+    /// all `∃R.⊤` facts share one witness (they mean the same thing).
+    top_witness_by_role: HashMap<RoleId, ClassId>,
 }
 
 impl TseitinAllocator {
@@ -2269,7 +2277,20 @@ impl TseitinAllocator {
             max_key_by_role: HashMap::new(),
             forall_key_by_role: HashMap::new(),
             forall_atomic_key_by_role: HashMap::new(),
+            top_witness_by_role: HashMap::new(),
         }
+    }
+
+    /// Get-or-allocate the opaque ⊤-witness synthetic for `∃R.⊤`. See
+    /// `top_witness_by_role`.
+    fn introduce_top_witness(&mut self, role: RoleId) -> ClassId {
+        if let Some(&existing) = self.top_witness_by_role.get(&role) {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.top_witness_by_role.insert(role, synthetic);
+        synthetic
     }
 
     /// SP-B2b: get-or-allocate the opaque synthetic class for `∀R.Atomic(K)`.
@@ -3459,6 +3480,18 @@ fn atomic_existential_rhs(
     // nominal fold needs only the NomKey identity.
     if let ConceptExpr::Nominal(ind) = pool.get(*body) {
         return Some((role.role_id(), tseitin.introduce_nominal(*ind)));
+    }
+    // `∃R.⊤` (ObjectSomeValuesFrom(R, owl:Thing)): the ⊤ filler has no
+    // atomic_or_tseitin body, so previously this made no fact and the subject never
+    // got an R-marker — the domain rule (`∃R.⊤ ⊑ C` = domain(R)=C) then never fired
+    // on it. Emit a fact to an opaque ⊤-witness so the domain inference fires (e.g.
+    // `A ≡ ∃R.⊤`, `B ≡ ∃R.⊤` ⟹ A ≡ B via domain(R) ⊒ {A,B}). Sound: the witness has
+    // no subsumers (⊤-equivalent), so it only ever triggers domain(R).
+    if matches!(pool.get(*body), ConceptExpr::Top) {
+        return Some((
+            role.role_id(),
+            tseitin.introduce_top_witness(role.role_id()),
+        ));
     }
     let extras = effective_ranges
         .get(&role.role_id())

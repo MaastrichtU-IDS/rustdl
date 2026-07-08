@@ -77,6 +77,35 @@ rustdl extends the same kernel with (a) EL⁺⁺ functional/inverse-functional w
 `DKey` datatype value-membership, ObjectHasSelf+range — and (c) a hybrid hypertableau
 "wedge" + tableau for the rest of SROIQ. whelk-rs stays within EL.
 
+## 5b. At-scale EL sweep (ORE-2015, 205 pure-EL onts) — added 2026-07-08
+
+Ran `compare-whelk` over all ORE-2015 pure-EL ontologies (multi-format harness).
+whelk-rs (base ELK, EL-sound-and-complete) is the oracle for the EL closure.
+
+- **rustdl == whelk (byte-identical EL closure): 201 / 205** — strong mutual
+  cross-validation at scale.
+- **rustdl ⊋ whelk (sound EL⁺⁺ superset): 1** (functional-role witness-merge).
+- **rustdl ⊊ whelk (EL gap): 3** (`ore_ont_3406/7216/13224`).
+- **Performance: rustdl faster on 123 / 144 timed onts (median 1.64×); whelk faster
+  on the largest** (e.g. `ore_ont_10248` 1M pairs: whelk 1.9 s vs rustdl 9.4 s) — the
+  go-basic scaling pattern generalises.
+
+**The sweep found two real rustdl EL-completeness gaps the tuned corpus never
+exercised — its whole point:**
+1. **`⊤ ⊑ NamedClass`** (`ore_ont_11522`): FIXED (commit on `fix/top-subsumes-all-el`;
+   `top_subsumers` broadcast). 11522 522 → 1490 = whelk.
+2. **Defined-class conjunctive trigger with an `∃` over a sub-property** — RESIDUAL,
+   3 onts. Pattern: `GOCHE_37527 ≡ ∃GOCHEREL_0000004.CHEBI_37527 ⊓ CHEBI_24431`,
+   `GOCHEREL_0000004 ⊑ RO_0000087`; rustdl's saturator doesn't fire the trigger for
+   many CHEBI subclasses (claims PureEl-complete, isn't). Chemistry (CHEBI/GOCHE) onts.
+   Not yet fixed — needs saturator debugging of why the conjunctive `∃`-over-subproperty
+   trigger misses.
+
+**Correction to §3:** the "strict superset" claim held on galen/notgalen/go-basic but is
+FALSE in general — pre-fix rustdl was a subset on the ⊤⊑C onts, and remains a subset on
+the 3 defined-class-∃ onts. Post-⊤⊑C-fix: rustdl is ⊇ whelk on 202/205 EL onts, with 3
+residual EL gaps to close before any unqualified EL-completeness claim.
+
 ## 6. Paper takeaway
 
 whelk-rs is the honest "same-class" baseline that isolates rustdl's contribution: **same

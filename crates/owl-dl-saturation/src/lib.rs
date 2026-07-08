@@ -637,6 +637,19 @@ impl WorklistEngine {
                 self.todo_subsumer.push_back((rule.sub, rule.sup));
             }
         }
+        // `⊤ ⊑ C` broadcast: C is Top-equivalent ⟹ every named class ⊑ C. Seed
+        // `(X, C)` for every named class X and every top subsumer C; the fixpoint
+        // then closes transitively (X ⊑ C ⊑ D ⟹ X ⊑ D) and fires C's downstream
+        // rules on each X. No-op unless the ontology has a `⊤ ⊑ NamedClass` axiom.
+        if !self.rules.top_subsumers.is_empty() {
+            let tops = self.rules.top_subsumers.clone();
+            for i in 0..self.num_user_classes {
+                let x = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+                for &c in &tops {
+                    self.todo_subsumer.push_back((x, c));
+                }
+            }
+        }
         // Told existential facts (snapshot first to release the
         // borrow into `self.rules`).
         let told: Vec<ExistentialFact> = self.rules.existential_facts.clone();
@@ -890,9 +903,16 @@ impl WorklistEngine {
         self.facts_by_sub[fact.sub.index() as usize].push(idx);
         self.facts_by_target[fact.target.index() as usize].push(idx);
         self.todo_fact.push_back(idx);
-        // Phase 2d: propagate to every subclass of fact.sub.
-        // subs_of_class returns an owned Vec, so no borrow conflict
-        // with the recursive push_fact_impl mutable borrow.
+        // Phase 2d: propagate the fact to every subclass of fact.sub. subs_of_class
+        // returns an owned Vec, so no borrow conflict with the recursive
+        // push_fact_impl mutable borrow.
+        //
+        // NOTE: gating this on `has_functional_roles` is UNSOUND — although Phase 2d
+        // was introduced to feed the functional witness-merge, the copied facts are
+        // also consumed by the general conjunction/∃ rules on subclasses, so skipping
+        // it drops real EL subsumptions on non-functional TBoxes (e.g. ORE
+        // ore_ont_11522: 522 vs whelk's 1490). go-basic's byte-identical result was a
+        // false reassurance (its structure happens not to need the copies). Do not gate.
         let subs = self.subs_of_class(fact.sub);
         let parent_df = DerivedFact::Exist(fact.sub, fact.role, fact.target);
         for c in subs {
@@ -2030,6 +2050,10 @@ impl Subsumers {
 struct ElRules {
     /// Direct named-to-named `A ⊑ B` facts.
     atomic_subsumptions: Vec<AtomicSubsumption>,
+    /// Atomic subsumers of `⊤` (from `SubClassOf(owl:Thing, C)` / `⊤ ⊑ C⊓…`).
+    /// Every named class ⊑ each of these (C is Top-equivalent). Broadcast to all
+    /// classes in `seed`; empty unless the ontology has a `⊤ ⊑ NamedClass` axiom.
+    top_subsumers: Vec<ClassId>,
     /// Conjunctive triggers: when a class accumulates every `body`
     /// among its subsumers, it gains `head`.
     conjunctive_triggers: Vec<ConjunctiveTrigger>,
@@ -3380,6 +3404,16 @@ fn lower_sub_class_of(
                         head,
                     });
                 }
+            }
+        }
+        // `⊤ ⊑ C` (a named class equivalent to owl:Thing): C subsumes EVERYTHING,
+        // so every named class ⊑ C. Record each atomic sup as a "top subsumer";
+        // `seed` broadcasts these to all classes and the fixpoint closes them
+        // transitively. Without this the axiom was silently dropped here — a real
+        // EL-incompleteness (ORE ore_ont_11522: 522 vs whelk's complete 1490).
+        ConceptExpr::Top => {
+            for c in atomic_operands_on_right(sup, pool) {
+                rules.top_subsumers.push(c);
             }
         }
         _ => {}

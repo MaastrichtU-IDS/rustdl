@@ -1,5 +1,24 @@
 # Paper evidence — native-host JVM measurements (2026-07-10)
 
+> **CORRECTION (2026-07-11) — the rustdl numbers below were measured on a STALE
+> binary.** `target/release/rustdl` was ~2 weeks old (the session-start rebuild
+> silently no-op'd on the broken pinned 1.95 toolchain — build with
+> `RUSTUP_TOOLCHAIN=stable`), so it lacked engine work that fixes the hard cases.
+> Re-measured with the fresh binary (FP=0/MISSED=0 re-verified corpus-wide):
+> - **wine is NOT a DNF** — classified soundly AND completely (FP=0/MISSED=0 vs the
+>   HermiT oracle) in **1.77 s** at `--pair-timeout-ms 25` (19.9 s at the default
+>   budget). The old ">200 s DNF" was purely the stale binary + unbounded budget.
+> - **curated walls**: pizza 1.93→**0.81 s**, family 2.02→**0.86 s**; every curated
+>   ont classifies in <2 s.
+> - **ORE-2015 (fresh, 25 ms budget)**: 134/18 DNF → **146 ok / 6 DNF**; median
+>   40 ms, mean 1.83 s, max 33.4 s (was 48.8 s); RSS median 34 MB, **max 17.4 GB**.
+> - **footprint pizza**: 1.93→0.81 s (RSS 18→22 MB); trivial unchanged (4.3 MB/<10 ms).
+> - The durable remaining weakness is the **multi-GB RSS tail** (family 1.2 GB, ORE
+>   17.4 GB), not wall time. Konclude/HermiT numbers unchanged (separate binaries).
+> The prose/tables below are the original stale-binary run, kept for provenance; the
+> paper (`rustdl-paper`) carries the corrected figures.
+
+
 Closes the two evidence gaps that `paper-evidence-2026-07-08.md` deferred to "a
 native-JVM eval host (NOT doable under docker)": **T5** (precise JVM peak RSS +
 cold-start) and the **F1** controlled multi-reasoner wall refresh. Measured

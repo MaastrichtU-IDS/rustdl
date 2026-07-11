@@ -12,4 +12,4 @@ def test_write_transcript_jsonl(tmp_path):
 def test_metrics_markdown_has_counts():
     res = LoopResult(proposed=5, clashes_caught=2, fixed_after_repair=2, malformed=1, final_unsat=0)
     md = run.metrics_markdown(res)
-    assert "| 5 |" in md and "clashes caught" in md.lower() and "malformed" in md.lower()
+    assert "| 5 |" in md and "edits with a clash" in md.lower() and "malformed" in md.lower()

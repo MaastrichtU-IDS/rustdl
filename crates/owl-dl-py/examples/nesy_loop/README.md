@@ -64,9 +64,9 @@ cd ~/code/rustdl/crates/owl-dl-py/examples/nesy_loop
 PYTHONPATH=.. python -m nesy_loop.run --n-edits 8 --max-revisions 2 --out out
 ```
 
-This prints a Markdown metrics table (edits proposed / clashes caught / fixed
-after repair / final new-unsat) and writes `out/transcript.jsonl` (one JSON
-object per turn) and `out/metrics.md`.
+This prints a Markdown metrics table (edits proposed / edits with a clash /
+fixed after repair / edits malformed / residual new-unsat) and writes
+`out/transcript.jsonl` (one JSON object per turn) and `out/metrics.md`.
 
 ### Deterministic replay
 

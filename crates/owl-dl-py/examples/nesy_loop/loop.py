@@ -59,6 +59,10 @@ def run_loop(base_ofn: str, llm: LLM, n_edits: int, max_revisions: int, workdir:
                 had_malformed = True
             feedback = gate.format_feedback(r)
             result.turns.append(Turn(i, rev, axiom, False, feedback, rejection=kind))
+        # These counters are per-edit-slot (index i counts at most once each),
+        # not a partition of `proposed`: a single edit slot can rack up both a
+        # clash and a malformed revision across its retries, so
+        # clashes_caught + malformed need not sum to proposed.
         if had_clash:
             result.clashes_caught += 1
         if had_malformed:

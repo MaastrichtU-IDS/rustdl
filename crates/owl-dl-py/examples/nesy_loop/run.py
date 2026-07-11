@@ -12,8 +12,12 @@ def write_transcript(res: LoopResult, path: str) -> None:
 
 
 def metrics_markdown(res: LoopResult) -> str:
+    # Counters are per-edit-slot, not a partition of `proposed`: a slot can
+    # contribute to both "edits with a clash" and "edits malformed" (see
+    # loop.py), and `final_unsat` is a structural invariant (always 0, since
+    # only clash-free edits are ever accepted into the ontology).
     return (
-        "| edits proposed | clashes caught | fixed after repair | malformed | final new-unsat |\n"
+        "| edits proposed | edits with a clash | fixed after repair | edits malformed | residual new-unsat |\n"
         "|---:|---:|---:|---:|---:|\n"
         f"| {res.proposed} | {res.clashes_caught} | {res.fixed_after_repair} | {res.malformed} | {res.final_unsat} |\n"
     )
@@ -28,11 +32,17 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default="out")
     a = ap.parse_args(argv)
     os.makedirs(a.out, exist_ok=True)
-    base = open(a.seed).read()
-    llm = ScriptedLLM(json.load(open(a.scripted))) if a.scripted else AnthropicLLM()
+    with open(a.seed) as f:
+        base = f.read()
+    if a.scripted:
+        with open(a.scripted) as f:
+            llm = ScriptedLLM(json.load(f))
+    else:
+        llm = AnthropicLLM()
     res = run_loop(base, llm, a.n_edits, a.max_revisions, a.out)
     write_transcript(res, os.path.join(a.out, "transcript.jsonl"))
-    open(os.path.join(a.out, "metrics.md"), "w").write(metrics_markdown(res))
+    with open(os.path.join(a.out, "metrics.md"), "w") as f:
+        f.write(metrics_markdown(res))
     print(metrics_markdown(res))
     return 0
 

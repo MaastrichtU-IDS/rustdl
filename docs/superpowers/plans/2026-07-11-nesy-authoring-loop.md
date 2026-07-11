@@ -533,9 +533,9 @@ def test_write_transcript_jsonl(tmp_path):
     assert rows[0]["axiom"] == "SubClassOf(:A :B)" and rows[0]["accepted"] is True
 
 def test_metrics_markdown_has_counts():
-    res = LoopResult(proposed=5, clashes_caught=2, fixed_after_repair=2, final_unsat=0)
+    res = LoopResult(proposed=5, clashes_caught=2, fixed_after_repair=2, malformed=1, final_unsat=0)
     md = run.metrics_markdown(res)
-    assert "| 5 |" in md and "clashes caught" in md.lower()
+    assert "| 5 |" in md and "clashes caught" in md.lower() and "malformed" in md.lower()
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -562,9 +562,9 @@ def write_transcript(res: LoopResult, path: str) -> None:
 
 def metrics_markdown(res: LoopResult) -> str:
     return (
-        "| edits proposed | clashes caught | fixed after repair | final new-unsat |\n"
-        "|---:|---:|---:|---:|\n"
-        f"| {res.proposed} | {res.clashes_caught} | {res.fixed_after_repair} | {res.final_unsat} |\n"
+        "| edits proposed | clashes caught | fixed after repair | malformed | final new-unsat |\n"
+        "|---:|---:|---:|---:|---:|\n"
+        f"| {res.proposed} | {res.clashes_caught} | {res.fixed_after_repair} | {res.malformed} | {res.final_unsat} |\n"
     )
 
 

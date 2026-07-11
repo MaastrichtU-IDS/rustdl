@@ -61,6 +61,36 @@ closure for the FP/MISSED computation is obtained in-process via the reasoner
 API (perf is irrelevant there); external reasoners' closures come from their
 output files.
 
+### Per-reasoner invocation
+
+Each cell wraps the reasoner in `gtimeout <global_timeout_s>` under
+`/usr/bin/time -l`:
+
+| Reasoner | Command (input format) | Closure source |
+|---|---|---|
+| rustdl | `rustdl classify <ont>.ofn --pair-timeout-ms N` (fresh CLI) | in-process reasoner API |
+| Konclude | `konclude classification -i <ont>.owx -o <out>.owx` | output owx (`read_konclude_verdict`) |
+| HermiT | `robot reason --reasoner hermit --axiom-generators "subclass" -i <ont>.owl -o <out>.hermit.owx` | output owx |
+| ELK | `robot reason --reasoner elk --axiom-generators "subclass" -i <ont>.owl -o <out>.elk.owx` | output owx |
+| whelk-rs | `compare-whelk` (OFN-only) | whelk closure |
+
+`robot` = `~/eval-tools/bin/robot` (Homebrew OpenJDK 17 arm64 + `robot.jar`
+1.9.10, bundling HermiT + ELK). Verified: HermiT on `sulo` → 0.42 s wall,
+239 MB RSS, 66 inferred `SubClassOf` axioms in the output owx.
+
+**JVM-floor caveat (HermiT & ELK).** Their `/usr/bin/time -l` wall is
+**end-to-end**: JVM boot + parse + reason + serialize. ROBOT logs only
+whole-second reasoning time, so there is no clean pure-reasoning number; every
+HermiT/ELK wall carries a ~0.4–1 s JVM-boot floor, and peak RSS carries a
+~240 MB JVM baseline. Both are recorded verbatim but **labeled in `MATRIX.md`
+as end-to-end JVM figures** so a small-ont "HermiT 420 ms vs rustdl 10 ms" is
+not misread as a reasoning-speed gap. rustdl and Konclude native walls have no
+comparable fixed floor.
+
+**Exit codes.** ROBOT `reason` exits 1 when it finds unsatisfiable classes even
+though reasoning completed — the exit code is ignored; status is derived from
+the output, not the code.
+
 ### Fresh-binary guard (enforces the stale-binary lesson)
 
 Stage 0 rebuilds rustdl with `RUSTUP_TOOLCHAIN=stable cargo build --release`,
@@ -108,10 +138,13 @@ through.
 }
 ```
 
-`status` ∈ `ok | dnf | error | na`, where `na` = out-of-fragment for an EL-only
-reasoner (ELK/whelk-rs on a non-EL ont). When the oracle is unavailable
-(Konclude itself DNFs/errors on the ont), `fp` and `missed` are `null` and the
-cell keeps only wall/RSS/status.
+`status` ∈ `ok | dnf | error | na | inconsistent`, where `na` = out-of-fragment
+for an EL-only reasoner (ELK/whelk-rs on a non-EL ont) and `inconsistent` = the
+reasoner detected an inconsistent ontology (a *valid verdict*, e.g. `family`,
+not a failure — ROBOT `reason` errors out on these, so the harness catches it
+as `inconsistent` and does not let it abort the batch). When the oracle is
+unavailable (Konclude itself DNFs/errors on the ont), `fp` and `missed` are
+`null` and the cell keeps only wall/RSS/status.
 
 ### `MATRIX.md` (rendered, paper-/human-facing)
 

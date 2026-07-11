@@ -3,6 +3,7 @@
 // lints while the module tree is being built out task by task.
 #![allow(dead_code, unreachable_pub)]
 
+pub mod corpus;
 pub mod model;
 pub mod provenance;
 pub mod run;

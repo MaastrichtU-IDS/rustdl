@@ -1029,6 +1029,7 @@ dependencies = [
  "pprof",
  "serde",
  "serde_json",
+ "sha2",
  "tracing",
  "tracing-subscriber",
  "walkdir",

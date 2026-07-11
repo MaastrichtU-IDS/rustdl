@@ -2409,9 +2409,10 @@ impl<'c> HyperEngine<'c> {
     /// The *distinct* (representative-resolved) `role`-successors of
     /// `node`, filtered by the optional class qualifier.
     fn distinct_role_succ(&self, node: HNode, role: Role, qual: Option<ClassId>) -> Vec<HNode> {
+        let hier = self.sub_roles.as_ref();
         let mut seen: Vec<HNode> = Vec::new();
         for (er, t) in &self.nodes[node.index()].edges {
-            if !role_matches(*er, role, self.sub_roles.as_ref()) {
+            if !role_matches(*er, role, hier) {
                 continue;
             }
             let rt = self.resolve(*t);
@@ -2422,6 +2423,20 @@ impl<'c> HyperEngine<'c> {
             }
             if !seen.contains(&rt) {
                 seen.push(rt);
+            }
+        }
+        for (er, s) in &self.nodes[node.index()].preds {
+            if !role_matches(er.flip(), role, hier) {
+                continue;
+            }
+            let rs = self.resolve(*s);
+            if let Some(q) = qual
+                && !self.nodes[rs.index()].has(q)
+            {
+                continue;
+            }
+            if !seen.contains(&rs) {
+                seen.push(rs);
             }
         }
         seen
@@ -3330,11 +3345,14 @@ impl<'c> HyperEngine<'c> {
         self.nodes.len()
     }
 
-    /// Class labels of the root node (node 0) — the derived
-    /// subsumers of the root concept, for EL-closure cross-checks.
+    /// Class labels of the root node — the derived subsumers of the root
+    /// concept, for EL-closure cross-checks. Resolves the root through the
+    /// merge union-find first: a `≤n` merge can fold node 0 into another
+    /// representative, so reading `self.nodes[0].labels` directly would be
+    /// stale after such a merge.
     #[must_use]
     pub fn root_labels(&self) -> &[ClassId] {
-        &self.nodes[0].labels
+        &self.nodes[self.resolve(HNode(0)).index()].labels
     }
 }
 
@@ -3452,6 +3470,33 @@ mod tests {
 
     fn cls(i: u32) -> ClassId {
         ClassId::new(i)
+    }
+
+    #[test]
+    fn distinct_role_succ_counts_inverse_predecessors() {
+        // Build a minimal engine graph directly via the private node/edge
+        // API — this `tests` module is a descendant of the module that
+        // defines `HyperEngine`/`HyperNode`/`HNode`, so it has access to
+        // their private fields/methods (`new_node`, `.edges`, `.preds`)
+        // without needing dedicated `for_test_*`/`push_test_*` helpers.
+        //
+        // Node `n` (the root) gets one forward `g`-edge to `m`, and one
+        // incoming edge from `a` whose role flips to `g` (i.e. a stored
+        // `g⁻` pred — the shape produced when `f ≡ g⁻` and `a —f→ n` is
+        // asserted). Both `m` and `a` are genuine `g`-successors of `n`.
+        let g = Role::Named(RoleId::new(0));
+        let mut eng = HyperEngine::new(&[], cls(0));
+        let n = HNode(0); // root
+        let m = eng.new_node();
+        let a = eng.new_node();
+        eng.nodes[n.index()].edges.push((g, m)); // n —g→ m  (n.edges)
+        eng.nodes[n.index()].preds.push((g.flip(), a)); // incoming a —g⁻→ n  ⇒ n —g→ a (n.preds)
+        let succ = eng.distinct_role_succ(n, g, None);
+        assert_eq!(
+            succ.len(),
+            2,
+            "n has two g-successors: m (edge) and a (inverse pred)"
+        );
     }
 
     #[test]

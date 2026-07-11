@@ -16,6 +16,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 
+mod matrix;
+
 /// Wrap `body` in a pprof CPU profiler when the `profile` feature is
 /// enabled and `RUSTDL_PROFILE=path/to/flamegraph.svg` is set. Sampling
 /// is signal-based (SIGPROF), so it works without `perf_event_paranoid`

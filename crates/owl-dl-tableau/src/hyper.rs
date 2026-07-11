@@ -2851,6 +2851,29 @@ impl<'c> HyperEngine<'c> {
             self.nodes[t.index()].preds.push((r, s_i));
             self.worklist.push(Event::Edge(s_i, r, t));
         }
+        // Absorb `s_j`'s INCOMING edges too (review round 1): the out-edge copy
+        // above lets a survivor's edges be read via `s_i`, but back-propagation
+        // (`succ_trigger` on `Event::Label`) reads only the survivor's OWN
+        // `preds`. Without copying them, a label derived on `s_i` AFTER the
+        // merge never back-propagates to `s_j`'s former predecessors — and on
+        // the pure-Horn single-drain path (galen) there is no full reseed to
+        // recover it. We do NOT rewrite the predecessors' out-edges (they still
+        // point at `s_j` and are read via resolve-on-read); we only extend
+        // `s_i.preds` and re-queue a back-trigger so any label already on `s_i`
+        // re-fires at the newly-absorbed predecessors. Flag-gated: OFF is
+        // byte-for-byte unchanged. Skip self-loops (`s_i → s_i`) and dedup.
+        if self.inverse_func_merge {
+            for (r, p) in self.nodes[s_j.index()].preds.clone() {
+                let rp = self.resolve(p);
+                if rp == s_i {
+                    continue;
+                }
+                if !self.nodes[s_i.index()].preds.contains(&(r, rp)) {
+                    self.nodes[s_i.index()].preds.push((r, rp));
+                }
+                self.worklist.push(Event::Edge(rp, r, s_i));
+            }
+        }
         for c in self.nodes[s_j.index()].at_most.clone() {
             if !self.nodes[s_i.index()].at_most.contains(&c) {
                 self.nodes[s_i.index()].at_most.push(c);
@@ -3726,6 +3749,69 @@ mod tests {
         assert!(
             eng.nodes[eng.resolve(a).index()].has(y),
             "after the merge, A's representative must carry Y"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    #[allow(unsafe_code)]
+    fn le1_merge_backprops_label_to_folded_node_predecessor() {
+        // Review round 1: after a ≤1 merge folds node A into survivor M, a label
+        // derived on the SURVIVOR must back-propagate to A's former PREDECESSOR
+        // P. Back-prop (`succ_trigger` on `Event::Label`) reads only the
+        // survivor's own `preds`, so unless the merge copies A's `preds` onto M
+        // the label never reaches P — and on the pure-Horn single-drain path
+        // (galen) there is no full reseed to recover it. This test drives the
+        // event drain DIRECTLY (no `horn_fixpoint` reseed) to reproduce that
+        // path; it FAILS without the preds-copy and PASSES with it.
+        //
+        //   Clause: r(x,y) ∧ e(y) → f(x)
+        //   P —r→ A ; fold A into M ; add `e` to M ; expect `f` on P.
+        let (r, e, f) = (Role::Named(RoleId::new(0)), cls(1), cls(2));
+        // Y is body variable 1 (X is 0).
+        let clauses = vec![DlClause {
+            body: vec![Atom::Role(r, X, 1), Atom::Class(e, 1)],
+            head: vec![Atom::Class(f, X)],
+        }];
+        let key = "RUSTDL_INVERSE_FUNC_MERGE";
+        // SAFETY: set_var is unsafe under edition 2024; restored before return.
+        let prior = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, "1");
+        }
+        let mut eng = HyperEngine::new(&clauses, cls(0));
+        let m = eng.new_node(); // HNode(1): survivor (lower index)
+        let a = eng.new_node(); // HNode(2): folded node
+        let p = eng.new_node(); // HNode(3): predecessor reachable only via A
+        // P —r→ A
+        eng.nodes[p.index()].edges.push((r, a));
+        eng.nodes[a.index()].preds.push((r, p));
+        // Clean slate for the manual single-drain.
+        eng.worklist.clear();
+        // Fold A into M (survivor = M). This is the ≤1 merge.
+        assert!(
+            !eng.merge_with_cause(m, a, DepSet::EMPTY),
+            "merge must not clash"
+        );
+        // A label arrives on the SURVIVOR after the merge.
+        eng.add_label(m, e, DepSet::EMPTY);
+        // Drain WITHOUT re-seeding (the single-drain / galen path).
+        while let Some(ev) = eng.worklist.pop() {
+            assert!(
+                !matches!(eng.process_event(ev), FireOutcome::Clash),
+                "no clash expected on this fixture"
+            );
+        }
+        unsafe {
+            match &prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        assert!(
+            eng.nodes[eng.resolve(p).index()].has(f),
+            "a label on the survivor must back-propagate to the folded node's \
+             predecessor P (needs the merge's preds-copy)"
         );
     }
 

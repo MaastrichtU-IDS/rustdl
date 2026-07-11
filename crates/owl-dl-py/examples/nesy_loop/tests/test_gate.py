@@ -52,5 +52,21 @@ def test_multi_unsat_feedback_scoped(tmp_path):
     r = gate.check(SEED, axiom, set(), str(tmp_path))
     assert len(r.new_unsat) == 2
     fb = gate.format_feedback(r)
+    # feedback scopes its claim to the one class it explains (names it + "other class")
     assert "other class" in fb
-    assert fb.count("Minimal cause for") == 1
+    assert fb.startswith(f"That edit makes {gate._short(r.new_unsat[0])} unsatisfiable (and 1 other class")
+    # the cause section explains only the target, not the other unsat class
+    cause = fb.split("Minimal cause:", 1)[1]
+    assert gate._short(r.new_unsat[1]) not in cause
+
+
+def test_undeclared_unsat_class_does_not_crash(tmp_path):
+    # Undeclared :Halloumi used in an intersection: classify flags it unsatisfiable,
+    # but rustdl.justify raises UnknownClassError. The gate must degrade gracefully
+    # (report the clash, empty justification) rather than crash the loop.
+    axiom = "SubClassOf(:Halloumi ObjectIntersectionOf(:CheeseTopping :VegetableTopping))"
+    r = gate.check(SEED, axiom, set(), str(tmp_path))
+    assert r.ok is False
+    assert any(u.endswith("#Halloumi") for u in r.new_unsat)
+    fb = gate.format_feedback(r)
+    assert "unsatisfiable" in fb.lower() and "Propose a revised axiom" in fb

@@ -2,7 +2,7 @@ from __future__ import annotations
 import argparse, json, os, sys
 from dataclasses import asdict
 from .loop import run_loop, LoopResult
-from .llm import ScriptedLLM, AnthropicLLM
+from .llm import ScriptedLLM, AnthropicLLM, LocalLLM
 
 
 def write_transcript(res: LoopResult, path: str) -> None:
@@ -29,6 +29,11 @@ def main(argv=None) -> int:
     ap.add_argument("--n-edits", type=int, default=8)
     ap.add_argument("--max-revisions", type=int, default=2)
     ap.add_argument("--scripted", default=None, help="JSON file with a list of replies (offline)")
+    ap.add_argument("--local", action="store_true", help="use a local OpenAI-compatible endpoint (e.g. Ollama)")
+    ap.add_argument("--model", default=None, help="model id (local or Anthropic)")
+    ap.add_argument("--base-url", default="http://localhost:11434/v1", help="local endpoint base URL")
+    ap.add_argument("--temperature", type=float, default=0.4, help="sampling temperature for --local")
+    ap.add_argument("--task", default=None, help="override the per-edit instruction given to the LLM")
     ap.add_argument("--out", default="out")
     a = ap.parse_args(argv)
     os.makedirs(a.out, exist_ok=True)
@@ -37,9 +42,12 @@ def main(argv=None) -> int:
     if a.scripted:
         with open(a.scripted) as f:
             llm = ScriptedLLM(json.load(f))
+    elif a.local:
+        llm = LocalLLM(model=a.model or "qwen2.5:32b-instruct",
+                       base_url=a.base_url, temperature=a.temperature)
     else:
-        llm = AnthropicLLM()
-    res = run_loop(base, llm, a.n_edits, a.max_revisions, a.out)
+        llm = AnthropicLLM(model=a.model) if a.model else AnthropicLLM()
+    res = run_loop(base, llm, a.n_edits, a.max_revisions, a.out, task=a.task)
     write_transcript(res, os.path.join(a.out, "transcript.jsonl"))
     with open(os.path.join(a.out, "metrics.md"), "w") as f:
         f.write(metrics_markdown(res))

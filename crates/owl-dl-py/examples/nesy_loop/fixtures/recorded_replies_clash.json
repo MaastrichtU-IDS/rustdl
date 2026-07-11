@@ -1,0 +1,4 @@
+[
+  "Declaration(Class(:Halloumi))\nSubClassOf(:Halloumi :CheeseTopping)\nSubClassOf(:Halloumi :VegetableTopping)",
+  "Declaration(Class(:Halloumi))\nSubClassOf(:Halloumi :VegetableTopping)"
+]

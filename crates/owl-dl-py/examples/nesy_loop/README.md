@@ -89,3 +89,26 @@ This should reproduce the same metrics as the original captured run.
 - `fixtures/seed.ofn` — clean seed ontology (pizza toy domain).
 - `tests/` — pytest suite (run with `PYTHONPATH=..`).
 - `out/` — captured transcript + metrics from a real run (Task 7).
+
+## Running with a local model (offline, no API key)
+
+Uses any OpenAI-compatible local endpoint (default: Ollama at `localhost:11434`):
+
+```sh
+# happy path — the model proposes valid, non-clashing enrichments
+python -m nesy_loop.run --local --model qwen2.5:32b-instruct --n-edits 6 --out out
+
+# catch-and-repair — a curation task that induces an over-classification clash
+python -m nesy_loop.run --local --model qwen2.5:32b-instruct --n-edits 1 --max-revisions 2 \
+  --task "Add the class :Halloumi -- a firm cheese grilled and served like a vegetable side -- \
+and classify it under all applicable existing topping categories." --out out-clash
+```
+
+Captured runs live in `out/` (happy path: 6 proposed, 0 clashes) and `out-clash/`
+(catch-and-repair: the model classifies Halloumi as both a cheese and a vegetable
+topping, rustdl reports it unsatisfiable with a justification + repair, and the
+model revises to a single category). Both replay deterministically offline:
+
+```sh
+python -m nesy_loop.run --scripted fixtures/recorded_replies_clash.json --n-edits 1 --max-revisions 2 --out /tmp/replay
+```

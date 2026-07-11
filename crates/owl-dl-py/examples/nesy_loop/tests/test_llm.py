@@ -22,3 +22,9 @@ def test_first_text_block_skips_non_text():
 def test_first_text_block_no_text_raises():
     with pytest.raises(ValueError):
         _first_text_block([_Blk("thinking")])
+
+
+def test_openai_content_extracts_message():
+    from nesy_loop.llm import _openai_content
+    resp = {"choices": [{"message": {"content": "  SubClassOf(:A :B)  "}}]}
+    assert _openai_content(resp) == "SubClassOf(:A :B)"

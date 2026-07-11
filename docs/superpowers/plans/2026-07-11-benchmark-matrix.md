@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust (edition 2024), clap, serde/serde_json, walkdir, sha2; external tools `~/eval-tools/bin/{konclude,robot}`, `gtimeout` (coreutils), `/usr/bin/time -l` (macOS).
 
+> **Note on test commands:** `owl-dl-bench` is a **binary-only** crate (no lib target), so its module unit tests run with `--bin owl-dl-bench`, NOT `--lib`. All test commands below use `--bin owl-dl-bench`.
+
 ## Global Constraints
 
 - Build rustdl only via `RUSTUP_TOOLCHAIN=stable cargo build --release` — the pinned 1.95.0 toolchain lacks `cargo` and a bare build silently reuses a stale binary. All test/build commands in this plan prepend `RUSTUP_TOOLCHAIN=stable`.
@@ -242,7 +244,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::model 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::model 2>&1 | head`
 Expected: FAIL — `CellResult`, `Status`, `append_cell`, `read_cells` not found (or "cannot find module matrix").
 
 - [ ] **Step 3: Implement the model**
@@ -351,7 +353,7 @@ mod matrix;
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::model`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::model`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -414,7 +416,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::run 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::run 2>&1 | head`
 Expected: FAIL — `parse_time_l` not found.
 
 - [ ] **Step 3: Implement the runner**
@@ -483,7 +485,7 @@ Add to `mod.rs`: `pub mod run;`
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::run`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::run`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
@@ -562,7 +564,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::provenance 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::provenance 2>&1 | head`
 Expected: FAIL — functions not found.
 
 - [ ] **Step 3: Implement provenance**
@@ -721,7 +723,7 @@ Add to `mod.rs`: `pub mod provenance;`
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::provenance`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::provenance`
 Expected: PASS (3 tests). (The `touch -d @secs` form works on macOS `touch`; if the CI host rejects it the test still exercises the version parsers — but on this eval host it is fine.)
 
 - [ ] **Step 5: Commit**
@@ -785,7 +787,7 @@ mod tests {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::corpus 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::corpus 2>&1 | head`
 Expected: FAIL — `sha256_hex` / `is_el_fragment` not found.
 
 - [ ] **Step 4: Implement corpus staging**
@@ -928,7 +930,7 @@ Add to `mod.rs`: `pub mod corpus;`
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::corpus`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::corpus`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Commit**
@@ -991,7 +993,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::correctness 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::correctness 2>&1 | head`
 Expected: FAIL — `diff_pairsets` not found.
 
 - [ ] **Step 3: Implement correctness**
@@ -1044,7 +1046,7 @@ Add to `mod.rs`: `pub mod correctness;`
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::correctness`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::correctness`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -1115,7 +1117,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::render 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::render 2>&1 | head`
 Expected: FAIL — `render_markdown` not found.
 
 - [ ] **Step 3: Implement render**
@@ -1215,7 +1217,7 @@ Add to `mod.rs`: `pub mod render;`
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::render`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::render`
 Expected: PASS (1 test).
 
 - [ ] **Step 5: Commit**
@@ -1270,7 +1272,7 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::tests::resume 2>&1 | head`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::tests::resume 2>&1 | head`
 Expected: FAIL — `already_done` not found.
 
 - [ ] **Step 3: Implement the orchestrator**
@@ -1512,7 +1514,7 @@ And in `main`'s match:
 
 - [ ] **Step 5: Run the unit test + build**
 
-Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --lib matrix::tests::resume`
+Run: `RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-bench --bin owl-dl-bench matrix::tests::resume`
 Expected: PASS.
 
 Run: `RUSTUP_TOOLCHAIN=stable cargo build -p owl-dl-bench --release`

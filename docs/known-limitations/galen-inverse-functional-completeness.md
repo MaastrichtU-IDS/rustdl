@@ -1,27 +1,34 @@
-# galen: 10 missed subsumptions (functional merge across an inverse edge)
+# galen: 10 → 1 missed subsumptions (functional merge across an inverse edge)
 
-**Status:** open (sound; near-complete, not complete). Not scheduled — closing it
-efficiently needs deeper work (see "Future work" below).
+**Status:** mostly closed. The functional/`≤1`-role-merge-across-an-inverse-edge
+mechanism is now sound, fast, and **default ON** — it recovers 9 of the 10
+originally-missed galen subsumptions. One pair remains, via a *different*
+mechanism (defined-class ∃-monotonicity); tracked separately, see
+[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](galen-defined-class-monotonicity-residual.md).
 
 **Discovered:** 2026-07-11, via the authoritative curated matrix
 (`docs/benchmarks/2026-07-11-curated/MATRIX.md`), which diffs rustdl against a
 Konclude oracle (HermiT independently derives the same 10, corroborating).
 
-## The finding
+**Closed (9 of 10):** 2026-07-11 (same day), by making the merge **incremental**
+— folded directly into `horn_fixpoint`'s existing fact-processing loop (with
+resolve-on-read so a head derived onto a folded node lands on the survivor)
+instead of the old whole-graph re-fire. galen now classifies in well under a
+second with **MISSED = 1** (down from 10), FP = 0 held throughout.
+
+## The finding (original)
 
 rustdl classifies galen as **Horn** and its completeness contract states
 `completeness_guaranteed()` true ⟹ Horn/PureEl + no timeout ⟹ MISSED = 0. galen
 met that condition yet rustdl **missed 10 genuine subsumptions** (e.g.
 `Femur ⊑ Space`) that both Konclude and HermiT derive. rustdl asserts nothing
-false (FP = 0 held throughout) — this is a **completeness contract violation**,
-not a soundness issue, and it is now honestly disclosed here and in the
-top-level docs (README.md, CLAUDE.md, `docs/reasoner-comparison-2026-06-21.md`)
-rather than left as a stale "complete" claim.
+false (FP = 0 held throughout) — this was a **completeness contract violation**,
+not a soundness issue.
 
 ## The minimal pattern
 
-All 10 misses reduce to one shape: a functional (`≤1`) role merge across an
-inverse-induced edge, in a cyclic model.
+All 10 original misses reduce to one shape: a functional (`≤1`) role merge
+across an inverse-induced edge, in a cyclic model.
 
 ```
 A    ⊑ ∃f.N
@@ -45,47 +52,53 @@ and the merge never fired. See
 `docs/superpowers/specs/2026-07-11-funcmerge-inverse-completeness-design.md` for
 the full localization.
 
-## The fix: sound, but opt-in
+## The fix, take 1: sound, but impractically slow (superseded)
 
-A sound fix exists — make `distinct_role_succ` union outgoing `edges` with
-incoming `preds`/flip (mirroring the existing inverse handling in
-`enumerate_matches`), deduped via `resolve()`. This does derive all 10 galen
-subsumptions correctly (regression test:
-`crates/owl-dl-reasoner/tests/funcmerge_inverse.rs`, `funcmerge_cyclic_derives_a_sub_y`).
+The first fix made `distinct_role_succ` union outgoing `edges` with incoming
+`preds`/flip (mirroring the existing inverse handling in `enumerate_matches`),
+deduped via `resolve()`. This derived all 10 galen subsumptions correctly, but
+fired the merge via the old **whole-graph re-fire** path: each merge fold
+re-ran deterministic clause processing over its neighborhood, and on galen's
+dense, highly-cyclic role graph this cascaded into an `O(graph) × O(depth)`
+clause-firing blowup — galen did not finish within the benchmark budget
+(**6.6-minute DNF**). So the flag was shipped **default OFF**
+(`RUSTDL_INVERSE_FUNC_MERGE=1` to opt in), sound-but-impractical: correct
+output if it terminated, but it didn't terminate on the one ontology it was
+meant to fix.
 
-It is gated behind an env flag, **default OFF**:
+## The fix, take 2: incremental merge, default ON
 
-```
-RUSTDL_INVERSE_FUNC_MERGE=1
-```
+The blowup was in *how* the merge re-fired clauses, not in the merge itself.
+Firing the `≤1`/functional merge **incrementally** — as part of
+`horn_fixpoint`'s existing fact-processing loop, touching only the folded
+node's delta (with resolve-on-read so a head derived onto a folded node lands
+on the survivor, not a stranded ghost) — avoids the whole-graph re-fire
+entirely. This is sound (same merge, same semantics) and **fast**: galen
+MISSED 10 → 1 in well under a second (down from the 6.6-minute DNF); wine
+19.78 s → 90 ms. Corpus-wide closure-diff (`konclude_closure_diff.rs`, all
+available fixtures): FP = 0 held throughout.
 
-(`crate::inverse_func_merge_enabled()`, `crates/owl-dl-tableau/src/lib.rs`.)
+`RUSTDL_INVERSE_FUNC_MERGE` is now **default ON** (`crate::inverse_func_merge_enabled()`,
+`crates/owl-dl-tableau/src/lib.rs`); set it to `0` to revert to the old
+(incomplete, MISSED = 10) behaviour.
 
-The flag is off by default because turning it on makes **galen classification
-explode** rather than terminate promptly. The newly-visible inverse successors
-trigger a much larger set of `≤1`/functional merges across the corpus; each
-merge fold re-fires deterministic clause processing on its neighborhood, and on
-galen's dense, highly-cyclic role graph this cascades into an
-O(graph) × O(depth) clause-firing blowup in the Horn fixpoint
-(`horn_fixpoint`) — the run does not finish within the benchmark budget (DNF).
-So the flag is sound-but-impractical today: correct output if it terminates,
-but it doesn't terminate on the one ontology it's meant to fix.
+## The residual: 1 pair, a different mechanism
 
-## Future work
-
-Closing this gap *efficiently* needs bounding or memoizing the clause-firing
-cascade across merge-branch recursion levels — e.g. capping re-fire depth,
-memoizing per-node clause results across folds, or restricting the new
-inverse-successor counting to the specific role shapes that actually need it
-(functional + declared-inverse, rather than every `≤n` check). An incremental
-reseed / "only re-fire the delta" spike was tried during scoping and did **not**
-suffice to tame the blowup — the cascade is not simply a matter of avoiding
-redundant re-processing of already-seen facts. This is tracked as future work,
-not scheduled.
+One galen pair remains missed: `TibialTuberosity ⊑ TibialInterCondylarEminence`.
+This is **not** an instance of the functional-merge-across-inverse pattern above
+— it is a defined-class ∃-monotonicity subsumption that needs the ¬-expansion
+disjunction + ∀-propagation path. See
+[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](galen-defined-class-monotonicity-residual.md)
+for the precise justification pattern. Tracked as follow-up, not scheduled.
 
 ## Pointers
 
-- Design: `docs/superpowers/specs/2026-07-11-funcmerge-inverse-completeness-design.md`
-- Plan: `docs/superpowers/plans/2026-07-11-funcmerge-inverse-completeness.md`
+- Root-cause design: `docs/superpowers/specs/2026-07-11-funcmerge-inverse-completeness-design.md`
+- Root-cause plan: `docs/superpowers/plans/2026-07-11-funcmerge-inverse-completeness.md`
+- Incremental-merge design: `docs/superpowers/specs/2026-07-11-wedge-incremental-functional-merge-design.md`
+- Incremental-merge plan: `docs/superpowers/plans/2026-07-11-wedge-incremental-merge.md`
 - Related deferred item: `docs/known-limitations/hf3-general-predecessor-aware-merge.md`
-- Authoritative numbers: `docs/benchmarks/2026-07-11-curated/MATRIX.md`
+- Residual (1 pair): `docs/known-limitations/galen-defined-class-monotonicity-residual.md`
+- Authoritative numbers (pre-fix baseline): `docs/benchmarks/2026-07-11-curated/MATRIX.md`
+  (superseded by the regenerated matrix at the same path, post-fix — see its
+  `run-metadata.json` timestamp/git_sha to distinguish).

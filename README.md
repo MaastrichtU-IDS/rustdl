@@ -53,11 +53,19 @@ across the measured corpus but not *provably* complete in general (it trusts the
 wedge's `Sat` verdicts; see the soundness contract in `CLAUDE.md` and
 [`docs/fragment-completeness.md`](docs/fragment-completeness.md)). The hard residual
 is the engineering-maturity gap to Konclude's optimized tableau, not a missing
-technique. A concrete residual: on galen, rustdl (sound, FP=0) misses 10
-subsumptions Konclude and HermiT derive — a functional/≤1-role merge across an
-inverse edge, soundly derivable via the opt-in `RUSTDL_INVERSE_FUNC_MERGE=1` but
-off by default because it currently makes galen non-terminating (see
-[`docs/known-limitations/galen-inverse-functional-completeness.md`](docs/known-limitations/galen-inverse-functional-completeness.md)).
+technique. A concrete residual, now much smaller: on galen, rustdl (sound, FP=0)
+missed 10 subsumptions Konclude and HermiT derive — a functional/≤1-role merge
+across an inverse edge — until an **incremental** version of that merge (folded
+directly into `horn_fixpoint` instead of a whole-graph re-fire) shipped default-ON
+(`RUSTDL_INVERSE_FUNC_MERGE`, `=0` reverts): galen now misses only **1**
+subsumption, classifying in under a second (down from a 6.6-minute DNF the old
+whole-graph re-fire hit when the same merge was enabled). The one remaining pair,
+`TibialTuberosity ⊑ TibialInterCondylarEminence`, is a *different* mechanism
+(defined-class ∃-monotonicity via ¬-expansion disjunction + ∀-propagation) tracked
+as follow-up — see
+[`docs/known-limitations/galen-inverse-functional-completeness.md`](docs/known-limitations/galen-inverse-functional-completeness.md)
+and
+[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](docs/known-limitations/galen-defined-class-monotonicity-residual.md).
 
 ## Coverage
 

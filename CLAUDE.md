@@ -6,8 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `rustdl` is a **sound** OWL 2 DL (SROIQ) reasoner in Rust — **near-complete** in
 practice (provably complete only on the guaranteed EL/Horn fragment; a concrete
-residual is 10 galen subsumptions it misses by default — see
-`docs/known-limitations/galen-inverse-functional-completeness.md`), targeting parity
+residual is 1 galen subsumption it misses by default — down from 10 after the
+2026-07-11 incremental functional/≤1-merge fix — see
+`docs/known-limitations/galen-inverse-functional-completeness.md` and
+`docs/known-limitations/galen-defined-class-monotonicity-residual.md`), targeting parity
 with HermiT and Konclude on the ORE benchmarks. It is a Konclude-style **hybrid**:
 a consequence-based EL **saturation** engine handles the cheap EL fragment, a
 **tableau** engine handles the rest of SROIQ, and an **orchestrator** decides per
@@ -243,6 +245,28 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `docs/superpowers/plans/2026-06-19-adaptive-budget.md`; companion
   scoping (incl. Lever #2 within-search-caching P0 = VIABLE-strong)
   `docs/superpowers/specs/2026-06-19-perf-frontier-levers-scoping.md`.
+  Incremental functional/`≤1` merge (2026-07-11, gated
+  `RUSTDL_INVERSE_FUNC_MERGE`, **default ON**) closes 9 of galen's 10
+  functional-merge-across-inverse misses (see
+  `docs/known-limitations/galen-inverse-functional-completeness.md`) by
+  firing the `≤1`/functional merge (incl. inverse-induced successors) as
+  part of `horn_fixpoint`'s own fact-processing loop instead of the earlier
+  whole-graph re-fire that made galen a 6.6-minute DNF when the merge was
+  enabled. Resolve-on-read (a head derived onto a folded node resolves to
+  the survivor via union-find, not the ghost) makes the incremental fold
+  correct; the folded node's `preds` are copied to the survivor so post-merge
+  labels back-propagate to its predecessors too. **Sound** (same merge
+  semantics as before — closure-diff FP=0 corpus-wide) **and fast**: galen
+  MISSED 10 → 1 in well under a second (down from the 6.6-min DNF), wine
+  19.78 s → 90 ms. `=0` reverts to the pre-2026-07-11 (MISSED=10, flag-off-
+  by-default) behaviour. The 1 residual galen pair
+  (`TibialTuberosity ⊑ TibialInterCondylarEminence`) is a *different*,
+  harder mechanism — a defined-class ∃-monotonicity subsumption that needs
+  disjunctive ¬-expansion + `∀`-propagation to interact with this same merge,
+  which the deterministic Horn-only `horn_fixpoint` does not attempt; see
+  `docs/known-limitations/galen-defined-class-monotonicity-residual.md`.
+  Spec `docs/superpowers/specs/2026-07-11-wedge-incremental-functional-merge-design.md`,
+  plan `docs/superpowers/plans/2026-07-11-wedge-incremental-merge.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;
@@ -750,10 +774,16 @@ Konclude across the corpus (**native Konclude binary** — supersedes the 06-03/
 docs whose ratios used docker walls inflated by ~1.5 s container startup; on native
 walls Konclude wins on every real-reasoning ontology, 2.2×–809×; the "beats
 Konclude"/"ORE-10908 ≤5×" claims were docker artifacts). **rustdl is sound
-corpus-wide (FP=0); near-complete — it misses 10 galen subsumptions vs the
-Konclude∩HermiT oracle (a functional/≤1-role merge across an inverse edge; the
-opt-in `RUSTDL_INVERSE_FUNC_MERGE=1` derives them soundly but makes galen DNF;
-see `docs/known-limitations/galen-inverse-functional-completeness.md`). `wine`
+corpus-wide (FP=0); near-complete — it misses 1 galen subsumption vs the
+Konclude∩HermiT oracle (down from 10: the functional/≤1-role merge across an
+inverse edge, `RUSTDL_INVERSE_FUNC_MERGE`, is now **default ON** — made
+incremental in `horn_fixpoint` on 2026-07-11 so it derives the merge fast
+instead of the old whole-graph re-fire that made galen DNF; `=0` reverts to
+the pre-fix, MISSED=10 behaviour. The 1 residual pair is a *different*
+mechanism — a defined-class ∃-monotonicity subsumption needing disjunctive
+¬-expansion + ∀-propagation, not the merge; see
+`docs/known-limitations/galen-inverse-functional-completeness.md` and
+`docs/known-limitations/galen-defined-class-monotonicity-residual.md`). `wine`
 is no longer a DNF (fixed v0.3.16, ~1.8 s at a low per-pair budget) — earlier
 "out-of-EL incomplete/DNF" notes are stale.** The
 remaining rustdl weakness is the multi-GB RSS tail on a few pathological SROIQ

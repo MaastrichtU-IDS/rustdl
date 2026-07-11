@@ -28,6 +28,42 @@ use owl_dl_core::ir::ClassId;
 use owl_dl_tableau::hyper::{AboxSeed, HyperEngine, HyperResult, SearchStats};
 use std::io::Cursor;
 
+// Env-mutation plumbing: serialize RUSTDL_INVERSE_FUNC_MERGE against other
+// env-mutating tests, restore on Drop. Mirrors the pattern used in
+// `owl-dl-reasoner/tests/funcmerge_inverse.rs`.
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct SetEnvGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn set(key: &'static str, value: &str) -> Self {
+        let prior = std::env::var_os(key);
+        // SAFETY: set_var is unsafe under edition 2024. Held only for one
+        // test, serialized via ENV_MUTEX, restored on Drop.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prior }
+    }
+}
+
+impl Drop for SetEnvGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see SetEnvGuard::set.
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 // Three existential successors (A, B, D) with ≤1 R constraint.
 // Their conjunction is Bottom but without pairwise DisjointClasses, so
 // forced_distinct_exceeds stays false and partition_rec is entered.
@@ -85,6 +121,19 @@ fn run_probe(
 
 #[test]
 fn shadow_probe_is_read_only_and_records() {
+    // This test exercises the shadow probe's read-only invariant DURING an
+    // actual `partition_rec` search branch (see fixture doc comment above).
+    // Since `RUSTDL_INVERSE_FUNC_MERGE` (default ON since 2026-07-11) fires
+    // this fixture's forced ≤1-R merge deterministically and incrementally
+    // in `horn_fixpoint`, bypassing `partition_rec` entirely (branches_taken
+    // == 0 at default) — a real, separate improvement, but it would make
+    // this specific probe test vacuous. Pin the flag off for this test's
+    // duration to keep exercising the intended branching path; unrelated to
+    // the shadow-probe feature under test.
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _flag = SetEnvGuard::set("RUSTDL_INVERSE_FUNC_MERGE", "0");
     let (internal, root) = build_fixture();
     let off = run_probe(&internal, root, false);
     let on = run_probe(&internal, root, true);

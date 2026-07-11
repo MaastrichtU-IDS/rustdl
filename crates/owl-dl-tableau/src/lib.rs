@@ -2064,14 +2064,16 @@ pub fn anywhere_blocking_enabled() -> bool {
     std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
 }
 
-/// Opt-in: count inverse-induced (`preds`/flip) successors in `≤n`/functional
-/// merges (sound; closes a completeness gap on inverse+functional cyclic
-/// patterns, e.g. galen). Default OFF because it can trigger expensive cyclic
-/// reasoning (galen DNF); see docs/known-limitations. Enable with
-/// `RUSTDL_INVERSE_FUNC_MERGE=1`.
+/// Count inverse-induced (`preds`/flip) successors in `≤n`/functional merges
+/// (sound; closes a completeness gap on inverse+functional cyclic patterns,
+/// e.g. galen). **Default ON** since 2026-07-11 — the incremental
+/// `horn_fixpoint` merge (rather than the old whole-graph re-fire) makes this
+/// fast in practice (galen MISSED 10 → 1, ~840 ms; wine 19.78 s → 90 ms;
+/// corpus FP=0). Set `RUSTDL_INVERSE_FUNC_MERGE=0` to revert to the old
+/// (incomplete) behaviour. See docs/known-limitations.
 #[must_use]
 pub fn inverse_func_merge_enabled() -> bool {
-    std::env::var_os("RUSTDL_INVERSE_FUNC_MERGE").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_INVERSE_FUNC_MERGE").is_none_or(|v| v != "0")
 }
 
 #[cfg(test)]

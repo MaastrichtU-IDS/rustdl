@@ -95,7 +95,6 @@ fn funcmerge_cyclic_derives_a_sub_y() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_SAME_TIER", "1");
-    let _flag2 = SetEnvGuard::set("RUSTDL_INVERSE_FUNC_MERGE", "1");
     let onto = load(FUNCMERGE_CYCLIC);
     let c = classify(&onto).expect("classify");
     // A ⊑ Y by the functional merge across the inverse edge; A ⊑ Z since Y ⊑ Z.

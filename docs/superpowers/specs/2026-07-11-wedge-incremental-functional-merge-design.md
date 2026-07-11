@@ -1,169 +1,175 @@
-# Incremental functional/≤1 merge in the Horn fixpoint — design
+# Incremental functional/≤1 merge in the Horn fixpoint — design (v2, post-advisor)
 
 **Date:** 2026-07-11
-**Status:** design under advisor review; pending implementation
+**Status:** revised after advisor review (`.superpowers/sdd/advisor-review.md`); pending user approval → implementation
 **Depends on / supersedes:** `2026-07-11-funcmerge-inverse-completeness-design.md` (the gated
 `distinct_role_succ` inverse-successor counting) and its deferred HF3 note.
 
 ## Problem (from the critical analysis)
 
-rustdl's hypertableau wedge decides galen (a **Horn** ontology) via `solve` →
-`horn_fixpoint` (deterministic) → `solve_at_most`/`partition_rec` (nondeterministic
-`≤n` search). Functional/`≤1` merges are *entailed* (deterministic) but are routed
-through the **nondeterministic search layer**: `partition_rec` treats the single
-forced `≤1` partition as a speculative branch — `save()` a full-graph snapshot, merge,
-**recurse into `solve(depth-1)`** (which restarts `horn_fixpoint` from scratch),
-`restore()`. Consequences on galen (once inverse-induced successors are counted so the
-merges actually fire):
+rustdl decides galen (a **Horn** ontology) via `solve` → `horn_fixpoint` (deterministic)
+→ `solve_at_most`/`partition_rec` (nondeterministic `≤n` search). Functional/`≤1` merges
+are *entailed* (deterministic) but are routed through the **nondeterministic search
+layer**: `find_open_at_most` (`hyper.rs:2600`, which does **not** filter `n==1`) →
+`solve_at_most:2507` → `partition_rec:2538`, which for the single forced `≤1` partition
+still does `save():2550` → `merge:2557` → **`solve(depth-1):2564`** (restarting
+`horn_fixpoint` with a full-graph reseed, `1495–1530`) → `restore:2570`. Consequences on
+galen once inverse-induced successors are counted so the merges fire:
 
 1. **O(depth × graph) blowup** — a cascade of *D* forced merges = *D* nested `solve`
    frames, each re-deriving the whole closure (~O(K³) match attempts measured).
-2. **Wasted full-graph clones** — a save/restore per entailed (never-undone) merge.
-3. **Premature `Stalled` = incompleteness** — the deterministic cascade exhausts the
-   256 nondeterministic-search `depth` cap and bails `Stalled`, so galen's
+2. **Wasted full-graph clones** — `save()` is a full `self.nodes.clone()`; one per entailed
+   (never-undone) merge.
+3. **Premature `Stalled` = incompleteness** — the deterministic cascade exhausts the 256
+   nondeterministic-search `depth` cap and bails `Stalled` (`solve:2221`), so galen's
    subsumptions are missed even though they are deterministically derivable.
 
-Root framing: **a Horn problem should need no backtracking search, but functional
-merges force it into the search layer and are then throttled by that layer's budget.**
-The saturation kernel already applies functional-merge as an incremental completion
-rule (why the *acyclic* `funcmerge` repros pass via saturation); the wedge must do the
-same.
+Root framing: **a Horn problem should need no backtracking search, but functional merges
+force it into the search layer and are then throttled by that layer's budget.** The
+saturation kernel applies functional-merge incrementally (why the *acyclic* `funcmerge`
+repros pass via saturation), and — decisively — the wedge itself already merges
+incrementally in `horn_fixpoint` for nominals via `apply_nn_rule` (`hyper.rs:3298`). This
+design generalizes that existing in-fixpoint-merge pattern to `≤1`/functional.
 
 ## Goal
 
-Make galen classify **fast and complete** (MISSED 10 → 0, terminates in seconds) by
-default, while preserving soundness (corpus FP = 0), the `≤n` (n ≥ 2) nondeterministic
-search, ⊔-branching + dependency-directed backjumping, and blocking-based termination.
+galen classifies **fast and complete** by default (MISSED 10 → 0, seconds), preserving
+soundness (corpus FP = 0), the `≤n` (n ≥ 2) nondeterministic search, ⊔-branching +
+dependency-directed backjumping, and blocking-based termination.
 
-## Design
+## Design (advisor-recommended "safer alternative")
 
-Three coupled changes in `crates/owl-dl-tableau/src/hyper.rs`.
+Three coupled changes in `crates/owl-dl-tableau/src/hyper.rs`. The key architectural
+decision (per advisor §4/alternative): **do NOT physically rewrite a folded node's
+in-edges (the invasive HF3). Keep merges physically "root-successor-only" and make all
+readers resolve-on-read.** This sidesteps the whole stale-reference BLOCKER.
 
 ### A. Fire `≤1`/functional merges incrementally inside `horn_fixpoint`
 
-`≤1` (including `Functional(R)` lowered to `≤1 R`) is deterministic: two successors
-under it are entailed equal. Handle it as a **completion rule in `process_event`**, not
-in `solve`:
+`≤1` (incl. `Functional(R)` lowered to `≤1 R`) is deterministic: two successors under it
+are entailed equal. Handle it as a completion rule reached from `process_event`, NOT from
+`solve`:
 
-- **Trigger.** When `process_event` adds a role edge to a node `x` (the `Event::Edge`
-  path) — or a merge/redirect gives `x` a new successor — check each active `≤1`
-  constraint on `x` (role `r`, from `x.at_most` with `n == 1`, honoring the role
-  hierarchy). If `distinct_role_succ(x, r, qual)` now has ≥ 2 elements, the merge is
-  forced.
-- **Act.** Merge the (≥2) successors into one **in place** via `merge_with_cause`
-  (change B), with **no `save`/`restore` and no `solve` recursion**. `merge_with_cause`
-  already re-queues `Event::Edge`/label events for the survivor, so the fixpoint
-  continues incrementally and the cascade runs to a proper fixpoint within the single
+- **Triggers (both required).**
+  1. *Successor-added:* on `Event::Edge` giving node `x` a role-successor, if `x` has an
+     active `≤1` on that role (from `x.at_most`, honoring the role hierarchy) and
+     `distinct_role_succ(x, r, qual)` now has ≥ 2 resolved elements → merge.
+  2. *Constraint-added:* **`Atom::AtMost` currently emits no event** (`hyper.rs:3000–3024`),
+     so a node that acquires a `≤1` *after* already having ≥ 2 successors would be missed
+     once `find_open_at_most` is narrowed to n ≥ 2. Add a re-check at constraint-add time
+     (emit an event, or check inline when the `at_most` set gains an `n==1` entry).
+- **Act.** Merge the ≥2 successors in place via `merge_with_cause` — **no `save`/`restore`,
+  no `solve` recursion** — exactly as `apply_nn_rule` already does. The merge re-queues the
+  survivor's edge/label events, so the cascade runs to a proper fixpoint within the single
   `horn_fixpoint` call.
 - **Clash.** If the forced successors are pairwise `must_be_distinct` (≠-forced or
-  disjoint-labelled), the `≤1` is unsatisfiable → the merge returns clash →
-  `horn_fixpoint` returns `Unsat` (same verdict the current `forced_distinct_exceeds`
-  pre-check produces, just reached incrementally).
-- **Scope.** Only `n == 1`. `find_open_at_most` / `solve_at_most` continue to handle
-  `≤n` for **n ≥ 2** (genuine nondeterminism) unchanged. After this change, a violated
-  `≤1` should never reach `solve` (the fixpoint resolves it first); `find_open_at_most`
-  is narrowed to `n ≥ 2` (and may keep an `n == 1` case as a defensive assert/no-op).
+  disjoint-labelled), the `≤1` is unsatisfiable → merge/`add_label` fires the `⊥`-clause →
+  `horn_fixpoint` returns `Unsat` (same verdict `forced_distinct_exceeds` gives, reached
+  incrementally).
+- **Scope.** Only `n == 1`. Narrow `find_open_at_most` / `solve_at_most` to **n ≥ 2**
+  (genuine nondeterminism) unchanged; a residual `n==1` there becomes a defensive
+  assert/no-op.
 
-### B. Predecessor-aware merge (the deferred HF3 — now a prerequisite)
+### B. Resolve-on-read in the hot paths (instead of predecessor-edge rewriting)
 
-Incremental `≤1` merges fold nodes reached via `preds` — including a predecessor/root
-(in `funcmerge`, `x`'s two g-successors are the witness `m` and `x`'s own predecessor
-`A`). The current `merge_with_cause` redirects only the folded node's **outgoing**
-edges and relies on `save`/`restore` + full reseed to mask stale in-edges; incrementally
-that is unsafe. Extend `merge_with_cause(survivor s_i, folded s_j)` to also:
+`≤1` merges fold nodes reached via `preds` — including a predecessor/root. Today
+`merge_with_cause` redirects only outgoing edges and relies on `solve`'s full-graph
+**reseed** to make stale in-edges harmless; dropping that reseed (change A) removes the
+precondition. Rather than physically redirect every reference to a folded node (advisor
+§4 enumerated the miss set: stale `preds`, stale worklist events, folded nodes left in
+`block_index`, `add_label` onto a folded node — a fragile "find them all" task), make the
+**readers resolve**:
 
-- **Redirect in-edges.** For each `(r, p) ∈ s_j.preds`: rewrite `p`'s outgoing edge
-  `(r, s_j)` to `(r, s_i)`, append `(r, p)` to `s_i.preds`, and re-queue `Event::Edge(p, r, s_i)`.
-- **Update blocking bookkeeping.** Fix any `BlockingSummary` (parent / parent_role /
-  label_sig) that references `s_j` to reference `s_i`; if `s_j` was some node's blocker
-  or parent, repoint it. Recompute/invalidate affected blocking so no node stays blocked
-  by a now-merged-away node.
-- **Fold constraint sets** (`at_most`, `at_least_done`) and labels as today, plus ensure
-  `s_i` re-checks its own `≤1` constraints after absorbing `s_j`'s successors (which may
-  cascade another merge — handled by the re-queued events).
-- **Survivor choice.** Prefer keeping the **older / lower-index** node as survivor
-  (`s_i = min(a, b)`), so the root (node 0) and ancestors survive rather than being
-  folded — keeps `root_labels()` and predecessor structure stable and minimizes
-  in-edge churn. (`root_labels()` is already `resolve()`-safe as a backstop.)
+- Add `self.resolve(...)` (with **path compression** in `resolve` for amortized cost) at
+  the hot read sites that currently assume merges are root-successor-only:
+  `enumerate_matches` (`~2907–2923`, whose docstring states that assumption),
+  `fire_exists` (`~3143`), the back-prop predecessor iteration (`~1568/1603`), and
+  `process_event`'s node dispatch / `add_label` target.
+- With resolve-on-read, a folded node's identity flows to its representative at every use;
+  no `preds`/`block_index`/worklist scrubbing is required, so B is a **bounded audit of
+  reader sites**, not an open-ended structure rewrite. (The full predecessor-aware merge
+  stays deferred as HF3, to be revisited only if a fixture defeats resolve-on-read.)
+- **Survivor policy.** Merge into the **older / lower-index** node (`survivor = min(a,b)`),
+  keeping the root (node 0) and ancestors as survivors — stabilizes `root_labels()` and
+  minimizes churn.
 
-### C. Snapshot/restore + backjumping correctness for in-fixpoint merges
+### C. Backjumping deps + save/restore
 
-`≤1` merges now happen inside `horn_fixpoint`, which runs within `solve`'s ⊔-branches.
-Two invariants to preserve:
-
-- **Restore rolls back merges.** `save()`/`restore()` must capture and restore the full
-  merge state — the `representative` union-find, redirected `preds`, and blocking
-  bookkeeping — so a restored ⊔-branch fully undoes any `≤1` merges it performed.
-  (Merges are part of graph state; verify `save` clones it and `restore` reinstates it.)
-- **Dependency tracking.** A `≤1` merge performed under active ⊔-decisions must carry
-  those decisions' `DepSet` so a clash it later causes backjumps correctly. Thread the
-  current decision dep-set into the incremental merge's `merge_with_cause` cause, mirroring
-  how `card_clash_deps` / branch merges attribute deps today. Conservatively, a merge may
-  carry the union of the deps of the two merged nodes' births plus the active decision
-  level.
+- **Merge dep-set (soundness).** Do NOT attribute a `≤1` merge the narrow "union of both
+  nodes' births ∪ active decision level" (advisor §6: omits the `≤1`'s own `at_most_dep`
+  and the successor-establishing deps → risk of an **unsound backjump** on non-Horn
+  inputs). Use the existing `card_clash_deps` (`~1120–1156`) or, conservatively,
+  `DepSet::ALL`. (Moot for galen — Horn, no decisions — but required for the non-Horn
+  corpus's soundness.)
+- **save/restore (already correct — reframed).** `save()` already deep-clones `nodes`
+  (incl. `preds`/`edges`/`at_most`/`parent`), `representative`, `neq`, and `block_index`;
+  `restore()` reinstates them — so in-fixpoint `≤1` merges inside a ⊔-branch already roll
+  back. **No change needed here.** The perf win comes entirely from eliminating the nested
+  `solve` frames and their per-merge reseed — *not* from cheaper snapshots.
 
 ## Termination
 
-Each `≤1` merge strictly reduces the number of canonical (representative) nodes; node
-*creation* is bounded by blocking (galen node count is capped ~1099); re-queued events
-are finite (bounded by edges × labels). So the incremental fixpoint reaches a proper
-fixpoint and terminates without consuming the nondeterministic `depth` budget. The
-`FIXPOINT_ITERS` cap remains as a backstop only.
+Provide a concrete measure (advisor §3): order states by the lexicographic pair
+(number of canonical/representative nodes ↓, then the standard blocking-bounded
+completion measure). Every `≤1` merge strictly decreases the canonical-node count (a
+union-find union). Node *creation* remains bounded by blocking; a merge can union labels
+and thereby re-enable an `∃` or (under double-blocking) unblock a dependent, but each such
+step either creates a node (bounded by blocking's finite completion-graph bound) or does a
+merge (strictly decreasing canonical nodes), and the two cannot alternate unboundedly
+because merges are monotone and node creation is capped. Keep `FIXPOINT_ITERS` as a
+backstop and assert it is not hit on the corpus.
 
 ## Soundness & completeness
 
-- **Sound:** a `≤1` merge is entailed by `Functional`/`≤1`; predecessor redirection
-  preserves the R-relationships; ⊔-branch restore rolls merges back. No new FP.
-- **Complete (for this class):** the deterministic cascade now runs to fixpoint instead
-  of bailing `Stalled`, so galen's 10 are derived. `≤n` (n ≥ 2) semantics unchanged.
-- **Hard gates:** corpus-wide FP = 0 (konclude_closure_diff, every fixture); galen
-  MISSED 10 → 0; no new MISSED on any corpus ontology; galen terminates in seconds; no
-  material wall regression on the rest of the corpus.
+- **Sound:** `≤1` merge is entailed; resolve-on-read preserves R-relationships (a folded
+  node's edges/labels are read via its representative); ⊔-branch `restore()` rolls merges
+  back; merge dep-set is conservative (`card_clash_deps`/`ALL`). Precedent: `apply_nn_rule`
+  already merges in-fixpoint soundly.
+- **Complete (for this class):** the deterministic cascade runs to fixpoint instead of
+  bailing `Stalled`; both triggers (A) ensure no `≤1` violation is missed; `≤n` (n ≥ 2)
+  semantics unchanged.
+- **Hard gates:** corpus-wide FP = 0 (konclude_closure_diff, every fixture); galen MISSED
+  10 → 0; no new MISSED on any corpus ontology; galen terminates in seconds; no material
+  wall regression; clippy `-D warnings` + fmt clean.
 
 ## Rollout / gating
 
-Implement behind the existing `RUSTDL_INVERSE_FUNC_MERGE` flag during development (so
-`main` default is untouched until proven). Once all gates pass — galen fast + complete,
-FP = 0 corpus-wide, no wall regression — flip the default ON (make the incremental merge
-the default path and retire the flag, or default-on with an escape hatch). The
-completeness contract (`completeness_guaranteed()` ⟹ Horn ⟹ MISSED = 0) becomes true
-again for galen.
+Implement behind the existing `RUSTDL_INVERSE_FUNC_MERGE` flag so `main`'s default path is
+untouched until proven. Once all gates pass, flip the default ON (retire the flag or
+default-on with an escape hatch); `completeness_guaranteed()` ⟹ Horn ⟹ MISSED = 0 becomes
+true for galen again.
 
 ## Test plan
 
-- **RED→GREEN:** `funcmerge_inverse` (A ⊑ Y / A ⊑ Z) passes at default (no flag) once
-  defaulted on; a scaled K-ring cyclic fixture classifies in ~linear time.
-- **Unit:** `distinct_role_succ` inverse-count = 2; an incremental-merge unit test where
-  a `≤1` on a node with a forward + an inverse successor merges them inside the fixpoint
-  and propagates the label to the predecessor; a predecessor-redirection unit test
-  (folded node's in-edges point to survivor).
+- **RED→GREEN:** `funcmerge_inverse` (A ⊑ Y / A ⊑ Z) passes at default once defaulted on; a
+  scaled **K-ring** cyclic fixture classifies in ~linear time (guards against the O(K³)
+  regression).
+- **Unit:** `distinct_role_succ` inverse-count = 2; an incremental-`≤1`-merge test where a
+  node with a forward + an inverse successor merges them inside the fixpoint and the label
+  reaches the predecessor; a **constraint-added** trigger test (add `≤1` to a node that
+  already has 2 successors → merge fires); resolve-on-read tests for the advisor's cases:
+  folded-node-as-blocker, -as-parent, -with-pending-worklist-event, -receiving-a-late-label.
 - **Regression:** `konclude_closure_diff` FP = 0 / MISSED unchanged-or-better on every
-  present fixture; galen via the matrix harness MISSED 10 → 0 with a finite wall; wall
-  sanity on wine/sio/pizza; clippy `-D warnings` + fmt clean.
+  present fixture; galen via the matrix harness MISSED 10 → 0 with finite wall; wall sanity
+  on wine/sio/pizza.
 
 ## Files
 
-- `crates/owl-dl-tableau/src/hyper.rs` — `process_event` (incremental `≤1` trigger),
-  `merge_with_cause` (predecessor-aware redirection + blocking fix), `find_open_at_most`
-  (narrow to n ≥ 2), `save`/`restore` (verify merge-state capture), `distinct_role_succ`
-  (inverse-aware, already implemented behind the flag).
+- `crates/owl-dl-tableau/src/hyper.rs` — `process_event`/`horn_fixpoint` (incremental `≤1`
+  trigger, mirroring `apply_nn_rule`), constraint-add trigger for `Atom::AtMost`,
+  `find_open_at_most` (narrow to n ≥ 2), the resolve-on-read sites (`enumerate_matches`,
+  `fire_exists`, back-prop, event dispatch, `add_label`), `resolve` (path compression),
+  `merge_with_cause` cause dep-set (`card_clash_deps`/`ALL`). `distinct_role_succ` is
+  already inverse-aware behind the flag.
 - `crates/owl-dl-reasoner/tests/funcmerge_inverse.rs` + a new K-ring scaling test.
 - `crates/owl-dl-tableau/src/lib.rs` — flag handling / eventual default flip.
 
-## Risks (for the advisor to scrutinize)
+## Advisor review outcome (summary)
 
-1. **Backjumping correctness** — do incremental merges carry the right `DepSet` so ⊔
-   backjumping stays sound/complete? Is the conservative dep union safe?
-2. **Predecessor redirection completeness** — is `preds` + blocking-summary + at_most/
-   at_least + union-find the *complete* set of structures referencing a folded node? A
-   missed reference → unsoundness or a dangling node.
-3. **Termination under merge-triggered ∃ generation** — can a merge re-enable an ∃ that
-   creates a node that triggers another merge in a way blocking doesn't bound?
-4. **Restore fidelity** — does `save`/`restore` already deep-capture the union-find +
-   redirected preds, or must it be extended (and at what cost — the diagnosis flagged
-   save/restore as a full clone)?
-5. **Blocking interaction** — merging a blocked node, or a node that is another's blocker;
-   does blocking stay sound (no lost successors) and terminating?
-6. **Is `≤1`-in-fixpoint actually confluent** — could different merge orders reach
-   different fixpoints? (For deterministic `≤1` it should be confluent, but the inverse/
-   nominal interactions deserve a check.)
+Verdict: **proceed with specified changes.** Adopted the advisor's safer alternative
+(resolve-on-read, no in-edge rewrite → the §4 BLOCKER becomes a bounded reader audit).
+Folded in the required fixes: constraint-add trigger (§2), conservative merge dep-set
+(§6), a concrete termination measure (§3), corrected `block_index`/save-restore framing
+(§4/§5), and the `apply_nn_rule` precedent. Full review: `.superpowers/sdd/advisor-review.md`.
+Residual watch-items for implementation: confluence under inverse+nominal interactions,
+and the termination measure holding under double-blocking unblocking.

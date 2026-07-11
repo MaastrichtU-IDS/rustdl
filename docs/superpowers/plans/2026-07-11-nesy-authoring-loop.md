@@ -84,8 +84,8 @@ SEED = os.path.join(os.path.dirname(__file__), "..", "fixtures", "seed.ofn")
 
 def test_seed_is_clean():
     c = rustdl.classify(SEED)
-    assert c.inconsistent() is False
-    assert c.unsatisfiable() == []
+    assert c.inconsistent is False
+    assert c.unsatisfiable == []
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -225,13 +225,13 @@ def check(base_ofn: str, axiom: str, baseline_unsat: set[str], workdir: str) -> 
     except rustdl.RustdlError as e:
         return GateResult(ok=False, parse_error=str(e))
 
-    if c.inconsistent():
+    if c.inconsistent:
         just = rustdl.justify(path, ["inconsistent"])
         reps = rustdl.repair(path, ["inconsistent"])
         return GateResult(ok=False, new_unsat=["<ontology inconsistent>"],
                           justification=just, repairs=reps)
 
-    new_unsat = sorted(set(c.unsatisfiable()) - baseline_unsat)
+    new_unsat = sorted(set(c.unsatisfiable) - baseline_unsat)
     if not new_unsat:
         return GateResult(ok=True)
 
@@ -457,7 +457,7 @@ def _prompt(current_ofn: str, feedback: str | None) -> str:
 
 def run_loop(base_ofn: str, llm: LLM, n_edits: int, max_revisions: int, workdir: str) -> LoopResult:
     import os
-    baseline = set(rustdl.classify(_write_base(base_ofn, workdir)).unsatisfiable())
+    baseline = set(rustdl.classify(_write_base(base_ofn, workdir)).unsatisfiable)
     result = LoopResult()
     current = base_ofn
     for i in range(n_edits):
@@ -478,7 +478,7 @@ def run_loop(base_ofn: str, llm: LLM, n_edits: int, max_revisions: int, workdir:
             result.turns.append(Turn(i, rev, axiom, False, feedback))
         if had_clash:
             result.clashes_caught += 1
-    result.final_unsat = len(rustdl.classify(_write_base(current, workdir)).unsatisfiable()) - len(baseline)
+    result.final_unsat = len(rustdl.classify(_write_base(current, workdir)).unsatisfiable) - len(baseline)
     return result
 
 

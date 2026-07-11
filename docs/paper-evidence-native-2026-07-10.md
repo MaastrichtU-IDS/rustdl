@@ -155,6 +155,34 @@ re-diff closures against the `oracle/` (the FP=0 soundness result is the committ
 FP=0 re-verification at HEAD is a separate pass via
 `cargo test -p owl-dl-reasoner --test konclude_closure_diff -- --ignored`.
 
+## S5 — explanation cost (native vs owlexplanation), added 2026-07-11
+
+Cost to produce **one justification for the same entailment** — pizza
+`CheeseyVegetableTopping ⊑ ⊥` — natively (`rustdl justify`) vs the OWL API
+`owlexplanation` library invoked through ROBOT over each OWL-API reasoner. 3 reps,
+`/usr/bin/time -l`. Harness `~/eval-tools/explain-bench.sh`; raw
+`results-explain.csv`. All four produce the same 3-axiom justification (the two
+`⊑` axioms + the disjointness).
+
+| tool | explanation path | wall (median) | peak RSS |
+|---|---|--:|--:|
+| **rustdl** | native, in-process | **10 ms** | **10 MB** |
+| HermiT | `owlexplanation` / ROBOT (JVM) | 0.39 s | 204 MB |
+| JFact | `owlexplanation` / ROBOT (JVM) | 0.38 s | 178 MB |
+| ELK | `owlexplanation` / ROBOT (JVM) | 0.50 s | 203 MB |
+| Konclude | — no OWL API binding | — | — |
+| whelk-rs | — no OWL API binding | — | — |
+
+**~40× faster, ~20× less memory** for the same justification. Notes: (1) much of
+the JVM figure is boot; it amortises across many explanations in a long-lived
+process, but the per-invocation/in-process (neurosymbolic) use rustdl targets
+pays it each call. (2) The entailment is EL⁺⁺-expressible, so ELK applies; a
+strictly-SROIQ entailment would leave only HermiT/JFact. (3) **Konclude and
+whelk-rs expose no OWL API reasoner binding**, so `owlexplanation` cannot wrap
+them — there is no explanation path to measure. This is the C2/S5 evidence: only
+rustdl explains in-process, and only rustdl explains Konclude/whelk-class inputs
+at all through this route. Folded into the paper as Table 6.
+
 ## Caveats (bind the numbers)
 
 1. **Konclude under Rosetta 2.** No arm64 release exists; the OSX-x64 binary runs

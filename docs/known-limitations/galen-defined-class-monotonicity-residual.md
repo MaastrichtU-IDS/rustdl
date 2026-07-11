@@ -110,3 +110,35 @@ is present. Not budget-bound (identical at 250 ms and 3000 ms). Closing it needs
 instrumentation (which pair-candidate is pruned and why) rather than a rule addition — there
 is no minimal repro to anchor a fix. Low ROI (1 of 28007 subsumptions; sound MISS; fast),
 so deferred. rustdl remains sound (FP=0) and near-complete on galen (MISSED 1).
+
+## Confirmed mechanism + fix triage (2026-07-12, advisor-consulted)
+
+**Root cause (confirmed, code-grounded):** the per-class **label-cache prune** in the
+top-down classifier drops `(TT, TICE)`. `classify_labels(TT)` runs a plain `sat(TT)` with
+no target sup and reads root-node labels; a defined class enters root labels only via a
+base Horn clause, but `TICE`'s backward direction `Eminence ⊓ ∃g.TibialPlateau ⊑ TICE`
+has an `∃` in the body — not clausal — so `TICE ∉ labels(TT)` and the pair is pruned at
+`crates/owl-dl-reasoner/src/classify.rs:1677-1700` before `subsumes_via_tableau` ever
+runs. The prune is an **unsound over-approximation for ∃-bearing defined sups**
+(completeness only — never FP; hence the self-reported `misses=0`). Only this one pair
+escapes both safety nets (EL-closure short-circuit + conjunctive back-fold): its filler
+subsumption `Tibia ⊑ TibialPlateau` is merge-derived (not an EL-closure fact) and its sup
+body is existential (no base-clause back-fold). Both minimal repros pass because the
+single-pair `is_subclass_of` API bypasses the label cache entirely.
+
+**Existing flag does NOT work as a fix.** `RUSTDL_CLASSIFY_DEFINED_SWEEP=1` bypasses the
+prune and full-tableau-verifies defined sups — which **explodes galen's wall**: the matrix
+did not finish in 6:40 (unbounded) and galen `classify --pair-timeout-ms 250` did not
+finish in 3:20. Bypassing the prune makes classify verify *all* of galen's defined-class
+sups via the tableau, and many of those probes are expensive/non-terminating (the same
+cyclic structure that makes a direct `is_subclass_of(TT,TICE)` hang >90 s). So the sweep
+is not a viable default.
+
+**Viable fix (deferred, low ROI):** a *targeted* improvement — teach `classify_labels`
+to include ∃-bearing defined classes as candidate sups (a definitional back-fold /
+∃-monotonicity-into-defined-class step in the label computation), so the prune stays a
+sound over-approximation and only *genuine* candidate pairs (like `TT⊑TICE`) are
+verified — not all defined sups. This is a deeper engine change to the wedge's label
+machinery. For a single subsumption out of 28 007 (sound MISS, fast), it is not worth the
+risk now; documented here for a future dig. **rustdl remains sound (FP=0) and
+near-complete on galen (MISSED 1).**

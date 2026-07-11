@@ -173,15 +173,26 @@ Cost to produce **one justification for the same entailment** — pizza
 | Konclude | — no OWL API binding | — | — |
 | whelk-rs | — no OWL API binding | — | — |
 
-**~40× faster, ~20× less memory** for the same justification. Notes: (1) much of
-the JVM figure is boot; it amortises across many explanations in a long-lived
-process, but the per-invocation/in-process (neurosymbolic) use rustdl targets
-pays it each call. (2) The entailment is EL⁺⁺-expressible, so ELK applies; a
-strictly-SROIQ entailment would leave only HermiT/JFact. (3) **Konclude and
-whelk-rs expose no OWL API reasoner binding**, so `owlexplanation` cannot wrap
-them — there is no explanation path to measure. This is the C2/S5 evidence: only
-rustdl explains in-process, and only rustdl explains Konclude/whelk-class inputs
-at all through this route. Folded into the paper as Table 6.
+**Cold: ~40× faster, ~20× less memory** for the same justification. **But the
+cold wall is startup-dominated** — measured warm per-explanation compute (JVM +
+ontology resident, fresh generator per call, median of 15; `~/eval-tools/WarmExplain.java`
+on robot.jar's classpath):
+
+| reasoner | warm per-explanation |
+|---|--:|
+| JFact | 6.1 ms |
+| HermiT | 7.7 ms |
+| ELK | 12.5 ms |
+
+i.e. **comparable to rustdl's 10 ms once warm.** So the honest, durable advantages
+are NOT warm compute speed but: (1) **~20× smaller resident footprint, cold or
+warm** (~10 MB vs ~200 MB); (2) **10 ms cold start every invocation, no VM to hold
+alive** — the per-call in-process regime a neurosymbolic pipeline runs in;
+(3) **Konclude and whelk-rs have no OWL API binding**, so `owlexplanation` cannot
+wrap them at all — no explanation path exists but rustdl's. Notes: the entailment
+is EL⁺⁺-expressible so ELK applies (a strict-SROIQ one would leave only
+HermiT/JFact). This is the C2/S5 evidence. Folded into the paper as Table 6 (cold
++ warm columns).
 
 ## Caveats (bind the numbers)
 

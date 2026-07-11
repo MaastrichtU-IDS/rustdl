@@ -4,6 +4,8 @@
 #![allow(dead_code, unreachable_pub)]
 
 pub mod corpus;
+pub use corpus::corpus_load_ofn;
+pub mod correctness;
 pub mod model;
 pub mod provenance;
 pub mod run;

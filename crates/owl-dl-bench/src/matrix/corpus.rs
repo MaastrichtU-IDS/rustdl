@@ -163,7 +163,7 @@ pub fn enumerate(tier: &str, work_dir: &Path, tools: &Path) -> Result<Vec<Staged
                     eprintln!("owl-dl-bench: convert error for {}: {e}", src.display());
                     (sha256, size_bytes, 0, "convert-error".to_string())
                 } else {
-                    match load_any(&ofn) {
+                    match corpus_load_ofn(&ofn) {
                         Ok(onto) => {
                             let count =
                                 owl_dl_reasoner::classify(&onto).map_or(0, |c| c.classes().len());
@@ -194,7 +194,7 @@ pub fn enumerate(tier: &str, work_dir: &Path, tools: &Path) -> Result<Vec<Staged
     Ok(staged)
 }
 
-fn load_any(
+pub fn corpus_load_ofn(
     ofn: &Path,
 ) -> Result<horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>> {
     use horned_owl::io::ParserConfiguration;

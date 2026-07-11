@@ -103,6 +103,16 @@ characterization set (GALEN/notgalen/RO/wine/SIO/pizza/ore-*).
   under docker would be worse methodology (the startup confound §0 warns against). Setup
   task, not a missing result.
 
+**DONE 2026-07-10 — native measurements complete (`docs/paper-evidence-native-2026-07-10.md`):**
+- **T5 startup/footprint: DONE both sides, native** (no docker). rustdl 4.3 MB / <10 ms
+  floor; JVM (ELK/HermiT via ROBOT on native openjdk@17) floor ~131 MB / ~250 ms even for
+  3 axioms; Konclude (native, Rosetta) 28 MB / 70 ms. Under-load peak RSS measured through
+  **1.18 GB** (HermiT/sio). The precise JVM peak RSS previously deferred is now in hand.
+- **F1 head-to-head: DONE native refresh.** Walls + engine-only across the curated corpus;
+  rustdl's EL wins / hard-SROIQ losses / Konclude's lead all reproduce the committed
+  comparison at HEAD (no regression); the startup confound is now quantified natively
+  (JVM boot ~0.25–2 s; Konclude Rosetta+load ~70–120 ms; rustdl ~0), not assumed.
+
 ## 4. Motivating application (the #1 risk — must land)
 
 Not speed, not novel calculus. The honest niche: **applications that need a sound answer

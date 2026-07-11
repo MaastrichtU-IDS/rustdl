@@ -75,3 +75,14 @@ Honest upshot for the paper: the *soundness*, *dual-oracle*, *feature*, and *EL-
 evidence (C1–C5, S1–S6) is solid and in hand; the only item needing a proper eval host is
 the JVM-side startup/RSS microbench and the controlled multi-reasoner wall refresh — a
 setup task, not a missing result.
+
+> **UPDATE 2026-07-10 — the deferred JVM-side items are now DONE, natively.**
+> This host *is* a native JVM host once provisioned (Homebrew `openjdk@17` +
+> ROBOT 1.9.10 + native Konclude via Rosetta). The precise JVM peak RSS + the
+> controlled wall refresh were measured with `/usr/bin/time -l` (no docker) — see
+> **`docs/paper-evidence-native-2026-07-10.md`**. Headlines: JVM startup floor
+> **~131 MB / ~250 ms** even for 3 axioms (vs rustdl **4.3 MB / <10 ms**);
+> HermiT peaks at **1.18 GB** on sio; the startup confound is now quantified
+> (JVM boot ~0.25–2 s; Konclude Rosetta+load ~70–120 ms; rustdl ~0). All F1
+> walls reproduce the committed comparison at HEAD (no regression). Harness:
+> `~/eval-tools/{bench,matrix}.sh`.

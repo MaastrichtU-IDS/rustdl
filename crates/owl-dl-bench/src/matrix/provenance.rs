@@ -46,10 +46,15 @@ pub fn newest_source_mtime(repo_root: &Path) -> Result<SystemTime> {
             newest = m;
         }
     }
-    if let Ok(m) = std::fs::metadata(repo_root.join("Cargo.lock")).and_then(|m| m.modified())
-        && m > newest
-    {
-        newest = m;
+    // The workspace-root Cargo.lock AND Cargo.toml carry build-affecting config
+    // (dep pins; [profile.release] lto/codegen-units, [workspace.lints]) that does
+    // NOT flow through any file under crates/. Fold both into the max.
+    for root_file in ["Cargo.lock", "Cargo.toml"] {
+        if let Ok(m) = std::fs::metadata(repo_root.join(root_file)).and_then(|m| m.modified())
+            && m > newest
+        {
+            newest = m;
+        }
     }
     Ok(newest)
 }
@@ -101,6 +106,10 @@ fn whelk_sha(repo_root: &Path) -> String {
     let lock = std::fs::read_to_string(repo_root.join("Cargo.lock")).unwrap_or_default();
     let mut in_whelk = false;
     for line in lock.lines() {
+        // Reset at each package boundary so we only read whelk's OWN source line;
+        // if whelk is ever [patch]ed to a path (no `source =`), we must not fall
+        // through and return an unrelated later package's SHA.
+        if line.trim() == "[[package]]" { in_whelk = false; }
         if line.trim() == "name = \"whelk\"" { in_whelk = true; }
         if in_whelk
             && let Some(src) = line.trim().strip_prefix("source = ")
@@ -173,6 +182,24 @@ mod tests {
         let bin = dir.join("oldbin");
         std::fs::write(&bin, "x").unwrap();
         // Backdate the binary to a date definitively older than any 2026 source file.
+        filetime_set(&bin);
+        assert!(assert_fresh_binary(&bin, &dir).is_err());
+    }
+
+    #[test]
+    fn stale_binary_rejected_when_only_root_cargo_toml_is_fresh() {
+        // Build-affecting config (e.g. [profile.release] lto/codegen-units) lives
+        // ONLY in the workspace-root Cargo.toml — it does not flow through
+        // Cargo.lock or any file under crates/. Editing it without rebuilding must
+        // still trip the freshness guard.
+        let dir =
+            std::env::temp_dir().join(format!("rustdl-fresh-roottoml-{}", std::process::id()));
+        // A crates/ dir must exist (WalkDir::new on a missing path yields nothing,
+        // which is fine) but we deliberately write NO fresh file under it.
+        std::fs::create_dir_all(dir.join("crates")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[profile.release]\ncodegen-units = 1\n").unwrap();
+        let bin = dir.join("oldbin");
+        std::fs::write(&bin, "x").unwrap();
         filetime_set(&bin);
         assert!(assert_fresh_binary(&bin, &dir).is_err());
     }

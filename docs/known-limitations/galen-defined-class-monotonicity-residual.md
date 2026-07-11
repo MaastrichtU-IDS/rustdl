@@ -95,3 +95,18 @@ disjunctive search. Neither is attempted here.
 - Parent finding: `docs/known-limitations/galen-inverse-functional-completeness.md`
 - Authoritative numbers: `docs/benchmarks/2026-07-11-curated/MATRIX.md` (regenerated
   post-fix; galen `MISSED 1`)
+
+## Follow-up diagnosis (2026-07-12): the abstract pattern is NOT the gap
+
+Two minimal reproductions were built and BOTH derive `TT ⊑ TICE` correctly in rustdl:
+1. **Told filler subsumption:** `TT ≡ E ⊓ ∃g.Sub`, `TICE ≡ E ⊓ ∃g.Sup`, `Sub ⊑ Sup` → rustdl derives `TT ⊑ TICE` (Konclude agrees).
+2. **Merge-derived filler subsumption:** same, but `Sub ⊑ Sup` is itself derived via the functional/≤1-inverse merge (`Sub ⊑ ∃f.M`, `f ≡ inv(g2)`, `Functional(g2)`, `M ≡ ∃g2.Sup`) → rustdl still derives both `Sub ⊑ Sup` and `TT ⊑ TICE`.
+
+So the defined-class ∃-monotonicity rule works in isolation, even over a merge-derived filler
+subsumption. The galen miss is therefore **context/scale-dependent** (as the original galen
+≤1 investigation was): at full 2748-class scale the top-down classifier's label-cache /
+candidate-recovery / rule-ordering drops this one pair, even though the underlying reasoning
+is present. Not budget-bound (identical at 250 ms and 3000 ms). Closing it needs in-galen
+instrumentation (which pair-candidate is pruned and why) rather than a rule addition — there
+is no minimal repro to anchor a fix. Low ROI (1 of 28007 subsumptions; sound MISS; fast),
+so deferred. rustdl remains sound (FP=0) and near-complete on galen (MISSED 1).

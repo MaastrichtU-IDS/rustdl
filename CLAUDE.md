@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`rustdl` is a sound, complete OWL 2 DL (SROIQ) reasoner in Rust, targeting parity
+`rustdl` is a **sound** OWL 2 DL (SROIQ) reasoner in Rust — **near-complete** in
+practice (provably complete only on the guaranteed EL/Horn fragment; a concrete
+residual is 10 galen subsumptions it misses by default — see
+`docs/known-limitations/galen-inverse-functional-completeness.md`), targeting parity
 with HermiT and Konclude on the ORE benchmarks. It is a Konclude-style **hybrid**:
 a consequence-based EL **saturation** engine handles the cheap EL fragment, a
 **tableau** engine handles the rest of SROIQ, and an **orchestrator** decides per

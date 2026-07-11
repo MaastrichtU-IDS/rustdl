@@ -2064,6 +2064,16 @@ pub fn anywhere_blocking_enabled() -> bool {
     std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
 }
 
+/// Opt-in: count inverse-induced (`preds`/flip) successors in `≤n`/functional
+/// merges (sound; closes a completeness gap on inverse+functional cyclic
+/// patterns, e.g. galen). Default OFF because it can trigger expensive cyclic
+/// reasoning (galen DNF); see docs/known-limitations. Enable with
+/// `RUSTDL_INVERSE_FUNC_MERGE=1`.
+#[must_use]
+pub fn inverse_func_merge_enabled() -> bool {
+    std::env::var_os("RUSTDL_INVERSE_FUNC_MERGE").is_some_and(|v| v == "1")
+}
+
 #[cfg(test)]
 #[allow(clippy::many_single_char_names)]
 mod tests {

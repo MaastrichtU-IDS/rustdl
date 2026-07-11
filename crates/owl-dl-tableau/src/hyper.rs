@@ -2425,18 +2425,20 @@ impl<'c> HyperEngine<'c> {
                 seen.push(rt);
             }
         }
-        for (er, s) in &self.nodes[node.index()].preds {
-            if !role_matches(er.flip(), role, hier) {
-                continue;
-            }
-            let rs = self.resolve(*s);
-            if let Some(q) = qual
-                && !self.nodes[rs.index()].has(q)
-            {
-                continue;
-            }
-            if !seen.contains(&rs) {
-                seen.push(rs);
+        if crate::inverse_func_merge_enabled() {
+            for (er, s) in &self.nodes[node.index()].preds {
+                if !role_matches(er.flip(), role, hier) {
+                    continue;
+                }
+                let rs = self.resolve(*s);
+                if let Some(q) = qual
+                    && !self.nodes[rs.index()].has(q)
+                {
+                    continue;
+                }
+                if !seen.contains(&rs) {
+                    seen.push(rs);
+                }
             }
         }
         seen
@@ -3473,6 +3475,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
+    #[allow(unsafe_code)]
     fn distinct_role_succ_counts_inverse_predecessors() {
         // Build a minimal engine graph directly via the private node/edge
         // API — this `tests` module is a descendant of the module that
@@ -3483,7 +3487,20 @@ mod tests {
         // Node `n` (the root) gets one forward `g`-edge to `m`, and one
         // incoming edge from `a` whose role flips to `g` (i.e. a stored
         // `g⁻` pred — the shape produced when `f ≡ g⁻` and `a —f→ n` is
-        // asserted). Both `m` and `a` are genuine `g`-successors of `n`.
+        // asserted). Both `m` and `a` are genuine `g`-successors of `n`,
+        // but counting the inverse pred (`a`) is gated behind
+        // `RUSTDL_INVERSE_FUNC_MERGE` (default off; see
+        // `crate::inverse_func_merge_enabled`), so this test opts in for
+        // its duration.
+        let key = "RUSTDL_INVERSE_FUNC_MERGE";
+        // SAFETY: set_var is unsafe under edition 2024; restored before
+        // returning. Not serialized against other tests via a mutex like
+        // the reasoner-crate env-mutating tests do, since this crate's
+        // test suite has no other test reading this var.
+        let prior = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, "1");
+        }
         let g = Role::Named(RoleId::new(0));
         let mut eng = HyperEngine::new(&[], cls(0));
         let n = HNode(0); // root
@@ -3492,6 +3509,12 @@ mod tests {
         eng.nodes[n.index()].edges.push((g, m)); // n —g→ m  (n.edges)
         eng.nodes[n.index()].preds.push((g.flip(), a)); // incoming a —g⁻→ n  ⇒ n —g→ a (n.preds)
         let succ = eng.distinct_role_succ(n, g, None);
+        unsafe {
+            match &prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
         assert_eq!(
             succ.len(),
             2,

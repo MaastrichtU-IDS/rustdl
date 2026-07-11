@@ -12,6 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 owl-dl-core.workspace = true
 owl-dl-saturation.workspace = true
 owl-dl-tableau.workspace = true

@@ -47,6 +47,7 @@ pub mod diagnose;
 pub mod justify;
 pub mod laconic;
 mod model_cache;
+pub mod oracle_diff;
 mod realize;
 pub mod repair;
 mod union_find;

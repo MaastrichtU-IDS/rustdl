@@ -1095,6 +1095,7 @@ dependencies = [
 name = "owl-dl-reasoner"
 version = "0.3.21"
 dependencies = [
+ "anyhow",
  "dashmap",
  "fixedbitset",
  "horned-owl",

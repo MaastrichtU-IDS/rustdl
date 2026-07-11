@@ -45,7 +45,7 @@ stage:
 | Module | Responsibility |
 |---|---|
 | `provenance.rs` | Capture reasoner versions + host env → `run-metadata.json` |
-| `corpus.rs` | Enumerate onts for the tier; compute sha256, size, class-count, fragment per ont |
+| `corpus.rs` | Enumerate onts for the tier; compute sha256, size, class-count, fragment; normalize each ont to the input formats the reasoners need |
 | `oracle.rs` | Run Konclude per ont; produce the oracle closure |
 | `run.rs` | Per (ont, reasoner): wall + peak RSS + status via a uniform `/usr/bin/time -l` subprocess wrapper |
 | `correctness.rs` | FP/MISSED for each reasoner's output closure vs the Konclude oracle |
@@ -75,8 +75,24 @@ Each cell wraps the reasoner in `gtimeout <global_timeout_s>` under
 | whelk-rs | `compare-whelk` (OFN-only) | whelk closure |
 
 `robot` = `~/eval-tools/bin/robot` (Homebrew OpenJDK 17 arm64 + `robot.jar`
-1.9.10, bundling HermiT + ELK). Verified: HermiT on `sulo` → 0.42 s wall,
-239 MB RSS, 66 inferred `SubClassOf` axioms in the output owx.
+1.9.10, bundling HermiT + ELK). `konclude` = the OSX-x64 v0.7.0-1138 binary
+(Rosetta 2). Verified on `sulo`: HermiT → 0.42 s / 239 MB / 66 inferred
+`SubClassOf`; Konclude → 0.17 s / 31.7 MB / 34 `SubClassOf`. The raw
+`SubClassOf` counts differ because Konclude serializes the transitively-reduced
+hierarchy while ROBOT emits more; `aligned_closures` reconstructs the full
+transitive closure over the shared signature before diffing, so the comparison
+is closure-vs-closure, not serialization-vs-serialization.
+
+### Input-format normalization (part of `corpus.rs`)
+
+The reasoners consume different formats: **Konclude → owx**, **HermiT/ELK
+→ owl (RDF/XML, via ROBOT which also accepts owx/ofn)**, **whelk-rs → ofn**,
+**rustdl → any (auto-detected)**. The curated corpus is pre-staged in all
+formats in `~/eval-tools/work/`, but the ORE/BioPortal `.owl` inputs are not.
+So stage 1 normalizes each ont to at least **owx** (Konclude) and **ofn**
+(whelk) via `robot convert`, recording conversion failures as a per-ont
+`convert_error` that marks the affected reasoner cells `error` (the ont still
+gets a row). A conversion is done once per ont and cached.
 
 **JVM-floor caveat (HermiT & ELK).** Their `/usr/bin/time -l` wall is
 **end-to-end**: JVM boot + parse + reason + serialize. ROBOT logs only

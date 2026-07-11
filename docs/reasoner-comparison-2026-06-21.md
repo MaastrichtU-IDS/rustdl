@@ -7,6 +7,8 @@
 > DL walls here (pizza 4.6 s, family 1.6 s) were also inflated — fresh: pizza 0.81 s,
 > family 0.86 s. See `docs/perf-2026-06-27-bench-snapshot.md` and the paper. The
 > table is kept for provenance.
+>
+> **Authoritative current numbers:** docs/benchmarks/2026-07-11-curated/MATRIX.md.
 
 Consolidated head-to-head: **rustdl** vs **Konclude**, **HermiT** (DL) and **ELK**,
 **whelk-rs** (EL), across the curated corpus (`docs/corpus.md`) and the ORE-2015
@@ -57,7 +59,7 @@ All times in **milliseconds** (wall, full classification) so rows compare direct
 | alehif | Horn | 70 ✓ | 1 | — | |
 | ore-15672 | SHOIN | **70 ✓** | 5 | 1,654 | blocked-⊔ fix |
 | ro | EL+ | 80 ✓ | 1 | DNF | HermiT DNFs |
-| galen | Horn | 220 ✓ | 16 | 1,144 | rustdl complete < HermiT reasoning |
+| galen | Horn | 220 (sound; misses 10) | 16 | 1,144 | rustdl sound, misses 10 vs oracle; HermiT reasoning slower |
 | ore-10908 | SROIQ | 220 ✓ | 23 | 10,345 | rustdl ~10× Konclude; 47× < HermiT |
 | notgalen | Horn | 270 ✓ | 20 | 1,306 | |
 | sio | SROIQ | 720 ✓ | 60 | ~57,000 | SROIQ sweep-gate |
@@ -65,9 +67,10 @@ All times in **milliseconds** (wall, full classification) so rows compare direct
 | wine | SHOIN(D) | **DNF (>200,000)** | 36 | 6,390 | **the lone DNF** — combinatorial nominal+disjunction (NO-GO'd) |
 | family | SROIQ | **1,600 ✓** | 900 | 9,344 | **inconsistency detected** (ABox-saturation pre-check) |
 
-rustdl is sound + complete on every row except wine; most DL onts are within **~10–50×
-Konclude**. Konclude leads on speed; HermiT is correct
-but 10²–10³× slower than Konclude and DNFs on ro/wine.
+rustdl is **sound** on every row; **complete except galen** (misses 10 hard
+functional-inverse subsumptions Konclude/HermiT derive) — and wine (now
+complete); most DL onts are within **~10–50× Konclude**. Konclude leads on
+speed; HermiT is correct but 10²–10³× slower than Konclude and DNFs on ro/wine.
 
 ## 3 · ORE-2015 pilot — 233 ontologies, oracle-validated
 

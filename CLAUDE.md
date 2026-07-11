@@ -746,10 +746,13 @@ close the SROIQ gap to HermiT + dead-ends already measured),
 Konclude across the corpus (**native Konclude binary** — supersedes the 06-03/04
 docs whose ratios used docker walls inflated by ~1.5 s container startup; on native
 walls Konclude wins on every real-reasoning ontology, 2.2×–809×; the "beats
-Konclude"/"ORE-10908 ≤5×" claims were docker artifacts). **rustdl is sound AND
-complete on the measured corpus (FP=0/MISSED=0 vs the Konclude∩HermiT oracle,
-re-verified 2026-07-11); `wine` is no longer a DNF (fixed v0.3.16, ~1.8 s at a low
-per-pair budget) — earlier "out-of-EL incomplete/DNF" notes are stale.** The
+Konclude"/"ORE-10908 ≤5×" claims were docker artifacts). **rustdl is sound
+corpus-wide (FP=0); near-complete — it misses 10 galen subsumptions vs the
+Konclude∩HermiT oracle (a functional/≤1-role merge across an inverse edge; the
+opt-in `RUSTDL_INVERSE_FUNC_MERGE=1` derives them soundly but makes galen DNF;
+see `docs/known-limitations/galen-inverse-functional-completeness.md`). `wine`
+is no longer a DNF (fixed v0.3.16, ~1.8 s at a low per-pair budget) — earlier
+"out-of-EL incomplete/DNF" notes are stale.** The
 remaining rustdl weakness is the multi-GB RSS tail on a few pathological SROIQ
 inputs, not wall time. Performance claims in docs are backed by the corpus harness
 — re-measure with `scripts/bench-rustdl-modes.sh` (on a **freshly built** binary,

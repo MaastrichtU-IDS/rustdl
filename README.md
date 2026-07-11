@@ -53,11 +53,15 @@ across the measured corpus but not *provably* complete in general (it trusts the
 wedge's `Sat` verdicts; see the soundness contract in `CLAUDE.md` and
 [`docs/fragment-completeness.md`](docs/fragment-completeness.md)). The hard residual
 is the engineering-maturity gap to Konclude's optimized tableau, not a missing
-technique.
+technique. A concrete residual: on galen, rustdl (sound, FP=0) misses 10
+subsumptions Konclude and HermiT derive — a functional/≤1-role merge across an
+inverse edge, soundly derivable via the opt-in `RUSTDL_INVERSE_FUNC_MERGE=1` but
+off by default because it currently makes galen non-terminating (see
+[`docs/known-limitations/galen-inverse-functional-completeness.md`](docs/known-limitations/galen-inverse-functional-completeness.md)).
 
 ## Coverage
 
-**Supported (sound; complete on the fragment, oracle-validated):**
+**Supported (sound; complete on the EL/Horn fragment where the guarantee holds — see completeness note):**
 
 - SROIQ object-property reasoning — role hierarchies; transitive, symmetric,
   asymmetric, irreflexive, functional, inverse-functional; inverse roles; role
@@ -155,6 +159,7 @@ license; no separate CLA.
 
 ## More
 
+- Authoritative performance matrix: [docs/benchmarks/2026-07-11-curated/MATRIX.md](docs/benchmarks/2026-07-11-curated/MATRIX.md)
 - Latest benchmark snapshot: [`docs/perf-2026-06-27-bench-snapshot.md`](docs/perf-2026-06-27-bench-snapshot.md)
 - Reasoner comparison: [`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md)
 - Perf vs Konclude/HermiT: [`docs/perf-2026-06-08-konclude-vs-rustdl.md`](docs/perf-2026-06-08-konclude-vs-rustdl.md)

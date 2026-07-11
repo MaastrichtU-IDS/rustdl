@@ -1,0 +1,41 @@
+{
+  "date": "2026-07-11T18:45:48Z",
+  "tier": "curated",
+  "oracle": "konclude-0.7.0-1138",
+  "host": {
+    "model": "Mac17,6",
+    "cpu": "Apple M5 Max",
+    "cores": 18,
+    "ram_gb": 128,
+    "os": "macOS 26.5.1 (Darwin 25.5.0)",
+    "arch": "arm64"
+  },
+  "budgets": {
+    "pair_timeout_ms": 250,
+    "global_timeout_s": 60
+  },
+  "reasoners": {
+    "elk": {
+      "note": "EL-only; end-to-end JVM wall",
+      "version": "1.9.10 (ROBOT)"
+    },
+    "hermit": {
+      "note": "end-to-end JVM wall (~0.4-1s boot floor, ~240MB baseline)",
+      "version": "1.9.10 (ROBOT)"
+    },
+    "konclude": {
+      "build": "OSX-x64 via Rosetta 2 (walls/RSS are upper bounds)",
+      "version": "v0.7.0-1138"
+    },
+    "rustdl": {
+      "binary_mtime_unix": 1783795520,
+      "build": "release stable-toolchain",
+      "git_sha": "16f08c9",
+      "version": "0.3.21"
+    },
+    "whelk-rs": {
+      "git_sha": "701710d58b6039794bc5a4348880d813eecf2bbb",
+      "note": "EL-only"
+    }
+  }
+}

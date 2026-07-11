@@ -30,7 +30,8 @@ pub fn is_el_fragment(frag: &str) -> bool {
 pub fn fragment_of(ofn_path: &Path) -> String {
     let src = std::fs::read_to_string(ofn_path).unwrap_or_default();
     // Non-EL constructs: unions, complements, universals, cardinalities,
-    // nominals, inverse roles.
+    // nominals, inverse roles — on both the object and data sides. Note
+    // `DataSomeValuesFrom`/`DataHasValue` are EL-legal and deliberately absent.
     const NON_EL: &[&str] = &[
         "ObjectUnionOf",
         "ObjectComplementOf",
@@ -41,6 +42,12 @@ pub fn fragment_of(ofn_path: &Path) -> String {
         "ObjectOneOf",
         "ObjectInverseOf",
         "DisjointUnion",
+        "DataAllValuesFrom",
+        "DataMinCardinality",
+        "DataMaxCardinality",
+        "DataExactCardinality",
+        "DataComplementOf",
+        "DataUnionOf",
     ];
     if NON_EL.iter().any(|c| src.contains(c)) {
         "DL".into()
@@ -113,15 +120,17 @@ fn tier_sources(tier: &str, work_dir: &Path) -> Result<Vec<PathBuf>> {
 pub fn enumerate(tier: &str, work_dir: &Path, tools: &Path) -> Result<Vec<StagedOnt>> {
     let robot = tools.join("bin/robot");
     let mut staged = Vec::new();
+    // `enumerate` returns Err only for a whole-run setup failure (bad tier /
+    // missing root dir); a per-ont read/convert/parse failure must NOT abort
+    // the tier — it yields an error row and we move on.
     for src in tier_sources(tier, work_dir)? {
-        let stem = src
-            .file_stem()
-            .with_context(|| format!("no file stem for {}", src.display()))?
-            .to_string_lossy()
-            .to_string();
-        let dir = src
-            .parent()
-            .with_context(|| format!("no parent dir for {}", src.display()))?;
+        // Path derivations use fallbacks so a pathological filename never
+        // propagates out of the loop.
+        let stem = src.file_stem().map_or_else(
+            || src.to_string_lossy().into_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        );
+        let dir = src.parent().unwrap_or_else(|| Path::new("."));
         let owx = dir.join(format!("{stem}.owx"));
         let ofn = dir.join(format!("{stem}.ofn"));
         let owl = if src.extension().is_some_and(|x| x == "owl") {
@@ -129,28 +138,51 @@ pub fn enumerate(tier: &str, work_dir: &Path, tools: &Path) -> Result<Vec<Staged
         } else {
             dir.join(format!("{stem}.owl"))
         };
-        // Normalize to the formats the reasoners need. Record convert errors as
-        // an empty meta with fragment="convert-error" so the caller marks cells.
+        // Normalize to the formats the reasoners need: `.owx` (Konclude),
+        // `.ofn` (whelk), and `.owl` (HermiT/ELK global constraint). When the
+        // source is already `.owl`, `ensure_convert` for it is a cached no-op.
         let converted = (|| -> Result<()> {
             ensure_convert(&robot, &src, &owx)?;
             ensure_convert(&robot, &src, &ofn)?;
+            ensure_convert(&robot, &src, &owl)?;
             Ok(())
         })();
-        let bytes = std::fs::read(&src).with_context(|| format!("read {}", src.display()))?;
-        let sha256 = sha256_hex(&bytes);
-        let (classes, fragment) = if converted.is_err() {
-            (0, "convert-error".to_string())
-        } else {
-            let count =
-                owl_dl_reasoner::classify(&load_any(&ofn)?).map_or(0, |c| c.classes().len());
-            (count, fragment_of(&ofn))
+        // Read/hash the source, then (if conversion succeeded) load the `.ofn`
+        // for the class count + fragment. Any failure at any step records an
+        // error row (fragment="convert-error", classes=0, best-effort sha/size)
+        // and continues rather than `?`-ing out of the whole enumeration.
+        let (sha256, size_bytes, classes, fragment) = match std::fs::read(&src) {
+            Err(e) => {
+                eprintln!("owl-dl-bench: skipping {}: read failed: {e}", src.display());
+                (String::new(), 0, 0, "convert-error".to_string())
+            }
+            Ok(bytes) => {
+                let sha256 = sha256_hex(&bytes);
+                let size_bytes = bytes.len() as u64;
+                if let Err(e) = &converted {
+                    eprintln!("owl-dl-bench: convert error for {}: {e}", src.display());
+                    (sha256, size_bytes, 0, "convert-error".to_string())
+                } else {
+                    match load_any(&ofn) {
+                        Ok(onto) => {
+                            let count =
+                                owl_dl_reasoner::classify(&onto).map_or(0, |c| c.classes().len());
+                            (sha256, size_bytes, count, fragment_of(&ofn))
+                        }
+                        Err(e) => {
+                            eprintln!("owl-dl-bench: parse error for {}: {e}", src.display());
+                            (sha256, size_bytes, 0, "convert-error".to_string())
+                        }
+                    }
+                }
+            }
         };
         staged.push(StagedOnt {
             meta: OntMeta {
                 name: stem,
                 source: src.to_string_lossy().into_owned(),
                 sha256,
-                size_bytes: bytes.len() as u64,
+                size_bytes,
                 classes,
                 fragment,
             },
@@ -195,5 +227,43 @@ mod tests {
         assert!(is_el_fragment("EL+"));
         assert!(!is_el_fragment("SHOIN(D)"));
         assert!(!is_el_fragment("DL"));
+    }
+
+    #[test]
+    fn data_cardinality_source_is_non_el() {
+        // A source whose only non-EL construct is a data-property cardinality
+        // must still be labeled "DL" — otherwise ELK/whelk would be run on an
+        // out-of-fragment ont and reported as valid EL numbers.
+        let dir = tempdir_here("frag_data_card");
+        let path = dir.join("data_card.ofn");
+        std::fs::write(
+            &path,
+            "SubClassOf(:C DataMaxCardinality(1 :hasAge xsd:integer))\n",
+        )
+        .unwrap();
+        assert_eq!(fragment_of(&path), "DL");
+    }
+
+    #[test]
+    fn pure_el_source_is_el() {
+        // Only EL-legal constructs (incl. the EL-legal DataSomeValuesFrom) must
+        // stay "EL" — a control for the data-side additions to NON_EL.
+        let dir = tempdir_here("frag_pure_el");
+        let path = dir.join("pure_el.ofn");
+        std::fs::write(
+            &path,
+            "SubClassOf(:C ObjectSomeValuesFrom(:r :D))\n\
+             SubClassOf(:C DataSomeValuesFrom(:hasAge xsd:integer))\n",
+        )
+        .unwrap();
+        assert_eq!(fragment_of(&path), "EL");
+    }
+
+    // Minimal deterministic scratch dir (no external tempdir crate); mirrors the
+    // helper used in `matrix::model`'s tests.
+    fn tempdir_here(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!("rustdl-corpus-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        base
     }
 }

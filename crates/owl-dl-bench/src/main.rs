@@ -167,6 +167,19 @@ enum Command {
         #[arg(long, default_value = "5")]
         iters: usize,
     },
+    /// Run the authoritative reasoner×ontology performance matrix.
+    Matrix {
+        #[arg(long, default_value = "curated")]
+        tier: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value = "25")]
+        pair_timeout_ms: u64,
+        #[arg(long, default_value = "120")]
+        global_timeout_s: u64,
+        #[arg(long)]
+        resume: bool,
+    },
 }
 
 fn parse_ofn(path: &Path) -> Result<SetOntology<RcStr>> {
@@ -357,6 +370,34 @@ fn run(cli: Cli) -> Result<()> {
         } => run_corpus(&dir, quiet, repeats, pair_timeout_ms)?,
         #[cfg(feature = "whelk-compare")]
         Command::CompareWhelk { file, iters } => run_compare_whelk(&file, iters)?,
+        Command::Matrix {
+            tier,
+            out,
+            pair_timeout_ms,
+            global_timeout_s,
+            resume,
+        } => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let tools = std::path::PathBuf::from(
+                std::env::var("RUSTDL_EVAL_TOOLS").unwrap_or(format!("{home}/eval-tools")),
+            );
+            let args = matrix::MatrixArgs {
+                tier,
+                out,
+                pair_timeout_ms,
+                global_timeout_s,
+                resume,
+                work_dir: tools.join("work"),
+                tools,
+                rustdl_bin: std::path::PathBuf::from(std::env::var("RUSTDL_BIN").unwrap_or(
+                    format!("{home}/code/rustdl/target/release/rustdl"),
+                )),
+                repo_root: std::path::PathBuf::from(
+                    std::env::var("RUSTDL_REPO").unwrap_or(format!("{home}/code/rustdl")),
+                ),
+            };
+            matrix::run_matrix(&args)?;
+        }
     }
     Ok(())
 }

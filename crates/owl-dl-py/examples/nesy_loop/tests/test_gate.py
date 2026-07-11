@@ -30,3 +30,27 @@ def test_feedback_mentions_class_and_fix(tmp_path):
     r = gate.check(SEED, axiom, set(), str(tmp_path))
     fb = gate.format_feedback(r)
     assert "unsatisfiable" in fb.lower() and "X" in fb
+
+def test_inconsistent_edit_flagged(tmp_path):
+    # owl:Thing/owl:Nothing aren't usable here (seed.ofn declares no `owl:` prefix),
+    # so instead assert a named individual into both disjoint toppings at once --
+    # this forces every class to become unsatisfiable, i.e. Classification.inconsistent.
+    axiom = (
+        "Declaration(NamedIndividual(:i)) "
+        "ClassAssertion(:CheeseTopping :i) ClassAssertion(:VegetableTopping :i)"
+    )
+    r = gate.check(SEED, axiom, set(), str(tmp_path))
+    assert r.ok is False
+    assert r.inconsistent is True
+    assert "inconsistent" in gate.format_feedback(r).lower()
+
+def test_multi_unsat_feedback_scoped(tmp_path):
+    axiom = (
+        "Declaration(Class(:P)) SubClassOf(:P :CheeseTopping) SubClassOf(:P :VegetableTopping) "
+        "Declaration(Class(:R)) SubClassOf(:R :CheeseTopping) SubClassOf(:R :VegetableTopping)"
+    )
+    r = gate.check(SEED, axiom, set(), str(tmp_path))
+    assert len(r.new_unsat) == 2
+    fb = gate.format_feedback(r)
+    assert "other class" in fb
+    assert fb.count("Minimal cause for") == 1

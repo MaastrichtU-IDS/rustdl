@@ -18,6 +18,7 @@ class GateResult:
     roots: list[str] = field(default_factory=list)
     justification: list[str] = field(default_factory=list)
     repairs: list[list[str]] = field(default_factory=list)
+    inconsistent: bool = False
 
 
 def _write(workdir: str, ofn: str) -> str:
@@ -39,7 +40,7 @@ def check(base_ofn: str, axiom: str, baseline_unsat: set[str], workdir: str) -> 
     if c.inconsistent:
         just = rustdl.justify(path, ["inconsistent"])
         reps = rustdl.repair(path, ["inconsistent"])
-        return GateResult(ok=False, new_unsat=["<ontology inconsistent>"],
+        return GateResult(ok=False, inconsistent=True,
                           justification=just, repairs=reps)
 
     new_unsat = sorted(set(c.unsatisfiable) - baseline_unsat)
@@ -62,8 +63,18 @@ def format_feedback(r: GateResult) -> str:
     if r.parse_error:
         return f"Your axiom did not parse ({r.parse_error}). Return one valid OWL functional-syntax axiom."
     lines = []
-    unsat = ", ".join(_short(u) for u in r.new_unsat)
-    lines.append(f"That edit makes {unsat} unsatisfiable. Minimal cause:")
+    if r.inconsistent:
+        lines.append("That edit makes the whole ontology inconsistent. Minimal cause:")
+        lines += [f"  - {a}" for a in r.justification]
+        if r.repairs:
+            fix = "; ".join(r.repairs[0])
+            lines.append(f"To fix, remove one of these axioms, e.g.: {fix}")
+        lines.append("Propose a revised axiom that does not introduce this clash.")
+        return "\n".join(lines)
+    target = r.new_unsat[0]
+    extra = f" (and {len(r.new_unsat) - 1} other class(es))" if len(r.new_unsat) > 1 else ""
+    lines.append(f"That edit makes {_short(target)} unsatisfiable{extra}.")
+    lines.append(f"Minimal cause for {_short(target)}:")
     lines += [f"  - {a}" for a in r.justification]
     if r.repairs:
         fix = "; ".join(r.repairs[0])

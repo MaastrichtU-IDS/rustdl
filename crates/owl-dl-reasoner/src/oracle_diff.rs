@@ -15,6 +15,22 @@ use std::path::Path;
 const OWL_THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 const OWL_NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
+/// True if `iri` denotes `owl:Thing`. ROBOT's HermiT/ELK owx output writes
+/// owl:Thing as the relative IRI `<Class IRI="Thing"/>` (resolved against
+/// `xml:base="…owl#"`); horned-owl resolves relative IRIs against the ontology
+/// IRI, not `xml:base`, so when the classified output has no `ontologyIRI` the
+/// value is left as the bare string `"Thing"`. Recognize both forms so those
+/// edges are correctly excluded instead of counted as atomic subsumptions.
+fn is_owl_thing(iri: &str) -> bool {
+    iri == OWL_THING || iri == "Thing"
+}
+
+/// True if `iri` denotes `owl:Nothing`. See [`is_owl_thing`] for why the bare
+/// relative form must also be recognized.
+fn is_owl_nothing(iri: &str) -> bool {
+    iri == OWL_NOTHING || iri == "Nothing"
+}
+
 /// Shorthand for the (sub, sup) IRI-string pair sets used throughout the
 /// closure-diff helpers and the anytime sweep.
 pub type PairSet = BTreeSet<(String, String)>;
@@ -58,7 +74,11 @@ pub fn read_owx_verdict(path: &Path) -> anyhow::Result<OwxVerdict> {
                 if let (ClassExpression::Class(sub_c), ClassExpression::Class(sup_c)) = (sub, sup) {
                     let s = sub_c.0.to_string();
                     let t = sup_c.0.to_string();
-                    if s == OWL_THING || t == OWL_THING || s == OWL_NOTHING || t == OWL_NOTHING {
+                    if is_owl_thing(&s)
+                        || is_owl_thing(&t)
+                        || is_owl_nothing(&s)
+                        || is_owl_nothing(&t)
+                    {
                         continue;
                     }
                     if s != t {
@@ -74,11 +94,11 @@ pub fn read_owx_verdict(path: &Path) -> anyhow::Result<OwxVerdict> {
                         _ => None,
                     })
                     .collect();
-                let has_nothing = iris.iter().any(|i| i == OWL_NOTHING);
-                let has_thing = iris.iter().any(|i| i == OWL_THING);
+                let has_nothing = iris.iter().any(|i| is_owl_nothing(i));
+                let has_thing = iris.iter().any(|i| is_owl_thing(i));
                 if has_nothing {
                     for iri in &iris {
-                        if iri != OWL_NOTHING {
+                        if !is_owl_nothing(iri) {
                             unsat.insert(iri.clone());
                         }
                     }
@@ -86,7 +106,7 @@ pub fn read_owx_verdict(path: &Path) -> anyhow::Result<OwxVerdict> {
                 }
                 if has_thing {
                     for iri in &iris {
-                        if iri != OWL_THING {
+                        if !is_owl_thing(iri) {
                             thing_equiv.insert(iri.clone());
                         }
                     }
@@ -97,7 +117,7 @@ pub fn read_owx_verdict(path: &Path) -> anyhow::Result<OwxVerdict> {
                 // directions and any chain through the group.
                 for a in &iris {
                     for b in &iris {
-                        if a != b && a != OWL_THING && b != OWL_THING {
+                        if a != b && !is_owl_thing(a) && !is_owl_thing(b) {
                             edges.insert((a.clone(), b.clone()));
                         }
                     }
@@ -232,4 +252,69 @@ pub fn aligned_owx_closures(reasoner: &OwxVerdict, oracle: &OwxVerdict) -> (Pair
         filter(transitive_closure(&reasoner.edges)),
         filter(transitive_closure(&oracle.edges)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// ROBOT's HermiT/ELK owx output sets `xml:base="…owl#"` on the root
+    /// `<Ontology>` and writes owl:Thing/owl:Nothing as RELATIVE IRIs
+    /// (`<Class IRI="Thing"/>`). horned-owl's owx reader resolves relative IRIs
+    /// against the ontology IRI, not `xml:base`; when the classified output has
+    /// no `ontologyIRI` attribute (the observed ROBOT case) the relative IRI is
+    /// left as the bare string `"Thing"`/`"Nothing"`. This regression test
+    /// guards that `read_owx_verdict` still recognizes and excludes those
+    /// relative Thing/Nothing IRIs — otherwise every `X SubClassOf Thing` edge
+    /// is mistaken for a real atomic subsumption, inflating the FP count by ~1
+    /// per class (observed: galen FP=2748 = its class count).
+    #[test]
+    fn read_owx_verdict_excludes_relative_thing() {
+        // Mimic ROBOT's output: xml:base on the owl# namespace, NO ontologyIRI
+        // (so horned-owl leaves relative IRIs bare), one real edge, and one
+        // `C SubClassOf Thing` edge written with a relative IRI.
+        let doc = r#"<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#"
+     xml:base="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:xml="http://www.w3.org/XML/1998/namespace"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
+    <Declaration><Class IRI="http://ex.org/C"/></Declaration>
+    <Declaration><Class IRI="http://ex.org/D"/></Declaration>
+    <SubClassOf><Class IRI="http://ex.org/C"/><Class IRI="http://ex.org/D"/></SubClassOf>
+    <SubClassOf><Class IRI="http://ex.org/C"/><Class IRI="Thing"/></SubClassOf>
+</Ontology>
+"#;
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "rustdl-oracle-diff-relative-thing-{}.owx",
+            std::process::id()
+        ));
+        {
+            let mut f = File::create(&path).expect("create temp owx");
+            f.write_all(doc.as_bytes()).expect("write temp owx");
+        }
+        let verdict = read_owx_verdict(&path).expect("read temp owx verdict");
+        let _ = std::fs::remove_file(&path);
+
+        // (a) the real atomic edge is present.
+        assert!(
+            verdict
+                .edges
+                .contains(&("http://ex.org/C".to_string(), "http://ex.org/D".to_string())),
+            "real edge C ⊑ D must be recognized; edges = {:?}",
+            verdict.edges
+        );
+        // (b) no edge targets a Thing IRI (relative "Thing" or absolute owl#Thing).
+        assert!(
+            !verdict
+                .edges
+                .iter()
+                .any(|(_, t)| t == "Thing" || t == OWL_THING),
+            "relative owl:Thing edge must be excluded; edges = {:?}",
+            verdict.edges
+        );
+    }
 }

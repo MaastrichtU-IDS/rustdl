@@ -87,7 +87,21 @@ pub fn run_matrix(args: &MatrixArgs) -> Result<()> {
     let robot = args.tools.join("bin/robot");
     let konclude = args.tools.join("bin/konclude");
 
+    const REASONERS: [&str; 5] = ["rustdl", "konclude", "hermit", "elk", "whelk-rs"];
+
     for ont in &onts {
+        // Resume short-circuit: if every reasoner for this ont is already
+        // recorded, skip the ont entirely — including the expensive per-ont
+        // Konclude oracle run, which would otherwise burn up to
+        // `global_timeout_s` per already-complete ont on the big resumable tiers.
+        if args.resume
+            && REASONERS
+                .iter()
+                .all(|r| already_done(&existing, &ont.meta.name, r))
+        {
+            continue;
+        }
+
         // Stage 2: oracle (Konclude) — run once per ont.
         let kon_out = ont.owx.with_extension("kon.owx");
         let kon_cmd = [
@@ -106,21 +120,11 @@ pub fn run_matrix(args: &MatrixArgs) -> Result<()> {
         };
 
         // One cell per reasoner.
-        for reasoner in ["rustdl", "konclude", "hermit", "elk", "whelk-rs"] {
+        for reasoner in REASONERS {
             if args.resume && already_done(&existing, &ont.meta.name, reasoner) {
                 continue;
             }
-            let cell = build_cell(
-                args,
-                ont,
-                reasoner,
-                oracle_verdict.as_ref(),
-                &oracle_id,
-                &kon_run,
-                &kon_out,
-                &robot,
-                &konclude,
-            )?;
+            let cell = build_cell(args, ont, reasoner, oracle_verdict.as_ref(), &oracle_id, &kon_run, &robot)?;
             append_cell(&results, &cell)?;
             eprintln!(
                 "  {} / {} -> {:?} {} ms",
@@ -139,7 +143,6 @@ pub fn run_matrix(args: &MatrixArgs) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_cell(
     args: &MatrixArgs,
     ont: &corpus::StagedOnt,
@@ -147,9 +150,7 @@ fn build_cell(
     oracle: Option<&owl_dl_reasoner::oracle_diff::OwxVerdict>,
     oracle_id: &str,
     kon_run: &TimedRun,
-    kon_out: &std::path::Path,
     robot: &std::path::Path,
-    konclude: &std::path::Path,
 ) -> Result<CellResult> {
     let el_only = matches!(reasoner, "elk" | "whelk-rs");
     let status: Status;
@@ -209,8 +210,11 @@ fn build_cell(
                 let r = timed(&cmd, args.global_timeout_s)?;
                 wall = Some(r.wall_ms);
                 rss = Some(r.peak_rss_mb);
-                // ROBOT errors on inconsistency; detect from stderr.
-                let inconsistent = r.stderr.to_lowercase().contains("inconsistent");
+                // ROBOT errors on inconsistency. It prints
+                // "ERROR ... The ontology is inconsistent. TIP: ..." to
+                // STDOUT (exit code 1, stderr empty), so check both streams.
+                let inconsistent = r.stdout.to_lowercase().contains("inconsistent")
+                    || r.stderr.to_lowercase().contains("inconsistent");
                 status = if inconsistent {
                     Status::Inconsistent
                 } else if r.timed_out {
@@ -237,10 +241,6 @@ fn build_cell(
         Some(c) => (Some(c.closure_size), Some(c.fp), Some(c.missed)),
         None => (None, None, None),
     };
-    // kon_out/konclude are threaded through for symmetry with the other match
-    // arms and future reasoners that may need them; the oracle verdict itself
-    // is already parsed by the caller.
-    let _ = (kon_out, konclude);
     Ok(CellResult {
         ont: ont.meta.name.clone(),
         source: ont.meta.source.clone(),

@@ -31,7 +31,9 @@ pub struct MatrixArgs {
 }
 
 pub fn already_done(existing: &[CellResult], ont: &str, reasoner: &str) -> bool {
-    existing.iter().any(|c| c.ont == ont && c.reasoner == reasoner)
+    existing
+        .iter()
+        .any(|c| c.ont == ont && c.reasoner == reasoner)
 }
 
 /// Map a `TimedRun` + an inconsistency signal to a `Status`.
@@ -83,7 +85,11 @@ pub fn run_matrix(args: &MatrixArgs) -> Result<()> {
     let onts = corpus::enumerate(&args.tier, &args.work_dir, &args.tools)?;
     eprintln!("matrix: {} ontologies in tier {}", onts.len(), args.tier);
 
-    let existing = if args.resume { read_cells(&results)? } else { Vec::new() };
+    let existing = if args.resume {
+        read_cells(&results)?
+    } else {
+        Vec::new()
+    };
     let robot = args.tools.join("bin/robot");
     let konclude = args.tools.join("bin/konclude");
 
@@ -124,7 +130,15 @@ pub fn run_matrix(args: &MatrixArgs) -> Result<()> {
             if args.resume && already_done(&existing, &ont.meta.name, reasoner) {
                 continue;
             }
-            let cell = build_cell(args, ont, reasoner, oracle_verdict.as_ref(), &oracle_id, &kon_run, &robot)?;
+            let cell = build_cell(
+                args,
+                ont,
+                reasoner,
+                oracle_verdict.as_ref(),
+                &oracle_id,
+                &kon_run,
+                &robot,
+            )?;
             append_cell(&results, &cell)?;
             eprintln!(
                 "  {} / {} -> {:?} {} ms",
@@ -189,11 +203,16 @@ fn build_cell(
                 rss = Some(r.peak_rss_mb);
                 status = status_of(&r, false);
                 if let (Status::Ok, Some(orc)) = (status, oracle) {
-                    correctness = correctness::rustdl_vs_oracle(ont, orc, args.pair_timeout_ms).ok();
+                    correctness =
+                        correctness::rustdl_vs_oracle(ont, orc, args.pair_timeout_ms).ok();
                 }
             }
             "hermit" | "elk" => {
-                let engine = if reasoner == "hermit" { "hermit" } else { "elk" };
+                let engine = if reasoner == "hermit" {
+                    "hermit"
+                } else {
+                    "elk"
+                };
                 let out = ont.owx.with_extension(format!("{engine}.owx"));
                 let cmd = [
                     robot.to_str().expect("path is valid utf-8"),

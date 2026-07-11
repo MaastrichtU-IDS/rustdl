@@ -45,7 +45,9 @@ pub fn parse_time_l(stderr: &str) -> Option<(u64, u64)> {
 /// `/usr/bin/time -l gtimeout <global_timeout_s> <cmd...>`.
 pub fn timed(cmd: &[&str], global_timeout_s: u64) -> Result<TimedRun> {
     let mut c = Command::new("/usr/bin/time");
-    c.arg("-l").arg("gtimeout").arg(global_timeout_s.to_string());
+    c.arg("-l")
+        .arg("gtimeout")
+        .arg(global_timeout_s.to_string());
     c.args(cmd);
     let out = c.output().with_context(|| format!("spawn {cmd:?}"))?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -53,7 +55,14 @@ pub fn timed(cmd: &[&str], global_timeout_s: u64) -> Result<TimedRun> {
     let code = out.status.code();
     let timed_out = code == Some(124); // gtimeout signals timeout with 124
     let (wall_ms, peak_rss_mb) = parse_time_l(&stderr).unwrap_or((0, 0));
-    Ok(TimedRun { wall_ms, peak_rss_mb, exit_code: code, timed_out, stdout, stderr })
+    Ok(TimedRun {
+        wall_ms,
+        peak_rss_mb,
+        exit_code: code,
+        timed_out,
+        stdout,
+        stderr,
+    })
 }
 
 #[cfg(test)]
@@ -69,8 +78,8 @@ mod tests {
                       31784960  maximum resident set size\n\
                       0  peak memory footprint\n";
         let (wall_ms, rss_mb) = parse_time_l(stderr).expect("parsed");
-        assert_eq!(wall_ms, 170);      // 0.17 s -> 170 ms
-        assert_eq!(rss_mb, 30);        // 31784960 B -> 30 MiB (floor)
+        assert_eq!(wall_ms, 170); // 0.17 s -> 170 ms
+        assert_eq!(rss_mb, 30); // 31784960 B -> 30 MiB (floor)
     }
 
     #[test]
@@ -79,7 +88,7 @@ mod tests {
                       239566848  maximum resident set size\n";
         let (wall_ms, rss_mb) = parse_time_l(stderr).unwrap();
         assert_eq!(wall_ms, 6390);
-        assert_eq!(rss_mb, 228);       // 239566848 -> 228 MiB
+        assert_eq!(rss_mb, 228); // 239566848 -> 228 MiB
     }
 
     #[test]

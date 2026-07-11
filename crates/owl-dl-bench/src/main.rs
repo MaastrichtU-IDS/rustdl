@@ -389,9 +389,10 @@ fn run(cli: Cli) -> Result<()> {
                 resume,
                 work_dir: tools.join("work"),
                 tools,
-                rustdl_bin: std::path::PathBuf::from(std::env::var("RUSTDL_BIN").unwrap_or(
-                    format!("{home}/code/rustdl/target/release/rustdl"),
-                )),
+                rustdl_bin: std::path::PathBuf::from(
+                    std::env::var("RUSTDL_BIN")
+                        .unwrap_or(format!("{home}/code/rustdl/target/release/rustdl")),
+                ),
                 repo_root: std::path::PathBuf::from(
                     std::env::var("RUSTDL_REPO").unwrap_or(format!("{home}/code/rustdl")),
                 ),

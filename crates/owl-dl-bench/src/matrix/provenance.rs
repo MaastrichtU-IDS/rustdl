@@ -1,5 +1,5 @@
 use crate::matrix::model::HostInfo;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -35,7 +35,10 @@ fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
 
 pub fn newest_source_mtime(repo_root: &Path) -> Result<SystemTime> {
     let mut newest = SystemTime::UNIX_EPOCH;
-    for entry in WalkDir::new(repo_root.join("crates")).into_iter().filter_map(std::result::Result::ok) {
+    for entry in WalkDir::new(repo_root.join("crates"))
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
         let p = entry.path();
         let is_src = p.extension().is_some_and(|e| e == "rs")
             || p.file_name().is_some_and(|n| n == "Cargo.toml");
@@ -76,7 +79,10 @@ pub fn assert_fresh_binary(binary: &Path, repo_root: &Path) -> Result<()> {
 
 pub fn capture_host() -> HostInfo {
     let one = |prog: &str, args: &[&str]| -> String {
-        cmd_output(prog, args).unwrap_or_default().trim().to_string()
+        cmd_output(prog, args)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
     };
     let cpu = one("sysctl", &["-n", "machdep.cpu.brand_string"]);
     let cores = one("sysctl", &["-n", "hw.ncpu"]).parse().unwrap_or(0);
@@ -95,8 +101,12 @@ pub fn capture_host() -> HostInfo {
 }
 
 fn git_short_sha(repo_root: &Path) -> String {
-    Command::new("git").arg("-C").arg(repo_root).args(["rev-parse", "--short", "HEAD"])
-        .output().ok()
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 }
@@ -109,8 +119,12 @@ fn whelk_sha(repo_root: &Path) -> String {
         // Reset at each package boundary so we only read whelk's OWN source line;
         // if whelk is ever [patch]ed to a path (no `source =`), we must not fall
         // through and return an unrelated later package's SHA.
-        if line.trim() == "[[package]]" { in_whelk = false; }
-        if line.trim() == "name = \"whelk\"" { in_whelk = true; }
+        if line.trim() == "[[package]]" {
+            in_whelk = false;
+        }
+        if line.trim() == "name = \"whelk\"" {
+            in_whelk = true;
+        }
         if in_whelk
             && let Some(src) = line.trim().strip_prefix("source = ")
             && let Some(hash) = src.rsplit('#').next()
@@ -122,7 +136,9 @@ fn whelk_sha(repo_root: &Path) -> String {
 }
 
 pub fn capture_reasoners(
-    tools: &Path, rustdl_bin: &Path, repo_root: &Path,
+    tools: &Path,
+    rustdl_bin: &Path,
+    repo_root: &Path,
 ) -> Result<BTreeMap<String, serde_json::Value>> {
     let konclude = tools.join("bin/konclude");
     let robot = tools.join("bin/robot");
@@ -133,25 +149,41 @@ pub fn capture_reasoners(
         .and_then(|s| parse_robot_version(&s))
         .unwrap_or_else(|| "unknown".into());
     let rustdl_ver = env!("CARGO_PKG_VERSION").to_string();
-    let bin_mtime = std::fs::metadata(rustdl_bin).ok()
+    let bin_mtime = std::fs::metadata(rustdl_bin)
+        .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs());
 
     let mut m = BTreeMap::new();
-    m.insert("rustdl".into(), json!({
-        "version": rustdl_ver, "git_sha": git_short_sha(repo_root),
-        "binary_mtime_unix": bin_mtime, "build": "release stable-toolchain"
-    }));
-    m.insert("konclude".into(), json!({
-        "version": kon_ver,
-        "build": "OSX-x64 via Rosetta 2 (walls/RSS are upper bounds)"
-    }));
-    m.insert("hermit".into(), json!({ "version": format!("{robot_ver} (ROBOT)"),
-        "note": "end-to-end JVM wall (~0.4-1s boot floor, ~240MB baseline)" }));
-    m.insert("elk".into(), json!({ "version": format!("{robot_ver} (ROBOT)"),
-        "note": "EL-only; end-to-end JVM wall" }));
-    m.insert("whelk-rs".into(), json!({ "git_sha": whelk_sha(repo_root), "note": "EL-only" }));
+    m.insert(
+        "rustdl".into(),
+        json!({
+            "version": rustdl_ver, "git_sha": git_short_sha(repo_root),
+            "binary_mtime_unix": bin_mtime, "build": "release stable-toolchain"
+        }),
+    );
+    m.insert(
+        "konclude".into(),
+        json!({
+            "version": kon_ver,
+            "build": "OSX-x64 via Rosetta 2 (walls/RSS are upper bounds)"
+        }),
+    );
+    m.insert(
+        "hermit".into(),
+        json!({ "version": format!("{robot_ver} (ROBOT)"),
+        "note": "end-to-end JVM wall (~0.4-1s boot floor, ~240MB baseline)" }),
+    );
+    m.insert(
+        "elk".into(),
+        json!({ "version": format!("{robot_ver} (ROBOT)"),
+        "note": "EL-only; end-to-end JVM wall" }),
+    );
+    m.insert(
+        "whelk-rs".into(),
+        json!({ "git_sha": whelk_sha(repo_root), "note": "EL-only" }),
+    );
     Ok(m)
 }
 
@@ -164,12 +196,18 @@ mod tests {
     fn parses_konclude_banner() {
         let banner = "{info} >> Konclude - Uni Ulm Parallel Reasoner\n\
                       {info} >> Reasoner for the SROIQV(D) Description Logic, 64-bit, Version v0.7.0-1138 - 500e11d9 (Jun 18 2021)\n";
-        assert_eq!(parse_konclude_version(banner).as_deref(), Some("v0.7.0-1138"));
+        assert_eq!(
+            parse_konclude_version(banner).as_deref(),
+            Some("v0.7.0-1138")
+        );
     }
 
     #[test]
     fn parses_robot_version() {
-        assert_eq!(parse_robot_version("ROBOT version 1.9.10").as_deref(), Some("1.9.10"));
+        assert_eq!(
+            parse_robot_version("ROBOT version 1.9.10").as_deref(),
+            Some("1.9.10")
+        );
     }
 
     #[test]
@@ -197,7 +235,11 @@ mod tests {
         // A crates/ dir must exist (WalkDir::new on a missing path yields nothing,
         // which is fine) but we deliberately write NO fresh file under it.
         std::fs::create_dir_all(dir.join("crates")).unwrap();
-        std::fs::write(dir.join("Cargo.toml"), "[profile.release]\ncodegen-units = 1\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[profile.release]\ncodegen-units = 1\n",
+        )
+        .unwrap();
         let bin = dir.join("oldbin");
         std::fs::write(&bin, "x").unwrap();
         filetime_set(&bin);

@@ -563,6 +563,17 @@ pub struct HyperEngine<'c> {
     /// is distinct only via `are_neq && !labels_disjoint`. Sound by
     /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
     precise_card_deps: bool,
+    /// `RUSTDL_INVERSE_FUNC_MERGE` (default OFF): fire deterministic `≤1`/
+    /// functional merges INCREMENTALLY inside `horn_fixpoint` (via
+    /// `process_event`) rather than routing them through the `solve`/
+    /// `solve_at_most` search layer, and count inverse-induced successors in
+    /// `distinct_role_succ`. When ON, the hot read paths that assume merges are
+    /// root-successor-only additionally resolve-on-read so a folded predecessor
+    /// is read via its representative (no physical in-edge rewrite). Cached at
+    /// construction from [`crate::inverse_func_merge_enabled`] so the hot loops
+    /// avoid a per-call env read; when OFF the default path is byte-for-byte
+    /// unchanged. See the wedge-incremental-functional-merge design.
+    inverse_func_merge: bool,
     /// `RUSTDL_MRV_ORDERING` (default OFF): `find_open_disjunction` returns the open
     /// disjunctive clause with the fewest live disjuncts first (most-constrained-variable).
     /// Verdict-invariant (reordering only). See the MRV spec.
@@ -909,6 +920,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -958,6 +970,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -1279,6 +1292,14 @@ impl<'c> HyperEngine<'c> {
     /// emitting a [`Event::Label`] on a *first* add (so its newly-enabled
     /// clauses fire). Returns whether the label was newly added.
     fn add_label(&mut self, n: HNode, c: ClassId, deps: DepSet) -> bool {
+        // Resolve-on-read (advisor §4): a head derived onto a folded node must
+        // land on the survivor, not be stranded on the ghost. Identity /
+        // byte-identical when the flag is off.
+        let n = if self.inverse_func_merge {
+            self.resolve(n)
+        } else {
+            n
+        };
         if self.nodes[n.index()].add(c, deps) {
             // Shadow: mirror the insertion into shadow_label_deps at the same
             // sorted position so the two vecs stay parallel. Guard: flag-off
@@ -1565,10 +1586,14 @@ impl<'c> HyperEngine<'c> {
                 // predecessors (back-propagation: a successor gained `c`).
                 let n_s = self.indexes.succ_trigger.get(key).map_or(0, Vec::len);
                 if n_s > 0 {
+                    // Resolve-on-read (advisor §4): a `≤1` merge can fold a
+                    // predecessor, so read it via its representative. No-op /
+                    // byte-identical when the flag is off.
+                    let resolve_reads = self.inverse_func_merge;
                     let preds: Vec<HNode> = self.nodes[n.index()]
                         .preds
                         .iter()
-                        .map(|&(_, p)| p)
+                        .map(|&(_, p)| if resolve_reads { self.resolve(p) } else { p })
                         .collect();
                     for p in preds {
                         for i in 0..n_s {
@@ -1600,10 +1625,13 @@ impl<'c> HyperEngine<'c> {
                 // so firing at a non-root predecessor is a no-op.
                 let n_b = self.indexes.role_back_trigger.get(key).map_or(0, Vec::len);
                 if n_b > 0 {
+                    // Resolve-on-read (advisor §4): fold a merged predecessor to
+                    // its representative. No-op / byte-identical when flag off.
+                    let resolve_reads = self.inverse_func_merge;
                     let preds: Vec<HNode> = self.nodes[src.index()]
                         .preds
                         .iter()
-                        .map(|&(_, p)| p)
+                        .map(|&(_, p)| if resolve_reads { self.resolve(p) } else { p })
                         .collect();
                     for p in preds {
                         for i in 0..n_b {
@@ -1627,6 +1655,24 @@ impl<'c> HyperEngine<'c> {
                     let ci = self.indexes.inverse_first_trigger[key][i];
                     if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
                         return FireOutcome::Clash;
+                    }
+                }
+                // Incremental ≤1/functional merge (behind the flag). This edge
+                // changes `src`'s `role`-successor set AND `tgt`'s
+                // `role.flip()`-successor set (inverse), so re-check a `≤1` on
+                // BOTH endpoints — the funcmerge inverse case is exactly why the
+                // `tgt` check is needed. `merge_with_cause` re-queues events, so
+                // the cascade runs to fixpoint in this same `horn_fixpoint`.
+                if self.inverse_func_merge {
+                    for (cr, q) in self.at_most_ones(src, role) {
+                        if matches!(self.enforce_at_most_one(src, cr, q), FireOutcome::Clash) {
+                            return FireOutcome::Clash;
+                        }
+                    }
+                    for (cr, q) in self.at_most_ones(tgt, role.flip()) {
+                        if matches!(self.enforce_at_most_one(tgt, cr, q), FireOutcome::Clash) {
+                            return FireOutcome::Clash;
+                        }
                     }
                 }
             }
@@ -1990,6 +2036,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             precise_card_deps: false,
+            inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
             block_index: None,
@@ -2425,7 +2472,7 @@ impl<'c> HyperEngine<'c> {
                 seen.push(rt);
             }
         }
-        if crate::inverse_func_merge_enabled() {
+        if self.inverse_func_merge {
             for (er, s) in &self.nodes[node.index()].preds {
                 if !role_matches(er.flip(), role, hier) {
                     continue;
@@ -2442,6 +2489,75 @@ impl<'c> HyperEngine<'c> {
             }
         }
         seen
+    }
+
+    /// The `(role, qual)` keys of `node`'s active `≤1`/functional constraints
+    /// that an edge on `edge_role` can now violate — the `n == 1` entries of
+    /// `node.at_most` whose role is a super-role of `edge_role` (so the edge
+    /// counts toward the bound). Used to trigger [`Self::enforce_at_most_one`]
+    /// from an `Event::Edge`. Only the constraint's OWN role/qualifier is
+    /// returned (the counting must use it, not the possibly-narrower edge role).
+    fn at_most_ones(&self, node: HNode, edge_role: Role) -> SmallVec<[(Role, Option<ClassId>); 2]> {
+        let hier = self.sub_roles.as_ref();
+        self.nodes[self.resolve(node).index()]
+            .at_most
+            .iter()
+            .filter(|&&(cr, _, n)| n == 1 && role_matches(edge_role, cr, hier))
+            .map(|&(cr, q, _)| (cr, q))
+            .collect()
+    }
+
+    /// Fire a deterministic `≤1`/functional merge for the `(role, qual)`
+    /// constraint at `node`, INCREMENTALLY inside the Horn fixpoint — mirroring
+    /// [`Self::apply_nn_rule`] (nominals). A `≤1` is deterministic: two
+    /// (representative-resolved) matching successors are entailed equal, so
+    /// merge the extras into the survivor via [`Self::merge_with_cause`] — no
+    /// `save`/`restore`, no `solve` recursion; the merge re-queues the
+    /// survivor's edge/label events so the cascade runs to a proper fixpoint
+    /// within the single `horn_fixpoint` call.
+    ///
+    /// Survivor = the older/lower-index node (`min`), keeping root/ancestors as
+    /// survivors. Merge-causation dep-set is CONSERVATIVE — `card_clash_deps`
+    /// (a sound over-approximation, `DepSet::ALL` under any untracked-provenance
+    /// fallback), never a narrow "births ∪ level" union, which would risk an
+    /// unsound backjump on non-Horn inputs (advisor §6).
+    ///
+    /// Returns [`FireOutcome::Clash`] if a merge clashes (the successors are
+    /// `≠`-forced ⇒ the `≤1` is unsatisfiable — the same verdict
+    /// `forced_distinct_exceeds` gives, reached incrementally), else
+    /// [`FireOutcome::NoChange`]. A no-op unless [`Self::inverse_func_merge`].
+    fn enforce_at_most_one(
+        &mut self,
+        node: HNode,
+        role: Role,
+        qual: Option<ClassId>,
+    ) -> FireOutcome {
+        if !self.inverse_func_merge {
+            return FireOutcome::NoChange;
+        }
+        let node = self.resolve(node);
+        let succs = self.distinct_role_succ(node, role, qual);
+        if succs.len() < 2 {
+            return FireOutcome::NoChange;
+        }
+        // Conservative merge-causation dep (advisor §6): `card_clash_deps` is a
+        // sound over-approx and collapses to `DepSet::ALL` under any
+        // untracked-provenance fallback (incl. the inverse-pred successor, which
+        // is not `parent`-generated). Widening deps only ever reduces
+        // backjumping ⇒ sound; moot for galen (Horn, no decisions).
+        let cause = self.card_clash_deps(node, &succs);
+        let head = *succs.iter().min().expect("succs.len() >= 2");
+        for &other in &succs {
+            if other == head {
+                continue;
+            }
+            // merge_with_cause resolves its args, so a successor already folded
+            // by an earlier iteration is a no-op (s_i == s_j ⇒ false).
+            if self.merge_with_cause(head, other, cause) {
+                return FireOutcome::Clash;
+            }
+        }
+        FireOutcome::NoChange
     }
 
     /// Whether merging `a` and `b` would necessarily clash because they
@@ -2604,6 +2720,17 @@ impl<'c> HyperEngine<'c> {
                 continue;
             }
             for &(role, qual, n) in &self.nodes[idx].at_most {
+                if self.inverse_func_merge && n == 1 {
+                    // Deterministic ≤1/functional merges fire incrementally in
+                    // `horn_fixpoint` (both the edge and constraint-add
+                    // triggers), so no `n == 1` violation should survive to the
+                    // branch layer; only genuine nondeterministic `n ≥ 2` does.
+                    debug_assert!(
+                        self.distinct_role_succ(node, role, qual).len() <= 1,
+                        "≤1 violation reached find_open_at_most under inverse_func_merge"
+                    );
+                    continue;
+                }
                 let succs = self.distinct_role_succ(node, role, qual);
                 if succs.len() > n as usize {
                     return Some((node, succs, n));
@@ -2904,11 +3031,17 @@ impl<'c> HyperEngine<'c> {
         // successors, so keep the match set inline to avoid a heap
         // allocation per recursion frame (profiling: allocator churn here
         // dominated self-time on wedge-heavy classification).
+        // Resolve-on-read (advisor §4): once ≤1 merges fold nodes, an edge/pred
+        // target may be non-canonical; bind the representative so a clause body
+        // matches on the survivor's (superset) labels. `resolve` is identity
+        // when nothing is merged, and the whole read is gated so the flag-off
+        // path is byte-for-byte unchanged.
+        let resolve_reads = self.inverse_func_merge;
         let mut targets: SmallVec<[HNode; 8]> = src_data
             .edges
             .iter()
             .filter(|(er, _)| role_matches(*er, role, hier))
-            .map(|(_, t)| *t)
+            .map(|(_, t)| if resolve_reads { self.resolve(*t) } else { *t })
             .collect();
         // Inverse-role matching (HF2): an incoming edge `s —er→ src`
         // asserts `er⁻(src, s)`, so it satisfies the wanted `role`
@@ -2918,7 +3051,7 @@ impl<'c> HyperEngine<'c> {
         // sound R-relationship — TODO(HF3) when general merge lands.)
         for (er, s) in &src_data.preds {
             if role_matches(er.flip(), role, hier) {
-                targets.push(*s);
+                targets.push(if resolve_reads { self.resolve(*s) } else { *s });
             }
         }
         for m in targets {
@@ -3005,21 +3138,36 @@ impl<'c> HyperEngine<'c> {
                 if self.nodes[target.index()].at_most.contains(&c) {
                     FireOutcome::NoChange
                 } else {
-                    let tn = &mut self.nodes[target.index()];
-                    tn.at_most.push(c);
-                    // Record the constraint's derivation deps (closes Hole C):
-                    // `card_clash_deps` unions this into the clash dep-set, so a
-                    // `≤n` derived under a decision contributes that decision.
-                    tn.at_most_dep = tn.at_most_dep.union(deps);
-                    // Shadow: mirror the at_most_dep fold (no taint here — this is
-                    // the direct-derivation path, not the merge-inherited one).
-                    // The `self.shadow_dep_probe` check would require splitting the
-                    // mutable `tn` borrow, so we rely on the zero-overhead property:
-                    // unioning EMPTY into EMPTY is a no-op, and shadow_at_most_dep
-                    // starts EMPTY and is only written when probe is on (the write is
-                    // unconditional here for borrow-checker simplicity, but costs
-                    // only two u128 ops when probe is off — acceptable).
-                    tn.shadow_at_most_dep = tn.shadow_at_most_dep.union(deps);
+                    {
+                        let tn = &mut self.nodes[target.index()];
+                        tn.at_most.push(c);
+                        // Record the constraint's derivation deps (closes Hole C):
+                        // `card_clash_deps` unions this into the clash dep-set, so a
+                        // `≤n` derived under a decision contributes that decision.
+                        tn.at_most_dep = tn.at_most_dep.union(deps);
+                        // Shadow: mirror the at_most_dep fold (no taint here — this is
+                        // the direct-derivation path, not the merge-inherited one).
+                        // The `self.shadow_dep_probe` check would require splitting the
+                        // mutable `tn` borrow, so we rely on the zero-overhead property:
+                        // unioning EMPTY into EMPTY is a no-op, and shadow_at_most_dep
+                        // starts EMPTY and is only written when probe is on (the write is
+                        // unconditional here for borrow-checker simplicity, but costs
+                        // only two u128 ops when probe is off — acceptable).
+                        tn.shadow_at_most_dep = tn.shadow_at_most_dep.union(deps);
+                    }
+                    // Constraint-added trigger (advisor §2): `Atom::AtMost` emits
+                    // no event, so a `≤1` attached to a node that ALREADY has ≥2
+                    // matching successors would be missed once `find_open_at_most`
+                    // is narrowed to n ≥ 2. Enforce the merge inline here.
+                    if n == 1
+                        && self.inverse_func_merge
+                        && matches!(
+                            self.enforce_at_most_one(target, role, qual),
+                            FireOutcome::Clash
+                        )
+                    {
+                        return FireOutcome::Clash;
+                    }
                     FireOutcome::Changed
                 }
             }
@@ -3140,7 +3288,11 @@ impl<'c> HyperEngine<'c> {
     /// create a fresh successor seeded with `cls`.
     fn fire_exists(&mut self, src: HNode, role: Role, cls: ClassId, deps: DepSet) -> FireOutcome {
         // Witness reuse: any role-matching successor already in cls.
+        // Resolve-on-read (advisor §4): a folded witness is read via its
+        // representative. No-op / byte-identical when the flag is off.
+        let resolve_reads = self.inverse_func_merge;
         let has_witness = self.nodes[src.index()].edges.iter().any(|(er, t)| {
+            let t = if resolve_reads { self.resolve(*t) } else { *t };
             role_matches(*er, role, self.sub_roles.as_ref()) && self.nodes[t.index()].has(cls)
         });
         if has_witness {
@@ -3519,6 +3671,61 @@ mod tests {
             succ.len(),
             2,
             "n has two g-successors: m (edge) and a (inverse pred)"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    #[allow(unsafe_code)]
+    fn le1_merge_fires_across_inverse_edge_in_fixpoint() {
+        // Incremental ≤1/functional merge must fire INSIDE `horn_fixpoint`
+        // (via `process_event`), not only through the `solve`/`solve_at_most`
+        // search layer. Graph shape (mirroring `funcmerge_inverse`):
+        //   N —g→ M    (M carries Y)
+        //   A —g⁻→ N   (an inverse-induced g-successor of N)
+        //   Functional(g) on N  ⇒  ≤1 g
+        // The two distinct g-successors {M, A} under `≤1 g` are entailed
+        // equal, so the merge must fire and A's representative must carry Y.
+        // Today the merge is routed through `solve`, so a bare `horn_fixpoint`
+        // (`run`) does NOT fire it → RED until the incremental trigger lands.
+        let key = "RUSTDL_INVERSE_FUNC_MERGE";
+        // SAFETY: set_var is unsafe under edition 2024; restored before
+        // returning. This crate's test suite has no other reader of this var.
+        let prior = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, "1");
+        }
+        let g = Role::Named(RoleId::new(0));
+        let y = cls(1);
+        let mut eng = HyperEngine::new(&[], cls(0));
+        let n = HNode(0); // root
+        let m = eng.new_node();
+        let a = eng.new_node();
+        // N —g→ M
+        eng.nodes[n.index()].edges.push((g, m));
+        eng.nodes[m.index()].preds.push((g, n));
+        // A —g⁻→ N (mirror of an asserted `f ≡ g⁻` edge A —f→ N)
+        eng.nodes[a.index()].edges.push((g.flip(), n));
+        eng.nodes[n.index()].preds.push((g.flip(), a));
+        // M carries Y; Functional(g) on N.
+        eng.nodes[m.index()].add(y, DepSet::EMPTY);
+        eng.nodes[n.index()].at_most.push((g, None, 1));
+        let r = eng.run(FIXPOINT_ITERS);
+        unsafe {
+            match &prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        assert_eq!(r, HyperResult::Sat, "≤1 g merge of {{M,A}} is satisfiable");
+        assert_eq!(
+            eng.resolve(a),
+            eng.resolve(m),
+            "≤1 g must merge the two distinct g-successors A and M in the fixpoint"
+        );
+        assert!(
+            eng.nodes[eng.resolve(a).index()].has(y),
+            "after the merge, A's representative must carry Y"
         );
     }
 

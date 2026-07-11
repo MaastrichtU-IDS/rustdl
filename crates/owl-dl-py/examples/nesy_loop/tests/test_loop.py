@@ -18,6 +18,7 @@ def test_bad_then_repaired(tmp_path):
     assert r.clashes_caught == 1 and r.fixed_after_repair == 1
     assert r.turns[0].accepted is False and r.turns[1].accepted is True
     assert r.turns[0].feedback and "unsatisfiable" in r.turns[0].feedback.lower()
+    assert r.turns[0].rejection == "clash"
     assert r.final_unsat == 0
 
 def test_unrepaired_clash_counts(tmp_path):
@@ -26,3 +27,13 @@ def test_unrepaired_clash_counts(tmp_path):
     r = loop.run_loop(SEED, llm, n_edits=1, max_revisions=1, workdir=str(tmp_path))
     assert r.clashes_caught == 1 and r.fixed_after_repair == 0
     assert r.turns[-1].accepted is False
+
+def test_malformed_then_good(tmp_path):
+    llm = ScriptedLLM(["this is not an axiom", "SubClassOf(:Tomato :Topping)"])
+    r = loop.run_loop(SEED, llm, n_edits=1, max_revisions=2, workdir=str(tmp_path))
+    assert r.malformed == 1
+    assert r.clashes_caught == 0
+    assert r.fixed_after_repair == 0
+    assert r.turns[0].rejection == "parse"
+    assert r.turns[-1].accepted is True
+    assert r.final_unsat == 0

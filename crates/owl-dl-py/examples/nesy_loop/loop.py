@@ -16,6 +16,7 @@ class Turn:
     axiom: str
     accepted: bool
     feedback: str | None = None
+    rejection: str | None = None
 
 
 @dataclass
@@ -25,6 +26,7 @@ class LoopResult:
     clashes_caught: int = 0
     fixed_after_repair: int = 0
     final_unsat: int = 0
+    malformed: int = 0
 
 
 def _prompt(current_ofn: str, feedback: str | None) -> str:
@@ -33,7 +35,6 @@ def _prompt(current_ofn: str, feedback: str | None) -> str:
 
 
 def run_loop(base_ofn: str, llm: LLM, n_edits: int, max_revisions: int, workdir: str) -> LoopResult:
-    import os
     baseline = set(rustdl.classify(_write_base(base_ofn, workdir)).unsatisfiable)
     result = LoopResult()
     current = base_ofn
@@ -41,20 +42,27 @@ def run_loop(base_ofn: str, llm: LLM, n_edits: int, max_revisions: int, workdir:
         result.proposed += 1
         feedback = None
         had_clash = False
+        had_malformed = False
         for rev in range(max_revisions + 1):
             axiom = llm.propose(_prompt(current, feedback))
             r = gate.check(current, axiom, baseline, workdir)
             if r.ok:
-                result.turns.append(Turn(i, rev, axiom, True, feedback))
+                result.turns.append(Turn(i, rev, axiom, True, feedback, rejection=None))
                 current = gate.apply_edit(current, axiom)
                 if had_clash:
                     result.fixed_after_repair += 1
                 break
-            had_clash = True
+            kind = "parse" if r.parse_error else "clash"
+            if kind == "clash":
+                had_clash = True
+            else:
+                had_malformed = True
             feedback = gate.format_feedback(r)
-            result.turns.append(Turn(i, rev, axiom, False, feedback))
+            result.turns.append(Turn(i, rev, axiom, False, feedback, rejection=kind))
         if had_clash:
             result.clashes_caught += 1
+        if had_malformed:
+            result.malformed += 1
     result.final_unsat = len(rustdl.classify(_write_base(current, workdir)).unsatisfiable) - len(baseline)
     return result
 

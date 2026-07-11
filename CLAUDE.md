@@ -22,6 +22,17 @@ cargo fmt --all -- --check                  # format check (max_width = 100)
 cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; warnings are errors
 ```
 
+> **Toolchain gotcha (build with `RUSTUP_TOOLCHAIN=stable`).** `rust-toolchain.toml`
+> pins `1.95.0`, but that toolchain is often installed *without* the `cargo`
+> binary (rustup `profile = minimal`), so a bare `cargo build`/`cargo test` in the
+> repo fails with *"the 'cargo' binary … is not applicable to the '1.95.0'
+> toolchain"* — and a failed/again-skipped build then **silently reuses a stale
+> `target/release/` binary**. Build and benchmark with
+> `RUSTUP_TOOLCHAIN=stable cargo …` (or `rustup component add cargo --toolchain 1.95.0`).
+> **Always confirm `target/release/rustdl` is freshly built before benchmarking** —
+> a ~2-week-stale binary produced a spurious `wine` DNF and inflated hard-case walls
+> (2026-07-11); the fresh binary classifies `wine` completely in ~1.8 s (FP=0/MISSED=0).
+
 CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`), build+test on
 linux/macos/windows, and `cargo-deny`. `RUSTFLAGS: -D warnings` is set in CI, so
 **any warning fails the build** — clippy `pedantic` is on workspace-wide (with a
@@ -734,7 +745,12 @@ close the SROIQ gap to HermiT + dead-ends already measured),
 `docs/perf-2026-06-08-konclude-vs-rustdl.md` has the current head-to-head vs
 Konclude across the corpus (**native Konclude binary** — supersedes the 06-03/04
 docs whose ratios used docker walls inflated by ~1.5 s container startup; on native
-walls Konclude wins on every real-reasoning ontology, 2.2×–809×, and rustdl's
-out-of-EL numbers are incomplete/DNF — the "beats Konclude"/"ORE-10908 ≤5×" claims
-were docker artifacts). Performance claims in docs are backed by the corpus harness
-— re-measure with `scripts/bench-rustdl-modes.sh` rather than trusting stale numbers.
+walls Konclude wins on every real-reasoning ontology, 2.2×–809×; the "beats
+Konclude"/"ORE-10908 ≤5×" claims were docker artifacts). **rustdl is sound AND
+complete on the measured corpus (FP=0/MISSED=0 vs the Konclude∩HermiT oracle,
+re-verified 2026-07-11); `wine` is no longer a DNF (fixed v0.3.16, ~1.8 s at a low
+per-pair budget) — earlier "out-of-EL incomplete/DNF" notes are stale.** The
+remaining rustdl weakness is the multi-GB RSS tail on a few pathological SROIQ
+inputs, not wall time. Performance claims in docs are backed by the corpus harness
+— re-measure with `scripts/bench-rustdl-modes.sh` (on a **freshly built** binary,
+per the toolchain gotcha above) rather than trusting stale numbers.

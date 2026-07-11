@@ -1,5 +1,13 @@
 # Reasoner comparison — EL & DL, custom + ORE-2015 (2026-06-21)
 
+> **STALE (corrected 2026-07-11).** The `wine` **"DNF (>200,000)" / "lone DNF"**
+> figures below are pre-v0.3.16 and no longer hold: `wine` classifies **soundly and
+> completely** (FP=0/MISSED=0 vs the HermiT oracle) in **~1.8 s** (low per-pair
+> budget) / ~20 s (default). rustdl now has **no DNF** on the curated corpus; the
+> DL walls here (pizza 4.6 s, family 1.6 s) were also inflated — fresh: pizza 0.81 s,
+> family 0.86 s. See `docs/perf-2026-06-27-bench-snapshot.md` and the paper. The
+> table is kept for provenance.
+
 Consolidated head-to-head: **rustdl** vs **Konclude**, **HermiT** (DL) and **ELK**,
 **whelk-rs** (EL), across the curated corpus (`docs/corpus.md`) and the ORE-2015
 pilot (233 onts, Konclude∩HermiT oracle). rustdl & Konclude re-measured at current

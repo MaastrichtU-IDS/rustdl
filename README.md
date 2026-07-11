@@ -20,10 +20,12 @@ reported subsumption is a genuine entailment.
 - **Competitive on DL, not the speed leader.** Most DL ontologies classify
   within ~10–50× of Konclude (the mature C++ tableau, which wins on speed);
   HermiT is slower still and itself DNFs on a hard tail. **wine — once rustdl's
-  one DNF (combinatorial nominal+disjunction) — now classifies soundly in ~1.6 s**
-  (a ~30× reduction from the coupled-saturation ∃-seed plus wedge search-ordering
-  work; see the [v0.3.16 snapshot](docs/perf-2026-06-27-bench-snapshot.md)). A
-  residual of ~9 idiosyncratic ORE-pilot ontologies stays hard.
+  one DNF (combinatorial nominal+disjunction) — now classifies soundly *and
+  completely* (FP=0/MISSED=0) in ~1.8 s** (a ~30× reduction from the
+  coupled-saturation ∃-seed plus wedge search-ordering work; see the
+  [v0.3.16 snapshot](docs/perf-2026-06-27-bench-snapshot.md)). rustdl has no DNF on
+  the curated corpus; a residual of ~6 idiosyncratic ORE-pilot ontologies stays hard,
+  and the one durable weakness is a multi-GB memory tail on a few pathological inputs.
 - Detects the **family** inconsistency (a consequence-based ABox-saturation
   pre-check) that the per-pair tableau alone misses.
 - **Explains *and* debugs — a full suite.** Built-in CLI commands turn rustdl into

@@ -169,8 +169,10 @@ pub fn enumerate(tier: &str, work_dir: &Path, tools: &Path) -> Result<Vec<Staged
                 } else {
                     match corpus_load_ofn(&ofn) {
                         Ok(onto) => {
-                            let count =
-                                owl_dl_reasoner::classify(&onto).map_or(0, |c| c.classes().len());
+                            // Syntactic class count only — a full `classify()`
+                            // here is unbounded and can hang forever on a hard
+                            // ontology (see `matrix::profile`).
+                            let count = crate::matrix::profile::profile(&onto).classes;
                             (sha256, size_bytes, count, fragment_of(&ofn))
                         }
                         Err(e) => {

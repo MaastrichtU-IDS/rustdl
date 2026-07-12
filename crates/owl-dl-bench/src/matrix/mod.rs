@@ -7,6 +7,7 @@ pub mod corpus;
 pub use corpus::corpus_load_ofn;
 pub mod correctness;
 pub mod model;
+pub mod profile;
 pub mod provenance;
 pub mod render;
 pub mod run;

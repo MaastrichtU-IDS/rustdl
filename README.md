@@ -53,19 +53,26 @@ across the measured corpus but not *provably* complete in general (it trusts the
 wedge's `Sat` verdicts; see the soundness contract in `CLAUDE.md` and
 [`docs/fragment-completeness.md`](docs/fragment-completeness.md)). The hard residual
 is the engineering-maturity gap to Konclude's optimized tableau, not a missing
-technique. A concrete residual, now much smaller: on galen, rustdl (sound, FP=0)
-missed 10 subsumptions Konclude and HermiT derive — a functional/≤1-role merge
-across an inverse edge — until an **incremental** version of that merge (folded
-directly into `horn_fixpoint` instead of a whole-graph re-fire) shipped default-ON
-(`RUSTDL_INVERSE_FUNC_MERGE`, `=0` reverts): galen now misses only **1**
-subsumption, classifying in under a second (down from a 6.6-minute DNF the old
-whole-graph re-fire hit when the same merge was enabled). The one remaining pair,
-`TibialTuberosity ⊑ TibialInterCondylarEminence`, is a *different* mechanism
-(defined-class ∃-monotonicity via ¬-expansion disjunction + ∀-propagation) tracked
-as follow-up — see
+technique. **The completeness contract now holds across the whole curated
+corpus: `completeness_guaranteed()` true (Horn/PureEl, no timeout) ⟹ MISSED = 0,
+verified on every curated fixture, including galen.** galen was the holdout: rustdl
+(sound, FP=0) missed 10 subsumptions Konclude and HermiT derive — a functional/≤1
+-role merge across an inverse edge — until an **incremental** version of that merge
+(folded directly into `horn_fixpoint` instead of a whole-graph re-fire) shipped
+default-ON (`RUSTDL_INVERSE_FUNC_MERGE`, `=0` reverts), closing 9 of the 10. The
+10th pair, `TibialTuberosity ⊑ TibialInterCondylarEminence`, was a *different*
+mechanism (a defined-class ∃-monotonicity subsumption pruned by the label cache)
+— closed by a second, independent fix: the label-cache **back-fold**
+(`RUSTDL_CLASSIFY_BACKFOLD`, also default ON), a sound, branch-free direct
+`∃`-composition over the sat graph, with zero tableau/search calls (so no wall
+regression — galen still classifies in under a second). **galen is now
+sound *and* complete on the curated corpus: rustdl MISSED=0, FP=0.** See
 [`docs/known-limitations/galen-inverse-functional-completeness.md`](docs/known-limitations/galen-inverse-functional-completeness.md)
 and
-[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](docs/known-limitations/galen-defined-class-monotonicity-residual.md).
+[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](docs/known-limitations/galen-defined-class-monotonicity-residual.md)
+for the full history of both fixes. This does **not** extend beyond the curated
+corpus — the broader ORE/BioPortal tiers are untested against this specific pair
+of fixes and completeness there remains an empirical, not provable, claim.
 
 ## Coverage
 

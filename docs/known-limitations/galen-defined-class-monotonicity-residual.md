@@ -1,6 +1,35 @@
 # galen: 1 residual missed subsumption (defined-class ∃-monotonicity)
 
-**Status:** open (sound; not scheduled). This is the one pair left after the
+## RESOLVED (2026-07-12)
+
+Closed by the label-cache **back-fold** rule (`RUSTDL_CLASSIFY_BACKFOLD`,
+**default ON**): a sound, branch-free, direct `∃`-composition over the
+merge-enriched `sat` graph — injected into the class hierarchy the same way as
+the defined-SUB sweep, with **zero tableau/search calls**. It closes exactly
+the gap diagnosed below: the label-cache prune at `classify.rs:1677-1700` was
+an unsound-for-completeness over-approximation for `∃`-bearing defined sups
+like `TICE`, and the back-fold gives `classify_labels` a second, targeted path
+to the same entailment without reopening the prune to the whole (explosive)
+defined-sup sweep.
+
+- **galen: MISSED 1 → 0** (`TibialTuberosity ⊑ TibialInterCondylarEminence` is
+  now `direct`).
+- **Corpus FP = 0** held throughout (closure-diff vs the Konclude∩HermiT
+  oracle, all curated fixtures, including galen: 28007=28007).
+- **galen wall stays ~sub-second** (~970 ms measured) — no
+  `DEFINED_SWEEP`-style explosion, because the back-fold makes no search
+  calls; it is a structural scan over precomputed defined-`∃` bodies.
+- Design: `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`.
+  Regenerated authoritative numbers:
+  `docs/benchmarks/2026-07-11-curated/MATRIX.md` (galen now `rustdl FP 0
+  MISSED 0`).
+
+The history below (root cause, the two ruled-out fixes, the confirmed
+mechanism) is kept as-is for context.
+
+---
+
+**Status:** RESOLVED (was: open, sound, not scheduled). This is the one pair left after the
 2026-07-11 incremental functional/`≤1`-merge fix closed the other 9 — see
 [`docs/known-limitations/galen-inverse-functional-completeness.md`](galen-inverse-functional-completeness.md).
 It is a **different mechanism**, not a residue of that fix.

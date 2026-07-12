@@ -4,12 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`rustdl` is a **sound** OWL 2 DL (SROIQ) reasoner in Rust — **near-complete** in
-practice (provably complete only on the guaranteed EL/Horn fragment; a concrete
-residual is 1 galen subsumption it misses by default — down from 10 after the
-2026-07-11 incremental functional/≤1-merge fix — see
+`rustdl` is a **sound** OWL 2 DL (SROIQ) reasoner in Rust — **sound and complete
+on the curated corpus** (as of 2026-07-12: galen, its last holdout, now
+classifies with MISSED=0/FP=0 — down from 10 after the 2026-07-11 incremental
+functional/≤1-merge fix closed 9, and the 10th closed by the 2026-07-12
+label-cache back-fold — see
 `docs/known-limitations/galen-inverse-functional-completeness.md` and
-`docs/known-limitations/galen-defined-class-monotonicity-residual.md`), targeting parity
+`docs/known-limitations/galen-defined-class-monotonicity-residual.md`; the
+provable guarantee remains scoped to the EL/Horn fragment, and completeness on
+the broader ORE/BioPortal tiers is untested), targeting parity
 with HermiT and Konclude on the ORE benchmarks. It is a Konclude-style **hybrid**:
 a consequence-based EL **saturation** engine handles the cheap EL fragment, a
 **tableau** engine handles the rest of SROIQ, and an **orchestrator** decides per
@@ -260,13 +263,24 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   MISSED 10 → 1 in well under a second (down from the 6.6-min DNF), wine
   19.78 s → 90 ms. `=0` reverts to the pre-2026-07-11 (MISSED=10, flag-off-
   by-default) behaviour. The 1 residual galen pair
-  (`TibialTuberosity ⊑ TibialInterCondylarEminence`) is a *different*,
+  (`TibialTuberosity ⊑ TibialInterCondylarEminence`) was a *different*,
   harder mechanism — a defined-class ∃-monotonicity subsumption that needs
   disjunctive ¬-expansion + `∀`-propagation to interact with this same merge,
   which the deterministic Horn-only `horn_fixpoint` does not attempt; see
   `docs/known-limitations/galen-defined-class-monotonicity-residual.md`.
   Spec `docs/superpowers/specs/2026-07-11-wedge-incremental-functional-merge-design.md`,
   plan `docs/superpowers/plans/2026-07-11-wedge-incremental-merge.md`.
+  **Label-cache back-fold (2026-07-12, gated `RUSTDL_CLASSIFY_BACKFOLD`,
+  default ON)** closed that 10th pair too: a sound, branch-free, direct
+  `∃`-composition rule over the per-class merge-enriched `sat` graph, injected
+  into the class hierarchy the same way as the defined-SUB sweep — **zero
+  tableau/search calls**, so it cannot hit the `DEFINED_SWEEP`-style wall
+  explosion. Recovers `TibialTuberosity ⊑ TibialInterCondylarEminence` without
+  the disjunctive ¬-expansion path. **galen MISSED 1 → 0; corpus FP=0/MISSED=0
+  unchanged elsewhere (closure-diff, all curated fixtures); galen wall stays
+  ~970 ms.** `=0` reverts. See
+  `docs/known-limitations/galen-defined-class-monotonicity-residual.md` and
+  `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;
@@ -774,18 +788,23 @@ Konclude across the corpus (**native Konclude binary** — supersedes the 06-03/
 docs whose ratios used docker walls inflated by ~1.5 s container startup; on native
 walls Konclude wins on every real-reasoning ontology, 2.2×–809×; the "beats
 Konclude"/"ORE-10908 ≤5×" claims were docker artifacts). **rustdl is sound
-corpus-wide (FP=0); near-complete — it misses 1 galen subsumption vs the
-Konclude∩HermiT oracle (down from 10: the functional/≤1-role merge across an
-inverse edge, `RUSTDL_INVERSE_FUNC_MERGE`, is now **default ON** — made
-incremental in `horn_fixpoint` on 2026-07-11 so it derives the merge fast
+corpus-wide (FP=0) and, as of 2026-07-12, sound *and complete* on the whole
+curated corpus vs the Konclude∩HermiT oracle — galen (the last holdout) now
+classifies with MISSED=0. Two independent default-ON fixes got there: the
+functional/≤1-role merge across an inverse edge (`RUSTDL_INVERSE_FUNC_MERGE`,
+made incremental in `horn_fixpoint` on 2026-07-11 so it derives the merge fast
 instead of the old whole-graph re-fire that made galen DNF; `=0` reverts to
-the pre-fix, MISSED=10 behaviour. The 1 residual pair is a *different*
-mechanism — a defined-class ∃-monotonicity subsumption needing disjunctive
-¬-expansion + ∀-propagation, not the merge; see
+the pre-fix, MISSED=10 behaviour) closed 9 of galen's 10 misses; the label-cache
+back-fold (`RUSTDL_CLASSIFY_BACKFOLD`, default ON since 2026-07-12) closed the
+10th — a defined-class ∃-monotonicity subsumption, via a sound branch-free
+direct `∃`-composition rather than the disjunctive ¬-expansion + ∀-propagation
+path; see
 `docs/known-limitations/galen-inverse-functional-completeness.md` and
-`docs/known-limitations/galen-defined-class-monotonicity-residual.md`). `wine`
+`docs/known-limitations/galen-defined-class-monotonicity-residual.md`. `wine`
 is no longer a DNF (fixed v0.3.16, ~1.8 s at a low per-pair budget) — earlier
-"out-of-EL incomplete/DNF" notes are stale.** The
+"out-of-EL incomplete/DNF" notes are stale. This completeness result is scoped
+to the curated corpus — the ORE/BioPortal tiers are untested here and remain an
+empirical, not provable, claim.** The
 remaining rustdl weakness is the multi-GB RSS tail on a few pathological SROIQ
 inputs, not wall time. Performance claims in docs are backed by the corpus harness
 — re-measure with `scripts/bench-rustdl-modes.sh` (on a **freshly built** binary,

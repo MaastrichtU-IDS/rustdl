@@ -1,10 +1,14 @@
-# galen: 10 → 1 missed subsumptions (functional merge across an inverse edge)
+# galen: 10 → 1 → 0 missed subsumptions (functional merge across an inverse edge)
 
-**Status:** mostly closed. The functional/`≤1`-role-merge-across-an-inverse-edge
-mechanism is now sound, fast, and **default ON** — it recovers 9 of the 10
-originally-missed galen subsumptions. One pair remains, via a *different*
-mechanism (defined-class ∃-monotonicity); tracked separately, see
-[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](galen-defined-class-monotonicity-residual.md).
+**Status:** CLOSED (2026-07-12). galen now classifies with **MISSED = 0**
+against the Konclude∩HermiT oracle (closure 28007=28007, FP=0). The
+functional/`≤1`-role-merge-across-an-inverse-edge mechanism below is
+**default ON** and recovered 9 of the original 10 misses; the 10th (a
+different mechanism, defined-class ∃-monotonicity) is now closed too, by the
+label-cache back-fold (`RUSTDL_CLASSIFY_BACKFOLD`, also **default ON**) — see
+[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](galen-defined-class-monotonicity-residual.md)
+for that mechanism's resolution. Both fixes are independent, sound, and
+default-on; together they take galen from MISSED 10 → 1 → 0.
 
 **Discovered:** 2026-07-11, via the authoritative curated matrix
 (`docs/benchmarks/2026-07-11-curated/MATRIX.md`), which diffs rustdl against a
@@ -82,14 +86,18 @@ available fixtures): FP = 0 held throughout.
 `crates/owl-dl-tableau/src/lib.rs`); set it to `0` to revert to the old
 (incomplete, MISSED = 10) behaviour.
 
-## The residual: 1 pair, a different mechanism
+## The residual: 1 pair, a different mechanism — now also closed
 
-One galen pair remains missed: `TibialTuberosity ⊑ TibialInterCondylarEminence`.
-This is **not** an instance of the functional-merge-across-inverse pattern above
-— it is a defined-class ∃-monotonicity subsumption that needs the ¬-expansion
-disjunction + ∀-propagation path. See
+One galen pair remained missed after the incremental merge:
+`TibialTuberosity ⊑ TibialInterCondylarEminence`. This was **not** an instance
+of the functional-merge-across-inverse pattern above — it is a defined-class
+∃-monotonicity subsumption pruned by the label cache (needing the ¬-expansion
+disjunction + ∀-propagation path if verified naively). It is now closed by the
+label-cache back-fold rule (`RUSTDL_CLASSIFY_BACKFOLD`, default ON since
+2026-07-12) — a sound, branch-free direct derivation over the sat graph that
+bypasses the disjunctive path entirely. See
 [`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](galen-defined-class-monotonicity-residual.md)
-for the precise justification pattern. Tracked as follow-up, not scheduled.
+for the precise justification pattern and the fix. **galen is now MISSED = 0.**
 
 ## Pointers
 

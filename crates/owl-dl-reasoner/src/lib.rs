@@ -1628,14 +1628,17 @@ pub(crate) fn classify_defined_sweep_enabled() -> bool {
 /// [`LabelOracle::Sat::derived_sups`] (Task 2), and `classify.rs`'s
 /// `inject_backfold_derived_sups` (Task 3) injects each into the class
 /// hierarchy directly (no `subsumes_via_tableau` call), same as the
-/// defined-SUB sweep. DEFAULT OFF — with the flag off, the label path and the
-/// hierarchy build are both byte-identical to pre-back-fold behaviour (no
-/// back-fold call, `derived_sups` empty, zero injections). Set
-/// `RUSTDL_CLASSIFY_BACKFOLD=1` to enable. See
+/// defined-SUB sweep. **DEFAULT ON** (since 2026-07-12, after the corpus gate
+/// went green: galen MISSED 1 → 0, corpus FP=0/MISSED=0 unchanged elsewhere,
+/// galen wall stays ~sub-second — no `DEFINED_SWEEP`-style explosion, since
+/// the rule makes zero search calls). With the flag on, the label path derives
+/// `derived_sups` and the hierarchy build injects each entailed edge; set
+/// `RUSTDL_CLASSIFY_BACKFOLD=0` to revert to the pre-back-fold behaviour (no
+/// back-fold call, `derived_sups` empty, zero injections). See
 /// `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md` §6.
 #[must_use]
 pub(crate) fn classify_backfold_enabled() -> bool {
-    std::env::var_os("RUSTDL_CLASSIFY_BACKFOLD").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_CLASSIFY_BACKFOLD").is_none_or(|v| v != "0")
 }
 
 /// Lever #1: adaptive early-cut of diverging wedge searches. Default OFF until the

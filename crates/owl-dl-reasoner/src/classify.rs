@@ -1955,7 +1955,8 @@ pub(crate) fn classify_top_down_internal(
 /// entailment-matrix transitive-closure BFS, so the BFS propagates the
 /// injected edge like any other direct super.
 ///
-/// A no-op when [`crate::classify_backfold_enabled`] is off (default): the
+/// A no-op when [`crate::classify_backfold_enabled`] is off (opt-out via
+/// `RUSTDL_CLASSIFY_BACKFOLD=0`, default is ON since 2026-07-12): the
 /// hierarchy is byte-identical to pre-Task-3 behaviour.
 fn inject_backfold_derived_sups(
     label_cache: &[crate::LabelOracle],

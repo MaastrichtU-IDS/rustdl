@@ -1,5 +1,5 @@
 {
-  "date": "2026-07-11T21:54:22Z",
+  "date": "2026-07-12T03:40:45Z",
   "tier": "curated",
   "oracle": "konclude-0.7.0-1138",
   "host": {
@@ -28,9 +28,9 @@
       "version": "v0.7.0-1138"
     },
     "rustdl": {
-      "binary_mtime_unix": 1783806707,
+      "binary_mtime_unix": 1783827576,
       "build": "release stable-toolchain",
-      "git_sha": "515c1ea",
+      "git_sha": "9c10dda",
       "version": "0.3.21"
     },
     "whelk-rs": {

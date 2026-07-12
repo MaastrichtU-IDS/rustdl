@@ -1,6 +1,9 @@
 //! Task 3 (label-cache back-fold): injecting the entailed
 //! `LabelOracle::Sat::derived_sups` into the class hierarchy via
-//! `RUSTDL_CLASSIFY_BACKFOLD`.
+//! `RUSTDL_CLASSIFY_BACKFOLD`. As of Task 5 (2026-07-12) the flag is
+//! **default ON**; the flag-ON tests below rely on the ambient default
+//! (no env set/unset the var to a clean slate) and the flag-OFF tests
+//! explicitly set `=0` to exercise the escape hatch.
 //!
 //! Two minimal repros of the galen `TibialTuberosity ⊑
 //! TibialInterCondylarEminence` residual (see
@@ -146,7 +149,9 @@ fn classify_flag_on_told_filler_subsumption_holds() {
     let _serial = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_BACKFOLD", "1");
+    // Back-fold is default-ON since 2026-07-12; unset (rather than an
+    // explicit "1") to exercise the ambient default, not an override.
+    let _flag = SetEnvGuard::unset("RUSTDL_CLASSIFY_BACKFOLD");
     let onto = load(TOLD_FILLER);
     let c = classify(&onto).expect("classify");
     assert!(
@@ -160,7 +165,9 @@ fn classify_flag_on_merge_derived_filler_subsumption_holds() {
     let _serial = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_BACKFOLD", "1");
+    // Back-fold is default-ON since 2026-07-12; unset (rather than an
+    // explicit "1") to exercise the ambient default, not an override.
+    let _flag = SetEnvGuard::unset("RUSTDL_CLASSIFY_BACKFOLD");
     let onto = load(MERGE_DERIVED_FILLER);
     let c = classify(&onto).expect("classify");
     assert!(
@@ -182,13 +189,16 @@ fn classify_flag_off_merge_derived_filler_subsumption_already_holds() {
     let _serial = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _flag = SetEnvGuard::unset("RUSTDL_CLASSIFY_BACKFOLD");
+    // Back-fold is default-ON since 2026-07-12; explicitly disable via the
+    // `=0` escape hatch to genuinely exercise the flag-off path (unsetting
+    // the var would now just re-enable the ambient default).
+    let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_BACKFOLD", "0");
     let onto = load(MERGE_DERIVED_FILLER);
     let c = classify(&onto).expect("classify");
     assert!(
         c.is_subclass("http://t/#TT", "http://t/#TICE"),
         "measured finding: TT ⊑ TICE already holds via classify() at this \
-         scale even with RUSTDL_CLASSIFY_BACKFOLD unset — see this file's \
+         scale even with RUSTDL_CLASSIFY_BACKFOLD=0 — see this file's \
          module doc comment"
     );
 }
@@ -198,7 +208,9 @@ fn backfold_flag_off_sanity_classify_still_succeeds() {
     let _serial = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _flag = SetEnvGuard::unset("RUSTDL_CLASSIFY_BACKFOLD");
+    // Back-fold is default-ON since 2026-07-12; explicitly disable via the
+    // `=0` escape hatch so this sanity check still covers the flag-off path.
+    let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_BACKFOLD", "0");
     let onto = load(NORMAL_ONTOLOGY);
     let c = classify(&onto).expect("classify");
     assert!(c.is_subclass("http://t/#A", "http://t/#B"));

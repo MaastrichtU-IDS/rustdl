@@ -278,7 +278,7 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   explosion. Recovers `TibialTuberosity ⊑ TibialInterCondylarEminence` without
   the disjunctive ¬-expansion path. **galen MISSED 1 → 0; corpus FP=0/MISSED=0
   unchanged elsewhere (closure-diff, all curated fixtures); galen wall stays
-  ~970 ms.** `=0` reverts. See
+  ~0.9 s.** `=0` reverts. See
   `docs/known-limitations/galen-defined-class-monotonicity-residual.md` and
   `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`.
 

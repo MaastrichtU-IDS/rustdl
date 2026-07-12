@@ -1970,6 +1970,12 @@ fn inject_backfold_derived_sups(
         return;
     }
     for (c, oracle) in label_cache.iter().enumerate() {
+        // Defensive: `direct_supers`/`direct_children` are indexed by class id in
+        // `0..n`; the loop should never see `c >= n` (label_cache.len() == n), but
+        // guard so a broken invariant is a skip, never an index panic.
+        if c >= n {
+            continue;
+        }
         let crate::LabelOracle::Sat { derived_sups, .. } = oracle else {
             continue;
         };

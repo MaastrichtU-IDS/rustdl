@@ -1622,13 +1622,16 @@ pub(crate) fn classify_defined_sweep_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_DEFINED_SWEEP").is_some_and(|v| v == "1")
 }
 
-/// Label-cache back-fold (Task 2): when ON, `classify_labels` runs the sound,
+/// Label-cache back-fold: when ON, `classify_labels` runs the sound,
 /// branch-free `∃`-composition rule [`HyperEngine::backfold_derived`] over the
-/// per-class `sat` graph and carries the entailed defined-`∃` names out in
-/// [`LabelOracle::Sat::derived_sups`]. DEFAULT OFF for the first landing — the
-/// hierarchy injection that consumes `derived_sups` is a later task; with the
-/// flag off the label path is byte-identical to today (no back-fold call,
-/// `derived_sups` empty). Set `RUSTDL_CLASSIFY_BACKFOLD=1` to enable. See
+/// per-class `sat` graph, carries the entailed defined-`∃` names out in
+/// [`LabelOracle::Sat::derived_sups`] (Task 2), and `classify.rs`'s
+/// `inject_backfold_derived_sups` (Task 3) injects each into the class
+/// hierarchy directly (no `subsumes_via_tableau` call), same as the
+/// defined-SUB sweep. DEFAULT OFF — with the flag off, the label path and the
+/// hierarchy build are both byte-identical to pre-back-fold behaviour (no
+/// back-fold call, `derived_sups` empty, zero injections). Set
+/// `RUSTDL_CLASSIFY_BACKFOLD=1` to enable. See
 /// `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md` §6.
 #[must_use]
 pub(crate) fn classify_backfold_enabled() -> bool {
@@ -1890,12 +1893,10 @@ pub(crate) enum LabelOracle {
     /// ([`HyperCache::classify_labels`] → `HyperEngine::backfold_derived`)
     /// proved ENTAILED (not candidates) over this `sat` graph. Empty unless
     /// [`classify_backfold_enabled`] is on. Consumed by the hierarchy-injection
-    /// step in a later task; the label-prune sites ignore it.
+    /// step in `classify.rs::inject_backfold_derived_sups` (Task 3); the
+    /// label-prune sites ignore it (they read `labels` only, unchanged).
     Sat {
         labels: std::collections::HashSet<owl_dl_core::ir::ClassId>,
-        // Consumed by the hierarchy-injection step in a later task; populated
-        // now (flag-gated) but not yet read, so allow it dead until then.
-        #[allow(dead_code)]
         derived_sups: Vec<owl_dl_core::ir::ClassId>,
     },
     /// C is unsatisfiable (every model omits C). Orchestrator returns

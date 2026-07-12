@@ -175,6 +175,14 @@ pub struct ClassificationStats {
     /// `C ≡ D₁ ⊔ … ⊔ Dₙ` ⊑ a primitive sup `X` where every `Dᵢ ⊑ X` holds
     /// in the EL closure (sound by construction). Added directly, no tableau.
     pub defined_sub_sweep_recovered: usize,
+    /// Subsumptions recovered by the label-cache back-fold (Task 3,
+    /// `RUSTDL_CLASSIFY_BACKFOLD`): entailed defined-`∃` names
+    /// (`LabelOracle::Sat::derived_sups`) that `HyperEngine::backfold_derived`
+    /// proved over the branch-free, merge-enriched `sat(c)` graph. Added
+    /// directly, no tableau — mirrors `defined_sub_sweep_recovered`. Zero
+    /// unless the flag is on. See
+    /// `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`.
+    pub backfold_recovered: usize,
     /// Pairs proved subsumed by the H4 hypertableau wedge (sound
     /// `Unsat`), skipping the tableau. Zero unless the wedge is
     /// enabled (`RUSTDL_HYPERTABLEAU`).
@@ -1836,6 +1844,26 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    // Label-cache back-fold injection (Task 3, `RUSTDL_CLASSIFY_BACKFOLD`,
+    // default OFF): consume `LabelOracle::Sat::derived_sups` — the entailed
+    // defined-`∃` names `HyperEngine::backfold_derived` (Task 2) proved over
+    // the branch-free, merge-enriched `sat(c)` graph — mirroring the
+    // defined-SUB sweep directly above: a direct `direct_supers`/
+    // `direct_children` push, **no `subsumes_via_tableau` call**. Must run
+    // after `direct_supers`/`direct_children` are populated (tier walk +
+    // both sweeps, above) and before the entailment-matrix BFS below, so the
+    // BFS transitively propagates the injected edge like any other direct
+    // super. See
+    // `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md` §4.2/§7.5.
+    inject_backfold_derived_sups(
+        &label_cache,
+        &closure,
+        n,
+        &mut direct_supers,
+        &mut direct_children,
+        &mut stats,
+    );
+
     // Build the full entailment matrix. Three sources contribute:
     //
     // 1. **Closure seed.** Every saturation-derived subsumption is
@@ -1909,6 +1937,58 @@ pub(crate) fn classify_top_down_internal(
         unsatisfiable_idxs,
         stats,
     })
+}
+
+/// Task 3 (label-cache back-fold): inject the entailed
+/// [`crate::LabelOracle::Sat::derived_sups`] into the class hierarchy.
+///
+/// `derived_sups(c)` are names `HyperEngine::backfold_derived` (Task 2)
+/// proved ENTAILED — not candidates — over `c`'s branch-free,
+/// merge-enriched `sat` graph (see
+/// `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`
+/// §1.2/§2). So, exactly like the defined-SUB sweep above
+/// (`stats.defined_sub_sweep_recovered`), each is injected directly as a
+/// `direct_supers`/`direct_children` edge — **no `subsumes_via_tableau`
+/// call** — guarded only by dedup (`closure.contains` / already a direct
+/// super). Must be called after `direct_supers`/`direct_children` are
+/// populated by the tier walk + both sweeps, and before the
+/// entailment-matrix transitive-closure BFS, so the BFS propagates the
+/// injected edge like any other direct super.
+///
+/// A no-op when [`crate::classify_backfold_enabled`] is off (default): the
+/// hierarchy is byte-identical to pre-Task-3 behaviour.
+fn inject_backfold_derived_sups(
+    label_cache: &[crate::LabelOracle],
+    closure: &owl_dl_saturation::Subsumers,
+    n: usize,
+    direct_supers: &mut [Vec<usize>],
+    direct_children: &mut [Vec<usize>],
+    stats: &mut ClassificationStats,
+) {
+    if !crate::classify_backfold_enabled() {
+        return;
+    }
+    for (c, oracle) in label_cache.iter().enumerate() {
+        let crate::LabelOracle::Sat { derived_sups, .. } = oracle else {
+            continue;
+        };
+        if derived_sups.is_empty() {
+            continue;
+        }
+        let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+        for &d_id in derived_sups {
+            let d = d_id.index() as usize;
+            if d >= n || d == c {
+                continue;
+            }
+            if closure.contains(c_id, d_id) || direct_supers[c].contains(&d) {
+                continue;
+            }
+            stats.backfold_recovered += 1;
+            direct_supers[c].push(d);
+            direct_children[d].push(c);
+        }
+    }
 }
 
 /// Walk the partial hierarchy top-down to find class `c`'s direct
@@ -2445,6 +2525,176 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(!h.is_subclass(&iri("C"), &iri("A")));
         let direct = h.direct_subsumers(&iri("A"));
         assert_eq!(direct, vec![iri("B")]);
+    }
+
+    /// Task 3 (label-cache back-fold): `inject_backfold_derived_sups` unit
+    /// tests. The classify()-level integration fixtures in
+    /// `tests/backfold.rs` exercise the flag end-to-end, but — per that
+    /// file's doc comment — the two minimal galen-residual repros
+    /// (told-filler / merge-derived-filler) are ALREADY closed by the
+    /// ordinary label-cache/hierarchy machinery before back-fold ever runs
+    /// (confirmed empirically; also see
+    /// `docs/known-limitations/galen-defined-class-monotonicity-residual.md`'s
+    /// "Follow-up diagnosis" — there is no small OFN fixture that
+    /// reproduces the real galen-scale gap). So the injection function
+    /// itself is unit-tested directly here, with a hand-built
+    /// `label_cache` whose `derived_sups` is the ONLY channel carrying the
+    /// edge — this is what actually exercises the new code.
+    #[test]
+    fn inject_backfold_derived_sups_adds_entailed_edge() {
+        let _env = EnvGuard::set(&[("RUSTDL_CLASSIFY_BACKFOLD", "1")]);
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:C))\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        let closure = owl_dl_saturation::saturate(&internal);
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        let a = internal.vocabulary.class_id(&iri("A")).expect("A id");
+        let c = internal.vocabulary.class_id(&iri("C")).expect("C id");
+        // No axioms relate A and C — the EL closure does not carry this
+        // edge, so `derived_sups` is the only source.
+        assert!(!closure.contains(a, c));
+        let n = [a, c]
+            .iter()
+            .map(|id| id.index() as usize + 1)
+            .max()
+            .expect("non-empty array");
+        let mut direct_supers: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut direct_children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut label_cache: Vec<crate::LabelOracle> = vec![crate::LabelOracle::NoVerdict; n];
+        label_cache[a.index() as usize] = crate::LabelOracle::Sat {
+            labels: std::collections::HashSet::new(),
+            derived_sups: vec![c],
+        };
+        let mut stats = ClassificationStats::default();
+        inject_backfold_derived_sups(
+            &label_cache,
+            &closure,
+            n,
+            &mut direct_supers,
+            &mut direct_children,
+            &mut stats,
+        );
+        assert_eq!(stats.backfold_recovered, 1);
+        assert!(direct_supers[a.index() as usize].contains(&(c.index() as usize)));
+        assert!(direct_children[c.index() as usize].contains(&(a.index() as usize)));
+
+        // Rerunning must not double-count or double-push (the dedup guard
+        // is `!direct_supers[c].contains(&d)`, checked fresh each call).
+        inject_backfold_derived_sups(
+            &label_cache,
+            &closure,
+            n,
+            &mut direct_supers,
+            &mut direct_children,
+            &mut stats,
+        );
+        assert_eq!(
+            stats.backfold_recovered, 1,
+            "dedup guard must prevent double-counting on rerun"
+        );
+        assert_eq!(
+            direct_supers[a.index() as usize]
+                .iter()
+                .filter(|&&x| x == c.index() as usize)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn inject_backfold_derived_sups_noop_when_flag_off() {
+        let _env = EnvGuard::set(&[("RUSTDL_CLASSIFY_BACKFOLD", "0")]);
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:C))\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        let closure = owl_dl_saturation::saturate(&internal);
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        let a = internal.vocabulary.class_id(&iri("A")).expect("A id");
+        let c = internal.vocabulary.class_id(&iri("C")).expect("C id");
+        let n = [a, c]
+            .iter()
+            .map(|id| id.index() as usize + 1)
+            .max()
+            .expect("non-empty array");
+        let mut direct_supers: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut direct_children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut label_cache: Vec<crate::LabelOracle> = vec![crate::LabelOracle::NoVerdict; n];
+        // Even though `derived_sups` carries the edge, the flag is off, so
+        // this must be a complete no-op — byte-identical to pre-Task-3.
+        label_cache[a.index() as usize] = crate::LabelOracle::Sat {
+            labels: std::collections::HashSet::new(),
+            derived_sups: vec![c],
+        };
+        let mut stats = ClassificationStats::default();
+        inject_backfold_derived_sups(
+            &label_cache,
+            &closure,
+            n,
+            &mut direct_supers,
+            &mut direct_children,
+            &mut stats,
+        );
+        assert_eq!(stats.backfold_recovered, 0, "flag off ⇒ zero injections");
+        assert!(direct_supers[a.index() as usize].is_empty());
+        assert!(direct_children[c.index() as usize].is_empty());
+    }
+
+    #[test]
+    fn inject_backfold_derived_sups_skips_pair_already_in_closure() {
+        let _env = EnvGuard::set(&[("RUSTDL_CLASSIFY_BACKFOLD", "1")]);
+        // A ⊑ C is ALREADY an EL-closure fact (asserted `SubClassOf`) — the
+        // dedup guard (`closure.contains`) must keep this a no-op; the
+        // closure seed already carries the edge into the entailment matrix.
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:C))\n\
+    SubClassOf(:A :C)\n\
+)\n"
+        ));
+        let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+        let closure = owl_dl_saturation::saturate(&internal);
+        let iri = |s: &str| format!("http://rustdl.test/{s}");
+        let a = internal.vocabulary.class_id(&iri("A")).expect("A id");
+        let c = internal.vocabulary.class_id(&iri("C")).expect("C id");
+        assert!(
+            closure.contains(a, c),
+            "SubClassOf(:A :C) must be an EL-closure fact"
+        );
+        let n = [a, c]
+            .iter()
+            .map(|id| id.index() as usize + 1)
+            .max()
+            .expect("non-empty array");
+        let mut direct_supers: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut direct_children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut label_cache: Vec<crate::LabelOracle> = vec![crate::LabelOracle::NoVerdict; n];
+        label_cache[a.index() as usize] = crate::LabelOracle::Sat {
+            labels: std::collections::HashSet::new(),
+            derived_sups: vec![c],
+        };
+        let mut stats = ClassificationStats::default();
+        inject_backfold_derived_sups(
+            &label_cache,
+            &closure,
+            n,
+            &mut direct_supers,
+            &mut direct_children,
+            &mut stats,
+        );
+        assert_eq!(stats.backfold_recovered, 0);
+        assert!(direct_supers[a.index() as usize].is_empty());
     }
 
     /// Regression for the defined-SUB sweep (cluster A; wine residual-31,

@@ -203,8 +203,13 @@ fn build_cell(
                 rss = Some(r.peak_rss_mb);
                 status = status_of(&r, false);
                 if let (Status::Ok, Some(orc)) = (status, oracle) {
-                    correctness =
-                        correctness::rustdl_vs_oracle(ont, orc, args.pair_timeout_ms).ok();
+                    correctness = correctness::rustdl_vs_oracle(
+                        ont,
+                        orc,
+                        args.pair_timeout_ms,
+                        args.global_timeout_s,
+                    )
+                    .ok();
                 }
             }
             "hermit" | "elk" => {

@@ -1,6 +1,6 @@
 use crate::matrix::corpus::StagedOnt;
 use anyhow::{Context, Result};
-use owl_dl_reasoner::classify_top_down_with_timeout;
+use owl_dl_reasoner::classify_with_budget;
 use owl_dl_reasoner::oracle_diff::{
     OwxVerdict, PairSet, aligned_closures, aligned_owx_closures, read_owx_verdict,
 };
@@ -32,10 +32,28 @@ pub fn diff_pairsets(reasoner: &PairSet, oracle: &PairSet) -> Correctness {
 
 /// Classify `ont` with rustdl's top-down classifier under a per-pair
 /// deadline, align its closure against the oracle's, and diff.
-pub fn rustdl_vs_oracle(ont: &StagedOnt, oracle: &OwxVerdict, pair_ms: u64) -> Result<Correctness> {
+///
+/// `global_timeout_s` threads the matrix's `--global-timeout-s` knob into
+/// this IN-PROCESS call as an explicit aggregate deadline. Before this fix,
+/// that knob only bounded the SUBPROCESS reasoners (via `run::timed`,
+/// including the subprocess `rustdl classify` run used for wall/RSS) — this
+/// correctness call classified again in-process with only a per-pair bound,
+/// so a pathological ontology (e.g. `ore_ont_10080`) could hang the matrix
+/// even though the subprocess cell for the same ontology had already
+/// finished (or been killed) within `global_timeout_s`.
+pub fn rustdl_vs_oracle(
+    ont: &StagedOnt,
+    oracle: &OwxVerdict,
+    pair_ms: u64,
+    global_timeout_s: u64,
+) -> Result<Correctness> {
     let onto = crate::matrix::corpus_load_ofn(&ont.ofn)?;
-    let c = classify_top_down_with_timeout(&onto, Duration::from_millis(pair_ms))
-        .context("rustdl classify")?;
+    let c = classify_with_budget(
+        &onto,
+        Some(Duration::from_millis(pair_ms)),
+        Some(Duration::from_secs(global_timeout_s)),
+    )
+    .context("rustdl classify")?;
     let (rustdl, oracle_pairs) = aligned_closures(&c, oracle);
     Ok(diff_pairsets(&rustdl, &oracle_pairs))
 }

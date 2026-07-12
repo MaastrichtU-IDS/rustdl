@@ -1152,6 +1152,18 @@ pub(crate) fn has_abox_axioms(internal: &owl_dl_core::ontology::InternalOntology
     })
 }
 
+/// Escape hatch for the synthesized aggregate deadline (see
+/// `classify_top_down_internal`): `RUSTDL_AGGREGATE_DEADLINE_MS`, parsed as
+/// `u64` milliseconds. `0` means "unbounded" (revert to the pre-fix
+/// behaviour); any other value overrides the synthesized `n × per_pair`
+/// estimate directly. Distinct from `RUSTDL_LABEL_CACHE_TIMEOUT_MS`, which
+/// scopes the per-class label-cache build deadline, not this aggregate.
+fn aggregate_deadline_env_override() -> Option<u64> {
+    std::env::var("RUSTDL_AGGREGATE_DEADLINE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+}
+
 /// Compute the effective deadline for a single probe from the two
 /// deadline sources. Either source may be absent:
 /// - If both are set, use the earlier (min) of `global` and
@@ -1191,6 +1203,49 @@ pub(crate) fn classify_top_down_internal(
         .enumerate()
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
+
+    // Aggregate-deadline synthesis (deadline-honoring fix, 2026-07-12): the
+    // per-pair-only entry points (`classify_top_down_with_timeout` /
+    // `classify_with_timeout`) previously always passed `global_deadline =
+    // None`. Every individual probe honored `per_pair`, but there was no
+    // AGGREGATE wall — on a pathological ontology (e.g. `ore_ont_10080`,
+    // n=3533) the label-cache build (n classes × up to a 30 s per-class
+    // ceiling), the tier walk, and the defined-sup sweep could each run
+    // unbounded in total, hanging a full-corpus run for 40+ minutes.
+    //
+    // When the caller supplied a per-pair budget but no aggregate one,
+    // synthesize one at the same "n × per_pair, clamped [floor, 30 s
+    // ceiling]" scale the label-cache build already uses
+    // (`adaptive_label_cache_ms`). This is deliberately generous: a fast
+    // ontology finishes every phase in well under this bound (unaffected),
+    // while a pathological one is now capped at the ceiling instead of
+    // running unbounded. `RUSTDL_LABEL_CACHE_TIMEOUT_MS` is intentionally
+    // NOT consulted here — that env var scopes the PER-CLASS label-cache
+    // deadline (`0` there means "unbounded per class"), a different knob
+    // than this aggregate wall; reusing it would let `=0` accidentally
+    // zero out the aggregate deadline too.
+    //
+    // `RUSTDL_AGGREGATE_DEADLINE_MS` is a dedicated escape hatch for THIS
+    // synthesized aggregate (distinct from the label-cache env var above):
+    // set to override the synthesized value directly, or to `0` to revert to
+    // the pre-fix unbounded-aggregate behaviour. The "n × per_pair" scale is
+    // a reasonable default for the pathological-large-n case this fix
+    // targets, but a small-n ontology whose bottleneck is a handful of
+    // genuinely expensive tableau pairs (rather than many cheap classes)
+    // could plausibly need more aggregate time than n × per_pair predicts;
+    // this override exists so that tradeoff can be tuned per workload
+    // without another code change.
+    let global_deadline = match (per_pair_timeout, global_deadline) {
+        (Some(_), None) => {
+            let aggregate_ms = match aggregate_deadline_env_override() {
+                Some(0) => None,
+                Some(ms) => Some(ms),
+                None => Some(crate::adaptive_label_cache_ms(n, per_pair_timeout, None)),
+            };
+            aggregate_ms.map(|ms| classify_start + std::time::Duration::from_millis(ms))
+        }
+        (_, gd) => gd,
+    };
 
     let closure = saturate(internal);
 
@@ -1613,6 +1668,19 @@ pub(crate) fn classify_top_down_internal(
     let defined_verify_mode = crate::classify_defined_sweep_enabled();
     let defined_set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
     for &sup in &sweep_sups {
+        // Aggregate-deadline guard (mirrors the tier walk's short-circuit at
+        // `find_direct_parents_top_down`, above): the sweep previously had no
+        // aggregate guard at all, so on a pathological ontology (e.g.
+        // `ore_ont_10080`) it kept constructing a fresh `HyperEngine` per
+        // candidate — for every `sup` — long after the deadline had passed,
+        // turning a bounded per-pair budget into an effectively unbounded
+        // wall. O(1) per `sup` (outer loop, not per inner candidate), so no
+        // hot-path cost when no deadline is active. Sound: skipping a `sup`
+        // only omits candidate edges the sweep would have ADDED (it never
+        // removes/asserts), so a cut here is a MISS at worst, never an FP.
+        if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+            continue;
+        }
         let sup_verify = defined_verify_mode && defined_set.contains(&sup);
         let sup_id =
             owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));

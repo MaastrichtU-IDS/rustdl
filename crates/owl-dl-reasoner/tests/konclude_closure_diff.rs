@@ -775,6 +775,63 @@ fn ore_one_closure_matches_oracle() {
     println!("RESULT\t{stem}\trustdl={r}\tkonclude={k}\tFP={fp}\tMISSED={m}");
 }
 
+/// Deadline-honoring regression (2026-07-12 design,
+/// `docs/superpowers/specs/2026-07-12-deadline-honoring-design.md`):
+/// `classify_top_down_with_timeout` must be bounded by an AGGREGATE
+/// deadline, not just a per-pair one, so a pathological ontology can't hang
+/// a full-corpus run.
+///
+/// `ore_ont_10080` (n=3533 classes) is the confirmed repro: with only a
+/// per-pair budget and no aggregate wall, it hung >40 minutes (the
+/// label-cache build alone burned up to a 30 s ceiling PER CLASS with no
+/// aggregate cap, and the defined-sup sweep loop rebuilt a fresh
+/// `HyperEngine` per candidate with no deadline check at all). Both are
+/// fixed: `classify_top_down_internal` now synthesizes an aggregate
+/// deadline from `per_pair_timeout` when the caller doesn't supply a global
+/// one, and the sweep loop now short-circuits once that deadline has
+/// passed (mirroring the tier walk's existing guard).
+///
+/// This test is bounded BY CONSTRUCTION — the aggregate deadline synthesized
+/// from a 25 ms per-pair budget is clamped to a 30 s ceiling — so asserting
+/// "returns within a generous wall" cannot itself hang; before the fix, the
+/// missing aggregate bound meant this call did not return within any bounded
+/// wall on this input. Gated (like the other ORE fixtures) to SKIP if the
+/// gitignored corpus file is absent — this is the *real* repro ontology, so
+/// prefer running it over a synthetic stand-in when available:
+///
+/// ```text
+/// cargo test -p owl-dl-reasoner --release --test konclude_closure_diff \
+///   -- --ignored --nocapture ore_10080_bounded_by_aggregate_deadline
+/// ```
+#[test]
+#[ignore = "needs ~/data/ore-run/{input,oracle}/ore_ont_10080*; the real deadline-honoring repro (was >40 min DNF, now bounded)"]
+fn ore_10080_bounded_by_aggregate_deadline() {
+    let Some(home) = std::env::var_os("HOME") else {
+        eprintln!("SKIP: HOME not set");
+        return;
+    };
+    let input = Path::new(&home).join("data/ore-run/input/ore_ont_10080.ofn");
+    let oracle = Path::new(&home).join("data/ore-run/oracle/ore_ont_10080-classified.owx");
+    if !input.exists() || !oracle.exists() {
+        eprintln!("SKIP: missing ore_ont_10080 fixture (gitignored corpus, not present locally)");
+        return;
+    }
+    let start = Instant::now();
+    let (r, k, fp, m) = diff_corpus_ontology("ore_ont_10080", &input, &oracle, 25);
+    let wall = start.elapsed();
+    println!(
+        "RESULT\tore_ont_10080\trustdl={r}\tkonclude={k}\tFP={fp}\tMISSED={m}\twall={:.2}s",
+        wall.as_secs_f64()
+    );
+    assert!(
+        wall < Duration::from_secs(40),
+        "ore_ont_10080 took {:.2}s — the aggregate deadline is not bounding the run \
+         (was an unbounded >40 min DNF before the deadline-honoring fix)",
+        wall.as_secs_f64()
+    );
+    assert_eq!(fp, 0, "ore_ont_10080 has FPs — soundness regression");
+}
+
 /// Generic at-scale FP sweep over a directory of (input, oracle) pairs.
 ///
 /// Drives the *same* trusted closure-diff (`diff_corpus_ontology`) used by the

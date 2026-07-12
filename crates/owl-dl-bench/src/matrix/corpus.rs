@@ -89,11 +89,15 @@ fn tier_sources(tier: &str, work_dir: &Path) -> Result<Vec<PathBuf>> {
     let home = std::env::var("HOME").unwrap_or_default();
     let (root, ext): (PathBuf, &str) = match tier {
         "curated" => (work_dir.to_path_buf(), "ofn"),
+        // ORE-2015 pilot: the input ontologies are `.ofn` under `.../ore-run/input`
+        // (the repo root also holds a 1920-file raw `pool_sample/` and `owx/`+`oracle/`
+        // sibling dirs — globbing `.owl` at the root wrongly grabs those). Point at the
+        // clean `.ofn` input set; oracles are (re)generated per-ont by the matrix.
         "ore" => (
             PathBuf::from(
-                std::env::var("RUSTDL_ORE_DIR").unwrap_or(format!("{home}/data/ore-run")),
+                std::env::var("RUSTDL_ORE_DIR").unwrap_or(format!("{home}/data/ore-run/input")),
             ),
-            "owl",
+            "ofn",
         ),
         "bioportal" => (
             PathBuf::from(

@@ -1622,6 +1622,19 @@ pub(crate) fn classify_defined_sweep_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_DEFINED_SWEEP").is_some_and(|v| v == "1")
 }
 
+/// Label-cache back-fold (Task 2): when ON, `classify_labels` runs the sound,
+/// branch-free `∃`-composition rule [`HyperEngine::backfold_derived`] over the
+/// per-class `sat` graph and carries the entailed defined-`∃` names out in
+/// [`LabelOracle::Sat::derived_sups`]. DEFAULT OFF for the first landing — the
+/// hierarchy injection that consumes `derived_sups` is a later task; with the
+/// flag off the label path is byte-identical to today (no back-fold call,
+/// `derived_sups` empty). Set `RUSTDL_CLASSIFY_BACKFOLD=1` to enable. See
+/// `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md` §6.
+#[must_use]
+pub(crate) fn classify_backfold_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_BACKFOLD").is_some_and(|v| v == "1")
+}
+
 /// Lever #1: adaptive early-cut of diverging wedge searches. Default OFF until the
 /// corpus MISSED-unchanged gate confirms it. Set `RUSTDL_ADAPTIVE_BUDGET=1`.
 ///
@@ -1872,7 +1885,19 @@ pub(crate) enum LabelOracle {
     /// C is satisfiable; root-node labels are the candidate subsumer
     /// set. `D ∈ labels` → verify via per-pair test; `D ∉ labels` →
     /// sound non-subsumption (this completion graph is a counterexample).
-    Sat(std::collections::HashSet<owl_dl_core::ir::ClassId>),
+    ///
+    /// `derived_sups` are the defined-`∃` names the branch-free back-fold
+    /// ([`HyperCache::classify_labels`] → `HyperEngine::backfold_derived`)
+    /// proved ENTAILED (not candidates) over this `sat` graph. Empty unless
+    /// [`classify_backfold_enabled`] is on. Consumed by the hierarchy-injection
+    /// step in a later task; the label-prune sites ignore it.
+    Sat {
+        labels: std::collections::HashSet<owl_dl_core::ir::ClassId>,
+        // Consumed by the hierarchy-injection step in a later task; populated
+        // now (flag-gated) but not yet read, so allow it dead until then.
+        #[allow(dead_code)]
+        derived_sups: Vec<owl_dl_core::ir::ClassId>,
+    },
     /// C is unsatisfiable (every model omits C). Orchestrator returns
     /// `true` for every (C, D) — unsat classes vacuously subsume all.
     Unsat,
@@ -2033,19 +2058,11 @@ pub(crate) struct HyperCache {
 /// One `EquivalentClasses`-defined name whose body is a flat conjunction (or
 /// lone `∃`) carrying at least one `ObjectSomeValuesFrom(role, Class(filler))`
 /// conjunct. See [`HyperCache::defined_exists_bodies`].
-#[derive(Debug, Clone)]
-pub(crate) struct DefinedBody {
-    /// The defined name itself (`D` in `D ≡ A ⊓ ∃r.C`).
-    #[allow(dead_code)]
-    name: owl_dl_core::ir::ClassId,
-    /// Atomic (named-class) conjuncts of the body (`A` above).
-    atoms: Vec<owl_dl_core::ir::ClassId>,
-    /// `∃`-conjuncts of the body, as `(role, named filler)` pairs (`(r, C)`
-    /// above). Only named fillers are handled in v1 — a non-atomic filler
-    /// (e.g. `∃r.(C ⊓ D)`) causes the whole body to be skipped (see `build`).
-    #[allow(dead_code)]
-    exists: Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>,
-}
+///
+/// Defined in `owl-dl-tableau` so `HyperEngine::backfold_derived` (which
+/// consumes `&[DefinedBody]`) can name the type; re-exported here for the
+/// precompute + call sites.
+pub(crate) use owl_dl_tableau::hyper::DefinedBody;
 
 /// Build [`HyperCache::defined_exists_bodies`] + `defined_body_by_genus` (Task 1
 /// of `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`).
@@ -2741,11 +2758,30 @@ impl HyperCache {
         }
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
             HyperResult::Unsat => LabelOracle::Unsat,
-            HyperResult::Sat => engine
-                .satisfiability_labels(self.fresh_q)
-                .map_or(LabelOracle::NoVerdict, |v| {
-                    LabelOracle::Sat(v.into_iter().collect())
-                }),
+            HyperResult::Sat => {
+                engine
+                    .satisfiability_labels(self.fresh_q)
+                    .map_or(LabelOracle::NoVerdict, |v| {
+                        // Branch-free `∃`-composition back-fold (Task 2, flag-gated,
+                        // default OFF): the entailed defined-`∃` names over this `sat`
+                        // graph. `backfold_derived` self-gates on `branches_taken == 0`
+                        // (returns empty otherwise). Flag off ⇒ empty, no engine call.
+                        let derived_sups = if crate::classify_backfold_enabled() {
+                            let root = engine.root_node();
+                            engine.backfold_derived(
+                                root,
+                                &self.defined_exists_bodies,
+                                &self.defined_body_by_genus,
+                            )
+                        } else {
+                            Vec::new()
+                        };
+                        LabelOracle::Sat {
+                            labels: v.into_iter().collect(),
+                            derived_sups,
+                        }
+                    })
+            }
             HyperResult::Stalled => LabelOracle::NoVerdict,
         }
     }
@@ -5719,7 +5755,7 @@ SubClassOf(:A :B)\nSubClassOf(:B :C)\n)\n"
         let cache = HyperCache::build(&internal);
         let oracle = cache.classify_labels(a, None);
         match oracle {
-            LabelOracle::Sat(labels) => {
+            LabelOracle::Sat { labels, .. } => {
                 assert!(labels.contains(&b), "A's labels must contain B: {labels:?}");
                 assert!(labels.contains(&c), "A's labels must contain C: {labels:?}");
             }

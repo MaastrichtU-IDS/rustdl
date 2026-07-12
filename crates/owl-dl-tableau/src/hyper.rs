@@ -29,6 +29,7 @@ use owl_dl_core::RoleHierarchy;
 use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role};
 use smallvec::{SmallVec, smallvec};
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// A match binding: the body's non-`X` successor variables mapped to
@@ -57,6 +58,21 @@ impl HNode {
     fn index(self) -> usize {
         self.0 as usize
     }
+}
+
+/// A defined class's body decomposed for the branch-free `∃`-composition
+/// back-fold ([`HyperEngine::backfold_derived`]): `name ≡ ⊓atoms ⊓ ⊓∃(role,
+/// filler)`. Only conjunctive bodies with ≥1 `∃`-conjunct over a named filler
+/// are represented (built in `owl-dl-reasoner`'s `build_defined_exists_bodies`);
+/// see `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md` §1.2.
+#[derive(Debug, Clone)]
+pub struct DefinedBody {
+    /// The defined name itself (`D` in `D ≡ A ⊓ ∃r.C`).
+    pub name: ClassId,
+    /// Atomic (named-class) conjuncts of the body (`A` above).
+    pub atoms: Vec<ClassId>,
+    /// `∃`-conjuncts of the body, as `(role, named filler)` pairs (`(r, C)`).
+    pub exists: Vec<(Role, ClassId)>,
 }
 
 /// A set of branch *decision levels* a derivation depends on, for
@@ -2453,6 +2469,63 @@ impl<'c> HyperEngine<'c> {
         (0..self.clauses[ci].head.len()).any(|k| self.head_atom_satisfied(ci, k, xnode, binding))
     }
 
+    /// SOUND, branch-free EL `∃`-composition over the already-built `sat`
+    /// graph: for each defined body `D ≡ ⊓atoms ⊓ ⊓∃(rⱼ,Cⱼ)`, derive `D` at the
+    /// root iff every `atom` labels the (resolved) root AND every `(rⱼ,Cⱼ)` has
+    /// a resolved `rⱼ`-successor carrying `Cⱼ`. Returns the entailed names.
+    ///
+    /// **Load-bearing soundness gate — the whole FP-safety argument:** returns
+    /// `vec![]` unless the run is branch-free (`branches_taken == 0`). A
+    /// branch-free run made no decisions, so its least Horn model *is* the
+    /// canonical model and every label/edge carries `DepSet::EMPTY` — a genuine
+    /// entailment (design §2a). If the run branched, a label/edge may be
+    /// branch-relative (true only in the chosen disjunct), so the composition
+    /// would be unsound; refuse to fire.
+    ///
+    /// Zero tableau/wedge/search calls — a pure structural scan reusing
+    /// [`Self::resolve`] (union-find) + [`Self::distinct_role_succ`] (which
+    /// honours the role hierarchy and, under `inverse_func_merge`, scans `preds`
+    /// so a merged survivor is found). Candidate enumeration scans ALL `bodies`:
+    /// the `genus` index omits atom-less bodies (a known Task-1 gap), and every
+    /// `∃`-bearing body must be considered, so correctness beats the genus
+    /// optimization here; `genus` is reserved for a future pruning pass.
+    ///
+    /// See `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`
+    /// §1.2 / §2.
+    #[must_use]
+    pub fn backfold_derived(
+        &self,
+        root: HNode,
+        bodies: &[DefinedBody],
+        genus: &HashMap<ClassId, Vec<usize>>,
+    ) -> Vec<ClassId> {
+        // The load-bearing soundness gate: only a branch-free run yields the
+        // least (canonical) Horn model, where every derivation is entailed.
+        if self.stats.branches_taken != 0 {
+            return Vec::new();
+        }
+        let _ = genus; // reserved (see doc): v1 scans all bodies for correctness.
+        let x = self.resolve(root);
+        let node = &self.nodes[x.index()];
+        let mut derived = Vec::new();
+        for body in bodies {
+            // Every atomic conjunct must label the root.
+            if !body.atoms.iter().all(|&a| node.has(a)) {
+                continue;
+            }
+            // Every ∃-conjunct must have a resolved role-successor carrying its
+            // (literal) named filler — no closure widening in v1.
+            if body
+                .exists
+                .iter()
+                .all(|&(r, c)| !self.distinct_role_succ(x, r, Some(c)).is_empty())
+            {
+                derived.push(body.name);
+            }
+        }
+        derived
+    }
+
     /// The *distinct* (representative-resolved) `role`-successors of
     /// `node`, filtered by the optional class qualifier.
     fn distinct_role_succ(&self, node: HNode, role: Role, qual: Option<ClassId>) -> Vec<HNode> {
@@ -3531,6 +3604,15 @@ impl<'c> HyperEngine<'c> {
     pub fn root_labels(&self) -> &[ClassId] {
         &self.nodes[self.resolve(HNode(0)).index()].labels
     }
+
+    /// The seed (root) node — node `0`, where [`Self::new`] asserts the
+    /// probed concept. Callers in other crates cannot name `HNode`
+    /// directly, so this hands them the root to pass to
+    /// [`Self::backfold_derived`].
+    #[must_use]
+    pub fn root_node(&self) -> HNode {
+        HNode(0)
+    }
 }
 
 enum FireOutcome {
@@ -3812,6 +3894,135 @@ mod tests {
             eng.nodes[eng.resolve(p).index()].has(f),
             "a label on the survivor must back-propagate to the folded node's \
              predecessor P (needs the merge's preds-copy)"
+        );
+    }
+
+    /// Positive canary for the branch-free `∃`-composition back-fold: build the
+    /// funcmerge-shaped `sat` graph — root `x : Eminence`, `x —g→ w`, `x —g→ u`,
+    /// `u : TibialPlateau`, `Functional(g)` on `x` — so the deterministic `≤1`
+    /// merge folds `u` into `w` and `w` gains `TibialPlateau`. Over that
+    /// merge-enriched, branch-free (`branches_taken == 0`) Horn model,
+    /// `backfold_derived` must recognize `TICE ≡ Eminence ⊓ ∃g.TibialPlateau`.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    #[allow(unsafe_code)]
+    fn backfold_derives_defined_exists_over_forward_inverse_merge() {
+        // The incremental `≤1`/functional merge inside `horn_fixpoint` is gated
+        // on `inverse_func_merge`, read at construction — set it BEFORE `new`.
+        let key = "RUSTDL_INVERSE_FUNC_MERGE";
+        // SAFETY: set_var is unsafe under edition 2024; restored before return.
+        let prior = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, "1");
+        }
+        let g = Role::Named(RoleId::new(0));
+        let eminence = cls(0);
+        let tibial_plateau = cls(1);
+        let tice = cls(2);
+        let mut eng = HyperEngine::new(&[], eminence); // node 0 seeded : Eminence
+        let x = HNode(0);
+        let w = eng.new_node(); // HNode(1): survivor (lower index)
+        let u = eng.new_node(); // HNode(2): folded, carries TibialPlateau
+        // x —g→ w and x —g→ u (two distinct g-successors)
+        eng.nodes[x.index()].edges.push((g, w));
+        eng.nodes[w.index()].preds.push((g, x));
+        eng.nodes[x.index()].edges.push((g, u));
+        eng.nodes[u.index()].preds.push((g, x));
+        // u : TibialPlateau ; Functional(g) on x ⇒ ≤1 g.
+        eng.nodes[u.index()].add(tibial_plateau, DepSet::EMPTY);
+        eng.nodes[x.index()].at_most.push((g, None, 1));
+        let r = eng.run(FIXPOINT_ITERS);
+        unsafe {
+            match &prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        assert_eq!(r, HyperResult::Sat, "≤1 g merge of {{w,u}} is satisfiable");
+        assert_eq!(
+            eng.stats().branches_taken,
+            0,
+            "the ≤1 merge is deterministic — no decisions taken"
+        );
+        assert!(
+            eng.nodes[eng.resolve(u).index()].has(tibial_plateau),
+            "the merge must transfer TibialPlateau onto w (survivor)"
+        );
+        let bodies = vec![DefinedBody {
+            name: tice,
+            atoms: vec![eminence],
+            exists: vec![(g, tibial_plateau)],
+        }];
+        let genus = std::collections::HashMap::new();
+        let derived = eng.backfold_derived(eng.root_node(), &bodies, &genus);
+        assert!(
+            derived.contains(&tice),
+            "backfold must derive TICE ≡ Eminence ⊓ ∃g.TibialPlateau over the merge model, \
+             got {derived:?}"
+        );
+    }
+
+    /// FP tripwire — the load-bearing soundness gate. Force a genuinely-open
+    /// disjunction `A ⊑ P ⊔ Q` where the engine takes the `P` branch, and
+    /// `P ⊑ ∃g.F` gives the root a `g`-successor carrying `F`. The structural
+    /// precondition of `D ≡ A ⊓ ∃g.F` then holds at the root **in the chosen
+    /// branch** — but `A ⊑ D` is NOT entailed (the `Q` model has no `g.F`
+    /// successor). Because the run branched (`branches_taken > 0`), the model is
+    /// no longer the least Horn model, so `backfold_derived` MUST refuse to fire.
+    /// This is genuinely non-vacuous: the precondition is asserted to hold, yet
+    /// the gate suppresses the (unsound) derivation.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn backfold_does_not_fire_when_branched() {
+        let g = Role::Named(RoleId::new(0));
+        let a = cls(0);
+        let p = cls(1);
+        let q = cls(2);
+        let f = cls(3);
+        let d = cls(4);
+        let clauses = vec![
+            // A ⊑ P ⊔ Q  — a genuinely-open 2-disjunct head ⇒ forces a decision.
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(p, X), Atom::Class(q, X)],
+            },
+            // P ⊑ ∃g.F  — the chosen branch materialises a g-successor with F.
+            DlClause {
+                body: vec![Atom::Class(p, X)],
+                head: vec![Atom::Exists(g, f, X)],
+            },
+        ];
+        let mut eng = HyperEngine::new(&clauses, a);
+        assert_eq!(
+            eng.decide(64),
+            HyperResult::Sat,
+            "A is satisfiable (via P or Q)"
+        );
+        assert!(
+            eng.stats().branches_taken > 0,
+            "the open A ⊑ P ⊔ Q disjunction must have forced a branch decision"
+        );
+        let root = eng.root_node();
+        let x = eng.resolve(root);
+        // Non-vacuity: the structural precondition of D ≡ A ⊓ ∃g.F HOLDS in the
+        // chosen branch (A present, a g-successor carries F) — so an ungated
+        // rule WOULD (unsoundly) derive D here.
+        assert!(eng.nodes[x.index()].has(a), "root carries A");
+        assert!(
+            !eng.distinct_role_succ(x, g, Some(f)).is_empty(),
+            "chosen (P) branch gives the root a g-successor carrying F — precondition holds"
+        );
+        let bodies = vec![DefinedBody {
+            name: d,
+            atoms: vec![a],
+            exists: vec![(g, f)],
+        }];
+        let genus = std::collections::HashMap::new();
+        let derived = eng.backfold_derived(root, &bodies, &genus);
+        assert!(
+            derived.is_empty(),
+            "branch-free gate MUST suppress the back-fold on a branched run \
+             (A ⊑ D is not entailed — the Q model has no g.F), got {derived:?}"
         );
     }
 

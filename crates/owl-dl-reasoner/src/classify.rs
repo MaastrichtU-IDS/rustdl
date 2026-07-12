@@ -1326,7 +1326,7 @@ pub(crate) fn classify_top_down_internal(
             if crate::unsat_via_labels_enabled() {
                 match label_cache.get(i) {
                     Some(crate::LabelOracle::Unsat) => return Ok((i, false, true)),
-                    Some(crate::LabelOracle::Sat(_)) => {
+                    Some(crate::LabelOracle::Sat { .. }) => {
                         // Concrete-domain verify: the wedge has no `card_sat`
                         // and does not materialise DKey cardinality, so it
                         // reports a counting-clash class `Sat`. For a class
@@ -1574,7 +1574,7 @@ pub(crate) fn classify_top_down_internal(
     let sweep_sups: Vec<usize> = if crate::classify_same_tier_enabled() {
         let mut set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
         for oracle in &label_cache {
-            if let crate::LabelOracle::Sat(labels) = oracle {
+            if let crate::LabelOracle::Sat { labels, .. } = oracle {
                 for &sup_id in labels {
                     let i = sup_id.index() as usize;
                     if i < n && !unsatisfiable_idxs.contains(&i) {
@@ -1675,7 +1675,7 @@ pub(crate) fn classify_top_down_internal(
                     .unwrap_or(false)
                 } else {
                     match label_cache.get(cand) {
-                        Some(crate::LabelOracle::Sat(labels)) => {
+                        Some(crate::LabelOracle::Sat { labels, .. }) => {
                             if labels.contains(&sup_id) {
                                 // sup_id ∈ labels: might be coincidence of
                                 // model; verify via subsumes_via_tableau.
@@ -1973,7 +1973,7 @@ fn find_direct_parents_top_down(
             // Phase 7: per-class label heuristic — check the cache
             // before paying for `subsumes_via_tableau`.
             match label_cache.get(c) {
-                Some(crate::LabelOracle::Sat(labels)) => {
+                Some(crate::LabelOracle::Sat { labels, .. }) => {
                     if labels.contains(&d_id) {
                         // D ∈ C's labels: might be coincidence-of-model;
                         // verify via the existing per-pair path.

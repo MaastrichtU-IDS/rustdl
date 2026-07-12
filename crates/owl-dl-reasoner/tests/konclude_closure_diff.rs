@@ -28,7 +28,9 @@ use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::oracle_diff::{
     aligned_closures, closure_from_classification, read_owx_verdict as read_konclude_verdict,
 };
-use owl_dl_reasoner::{classify_saturation_only, classify_top_down_with_timeout};
+use owl_dl_reasoner::{
+    classify_saturation_only, classify_top_down_with_timeout, classify_with_budget,
+};
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::Path;
@@ -776,59 +778,84 @@ fn ore_one_closure_matches_oracle() {
 }
 
 /// Deadline-honoring regression (2026-07-12 design,
-/// `docs/superpowers/specs/2026-07-12-deadline-honoring-design.md`):
-/// `classify_top_down_with_timeout` must be bounded by an AGGREGATE
-/// deadline, not just a per-pair one, so a pathological ontology can't hang
-/// a full-corpus run.
+/// `docs/superpowers/specs/2026-07-12-deadline-honoring-design.md`): when an
+/// EXPLICIT aggregate wall-clock deadline is supplied (via
+/// `classify_with_budget`), the top-down classifier must return within that
+/// bound even on a pathological ontology — instead of hanging on the
+/// per-pair-only path, which establishes no aggregate wall.
 ///
-/// `ore_ont_10080` (n=3533 classes) is the confirmed repro: with only a
-/// per-pair budget and no aggregate wall, it hung >40 minutes (the
-/// label-cache build alone burned up to a 30 s ceiling PER CLASS with no
-/// aggregate cap, and the defined-sup sweep loop rebuilt a fresh
-/// `HyperEngine` per candidate with no deadline check at all). Both are
-/// fixed: `classify_top_down_internal` now synthesizes an aggregate
-/// deadline from `per_pair_timeout` when the caller doesn't supply a global
-/// one, and the sweep loop now short-circuits once that deadline has
-/// passed (mirroring the tier walk's existing guard).
+/// `ore_ont_10080` (n=3533 classes) is the confirmed repro: on the bare
+/// per-pair path it hung >40 minutes (the defined-sup sweep loop rebuilt a
+/// fresh `HyperEngine` per candidate with no aggregate deadline check at
+/// all, and the tier walk / label-cache build likewise had no aggregate
+/// cap). This test drives the FIX directly: it passes `classify_with_budget`
+/// an explicit `Some(global_budget)`, which (a) makes the sweep-loop guard
+/// and tier-walk guard active, and (b) caps every phase. It does NOT rely on
+/// any synthesized default — the bare `classify_top_down_with_timeout` path
+/// is deliberately left unbounded (opt-in only via
+/// `RUSTDL_AGGREGATE_DEADLINE_MS`), so this test would still hang if it used
+/// that path (which is exactly the pre-fix behaviour the guards address).
 ///
-/// This test is bounded BY CONSTRUCTION — the aggregate deadline synthesized
-/// from a 25 ms per-pair budget is clamped to a 30 s ceiling — so asserting
-/// "returns within a generous wall" cannot itself hang; before the fix, the
-/// missing aggregate bound meant this call did not return within any bounded
-/// wall on this input. Gated (like the other ORE fixtures) to SKIP if the
-/// gitignored corpus file is absent — this is the *real* repro ontology, so
-/// prefer running it over a synthetic stand-in when available:
+/// Bounded BY CONSTRUCTION (the explicit `global_budget` caps the run), so
+/// asserting "returns within a generous wall" cannot itself hang. Gated
+/// (like the other ORE fixtures) to SKIP if the gitignored corpus file is
+/// absent — this is the *real* repro ontology:
 ///
 /// ```text
 /// cargo test -p owl-dl-reasoner --release --test konclude_closure_diff \
-///   -- --ignored --nocapture ore_10080_bounded_by_aggregate_deadline
+///   -- --ignored --nocapture ore_10080_bounded_by_explicit_deadline
 /// ```
 #[test]
-#[ignore = "needs ~/data/ore-run/{input,oracle}/ore_ont_10080*; the real deadline-honoring repro (was >40 min DNF, now bounded)"]
-fn ore_10080_bounded_by_aggregate_deadline() {
+#[ignore = "needs ~/data/ore-run/{input,oracle}/ore_ont_10080*; the real deadline-honoring repro (was >40 min DNF, now bounded by an explicit global deadline)"]
+fn ore_10080_bounded_by_explicit_deadline() {
     let Some(home) = std::env::var_os("HOME") else {
         eprintln!("SKIP: HOME not set");
         return;
     };
     let input = Path::new(&home).join("data/ore-run/input/ore_ont_10080.ofn");
-    let oracle = Path::new(&home).join("data/ore-run/oracle/ore_ont_10080-classified.owx");
-    if !input.exists() || !oracle.exists() {
+    let oracle_path = Path::new(&home).join("data/ore-run/oracle/ore_ont_10080-classified.owx");
+    if !input.exists() || !oracle_path.exists() {
         eprintln!("SKIP: missing ore_ont_10080 fixture (gitignored corpus, not present locally)");
         return;
     }
+
+    // Explicit aggregate deadline — the crux of the fix. 5 s is generous
+    // enough for the EL closure + label cache to recover the full hierarchy
+    // (per the diagnosis: 5 s global + 25 ms per-pair → FP=0/MISSED=0 on this
+    // ont) yet small enough to prove the run is bounded rather than the >40
+    // min DNF it was on the unbounded path.
+    let per_pair = Duration::from_millis(25);
+    let global_budget = Duration::from_secs(5);
+
+    let onto = load_ofn_fixture(&input);
     let start = Instant::now();
-    let (r, k, fp, m) = diff_corpus_ontology("ore_ont_10080", &input, &oracle, 25);
+    let c = classify_with_budget(&onto, Some(per_pair), Some(global_budget))
+        .expect("classify_with_budget");
     let wall = start.elapsed();
+
+    let verdict = read_konclude_verdict(&oracle_path).expect("read owx verdict");
+    let (rustdl, konclude) = aligned_closures(&c, &verdict);
+    let fp = rustdl.difference(&konclude).count();
+    let missed = konclude.difference(&rustdl).count();
     println!(
-        "RESULT\tore_ont_10080\trustdl={r}\tkonclude={k}\tFP={fp}\tMISSED={m}\twall={:.2}s",
-        wall.as_secs_f64()
+        "RESULT\tore_ont_10080\trustdl={}\tkonclude={}\tFP={fp}\tMISSED={missed}\twall={:.2}s\ttimed_out={}",
+        rustdl.len(),
+        konclude.len(),
+        wall.as_secs_f64(),
+        c.stats().timed_out_pairs,
     );
+
+    // Bounded: must return well within a small multiple of the 5 s budget
+    // (allowing for parse + saturation + label-cache overhead outside the
+    // per-probe deadline). Before the sweep-guard fix, this ran >40 min even
+    // with a global deadline supplied (the sweep ignored it).
     assert!(
-        wall < Duration::from_secs(40),
-        "ore_ont_10080 took {:.2}s — the aggregate deadline is not bounding the run \
-         (was an unbounded >40 min DNF before the deadline-honoring fix)",
+        wall < Duration::from_secs(30),
+        "ore_ont_10080 took {:.2}s with a 5 s explicit global deadline — the sweep-loop/tier \
+         guards are not bounding the run (was an unbounded >40 min DNF before the fix)",
         wall.as_secs_f64()
     );
+    // Soundness: a deadline cut is always a MISS, never an FP.
     assert_eq!(fp, 0, "ore_ont_10080 has FPs — soundness regression");
 }
 

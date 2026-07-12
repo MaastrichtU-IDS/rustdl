@@ -2009,6 +2009,116 @@ pub(crate) struct HyperCache {
     /// `with_tautology_skip`. Sound (FP=0: skip removes an obligation; MISSED=0: an
     /// OPEN `a ⊔ ¬a` has unconstrained polarity ⇒ any model extends). `None` when off.
     tautology_pairs: Option<std::collections::HashSet<(u32, u32)>>,
+    /// Label-cache back-fold precompute (Task 1 of
+    /// `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`):
+    /// one entry per `EquivalentClasses`-defined name whose body is a flat
+    /// conjunction (or a lone `∃`) with **at least one** `ObjectSomeValuesFrom`
+    /// conjunct. Purely-atomic defined bodies are excluded — they already
+    /// fire via Horn clauses, so back-fold would be redundant for them.
+    /// Populated once in `build`; empty when the ontology has no such
+    /// defined classes (zero cost on the common case). Consumed by the
+    /// (not-yet-built) back-fold rule in a later task — this precompute is
+    /// otherwise inert: nothing outside tests reads these fields yet.
+    #[allow(dead_code)]
+    defined_exists_bodies: Vec<DefinedBody>,
+    /// Genus index for `defined_exists_bodies`: each atomic conjunct
+    /// (`DefinedBody::atoms` member) maps to the indices of every body it
+    /// appears in, so a later recognition pass only scans bodies whose genus
+    /// is actually present on a class's label instead of scanning every
+    /// defined body per class.
+    #[allow(dead_code)]
+    defined_body_by_genus: std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<usize>>,
+}
+
+/// One `EquivalentClasses`-defined name whose body is a flat conjunction (or
+/// lone `∃`) carrying at least one `ObjectSomeValuesFrom(role, Class(filler))`
+/// conjunct. See [`HyperCache::defined_exists_bodies`].
+#[derive(Debug, Clone)]
+pub(crate) struct DefinedBody {
+    /// The defined name itself (`D` in `D ≡ A ⊓ ∃r.C`).
+    #[allow(dead_code)]
+    name: owl_dl_core::ir::ClassId,
+    /// Atomic (named-class) conjuncts of the body (`A` above).
+    atoms: Vec<owl_dl_core::ir::ClassId>,
+    /// `∃`-conjuncts of the body, as `(role, named filler)` pairs (`(r, C)`
+    /// above). Only named fillers are handled in v1 — a non-atomic filler
+    /// (e.g. `∃r.(C ⊓ D)`) causes the whole body to be skipped (see `build`).
+    #[allow(dead_code)]
+    exists: Vec<(owl_dl_core::ir::Role, owl_dl_core::ir::ClassId)>,
+}
+
+/// Build [`HyperCache::defined_exists_bodies`] + `defined_body_by_genus` (Task 1
+/// of `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`).
+///
+/// Walks each defined name's body **one level**: if it is a flat conjunction
+/// (`ConceptExpr::And`) — or a lone `∃` — with at least one
+/// `ObjectSomeValuesFrom(role, Class(filler))` conjunct, collects atomic
+/// conjuncts into `atoms` and `(role, filler)` pairs into `exists`. A
+/// non-atomic `∃`-filler (e.g. `∃r.(C ⊓ D)`, not a single named class) or any
+/// other unsupported conjunct shape (`Not`/`Or`/`Min`/`Max`/…) causes the
+/// **whole body** to be skipped — v1 handles only named fillers over flat
+/// conjunctions. Bodies with zero `∃`-conjuncts (purely atomic, e.g.
+/// `E2 ≡ A2`) are excluded — they already fire via Horn clauses.
+fn build_defined_exists_bodies(
+    internal: &InternalOntology,
+    defs: &owl_dl_core::definitions::Definitions,
+) -> (
+    Vec<DefinedBody>,
+    std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<usize>>,
+) {
+    use owl_dl_core::ir::{ClassId, ConceptExpr, ConceptId, Role};
+
+    let mut bodies: Vec<DefinedBody> = Vec::new();
+    for (name, body_id) in defs.iter() {
+        let mut atoms: Vec<ClassId> = Vec::new();
+        let mut exists: Vec<(Role, ClassId)> = Vec::new();
+        // Classify one conjunct given its `ConceptId`; returns `false` to
+        // signal the whole body must be dropped (non-atomic ∃-filler or an
+        // unsupported conjunct shape).
+        let mut classify_conjunct = |cid: ConceptId| -> bool {
+            match internal.concepts.get(cid) {
+                ConceptExpr::Atomic(a) => {
+                    atoms.push(*a);
+                    true
+                }
+                ConceptExpr::Some(role, filler) => match internal.concepts.get(*filler) {
+                    ConceptExpr::Atomic(f) => {
+                        exists.push((*role, *f));
+                        true
+                    }
+                    // Non-atomic filler — v1 handles named fillers only.
+                    _ => false,
+                },
+                // Anything else at this level (Not/Or/Min/Max/Top/Bot/...) is
+                // outside the flat-conjunction-of-atoms-and-∃ shape v1 targets.
+                _ => false,
+            }
+        };
+
+        let ok = match internal.concepts.get(body_id) {
+            ConceptExpr::And(operands) => operands.iter().all(|&cid| classify_conjunct(cid)),
+            ConceptExpr::Some(..) => classify_conjunct(body_id),
+            // Purely atomic single-name equivalence, or an unsupported shape
+            // (Or/Not/Min/Max/...) — not handled by this precompute.
+            _ => false,
+        };
+        if ok && !exists.is_empty() {
+            bodies.push(DefinedBody {
+                name,
+                atoms,
+                exists,
+            });
+        }
+    }
+
+    let mut by_genus: std::collections::HashMap<ClassId, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (idx, body) in bodies.iter().enumerate() {
+        for &a in &body.atoms {
+            by_genus.entry(a).or_default().push(idx);
+        }
+    }
+    (bodies, by_genus)
 }
 
 impl HyperCache {
@@ -2018,6 +2128,14 @@ impl HyperCache {
         let mut internal = internal.clone();
         let (base, _stats) = owl_dl_core::clause::clausify_with_stats(&internal);
         let defs = owl_dl_core::definitions::extract_definitions(&internal);
+        // Label-cache back-fold (Task 1): precompute the ∃-bearing defined
+        // bodies + genus index. Pure read of `defs`/`internal.concepts` — the
+        // pool is append-only interning, so this is safe before the later
+        // complement-concept additions in `build_sup_neg_map`. Inert until a
+        // later task adds a consumer: this only appends two fields, no
+        // existing behaviour changes.
+        let (defined_exists_bodies, defined_body_by_genus) =
+            build_defined_exists_bodies(&internal, &defs);
         let num_classes = u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX);
         let mut next_fresh = fresh_class_id(&base).index().max(num_classes);
         let fresh_q = ClassId::new(next_fresh);
@@ -2293,6 +2411,8 @@ impl HyperCache {
             exists_seed,
             value_disjoint,
             tautology_pairs,
+            defined_exists_bodies,
+            defined_body_by_genus,
         }
     }
 
@@ -6788,6 +6908,113 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         assert!(
             !seeded.contains(&a),
             "A's table must NOT contain A itself (d != c filter)"
+        );
+    }
+}
+
+/// Task 1 (label-cache back-fold): `defined_exists_bodies` +
+/// `defined_body_by_genus` precompute tests.
+///
+/// Inline (not in `tests/`) because `HyperCache` and its fields are
+/// `pub(crate)` — unreachable from an integration-test crate.
+///
+/// Fixture: `D ≡ A ⊓ ∃r.C` (∃-bearing — must be captured) and `E2 ≡ A2`
+/// (purely atomic — must be excluded, it already fires via Horn clauses).
+#[cfg(test)]
+mod defined_exists_bodies_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    /// Look up a named class by local name. The prefix `:=<http://rustdl.test/>`
+    /// expands `:X` to `http://rustdl.test/X`.
+    fn class_id_by_local(internal: &InternalOntology, local: &str) -> owl_dl_core::ir::ClassId {
+        let iri = format!("http://rustdl.test/{local}");
+        internal
+            .vocabulary
+            .classes()
+            .find(|(_, i)| *i == iri.as_str())
+            .map_or_else(
+                || panic!("class {local} not found in vocabulary"),
+                |(id, _)| id,
+            )
+    }
+
+    fn build_fixture() -> InternalOntology {
+        let src = format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:D)) Declaration(Class(:E2)) \
+             Declaration(Class(:A)) Declaration(Class(:A2)) Declaration(Class(:C))\n\
+             Declaration(ObjectProperty(:r))\n\
+             EquivalentClasses(:D ObjectIntersectionOf(:A ObjectSomeValuesFrom(:r :C)))\n\
+             EquivalentClasses(:E2 :A2)\n\
+             )\n"
+        );
+        owl_dl_core::convert::convert_ontology(&parse(&src))
+            .expect("D≡A⊓∃r.C, E2≡A2 fixture converts")
+    }
+
+    #[test]
+    fn defined_exists_bodies_extracted_and_genus_indexed() {
+        let internal = build_fixture();
+        let d = class_id_by_local(&internal, "D");
+        let e2 = class_id_by_local(&internal, "E2");
+        let a = class_id_by_local(&internal, "A");
+        let c = class_id_by_local(&internal, "C");
+        let r = owl_dl_core::ir::Role::named(
+            internal
+                .vocabulary
+                .roles()
+                .find(|(_, iri)| *iri == "http://rustdl.test/r")
+                .map(|(id, _)| id)
+                .expect(": r role must exist"),
+        );
+
+        let hc = HyperCache::build(&internal);
+
+        let d_body = hc
+            .defined_exists_bodies
+            .iter()
+            .find(|b| b.name == d)
+            .expect("D (∃-bearing defined body) must be present");
+        assert_eq!(
+            d_body.atoms.as_slice(),
+            &[a],
+            "D's atomic conjuncts must be exactly [A]"
+        );
+        assert_eq!(
+            d_body.exists.as_slice(),
+            &[(r, c)],
+            "D's ∃-conjuncts must be exactly [(r, C)]"
+        );
+
+        assert!(
+            !hc.defined_exists_bodies.iter().any(|b| b.name == e2),
+            "E2 (purely atomic body) must be excluded — it already fires via Horn clauses"
+        );
+
+        // Genus index: D must be reachable from its atomic conjunct A.
+        let idx = hc
+            .defined_body_by_genus
+            .get(&a)
+            .expect("A must be indexed as a genus");
+        assert!(
+            idx.iter().any(|&i| hc.defined_exists_bodies[i].name == d),
+            "defined_body_by_genus[A] must include D's index"
         );
     }
 }

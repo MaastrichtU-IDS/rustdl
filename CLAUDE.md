@@ -281,6 +281,23 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   ~0.9 s.** `=0` reverts. See
   `docs/known-limitations/galen-defined-class-monotonicity-residual.md` and
   `docs/superpowers/specs/2026-07-12-label-cache-backfold-design.md`.
+  **Incremental `horn_fixpoint` (SP1, 2026-07-14, gated
+  `RUSTDL_HYPER_INCREMENTAL_FIXPOINT`, default ON)** stops re-seeding the whole
+  graph on every wedge `solve` frame: with the flag on, `horn_fixpoint` drains
+  only the per-branch worklist delta (worklist snapshotted in `save`/`restore`,
+  root graph seeded once in `decide_with_deadline`), instead of the
+  clear+full-reseed the OFF path still does. **Verdict-preserving** (curated
+  FP=0/MISSED=0, byte-identical closures; `ore_ont_13723` non-Horn FP oracle
+  0→0) and a real ~10% stall reduction on dense SROIQ (`ore_ont_10019` classify
+  incomplete pairs 1626→1465, hierarchy byte-identical — a sound speedup, no new
+  decided class; the residual stall is depth-bound, deferred to SP2). Wired at
+  the four `HyperCache` classify builders + the four diagnostic probes; NOT
+  wired to the default-OFF snapshot path. `=0` reverts to the full-reseed path.
+  Correctness gate: `crates/owl-dl-cli/tests/incremental_fixpoint_identity.rs`
+  (classify OFF-vs-ON byte-identity on 4 fixtures). See
+  `docs/2026-07-13-ore_ont_10019-stall-findings.md`, spec
+  `docs/superpowers/specs/2026-07-13-dense-sroiq-tractability-roadmap.md`, plan
+  `docs/superpowers/plans/2026-07-13-dense-sroiq-sp0-sp1.md`.
 
 - **`crates/owl-dl-core`** — Phase 3c (commit 0b5ed36) cached
   `ConceptPool::bot_id` via `OnceLock<ConceptId>` (concurrency-safe;

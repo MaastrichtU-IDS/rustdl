@@ -1669,11 +1669,16 @@ pub(crate) fn adaptive_budget_enabled() -> bool {
     std::env::var("RUSTDL_ADAPTIVE_BUDGET").map_or(true, |v| v != "0")
 }
 
-/// SP1: opt-in incremental `horn_fixpoint`. Default OFF until validated
-/// FP=0 AND MISSED=0. Disable/enable with `RUSTDL_HYPER_INCREMENTAL_FIXPOINT`.
+/// SP1: incremental `horn_fixpoint` (drains the per-branch worklist delta
+/// instead of re-seeding the whole graph each `solve` frame). **DEFAULT ON**
+/// as of 2026-07-14: verdict-preserving (curated FP=0/MISSED=0, byte-identical
+/// closures; `ore_ont_13723` non-Horn FP oracle 0→0) with a real ~10% stall
+/// reduction on dense SROIQ (`ore_ont_10019` incomplete 1626→1465) and no curated
+/// wall regression. `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0` reverts to the
+/// full-reseed path.
 #[must_use]
 pub(crate) fn incremental_fixpoint_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPER_INCREMENTAL_FIXPOINT").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_HYPER_INCREMENTAL_FIXPOINT").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
@@ -3235,7 +3240,11 @@ impl SnapshotCache {
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
         let build_start = std::time::Instant::now();
         let clauses = self.clauses_for_sub(sub);
-        // incremental_fixpoint deliberately NOT wired: this path uses engine.decide() which bypasses the decide_with_deadline root seed (snapshot capture is default-OFF).
+        // incremental_fixpoint deliberately NOT wired here: the snapshot cache
+        // (RUSTDL_SNAPSHOT_CAPTURE) is default-OFF and out of scope for SP1's
+        // classify-path acceleration. (engine.decide() does route through
+        // decide_with_deadline, so the root seed would engage — this exclusion
+        // is by scope, not a seeding limitation.)
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         let result = match engine.decide(HYPER_WEDGE_DEPTH) {
             HyperResult::Sat => {

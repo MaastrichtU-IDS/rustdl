@@ -205,44 +205,52 @@ across `funcmerge-cyclic`, `pizza`, `27_eight_way_disjunction_sat`, and
 `18_diamond_subsumption_unsat` (the last three added here to cover disjunctive
 branching + `≤n` merging across `save`/`restore`).
 
-## SP1 corpus gate + default decision (2026-07-14, Task 1.5)
+## SP1 corpus gate + default decision (2026-07-14, Tasks 1.5 + 1.6)
 
-**Soundness/completeness gates — both clean, flag ON:**
+**Correction (important — a stale first measurement).** The first pass of this
+gate (Task 1.5) was run while the flag was wired only into the diagnostic
+`hyper-sat`/probe entry points, **not** the production `classify` path — a
+gap the whole-branch review caught. So every Task 1.5 `classify`-based result
+(`owl-dl-bench matrix`, the `konclude_closure_diff` oracle test, and the
+`ore_ont_10019` classify headline) ran with `classify` **inert to the flag**:
+its "byte-identical / 1643→1629" numbers were trivially identical by
+construction, not a test of the incremental drain. Task 1.6 wired the flag into
+the `HyperCache` classify builders (`decide_with_stats`, `sat_only_with_stats`,
+`classify_labels`, `ConsistencyCache::decide` — all of which route through the
+`decide_with_deadline` root seed) and re-ran every gate on the now-live path.
+The numbers below are the real, live-path results.
+
+**Soundness/completeness gates — both clean on the live classify path (flag ON):**
 
 - **Curated matrix** (`owl-dl-bench matrix --tier curated --pair-timeout-ms 1000`,
   8 ontologies: family, galen, pizza, ro, sio, sulo, trivial, wine): every
-  `rustdl` row is **FP=0 and MISSED=0 under both flag states**, with no
-  ontology showing a flag-ON completeness regression (MISSED equal everywhere).
-  Wall deltas mostly noise-level except `family` (1320→870 ms, −34%) and
-  few-percent gains on `galen`/`sio`.
-- **Non-Horn adversarial FP oracle** (`ore_ont_13723`, the known
-  disjunctive FP regressor, vs the Konclude `.owx` oracle via
+  `rustdl` row is **FP=0 and MISSED=0**, closures **byte-identical** to flag-OFF.
+  No completeness or soundness regression. Curated wall is a wash-to-slightly-
+  better (`family` −34%).
+- **Non-Horn adversarial FP oracle** (`ore_ont_13723`, the known disjunctive FP
+  regressor, vs the Konclude `.owx` oracle via
   `konclude_closure_diff::ore_one_closure_matches_oracle`): **FP 0 → 0**,
-  closures byte-identical (`rustdl=10166 konclude=10166` under both flags).
-  The incremental fixpoint is verdict-preserving on the exact fragment where
-  the snapshot-cache was historically FP-unsound.
+  closures byte-identical (`rustdl=10166 konclude=10166` both flags). The
+  incremental fixpoint is verdict-preserving on the exact fragment where the
+  snapshot-cache was historically FP-unsound.
 
-**Headline (`ore_ont_10019` classify, `RUSTDL_AGGREGATE_DEADLINE_MS=60000`,
+**Headline (`ore_ont_10019` classify, live path, `RUSTDL_AGGREGATE_DEADLINE_MS=60000`,
 `--pair-timeout-ms 250`), OFF vs ON:** timed-out (incomplete) pairs
-**1643 → 1629 (−14, ~0.85%)**; wall unchanged (both deadline-bound at 60.02 s);
-reported hierarchy **byte-identical** (55 `direct` lines, `diff` empty); no
-newly-decided class. The 56× per-branch-cost win does not surface as a
-classify win here because these classes are **depth-bound, not
-per-branch-cost-bound** — even reaching the depth cap they do not exhaust
-their search inside budget (SP0's `stalled=33` is unchanged).
+**1626 → 1465 (−161, ~10%)**; reported hierarchy **byte-identical** (61 `direct`
+lines, `diff` empty — no newly-decided class); wall unchanged (both deadline-
+bound). This is a genuine **sound speedup** — ~10% more pairs resolve within the
+same budget — not the ~0.85% run-to-run noise the inert Task 1.5 pass reported.
+It does not yet convert into a new *decided* subsumption: the residual stall is
+**depth-bound, not per-branch-cost-bound** (SP0's `stalled=33` unchanged), so
+turning the freed headroom into answers needs the SP2 levers (branch ordering /
+lookahead / no-good caching), not more throughput.
 
-**Decision: keep `incremental_fixpoint` DEFAULT-OFF.** Per the plan's Step 4
-rule (marginal win ⇒ keep OFF + record why). The change is **clean and
-no-downside** (FP=0/MISSED=0 corpus-wide, verdict-preserving, byte-identical
-closures) and the machinery is validated groundwork, but it buys **no headline
-win at current budgets**: `ore_ont_10019` is deadline-bound identically under
-both flags with an unchanged hierarchy, and the curated tier is a wall wash
-(bar `family`). Flag-ON also adds a per-`save` worklist clone with no
-measurable benefit today. The residual stall is a **depth/search-ordering
-problem (SP2)**, not throughput — the throughput lever SP1 targeted is now
-largely spent. `incremental_fixpoint` remains available opt-in
-(`RUSTDL_HYPER_INCREMENTAL_FIXPOINT=1`) as the sound, tested prerequisite for
-SP2 work (branch ordering / lookahead / no-good caching) that would make a
-deeper search affordable enough to convert the throughput headroom into
-decided classes. Revisit the default flip once such an SP2 lever lands and the
-combination shows a real completeness/wall win.
+**Decision: `incremental_fixpoint` flipped DEFAULT-ON (2026-07-14).** The change
+is **verdict-preserving with zero answer-risk** — byte-identical closures across
+the curated tier and the `ore_ont_13723` non-Horn oracle, FP=0/MISSED=0 — and
+delivers a real ~10% reduction in stalled pairs on dense SROIQ with no curated
+wall regression. Flipping ON also makes the now-live differential harness
+(`incremental_fixpoint_identity.rs`) a permanent regression guard on a shipping
+path. `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0` reverts to the full-reseed path.
+The throughput lever SP1 targeted is now largely spent; converting the freed
+headroom into newly-decided classes is deferred to SP2.

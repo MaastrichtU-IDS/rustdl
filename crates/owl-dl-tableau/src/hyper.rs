@@ -505,6 +505,14 @@ pub struct SearchStats {
     pub lookahead_dropped: u64,
     /// Times the lookahead reduced a ⊔ to a single forced disjunct.
     pub lookahead_forced_single: u64,
+    /// SP2 B3: disjunction branches pruned by a recorded node-local no-good
+    /// (`RUSTDL_WEDGE_NOGOOD`). Always 0 when the flag is off.
+    pub nogood_prunes: u64,
+    /// Of `nogood_prunes`, those whose precise core dep-set contained the
+    /// current frame's decision level `d` — i.e. the prune was *net-new*
+    /// (dependency-directed backjumping would NOT have skipped this branch
+    /// anyway). A prune with `d ∉ core_deps` is backjump-redundant.
+    pub nogood_prunes_netnew: u64,
     /// Per-clash records from the shadow precise-dependency probe
     /// (`RUSTDL_SHADOW_DEP_PROBE`). Empty unless the probe is enabled via
     /// [`HyperEngine::with_shadow_dep_probe`]. Each entry carries the real
@@ -581,9 +589,22 @@ impl NoGoodStore {
     /// is provably UNSAT by a previously-recorded no-good.
     #[must_use]
     pub fn subsumes(&self, labels: &std::collections::BTreeSet<ClassId>) -> bool {
+        self.first_subsuming_core(labels).is_some()
+    }
+
+    /// The first stored core that is a subset of `labels` (i.e. proves
+    /// `labels` UNSAT), or `None`. B3's prune needs the matched core itself
+    /// — not just a bool — to recompute the prune's precise dep-set from
+    /// exactly the core classes' per-node label deps.
+    #[must_use]
+    pub fn first_subsuming_core(
+        &self,
+        labels: &std::collections::BTreeSet<ClassId>,
+    ) -> Option<&[ClassId]> {
         self.cores
             .iter()
-            .any(|core| core.iter().all(|c| labels.contains(c)))
+            .find(|core| core.iter().all(|c| labels.contains(c)))
+            .map(Vec::as_slice)
     }
 
     /// Drop all recorded cores (per-solve reset).
@@ -780,11 +801,9 @@ pub struct HyperEngine<'c> {
     /// `RUSTDL_WEDGE_NOGOOD` (SP2 B1, default OFF): opt into
     /// antecedent-seeded node-local UNSAT-core extraction
     /// ([`Self::extract_node_local_core`]) for no-good caching. Written by
-    /// all three constructors + [`Self::with_wedge_nogood`]; the extraction
-    /// entry point is not yet called by any non-test path (wired in B3), so
-    /// the field is currently write-only.
-    // wired in B3
-    #[allow(dead_code)]
+    /// all three constructors + [`Self::with_wedge_nogood`]; gates the B3
+    /// record-at-clash ([`Self::fire_head`]) and prune-at-branch
+    /// ([`Self::solve`]) hooks.
     wedge_nogood: bool,
     /// SP2 B2: per-solve store of minimal UNSAT no-good cores. Reset at the
     /// top of every [`Self::decide_with_deadline`] call (per-solve scoping —
@@ -2398,6 +2417,50 @@ impl<'c> HyperEngine<'c> {
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
                 let _ = self.apply_head_atom(head_atom, node, &binding, decision_deps);
+                // SP2 B3: node-local no-good prune. If the just-asserted
+                // disjunct's node carries a label-set subsumed by a recorded
+                // no-good core, this branch is provably UNSAT node-locally
+                // (a superset of an UNSAT set is UNSAT). Treat it EXACTLY as a
+                // child `Unsat` with the precise recomputed core deps — never
+                // `return Unsat` directly (that skips restore/backjump and
+                // corrupts state, advisor N2).
+                if self.wedge_nogood
+                    && let Atom::Class(_, v) = head_atom
+                    && let Some(target) = resolve_var(v, node, &binding)
+                {
+                    let n = self.resolve(target);
+                    let set: std::collections::BTreeSet<ClassId> =
+                        self.nodes[n.index()].labels.iter().copied().collect();
+                    if let Some(core) = self
+                        .nogood_store
+                        .first_subsuming_core(&set)
+                        .map(<[_]>::to_vec)
+                    {
+                        // Recompute the prune's dep-set precisely (advisor #4):
+                        // birth_deps(n) ∪ the label-deps of exactly the matched
+                        // core's classes at `n` (mirrors `clause_body_deps`).
+                        let mut core_deps = self.nodes[n.index()].birth_deps;
+                        for &cls in &core {
+                            core_deps = core_deps.union(self.nodes[n.index()].deps_of(cls));
+                        }
+                        self.stats.nogood_prunes += 1;
+                        // Net-new via the FRAME-LOCAL `d` (advisor N1/#6): `d ∈
+                        // core_deps` ⇒ this decision is genuinely responsible ⇒
+                        // backjumping would NOT have skipped this branch.
+                        if core_deps.contains(d) {
+                            self.stats.nogood_prunes_netnew += 1;
+                        }
+                        // Replicate the child-`Unsat` arm below verbatim, with
+                        // `core_deps` standing in for the child's `clash_deps`.
+                        self.restore(saved);
+                        if !core_deps.contains(d) {
+                            self.clash_deps = core_deps;
+                            return HyperResult::Unsat;
+                        }
+                        combined = combined.union(core_deps);
+                        continue;
+                    }
+                }
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return HyperResult::Sat,
                     HyperResult::Unsat => {
@@ -3384,6 +3447,16 @@ impl<'c> HyperEngine<'c> {
                 let shadow = body_deps.union(self.nodes[xn.index()].shadow_merge_cause);
                 self.record_clash(real, shadow, xn);
             }
+            // SP2 B3: record a node-local no-good core for this clash so
+            // future disjunction branches whose node label-set is a superset
+            // can be pruned. `extract_node_local_core` resolves + taint-gates
+            // internally and returns `None` when the clash is not soundly
+            // generalizable. Flag-off ⇒ zero work.
+            if self.wedge_nogood
+                && let Some(core) = self.extract_node_local_core(xn, body_deps)
+            {
+                self.nogood_store.record(core);
+            }
             return FireOutcome::Clash;
         }
         // Horn: exactly one head atom (caller gated on is_horn).
@@ -3913,8 +3986,6 @@ impl<'c> HyperEngine<'c> {
     /// re-derivable labels so only genuine inputs remain.
     ///
     /// Read-only (`&self`); no graph mutation.
-    // wired in B3
-    #[allow(dead_code)]
     fn extract_node_local_core(
         &self,
         clash_node: HNode,
@@ -4668,6 +4739,64 @@ mod tests {
             .decide(64);
         assert_eq!(off, HyperResult::Sat, "baseline: mergeable R-succs ⇒ Sat");
         assert_eq!(on, off, "precise-card-deps changed the verdict — UNSOUND");
+    }
+
+    /// SP2 B3: the live record-at-clash + prune-at-branch path actually FIRES
+    /// (non-vacuous gate) AND is verdict-preserving. Two disjunctions:
+    ///   D1: `a → b1 ⊔ b2`     D2: `b2 → b1 ⊔ e`
+    /// plus `a→x`, `a→y`, `b1→z`, and the 3-atom clash `x⊓y⊓z ⊑ ⊥` (3 atoms,
+    /// so `(a,b1)` is NOT registered as a told-disjoint pair and the extracted
+    /// core survives the step-6 filter). Exploring D1's `b1` branch clashes and
+    /// records the node-local no-good core `{a, b1}`. Later, D2's `b1` branch
+    /// (in the `b2` subtree) asserts `b1` onto a node already carrying `{a, b2}`
+    /// ⇒ its label-set ⊇ `{a, b1}` ⇒ the recorded core prunes it without
+    /// re-deriving the clash. The `e` disjunct is clash-free ⇒ overall Sat.
+    /// The prune is sound (that branch genuinely clashes: `b1→z` + `a→x,y` +
+    /// `x⊓y⊓z⊑⊥`), so flag-ON and flag-OFF must agree on the verdict, and the
+    /// ON run must report at least one prune.
+    #[test]
+    fn wedge_nogood_prune_fires_and_preserves_verdict() {
+        let (a, b1, b2, ee, xx, yy, zz) = (cls(0), cls(1), cls(2), cls(3), cls(4), cls(5), cls(6));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(xx, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(yy, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b1, X)],
+                head: vec![Atom::Class(zz, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(xx, X), Atom::Class(yy, X), Atom::Class(zz, X)],
+                head: vec![],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(b1, X), Atom::Class(b2, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b2, X)],
+                head: vec![Atom::Class(b1, X), Atom::Class(ee, X)],
+            },
+        ];
+        let off = HyperEngine::new(&clauses, a).decide(64);
+        let mut on_engine = HyperEngine::new(&clauses, a).with_wedge_nogood();
+        let on = on_engine.decide(64);
+        assert_eq!(
+            off,
+            HyperResult::Sat,
+            "baseline: reachable via a→b2→e ⇒ Sat"
+        );
+        assert_eq!(on, off, "wedge-nogood changed the verdict — UNSOUND");
+        assert!(
+            on_engine.stats().nogood_prunes >= 1,
+            "expected the recorded no-good {{a,b1}} to prune D2's b1 branch — the \
+             live prune path never fired (gate would be vacuous)"
+        );
     }
 
     // ── new_seeded (ABox-consistency) constructor ─────────────────────

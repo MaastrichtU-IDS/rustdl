@@ -203,3 +203,95 @@ prune behind `RUSTDL_WEDGE_NOGOOD`).
 - `cargo clippy -p owl-dl-reasoner --all-targets --all-features -- -D warnings`: clean.
 - Both required invocations (asymptotic + in-budget) ran to completion,
   producing depth-binned output for all 15 stalled classes (tables above).
+
+---
+
+## Task B4 — direct measurement (2026-07-14, `feat/sp2-nogood`)
+
+Fresh build of `owl-dl-cli` + `owl-dl-bench` (`RUSTUP_TOOLCHAIN=stable`, confirmed
+real recompile). No source changed, no defaults flipped, no commit. Full report:
+`.superpowers/sdd/task-B4-report.md`.
+
+### Step 1 — curated matrix (`--pair-timeout-ms 1000 --global-timeout-s 120`)
+
+All 8 ontologies (family, galen, pizza, ro, sio, sulo, trivial, wine) are
+**FP=0 / MISSED=0 with the flag ON**, closures byte-identical OFF vs ON. GATE PASS
+(no soundness regression, no over-prune). Flag-ON adds some wall (family 810→1520,
+pizza 120→320, wine 60→470 ms); correctness unchanged.
+
+### Step 2 — non-Horn FP oracle (ore_ont_13723)
+
+`konclude_closure_diff::ore_one_closure_matches_oracle`: closure 10166=10166,
+**FP=0 → 0** OFF vs ON, test ok both ways.
+
+### Step 3 — ore_ont_10019 classify (`--pair-timeout-ms 250`, aggregate deadline 60 s)
+
+| nogood | adaptive_budget | incomplete | direct lines | wall |
+|--------|-----------------|-----------|--------------|------|
+| OFF | 0 | 1579 | 59 | 60.03 s |
+| ON  | 0 | 1579 | 59 | 60.02 s |
+| OFF | 1 | 1459 | 63 | 60.01 s |
+| ON  | 1 | 1451 | 61 | 60.01 s |
+
+- **All configs pin the 60 s aggregate deadline** ⇒ deadline-bound, non-deterministic
+  (rayon scheduling decides which pairs finish first).
+- adaptive_budget=0: hierarchy **byte-identical** OFF vs ON (59=59).
+- adaptive_budget=1: ON has *fewer* lines than OFF and the OFF-vs-ON diff set **changes
+  run-to-run** (run 1: Sulfinic/Sulfoxide; repeat: AcylGroup) — scheduling noise, not a
+  new decision. **ON never gains a subsumption over OFF; no class stably newly decided.**
+- Incomplete count flat within noise; wall unmoved.
+- **`nogood_prunes` / `nogood_prunes_netnew` are NOT surfaced** in classify output (only
+  label-heuristic counters + `# timed-out pairs`). A separate SearchStats probe is needed
+  to confirm net-new prune activity.
+
+**Factual bottom line (no verdict — controller's call):** soundness gates clean
+(curated FP=0/MISSED=0 ON, 13723 FP=0→0); on ore_ont_10019 the flag did not stably change
+the hierarchy, did not lower the stalled count beyond noise, and did not move wall; prune
+counters were not observable from the CLI.
+
+## VERDICT (controller, 2026-07-14): 2b DEAD — sound, zero classify benefit
+
+**By the decision criterion** (VIABLE iff the flag flips ≥1 currently-stalled class to
+*decided* within budget, driven by net-new deep-tail prunes): **NOT met → 2b DEAD.**
+
+- On `ore_ont_10019` the flag decides **no new class** (hierarchy byte-identical at
+  adaptive_budget=0; the ±1–2 line diffs at adaptive_budget=1 are deadline-scheduling
+  noise that changes run-to-run, and ON never *gains* a subsumption over OFF), does **not**
+  lower the stalled/incomplete count beyond noise, and does **not** move wall (every config
+  pins the 60 s aggregate deadline).
+- Worse, flag-ON **adds** wall overhead on several curated ontologies (family 810→1520 ms,
+  pizza 120→320, wine 60→470) — the per-clash core-extraction cost (repeated node-local
+  closures per clash), exactly the cost concern the advisor raised — for no benefit.
+
+**Soundness is not in question:** curated FP=0/MISSED=0 with byte-identical closures OFF
+vs ON across all 8 ontologies, and the non-Horn adversarial oracle (`ore_ont_13723`) holds
+FP=0→0 byte-identical. The prune is verdict-preserving (a superset of a B0-oracle-validated
+node-local UNSAT core is UNSAT; the taint→`DepSet::ALL` widening keeps the backjump sound).
+The mechanism is *correct* — it is simply *ineffective* on this workload.
+
+**Why (as far as measured):** this is the CDBL 0%-wall outcome the roadmap warned about,
+now confirmed for the wedge regime. Two compounding causes, consistent with the advisor's
+pre-build analysis and SP1's result:
+1. **SP1 already ate the upside.** A node-local prune front-runs at most one incremental
+   `horn_fixpoint`, which SP1 made ~56× cheaper — so even prunes that fire save little.
+2. **The residual stall is depth-bound, not re-derivation-bound** (SP1 finding; the classes
+   reach the depth cap and the run is deadline-bound). No-goods prune redundant
+   re-derivation; they do not reduce the search *depth* needed to refute — so they cannot
+   convert the deadline-bound stall into decided classes.
+
+**Observability caveat:** `nogood_prunes`/`nogood_prunes_netnew` are not surfaced by the
+CLI, so we did not confirm *whether* the prune fires on `ore_ont_10019` (thin admissible-core
+population — many clashes merge-tainted and excluded) versus *fires-but-backjump-redundant*.
+Either way the classify outcome is zero benefit; the distinction would only refine the
+post-mortem, not the verdict. A one-line SearchStats stderr dump under the flag would settle
+it cheaply if ever revisited.
+
+**Pivot (per roadmap):** the tractability lever for `ore_ont_10019`'s depth-bound stall is
+NOT node-local UNSAT memoization. Remaining candidates: (2a) stronger/label-normalized
+blocking to cap the disjunctive-search depth, or bounding `search.rs` as an honest tail
+backstop (roadmap "honest tail gate"). SP2 as scoped (2b) is closed DEAD.
+
+**Disposition of the code:** `RUSTDL_WEDGE_NOGOOD` stays **default-OFF**. It is sound and a
+clean, tested reference implementation, but adds wall cost with no benefit when ON — so it
+should either be left dormant (opt-in, for a future workload where re-derivation *is* the
+bottleneck) or reverted. Controller/user's call at branch finish.

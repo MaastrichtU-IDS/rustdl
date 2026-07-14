@@ -1213,6 +1213,28 @@ fn main() -> Result<()> {
         } => {
             use owl_dl_reasoner::HyperResult;
             let onto = parse_ofn(&file)?;
+            // Coarse syntactic feature scan — adequate for the SP2-soundness
+            // gate question "are inverse/nominal present?"; do not
+            // over-engineer beyond a `Debug`-string substring check.
+            let mut has_inverse = false;
+            let mut has_nominal = false;
+            let mut has_card = false;
+            for ac in &onto {
+                let s = format!("{:?}", ac.component);
+                if s.contains("InverseObjectProperties") || s.contains("ObjectInverseOf") {
+                    has_inverse = true;
+                }
+                if s.contains("ObjectOneOf") || s.contains("ObjectHasValue") {
+                    has_nominal = true;
+                }
+                if s.contains("ObjectMinCardinality")
+                    || s.contains("ObjectMaxCardinality")
+                    || s.contains("ObjectExactCardinality")
+                {
+                    has_card = true;
+                }
+            }
+            println!("# features: inverse={has_inverse} nominal={has_nominal} card={has_card}");
             let timeout = (per_class_timeout_ms > 0)
                 .then(|| std::time::Duration::from_millis(per_class_timeout_ms));
             let probe = owl_dl_reasoner::hyper_sat_probe(&onto, depth, timeout)
@@ -1251,6 +1273,9 @@ fn main() -> Result<()> {
             let mut total_match_attempts = 0u64;
             let mut total_node_clones = 0u64;
             let mut total_fixpoint_passes = 0u64;
+            let mut total_is_blocked_calls = 0u64;
+            let mut total_blocks_fired = 0u64;
+            let mut total_block_eligible = 0u64;
             for r in &probe.results {
                 match r.result {
                     HyperResult::Sat => sat += 1,
@@ -1262,6 +1287,9 @@ fn main() -> Result<()> {
                 total_match_attempts += r.stats.match_attempts;
                 total_node_clones += r.stats.node_clones;
                 total_fixpoint_passes += r.stats.fixpoint_passes;
+                total_is_blocked_calls += r.stats.is_blocked_calls;
+                total_blocks_fired += r.stats.blocks_fired;
+                total_block_eligible += r.stats.block_eligible;
                 max_depth_reached = max_depth_reached.max(r.stats.max_branch_depth);
                 if r.stats.branches_taken > 0 {
                     branched += 1;
@@ -1279,6 +1307,9 @@ fn main() -> Result<()> {
             println!("# match_attempts:   {total_match_attempts}  (clause×node Horn match tries)");
             println!("# node_clones:      {total_node_clones}  (save/restore — trail target)");
             println!("# fixpoint_passes:  {total_fixpoint_passes}");
+            println!("# total_is_blocked_calls: {total_is_blocked_calls}");
+            println!("# total_blocks_fired:    {total_blocks_fired}");
+            println!("# total_block_eligible:  {total_block_eligible}");
             println!("# classes_branched: {branched}   <-- HEADLINE: only these probe the engine");
             if branched > 0 {
                 branched_walls
@@ -1304,7 +1335,7 @@ fn main() -> Result<()> {
                 .filter(|r| r.stats.branches_taken > 0)
             {
                 println!(
-                    "#   {:?} wall={:.2}ms branches={} (disj={} merge={}) restores={} depth={}  {}",
+                    "#   {:?} wall={:.2}ms branches={} (disj={} merge={}) restores={} depth={} blk={}/{}  {}",
                     r.result,
                     r.wall_ms,
                     r.stats.branches_taken,
@@ -1312,6 +1343,8 @@ fn main() -> Result<()> {
                     r.stats.merge_branches,
                     r.stats.restores,
                     r.stats.max_branch_depth,
+                    r.stats.blocks_fired,
+                    r.stats.block_eligible,
                     r.iri,
                 );
             }

@@ -8,8 +8,16 @@
 //!
 //! Fixture: `A ⊑ B` (`Class(A,X) → Class(B,X)`) and `B ⊓ C ⊑ ⊥`
 //! (`Class(B,X) ∧ Class(C,X) → ⊥`). The crucial case is `{A, C}`: the
-//! oracle must fire `A → B` first, then see the `B ⊓ C → ⊥` clash — a
-//! multi-step, non-syntactic core (not a told-disjoint pair).
+//! oracle must fire `A → B` first, then reach the clash — a multi-step
+//! derivation exercising single-Class-head insertion. (That `B ⊓ C → ⊥`
+//! clause IS a 2-atom-same-var ⊥ body, so `build_disjoint_pairs` also
+//! captures it into `disjoint_pairs`; the actual clash there fires via
+//! the disjoint-pairs branch.)
+//!
+//! A separate 3-atom ⊥-headed clause `A ⊓ B ⊓ C → ⊥` exercises the
+//! `head.is_empty()` branch in isolation: `build_disjoint_pairs` requires
+//! `body.len() == 2`, so this clause is NOT in `disjoint_pairs` and the
+//! empty-head branch is the only thing that can detect its clash.
 
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::many_single_char_names)]
@@ -42,10 +50,12 @@ fn node_local_unsat_multistep_core() {
     // root label is irrelevant here — we pass label-sets explicitly.
     let eng = HyperEngine::new(&clauses, a);
 
-    // The multi-step core: A → B, then B ⊓ C → ⊥.
+    // The multi-step core: A → B, then B ⊓ C clashes (via disjoint_pairs, since
+    // the 2-same-var ⊥ body is a told-disjoint pair). Validates the A→B
+    // single-Class-head insertion feeding a downstream clash.
     assert!(
         eng.node_local_unsat(&[a, c]),
-        "{{A,C}} must be UNSAT via A→B then B⊓C→⊥ (multi-step, non-syntactic core)"
+        "{{A,C}} must be UNSAT via A→B then the B⊓C clash (multi-step)"
     );
     // A alone derives B but nothing clashes.
     assert!(!eng.node_local_unsat(&[a]), "{{A}} must be satisfiable");
@@ -53,5 +63,34 @@ fn node_local_unsat_multistep_core() {
     assert!(
         !eng.node_local_unsat(&[d, e]),
         "{{D,E}} must be satisfiable"
+    );
+}
+
+/// Exercises the `head.is_empty()` branch in ISOLATION: a 3-atom ⊥-headed
+/// clause `A ⊓ B ⊓ C → ⊥` is NOT a told-disjoint pair (`build_disjoint_pairs`
+/// needs `body.len() == 2`), so only the empty-head branch can detect it.
+#[test]
+fn node_local_unsat_nonbinary_bottom_head() {
+    let (a, b, c) = (cls(0), cls(1), cls(2));
+
+    let clauses = vec![
+        // A ⊓ B ⊓ C ⊑ ⊥ — 3-atom body ⇒ NOT captured into disjoint_pairs.
+        DlClause {
+            body: vec![Atom::Class(a, X), Atom::Class(b, X), Atom::Class(c, X)],
+            head: vec![],
+        },
+    ];
+
+    let eng = HyperEngine::new(&clauses, a);
+
+    // All three present ⇒ empty-head clash (the ONLY detection path here).
+    assert!(
+        eng.node_local_unsat(&[a, b, c]),
+        "{{A,B,C}} must be UNSAT via the head.is_empty() branch (not a disjoint pair)"
+    );
+    // Only two of three ⇒ body does not match ⇒ no clash.
+    assert!(
+        !eng.node_local_unsat(&[a, b]),
+        "{{A,B}} must be satisfiable (3-atom body under-satisfied)"
     );
 }

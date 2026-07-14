@@ -3741,12 +3741,18 @@ impl<'c> HyperEngine<'c> {
                 if cl.head.is_empty() {
                     clashed = true;
                 } else if cl.head.len() == 1
-                    && let Atom::Class(c, _) = cl.head[0]
+                    && let Atom::Class(c, v) = cl.head[0]
+                    && body_var == Some(v)
                     && !set.contains(&c)
                 {
-                    // Single Class head — a forced node-local derivation.
-                    // Non-Class single heads (∃/≥/≤/=) are not node-local; skip.
-                    // Disjunctive heads (len > 1) are NOT forced — skip.
+                    // Single Class head on the SAME variable the body pinned —
+                    // a forced node-local derivation. A head atom on a DIFFERENT
+                    // variable (e.g. `Class(A,X) → Class(B,Y)`) is NOT node-local
+                    // (deriving B onto this node would be a false UNSAT), and
+                    // non-Class single heads (∃/≥/≤/=) and disjunctive heads
+                    // (len > 1) are likewise skipped. (An empty body has no
+                    // pinned variable ⇒ body_var is None ⇒ skipped: safe
+                    // under-derivation, never a false clash.)
                     set.insert(c);
                     changed = true;
                 }

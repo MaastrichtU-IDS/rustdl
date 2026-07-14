@@ -534,9 +534,10 @@ pub struct SearchStats {
 /// clause set + disjointness facts captured at extraction time; reusing it
 /// across an unrelated solve would be an unproven (and unneeded) generalization.
 ///
-/// Not yet consulted by any pruning path — wired in B3. Public so the
-/// external `wedge_nogood.rs` integration test can exercise it directly
-/// (matches how B0/B1 reach `HyperEngine` internals).
+/// Consulted by the B3 prune hook in [`HyperEngine::solve`] and populated by
+/// the record hook in [`HyperEngine::fire_head`] (both under `wedge_nogood`).
+/// Public so the external `wedge_nogood.rs` integration test can exercise it
+/// directly (matches how B0/B1 reach `HyperEngine` internals).
 #[derive(Debug, Clone, Default)]
 pub struct NoGoodStore {
     /// Minimal UNSAT cores found so far this solve. Each inner `Vec` is
@@ -808,9 +809,8 @@ pub struct HyperEngine<'c> {
     /// SP2 B2: per-solve store of minimal UNSAT no-good cores. Reset at the
     /// top of every [`Self::decide_with_deadline`] call (per-solve scoping —
     /// a core is only valid for the clause/graph state it was extracted
-    /// from). Not yet consulted by any pruning path.
-    // consumed in B3
-    #[allow(dead_code)]
+    /// from). Written by the B3 record hook in [`Self::fire_head`] and read by
+    /// the B3 prune hook in [`Self::solve`] (both under `wedge_nogood`).
     nogood_store: NoGoodStore,
 }
 
@@ -1159,10 +1159,12 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
-    /// Opt into SP2 antecedent-seeded node-local UNSAT-core extraction (B1).
-    /// See [`Self::extract_node_local_core`] and `RUSTDL_WEDGE_NOGOOD`. Off by
-    /// default; the extraction entry is not yet consulted by any search path
-    /// (wired in B3).
+    /// Opt into SP2 node-local no-good record+prune (`RUSTDL_WEDGE_NOGOOD`).
+    /// Off by default. When on, [`Self::fire_head`] records an antecedent-seeded
+    /// node-local UNSAT core ([`Self::extract_node_local_core`]) at each clash,
+    /// and [`Self::solve`] prunes any disjunction branch whose node label-set is
+    /// subsumed by a recorded core (a sound early cut — a superset of a
+    /// node-local UNSAT set is UNSAT).
     #[must_use]
     pub fn with_wedge_nogood(mut self) -> Self {
         self.wedge_nogood = true;
@@ -2443,6 +2445,14 @@ impl<'c> HyperEngine<'c> {
                         for &cls in &core {
                             core_deps = core_deps.union(self.nodes[n.index()].deps_of(cls));
                         }
+                        // SOUNDNESS (review Critical): a merge-tainted node's
+                        // merge-causation decision is NOT tracked in its labels'
+                        // deps (`merge_with_cause` passes `EMPTY`), so the precise
+                        // `core_deps` above would UNDER-report and could backjump
+                        // past a decision the clash actually depended on ⇒ false
+                        // Unsat ⇒ FP. Widen to `DepSet::ALL` exactly as the real
+                        // clash paths do (see `widen_deps_if_tainted`).
+                        core_deps = self.widen_deps_if_tainted(n, core_deps);
                         self.stats.nogood_prunes += 1;
                         // Net-new via the FRAME-LOCAL `d` (advisor N1/#6): `d ∈
                         // core_deps` ⇒ this decision is genuinely responsible ⇒
@@ -3285,6 +3295,26 @@ impl<'c> HyperEngine<'c> {
             FireOutcome::Changed
         } else {
             FireOutcome::NoChange
+        }
+    }
+
+    /// Widen `deps` to [`DepSet::ALL`] when node `n` is merge-tainted, i.e.
+    /// when a real clash on `n` would have widened too. The B3 no-good prune
+    /// recomputes a *precise* dep-set from the matched core's label deps, but a
+    /// merge-tainted node's merge-causation decision is untracked in those deps
+    /// (`merge_with_cause` passes `EMPTY`), so the precise set can under-report
+    /// and license an unsound backjump. This mirrors both real clash paths:
+    /// `card_clash_deps` widens on `at_most_tainted` (live under default-ON
+    /// precise-card-deps) and `fire_head` widens on `nn_tainted` (gated by the
+    /// test-only `nn_taint_disabled`). `ALL.contains(level)` is `true` for every
+    /// level ⇒ a tainted prune is correctly treated as net-new / non-backjumpable.
+    fn widen_deps_if_tainted(&self, n: HNode, deps: DepSet) -> DepSet {
+        if self.nodes[n.index()].at_most_tainted
+            || (self.nodes[n.index()].nn_tainted && !self.nn_taint_disabled)
+        {
+            DepSet::ALL
+        } else {
+            deps
         }
     }
 
@@ -4797,6 +4827,45 @@ mod tests {
             "expected the recorded no-good {{a,b1}} to prune D2's b1 branch — the \
              live prune path never fired (gate would be vacuous)"
         );
+    }
+
+    /// SP2 B3 review (Critical): the prune's precise `core_deps` MUST be widened
+    /// to `DepSet::ALL` on a merge-tainted node — otherwise the untracked
+    /// merge-causation decision is missing from the propagated dep-set and an
+    /// unsound backjump can produce a false Unsat (FP). `widen_deps_if_tainted`
+    /// is the guard the prune routes through; here we drive it directly against
+    /// a synthetically-tainted node (constructing the full `≤n`-merge →
+    /// disjunction-prune scenario is too heavy; B4's FP oracle is the
+    /// whole-system net).
+    #[test]
+    fn nogood_prune_widens_core_deps_on_tainted_node() {
+        let a = cls(0);
+        let clauses: Vec<DlClause> = Vec::new();
+        let mut eng = HyperEngine::new(&clauses, a);
+        let n = HNode(0); // root node exists at construction
+        let precise = DepSet::singleton(3);
+
+        // Untainted ⇒ passthrough (precise deps preserved).
+        let pass = eng.widen_deps_if_tainted(n, precise);
+        assert!(
+            !pass.overflow && pass.bits == precise.bits,
+            "untainted must pass through"
+        );
+
+        // `≤n`-merge taint (`at_most_tainted`) ⇒ widen to ALL.
+        eng.nodes[n.index()].at_most_tainted = true;
+        let w1 = eng.widen_deps_if_tainted(n, precise);
+        assert!(w1.overflow, "at_most_tainted must widen to DepSet::ALL");
+
+        // NN-merge taint (`nn_tainted`, not disabled) ⇒ widen to ALL.
+        eng.nodes[n.index()].at_most_tainted = false;
+        eng.nodes[n.index()].nn_tainted = true;
+        let w2 = eng.widen_deps_if_tainted(n, precise);
+        assert!(w2.overflow, "nn_tainted must widen to DepSet::ALL");
+
+        // ALL contains every decision level ⇒ tainted prune is net-new /
+        // non-backjumpable (the whole point of the widening).
+        assert!(w2.contains(0) && w2.contains(3) && w2.contains(127));
     }
 
     // ── new_seeded (ABox-consistency) constructor ─────────────────────

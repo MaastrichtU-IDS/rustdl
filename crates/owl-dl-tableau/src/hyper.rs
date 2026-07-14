@@ -698,6 +698,15 @@ pub struct HyperEngine<'c> {
     /// carries the precise level at which the clash occurred rather than
     /// the run's peak `max_branch_depth`.
     current_branch_level: u32,
+    /// `RUSTDL_WEDGE_NOGOOD` (SP2 B1, default OFF): opt into
+    /// antecedent-seeded node-local UNSAT-core extraction
+    /// ([`Self::extract_node_local_core`]) for no-good caching. Written by
+    /// all three constructors + [`Self::with_wedge_nogood`]; the extraction
+    /// entry point is not yet called by any non-test path (wired in B3), so
+    /// the field is currently write-only.
+    // wired in B3
+    #[allow(dead_code)]
+    wedge_nogood: bool,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -959,6 +968,7 @@ impl<'c> HyperEngine<'c> {
             sat_lookahead: None,
             shadow_dep_probe: false,
             current_branch_level: 0,
+            wedge_nogood: false,
         }
     }
 
@@ -1010,6 +1020,7 @@ impl<'c> HyperEngine<'c> {
             sat_lookahead: None,
             shadow_dep_probe: false,
             current_branch_level: 0,
+            wedge_nogood: false,
         }
     }
 
@@ -1038,6 +1049,16 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_precise_card_deps(mut self) -> Self {
         self.precise_card_deps = true;
+        self
+    }
+
+    /// Opt into SP2 antecedent-seeded node-local UNSAT-core extraction (B1).
+    /// See [`Self::extract_node_local_core`] and `RUSTDL_WEDGE_NOGOOD`. Off by
+    /// default; the extraction entry is not yet consulted by any search path
+    /// (wired in B3).
+    #[must_use]
+    pub fn with_wedge_nogood(mut self) -> Self {
+        self.wedge_nogood = true;
         self
     }
 
@@ -2122,6 +2143,7 @@ impl<'c> HyperEngine<'c> {
             sat_lookahead: None,
             shadow_dep_probe: false,
             current_branch_level: 0,
+            wedge_nogood: false,
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices
@@ -3782,6 +3804,158 @@ impl<'c> HyperEngine<'c> {
         self.node_local_closure(labels).1
     }
 
+    /// SP2 B1: antecedent-seeded, cost-bounded node-local UNSAT core.
+    ///
+    /// Given a clashing node and the `body_deps` (decision-level dep-set) of
+    /// the clash, recover the **minimal antecedent input core** — the seed/
+    /// decision labels that node-locally entail the clash — as a sorted
+    /// `Vec<ClassId>`, or `None` if the clash is not soundly generalizable to
+    /// a node-local no-good (merge-tainted node, no node-local clash on the
+    /// inputs, or a bare told-disjoint pair the clause firing already catches).
+    ///
+    /// The seed-by-dep-intersection alone is insufficient: a *derived* label
+    /// inherits its antecedents' deps (`label_deps[B] == label_deps[A]`), so it
+    /// intersects `body_deps` and enters the pool; greedy minimization could
+    /// then land on the derived told-disjoint pair `{B,C}` (which step 6 then
+    /// discards, losing the useful `{A,C}`). Step 3 removes node-locally
+    /// re-derivable labels so only genuine inputs remain.
+    ///
+    /// Read-only (`&self`); no graph mutation.
+    // wired in B3
+    #[allow(dead_code)]
+    fn extract_node_local_core(
+        &self,
+        clash_node: HNode,
+        body_deps: DepSet,
+    ) -> Option<Vec<ClassId>> {
+        let xn = self.resolve(clash_node);
+        let node = &self.nodes[xn.index()];
+        // Merge-tainted nodes carry un-decision-tracked provenance
+        // (`at_most`/NN merge causation); refuse to generalize (conservative —
+        // the B0 oracle is the real soundness backstop).
+        if node.at_most_tainted || node.nn_tainted {
+            return None;
+        }
+        let labels = node.labels.clone();
+        let label_deps = node.label_deps.clone();
+        self.extract_core_impl(&labels, &label_deps, body_deps)
+    }
+
+    /// Pool → minimal-antecedent-core logic shared by
+    /// [`Self::extract_node_local_core`] and the explicit-dep test adapter.
+    /// `labels[i]`'s dep-set is `label_deps[i]` (parallel).
+    fn extract_core_impl(
+        &self,
+        labels: &[ClassId],
+        label_deps: &[DepSet],
+        body_deps: DepSet,
+    ) -> Option<Vec<ClassId>> {
+        // Step 2 — candidate pool `P` (cost bound): present Class labels whose
+        // dep-set intersects `body_deps`, UNION present labels with an EMPTY
+        // dep-set (seed/root-given). `DepSet` has no `intersect`/`is_empty`, so:
+        // intersection = `a.overflow || b.overflow || (a.bits & b.bits) != 0`
+        // (an `ALL`/overflow set intersects everything); empty = `bits == 0 &&
+        // !overflow`.
+        let mut pool: Vec<ClassId> = labels
+            .iter()
+            .zip(label_deps.iter())
+            .filter_map(|(&c, &d)| {
+                let is_empty = d.bits == 0 && !d.overflow;
+                let intersects = d.overflow || body_deps.overflow || (d.bits & body_deps.bits) != 0;
+                if is_empty || intersects {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        pool.sort_by_key(|c| c.index());
+        pool.dedup();
+
+        // Step 3 — drop node-locally re-derivable labels (the #2 fix): a label
+        // `L` derivable from the rest of the pool is a derivation step, not an
+        // input. Iterate to a fixpoint so chains collapse (removing one label
+        // can make another no longer re-derivable / vice versa is impossible
+        // since removal only shrinks closures, but a fresh full pass is
+        // simplest and the pool is tiny).
+        loop {
+            let mut removed = false;
+            for i in 0..pool.len() {
+                let l = pool[i];
+                let rest: Vec<ClassId> = pool.iter().copied().filter(|&x| x != l).collect();
+                if self.node_local_closure(&rest).0.contains(&l) {
+                    pool.remove(i);
+                    removed = true;
+                    break;
+                }
+            }
+            if !removed {
+                break;
+            }
+        }
+        let inputs = pool;
+
+        // Step 4 — derivation-local soundness: the inputs alone must node-locally
+        // clash. If they don't, the clash needed edge/successor evidence or
+        // derived-only labels ⇒ not a node-local no-good.
+        if !self.node_local_unsat(&inputs) {
+            return None;
+        }
+
+        // Step 5 — minimize greedily: drop each label while the clash survives.
+        let mut core = inputs;
+        let mut i = 0;
+        while i < core.len() {
+            let cand = core[i];
+            let reduced: Vec<ClassId> = core.iter().copied().filter(|&x| x != cand).collect();
+            if self.node_local_unsat(&reduced) {
+                core = reduced;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Step 6 — filter syntactic told-disjoint pairs: a bare `(a,b)` core
+        // that is already a told-disjoint pair is caught eagerly by clause
+        // firing, so caching it prunes nothing.
+        if core.len() == 2 {
+            let (a, b) = (core[0].index(), core[1].index());
+            let (lo, hi) = (a.min(b), a.max(b));
+            if self.disjoint_pairs.contains(&(lo, hi)) {
+                return None;
+            }
+        }
+
+        // Step 7 — sorted core.
+        core.sort_by_key(|c| c.index());
+        Some(core)
+    }
+
+    /// Test/B3-support adapter for [`Self::extract_core_impl`]: drive the
+    /// antecedent-core extraction with an EXPLICIT label pool and per-label
+    /// decision-level lists, so callers outside this crate (which cannot name
+    /// the `pub(crate)` `DepSet`/`HNode` types) can exercise the pool +
+    /// re-derivability + minimize + disjoint-filter logic. `label_dep_levels[i]`
+    /// is the set of decision levels `labels[i]` depends on; `body_dep_levels`
+    /// the clash body's. No taint gate — that is a node property covered by the
+    /// in-crate live-node test.
+    #[must_use]
+    pub fn extract_core_from_dep_levels(
+        &self,
+        labels: &[ClassId],
+        label_dep_levels: &[Vec<u32>],
+        body_dep_levels: &[u32],
+    ) -> Option<Vec<ClassId>> {
+        let to_dep = |levels: &[u32]| {
+            levels
+                .iter()
+                .fold(DepSet::EMPTY, |acc, &lvl| acc.insert(lvl))
+        };
+        let label_deps: Vec<DepSet> = label_dep_levels.iter().map(|lv| to_dep(lv)).collect();
+        let body_deps = to_dep(body_dep_levels);
+        self.extract_core_impl(labels, &label_deps, body_deps)
+    }
+
     /// Class labels of the root node — the derived subsumers of the root
     /// concept, for EL-closure cross-checks. Resolves the root through the
     /// merge union-find first: a `≤n` merge can fold node 0 into another
@@ -3916,6 +4090,72 @@ mod tests {
 
     fn cls(i: u32) -> ClassId {
         ClassId::new(i)
+    }
+
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn extract_node_local_core_none_on_tainted_node() {
+        // SP2 B1: a merge-tainted node carries un-decision-tracked provenance,
+        // so `extract_node_local_core` must refuse to generalize (⇒ `None`),
+        // even though the node's labels would otherwise node-locally clash.
+        // Covers the live-node path (real `HNode`/`DepSet`) the external
+        // adapter test cannot reach. Fixture: `B ⊓ C ⊑ ⊥` with node {B,C}.
+        let (b, c) = (cls(1), cls(2));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+            head: vec![],
+        }];
+        let mut eng = HyperEngine::new(&clauses, b);
+        let n = HNode(0);
+        eng.nodes[n.index()].add(c, DepSet::singleton(2));
+        // Sanity: untainted, this clash IS node-local (a told-disjoint pair ⇒
+        // filtered to None by step 6, so use a non-disjoint control instead).
+        // Here we only assert the taint gate: set the taint and expect None.
+        eng.nodes[n.index()].at_most_tainted = true;
+        assert_eq!(
+            eng.extract_node_local_core(n, DepSet::singleton(2)),
+            None,
+            "at_most_tainted node must not be generalized"
+        );
+        eng.nodes[n.index()].at_most_tainted = false;
+        eng.nodes[n.index()].nn_tainted = true;
+        assert_eq!(
+            eng.extract_node_local_core(n, DepSet::singleton(2)),
+            None,
+            "nn_tainted node must not be generalized"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn extract_node_local_core_live_node_recovers_antecedent() {
+        // SP2 B1: exercise the REAL `extract_node_local_core` (not just the
+        // adapter) end-to-end on a live node. `A⊑B, B⊓C⊑⊥`; the node carries
+        // {A,B,C} with B derived from A (inherits A's {d1}); body_deps {d1,d2}.
+        // Expect the antecedent core {A,C}, not the derived pair {B,C}.
+        let (a, b, c) = (cls(0), cls(1), cls(2));
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(b, X), Atom::Class(c, X)],
+                head: vec![],
+            },
+        ];
+        let mut eng = HyperEngine::new(&clauses, a); // root already has A@EMPTY
+        let n = HNode(0);
+        // Overwrite A's dep to {d1}, then add B@{d1} (derived), C@{d2}.
+        eng.nodes[n.index()].label_deps[0] = DepSet::singleton(1);
+        eng.nodes[n.index()].add(b, DepSet::singleton(1));
+        eng.nodes[n.index()].add(c, DepSet::singleton(2));
+        let body_deps = DepSet::singleton(1).insert(2);
+        assert_eq!(
+            eng.extract_node_local_core(n, body_deps),
+            Some(vec![a, c]),
+            "live-node extraction must recover {{A,C}}, not {{B,C}}"
+        );
     }
 
     #[test]

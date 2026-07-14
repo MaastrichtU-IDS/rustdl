@@ -131,6 +131,35 @@ pub fn analyze(records: &[ClashRecord]) -> ShadowReport {
     }
 }
 
+pub struct DepthBinnedReport {
+    pub split_depth: u32,
+    pub shallow: ShadowReport,
+    pub deep: ShadowReport,
+    pub n_shallow: usize,
+    pub n_deep: usize,
+}
+
+#[must_use]
+pub fn analyze_by_depth(records: &[ClashRecord], split_depth: u32) -> DepthBinnedReport {
+    let shallow: Vec<ClashRecord> = records
+        .iter()
+        .filter(|r| r.branch_depth < split_depth)
+        .cloned()
+        .collect();
+    let deep: Vec<ClashRecord> = records
+        .iter()
+        .filter(|r| r.branch_depth >= split_depth)
+        .cloned()
+        .collect();
+    DepthBinnedReport {
+        split_depth,
+        n_shallow: shallow.len(),
+        n_deep: deep.len(),
+        shallow: analyze(&shallow),
+        deep: analyze(&deep),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +190,45 @@ mod tests {
         assert_eq!(r.bjgap_shadow.median, 9); // 10 - 2 + 1
         assert!(r.reusable_nogood_frac > 0.0); // key 7 recurs
         assert_eq!(r.distinct_nogoods, 1);
+    }
+
+    #[test]
+    fn analyze_by_depth_splits_shallow_and_deep() {
+        use crate::hyper::{ClashRecord, DepSetSnapshot};
+        let snap = |levels: Vec<u32>| DepSetSnapshot {
+            highest: levels.last().copied(),
+            count: levels.len() as u32,
+            levels,
+        };
+        let recs = vec![
+            ClashRecord {
+                branch_depth: 1,
+                real: snap(vec![1]),
+                shadow: snap(vec![1]),
+                clash_label_key: 100,
+            },
+            ClashRecord {
+                branch_depth: 2,
+                real: snap(vec![1]),
+                shadow: snap(vec![1]),
+                clash_label_key: 100,
+            },
+            ClashRecord {
+                branch_depth: 50,
+                real: snap(vec![9]),
+                shadow: snap(vec![9]),
+                clash_label_key: 200,
+            },
+            ClashRecord {
+                branch_depth: 60,
+                real: snap(vec![9]),
+                shadow: snap(vec![9]),
+                clash_label_key: 200,
+            },
+        ];
+        let r = analyze_by_depth(&recs, 10);
+        assert_eq!((r.n_shallow, r.n_deep), (2, 2));
+        assert!((r.deep.reusable_nogood_frac - 1.0).abs() < 1e-9);
+        assert!((r.shallow.reusable_nogood_frac - 1.0).abs() < 1e-9);
     }
 }

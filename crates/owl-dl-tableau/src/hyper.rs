@@ -518,7 +518,7 @@ pub struct SearchStats {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
-              mrv_ordering, nn_taint_disabled, shadow_dep_probe) — orthogonal toggles, not a state enum"
+              mrv_ordering, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],

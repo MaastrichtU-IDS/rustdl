@@ -2575,6 +2575,9 @@ impl HyperCache {
         // amortized index.
         // Only thread the hierarchy in when SP1.1 is enabled (default OFF).
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        if crate::incremental_fixpoint_enabled() {
+            engine = engine.with_incremental_fixpoint();
+        }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
@@ -2635,6 +2638,9 @@ impl HyperCache {
             }
         }
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        if crate::incremental_fixpoint_enabled() {
+            engine = engine.with_incremental_fixpoint();
+        }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
@@ -2761,6 +2767,9 @@ impl HyperCache {
             }
             e
         };
+        if crate::incremental_fixpoint_enabled() {
+            engine = engine.with_incremental_fixpoint();
+        }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
@@ -2995,6 +3004,9 @@ impl ConsistencyCache {
         let mut engine = HyperEngine::new_seeded(&self.clauses, &self.seed)
             .with_sub_roles(self.sub_roles.clone())
             .with_nominals(self.num_classes, self.num_individuals);
+        if crate::incremental_fixpoint_enabled() {
+            engine = engine.with_incremental_fixpoint();
+        }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
         }
@@ -3223,6 +3235,7 @@ impl SnapshotCache {
         use owl_dl_tableau::hyper::{HyperEngine, HyperResult};
         let build_start = std::time::Instant::now();
         let clauses = self.clauses_for_sub(sub);
+        // incremental_fixpoint deliberately NOT wired: this path uses engine.decide() which bypasses the decide_with_deadline root seed (snapshot capture is default-OFF).
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         let result = match engine.decide(HYPER_WEDGE_DEPTH) {
             HyperResult::Sat => {

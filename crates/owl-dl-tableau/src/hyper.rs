@@ -1529,6 +1529,14 @@ impl<'c> HyperEngine<'c> {
     /// Run Horn hyperresolution to fixpoint. `max_iters` bounds the
     /// outer loop defensively. Disjunctive (non-Horn) clauses are
     /// skipped here — use [`HyperEngine::decide`] for branching.
+    ///
+    /// FOOTGUN: this calls `horn_fixpoint` directly, bypassing the one-time
+    /// worklist seed that `decide_with_deadline` performs under
+    /// `incremental_fixpoint`. It must NOT be used on an engine with
+    /// `incremental_fixpoint` enabled unless the caller has already seeded the
+    /// worklist (e.g. via `seed_worklist_from_graph`) — otherwise the first
+    /// drain sees an empty worklist and returns `Sat` immediately (a total
+    /// MISS). In production `run` is only used on non-incremental engines.
     #[must_use]
     pub fn run(&mut self, max_iters: usize) -> HyperResult {
         self.horn_fixpoint(max_iters)
@@ -2990,9 +2998,23 @@ impl<'c> HyperEngine<'c> {
         // recover it. We do NOT rewrite the predecessors' out-edges (they still
         // point at `s_j` and are read via resolve-on-read); we only extend
         // `s_i.preds` and re-queue a back-trigger so any label already on `s_i`
-        // re-fires at the newly-absorbed predecessors. Flag-gated: OFF is
-        // byte-for-byte unchanged. Skip self-loops (`s_i → s_i`) and dedup.
-        if self.inverse_func_merge {
+        // re-fires at the newly-absorbed predecessors. Skip self-loops
+        // (`s_i → s_i`) and dedup.
+        //
+        // Gated by `inverse_func_merge || incremental_fixpoint`. The
+        // `inverse_func_merge` arm is the original galen driver. The
+        // `incremental_fixpoint` arm is REQUIRED for incremental correctness
+        // independent of `inverse_func_merge`: `apply_nn_rule` (nominal
+        // NN-merge) merges two nodes with distinct predecessors regardless of
+        // `inverse_func_merge`, and in incremental mode there is no full
+        // reseed to recover a dropped back-prop firing — so with
+        // `incremental_fixpoint=ON` + `inverse_func_merge=OFF` + nominals a
+        // back-prop clause at the folded node's former parent could silently
+        // fail to fire (a MISS). Copying in-edges on a merge is always sound
+        // merge semantics (every `x→j` must become `x→i`). When BOTH flags are
+        // OFF (default tableau path) this block is skipped exactly as before —
+        // byte-for-byte unchanged.
+        if self.inverse_func_merge || self.incremental_fixpoint {
             for (r, p) in self.nodes[s_j.index()].preds.clone() {
                 let rp = self.resolve(p);
                 if rp == s_i {

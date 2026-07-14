@@ -2,10 +2,11 @@
 //! identical hierarchies on every fixture. A difference means the
 //! incremental drain dropped or double-fired a clause (a MISS or FP).
 //!
-//! `RUSTDL_HYPER_INCREMENTAL_FIXPOINT` is inert as of Task 1.2 (SP1's
-//! later tasks make it load-bearing), so this test currently passes
-//! trivially — it exists to catch a regression the moment the flag
-//! starts doing real work.
+//! `RUSTDL_HYPER_INCREMENTAL_FIXPOINT` is load-bearing as of Task 1.4:
+//! ON, `horn_fixpoint` no longer re-seeds the whole graph every pass but
+//! drains only the per-branch delta carried across `save`/`restore`. This
+//! test is the durable byte-identity gate on that path — a mismatch here is
+//! a real incremental-drain bug, not diagnostic noise.
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};

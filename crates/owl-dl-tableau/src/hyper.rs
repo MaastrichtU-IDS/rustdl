@@ -3674,6 +3674,108 @@ impl<'c> HyperEngine<'c> {
         self.nodes.len()
     }
 
+    /// Wedge-native node-local UNSAT oracle (SP2 B0): the forward-closure of
+    /// `labels` over the **node-local** fragment of `self.clauses` +
+    /// `self.disjoint_pairs`, returning `(closed_set, clashed)`.
+    ///
+    /// A clause is node-local iff **every** body atom is [`Atom::Class`] on
+    /// **one and the same** variable (no [`Atom::Role`]/existential/cardinality/
+    /// equality atoms, and no cross-variable bodies). Such a clause fires only
+    /// when all its body classes are already in the set; a `⊥` head (empty)
+    /// flags a clash, a single [`Atom::Class`] head is added to the set, and a
+    /// **disjunctive** head (`len > 1`) is SKIPPED — treating it as forced
+    /// would be a false UNSAT. Told-disjoint pairs (`self.disjoint_pairs`) both
+    /// present in the set also flag a clash.
+    ///
+    /// **Sound (no false UNSAT):** restricting firing to role-free,
+    /// same-variable, non-disjunctive clauses under-approximates the real
+    /// engine's node-local derivation, so `clashed` can only MISS a real clash
+    /// (safe under-prune), never assert one the engine wouldn't. Read-only
+    /// (`&self`); no graph mutation. B1 needs the closed set (not just the
+    /// bool) for its re-derivability filter.
+    #[must_use]
+    pub fn node_local_closure(
+        &self,
+        labels: &[ClassId],
+    ) -> (std::collections::HashSet<ClassId>, bool) {
+        let mut set: std::collections::HashSet<ClassId> = labels.iter().copied().collect();
+        let mut clashed = false;
+
+        // Defensive iteration bound: each pass either adds ≥1 class or is the
+        // final no-change pass, so `clauses.len() + set.len()` passes suffice.
+        let max_iters = self.clauses.len() + set.len() + 1;
+        for _ in 0..max_iters {
+            let mut changed = false;
+
+            for cl in self.clauses {
+                // Node-local body test: non-empty, all `Class(_, v)` on the
+                // SAME variable `v`, and every body class already in `set`.
+                let mut body_var: Option<Var> = None;
+                let mut node_local = true;
+                let mut all_present = true;
+                for atom in &cl.body {
+                    if let Atom::Class(c, v) = atom {
+                        match body_var {
+                            None => body_var = Some(*v),
+                            Some(bv) if bv == *v => {}
+                            Some(_) => {
+                                node_local = false;
+                                break;
+                            }
+                        }
+                        if !set.contains(c) {
+                            all_present = false;
+                        }
+                    } else {
+                        // Role/existential/cardinality/equality atom — not node-local.
+                        node_local = false;
+                        break;
+                    }
+                }
+                // An empty body (`⊤ → head`) has no variable; treat it as
+                // node-local (it always fires). `all_present` stays true.
+                if !node_local || !all_present {
+                    continue;
+                }
+
+                if cl.head.is_empty() {
+                    clashed = true;
+                } else if cl.head.len() == 1
+                    && let Atom::Class(c, _) = cl.head[0]
+                    && !set.contains(&c)
+                {
+                    // Single Class head — a forced node-local derivation.
+                    // Non-Class single heads (∃/≥/≤/=) are not node-local; skip.
+                    // Disjunctive heads (len > 1) are NOT forced — skip.
+                    set.insert(c);
+                    changed = true;
+                }
+            }
+
+            // Told-disjoint clash: any normalized pair both present in the set.
+            if !clashed {
+                for &(a, b) in self.disjoint_pairs.iter() {
+                    if set.contains(&ClassId::new(a)) && set.contains(&ClassId::new(b)) {
+                        clashed = true;
+                        break;
+                    }
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        (set, clashed)
+    }
+
+    /// Node-local UNSAT bool — the clash flag from [`Self::node_local_closure`].
+    #[must_use]
+    pub fn node_local_unsat(&self, labels: &[ClassId]) -> bool {
+        self.node_local_closure(labels).1
+    }
+
     /// Class labels of the root node — the derived subsumers of the root
     /// concept, for EL-closure cross-checks. Resolves the root through the
     /// merge union-find first: a `≤n` merge can fold node 0 into another

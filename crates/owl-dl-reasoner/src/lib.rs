@@ -683,6 +683,9 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
     let mut results = Vec::with_capacity(internal.vocabulary.num_classes());
     for (class_id, iri) in internal.vocabulary.classes() {
         let mut engine = HyperEngine::new(&clauses, class_id);
+        if crate::incremental_fixpoint_enabled() {
+            engine = engine.with_incremental_fixpoint();
+        }
         let deadline = per_class_timeout.map(|t| std::time::Instant::now() + t);
         let start = std::time::Instant::now();
         let result = engine.decide_with_deadline(max_depth, deadline);
@@ -1092,6 +1095,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if crate::adaptive_budget_enabled() {
                 engine = engine.with_adaptive_budget();
             }
+            if crate::incremental_fixpoint_enabled() {
+                engine = engine.with_incremental_fixpoint();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1222,6 +1228,9 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
     }
     if hyper_mrv_ordering_enabled() {
         engine = engine.with_mrv_ordering();
+    }
+    if crate::incremental_fixpoint_enabled() {
+        engine = engine.with_incremental_fixpoint();
     }
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
     let start = std::time::Instant::now();
@@ -1378,6 +1387,9 @@ pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
     }
     if hyper_mrv_ordering_enabled() {
         engine = engine.with_mrv_ordering();
+    }
+    if crate::incremental_fixpoint_enabled() {
+        engine = engine.with_incremental_fixpoint();
     }
 
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
@@ -1655,6 +1667,13 @@ pub(crate) fn adaptive_budget_enabled() -> bool {
     // DEFAULT ON: strictly verdict-preserving (corpus MISSED=0, byte-identical
     // closures at DIV_WINDOW=500) and faster (ore-15672 138→91s). `=0` opts out.
     std::env::var("RUSTDL_ADAPTIVE_BUDGET").map_or(true, |v| v != "0")
+}
+
+/// SP1: opt-in incremental `horn_fixpoint`. Default OFF until validated
+/// FP=0 AND MISSED=0. Disable/enable with `RUSTDL_HYPER_INCREMENTAL_FIXPOINT`.
+#[must_use]
+pub(crate) fn incremental_fixpoint_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPER_INCREMENTAL_FIXPOINT").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau

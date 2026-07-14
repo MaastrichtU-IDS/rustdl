@@ -568,6 +568,12 @@ pub struct HyperEngine<'c> {
     /// soundness with inverse roles; without it, `RUSTDL_HYPERTABLEAU_TRUST_SAT`
     /// is corpus-only safe (see SIO finding).
     double_blocking: bool,
+    /// SP1 scaffold (`RUSTDL_HYPER_INCREMENTAL_FIXPOINT`, via
+    /// [`with_incremental_fixpoint`]): opt-in incremental `horn_fixpoint` —
+    /// process only the per-branch worklist delta instead of re-seeding the
+    /// whole graph each solve frame. Default OFF until validated FP=0 AND
+    /// MISSED=0.
+    incremental_fixpoint: bool,
     /// Opt-in (`RUSTDL_PRECISE_CARD_DEPS`, via [`with_precise_card_deps`]): at a
     /// `≤n` cardinality clash, report a **sound over-approximation** of the
     /// clash's true dependency set instead of `DepSet::ALL`, so backjumping can
@@ -935,6 +941,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            incremental_fixpoint: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
@@ -985,6 +992,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            incremental_fixpoint: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
@@ -1010,6 +1018,14 @@ impl<'c> HyperEngine<'c> {
     pub fn with_double_blocking(mut self) -> Self {
         self.double_blocking = true;
         self.block_index = Some(std::collections::HashMap::new());
+        self
+    }
+
+    /// Enable incremental `horn_fixpoint` (SP1): process only the per-branch
+    /// worklist delta instead of re-seeding the whole graph each solve frame.
+    #[must_use]
+    pub fn with_incremental_fixpoint(mut self) -> Self {
+        self.incremental_fixpoint = true;
         self
     }
 
@@ -2051,6 +2067,7 @@ impl<'c> HyperEngine<'c> {
             nominals: None,
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
+            incremental_fixpoint: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,

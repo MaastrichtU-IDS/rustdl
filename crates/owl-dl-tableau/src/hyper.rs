@@ -321,6 +321,9 @@ struct Snapshot {
     /// for the whole query should be `BackPropAborted` regardless of
     /// whether the branch that observed it succeeded.
     origin: Vec<bool>,
+    /// SP1: the pending event worklist, saved/restored only when
+    /// `incremental_fixpoint` is on. Empty (and never read) when off.
+    worklist: Vec<Event>,
 }
 
 /// Phase 1b.5 lazy expansion state for snapshot replay. When set
@@ -2339,6 +2342,11 @@ impl<'c> HyperEngine<'c> {
             neq: self.neq.clone(),
             block_index: self.block_index.clone(),
             origin: self.snapshot_origin.clone(),
+            worklist: if self.incremental_fixpoint {
+                self.worklist.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -2348,6 +2356,9 @@ impl<'c> HyperEngine<'c> {
         self.neq = saved.neq;
         self.block_index = saved.block_index;
         self.snapshot_origin = saved.origin;
+        if self.incremental_fixpoint {
+            self.worklist = saved.worklist;
+        }
         self.stats.restores += 1;
     }
 

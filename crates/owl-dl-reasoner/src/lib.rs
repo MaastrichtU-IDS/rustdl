@@ -626,7 +626,9 @@ pub fn clause_deferred_census<A: horned_owl::model::ForIRI>(
     Ok(owl_dl_core::clause::deferred_census(&internal))
 }
 
-pub use owl_dl_tableau::hyper::{HyperResult, SearchStats};
+pub use owl_dl_tableau::hyper::{
+    HyperResult, SearchStats, reset_nogood_prune_counts, take_nogood_prune_counts,
+};
 
 /// Per-class concept-satisfiability result from the hypertableau
 /// engine ([`owl_dl_tableau::hyper`]), for the H2b wall measurement.
@@ -1701,7 +1703,8 @@ pub(crate) fn incremental_fixpoint_enabled() -> bool {
 /// of an UNSAT label-set is UNSAT). Applied at the SAME `HyperEngine::new*`
 /// classify sites as `incremental_fixpoint`. Default OFF until the
 /// verdict-identity gate + a corpus perf/soundness sweep validate it.
-pub(crate) fn wedge_nogood_enabled() -> bool {
+#[must_use]
+pub fn wedge_nogood_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_NOGOOD").is_some_and(|v| v != "0" && !v.is_empty())
 }
 

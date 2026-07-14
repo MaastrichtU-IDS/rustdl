@@ -30,7 +30,35 @@ use owl_dl_core::clause::{Atom, DlClause, Var, X};
 use owl_dl_core::ir::{ClassId, Role};
 use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// DIAGNOSTIC-ONLY (SP2 nogood sweep): process-global aggregate of the
+/// per-decide `SearchStats::nogood_prunes` / `nogood_prunes_netnew` counters,
+/// which are otherwise dropped when a per-pair `SearchStats` is discarded.
+/// Incremented in the node-local no-good prune block; read+reset via
+/// [`take_nogood_prune_counts`]. Behaviour-neutral — never consulted by the
+/// engine, only surfaced as a `# nogood:` diagnostic line under
+/// `RUSTDL_WEDGE_NOGOOD`.
+static NOGOOD_PRUNES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static NOGOOD_PRUNES_NETNEW_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Read and reset the process-global nogood-prune counters (see
+/// [`NOGOOD_PRUNES_TOTAL`]). Returns `(prunes, netnew)`. Diagnostic-only.
+#[must_use]
+pub fn take_nogood_prune_counts() -> (u64, u64) {
+    (
+        NOGOOD_PRUNES_TOTAL.swap(0, Ordering::Relaxed),
+        NOGOOD_PRUNES_NETNEW_TOTAL.swap(0, Ordering::Relaxed),
+    )
+}
+
+/// Reset the process-global nogood-prune counters to zero (call at classify
+/// entry so the reported count is per-run). Diagnostic-only.
+pub fn reset_nogood_prune_counts() {
+    NOGOOD_PRUNES_TOTAL.store(0, Ordering::Relaxed);
+    NOGOOD_PRUNES_NETNEW_TOTAL.store(0, Ordering::Relaxed);
+}
 
 /// A match binding: the body's non-`X` successor variables mapped to
 /// graph nodes, sorted by variable. `X` is implicit (always the match
@@ -2454,11 +2482,13 @@ impl<'c> HyperEngine<'c> {
                         // clash paths do (see `widen_deps_if_tainted`).
                         core_deps = self.widen_deps_if_tainted(n, core_deps);
                         self.stats.nogood_prunes += 1;
+                        NOGOOD_PRUNES_TOTAL.fetch_add(1, Ordering::Relaxed);
                         // Net-new via the FRAME-LOCAL `d` (advisor N1/#6): `d ∈
                         // core_deps` ⇒ this decision is genuinely responsible ⇒
                         // backjumping would NOT have skipped this branch.
                         if core_deps.contains(d) {
                             self.stats.nogood_prunes_netnew += 1;
+                            NOGOOD_PRUNES_NETNEW_TOTAL.fetch_add(1, Ordering::Relaxed);
                         }
                         // Replicate the child-`Unsat` arm below verbatim, with
                         // `core_deps` standing in for the child's `clash_deps`.

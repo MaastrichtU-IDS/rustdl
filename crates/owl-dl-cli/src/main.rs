@@ -725,6 +725,9 @@ fn main() -> Result<()> {
             // 0 = unbounded; any positive value bounds each pair.
             let timeout =
                 (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            // DIAGNOSTIC (SP2 nogood sweep): reset the per-classify aggregate so
+            // the `# nogood:` line reflects only this run.
+            owl_dl_reasoner::reset_nogood_prune_counts();
             let h = if saturation_only {
                 classify_saturation_only(&onto).context("classify_saturation_only")?
             } else {
@@ -740,6 +743,12 @@ fn main() -> Result<()> {
                 }
             };
             print_classification(&h);
+            // DIAGNOSTIC (SP2 nogood sweep): surface the per-classify no-good
+            // prune aggregate under `RUSTDL_WEDGE_NOGOOD`. Behaviour-neutral.
+            if owl_dl_reasoner::wedge_nogood_enabled() {
+                let (prunes, netnew) = owl_dl_reasoner::take_nogood_prune_counts();
+                println!("# nogood: prunes={prunes} netnew={netnew}");
+            }
             warn_if_incomplete(h.stats().timed_out_pairs, pair_timeout_ms);
         }
         Command::Instance {

@@ -66,11 +66,21 @@ cheaply.**
   `branch_depth`, and the real/shadow `DepSetSnapshot`s.
 - `owl-dl-tableau/src/shadow_measures.rs` — read-only measures over clash records
   (`Histogram`, etc.).
-- `verify_node_local_clash(pool, tbox, hierarchy, &labels, cap) -> bool`
-  (`owl-dl-tableau/src/saturate.rs`, exported + unit-tested) — the reusable
-  soundness oracle: "is this label-set node-locally unsatisfiable."
-- Merge-taint flags on `HyperNode`: `at_most_tainted`, `nn_tainted`,
-  `shadow_merge_cause` — for the derivation-local exclusion.
+- Merge-taint flags on `HyperNode`: `at_most_tainted`, `nn_tainted` (live-path,
+  set during search) — a conservative derivation-local exclusion. (NOT
+  `shadow_merge_cause`: it is written only under the shadow probe, so it is empty
+  under `RUSTDL_WEDGE_NOGOOD` and unusable here.)
+
+**Must be built (Stage 1) — NOTE (advisor rework):** the tableau's
+`saturate::verify_node_local_clash(pool, tbox, hierarchy, &[ConceptId], …)` is
+**NOT reusable** as the soundness oracle: the wedge (`HyperEngine`) holds no
+`ConceptPool`/`AbsorbedTBox`, reasons over clausal `DlClause`, and its node
+labels are `ClassId` (a distinct newtype from `ConceptId`, whose space includes
+preimage-less Tseitin names). Stage 1 must build a **wedge-native** node-local
+UNSAT oracle over `self.clauses` (node-local clauses = all-`Class`-atom bodies on
+one variable; plus `disjoint_pairs`). That oracle — not merge-taint — is the
+load-bearing soundness guarantee (a genuinely node-local core is TBox-global,
+sound regardless of `≤n`-merge provenance, on the no-inverse/no-nominal fragment).
 - `DepSet` + `clash_deps` at the clash site; `record_clash`.
 
 **Must be built (Stage 1):**
@@ -141,9 +151,10 @@ stalled-flips), not a proxy.
   sole remaining `≤n` contamination path). The flag therefore must not be trusted
   on inverse/nominal ontologies — enforced by the corpus FP gate below, and the
   design does not claim general SROIQ(D) soundness.
-- Each stored core is validated by `verify_node_local_clash` (saturate.rs) before
-  it is allowed to prune — a cheap independent re-derivation on an isolated node,
-  so a mis-extracted core can never cause a false prune (FP).
+- Each stored core is validated by the **wedge-native node-local oracle** (a
+  read-only node-local Horn re-derivation over `self.clauses`) before it is
+  allowed to prune, so a mis-extracted core can never cause a false prune (FP) —
+  only a MISS, caught by the closure gate.
 
 **Measurement (the actual verdict):** with the flag ON, on `ore_ont_10019`
 classify (adaptive-budget OFF and ON), report:
@@ -200,5 +211,5 @@ classify (adaptive-budget OFF and ON), report:
   converge these classes regardless of hit-rate — Stage 0's deep-tail bin is
   designed to catch this before Stage-1 effort.
 - **Core-extraction correctness:** a mis-extracted core is caught by the
-  `verify_node_local_clash` gate (no FP) but could over-prune → MISS; the
+  wedge-native node-local oracle gate (no FP) but could over-prune → MISS; the
   MISSED=0 closure gate catches it.

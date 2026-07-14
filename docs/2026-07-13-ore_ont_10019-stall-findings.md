@@ -161,3 +161,46 @@ worth carrying into SP2 scoping: the `block_eligible` counter is dead
 reasons from this probe's `blk=fired/eligible` column should either enable
 `.with_double_blocking()` in the probe or read the ratio as `fired/
 is_blocked_calls` instead of `fired/eligible`.
+
+---
+
+## SP1 result (2026-07-14): incremental `horn_fixpoint` landed
+
+SP1 Task 1.4 made `horn_fixpoint` incremental under
+`RUSTDL_HYPER_INCREMENTAL_FIXPOINT` (default OFF). In incremental mode the
+per-pass `worklist.clear()` + full-graph re-seed is skipped; each `solve`
+frame drains only the delta its own decision pushed, relying on the parent's
+saturated worklist carried across `save`/`restore` (Task 1.3). The root query
+graph is built by direct field writes that bypass `worklist.push`, so
+`decide_with_deadline` seeds the worklist once, before the first `solve`.
+
+Measured on `ore_ont_10019` (`hyper-sat --per-class-timeout-ms 300`), OFF vs ON:
+
+| metric          | incremental=0 | incremental=1 | delta        |
+|-----------------|--------------:|--------------:|-------------:|
+| `match_attempts`| 111,145,427   | 1,973,881     | **−98.2% (~56×)** |
+| `sat`           | 14            | 14            | unchanged    |
+| `unsat`         | 0             | 0             | unchanged    |
+| `stalled`       | 33            | 33            | unchanged    |
+| branches / stalled class | ~1,500–3,600 | ~16,500       | ~5–10× more  |
+| max depth reached | ~75–80      | ~137–138 (cap) | deeper      |
+
+The redundant re-saturation that dominated the per-branch cost is gone:
+per-branch Horn match tries collapse ~56×, so within the identical 300 ms
+budget the search now explores ~5–10× more branches and reaches the depth cap
+(138) instead of stalling at depth ~75–80. The verdict counts are unchanged
+(same 14 sat / 33 stalled): these 33 classes are genuinely hard — the deeper,
+cheaper search still does not exhaust them inside 300 ms, confirming the doc's
+diagnosis that this is a raw-throughput problem. Closing the 33 stalls needs
+the remaining SP levers (branch ordering / lookahead / a higher budget), not
+more per-branch throughput; the throughput lever itself is now largely spent.
+
+Note: `node_clones == branches_taken` still holds — the full node-vec clone per
+branch in `save`/`restore` is unchanged by this task (only the worklist is now
+carried; the graph clone is a separate SP lever).
+
+Correctness: the classify OFF-vs-ON differential harness
+(`crates/owl-dl-cli/tests/incremental_fixpoint_identity.rs`) is byte-identical
+across `funcmerge-cyclic`, `pizza`, `27_eight_way_disjunction_sat`, and
+`18_diamond_subsumption_unsat` (the last three added here to cover disjunctive
+branching + `≤n` merging across `save`/`restore`).

@@ -63,13 +63,19 @@ fn classify_verdict_lines(ofn: &Path, incremental: bool) -> Vec<String> {
 }
 
 #[test]
-// The fixture list is a single entry today (SP1 Task 1.2); later SP1 tasks
-// grow it, at which point this stops being a single-element loop. Keep the
-// loop shape rather than de-looping and re-looping later.
-#[allow(clippy::single_element_loop)]
 fn incremental_matches_baseline_on_fixtures() {
-    // Small, checked-in SROIQ fixtures that exercise disjunction + <=n.
-    for rel in ["ontologies/regression/funcmerge-cyclic.ofn"] {
+    // Small, checked-in SROIQ fixtures. The first exercises functional/`≤1`
+    // merge; the last three (added SP1 Task 1.4) exercise disjunctive
+    // branching and `≤n` cardinality merging across `save`/`restore` — the
+    // path where the incremental worklist drain is actually stressed. Each
+    // was verified deterministic under `classify` (verdict lines identical
+    // over repeated runs) before inclusion.
+    for rel in [
+        "ontologies/regression/funcmerge-cyclic.ofn",
+        "ontologies/real/pizza.ofn",
+        "crates/owl-dl-bench/fixtures/27_eight_way_disjunction_sat.ofn",
+        "crates/owl-dl-bench/fixtures/18_diamond_subsumption_unsat.ofn",
+    ] {
         let path = fixture_path(rel);
         // A missing fixture must fail loudly, not be silently skipped: a
         // vacuous pass here would defeat the whole point of this gate.

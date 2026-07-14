@@ -1544,10 +1544,41 @@ impl<'c> HyperEngine<'c> {
     /// `Stalled`). See `docs/hypertableau-seminaive-scoping.md`.
     fn horn_fixpoint(&mut self, max_iters: usize) -> HyperResult {
         self.stats.fixpoint_passes += 1;
-        // Re-seed from scratch (keeps the worklist out of the cloned
-        // branch state — seminaive scoping §4). A failed branch may
-        // have left stale events; clearing here discards them and the
-        // (restored) graph re-seeds correctly.
+        // Non-incremental mode: re-seed from scratch every pass (keeps the
+        // worklist out of the cloned branch state — seminaive scoping §4).
+        // A failed branch may have left stale events; clearing here discards
+        // them and the (restored) graph re-seeds correctly.
+        //
+        // Incremental mode (`incremental_fixpoint`): do NOT clear or re-seed.
+        // The parent's saturated worklist is carried across `save`/`restore`
+        // (Task 1.3); this frame drains only the delta its own decision
+        // pushed (via `apply_head_atom`/merge/`add_label`/`add_edge`). The
+        // very first call is seeded once by `decide_with_deadline` (the root
+        // query graph is built by direct field writes that bypass
+        // `worklist.push`, so without that seed the first drain would be a
+        // no-op — a silent total MISS).
+        if !self.incremental_fixpoint {
+            self.seed_worklist_from_graph();
+        }
+        let mut steps = 0usize;
+        while let Some(ev) = self.worklist.pop() {
+            steps += 1;
+            if steps > max_iters {
+                return HyperResult::Stalled;
+            }
+            if matches!(self.process_event(ev), FireOutcome::Clash) {
+                return HyperResult::Unsat;
+            }
+        }
+        HyperResult::Sat
+    }
+
+    /// Clear the worklist and re-seed it from the full current graph
+    /// (every canonical node's `NodeNew`/`Label`/`Edge` events). Shared by
+    /// the non-incremental `horn_fixpoint` re-seed (every pass) and the
+    /// one-time root seed in `decide_with_deadline` under
+    /// `incremental_fixpoint`.
+    fn seed_worklist_from_graph(&mut self) {
         self.worklist.clear();
         for idx in 0..self.nodes.len() {
             let n = HNode(u32::try_from(idx).expect("fits u32"));
@@ -1584,17 +1615,6 @@ impl<'c> HyperEngine<'c> {
                 self.worklist.push(Event::Edge(n, r, m));
             }
         }
-        let mut steps = 0usize;
-        while let Some(ev) = self.worklist.pop() {
-            steps += 1;
-            if steps > max_iters {
-                return HyperResult::Stalled;
-            }
-            if matches!(self.process_event(ev), FireOutcome::Clash) {
-                return HyperResult::Unsat;
-            }
-        }
-        HyperResult::Sat
     }
 
     /// Fire the clauses an event newly enables. Reuses [`fire_clause`]
@@ -1754,6 +1774,15 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        // Incremental mode: the root query graph is built by direct field
+        // writes (`HyperNode::add`, `edges.push`) in `new`/`new_with_prebuilt`/
+        // `new_seeded`/`from_snapshot`, which bypass `worklist.push`. Seed the
+        // worklist once here (mirroring the non-incremental re-seed) so the
+        // first `horn_fixpoint` drain sees the initial graph; every later
+        // `solve` frame drains only its own delta.
+        if self.incremental_fixpoint {
+            self.seed_worklist_from_graph();
+        }
         self.solve(max_depth)
     }
 

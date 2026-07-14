@@ -204,3 +204,45 @@ Correctness: the classify OFF-vs-ON differential harness
 across `funcmerge-cyclic`, `pizza`, `27_eight_way_disjunction_sat`, and
 `18_diamond_subsumption_unsat` (the last three added here to cover disjunctive
 branching + `≤n` merging across `save`/`restore`).
+
+## SP1 corpus gate + default decision (2026-07-14, Task 1.5)
+
+**Soundness/completeness gates — both clean, flag ON:**
+
+- **Curated matrix** (`owl-dl-bench matrix --tier curated --pair-timeout-ms 1000`,
+  8 ontologies: family, galen, pizza, ro, sio, sulo, trivial, wine): every
+  `rustdl` row is **FP=0 and MISSED=0 under both flag states**, with no
+  ontology showing a flag-ON completeness regression (MISSED equal everywhere).
+  Wall deltas mostly noise-level except `family` (1320→870 ms, −34%) and
+  few-percent gains on `galen`/`sio`.
+- **Non-Horn adversarial FP oracle** (`ore_ont_13723`, the known
+  disjunctive FP regressor, vs the Konclude `.owx` oracle via
+  `konclude_closure_diff::ore_one_closure_matches_oracle`): **FP 0 → 0**,
+  closures byte-identical (`rustdl=10166 konclude=10166` under both flags).
+  The incremental fixpoint is verdict-preserving on the exact fragment where
+  the snapshot-cache was historically FP-unsound.
+
+**Headline (`ore_ont_10019` classify, `RUSTDL_AGGREGATE_DEADLINE_MS=60000`,
+`--pair-timeout-ms 250`), OFF vs ON:** timed-out (incomplete) pairs
+**1643 → 1629 (−14, ~0.85%)**; wall unchanged (both deadline-bound at 60.02 s);
+reported hierarchy **byte-identical** (55 `direct` lines, `diff` empty); no
+newly-decided class. The 56× per-branch-cost win does not surface as a
+classify win here because these classes are **depth-bound, not
+per-branch-cost-bound** — even reaching the depth cap they do not exhaust
+their search inside budget (SP0's `stalled=33` is unchanged).
+
+**Decision: keep `incremental_fixpoint` DEFAULT-OFF.** Per the plan's Step 4
+rule (marginal win ⇒ keep OFF + record why). The change is **clean and
+no-downside** (FP=0/MISSED=0 corpus-wide, verdict-preserving, byte-identical
+closures) and the machinery is validated groundwork, but it buys **no headline
+win at current budgets**: `ore_ont_10019` is deadline-bound identically under
+both flags with an unchanged hierarchy, and the curated tier is a wall wash
+(bar `family`). Flag-ON also adds a per-`save` worklist clone with no
+measurable benefit today. The residual stall is a **depth/search-ordering
+problem (SP2)**, not throughput — the throughput lever SP1 targeted is now
+largely spent. `incremental_fixpoint` remains available opt-in
+(`RUSTDL_HYPER_INCREMENTAL_FIXPOINT=1`) as the sound, tested prerequisite for
+SP2 work (branch ordering / lookahead / no-good caching) that would make a
+deeper search affordable enough to convert the throughput headroom into
+decided classes. Revisit the default flip once such an SP2 lever lands and the
+combination shows a real completeness/wall win.

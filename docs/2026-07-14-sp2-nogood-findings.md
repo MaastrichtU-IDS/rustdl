@@ -295,3 +295,36 @@ backstop (roadmap "honest tail gate"). SP2 as scoped (2b) is closed DEAD.
 clean, tested reference implementation, but adds wall cost with no benefit when ON — so it
 should either be left dormant (opt-in, for a future workload where re-derivation *is* the
 bottleneck) or reverted. Controller/user's call at branch finish.
+
+## ORE benefit sweep (2026-07-14) — does the prune help ANY other ontology?
+
+Full ORE pilot swept: **152/152 ontologies**, `classify` OFF vs ON
+(`RUSTDL_WEDGE_NOGOOD`), subprocess-per-ont, `--pair-timeout-ms 250`, 25 s wall
+cap per run. Per-ont: wall, incomplete pairs, verdict-line count + hash, and
+(ON) `nogood_prunes`/`netnew` via the new diagnostic (commit a6ce809).
+
+**Result: the prune benefits ZERO of the 152 ontologies.**
+- **Beneficiaries: none.** No ontology where ON is faster, decides more classes,
+  has fewer incomplete pairs, or completes where OFF timed out.
+- **Net-negative widely.** ~10 ontologies materially slower with ON (up to **8×**:
+  `ore_ont_10702` 0.06→0.48 s; `12536` 2.83→7.68; `2313` 4.97→16.53 with 11,901
+  prunes; `16666`, `2792`, `5359`, `13545`, `15682`, `5964`, `8666`). **4
+  completion→TIMEOUT regressions**: `ore_ont_11378` (OFF 3.71 s/8734 verdicts →
+  ON 25 s TIMEOUT), `3077` (3.45→TIMEOUT), `3917` (3.23→TIMEOUT), `699`
+  (3.46→TIMEOUT). ON timeouts 14 vs OFF timeouts 10 (+4).
+- **The prune fires broadly: 31 ontologies, 51,748 prunes, ALL net-new** (net-new
+  == total). This **refutes** the "backjumping already captures the reuse"
+  hypothesis — the prunes are genuinely additional — and **confirms the
+  extraction-cost-dominates** explanation: recording (a node-local closure
+  minimization per clash) + matching costs more than the single now-56×-cheaper
+  `horn_fixpoint` a prune front-runs, and on the 4 regressors it blows the budget.
+- **Soundness intact.** One verdict-hash diff (`ore_ont_7532`: OFF inc2/1934
+  verdicts vs ON inc3/1933) is a **timing artifact** — ON's overhead pushed one
+  more pair past the per-pair deadline, so ON decided one *fewer* (MISS-direction,
+  never a wrong extra verdict). No FP. Consistent with curated FP=0/MISSED=0 and
+  the `ore_ont_13723` oracle.
+
+**Bottom line:** the node-local no-good prune is not merely zero-benefit — it is
+**net-negative to actively harmful** when enabled (slowdowns + 4 new timeouts),
+across the entire ORE pilot. It fires correctly and soundly; it simply never pays
+for itself. This is the definitive confirmation of the 2b-DEAD verdict.

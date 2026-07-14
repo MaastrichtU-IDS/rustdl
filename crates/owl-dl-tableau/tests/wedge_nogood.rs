@@ -167,3 +167,41 @@ fn extract_core_none_on_told_disjoint_pair() {
         "a told-disjoint-pair-only core (B,C) must be filtered to None"
     );
 }
+
+/// SP2 B2: `NoGoodStore` — record a minimal core, check subsumption, and
+/// verify minimality is maintained when a superset core is recorded later.
+#[test]
+fn nogood_store_subsumption_and_minimality() {
+    use owl_dl_tableau::hyper::NoGoodStore;
+
+    let (a, c, d) = (cls(0), cls(2), cls(3));
+
+    let mut store = NoGoodStore::default();
+    store.record(vec![a, c]);
+
+    // A superset of the recorded core {a,c} is subsumed (pruned).
+    let superset: std::collections::BTreeSet<ClassId> = [a, c, d].into_iter().collect();
+    assert!(
+        store.subsumes(&superset),
+        "{{a,c,d}} must be subsumed by the recorded core {{a,c}}"
+    );
+
+    // {a,d} is missing c, so the core does not apply.
+    let missing_c: std::collections::BTreeSet<ClassId> = [a, d].into_iter().collect();
+    assert!(
+        !store.subsumes(&missing_c),
+        "{{a,d}} must NOT be subsumed (core {{a,c}} needs c)"
+    );
+
+    // Minimality: recording a superset of an existing core is redundant and
+    // must not be kept — {a,c} alone continues to explain {a,c,d}.
+    store.record(vec![a, c, d]);
+    assert!(
+        store.subsumes(&superset),
+        "after recording the redundant superset {{a,c,d}}, {{a,c,d}} must still be subsumed"
+    );
+    assert!(
+        !store.subsumes(&missing_c),
+        "the redundant superset record must not have introduced a spurious {{a,d}} match"
+    );
+}

@@ -513,6 +513,85 @@ pub struct SearchStats {
     pub clash_records: Vec<ClashRecord>,
 }
 
+/// SP2 B2: a per-solve store of minimal "no-good" UNSAT cores (see
+/// [`HyperEngine::extract_node_local_core`]). Each stored core is a sorted,
+/// deduplicated `Vec<ClassId>` — a label-set that is provably UNSAT
+/// node-locally. `record` maintains the **minimality** invariant: no stored
+/// core is a superset of another (a superset core is subsumed by — i.e.
+/// implied by — the subset, so it carries no extra pruning power and is
+/// dropped).
+///
+/// Scoped to a single `decide`/`decide_with_deadline` call (`clear()`'d at
+/// its top — see the call site) because a core's validity depends on the
+/// clause set + disjointness facts captured at extraction time; reusing it
+/// across an unrelated solve would be an unproven (and unneeded) generalization.
+///
+/// Not yet consulted by any pruning path — wired in B3. Public so the
+/// external `wedge_nogood.rs` integration test can exercise it directly
+/// (matches how B0/B1 reach `HyperEngine` internals).
+#[derive(Debug, Clone, Default)]
+pub struct NoGoodStore {
+    /// Minimal UNSAT cores found so far this solve. Each inner `Vec` is
+    /// sorted ascending by `ClassId` and deduplicated.
+    cores: Vec<Vec<ClassId>>,
+}
+
+/// `true` iff every element of sorted `a` is present in sorted `b`
+/// (`a ⊆ b`), checked in a single linear merge-style pass (no allocation).
+fn is_subset_sorted(a: &[ClassId], b: &[ClassId]) -> bool {
+    let mut bi = 0;
+    for &x in a {
+        while bi < b.len() && b[bi] < x {
+            bi += 1;
+        }
+        if bi >= b.len() || b[bi] != x {
+            return false;
+        }
+        bi += 1;
+    }
+    true
+}
+
+impl NoGoodStore {
+    /// Record a newly-found UNSAT core, maintaining minimality: `core` is
+    /// sorted + deduplicated; if an existing stored core is already a
+    /// subset of it, the new core is redundant and skipped; otherwise any
+    /// existing cores that `core` itself subsets (i.e. are supersets of the
+    /// new, more-general core) are dropped before `core` is pushed.
+    pub fn record(&mut self, mut core: Vec<ClassId>) {
+        core.sort_unstable();
+        core.dedup();
+        if self
+            .cores
+            .iter()
+            .any(|existing| is_subset_sorted(existing, &core))
+        {
+            // An existing core already subsumes (generalizes) this one —
+            // nothing new to learn.
+            return;
+        }
+        // The new core is more general than any existing core it subsets —
+        // drop those now-redundant, less-general entries.
+        self.cores
+            .retain(|existing| !is_subset_sorted(&core, existing));
+        self.cores.push(core);
+    }
+
+    /// `true` iff some stored core is a subset of `labels` — i.e. `labels`
+    /// is provably UNSAT by a previously-recorded no-good.
+    #[must_use]
+    pub fn subsumes(&self, labels: &std::collections::BTreeSet<ClassId>) -> bool {
+        self.cores
+            .iter()
+            .any(|core| core.iter().all(|c| labels.contains(c)))
+    }
+
+    /// Drop all recorded cores (per-solve reset).
+    pub fn clear(&mut self) {
+        self.cores.clear();
+    }
+}
+
 /// The hyperresolution engine. Holds the completion graph and the
 /// clause set (borrowed), plus per-run search instrumentation.
 #[allow(
@@ -707,6 +786,13 @@ pub struct HyperEngine<'c> {
     // wired in B3
     #[allow(dead_code)]
     wedge_nogood: bool,
+    /// SP2 B2: per-solve store of minimal UNSAT no-good cores. Reset at the
+    /// top of every [`Self::decide_with_deadline`] call (per-solve scoping —
+    /// a core is only valid for the clause/graph state it was extracted
+    /// from). Not yet consulted by any pruning path.
+    // consumed in B3
+    #[allow(dead_code)]
+    nogood_store: NoGoodStore,
 }
 
 /// A derivation event driving semi-naive Horn evaluation.
@@ -969,6 +1055,7 @@ impl<'c> HyperEngine<'c> {
             shadow_dep_probe: false,
             current_branch_level: 0,
             wedge_nogood: false,
+            nogood_store: NoGoodStore::default(),
         }
     }
 
@@ -1021,6 +1108,7 @@ impl<'c> HyperEngine<'c> {
             shadow_dep_probe: false,
             current_branch_level: 0,
             wedge_nogood: false,
+            nogood_store: NoGoodStore::default(),
         }
     }
 
@@ -1803,6 +1891,9 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        // Per-solve reset — a recorded no-good core is only valid for the
+        // clause/graph state it was extracted from within this solve.
+        self.nogood_store.clear();
         // Incremental mode: the root query graph is built by direct field
         // writes (`HyperNode::add`, `edges.push`) in `new`/`new_with_prebuilt`/
         // `new_seeded`/`from_snapshot`, which bypass `worklist.push`. Seed the
@@ -2144,6 +2235,7 @@ impl<'c> HyperEngine<'c> {
             shadow_dep_probe: false,
             current_branch_level: 0,
             wedge_nogood: false,
+            nogood_store: NoGoodStore::default(),
         };
         // Asserted ObjectPropertyAssertion edges: mirror as edge +
         // reverse pred (matches `from_snapshot` bookkeeping). Indices

@@ -559,6 +559,33 @@ pub struct SearchStats {
     /// can distinguish a *divergence*-`Stalled` from a plain deadline-`Stalled`
     /// and skip a main-tableau fallthrough that would re-thrash the same pair.
     pub diverged: bool,
+    /// `solve_at_most` partition-exhaustion probe (`RUSTDL_AT_MOST_EXHAUST_PROBE`,
+    /// read-only / verdict-preserving): count of exhaustion clashes where the real
+    /// narrowing candidate `card_clash_deps(node,succs) ∪ ⋃child_clash_deps` was
+    /// computed (real `clash_deps` still `DepSet::ALL`).
+    pub at_most_exhaust_total: u64,
+    /// Of `at_most_exhaust_total`, those whose candidate dep is **bounded**
+    /// (`!overflow`) — i.e. sub-`ALL`, so backjumping would have room to prune.
+    /// `bounded == 0` ⇒ the site is a genuine structural `ALL` (wine frontier).
+    pub at_most_exhaust_bounded: u64,
+    /// Sum of `bits.count_ones()` over the bounded candidates — the mean decision
+    /// count the narrowed clash would depend on (compare to `max_branch_depth`).
+    pub at_most_exhaust_popcount_sum: u64,
+    /// Of `at_most_exhaust_total`, those whose `card_clash_deps(node,succs)` ALONE
+    /// (before the child-dep union) is bounded — disambiguates a local structural
+    /// `ALL` (own-succ/≠/taint guard trips) from a Hole-A deeper-failure `ALL`.
+    pub at_most_exhaust_local_bounded: u64,
+    /// Guard attribution for a local `ALL` (which `card_clash_deps` early-return
+    /// fired): `≤n` merge-inherited (`at_most_tainted`).
+    pub at_most_exhaust_guard_taint: u64,
+    /// Guard attribution: own-successor guard (`succ.parent != Some(p)` — an
+    /// inverse-induced / merge-redirected successor; "Hole B").
+    pub at_most_exhaust_guard_ownsucc: u64,
+    /// Guard attribution: `≠`-only distinctness (`are_neq && !labels_disjoint`).
+    pub at_most_exhaust_guard_neq: u64,
+    /// Guard attribution: no early guard tripped — `over` itself overflowed (a
+    /// component `birth`/`at_most`/`label` dep is already `ALL`, e.g. depth ≥128).
+    pub at_most_exhaust_guard_over: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -642,6 +669,13 @@ pub struct HyperEngine<'c> {
     /// is distinct only via `are_neq && !labels_disjoint`. Sound by
     /// construction; off by default. See `docs/backjump-reconcile-2026-06-06.md`.
     precise_card_deps: bool,
+    /// `RUSTDL_AT_MOST_EXHAUST_PROBE` (default OFF): read-only / verdict-preserving
+    /// go-no-go probe for narrowing the `solve_at_most` partition-exhaustion clash
+    /// (Hole A). At the exhaustion site, compute the candidate narrowing dep
+    /// `card_clash_deps(node,succs) ∪ ⋃child_clash_deps` and record whether it is
+    /// bounded (sub-`ALL`) — WITHOUT using it (real `clash_deps` stays `DepSet::ALL`
+    /// ⇒ byte-identical verdicts). Set once per `decide_with_deadline` from env.
+    at_most_exhaust_probe: bool,
     /// `RUSTDL_INVERSE_FUNC_MERGE` (default OFF): fire deterministic `≤1`/
     /// functional merges INCREMENTALLY inside `horn_fixpoint` (via
     /// `process_event`) rather than routing them through the `solve`/
@@ -1001,6 +1035,7 @@ impl<'c> HyperEngine<'c> {
             incremental_fixpoint: false,
             semantic_branching: false,
             precise_card_deps: false,
+            at_most_exhaust_probe: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
@@ -1053,6 +1088,7 @@ impl<'c> HyperEngine<'c> {
             incremental_fixpoint: false,
             semantic_branching: false,
             precise_card_deps: false,
+            at_most_exhaust_probe: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
@@ -1866,6 +1902,8 @@ impl<'c> HyperEngine<'c> {
         self.stats = SearchStats::default();
         self.init_depth = max_depth;
         self.deadline = deadline;
+        self.at_most_exhaust_probe = std::env::var_os("RUSTDL_AT_MOST_EXHAUST_PROBE")
+            .is_some_and(|v| v != "0" && !v.is_empty());
         // Incremental mode: the root query graph is built by direct field
         // writes (`HyperNode::add`, `edges.push`) in `new`/`new_with_prebuilt`/
         // `new_seeded`/`from_snapshot`, which bypass `worklist.push`. Seed the
@@ -1875,7 +1913,23 @@ impl<'c> HyperEngine<'c> {
         if self.incremental_fixpoint {
             self.seed_worklist_from_graph();
         }
-        self.solve(max_depth)
+        let verdict = self.solve(max_depth);
+        if self.at_most_exhaust_probe && self.stats.at_most_exhaust_total > 0 {
+            eprintln!(
+                "AT_MOST_EXHAUST_PROBE total={} local_bounded={} bounded={} popcount_sum={} \
+                 guard_taint={} guard_ownsucc={} guard_neq={} guard_over={} max_depth={}",
+                self.stats.at_most_exhaust_total,
+                self.stats.at_most_exhaust_local_bounded,
+                self.stats.at_most_exhaust_bounded,
+                self.stats.at_most_exhaust_popcount_sum,
+                self.stats.at_most_exhaust_guard_taint,
+                self.stats.at_most_exhaust_guard_ownsucc,
+                self.stats.at_most_exhaust_guard_neq,
+                self.stats.at_most_exhaust_guard_over,
+                self.stats.max_branch_depth,
+            );
+        }
+        verdict
     }
 
     /// On a successful satisfiability search, return the labels of the
@@ -2194,6 +2248,7 @@ impl<'c> HyperEngine<'c> {
             incremental_fixpoint: false,
             semantic_branching: false,
             precise_card_deps: false,
+            at_most_exhaust_probe: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
@@ -2580,7 +2635,7 @@ impl<'c> HyperEngine<'c> {
             // partitions (hence the Sat/Unsat outcome) is identical; only
             // the order-redundancy is removed. See
             // `docs/wedge-cardinality-clash-precheck.md`.
-            return self.solve_at_most(&succs, n as usize, depth);
+            return self.solve_at_most(node, &succs, n as usize, depth);
         }
         HyperResult::Sat
     }
@@ -2986,16 +3041,84 @@ impl<'c> HyperEngine<'c> {
     /// depend on decisions reached by the deeper `solve(depth-1)` / inverse
     /// back-propagation that the local `succs`/`parent` dep set need not cover,
     /// so narrowing here is not provably sound. See `card_clash_deps`.
-    fn solve_at_most(&mut self, succs: &[HNode], n: usize, depth: usize) -> HyperResult {
+    fn solve_at_most(
+        &mut self,
+        node: HNode,
+        succs: &[HNode],
+        n: usize,
+        depth: usize,
+    ) -> HyperResult {
         let mut groups: Vec<Vec<HNode>> = Vec::with_capacity(n);
         let mut any_stalled = false;
-        if let Some(sat) = self.partition_rec(succs, 0, &mut groups, n, depth, &mut any_stalled) {
+        // Probe-only accumulator: union of the child (partition) clash deps, the
+        // "deeper failures" Hole A said `card_clash_deps(node,succs)` omits.
+        let mut child_acc = DepSet::EMPTY;
+        if let Some(sat) = self.partition_rec(
+            succs,
+            0,
+            &mut groups,
+            n,
+            depth,
+            &mut any_stalled,
+            &mut child_acc,
+        ) {
             return sat; // Sat — completed model kept (no restore).
         }
         if any_stalled {
             return HyperResult::Stalled;
         }
         self.clash_deps = DepSet::ALL;
+        // GO/NO-GO PROBE (read-only, verdict-preserving): compute the candidate
+        // narrowing dep `card_clash_deps(node,succs) ∪ ⋃child_clash_deps` and
+        // record whether it is bounded (sub-`ALL`). Real `clash_deps` stays `ALL`
+        // above ⇒ behaviour byte-identical. `card_clash_deps` returns `ALL` unless
+        // `precise_card_deps` is on (enabled on the classify/probe path).
+        if self.at_most_exhaust_probe {
+            let local = self.card_clash_deps(node, succs);
+            let candidate = local.union(child_acc);
+            self.stats.at_most_exhaust_total += 1;
+            if local.overflow {
+                // Attribute the local `ALL` to the first `card_clash_deps` guard
+                // that would trip (same order as the helper). Read-only mirror.
+                let p = self.resolve(node);
+                let neq_only = {
+                    let mut hit = false;
+                    'pairs: for (i, &a) in succs.iter().enumerate() {
+                        for &b in &succs[i + 1..] {
+                            if self.are_neq(a, b) && !self.labels_disjoint(a, b) {
+                                hit = true;
+                                break 'pairs;
+                            }
+                        }
+                    }
+                    hit
+                };
+                if self.nodes[p.index()].at_most_tainted {
+                    self.stats.at_most_exhaust_guard_taint += 1;
+                } else if succs
+                    .iter()
+                    .any(|&s| self.nodes[s.index()].parent != Some(p))
+                {
+                    self.stats.at_most_exhaust_guard_ownsucc += 1;
+                } else if neq_only {
+                    // ≥n successors pairwise `≠`-forced but NOT disjoint-labelled
+                    // (e.g. `≥2 R.C` → two same-labelled C-successors): the `≠`
+                    // provenance is untracked ⇒ conservative `ALL`.
+                    self.stats.at_most_exhaust_guard_neq += 1;
+                } else {
+                    // No guard tripped ⇒ `over` itself overflowed (a component
+                    // birth/at_most/label dep is already `ALL`, e.g. a decision
+                    // level ≥128 exceeding the 128-bit `DepSet`).
+                    self.stats.at_most_exhaust_guard_over += 1;
+                }
+            } else {
+                self.stats.at_most_exhaust_local_bounded += 1;
+            }
+            if !candidate.overflow {
+                self.stats.at_most_exhaust_bounded += 1;
+                self.stats.at_most_exhaust_popcount_sum += u64::from(candidate.bits.count_ones());
+            }
+        }
         // Shadow: record the partition-exhaustion clash. This is a genuinely
         // structural ALL (exhausted all partitions) — not a taint artifact.
         // Use ALL for both real and shadow so Task-2 analysis sees "genuine
@@ -3017,6 +3140,11 @@ impl<'c> HyperEngine<'c> {
     /// to short-circuit the whole enumeration (model found, state kept);
     /// `None` to keep enumerating (sets `*any_stalled` on a depth-bound
     /// hit). Every branch is restored before the next partition.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recursive restricted-growth enumeration; the read-only probe accumulator \
+                  (`child_acc`) is threaded alongside the existing search params"
+    )]
     fn partition_rec(
         &mut self,
         succs: &[HNode],
@@ -3025,6 +3153,7 @@ impl<'c> HyperEngine<'c> {
         n: usize,
         depth: usize,
         any_stalled: &mut bool,
+        child_acc: &mut DepSet,
     ) -> Option<HyperResult> {
         if idx == succs.len() {
             // Complete partition (≤ n blocks). Merge each block into its
@@ -3042,10 +3171,21 @@ impl<'c> HyperEngine<'c> {
                     }
                 }
             }
-            if !clashed {
+            if clashed {
+                // Probe: the merge itself clashed — its dep is in `self.clash_deps`.
+                if self.at_most_exhaust_probe {
+                    *child_acc = child_acc.union(self.clash_deps);
+                }
+            } else {
                 match self.solve(depth - 1) {
                     HyperResult::Sat => return Some(HyperResult::Sat),
-                    HyperResult::Unsat => {}
+                    HyperResult::Unsat => {
+                        // Probe: accumulate this failed partition's clash dep (the
+                        // "deeper failure" dep) BEFORE `restore`. Read-only.
+                        if self.at_most_exhaust_probe {
+                            *child_acc = child_acc.union(self.clash_deps);
+                        }
+                    }
                     HyperResult::Stalled => *any_stalled = true,
                 }
             }
@@ -3057,7 +3197,8 @@ impl<'c> HyperEngine<'c> {
             // Mergeable with this block iff distinct from no member.
             if groups[gi].iter().all(|&m| !self.must_be_distinct(s, m)) {
                 groups[gi].push(s);
-                let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled);
+                let r =
+                    self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled, child_acc);
                 groups[gi].pop();
                 if r.is_some() {
                     return r;
@@ -3066,7 +3207,7 @@ impl<'c> HyperEngine<'c> {
         }
         if groups.len() < n {
             groups.push(vec![s]);
-            let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled);
+            let r = self.partition_rec(succs, idx + 1, groups, n, depth, any_stalled, child_acc);
             groups.pop();
             if r.is_some() {
                 return r;

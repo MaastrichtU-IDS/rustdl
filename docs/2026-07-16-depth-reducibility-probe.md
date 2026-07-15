@@ -80,3 +80,39 @@ if that fails its gate, the tail needs a different search architecture, not an
 incremental knob.**
 
 The probe instrumentation was throwaway (reverted; `SB_DEPTH_PROBE`). Numbers preserved here.
+
+## UPDATE — transposition-memo recurrence spike (2026-07-16): DEAD, measured
+
+The one remaining lever (a within-search transposition memo keyed on the whole-graph
+state) was spiked the sound way (advisor: measure recurrence first — soundness-free, no
+memo, no FP risk). An **index-independent** whole-graph structural signature (per
+canonical node: `(sorted labels, sorted (role, neighbor-label-hash))`, combined by
+`wrapping_add` → node-numbering-independent so isomorphic-but-renumbered graphs collide;
+a deliberately GENEROUS/over-colliding proxy, biased optimistic) was hashed at every
+saturated `solve`-entry and checked for recurrence within each `decide()`. Run on
+`ore_ont_10019` (`hyper-sat --per-class-timeout-ms 500`, adaptive-budget OFF, incremental
+OFF), 47 classes, 26 497 solve-entries.
+
+**Result: global repeat fraction = 2.4 %; 45/47 classes < 5 %; the busiest (thrashing)
+class = 0.0 %.** Whole-graph states essentially never recur within a search. This
+**confirms the advisor's prediction and reconciles SP2**: SP2's `revisit_frac ≈ 1.0` was
+on a SINGLE node's label-set (trivially recurs — many distinct graphs share a node's
+labels), which does NOT translate to the whole-graph-state recurrence a *sound* memo must
+key on. A transposition memo would hit ~2.4 % (0 % where it's needed) — far below
+viability, the same "all-net-new" death as SP2's node-local no-goods.
+
+**TERMINAL VERDICT (every lever now measured out):**
+- caching / CDCL / no-goods — DEAD (depth-bound, not re-derivation-bound; all-net-new).
+- blocking / depth-reduction — DEAD (0 % anywhere-blockable; nothing recurs to block).
+- within-search transposition memo — DEAD (2.4 % whole-graph recurrence; 0 % on the
+  thrashing class).
+- decision ordering — DEAD (forced generative ∃-chain).
+
+`ore_ont_10019`'s wedge stall is a disjunctive DFS over a genuinely large space of
+**structurally distinct** states — no recurrence to memoize, nothing to block, no
+re-derivation to prune. Konclude (90 ms) / HermiT (360 ms) decide it via a fundamentally
+different model-construction/search strategy that never generates this explosion.
+**Closing this tail requires a different search architecture, not any incremental knob on
+the current wedge.** That is the evidence-backed end of the incremental-lever line; the
+spike incurred zero FP risk (measurement only). Sig-probe instrumentation reverted;
+numbers preserved here.

@@ -567,7 +567,7 @@ pub struct SearchStats {
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
               mrv_ordering, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint, \
-              semantic_branching) — orthogonal toggles, not a state enum"
+              semantic_branching, transposition) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
@@ -626,6 +626,16 @@ pub struct HyperEngine<'c> {
     /// whole graph each solve frame. Default OFF until validated FP=0 AND
     /// MISSED=0.
     incremental_fixpoint: bool,
+    /// Phase 1b (`RUSTDL_WEDGE_TRANSPOSITION`, via [`with_transposition`]):
+    /// within-search transposition memo — memoize a `solve` frame's terminal
+    /// verdict keyed on the EXACT canonical graph state (deps excluded), so the
+    /// no-progress transposition on the dense-SROIQ tail (e.g. `ore_ont_10019`
+    /// `AcylGroup` re-derives 2 states 768×) is cut. Sound: within one
+    /// `decide()` the query is fixed and the worklist is empty at the memo point,
+    /// so the graph state determines the verdict. Default OFF. Field read in
+    /// Task 3. See docs/superpowers/plans/2026-07-16-wedge-transposition-memo.md.
+    #[allow(dead_code)] // consumed in Task 3 (memo lookup in `solve`)
+    transposition: bool,
     /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, via
     /// [`with_semantic_branching`]): opt-in in-search boolean constraint
     /// propagation at the `⊔` decision point — drop told-disjoint disjuncts and
@@ -999,6 +1009,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            transposition: false,
             semantic_branching: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
@@ -1051,6 +1062,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            transposition: false,
             semantic_branching: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
@@ -1085,6 +1097,14 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_incremental_fixpoint(mut self) -> Self {
         self.incremental_fixpoint = true;
+        self
+    }
+
+    /// Enable the within-search transposition memo (Phase 1b). See
+    /// [`Self::transposition`].
+    #[must_use]
+    pub fn with_transposition(mut self) -> Self {
+        self.transposition = true;
         self
     }
 
@@ -2192,6 +2212,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            transposition: false,
             semantic_branching: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),

@@ -689,6 +689,9 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
         }
+        if crate::transposition_enabled() {
+            engine = engine.with_transposition();
+        }
         let deadline = per_class_timeout.map(|t| std::time::Instant::now() + t);
         let start = std::time::Instant::now();
         let result = engine.decide_with_deadline(max_depth, deadline);
@@ -1104,6 +1107,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if crate::semantic_branching_enabled() {
                 engine = engine.with_semantic_branching();
             }
+            if crate::transposition_enabled() {
+                engine = engine.with_transposition();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1240,6 +1246,9 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
     }
     if crate::semantic_branching_enabled() {
         engine = engine.with_semantic_branching();
+    }
+    if crate::transposition_enabled() {
+        engine = engine.with_transposition();
     }
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
     let start = std::time::Instant::now();
@@ -1402,6 +1411,9 @@ pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
     }
     if crate::semantic_branching_enabled() {
         engine = engine.with_semantic_branching();
+    }
+    if crate::transposition_enabled() {
+        engine = engine.with_transposition();
     }
 
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
@@ -1701,6 +1713,17 @@ pub(crate) fn incremental_fixpoint_enabled() -> bool {
 #[must_use]
 pub(crate) fn semantic_branching_enabled() -> bool {
     std::env::var_os("RUSTDL_SEMANTIC_BRANCHING").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Phase 1b within-search transposition memo (`RUSTDL_WEDGE_TRANSPOSITION`,
+/// **default OFF**): memoize a wedge `solve` frame's terminal verdict keyed on
+/// the exact canonical graph state, cutting the dense-SROIQ no-progress
+/// transposition (e.g. `ore_ont_10019` `AcylGroup`). Opt-in until the soundness
+/// gate (FP=0 non-Horn oracle + curated MISSED=0 + exact-key adversarial canary)
+/// is green.
+#[must_use]
+pub(crate) fn transposition_enabled() -> bool {
+    std::env::var_os("RUSTDL_WEDGE_TRANSPOSITION").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Bound-the-tail (`RUSTDL_BOUND_DIVERGED_TAIL`, **default OFF**): when the
@@ -2633,6 +2656,9 @@ impl HyperCache {
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
         }
+        if crate::transposition_enabled() {
+            engine = engine.with_transposition();
+        }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
@@ -2698,6 +2724,9 @@ impl HyperCache {
         }
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
+        }
+        if crate::transposition_enabled() {
+            engine = engine.with_transposition();
         }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
@@ -2830,6 +2859,9 @@ impl HyperCache {
         }
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
+        }
+        if crate::transposition_enabled() {
+            engine = engine.with_transposition();
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
@@ -3070,6 +3102,9 @@ impl ConsistencyCache {
         }
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
+        }
+        if crate::transposition_enabled() {
+            engine = engine.with_transposition();
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();

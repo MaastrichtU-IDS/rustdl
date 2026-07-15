@@ -6,7 +6,17 @@
 Measure-first: Phase 0 diagnoses before Phase 1 fixes; gate every fix on FP=0 (non-Horn
 `ore_ont_13723` oracle) + curated MISSED=0 byte-identical + `ore_ont_10019` residual cleared.
 
-## Track A — the 3 MISSED (completeness; do first)
+## KEY FINDING (2026-07-16): the tracks are COUPLED — do Track B first
+
+`RUSTDL_CLASSIFY_DEFINED_SWEEP=1` recovers **2 of the 3** MISSED soundly (MISSED 3→1,
+161/162, FP=0) — but takes **263 s**, because the sweep re-verifies defined-sups with the
+full tableau and is bottlenecked by the **Track-B stalls** (AcylGroup/KetoneGroup depth-256).
+So the cheap completeness win already EXISTS (the sweep) but is gated on fixing the stalls.
+**Revised order: Track B first (fix the stalls → sweep becomes fast → default-on-able →
+recovers 2/3), then the residual 1** (`SulfoxideGroup ⊑ SulfinicAcidGeneralGroup`, deepest
+defined⊑defined, NOT recovered even by the slow sweep — needs its own diagnosis).
+
+## Track A — the 3 MISSED (completeness)
 
 `SulfinicAcidGeneralGroup ⊑ OrganicSulfurGroup`, `SulfoxideGroup ⊑ OrganicSulfurGroup`,
 `SulfoxideGroup ⊑ SulfinicAcidGeneralGroup`. All are subsumptions INTO defined `∃`-body

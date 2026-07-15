@@ -554,6 +554,11 @@ pub struct SearchStats {
     /// disjunct returned a clean `Unsat`. Non-vacuity signal for the FP gate:
     /// if this is 0 on a fixture, Layer B did not fire there.
     pub semantic_exclusions: u64,
+    /// Bound-the-tail: set `true` when the adaptive-budget `is_diverging`
+    /// early-cut fired (the search thrashed at saturated depth), so the caller
+    /// can distinguish a *divergence*-`Stalled` from a plain deadline-`Stalled`
+    /// and skip a main-tableau fallthrough that would re-thrash the same pair.
+    pub diverged: bool,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -2319,6 +2324,7 @@ impl<'c> HyperEngine<'c> {
                 let cap = u32::try_from(self.init_depth).unwrap_or(u32::MAX);
                 let depth_saturated = self.stats.max_branch_depth >= cap;
                 if is_diverging(db, dr, depth_saturated) {
+                    self.stats.diverged = true;
                     return HyperResult::Stalled;
                 }
                 self.div_checkpoint = (

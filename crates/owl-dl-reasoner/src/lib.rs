@@ -1703,6 +1703,23 @@ pub(crate) fn semantic_branching_enabled() -> bool {
     std::env::var_os("RUSTDL_SEMANTIC_BRANCHING").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
+/// Bound-the-tail (`RUSTDL_BOUND_DIVERGED_TAIL`, **default OFF**): when the
+/// wedge returns a *divergence*-`Stalled` (`is_diverging` fired — the search
+/// thrashed at saturated depth), skip the main-tableau fallthrough in
+/// `subsumes_via_tableau` and record "not subsumed" directly. The fallthrough
+/// would re-thrash the same hard SROIQ pair and default to not-subsumed anyway
+/// (measured: `ore_ont_10019` `tier_walk` 77.7 s → 43.4 s if ALL fallthroughs are
+/// skipped — but the sound divergence-keyed skip is inert there; see findings).
+/// **Completeness,
+/// not soundness** — it only ever *removes* subsumptions (FP=0 trivially); a
+/// completable ontology does not trip `is_diverging`, so it is untouched. Gated
+/// on curated MISSED=0. Depends on `adaptive_budget` (default ON) to set the
+/// divergence flag; inert if `RUSTDL_ADAPTIVE_BUDGET=0`.
+#[must_use]
+pub(crate) fn bound_diverged_tail_enabled() -> bool {
+    std::env::var_os("RUSTDL_BOUND_DIVERGED_TAIL").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
 /// (`RUSTDL_ANYWHERE_BLOCKING`). Opt-IN, default OFF: returns `true` only when
 /// the variable is exactly `"1"`. When ON, `TableauContext::is_blocked` scopes
@@ -1926,6 +1943,11 @@ pub(crate) enum HyperVerdict {
     NotSubsumed,
     /// `Stalled`/budget exhausted — caller falls back to the tableau.
     Unknown,
+    /// `Stalled` because the adaptive-budget `is_diverging` early-cut fired —
+    /// the wedge thrashed at saturated depth. Distinguished from `Unknown` so
+    /// the bound-the-tail path can skip a main-tableau fallthrough that would
+    /// re-thrash the same pair (sound: only ever yields "not subsumed").
+    UnknownDiverged,
 }
 
 /// Per-class label heuristic oracle. Built by `HyperCache::classify_labels`
@@ -2510,10 +2532,13 @@ impl HyperCache {
         deadline: Option<std::time::Instant>,
     ) -> HyperVerdict {
         use owl_dl_tableau::hyper::HyperResult;
-        let (result, _stats) = self.decide_with_stats(sub, sup, HYPER_WEDGE_DEPTH, deadline);
+        let (result, stats) = self.decide_with_stats(sub, sup, HYPER_WEDGE_DEPTH, deadline);
         match result {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
+            // Distinguish a divergence-cut `Stalled` (thrash) from a plain
+            // deadline `Stalled`, so bound-the-tail can skip the fallthrough.
+            HyperResult::Stalled if stats.diverged => HyperVerdict::UnknownDiverged,
             HyperResult::Stalled => HyperVerdict::Unknown,
         }
     }

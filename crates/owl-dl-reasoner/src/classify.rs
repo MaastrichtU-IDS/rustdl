@@ -147,6 +147,10 @@ pub struct ClassificationStats {
     /// Pairwise subsumption queries that the saturation closure did
     /// not witness, dispatched to the tableau.
     pub tableau_subsumption_calls: usize,
+    /// Bound-the-tail (`RUSTDL_BOUND_DIVERGED_TAIL`): pairs whose main-tableau
+    /// fallthrough was skipped because the wedge diverged (thrashed at saturated
+    /// depth). Also counted in `timed_out_pairs`. Diagnostic only.
+    pub diverged_tail_skips: usize,
     /// Classes flagged as `⊑ ⊥` by saturation directly (no per-class
     /// tableau probe issued).
     pub saturation_unsat_hits: usize,
@@ -1546,6 +1550,7 @@ pub(crate) fn classify_top_down_internal(
         for (c, parents, sd) in tier_results {
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
+            stats.diverged_tail_skips += sd.diverged_tail_skips;
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats
                 .timed_out_pair_ids
@@ -1811,6 +1816,7 @@ pub(crate) fn classify_top_down_internal(
         for (cand, subsumed, sd) in probe_results {
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
+            stats.diverged_tail_skips += sd.diverged_tail_skips;
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats
                 .timed_out_pair_ids
@@ -2348,6 +2354,17 @@ fn subsumes_via_tableau(
                 // fall through to the tableau probe below; if the tableau
                 // returns Subsumed, bump hyper_refuted_fast_flipped_pairs.
             }
+        }
+        crate::HyperVerdict::UnknownDiverged if crate::bound_diverged_tail_enabled() => {
+            // Bound-the-tail: the wedge diverged (thrashed at saturated depth) on
+            // this pair; the main-tableau fallthrough would re-thrash it and
+            // default to "not subsumed" anyway. Skip it. Sound: only ever yields
+            // "not subsumed" (a MISS at worst — never an FP). Counted as a
+            // timed-out pair so the INCOMPLETE banner stays honest.
+            stats.diverged_tail_skips += 1;
+            stats.timed_out_pairs += 1;
+            stats.timed_out_pair_ids.push((sub.index(), sup.index()));
+            return Ok(None);
         }
         _ => {}
     }

@@ -630,6 +630,18 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.hyper_proven_pairs
         )?;
     }
+    if stats.fallthrough_ran > 0 {
+        writeln!(
+            out,
+            "# fallthrough (wedge-stall→tableau): ran={} rescued={} (of which diverged-stall={}) notsub={} noverdict={} from_diverged={}",
+            stats.fallthrough_ran,
+            stats.fallthrough_subsumed,
+            stats.fallthrough_subsumed_diverged,
+            stats.fallthrough_notsubsumed,
+            stats.fallthrough_noverdict,
+            stats.fallthrough_from_diverged
+        )?;
+    }
     let unsat = h.unsatisfiable_classes();
     if !unsat.is_empty() {
         writeln!(out, "# unsatisfiable: {}", unsat.len())?;

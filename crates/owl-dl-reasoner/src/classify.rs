@@ -151,6 +151,18 @@ pub struct ClassificationStats {
     /// fallthrough was skipped because the wedge diverged (thrashed at saturated
     /// depth). Also counted in `timed_out_pairs`. Diagnostic only.
     pub diverged_tail_skips: usize,
+    /// Phase 0 bound-the-tail exploration (diagnostic): a "stall fallthrough" is
+    /// a wedge `Unknown`/`UnknownDiverged` (a stall, not a fast-refute/counting
+    /// verify) that reached the main tableau. The rescue rate
+    /// `fallthrough_subsumed / fallthrough_ran` decides whether skipping the
+    /// fallthrough is MISSED-safe; the `_diverged` splits say whether rescues
+    /// come from divergence- vs deadline-stalls.
+    pub fallthrough_ran: usize,
+    pub fallthrough_subsumed: usize,
+    pub fallthrough_notsubsumed: usize,
+    pub fallthrough_noverdict: usize,
+    pub fallthrough_from_diverged: usize,
+    pub fallthrough_subsumed_diverged: usize,
     /// Classes flagged as `⊑ ⊥` by saturation directly (no per-class
     /// tableau probe issued).
     pub saturation_unsat_hits: usize,
@@ -1551,6 +1563,12 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.diverged_tail_skips += sd.diverged_tail_skips;
+            stats.fallthrough_ran += sd.fallthrough_ran;
+            stats.fallthrough_subsumed += sd.fallthrough_subsumed;
+            stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
+            stats.fallthrough_noverdict += sd.fallthrough_noverdict;
+            stats.fallthrough_from_diverged += sd.fallthrough_from_diverged;
+            stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats
                 .timed_out_pair_ids
@@ -1817,6 +1835,12 @@ pub(crate) fn classify_top_down_internal(
             stats.saturation_subsumption_hits += sd.saturation_subsumption_hits;
             stats.tableau_subsumption_calls += sd.tableau_subsumption_calls;
             stats.diverged_tail_skips += sd.diverged_tail_skips;
+            stats.fallthrough_ran += sd.fallthrough_ran;
+            stats.fallthrough_subsumed += sd.fallthrough_subsumed;
+            stats.fallthrough_notsubsumed += sd.fallthrough_notsubsumed;
+            stats.fallthrough_noverdict += sd.fallthrough_noverdict;
+            stats.fallthrough_from_diverged += sd.fallthrough_from_diverged;
+            stats.fallthrough_subsumed_diverged += sd.fallthrough_subsumed_diverged;
             stats.timed_out_pairs += sd.timed_out_pairs;
             stats
                 .timed_out_pair_ids
@@ -2219,6 +2243,30 @@ fn find_direct_parents_top_down(
     Ok(direct_parents)
 }
 
+/// Phase 0 bound-the-tail exploration (diagnostic): record the main-tableau
+/// outcome of a wedge STALL fallthrough. `outcome`: `Some(true)` = subsumed
+/// (rescue), `Some(false)` = not-subsumed, `None` = no-verdict/timeout.
+fn record_fallthrough_outcome(
+    stats: &mut ClassificationStats,
+    stall_fallthrough: bool,
+    stall_diverged: bool,
+    outcome: Option<bool>,
+) {
+    if !stall_fallthrough {
+        return;
+    }
+    match outcome {
+        Some(true) => {
+            stats.fallthrough_subsumed += 1;
+            if stall_diverged {
+                stats.fallthrough_subsumed_diverged += 1;
+            }
+        }
+        Some(false) => stats.fallthrough_notsubsumed += 1,
+        None => stats.fallthrough_noverdict += 1,
+    }
+}
+
 /// Helper: ask the tableau whether `sub ⊑ sup`. Counts the call in
 /// `stats`, honours `per_pair_timeout`, returns:
 /// - `Ok(Some(true))` — subsumption holds
@@ -2368,6 +2416,21 @@ fn subsumes_via_tableau(
         }
         _ => {}
     }
+    // Phase 0 rescue-rate instrumentation (diagnostic): does the main-tableau
+    // fallthrough RESCUE a wedge STALL (return Subsumed)? A stall fallthrough is
+    // a wedge Unknown/UnknownDiverged reaching the tableau (NOT a fast-refute /
+    // counting-verify, which legitimately need the tableau). Split by divergence.
+    let stall_fallthrough = matches!(
+        verdict,
+        crate::HyperVerdict::Unknown | crate::HyperVerdict::UnknownDiverged
+    );
+    let stall_diverged = matches!(verdict, crate::HyperVerdict::UnknownDiverged);
+    if stall_fallthrough {
+        stats.fallthrough_ran += 1;
+        if stall_diverged {
+            stats.fallthrough_from_diverged += 1;
+        }
+    }
     let build = move |pool: &mut ConceptPool| {
         let sub_concept = pool.atomic(sub);
         let super_concept = pool.atomic(sup);
@@ -2387,6 +2450,7 @@ fn subsumes_via_tableau(
             if counting_verified && subsumed {
                 stats.counting_verified_pairs += 1;
             }
+            record_fallthrough_outcome(stats, stall_fallthrough, stall_diverged, Some(subsumed));
             Ok(Some(subsumed))
         }
         Some(deadline) => {
@@ -2406,11 +2470,18 @@ fn subsumes_via_tableau(
                     if counting_verified && subsumed {
                         stats.counting_verified_pairs += 1;
                     }
+                    record_fallthrough_outcome(
+                        stats,
+                        stall_fallthrough,
+                        stall_diverged,
+                        Some(subsumed),
+                    );
                     Ok(Some(subsumed))
                 }
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
                     stats.timed_out_pair_ids.push((sub.index(), sup.index()));
+                    record_fallthrough_outcome(stats, stall_fallthrough, stall_diverged, None);
                     Ok(None)
                 }
                 Err(other) => Err(other),

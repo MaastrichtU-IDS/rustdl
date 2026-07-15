@@ -159,3 +159,38 @@ RUSTDL_SHADOW_DEP_PROBE=1 RUSTDL_ADAPTIVE_BUDGET=0 RUSTUP_TOOLCHAIN=stable \
   cargo test -p owl-dl-reasoner --release --test backjump_precision_gate -- \
   --ignored --nocapture
 ```
+
+## VERDICT (controller, 2026-07-15): Fix #1 ruled out → wedge quick-levers exhausted
+
+**Fix #1 (backjump-precision repair) is NOT the lever.** `bjgap_real` and
+`bjgap_shadow` are *bit-identical* on all 5 classes across median, p90, AND max
+(130/130/154). Had precise deps offered headroom, real-`ALL` clashes with a
+shallow true `highest` would give a large shadow `bjgap`, pushing shadow's
+upper percentiles/max above real's — that divergence is absent everywhere in the
+distribution. So recovering the precise dep-set would not enable a materially
+bigger backjump than the `DepSet::ALL` sentinel already yields at these depths;
+the clashes' true minimal dependencies are themselves deep. The high real-`ALL`%
+(~89%) is real but does not translate to lost backjump distance.
+(Residual caveat: a per-record `shadow.highest` histogram restricted to the
+real-`ALL` subset was not computed and would nail this definitively; but the
+max-equality already makes a material-headroom Fix #1 unlikely. Cheap to sharpen
+if a reviewer wants certainty before fully closing Fix #1.)
+
+**This exhausts the wedge's tractable quick levers for the dense-SROIQ tail:**
+throughput (SP1) — dead; node-local no-goods (SP2) — dead; MRV ordering — on,
+inert; `sat_lookahead` — inert; backjump-precision (this) — ruled out. The
+remaining directions are both large:
+- **Fix #2 — absorption / unit propagation (BCP):** make disjunctions not become
+  branch points (Konclude's 90 ms comes largely from this). A genuine new engine
+  capability — multi-session, uncertain, and untried. The only remaining path
+  that could actually *decide* the 33 stalled classes.
+- **Bound-the-tail (honest floor):** make the `Stalled → NoVerdict → search.rs`
+  fallthrough bounded so classify returns sound-incomplete fast instead of
+  burning the deadline (some ORE onts hang; SP2 sweep showed 4 timeout onts).
+  Does NOT close completeness, but a sure robustness win for the whole tail.
+
+Konclude/HermiT decide the ontology in ms, so it is *not* intractable — the gap
+is rustdl's disjunctive-engine sophistication (absorption/propagation), a large
+build. The honest position: the wedge's incremental levers are spent; closing
+`ore_ont_10019` now requires either the big absorption investment (Fix #2) or
+accepting the characterized tail and bounding it.

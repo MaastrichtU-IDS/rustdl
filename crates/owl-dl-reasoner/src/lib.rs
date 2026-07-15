@@ -686,6 +686,9 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
         }
+        if crate::semantic_branching_enabled() {
+            engine = engine.with_semantic_branching();
+        }
         let deadline = per_class_timeout.map(|t| std::time::Instant::now() + t);
         let start = std::time::Instant::now();
         let result = engine.decide_with_deadline(max_depth, deadline);
@@ -1098,6 +1101,9 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if crate::incremental_fixpoint_enabled() {
                 engine = engine.with_incremental_fixpoint();
             }
+            if crate::semantic_branching_enabled() {
+                engine = engine.with_semantic_branching();
+            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1231,6 +1237,9 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
     }
     if crate::incremental_fixpoint_enabled() {
         engine = engine.with_incremental_fixpoint();
+    }
+    if crate::semantic_branching_enabled() {
+        engine = engine.with_semantic_branching();
     }
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
     let start = std::time::Instant::now();
@@ -1390,6 +1399,9 @@ pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
     }
     if crate::incremental_fixpoint_enabled() {
         engine = engine.with_incremental_fixpoint();
+    }
+    if crate::semantic_branching_enabled() {
+        engine = engine.with_semantic_branching();
     }
 
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
@@ -1679,6 +1691,19 @@ pub(crate) fn adaptive_budget_enabled() -> bool {
 #[must_use]
 pub(crate) fn incremental_fixpoint_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_INCREMENTAL_FIXPOINT").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Fix#2 Layer A scaffold: default-OFF, inert flag for wedge semantic
+/// branching. `HyperEngine::with_semantic_branching` is applied at the same
+/// classify/consistency/label-cache/probe sites as `incremental_fixpoint`
+/// when this is set, but the field it sets is not read anywhere yet — Task 2
+/// wires the actual filter behind it. Set `RUSTDL_SEMANTIC_BRANCHING` to a
+/// non-empty, non-`"0"` value to opt in.
+#[must_use]
+pub(crate) fn semantic_branching_enabled() -> bool {
+    std::env::var("RUSTDL_SEMANTIC_BRANCHING")
+        .ok()
+        .is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
@@ -2583,6 +2608,9 @@ impl HyperCache {
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
         }
+        if crate::semantic_branching_enabled() {
+            engine = engine.with_semantic_branching();
+        }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
@@ -2645,6 +2673,9 @@ impl HyperCache {
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
+        }
+        if crate::semantic_branching_enabled() {
+            engine = engine.with_semantic_branching();
         }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
@@ -2774,6 +2805,9 @@ impl HyperCache {
         };
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
+        }
+        if crate::semantic_branching_enabled() {
+            engine = engine.with_semantic_branching();
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
@@ -3011,6 +3045,9 @@ impl ConsistencyCache {
             .with_nominals(self.num_classes, self.num_individuals);
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
+        }
+        if crate::semantic_branching_enabled() {
+            engine = engine.with_semantic_branching();
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();

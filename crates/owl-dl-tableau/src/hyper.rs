@@ -518,7 +518,8 @@ pub struct SearchStats {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent opt-in feature flags (double_blocking, precise_card_deps, \
-              mrv_ordering, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint) — orthogonal toggles, not a state enum"
+              mrv_ordering, nn_taint_disabled, shadow_dep_probe, incremental_fixpoint, \
+              semantic_branching) — orthogonal toggles, not a state enum"
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
@@ -577,6 +578,11 @@ pub struct HyperEngine<'c> {
     /// whole graph each solve frame. Default OFF until validated FP=0 AND
     /// MISSED=0.
     incremental_fixpoint: bool,
+    /// Fix#2 Layer A scaffold (`RUSTDL_SEMANTIC_BRANCHING`, via
+    /// [`with_semantic_branching`]): opt-in in-search boolean constraint
+    /// propagation at the `⊔` decision point. Default OFF; consumed in Task 2.
+    #[allow(dead_code)] // consumed in Task 2
+    semantic_branching: bool,
     /// Opt-in (`RUSTDL_PRECISE_CARD_DEPS`, via [`with_precise_card_deps`]): at a
     /// `≤n` cardinality clash, report a **sound over-approximation** of the
     /// clash's true dependency set instead of `DepSet::ALL`, so backjumping can
@@ -945,6 +951,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            semantic_branching: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
@@ -996,6 +1003,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            semantic_branching: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
@@ -1029,6 +1037,15 @@ impl<'c> HyperEngine<'c> {
     #[must_use]
     pub fn with_incremental_fixpoint(mut self) -> Self {
         self.incremental_fixpoint = true;
+        self
+    }
+
+    /// Enable Fix#2 Layer A in-search boolean constraint propagation at the `⊔`
+    /// decision point (`RUSTDL_SEMANTIC_BRANCHING`). Default OFF; no behaviour
+    /// change until Task 2 reads the field.
+    #[must_use]
+    pub fn with_semantic_branching(mut self) -> Self {
+        self.semantic_branching = true;
         self
     }
 
@@ -2108,6 +2125,7 @@ impl<'c> HyperEngine<'c> {
             clash_deps: DepSet::EMPTY,
             double_blocking: false,
             incremental_fixpoint: false,
+            semantic_branching: false,
             precise_card_deps: false,
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,

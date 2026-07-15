@@ -140,6 +140,20 @@ struct Clausifier {
     /// (refute-only — the wedge can never gain a false clash from a
     /// missing constraint).
     dkey_classes: std::collections::HashSet<ClassId>,
+    /// `RUSTDL_CARD_DISJUNCT_ATOMS` (**default ON**, `=0` reverts): emit a
+    /// `Min`/`Max` head *disjunct* as a first-class evaluatable
+    /// `AtLeast`/`AtMost` atom instead of an opaque structural class `Q`. An
+    /// opaque `Q` is never recognized as already-satisfied
+    /// (`head_atom_satisfied` checks `node.has(Q)`), so a `¬cardinality`
+    /// disjunct in a defined class's sufficient-direction clause keeps the
+    /// clause perpetually "open" and the search branches spuriously — the
+    /// dense-SROIQ over-branching (`ore_ont_10019`: bare `CarbonAtom` stalls at
+    /// 7000 branches). An `AtMost` atom IS satisfaction-checked, so the
+    /// `≤`-part reads as satisfied on a node with too few successors → no
+    /// branch; when the node genuinely has the cardinality, `D` is still
+    /// derived (completeness preserved). Representation-faithful ⟹ sound. See
+    /// `docs/superpowers/specs/2026-07-16-cardinality-disjunct-atoms-design.md`.
+    card_disjunct_atoms: bool,
 }
 
 impl Clausifier {
@@ -160,6 +174,8 @@ impl Clausifier {
             deferred_kinds: std::collections::BTreeMap::new(),
             inverse_canon,
             dkey_classes,
+            card_disjunct_atoms: std::env::var_os("RUSTDL_CARD_DISJUNCT_ATOMS")
+                .is_none_or(|v| v != "0" && !v.is_empty()),
         }
     }
 
@@ -717,6 +733,38 @@ impl Clausifier {
                     None
                 }
             }
+            // SPIKE (RUSTDL_SPIKE_CARD_ATOM): emit a cardinality DISJUNCT as a
+            // first-class evaluatable AtMost/AtLeast atom (mirroring emit_head's
+            // top-level handling) instead of an opaque structural class Q. An
+            // opaque Q is never recognized as already-satisfied by
+            // head_atom_satisfied (it just checks node.has(Q)), so a
+            // `soft → ¬(=n r.C) ⊔ D` clause stays perpetually open — even on a
+            // node with no matching successor (where ≤0 holds vacuously) — and
+            // branches spuriously. AtMost IS satisfaction-checked, so the ≤-part
+            // of ¬(=n) reads as satisfied on such nodes → no branch. Sound
+            // (representation-faithful, not a semantics change) + complete
+            // (clause not dropped; D still derived when the node has the card).
+            ConceptExpr::Max(n, role, inner) if self.card_disjunct_atoms => {
+                let role = self.canon_role(role);
+                let qual = self.cardinality_qualifier(inner);
+                if matches!(qual, Some(cq) if self.dkey_classes.contains(&cq)) {
+                    return None;
+                }
+                Some(Atom::AtMost(role, qual, n, var))
+            }
+            ConceptExpr::Min(n, role, inner) if self.card_disjunct_atoms => {
+                if n == 0 {
+                    // ≥0 disjunct is ⊤ → the whole Or head is a tautology.
+                    // Defer (drop) the tautological clause: sound + complete.
+                    return None;
+                }
+                let role = self.canon_role(role);
+                let qual = self.cardinality_qualifier(inner);
+                if matches!(qual, Some(cq) if self.dkey_classes.contains(&cq)) {
+                    return None;
+                }
+                Some(Atom::AtLeast(role, qual, n, var))
+            }
             // Any other compound disjunct (`∀`/`≥n`/`≤n`/`Self`/nested
             // `Or`): name it with a fresh `Q ⊑ disjunct` and use `Q` as
             // the head atom. `atomic_name_of` clausifies `Q ⊑ disjunct`
@@ -1093,6 +1141,44 @@ SubClassOf(:C ObjectHasSelf(:r))\n)\n"
                 .iter()
                 .any(|a| matches!(a, Atom::Role(_, v, w) if v == w))),
             "expected a self-loop Role(x,x) head"
+        );
+    }
+
+    /// `RUSTDL_CARD_DISJUNCT_ATOMS` (default ON): the sufficient (⇐) direction
+    /// of a defined class `D ≡ A ⊓ =1 r.B` — `A ⊓ =1 r.B ⊑ D` — clausifies to a
+    /// disjunctive clause `A → ¬(=1 r.B) ⊔ D`, where `¬(=1 r.B) = ≤0 r.B ⊔ ≥2 r.B`.
+    /// Those cardinality disjuncts must be first-class evaluatable `AtMost`/
+    /// `AtLeast` head atoms (NOT opaque structural classes), so
+    /// `head_atom_satisfied` recognizes the `≤0` part as satisfied on a node with
+    /// no `r`-successors and does not branch spuriously (the dense-SROIQ
+    /// over-branching fix). See the cardinality-disjunct-atoms design.
+    #[test]
+    fn defined_class_sufficient_direction_uses_cardinality_disjunct_atoms() {
+        let (clauses, _stats) = clausify_ofn(&format!(
+            "{HEADER}Ontology(\n\
+Declaration(Class(:A))\nDeclaration(Class(:B))\nDeclaration(Class(:D))\n\
+Declaration(ObjectProperty(:r))\n\
+EquivalentClasses(:D ObjectIntersectionOf(:A ObjectExactCardinality(1 :r :B)))\n)\n"
+        ));
+        // A disjunctive (≥2-head) clause carrying an `AtMost(_, Some, 0, _)` atom
+        // — the `≤0` part of `¬(=1 r.B)`. Under the opaque-Q path this would be a
+        // `Class(Q, _)` and this assertion would fail.
+        assert!(
+            clauses.iter().any(|c| c.head.len() >= 2
+                && c.head
+                    .iter()
+                    .any(|a| matches!(a, Atom::AtMost(_, Some(_), 0, _)))),
+            "expected a disjunctive clause with an AtMost(_,Some,0,_) disjunct \
+             (the ≤0 part of ¬(=1 r.B)); heads={:?}",
+            clauses.iter().map(|c| &c.head).collect::<Vec<_>>()
+        );
+        // And the `≥2` part as an `AtLeast(_, Some, 2, _)` disjunct.
+        assert!(
+            clauses.iter().any(|c| c.head.len() >= 2
+                && c.head
+                    .iter()
+                    .any(|a| matches!(a, Atom::AtLeast(_, Some(_), 2, _)))),
+            "expected an AtLeast(_,Some,2,_) disjunct (the ≥2 part of ¬(=1 r.B))"
         );
     }
 

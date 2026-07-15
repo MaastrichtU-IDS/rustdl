@@ -744,25 +744,40 @@ impl Clausifier {
             // of ¬(=n) reads as satisfied on such nodes → no branch. Sound
             // (representation-faithful, not a semantics change) + complete
             // (clause not dropped; D still derived when the node has the card).
+            // Degenerate cases fall through to the opaque-`Q` `_` arm below —
+            // NOT `None`, which would make the caller defer the WHOLE clause
+            // (a silent MISS if the clause has other contentful disjuncts):
+            //   - `DKey` filler: keep the pre-fix behavior (opaque `Q`, clause
+            //     retained, wedge-inert; the main tableau's `card_sat` counts
+            //     it). Returning `None` here regressed data ontologies.
+            //   - `Min(0)` = `≥0` = ⊤: leave to `atomic_name_of` (`Q ⊑ ≥0` is
+            //     vacuous, so the `Q` disjunct is trivially assertable — clause
+            //     retained, effectively tautological, no drop).
+            // Only the common non-degenerate cardinality disjunct gets the new
+            // evaluatable `AtMost`/`AtLeast` atom (the actual over-branching fix).
             ConceptExpr::Max(n, role, inner) if self.card_disjunct_atoms => {
+                // DKey filler → fall back to the opaque-`Q` path (clause
+                // retained, wedge-inert; `card_sat` counts it). `class_id_of`
+                // is non-interning, so the guard has no side effect.
+                if matches!(self.class_id_of(inner), Some(cid) if self.dkey_classes.contains(&cid))
+                {
+                    return self.atomic_name_of(c).map(|q| Atom::Class(q, var));
+                }
                 let role = self.canon_role(role);
                 let qual = self.cardinality_qualifier(inner);
-                if matches!(qual, Some(cq) if self.dkey_classes.contains(&cq)) {
-                    return None;
-                }
                 Some(Atom::AtMost(role, qual, n, var))
             }
             ConceptExpr::Min(n, role, inner) if self.card_disjunct_atoms => {
-                if n == 0 {
-                    // ≥0 disjunct is ⊤ → the whole Or head is a tautology.
-                    // Defer (drop) the tautological clause: sound + complete.
-                    return None;
+                // `≥0` = ⊤ (`Q ⊑ ≥0` vacuous → trivially assertable disjunct) or
+                // a `DKey` filler → opaque-`Q` path, keeping the clause. Never
+                // `None` (which would defer the WHOLE clause = silent MISS).
+                if n == 0
+                    || matches!(self.class_id_of(inner), Some(cid) if self.dkey_classes.contains(&cid))
+                {
+                    return self.atomic_name_of(c).map(|q| Atom::Class(q, var));
                 }
                 let role = self.canon_role(role);
                 let qual = self.cardinality_qualifier(inner);
-                if matches!(qual, Some(cq) if self.dkey_classes.contains(&cq)) {
-                    return None;
-                }
                 Some(Atom::AtLeast(role, qual, n, var))
             }
             // Any other compound disjunct (`∀`/`≥n`/`≤n`/`Self`/nested

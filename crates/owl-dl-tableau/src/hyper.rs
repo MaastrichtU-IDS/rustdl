@@ -586,6 +586,15 @@ pub struct SearchStats {
     /// Guard attribution: no early guard tripped — `over` itself overflowed (a
     /// component `birth`/`at_most`/`label` dep is already `ALL`, e.g. depth ≥128).
     pub at_most_exhaust_guard_over: u64,
+    /// `≠`-provenance probe: of `at_most_exhaust_total`, those whose OPTIMISTIC
+    /// candidate `card_clash_over_ignore_neq(node,succs) ∪ ⋃child_clash_deps`
+    /// (bypassing the `≠`-guard) is bounded — the lower bound on backjump room.
+    pub at_most_exhaust_opt_bounded: u64,
+    /// Sum of `bits.count_ones()` over the opt-bounded candidates.
+    pub at_most_exhaust_opt_popsum: u64,
+    /// Sum of `current_branch_level` at the opt-bounded clashes — the decision
+    /// depth to compare popcount against (`popcount << depth` ⇒ real backjump room).
+    pub at_most_exhaust_opt_level_sum: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -1304,6 +1313,37 @@ impl<'c> HyperEngine<'c> {
         over
     }
 
+    /// Probe-only (`at_most_exhaust_probe`) twin of [`Self::card_clash_deps`] that
+    /// SKIPS the `≠`-only distinctness guard and computes `over` anyway. Rationale
+    /// under test: for `≥n R.C` (single filler) the successors are generated
+    /// distinct *by the same `≥n` firing* that births them, so the successors'
+    /// `birth_deps` may already justify the `≠` — making the guard's `ALL`
+    /// fallback unnecessarily conservative here. This is an OPTIMISTIC lower bound
+    /// on the sound narrowing (the true dep is `over ∪ neq_deps ⊇ over`); if even
+    /// `over` has no backjump room, the `≠`-provenance lever is dead. Keeps the
+    /// taint + own-successor guards (both genuinely needed for `birth_deps` to
+    /// carry the parent's decisions); returns `ALL` if they trip. Read-only.
+    fn card_clash_over_ignore_neq(&self, parent: HNode, succs: &[HNode]) -> DepSet {
+        let p = self.resolve(parent);
+        if self.nodes[p.index()].at_most_tainted {
+            return DepSet::ALL;
+        }
+        for &s in succs {
+            if self.nodes[s.index()].parent != Some(p) {
+                return DepSet::ALL;
+            }
+        }
+        let mut over = self.nodes[p.index()].at_most_dep;
+        for node in std::iter::once(p).chain(succs.iter().copied()) {
+            let hn = &self.nodes[self.resolve(node).index()];
+            over = over.union(hn.birth_deps);
+            for &ld in &hn.label_deps {
+                over = over.union(ld);
+            }
+        }
+        over
+    }
+
     /// Shadow twin of [`Self::card_clash_deps`]: the precise over-set
     /// computed ALWAYS (no taint-induced collapse). It differs from the
     /// real path in that it uses the `shadow_*` fields which carry the
@@ -1917,7 +1957,8 @@ impl<'c> HyperEngine<'c> {
         if self.at_most_exhaust_probe && self.stats.at_most_exhaust_total > 0 {
             eprintln!(
                 "AT_MOST_EXHAUST_PROBE total={} local_bounded={} bounded={} popcount_sum={} \
-                 guard_taint={} guard_ownsucc={} guard_neq={} guard_over={} max_depth={}",
+                 guard_taint={} guard_ownsucc={} guard_neq={} guard_over={} \
+                 opt_bounded={} opt_popsum={} opt_level_sum={} max_depth={}",
                 self.stats.at_most_exhaust_total,
                 self.stats.at_most_exhaust_local_bounded,
                 self.stats.at_most_exhaust_bounded,
@@ -1926,6 +1967,9 @@ impl<'c> HyperEngine<'c> {
                 self.stats.at_most_exhaust_guard_ownsucc,
                 self.stats.at_most_exhaust_guard_neq,
                 self.stats.at_most_exhaust_guard_over,
+                self.stats.at_most_exhaust_opt_bounded,
+                self.stats.at_most_exhaust_opt_popsum,
+                self.stats.at_most_exhaust_opt_level_sum,
                 self.stats.max_branch_depth,
             );
         }
@@ -3117,6 +3161,15 @@ impl<'c> HyperEngine<'c> {
             if !candidate.overflow {
                 self.stats.at_most_exhaust_bounded += 1;
                 self.stats.at_most_exhaust_popcount_sum += u64::from(candidate.bits.count_ones());
+            }
+            // `≠`-provenance probe: optimistic candidate bypassing the `≠`-guard.
+            let opt = self
+                .card_clash_over_ignore_neq(node, succs)
+                .union(child_acc);
+            if !opt.overflow {
+                self.stats.at_most_exhaust_opt_bounded += 1;
+                self.stats.at_most_exhaust_opt_popsum += u64::from(opt.bits.count_ones());
+                self.stats.at_most_exhaust_opt_level_sum += u64::from(self.current_branch_level);
             }
         }
         // Shadow: record the partition-exhaustion clash. This is a genuinely

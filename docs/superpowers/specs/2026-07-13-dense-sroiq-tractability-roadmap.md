@@ -35,10 +35,17 @@ Konclude 90 ms, HermiT 360 ms.
   (`hyper.rs:1532` clears + re-pushes every node's labels/edges) that `solve`
   invokes at the top of *every* recursive frame (`hyper.rs:2194`).
   `fixpoint_passes ≈ branches` ⇒ ~one full re-seed per branch.
-- **Depth 75-76 is a red flag that blocking is NOT firing** on the recursive
-  bond-successor chain (subset pair-blocking should cap depth far below 75 if
-  successors were label-comparable). Blocking effectiveness is currently
-  unmeasured and is the cheapest potential lever.
+- ~~**Depth 75-76 is a red flag that blocking is NOT firing** on the recursive
+  bond-successor chain~~ **[RETRACTED 2026-07-15]** — this misread the counter.
+  `track_depth` (`hyper.rs`) counts the **disjunctive-decision stack** (down from
+  the `HYPER_WEDGE_DEPTH=256` cap, one per ⊔/≤n decision), NOT the ∃-successor
+  chain length. So "depth 75/142" is a *disjunctive-search* quantity, not model
+  depth. SP0 confirmed blocking fires (~76%); the code gates *all* generation —
+  incl. the ⊔ rule (`find_open_disjunction` skips `is_blocked` nodes) — so the
+  H1 "blocking fails to cap the tree" pathology is not what stalls this ontology.
+  The stall is disjunctive-DFS thrash over a blocking-bounded, redundantly
+  re-explored state space (SP2 `revisit_frac≈1.0`). See
+  `docs/superpowers/specs/2026-07-15-wedge-backjump-precision-design.md`.
 
 So the real levers, in cost-attribution order: (1) per-branch re-seed cost,
 (2) blocking not collapsing the successor recursion, and only then (3) branch

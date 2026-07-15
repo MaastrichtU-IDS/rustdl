@@ -32,21 +32,43 @@ sub-class's `∃hasSingleBond.(SulfurAtom…)` **through the role hierarchy**
 - **A1 (fix):** (a) refine/flip the defined-sup sweep if it recovers them soundly, or
   (b) close the specific `∀`-propagation-through-role-hierarchy gap. Small, targeted.
 
-## Track B — the 2 stalled (tractability; NOT completeness — they cause no MISSED)
+## Track B — the 2 stalled (tractability ONLY; they cause NO MISSED)
 
-`AcylGroup`, `KetoneGroup`: depth-256, 0 blocks fired, driven by `≥2 hasSingle.{OrganicGroup,Alkyl}`
-generating a deep chain (symmetric bonds + `Alkyl`/`OrganicGroup` recursion) blocking never
-caps. Both are satisfiable and their subsumptions ARE derived — this is wall/robustness only.
+`AcylGroup`, `KetoneGroup`: depth-256, 0 blocks fired. Both are satisfiable and their
+subsumptions ARE derived — this is wall/robustness only, and **the sole reason to fix it is
+to make Track-A's defined-sweep affordable** (the sweep's 263 s is these two stalls).
 
-- **B0 (diagnose):** (i) the `≥`-part (`AtLeast`) disjuncts of `¬(=n)` aren't
-  satisfaction-checked (`head_atom_satisfied` `TODO(HF3)`) → a satisfied `≥` disjunct still
-  branches; (ii) the `≥2` chain has recurring labels double-blocking misses — RE-RUN the
-  anywhere-blockable probe on the NOW-FIXED search (the earlier 0% was on the over-branching
-  search; may differ).
-- **B1 (fix):** (i) → add an `AtLeast` satisfaction arm to `head_atom_satisfied` (count
-  `≥ n` successors) — small, sound (recognizing a satisfied disjunct only removes branches);
-  (ii) → anywhere-blocking in the wedge (larger; double-blocking soundness care for
-  symmetric/inverse roles) or a generation refinement.
+**B0 DONE (2026-07-16) — diagnosed as TRANSPOSITION, not the mechanisms first guessed.**
+`n_nodes` is pinned at **4** for the entire depth-256 stack (advisor: if `≥` disjuncts were
+*taken*, `generate_at_least` would grow the graph — it doesn't). A per-class recurrence
+probe (index-independent whole-graph signature) on the NOW-FIXED engine:
+`AcylGroup` **repeat_frac 0.997, 2 distinct states** (766/768 revisits); `KetoneGroup`
+**0.816, 3770 distinct** (16768/20538). The search re-derives the same handful of states via
+different decision orders — pure no-progress transposition. This is **not** unrecognized
+`≥`-disjuncts and **not** blocking (a 4-node graph has nothing to block). The 2.4% GLOBAL
+recurrence that killed the transposition memo earlier was dominated by the (now-fixed)
+over-branching classes; **on these two it is 99.7% / 81.6%** — the memo is live here.
+
+**A COUNT-BASED `AtLeast` satisfaction-check is OFF THE TABLE (advisor):** unsound — `≥n`
+breaks under a pending merge and is read mid-construction (`=2` = `≥2 ⊓ ≤2` with the `≤2`/
+merge in flight), so recognizing `≥n` off a transient count wrongly skips a branch →
+wrongly-not-subsumed, invisible to FP=0-vs-oracle. Do not install it.
+
+**B1 (fix) = within-search transposition memo** (the advisor-scoped design): within a single
+`decide()`, memoize the (Sat/Unsat) verdict keyed on the index-independent whole-graph
+structural signature (labels + edges + merges + `≠` + `at_most` + `excluded`; deps EXCLUDED).
+`Sat` short-circuits (sound — fixed query `sub ⊓ ¬sup`, so a Sat state genuinely means this
+query is satisfiable; NOT the cross-query reuse-trap). `Unsat` reused only with
+`DepSet::ALL` (sound superset; disables backjump on the hit but correct). Scope per-`decide`
+(cleared each call). Run with `RUSTDL_HYPER_INCREMENTAL_FIXPOINT=0` OR include the worklist
+in the key (advisor: worklist is part of saved/restored state and affects firing).
+
+**B1 soundness gate (tractability-fix ⟹ MUST NOT trade soundness for speed):** FP=0 on the
+non-Horn `ore_ont_13723` oracle + curated MISSED=0 byte-identical + a dedicated adversarial
+canary that a memo hit cannot turn a real clash into a skip (the key must fully determine the
+subtree — a missing key component = a wrong reuse = FP). If the sound memo does NOT cleanly
+make the two probes terminate, the fallback is to **bound those two probes** (they lose zero
+completeness) rather than risk correctness for a wall win.
 
 ## Sequencing
 

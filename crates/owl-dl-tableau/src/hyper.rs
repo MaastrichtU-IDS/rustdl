@@ -178,6 +178,18 @@ struct HyperNode {
     /// `label_deps[i]` is the set of decision levels `labels[i]`'s
     /// derivation depends on. Empty before any branching.
     label_deps: Vec<DepSet>,
+    /// Fix#2 Layer B semantic-branching exclusion set (`RUSTDL_SEMANTIC_BRANCHING`):
+    /// classes asserted **false** at this node because a prior sibling `⊔`
+    /// disjunct on this class returned a clean `Unsat`. `(ClassId, DepSet)` sorted
+    /// by `ClassId::index()`; the `DepSet` is the sibling's Unsat clash deps, which
+    /// any clash the exclusion manufactures must union (superset backjump
+    /// discipline). Adding an excluded class as a label is a clash (see
+    /// `process_event`). Rides the whole-node-clone `Snapshot` (no `trail.rs`
+    /// change); scoped to the sibling loop that added it (the parent's `restore`
+    /// clears it). Empty (inert) when the flag is off. Losing an exclusion (e.g.
+    /// via a merge) is a MISS, never an FP — soundness rests only on never
+    /// excluding a *stalled* sibling and on the superset dep.
+    excluded: Vec<(ClassId, DepSet)>,
     /// Outgoing role edges `(role, target)`.
     edges: Vec<(Role, HNode)>,
     /// Incoming role edges `(role, source)` — the reverse of `edges`,
@@ -299,6 +311,26 @@ impl HyperNode {
         match self.labels.binary_search_by_key(&c.index(), |l| l.index()) {
             Ok(pos) => self.label_deps[pos],
             Err(_) => DepSet::EMPTY,
+        }
+    }
+
+    /// Fix#2 Layer B: the exclusion dep-set for `c` if `c` is excluded here.
+    fn is_excluded(&self, c: ClassId) -> Option<DepSet> {
+        self.excluded
+            .binary_search_by_key(&c.index(), |(e, _)| e.index())
+            .ok()
+            .map(|pos| self.excluded[pos].1)
+    }
+
+    /// Fix#2 Layer B: assert `c` false at this node with the justifying dep-set.
+    /// Keep-first (the first exclusion's dep is a sound, tight justification);
+    /// a re-exclusion is a no-op.
+    fn exclude(&mut self, c: ClassId, deps: DepSet) {
+        if let Err(pos) = self
+            .excluded
+            .binary_search_by_key(&c.index(), |(e, _)| e.index())
+        {
+            self.excluded.insert(pos, (c, deps));
         }
     }
 }
@@ -518,6 +550,10 @@ pub struct SearchStats {
     /// Fix#2 Layer A: times a `⊔` decision collapsed to a single live disjunct
     /// after pruning and was unit-forced (asserted without a decision level).
     pub semantic_unit_forces: u64,
+    /// Fix#2 Layer B: classes excluded (asserted false) after a sibling `⊔`
+    /// disjunct returned a clean `Unsat`. Non-vacuity signal for the FP gate:
+    /// if this is 0 on a fixture, Layer B did not fire there.
+    pub semantic_exclusions: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -1655,6 +1691,25 @@ impl<'c> HyperEngine<'c> {
     fn process_event(&mut self, ev: Event) -> FireOutcome {
         match ev {
             Event::Label(n, c) => {
+                // Fix#2 Layer B: adding an EXCLUDED class here is a clash (an
+                // earlier sibling ⊔ disjunct on `c` was refuted, so `¬c` holds
+                // in this subtree). Checked before any other rule so an excluded
+                // nominal clashes immediately. Dep-set = the just-added label's
+                // deps ∪ the exclusion's justifying deps (`child_depsⱼ`) — a
+                // SUPERSET, so backjumping accounts for every decision the
+                // exclusion rests on. `deps_of(c)` is valid here: `add_label`
+                // inserts the label+deps before pushing `Event::Label`.
+                if self.semantic_branching {
+                    let rn = if self.inverse_func_merge {
+                        self.resolve(n)
+                    } else {
+                        n
+                    };
+                    if let Some(xd) = self.nodes[rn.index()].is_excluded(c) {
+                        self.clash_deps = self.nodes[rn.index()].deps_of(c).union(xd);
+                        return FireOutcome::Clash;
+                    }
+                }
                 // `HF4a` NN-rule: a singleton nominal on `n` merges any
                 // other node carrying it (clashing if they are `≠`).
                 if matches!(self.apply_nn_rule(n, c), FireOutcome::Clash) {
@@ -2340,30 +2395,42 @@ impl<'c> HyperEngine<'c> {
                         } else {
                             t0
                         };
-                        let tainted = self.nodes[t.index()].nn_tainted && !self.nn_taint_disabled;
-                        let mut kill = DepSet::EMPTY;
-                        let mut dead = false;
-                        let n_labels = self.nodes[t.index()].labels.len();
-                        for li in 0..n_labels {
-                            let e = self.nodes[t.index()].labels[li];
-                            if e == c {
-                                continue;
-                            }
-                            let (lo, hi) = (c.index().min(e.index()), c.index().max(e.index()));
-                            if self.disjoint_pairs.contains(&(lo, hi)) {
-                                dead = true;
-                                kill = kill.union(self.nodes[t.index()].deps_of(e));
-                            }
-                        }
-                        if dead {
-                            let contribution = if tainted {
-                                DepSet::ALL
-                            } else {
-                                decision_deps.union(kill)
-                            };
-                            prune_deps = prune_deps.union(contribution);
+                        // Fix#2 Layer B: an EXCLUDED class is dead (a prior sibling
+                        // `⊔` disjunct on `c` was cleanly refuted, so `¬c` holds).
+                        // Asserting `c` here would clash on the exclusion (see
+                        // `process_event`) with `decision_deps ∪ xd`; fold that
+                        // superset into `prune_deps`.
+                        if let Some(xd) = self.nodes[t.index()].is_excluded(c) {
+                            prune_deps = prune_deps.union(decision_deps.union(xd));
                             self.stats.semantic_prunes += 1;
                             dropped = true;
+                        } else {
+                            let tainted =
+                                self.nodes[t.index()].nn_tainted && !self.nn_taint_disabled;
+                            let mut kill = DepSet::EMPTY;
+                            let mut dead = false;
+                            let n_labels = self.nodes[t.index()].labels.len();
+                            for li in 0..n_labels {
+                                let e = self.nodes[t.index()].labels[li];
+                                if e == c {
+                                    continue;
+                                }
+                                let (lo, hi) = (c.index().min(e.index()), c.index().max(e.index()));
+                                if self.disjoint_pairs.contains(&(lo, hi)) {
+                                    dead = true;
+                                    kill = kill.union(self.nodes[t.index()].deps_of(e));
+                                }
+                            }
+                            if dead {
+                                let contribution = if tainted {
+                                    DepSet::ALL
+                                } else {
+                                    decision_deps.union(kill)
+                                };
+                                prune_deps = prune_deps.union(contribution);
+                                self.stats.semantic_prunes += 1;
+                                dropped = true;
+                            }
                         }
                     }
                     if !dropped {
@@ -2428,6 +2495,29 @@ impl<'c> HyperEngine<'c> {
                             // disjuncts (and this whole decision).
                             self.clash_deps = child_deps;
                             return HyperResult::Unsat;
+                        }
+                        // Fix#2 Layer B: this sibling was cleanly refuted under
+                        // decision `d`, so `¬c` holds for the remaining siblings
+                        // (`D₁∨…` split on `c` vs `¬c`). Exclude `c` on its
+                        // landing node — asserted AFTER `restore` and BEFORE the
+                        // next iteration's `save`, so it rides into the next
+                        // sibling's snapshot and is cleared by the parent's
+                        // restore when this frame returns. ⚠️ ONLY on a clean
+                        // `Unsat` (this arm) — NEVER `Stalled` (unproven `¬c` →
+                        // FP). Carries `child_deps` (⊇ `d`): any clash the
+                        // exclusion manufactures unions it (superset backjump).
+                        // Atomic `Class` disjuncts only.
+                        if self.semantic_branching
+                            && let Atom::Class(c, v) = head_atom
+                            && let Some(t0) = resolve_var(v, node, &binding)
+                        {
+                            let t = if self.inverse_func_merge {
+                                self.resolve(t0)
+                            } else {
+                                t0
+                            };
+                            self.nodes[t.index()].exclude(c, child_deps);
+                            self.stats.semantic_exclusions += 1;
                         }
                         combined = combined.union(child_deps);
                     }

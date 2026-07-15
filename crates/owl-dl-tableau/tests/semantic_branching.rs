@@ -234,3 +234,115 @@ fn survivors_remain_prune_dep_prevents_unsound_backjump() {
         on.stats().semantic_prunes
     );
 }
+
+// ───────────────────────── Layer B (exclusion set) ─────────────────────────
+
+/// Layer B mover: excluding a cleanly-refuted sibling collapses a DOWNSTREAM
+/// disjunction to a unit-force. `Q → A ∨ B`; `A → ⊥` (A refuted → exclude A);
+/// a downstream `Q → A ∨ C` then has `A` pruned-by-exclusion, unit-forcing `C`.
+/// Verdict `Sat` (via the B branch, where A is excluded and C forced). Proves
+/// Layer B fires (`semantic_exclusions ≥ 1`) and drives a Layer-A unit-force
+/// off the exclusion (`semantic_unit_forces ≥ 1`).
+#[test]
+fn layer_b_exclusion_collapses_downstream_disjunction() {
+    // Q=0, A=1, B=2, C=3
+    let c = ClassId::new;
+    let clauses = vec![
+        // Q → A ∨ B
+        DlClause {
+            body: vec![Atom::Class(c(0), X)],
+            head: vec![Atom::Class(c(1), X), Atom::Class(c(2), X)],
+        },
+        // A → ⊥   (the first sibling is cleanly refuted ⇒ A excluded)
+        DlClause {
+            body: vec![Atom::Class(c(1), X)],
+            head: vec![],
+        },
+        // Q → A ∨ C   (downstream disjunction; after A is excluded, C is forced)
+        DlClause {
+            body: vec![Atom::Class(c(0), X)],
+            head: vec![Atom::Class(c(1), X), Atom::Class(c(3), X)],
+        },
+    ];
+
+    let mut off = HyperEngine::new(&clauses, c(0));
+    let v_off = off.decide(64);
+    let mut on = HyperEngine::new(&clauses, c(0)).with_semantic_branching();
+    let v_on = on.decide(64);
+
+    assert_eq!(
+        v_off,
+        HyperResult::Sat,
+        "control (OFF): Q is satisfiable via B"
+    );
+    assert_eq!(v_on, v_off, "Layer B must preserve the verdict");
+    assert!(
+        on.stats().semantic_exclusions >= 1,
+        "A must be excluded after its clean Unsat (non-vacuous), got {}",
+        on.stats().semantic_exclusions
+    );
+    assert!(
+        on.stats().semantic_unit_forces >= 1,
+        "the downstream A∨C must collapse to a unit-force of C via the exclusion, got {}",
+        on.stats().semantic_unit_forces
+    );
+}
+
+/// Layer B soundness invariant: a sibling that only STALLS is NEVER excluded
+/// (excluding an unproven `¬Dⱼ` is the reuse-trap FP hazard). `Q → A ∨ B` at
+/// `decide(1)`: the `A` branch opens `A → G ∨ H` at depth 0 → `Stalled` (not
+/// refuted). `B → A` re-derives `A`; if `A` were wrongly excluded on its stall,
+/// the `B` branch would clash on the exclusion and the verdict would flip away
+/// from the correct one. With the invariant honored, `A` is not excluded, so
+/// `B → A` does not clash. Correct verdict: NOT a false `Unsat` (A stalled ⇒ the
+/// frame is `Stalled`, i.e. no definite subsumption). Discriminating: injecting
+/// "exclude on Stalled too" flips the verdict.
+#[test]
+fn layer_b_never_excludes_a_stalled_sibling() {
+    // Q=0, A=1, B=2, G=3, H=4
+    let c = ClassId::new;
+    let clauses = vec![
+        // Q → A ∨ B
+        DlClause {
+            body: vec![Atom::Class(c(0), X)],
+            head: vec![Atom::Class(c(1), X), Atom::Class(c(2), X)],
+        },
+        // A → G ∨ H   (opens a disjunction ⇒ at depth 0 the A branch STALLS)
+        DlClause {
+            body: vec![Atom::Class(c(1), X)],
+            head: vec![Atom::Class(c(3), X), Atom::Class(c(4), X)],
+        },
+        // B → A   (Horn: the B branch re-derives A)
+        DlClause {
+            body: vec![Atom::Class(c(2), X)],
+            head: vec![Atom::Class(c(1), X)],
+        },
+    ];
+
+    // decide(1): outer Q→A∨B at depth 1; each branch recurses at depth 0, where
+    // an open disjunction ⇒ Stalled.
+    let mut off = HyperEngine::new(&clauses, c(0));
+    let v_off = off.decide(1);
+    let mut on = HyperEngine::new(&clauses, c(0)).with_semantic_branching();
+    let v_on = on.decide(1);
+
+    // The A branch stalls (A→G∨H at depth 0); the frame is therefore Stalled,
+    // NOT a definite Unsat. The invariant (never exclude a stalled sibling)
+    // keeps ON from manufacturing a false clash in the B branch.
+    assert_eq!(
+        v_on, v_off,
+        "flag ON must not flip the verdict by excluding a merely-stalled sibling"
+    );
+    assert_ne!(
+        v_on,
+        HyperResult::Unsat,
+        "must NOT be a false Unsat — A only stalled, so ¬A is unproven"
+    );
+    // A stalled ⇒ never excluded.
+    assert_eq!(
+        on.stats().semantic_exclusions,
+        0,
+        "a stalled sibling must never be excluded, got {}",
+        on.stats().semantic_exclusions
+    );
+}

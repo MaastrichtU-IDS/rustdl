@@ -43,18 +43,53 @@
 
 **Interfaces:** consumes `self.disjoint_pairs`, `self.clauses`, `HyperNode.labels`, `apply_head_atom`. Produces the flag-gated pruning; a `SearchStats` counter `semantic_prunes: u64` + `semantic_unit_forces: u64` (optional, for measurement).
 
-**The change (inside `solve`, only when `self.semantic_branching`), after `live` is computed and before the `if live.is_empty()` check:**
-- Filter `live` to drop each `k` where `self.clauses[ci].head[k]` is `Atom::Class(c, _)` **and** the node (resolved) carries some label `e` with `(min(c.index(),e.index()), max(..)) ∈ self.disjoint_pairs`. (Non-`Class` / compound head atoms are never dropped — conservative.) Increment `semantic_prunes` per dropped `k`.
+**The change (inside `solve`, only when `self.semantic_branching`), after `live`, `d`, `body_deps`, and `decision_deps` are computed (keep `track_depth(depth)` on ALL paths — it uses `init_depth - depth + 1`, constant across the same-depth unit-force recursion, so it never inflates `max_branch_depth`; guarding it would risk diverging the OFF path, and it is verdict-irrelevant):**
+
+Filter `live` and, **for every disjunct dropped, fold its flag-OFF clash dep-set into an accumulator `combined` so backjumping stays sound** (⚠️ SEE THE DEP-SET SOUNDNESS RULE BELOW — this is the load-bearing correctness point; a naive `clash_deps = body_deps` is an UNSOUND subset → false Unsat → FP subsumption):
+
+```text
+let mut combined = DepSet::EMPTY;
+live.retain(|&k| {
+    let Atom::Class(c, v) = self.clauses[ci].head[k] else { return true; }; // compound → keep, conservative
+    let Some(t0) = resolve_var(v, node, &binding) else { return true; };     // unresolvable → keep
+    let t = self.resolve(t0);                                                // through the merge union-find
+    // find EVERY disjoint partner label e on t (e != c, (min,max) idx ∈ disjoint_pairs)
+    let mut dead = false;
+    let mut kill = DepSet::EMPTY;
+    let tainted = self.nodes[t.index()].nn_tainted && !self.nn_taint_disabled;
+    for &e in &self.nodes[t.index()].labels {
+        if e == c { continue; }
+        let (lo, hi) = (c.index().min(e.index()), c.index().max(e.index()));
+        if self.disjoint_pairs.contains(&(lo, hi)) {
+            dead = true;
+            // flag-OFF this disjunct clashes via c⊓e→⊥ with deps = decision_deps ∪ deps(e)
+            // (or DepSet::ALL when the node is nn_tainted — mirror fire_clause, hyper.rs:3259).
+            kill = kill.union(self.nodes[t.index()].deps_of(e));
+        }
+    }
+    if dead {
+        let contribution = if tainted { DepSet::ALL } else { decision_deps.union(kill) };
+        combined = combined.union(contribution);
+        self.stats.semantic_prunes += 1;
+        false // drop
+    } else {
+        true  // keep
+    }
+});
+```
 - Then:
-  - `live` empty → the existing `clash_deps = body_deps; return Unsat` (now also reached when disjointness killed all disjuncts — sound: each was an immediate clash).
-  - `live.len() == 1` → **unit-force, no branch/decision level:** let `k` be the survivor; `self.apply_head_atom(self.clauses[ci].head[k], node, &binding, body_deps)` (deps = `body_deps`, NOT `decision_deps` — no decision was made); `self.semantic_unit_forces += 1`; then `return self.solve(depth)` (SAME `depth` — no decrement; the forced assertion is monotone, and `solve` re-runs `horn_fixpoint` + finds the next disjunction; the forced disjunct is now head-satisfied so it is not re-picked → terminating). Do NOT `track_depth`.
-  - else → branch over the filtered `live` exactly as today (save/apply/`solve(depth-1)`/backjump).
+  - `live` empty → **`self.clash_deps = combined.remove(d); return HyperResult::Unsat;`** — NOT `body_deps`. `combined.remove(d)` reproduces exactly what the flag-OFF branch loop propagates when every disjunct is a disjointness clash (`combined = ⋃(decision_deps ∪ deps(eₖ))`, then the exhausted decision `d` is removed). `d` is present only via `decision_deps`; `deps(eₖ)`/`body_deps` never contain `d`, so `remove(d)` is exact.
+  - `live.len() == 1` → **unit-force, no branch/decision level:** let `k = live[0]`; `let forced_deps = body_deps.union(combined.remove(d));` (⊇ `body_deps ∪ ⋃ⱼ deps(eⱼ)` — the clause body plus what justified killing every other disjunct; no `d`, since no decision was made); `self.apply_head_atom(self.clauses[ci].head[k], node, &binding, forced_deps);` `self.stats.semantic_unit_forces += 1;` then `return self.solve(depth)` (SAME `depth` — no decrement; the forced assertion is monotone and now head-satisfied, so `find_open_disjunction` will not re-pick this clause → terminating; head_len ≥ 2 always here since single-head clauses are Horn, so ≥1 disjunct was dropped and `combined ⊇ decision_deps ⊇ body_deps`).
+  - else → branch over the filtered `live` exactly as today (save/apply/`solve(depth-1)`/backjump). The pre-existing `for k in live { … }` loop already threads `decision_deps` and folds `child_deps` into its own `combined`/backjump — leave it; the filtered `live` just has fewer children.
 
-**Soundness note for the implementer:** a disjunct dropped here is one the reactive `horn_fixpoint` would have clashed on the next pass anyway (both its class and a told-disjoint class are/would-be on the node) — so pruning it changes no verdict. Unit-forcing asserts a disjunct the search was forced to take (all siblings are immediate clashes) — also verdict-preserving. **No negative/exclusion state is introduced (that is Layer B).**
+**⚠️ DEP-SET SOUNDNESS RULE (load-bearing — advisor 2026-07-15):** `is_subclass_of` reduces to unsat of `sub ⊓ ¬sup`, so a false `Unsat` is a false-positive subsumption. Backjumping is sound only if every dep-set Layer A emits is a **SUPERSET** of what the flag-OFF engine would compute at the same clash. The flag-OFF path asserts the dropped disjunct `c`, then `horn_fixpoint` fires `c⊓e→⊥` with `clash_deps = decision_deps ∪ deps(e)` (or `DepSet::ALL` when the clashing node is `nn_tainted`, hyper.rs:3259-3263). `deps(e)` can carry an ancestor `⊔` decision that is **not** in `body_deps`; emitting bare `body_deps` (a subset) drops it → unsound backjump past that ancestor decision → could skip a `Sat` sibling → false `Unsat` → **FP**. This is the same subset-vs-superset hazard `precise_card_deps` was built around: **when unsure, wider (up to `DepSet::ALL`) is always sound; subset is never.** Unioning over *all* disjoint partners `e` (rather than the single one flag-OFF happens to fire first) is deliberately wider — still a superset, still sound.
 
-- [ ] **Step 1 (RED):** In `semantic_branching.rs`, build a tiny clause set: `Disjoint(B,C)` (⊥-headed `B⊓C→⊥`), a node seeded with `{A, B}`, and a covering clause `A → B ∨ C`. With the flag ON, `solve` must (a) drop disjunct `C`? no — wait: node has `A,B`; disjunct `C` is disjoint with `B` (on node) → drop `C`; disjunct `B` is already satisfied. Construct so exactly one disjunct survives and is forced, OR all-die → Unsat. Assert: flag-ON verdict == flag-OFF verdict (Sat/Unsat identical), and `semantic_prunes >= 1` (non-vacuous: pruning actually happened). Run → FAIL (flag/counter absent).
-- [ ] **Step 2:** Implement the filter + unit-force + counters per the design above.
-- [ ] **Step 3 (GREEN):** `cargo test -p owl-dl-tableau --test semantic_branching` → PASS (verdict identical, prune fired).
+**Soundness note (verdict-preservation):** a dropped disjunct is one the reactive `horn_fixpoint` would clash on next pass anyway (`(c,e) ∈ disjoint_pairs ⟺ a clause `c⊓e→⊥` exists; both `c` and `e` on `t` ⟹ it fires) — so pruning changes no verdict *provided the dep discipline above holds*. Unit-forcing asserts a disjunct the search was forced to take (all siblings are immediate clashes). **No negative/exclusion state is introduced (that is Layer B).**
+
+- [ ] **Step 1 (RED):** In `semantic_branching.rs`, build a tiny clause set exercising the drop + unit-force: `Disjoint(B,C)` (⊥-headed `B⊓C→⊥`), a node seeded with `{A, B}`, and a covering clause `A → B ∨ C`. Node has `A,B`; disjunct `C` is disjoint with `B` (on node) → drop `C`; `B` is already satisfied so the clause is not even open — construct instead so `B` is NOT pre-satisfied and exactly one disjunct survives to be forced (e.g. seed `{A, X}` with `Disjoint(X, C)` so `C` dies and `B` is forced), OR all-die → Unsat. Assert: flag-ON verdict == flag-OFF verdict (Sat/Unsat identical), and `semantic_prunes >= 1` (non-vacuous). Run → FAIL (flag/counter absent).
+- [ ] **Step 1b (RED — the FP tripwire canary, advisor 2026-07-15):** a fixture where the dropped disjunct's clashing label `e` is placed by an **ancestor `⊔` decision** (not by clause `ci`'s body), so bare `body_deps` would be a strict subset of the flag-OFF clash dep-set and an unsound backjump would flip a `Sat` to `Unsat`. Shape: an outer covering clause `A → E ∨ F` (decision level `d_e`); on the `E` branch, an inner covering clause `A → G ∨ C` where `Disjoint(E,C)` — so on the inner ⊔, disjunct `C` is dropped because ancestor-placed `E` is disjoint. Arrange the `F` branch to be **`Sat`**, so a backjump that skips `d_e` (the bug) would wrongly return `Unsat`. Assert flag-ON verdict == flag-OFF verdict (must be `Sat`) — i.e. the dep-set fold kept `d_e`. The eight-way/diamond fixtures do NOT exercise this. Run → FAIL until the dep fold is implemented.
+- [ ] **Step 2:** Implement the filter + `combined` dep-fold + unit-force + counters per the design above (including the DEP-SET SOUNDNESS RULE — `combined.remove(d)` on empty-live, `body_deps ∪ combined.remove(d)` on unit-force, `DepSet::ALL` on `nn_tainted`).
+- [ ] **Step 3 (GREEN):** `cargo test -p owl-dl-tableau --test semantic_branching` → PASS (both the prune test and the ancestor-dep canary: verdict identical, prune fired, no spurious backjump).
 - [ ] **Step 4 (verdict-identity gate):** rebuild CLI; add/reuse a differential test (mirror `incremental_fixpoint_identity.rs`) comparing `classify` OFF vs ON on `funcmerge-cyclic`, `pizza`, `27_eight_way_disjunction_sat`, `18_diamond_subsumption_unsat` — **byte-identical** (Layer A is verdict-preserving). Full tableau suite green (OFF path unchanged). fmt/clippy clean.
 - [ ] **Step 5:** Commit: `feat(hyper): Layer A disjoint-prune + unit-force at ⊔ under RUSTDL_SEMANTIC_BRANCHING (Fix#2)`.
 

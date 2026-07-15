@@ -2328,7 +2328,18 @@ impl<'c> HyperEngine<'c> {
                     if let Atom::Class(c, v) = self.clauses[ci].head[k]
                         && let Some(t0) = resolve_var(v, node, &binding)
                     {
-                        let t = self.resolve(t0);
+                        // Check labels on the SAME node the disjunct would land
+                        // on. `add_label` resolves through the merge union-find
+                        // only when `inverse_func_merge` is on (hyper.rs `add_label`);
+                        // mirror that exactly, else with the flag off a `≤n` merge
+                        // could put `c` on `t0` while `e` was read on `resolve(t0)`
+                        // — different physical nodes, so the same-variable
+                        // disjointness clause need not fire → unsound drop.
+                        let t = if self.inverse_func_merge {
+                            self.resolve(t0)
+                        } else {
+                            t0
+                        };
                         let tainted = self.nodes[t.index()].nn_tainted && !self.nn_taint_disabled;
                         let mut kill = DepSet::EMPTY;
                         let mut dead = false;

@@ -1048,8 +1048,8 @@ impl<'c> HyperEngine<'c> {
     }
 
     /// Enable Fix#2 Layer A in-search boolean constraint propagation at the `⊔`
-    /// decision point (`RUSTDL_SEMANTIC_BRANCHING`). Default OFF; no behaviour
-    /// change until Task 2 reads the field.
+    /// decision point (`RUSTDL_SEMANTIC_BRANCHING`): drop told-disjoint disjuncts
+    /// and unit-force a lone survivor. Verdict-preserving; default OFF.
     #[must_use]
     pub fn with_semantic_branching(mut self) -> Self {
         self.semantic_branching = true;

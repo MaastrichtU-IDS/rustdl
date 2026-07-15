@@ -1696,7 +1696,8 @@ pub(crate) fn incremental_fixpoint_enabled() -> bool {
 /// Fix#2 Layer A in-search boolean constraint propagation at the `⊔` decision
 /// point (`RUSTDL_SEMANTIC_BRANCHING`). **DEFAULT OFF**: opt-in only. Returns
 /// `true` only when `RUSTDL_SEMANTIC_BRANCHING` is set to a non-empty, non-`"0"`
-/// value. No behaviour change until Task 2 reads `HyperEngine::semantic_branching`.
+/// value. Verdict-preserving (byte-identical curated closures OFF vs ON); wired
+/// at the classify `HyperEngine` builders alongside `with_incremental_fixpoint`.
 #[must_use]
 pub(crate) fn semantic_branching_enabled() -> bool {
     std::env::var_os("RUSTDL_SEMANTIC_BRANCHING").is_some_and(|v| v != "0" && !v.is_empty())

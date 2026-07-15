@@ -136,3 +136,38 @@ neither the wine re-architecture nor a trivial fix.
 The probe is a read-only diagnostic (`RUSTDL_AT_MOST_EXHAUST_PROBE`, default OFF, verdicts
 byte-identical — confirmed OFF-vs-ON `entailed=157 stalled=15` on `ore_ont_10019`) retained
 for reproducibility.
+
+## `≠`-provenance follow-up — SOUND cheap lever, but partial + instance-specific
+
+**Room probe** (optimistic candidate `card_clash_over_ignore_neq(node,succs) ∪ ⋃child_clash_deps`,
+bypassing the `≠`-guard): `ore_ont_10019` **31.1 %** of 43048 clashes bounded (mean popcount
+**18.7** vs mean decision-depth **83.7** — real backjump room); `ore_ont_12653` **0 %** (stalls
+deep, >128 levels, exceeding the 128-bit `DepSet`).
+
+**Soundness of dropping the `≠`-guard — VERIFIED by code read (not assumed):**
+`add_neq` is called at **exactly one site** — line 4023 in `generate_at_least` — and
+`generate_at_least` sets both successors' `birth_deps = deps` (the `≥n` firing's dep, line
+4003). So every engine `≠` is `≥n`-generated and its justification is already carried in the
+successors' `birth_deps`, which `over` unions. Therefore replacing the `≠`-guard's `ALL` with
+`over` is a **sound** over-approximation (given the single-`add_neq` invariant — assert it), and
+no separate `neq_deps` threading is needed. (Hole A's downstream deps are covered by unioning
+`child_acc`, already in the probe.)
+
+**Three deflators (advisor, all real):**
+1. **128-bit confound** — `opt_bounded` requires `!overflow`, set at depth ≥128, so the 31 %
+   is structurally the shallow-clash fraction; the deep 69 % is `DepSet`-capacity-bound, a
+   *distinct* lever (wider dep representation), not `≠`-provenance.
+2. **Proxy ≠ gate** — the real go/no-go is the **branch-count delta on `KetoneGroup ⊑ AcylGroup`**,
+   not "% bounded." 69 % of clashes still at `ALL` means any `ALL`-node in the re-explored loop
+   re-stalls it; whether the sound 31 % collapses the stall is unmeasured until the narrowing is
+   actually wired to backjumping.
+3. **`ore_ont_12653 = 0 %`** — the cross-domain *generality* instance gets zero benefit. This is
+   an `ore_ont_10019`-shaped lever, not the general one.
+
+**Status: sound cheap lever identified; build-vs-stop is a proportionality call.** The next step
+(if taken) is verdict-affecting + FP-critical: wire the guard-relax (`over ∪ child_acc` in place
+of `ALL`, single-`add_neq` invariant asserted) to backjumping behind a flag, then gate on the
+`KetoneGroup ⊑ AcylGroup` branch-count delta AND corpus FP=0/MISSED=0 (the non-Horn
+`ore_ont_13723` oracle + curated byte-identity). Given the partial (31 %, shallow-only) and
+instance-specific (0 % on the generality case) payoff, proportionality argues for a hard
+branch-count gate before committing.

@@ -511,6 +511,13 @@ pub struct SearchStats {
     /// vs shadow dep-sets at the moment of a clash, enabling post-run
     /// analysis of how much precision the taint paths discard.
     pub clash_records: Vec<ClashRecord>,
+    /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`): disjuncts dropped at the `⊔`
+    /// decision because a told-disjoint class was already on the (resolved)
+    /// node — the disjunct would clash on the very next `horn_fixpoint` pass.
+    pub semantic_prunes: u64,
+    /// Fix#2 Layer A: times a `⊔` decision collapsed to a single live disjunct
+    /// after pruning and was unit-forced (asserted without a decision level).
+    pub semantic_unit_forces: u64,
 }
 
 /// The hyperresolution engine. Holds the completion graph and the
@@ -578,10 +585,10 @@ pub struct HyperEngine<'c> {
     /// whole graph each solve frame. Default OFF until validated FP=0 AND
     /// MISSED=0.
     incremental_fixpoint: bool,
-    /// Fix#2 Layer A scaffold (`RUSTDL_SEMANTIC_BRANCHING`, via
+    /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, via
     /// [`with_semantic_branching`]): opt-in in-search boolean constraint
-    /// propagation at the `⊔` decision point. Default OFF; consumed in Task 2.
-    #[allow(dead_code)] // consumed in Task 2
+    /// propagation at the `⊔` decision point — drop told-disjoint disjuncts and
+    /// unit-force a lone survivor. Verdict-preserving; default OFF.
     semantic_branching: bool,
     /// Opt-in (`RUSTDL_PRECISE_CARD_DEPS`, via [`with_precise_card_deps`]): at a
     /// `≤n` cardinality clash, report a **sound over-approximation** of the
@@ -2283,11 +2290,104 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
-            let live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
+            let mut live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
                 self.lookahead_live_disjuncts(&sat, ci, node)
             } else {
                 (0..head_len).collect()
             };
+            // Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, default OFF): in-search
+            // disjointness pruning + unit-forcing. Drop each atomic `Class(c,_)`
+            // disjunct whose (resolved) target node already carries a told-
+            // disjoint label `e` — the disjunct would clash on the very next
+            // `horn_fixpoint` pass anyway, so pruning it changes no verdict.
+            //
+            // SOUNDNESS (load-bearing): the dep-set Layer A emits must be a
+            // SUPERSET of what the flag-OFF engine computes at the same clash,
+            // or backjumping is unsound (subset → false Unsat → FP subsumption,
+            // since `is_subclass_of` reduces to unsat of `sub ⊓ ¬sup`). Flag-OFF
+            // asserts the dropped disjunct `c`, then `fire_clause` clashes
+            // `c ⊓ e → ⊥` with `decision_deps ∪ deps(e)` (or `DepSet::ALL` when
+            // the clashing node is `nn_tainted`). So we fold exactly that per
+            // dropped disjunct into `prune_deps`; unioning over ALL disjoint
+            // partners `e` is deliberately wider (still a superset, still
+            // sound). See the wedge-semantic-branching design +
+            // `docs/backjump-reconcile-2026-06-06.md`.
+            // Accumulates the flag-OFF clash dep-set of every disjunct Layer A
+            // drops. It seeds the branch loop's `combined` below so that, when
+            // the surviving disjuncts all fail, the propagated Unsat dep-set is
+            // a SUPERSET of flag-OFF's (which folds the child dep-set of the
+            // dropped-but-branched-and-clashed disjuncts too). Dropping those
+            // disjuncts without carrying their deps forward narrows `combined`
+            // → unsound backjump past an ancestor decision → false Unsat → FP.
+            // EMPTY (hence inert) when the flag is off.
+            let mut prune_deps = DepSet::EMPTY;
+            if self.semantic_branching {
+                let mut kept: Vec<usize> = Vec::with_capacity(live.len());
+                for &k in &live {
+                    let mut dropped = false;
+                    if let Atom::Class(c, v) = self.clauses[ci].head[k]
+                        && let Some(t0) = resolve_var(v, node, &binding)
+                    {
+                        let t = self.resolve(t0);
+                        let tainted = self.nodes[t.index()].nn_tainted && !self.nn_taint_disabled;
+                        let mut kill = DepSet::EMPTY;
+                        let mut dead = false;
+                        let n_labels = self.nodes[t.index()].labels.len();
+                        for li in 0..n_labels {
+                            let e = self.nodes[t.index()].labels[li];
+                            if e == c {
+                                continue;
+                            }
+                            let (lo, hi) = (c.index().min(e.index()), c.index().max(e.index()));
+                            if self.disjoint_pairs.contains(&(lo, hi)) {
+                                dead = true;
+                                kill = kill.union(self.nodes[t.index()].deps_of(e));
+                            }
+                        }
+                        if dead {
+                            let contribution = if tainted {
+                                DepSet::ALL
+                            } else {
+                                decision_deps.union(kill)
+                            };
+                            prune_deps = prune_deps.union(contribution);
+                            self.stats.semantic_prunes += 1;
+                            dropped = true;
+                        }
+                    }
+                    if !dropped {
+                        kept.push(k);
+                    }
+                }
+                live = kept;
+                // All disjuncts pruned → immediate clash. Propagate the superset
+                // dep-set with the exhausted decision `d` removed — matching the
+                // flag-OFF loop's `combined.remove(d)` when every disjunct is a
+                // disjointness clash. `body_deps.union(..)` guards the degenerate
+                // case where a co-enabled lookahead (not this prune) emptied
+                // `live` (`prune_deps` EMPTY): the dep must still cover the body.
+                if live.is_empty() {
+                    self.clash_deps = body_deps.union(prune_deps).remove(d);
+                    return HyperResult::Unsat;
+                }
+                // Exactly one live disjunct → unit-force it WITHOUT a decision
+                // level: all siblings are immediate clashes, so the search was
+                // compelled to take this one. `forced_deps ⊇ body_deps ∪
+                // ⋃ⱼ deps(eⱼ)` (the body + what justified killing every other
+                // disjunct); no `d`, since no decision was made. Recurse at the
+                // SAME `depth` — the assertion is monotone and now head-
+                // satisfied, so `find_open_disjunction` will not re-pick this
+                // clause (terminating). `track_depth` above stays harmless: its
+                // level `init_depth - depth + 1` is constant across this same-
+                // depth recursion, so `max_branch_depth` is not inflated.
+                if live.len() == 1 {
+                    let head_atom = self.clauses[ci].head[live[0]];
+                    let forced_deps = body_deps.union(prune_deps.remove(d));
+                    let _ = self.apply_head_atom(head_atom, node, &binding, forced_deps);
+                    self.stats.semantic_unit_forces += 1;
+                    return self.solve(depth);
+                }
+            }
             // If the lookahead proved ALL disjuncts dead, treat it as a clash
             // on this branch (same as if every branch returned Unsat).
             if live.is_empty() {
@@ -2295,7 +2395,10 @@ impl<'c> HyperEngine<'c> {
                 return HyperResult::Unsat;
             }
             let mut any_stalled = false;
-            let mut combined = DepSet::EMPTY;
+            // Seed with the dropped disjuncts' clash deps (see `prune_deps`): the
+            // flag-OFF loop would have branched and clashed those, folding their
+            // dep-sets into `combined`. EMPTY when the flag is off (byte-identical).
+            let mut combined = prune_deps;
             for k in live {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();

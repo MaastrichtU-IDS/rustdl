@@ -1,5 +1,13 @@
 # Bound-the-tail — exploration plan (dense-SROIQ wall reclamation)
 
+> **STATUS 2026-07-16 — Phase 0 executed, arc CLOSED.** The pivotal rescue-rate
+> measurement killed the wall reclaim on evidence: the fallthrough rescues **11 real
+> subsumptions** on `ore_ont_10019` (all deadline-stalls, 0 divergence-stalls), so
+> Phase 1 (skip/budget-share) fails MISSED=0 and Phase 2 (earlier divergence) can't
+> safely cut them (they're tableau-completable, not diverging). The −44 % is a
+> completeness TRADE, not free. See `docs/2026-07-16-fallthrough-rescue-rate.md`.
+> Phases 1-3 below were NOT executed (Phase 0 gated them out).
+
 **Motivation:** `docs/2026-07-15-bound-the-tail-findings.md` — ~half the dense-SROIQ
 classify wall is the main-tableau (`search.rs`) fallthrough re-thrashing pairs the
 wedge already stalled on (`ore_ont_10019`: 77.7 s → 43.4 s if all fallthroughs are

@@ -626,9 +626,7 @@ pub fn clause_deferred_census<A: horned_owl::model::ForIRI>(
     Ok(owl_dl_core::clause::deferred_census(&internal))
 }
 
-pub use owl_dl_tableau::hyper::{
-    HyperResult, SearchStats, reset_nogood_prune_counts, take_nogood_prune_counts,
-};
+pub use owl_dl_tableau::hyper::{HyperResult, SearchStats};
 
 /// Per-class concept-satisfiability result from the hypertableau
 /// engine ([`owl_dl_tableau::hyper`]), for the H2b wall measurement.
@@ -687,9 +685,6 @@ pub fn hyper_sat_probe<A: horned_owl::model::ForIRI>(
         let mut engine = HyperEngine::new(&clauses, class_id);
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
-        }
-        if crate::wedge_nogood_enabled() {
-            engine = engine.with_wedge_nogood();
         }
         let deadline = per_class_timeout.map(|t| std::time::Instant::now() + t);
         let start = std::time::Instant::now();
@@ -1103,9 +1098,6 @@ pub fn hyper_subsumption_probe<A: horned_owl::model::ForIRI>(
             if crate::incremental_fixpoint_enabled() {
                 engine = engine.with_incremental_fixpoint();
             }
-            if crate::wedge_nogood_enabled() {
-                engine = engine.with_wedge_nogood();
-            }
             let result = engine.decide_with_deadline(max_depth, deadline);
             let stats = engine.stats();
             let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -1239,9 +1231,6 @@ pub fn seed_probe<A: horned_owl::model::ForIRI>(
     }
     if crate::incremental_fixpoint_enabled() {
         engine = engine.with_incremental_fixpoint();
-    }
-    if crate::wedge_nogood_enabled() {
-        engine = engine.with_wedge_nogood();
     }
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
     let start = std::time::Instant::now();
@@ -1401,9 +1390,6 @@ pub fn precompletion_probe<A: horned_owl::model::ForIRI>(
     }
     if crate::incremental_fixpoint_enabled() {
         engine = engine.with_incremental_fixpoint();
-    }
-    if crate::wedge_nogood_enabled() {
-        engine = engine.with_wedge_nogood();
     }
 
     let deadline = timeout.map(|t| std::time::Instant::now() + t);
@@ -1693,19 +1679,6 @@ pub(crate) fn adaptive_budget_enabled() -> bool {
 #[must_use]
 pub(crate) fn incremental_fixpoint_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_INCREMENTAL_FIXPOINT").is_none_or(|v| v != "0" && !v.is_empty())
-}
-
-/// SP2 B3 node-local no-good record+prune (`RUSTDL_WEDGE_NOGOOD`). Opt-IN,
-/// **default OFF**: returns `true` only when the variable is set to something
-/// other than `"0"`/empty. When ON, the wedge records minimal node-local
-/// UNSAT cores at clashes and prunes disjunction branches whose node
-/// label-set is subsumed by a recorded core (a sound early cut — a superset
-/// of an UNSAT label-set is UNSAT). Applied at the SAME `HyperEngine::new*`
-/// classify sites as `incremental_fixpoint`. Default OFF until the
-/// verdict-identity gate + a corpus perf/soundness sweep validate it.
-#[must_use]
-pub fn wedge_nogood_enabled() -> bool {
-    std::env::var_os("RUSTDL_WEDGE_NOGOOD").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Anywhere (pairwise/double) blocking in the MAIN SROIQ tableau
@@ -2610,9 +2583,6 @@ impl HyperCache {
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
         }
-        if crate::wedge_nogood_enabled() {
-            engine = engine.with_wedge_nogood();
-        }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
         }
@@ -2675,9 +2645,6 @@ impl HyperCache {
         let mut engine = HyperEngine::new(&clauses, self.fresh_q);
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
-        }
-        if crate::wedge_nogood_enabled() {
-            engine = engine.with_wedge_nogood();
         }
         if crate::classify_same_tier_enabled() {
             engine = engine.with_sub_roles(self.sub_roles.clone());
@@ -2807,9 +2774,6 @@ impl HyperCache {
         };
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
-        }
-        if crate::wedge_nogood_enabled() {
-            engine = engine.with_wedge_nogood();
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
@@ -3047,9 +3011,6 @@ impl ConsistencyCache {
             .with_nominals(self.num_classes, self.num_individuals);
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
-        }
-        if crate::wedge_nogood_enabled() {
-            engine = engine.with_wedge_nogood();
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();

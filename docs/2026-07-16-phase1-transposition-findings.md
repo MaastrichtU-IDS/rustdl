@@ -74,3 +74,33 @@ Options — none require the reverted memo:
 
 The dense-SROIQ tail is now: over-branching fixed (card-disjunct-atoms, shipped, default-ON,
 159/162); the residual is one hard defined⊑defined subsumption + two cosmetic probe stalls.
+
+## The last MISS diagnosed (2026-07-16) — `SulfoxideGroup ⊑ SulfinicAcidGeneralGroup`
+
+**It is NOT a calculus gap, and it is NOT separately modularizable. It is the
+over-branching root cause manifesting on the `¬sup` side of this one pair.**
+
+- **Not a calculus gap.** On a minimal reproducer (the 2 defs + bond roles + atoms,
+  even with `CarbonGroup ≡ Aryl ⊔ Alkyl` and the Alkyl/Aryl bodies added) the tableau
+  derives it **instantly** (0.2 s); `explain` on that reproducer reports "answered by
+  tableau." The subsumption holds because Sulfoxide's `∃hasSingleBondWith` filler is a
+  superset of SulfinicAcid's (adds `∃hasSingleBond.CarbonGroup ⊓ ≥2 hasSingleBond.CarbonGroup`),
+  so `Sulfoxide-filler ⊑ SinicAcid-filler` and `∃` is monotone.
+- **Two obstacles in the full ont:** (a) the label heuristic prunes the pair by default
+  (the defined-sweep bypasses it); (b) the per-pair tableau probe **blows up in the
+  full-ont context** — `explain` on the full ont is killed at 60 s.
+- **Module extraction is dead for this ont (advisor-confirmed calculus + measured).** A
+  *sound* ⊥-locality module for Σ = {SulfoxideGroup, SulfinicAcidGeneralGroup} expands
+  Σ (via `CarbonGroup ≡ Aryl ⊔ Alkyl` → `CarbonAtom, hasBondWith`; via domain/range →
+  `Atom`) to `{CarbonAtom, hasSingleBondWith, hasDoubleBondWith, OxygenAtom, Atom}`. Every
+  one of the **15** functional-group definitions is `SomeGroup ≡ CarbonAtom ⊓ (cardinality/∃
+  on bond-roles to Atom-subclasses)`; their **sufficient-direction** `body ⊑ SomeGroup`
+  axioms are over exactly that vocabulary, so under ⊥-locality (SomeGroup→⊥) `body ⊑ ⊥` is
+  non-tautological → **non-local → the module must keep all 15**. Those 15 are precisely the
+  over-branching source (see [[dense-sroiq-root-cause-overbranching]]). The fast hand-curated
+  reproducer was fast only because it *deleted* axioms a sound module is obligated to keep.
+  Measured: 47 classes, 15 CarbonAtom-anchored defs, 25 bond-role defs — the module ≈ whole ont.
+- **Conclusion:** no cheap, sound, separately-scoped lever closes this pair. Closing it means
+  further attacking the over-branching itself (surrogate atoms / stronger sufficient-direction
+  absorption so the 15 defs stop branching) — the deep frontier, not warranted for one
+  subsumption at 161/162 FP=0. **Deferred, with the mechanism recorded.**

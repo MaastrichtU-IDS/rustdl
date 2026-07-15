@@ -83,6 +83,34 @@ of a disjunction anchored on a shared soft trigger. Scope:
 - All prior "levers measured out" remain correct *for the current over-branching search*;
   they don't bear on the preprocessing fix, which changes the clause set itself.
 
+## Deeper-diagnosis spike (2026-07-16): confirms the mechanism AND scopes the fix
+
+A throwaway flag (`RUSTDL_SPIKE_DEFER_HARD`) that DROPS the soft+hard sufficient-direction
+disjunctions in `absorb_hard_antecedent`, measured on `ore_ont_10019`:
+
+| | branches | stalled classes | sat classes | closure vs Konclude(162) | FP | MISSED |
+|---|---|---|---|---|---|---|
+| current (⇐ clauses on) | 160 652 | 33 | 14 | 150 | 0 | 12 |
+| spike (⇐ clauses dropped) | **30** | **0** | **47** | 150 | 0 | 12 |
+
+Three decisive conclusions:
+1. **The over-branching is pure waste.** 160 652 → 30 branches, 33 → 0 stalled — yet the
+   closure is IDENTICAL (150). The explosion derives nothing correct.
+2. **The ⇐ clauses ARE needed** for 12 real subsumptions (`AcylGroup ⊑ CarbonylGroup`,
+   … all `X ⊑ CarbonylGroup`/`OrganicSulfurGroup` — a defined class X whose *necessary*
+   conditions ⊇ another defined class's definition). Konclude derives them (162); rustdl
+   misses them (150). Proving `X ⊑ D` needs D's sufficient direction to expand `¬D`.
+3. **Current rustdl gets the worst of both** — it HAS the ⇐ clauses (→ over-branches) and
+   STILL misses the 12 (the over-branching makes those subsumption pairs stall out).
+
+**So the sound fix must recover the 12 (→ Konclude parity 162) WITHOUT over-branching.**
+That is precisely Horn surrogate-atom absorption: `CarbonAtom ⊓ Q → CarbonylGroup`
+(Q a surrogate for `=1 hasDouble.O`) fires deterministically (no branch) and derives the
+subsumption. **The one genuinely delicate sub-problem** the spike surfaces: the
+reverse-derivation of a *cardinality* surrogate — deriving Q on a node that has
+`=1 hasDouble.O` (the surrogate's ⇐ direction is itself a hard antecedent). This is the
+crux the fix's design must solve (standard DL absorption territory; HermiT solves it).
+
 ## Disposition
 
 Branch `feat/dense-sroiq-search-arch` was created for the rewrite; **the rewrite is not

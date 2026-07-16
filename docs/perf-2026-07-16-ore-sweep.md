@@ -148,10 +148,41 @@ classify 1.3 ms vs Konclude 1 ms (1.3×), `ore_ont_10134` 6.7 ms vs 4 ms (1.7×)
 seconds (`ore_ont_10019`: classify 6284 ms vs Konclude 13 ms).
 
 **Refined reading:** rustdl's *reasoning core* is within a small factor of Konclude on the
-common case (median ~4.7×, near-parity on the easy end, faster on 11 %); a non-trivial slice of
-the apparent wall gap was parsing, not reasoning. The genuine, large gap is confined to the
-hard-SROIQ tail (search-reuse frontier) — plus, separately, rustdl's slower parse front-end
-(horned-owl) which shows up as ~20 % of the easy-ont wall.
+common case; a non-trivial slice of the apparent wall gap was parsing, not reasoning. The
+genuine, large gap is confined to the hard-SROIQ tail (search-reuse frontier) — plus,
+separately, rustdl's slower parse front-end (horned-owl) which shows up as ~20 % of the
+easy-ont wall.
+
+> **Caveat on the 4.7×:** that figure used the *bounded* (`--pair-timeout-ms 50`) rustdl run —
+> the bound caps rustdl's per-pair work, so it *undercounts* rustdl's true reasoning. It was
+> also measured at 8 threads under 4-way self-contention, vs Konclude serial/isolated. The
+> definitive **matched** comparison (next section) removes both artifacts; the honest matched
+> median is **7.2×**, not 4.7×.
+
+## Definitive matched comparison (isolated, full-core, unbounded — same conditions both sides)
+
+Re-ran the 234 pilot set with every asymmetry removed: **serial** (one at a time), **full 32
+cores each** (no thread cap, no concurrency), **rustdl unbounded** (no `--pair-timeout-ms`, so
+its *complete* reasoning is measured, matching Konclude's complete classification), then Konclude
+serial/isolated — sequentially, never overlapping. Both parse-excluded (rustdl `classify_ms` vs
+Konclude `reason_ms`). rustdl completed 213/233, Konclude reasoned 222/233.
+
+**Matched ratio `classify_ms / reason_ms`:**
+
+| set | n | median | p90 | p99 | max | rustdl ≤ Konclude |
+|---|---|---|---|---|---|---|
+| **overall** | 203 | **7.2×** | 46× | 673× | 5308× | 13 (6 %) |
+| EL | 56 | **1.9×** | 19× | — | 64× | **9 (16 %)** |
+| DL | 58 | 8.5× | 63× | — | 5308× | 4 (7 %) |
+| pure-DL | 89 | **9.6×** | 63× | — | 673× | **0 (0 %)** |
+
+**This is the number to cite.** rustdl's complete reasoning core is **~7× Konclude's on the
+median**, and the same EL→pure-DL gradient holds cleanly: **EL near-parity (1.9×, rustdl wins
+16 %)**, DL ~8.5×, **pure-DL ~9.6× and rustdl never wins**. `min = 0.20×` — on the fastest cases
+rustdl out-reasons Konclude 5×. Removing the 50 ms bound moved the median 4.7× → 7.2× (the bound
+had been hiding rustdl's true reasoning cost); isolating/full-core cut p90 classify_ms
+4758 → 1901 ms (parallelism helped the mid-tail) but did **not** rescue the DNF tail (213 OK
+unbounded-isolated ≈ 220 bounded-contended — the tail is scale-bound, not thread-bound).
 
 ## Stratified by OWL profile (all 1920)
 

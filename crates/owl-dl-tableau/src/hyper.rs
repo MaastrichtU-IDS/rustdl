@@ -505,6 +505,14 @@ pub struct SearchStats {
     pub lookahead_dropped: u64,
     /// Times the lookahead reduced a ⊔ to a single forced disjunct.
     pub lookahead_forced_single: u64,
+    /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`): `Atom::Class` disjuncts
+    /// dropped at a ⊔ decision because the node already carries a
+    /// told-disjoint label (each would clash on the next `horn_fixpoint`
+    /// pass). Zero unless semantic branching is enabled.
+    pub semantic_prunes: u64,
+    /// Fix#2 Layer A: times a ⊔ collapsed to a single `Atom::Class`
+    /// survivor that was unit-forced (asserted with NO decision level).
+    pub semantic_unit_forces: u64,
     /// Per-clash records from the shadow precise-dependency probe
     /// (`RUSTDL_SHADOW_DEP_PROBE`). Empty unless the probe is enabled via
     /// [`HyperEngine::with_shadow_dep_probe`]. Each entry carries the real
@@ -578,11 +586,12 @@ pub struct HyperEngine<'c> {
     /// whole graph each solve frame. Default OFF until validated FP=0 AND
     /// MISSED=0.
     incremental_fixpoint: bool,
-    /// Fix#2 Layer A scaffold (`RUSTDL_SEMANTIC_BRANCHING`, via
-    /// [`with_semantic_branching`]): default-OFF, inert flag. Not read
-    /// anywhere yet — Task 2 wires the actual wedge semantic-branching
-    /// filter behind it.
-    #[allow(dead_code)] // consumed in Task 2
+    /// Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`, via
+    /// [`with_semantic_branching`]): default-OFF. When set, `solve` performs
+    /// in-search disjoint-pruning + unit-forcing at the `⊔` decision (drop each
+    /// `Atom::Class` disjunct told-disjoint with a label on the node; force the
+    /// lone `Class` survivor without a decision level). Verdict-preserving —
+    /// the OFF path is byte-identical.
     semantic_branching: bool,
     /// Opt-in (`RUSTDL_PRECISE_CARD_DEPS`, via [`with_precise_card_deps`]): at a
     /// `≤n` cardinality clash, report a **sound over-approximation** of the
@@ -1041,9 +1050,9 @@ impl<'c> HyperEngine<'c> {
         self
     }
 
-    /// Fix#2 Layer A scaffold: opt into `RUSTDL_SEMANTIC_BRANCHING`. Inert —
-    /// the field is not read anywhere yet; Task 2 wires the actual wedge
-    /// semantic-branching filter behind it.
+    /// Fix#2 Layer A: opt into `RUSTDL_SEMANTIC_BRANCHING` — in-search
+    /// disjoint-pruning + unit-forcing at the `⊔` decision (see
+    /// [`Self::semantic_branching`]). Verdict-preserving; default OFF.
     #[must_use]
     pub fn with_semantic_branching(mut self) -> Self {
         self.semantic_branching = true;
@@ -2284,19 +2293,102 @@ impl<'c> HyperEngine<'c> {
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
             let head_len = self.clauses[ci].head.len();
-            let live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
+            let mut live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
                 self.lookahead_live_disjuncts(&sat, ci, node)
             } else {
                 (0..head_len).collect()
             };
-            // If the lookahead proved ALL disjuncts dead, treat it as a clash
-            // on this branch (same as if every branch returned Unsat).
+            // Fix#2 Layer A (`RUSTDL_SEMANTIC_BRANCHING`): in-search
+            // disjoint-pruning. Drop each `Atom::Class(c,·)` disjunct that is
+            // told-disjoint with a label `e` already on the (resolved) node —
+            // branching into it would put `c` on the node and the ⊥-headed
+            // `c ⊓ e → ⊥` clause would clash on the very next `horn_fixpoint`
+            // pass, so removing it changes no Sat/Unsat verdict. Non-`Class`
+            // / compound head atoms are never dropped (conservative).
+            //
+            // `reason_deps` accumulates each killing label `e`'s `deps_of(e)`.
+            // This is soundness-critical: this is a dependency-directed-
+            // backjumping engine, and the forced/failed disjunct truly depends
+            // on the labels that killed its siblings. `clause_body_deps` omits
+            // `e` (it is not a body atom), so the correct dep-set is
+            // `body_deps ∪ reason_deps`. Under-counting → unsound backjump →
+            // false-positive subsumption; over-approximating is always sound.
+            let mut reason_deps = DepSet::EMPTY;
+            if self.semantic_branching {
+                let before = live.len();
+                live.retain(|&k| {
+                    let Atom::Class(c, v) = self.clauses[ci].head[k] else {
+                        return true; // non-`Class` head atom: never dropped
+                    };
+                    let Some(raw) = resolve_var(v, node, &binding) else {
+                        return true;
+                    };
+                    let t = self.resolve(raw);
+                    let tn = &self.nodes[t.index()];
+                    for &e in &tn.labels {
+                        if e == c {
+                            continue;
+                        }
+                        let (lo, hi) = (c.index().min(e.index()), c.index().max(e.index()));
+                        if self.disjoint_pairs.contains(&(lo, hi)) {
+                            reason_deps = reason_deps.union(tn.deps_of(e));
+                            return false; // prune: `c ⊓ e ⊑ ⊥`, an immediate clash
+                        }
+                    }
+                    true
+                });
+                self.stats.semantic_prunes += u64::try_from(before - live.len()).unwrap_or(0);
+            }
+            // If the lookahead / disjoint-prune proved ALL disjuncts dead, treat
+            // it as a clash on this branch (same as if every branch returned
+            // Unsat). `reason_deps` is EMPTY on the OFF path, so `body_deps ∪ ∅`
+            // keeps that path byte-identical.
             if live.is_empty() {
-                self.clash_deps = body_deps;
+                self.clash_deps = body_deps.union(reason_deps);
                 return HyperResult::Unsat;
             }
+            // Fix#2 Layer A: exactly one `Atom::Class` disjunct survives → it is
+            // FORCED (every sibling is an immediate clash), so assert it as a
+            // committed consequence WITHOUT opening a decision level, then
+            // re-solve at the SAME depth. Deps = `body_deps ∪ reason_deps` (NOT
+            // `decision_deps` — no decision was made; NOT bare `body_deps` — see
+            // above). No `save`/`restore`: the assertion is monotone and the
+            // parent branch frame owns the snapshot. Restricted to `Atom::Class`
+            // survivors: `head_atom_satisfied` returns false forever for
+            // `AtLeast`/`Equal`/`Role` (TODO(HF3)), so a non-`Class` lone
+            // survivor would stay open, be re-picked, and loop; those fall
+            // through to the proven branch loop below (one iteration at
+            // `depth-1`). A `Class` survivor terminates: `apply_head_atom`
+            // → `add_label` makes it head-satisfied, so `find_open_disjunction`
+            // skips this clause on the re-entry (strict, monotone label gain).
+            if self.semantic_branching && live.len() == 1 {
+                let head_atom = self.clauses[ci].head[live[0]];
+                if let Atom::Class(..) = head_atom {
+                    let _ = self.apply_head_atom(
+                        head_atom,
+                        node,
+                        &binding,
+                        body_deps.union(reason_deps),
+                    );
+                    self.stats.semantic_unit_forces += 1;
+                    return self.solve(depth);
+                }
+            }
             let mut any_stalled = false;
-            let mut combined = DepSet::EMPTY;
+            // Fix#2 Layer A (soundness-critical): seed `combined` with
+            // `reason_deps` so the pruned disjuncts' dep-sets propagate. A
+            // disjunct dropped by the disjoint-prune is a child that WOULD have
+            // returned `Unsat` with a clash-dep ⊇ `deps_of(killing label)`; since
+            // that child is never actually explored, its dep is introduced here
+            // instead. Omitting it under-reports the frame's true clash deps →
+            // the parent backjumps past a decision that (via the killing label)
+            // IS responsible → a satisfiable sibling is skipped → false `Unsat` →
+            // FP subsumption. (This is the mainline pizza failure: the killing
+            // label `NonVegetarianPizza` was asserted by an ancestor `⊔` decision
+            // whose `VegetarianPizza` sibling is the satisfying branch.)
+            // `reason_deps` is `EMPTY` on the OFF path, so this stays
+            // byte-identical there.
+            let mut combined = reason_deps;
             for k in live {
                 let head_atom = self.clauses[ci].head[k];
                 let saved = self.save();
@@ -2312,8 +2404,11 @@ impl<'c> HyperEngine<'c> {
                             // This decision wasn't responsible for the
                             // clash — backjump: propagate the child's
                             // dep-set up, skipping the remaining
-                            // disjuncts (and this whole decision).
-                            self.clash_deps = child_deps;
+                            // disjuncts (and this whole decision). Fold in
+                            // `reason_deps`: the pruned siblings are dead only
+                            // because of the killing labels, so the frame's
+                            // `Unsat` depends on them too (EMPTY when OFF).
+                            self.clash_deps = child_deps.union(reason_deps);
                             return HyperResult::Unsat;
                         }
                         combined = combined.union(child_deps);

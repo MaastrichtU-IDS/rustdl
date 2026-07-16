@@ -65,6 +65,61 @@ DNF rate climbs steeply with size: 6 % (<1 MB) → 90 % (>50 MB). **Two tail com
    are the disjunctive/nominal search-explosion class characterized this session (dense-SROIQ
    tail, dead disj deps).
 
+## Bounded mode (`--pair-timeout-ms 50`) — barely moves the needle
+
+Re-swept all 1920 identically but with a **50 ms per-pair timeout** (sound under-approximation:
+a pair whose tableau verdict doesn't finish in 50 ms defaults to "not subsumed").
+
+| mode | classified <60 s | DNF | OK-of-reached |
+|---|---|---|---|
+| default | 1180 | 294 | 80 % |
+| **bounded 50 ms** | **1201** | **273** | **81 %** |
+
+Net: **+21 classified, only 24 files recovered** (KILLED→OK); median wall unchanged (50→60 ms,
+noise). **The DNF tail is scale-dominated, not per-pair-search-bound** — a huge ontology has
+O(n²) pairs, so `50 ms × millions of pairs` (plus parse + label-cache build + RSS) blows the
+60 s cap regardless of the per-pair bound. Per-pair bounding only rescues the *small-hard*
+algorithmic slice (~24 files, e.g. `ore_ont_10019`: default DNF → bounded 6.36 s). It does
+**not** address the big-file scale tail.
+
+## Konclude head-to-head (234-ontology pilot subset)
+
+The pilot subset (`/data/dumontier/ore-run/pilot`, 234 onts with a pre-converted `canon.owx`;
+stratified, includes the SROIQ OutOfFragment cases — i.e. the *harder* end of the corpus).
+Konclude run via `docker … konclude/konclude:latest classification -w AUTO`; **`reason_ms`** =
+Konclude's own reported classification time (excludes docker startup + parse). rustdl walls
+from the sweeps above.
+
+**Who classifies the 234:** rustdl default **212**, rustdl bounded **220**, Konclude **222**.
+
+**Konclude reasoning time:** median **5 ms**, mean 39 ms, p90 72 ms, p99 326 ms, max 1.79 s;
+63 % under 10 ms, none over 10 s. (Total docker wall median 0.53 s — startup-floored ~0.6 s.)
+
+**Ratio where both succeed** (`rustdl_wall / konclude_reason_s`; generous to Konclude — rustdl's
+wall includes parse, Konclude's `reason_ms` does not):
+
+| comparison | n | median | mean | p90 | max |
+|---|---|---|---|---|---|
+| rustdl default vs Konclude | 180 | **10×** | 61× | 71× | 4204× |
+| rustdl bounded-50 vs Konclude | 188 | **10×** | 60× | 96× | 1697× |
+
+**The qualitative gap — 20 onts rustdl DNFs (>60 s) but Konclude reasons in mean 228 ms**, and
+they are mostly *small* (14 of 20 are <5 MB, many <1 MB): `ore_ont_10019` (Konclude 13 ms),
+`ore_ont_3250` (8 ms), `ore_ont_6485` (11 ms), `ore_ont_8666` (14 ms)… **rustdl's hardest cases
+are Konclude's trivial cases** — the small-hard SROIQ search-explosion class, exactly the
+dense-SROIQ tail this session mapped to the (soundness-ruled-out) search-reuse frontier.
+(Reverse: 10 onts where Konclude emitted no `reason_ms` — likely inconsistency / empty-class /
+a Konclude quirk — that rustdl produced a result for; not counted as rustdl wins.)
+
+**Exemplar `ore_ont_10019`** (this session's running example): default **DNF**, bounded-50
+**6.36 s**, Konclude **13 ms** (~490× even after the bounded rescue).
+
+**Reading:** on the easy bulk, rustdl is fast in absolute terms (median tens of ms) and, with
+docker startup + parse counted on both sides, roughly comparable to Konclude. Konclude's
+advantage is (a) a ~10× faster reasoning core on the median and (b) — the real gap — it does
+**not** have rustdl's DNF tail: the cases rustdl can't finish, Konclude finishes in
+milliseconds. That tail is the SROIQ search-reuse frontier, not a constant-factor deficit.
+
 ## Caveats
 
 - **DNF = `KILLED`** conflates the 60 s cap with OOM; with 235 GB free, OOM was rare, so

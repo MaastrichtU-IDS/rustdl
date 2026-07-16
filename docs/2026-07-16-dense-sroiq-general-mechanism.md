@@ -171,3 +171,50 @@ of `ALL`, single-`add_neq` invariant asserted) to backjumping behind a flag, the
 `ore_ont_13723` oracle + curated byte-identity). Given the partial (31 %, shallow-only) and
 instance-specific (0 % on the generality case) payoff, proportionality argues for a hard
 branch-count gate before committing.
+
+## DepSet-capacity lever — MEASURED NO-GO (2026-07-16)
+
+The deep 69 % (and all of `ore_ont_12653`) is bound not by `≠`-provenance but by the **128-bit
+`DepSet` overflowing at depth >128** (`d = init_depth − depth ∈ [0,256]`). Widening is a
+*distinct*, potentially-more-general lever (backjump precision for any deep search). No read-only
+probe exists (overflow already destroyed the sparsity), so it was build-to-measure: a crude
+two-word `DepSet` (`u128 + u128_hi`, 256-bit, overflow only at ≥256), uncommitted throwaway.
+
+**Widening ALONE: 0 branch-count reduction** — `PathOfLength4` sat 195842→195842 identical,
+`KetoneGroup ⊑ AcylGroup` 36045→36045 identical, all 15 stalled pairs unchanged. It *does*
+recover dep precision (12653 exhaustion clashes 0 %→80.9 % bounded), but nothing *consumes* it:
+the exhaustion site still returns `ALL` (the `≠`-guard relax was never wired), and the dominant
+**disj-only** stalls have dense deps (no room even when precise). Widening and the `≠`-guard
+relax are **complementary, not alternatives** — neither reduces branch-count alone.
+
+**The decisive discriminator (advisor) — filter the probe to STALLING decides (`max_depth=256`):**
+
+| instance | group | exhaustion clashes | opt_bounded | mean popcount / depth |
+|---|---|---|---|---|
+| `ore_ont_10019` | **STALL** | 10825 | **0.2 %** | 18 / 46 |
+| `ore_ont_10019` | terminating | 32201 | 54.7 % | 18.8 / 99.5 |
+| `ore_ont_12653` | **STALL** | 393 | 80.9 % | 4.3 / 254.7 |
+
+**The room is a mirage where it matters.** On `ore_ont_10019` the 41 % aggregate was almost
+entirely in *fast-terminating* decides; in the actual stalls it is **0.2 %**. On `ore_ont_12653`
+the 80.9 % is real but sits in the *subsumption* exhaustion clashes — its **headline stall
+(`PathOfLength4` sat) is disj-only** (no exhaustion clashes → dead regardless). So the combination
+(widening + `≠`-guard relax) would help essentially nothing that actually stalls.
+
+**Verdict: DepSet-capacity is a measured NO-GO** (widening reverted, uncommitted). Note: the
+earlier hot-path-tax worry is dropped — EL/Horn deps are `EMPTY`, cheap even at two words; the
+blocker is simply that the recovered room is not in the stalls.
+
+## Complete mapping of the dense-SROIQ tail (this session)
+
+1. **Structure-less over-branching** — SOLVED (card-disjunct-atoms, shipped, default-ON).
+2. **Structure-bearing disj-only stalls** (`PathOfLength4`, `KetoneGroup` sat; the *dominant*
+   stall class) — **dense deps, no backjump room**; the reuse-trap / CDCL search-reuse frontier,
+   ruled NO-GO on soundness (`[[next-big-bet-reuse-trap-nominal-termination]]`).
+3. **Merge-exhaustion stalls** — the `≠`-guard returns `ALL` (over-conservative; sound to relax
+   per the single-`add_neq` code read), and the 128-bit `DepSet` caps deep deps. Both are
+   fixable, but the recovered room is a **mirage in the actual stalls** (0.2 % on `ore_ont_10019`)
+   and the payoff is **wall-only** (~0 MISSED). NO-GO on proportionality.
+
+No cheap sound lever reduces the dense-SROIQ stalls. The remaining frontier is search-reuse
+(caching/CDCL), which is the soundness-ruled-out reuse-trap.

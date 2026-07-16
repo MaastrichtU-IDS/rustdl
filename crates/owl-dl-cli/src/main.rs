@@ -733,10 +733,19 @@ fn main() -> Result<()> {
             n2_classify,
             saturation_only,
         } => {
+            // Opt-in phase timing (`RUSTDL_TIMING=1`): separate parse (horned-owl
+            // read) from classify (convert/preprocess + reasoning), so the wall can
+            // be compared apples-to-apples with reasoners whose reported time
+            // excludes parsing (e.g. Konclude's `reason_ms`). Default output
+            // unchanged.
+            let timing = std::env::var_os("RUSTDL_TIMING").is_some();
+            let t_parse = std::time::Instant::now();
             let onto = parse_ofn(&file)?;
+            let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
             // 0 = unbounded; any positive value bounds each pair.
             let timeout =
                 (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            let t_classify = std::time::Instant::now();
             let h = if saturation_only {
                 classify_saturation_only(&onto).context("classify_saturation_only")?
             } else {
@@ -751,6 +760,10 @@ fn main() -> Result<()> {
                     (false, None) => classify(&onto).context("classify")?,
                 }
             };
+            let classify_ms = t_classify.elapsed().as_secs_f64() * 1000.0;
+            if timing {
+                eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
+            }
             print_classification(&h);
             warn_if_incomplete(h.stats().timed_out_pairs, pair_timeout_ms);
         }

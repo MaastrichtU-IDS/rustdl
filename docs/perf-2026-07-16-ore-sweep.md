@@ -116,9 +116,42 @@ a Konclude quirk — that rustdl produced a result for; not counted as rustdl wi
 
 **Reading:** on the easy bulk, rustdl is fast in absolute terms (median tens of ms) and, with
 docker startup + parse counted on both sides, roughly comparable to Konclude. Konclude's
-advantage is (a) a ~10× faster reasoning core on the median and (b) — the real gap — it does
+advantage is (a) a faster reasoning core on the median and (b) — the real gap — it does
 **not** have rustdl's DNF tail: the cases rustdl can't finish, Konclude finishes in
 milliseconds. That tail is the SROIQ search-reuse frontier, not a constant-factor deficit.
+
+## Parse vs reasoning split (apples-to-apples with Konclude `reason_ms`)
+
+The ratios above use rustdl's **total wall** (parse + reason) against Konclude's **`reason_ms`**
+(reason only) — generous to Konclude. Added an env-gated phase timer (`RUSTDL_TIMING=1` →
+`TIMING parse_ms=… classify_ms=…`), separating `parse_ofn` (horned-owl read) from `classify`
+(convert/preprocess + reasoning), and re-measured the 234 pilot set (bounded-50, 220 completed).
+
+- **rustdl parse:** median 3.7 ms, mean 12.7 ms, p90 41.5 ms, max 109 ms.
+- **rustdl classify:** median 12.7 ms, mean **1962 ms** (tail-dominated), p90 4758 ms, max 48 s.
+- **Parse is a real fraction of the easy-ont wall: median 19 %, mean 23 %** — the horned-owl
+  read is a meaningful chunk of the sub-second onts (and it is *excluded* from Konclude's
+  `reason_ms`, so the wall-based ratio double-counted it against rustdl).
+
+**Fair ratio — rustdl `classify_ms` vs Konclude `reason_ms`, both parse-excluded** (188 onts
+where both succeed):
+
+| framing | median | mean | p90 | p99 | max |
+|---|---|---|---|---|---|
+| total wall / reason_ms (prior) | 10× | 61× | 71× | — | 4204× |
+| **classify_ms / reason_ms (fair)** | **4.7×** | 50× | 88× | 809× | 1168× |
+
+**Separating parse halves the median gap (10× → 4.7×)**, and on **11 % of onts (20/188) rustdl's
+reasoning is ≤ Konclude's**. Side-by-side on the easy end confirms near-parity: `ore_ont_10056`
+classify 1.3 ms vs Konclude 1 ms (1.3×), `ore_ont_10134` 6.7 ms vs 4 ms (1.7×). The large mean
+/ tail (p99 809×, max 1168×) is **entirely the hard SROIQ onts** where `classify_ms` runs to
+seconds (`ore_ont_10019`: classify 6284 ms vs Konclude 13 ms).
+
+**Refined reading:** rustdl's *reasoning core* is within a small factor of Konclude on the
+common case (median ~4.7×, near-parity on the easy end, faster on 11 %); a non-trivial slice of
+the apparent wall gap was parsing, not reasoning. The genuine, large gap is confined to the
+hard-SROIQ tail (search-reuse frontier) — plus, separately, rustdl's slower parse front-end
+(horned-owl) which shows up as ~20 % of the easy-ont wall.
 
 ## Caveats
 

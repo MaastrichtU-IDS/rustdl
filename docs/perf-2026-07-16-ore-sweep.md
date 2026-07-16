@@ -153,6 +153,46 @@ the apparent wall gap was parsing, not reasoning. The genuine, large gap is conf
 hard-SROIQ tail (search-reuse frontier) — plus, separately, rustdl's slower parse front-end
 (horned-owl) which shows up as ~20 % of the easy-ont wall.
 
+## Stratified by OWL profile (all 1920)
+
+ORE stratifies the corpus into `el` / `dl` / `pure_dl` pools (via per-profile `fileorder.txt`).
+EL and pure-DL are disjoint; the DL pool overlaps both. Disjoint assignment with priority
+**EL → pure-DL → DL** gives **EL 594, DL 554, pure-DL 772 = 1920**.
+
+**Default `classify`:**
+
+| profile | total | reached reasoner | classified | DNF | anon-reject | median | p90 |
+|---|---|---|---|---|---|---|---|
+| **EL** | 594 | 594 | **536 (90 %)** | 58 | **0** | 0.05 s | 4.2 s |
+| **DL** | 554 | 418 | 342 (82 %) | 76 | 136 | 0.06 s | 5.5 s |
+| **pure-DL** | 772 | 462 | **302 (65 %)** | 160 | **310** | 0.06 s | 11.9 s |
+
+A clean monotone gradient with expressiveness:
+- **EL is rustdl's strong fragment** — 90 % classified, **zero anonymous-individual rejects**
+  (EL ontologies here don't use them), shortest tail (p90 4.2 s).
+- **pure-DL is the hard end** — only 65 % classified, **40 % rejected** on the anonymous-
+  individuals converter gap, and the longest tail (p90 11.9 s). The median stays ~50 ms across
+  *all* profiles (71 % of everything is trivial); the profile difference lives in the **tail and
+  the reach**, not the common case.
+
+**Bounded (`--pair-timeout-ms 50`)** barely shifts it, and the small recovery concentrates
+where expected — pure-DL: 302 → 318 classified (+16, the small-hard SROIQ slice); EL 536 → 535
+and DL 342 → 348 essentially flat.
+
+**vs Konclude, parse-excluded (`classify_ms` / `reason_ms`, 234 pilot subset):**
+
+| profile | n | median | p90 | max | rustdl ≤ Konclude |
+|---|---|---|---|---|---|
+| **EL** | 56 | **2.0×** | 33× | 179× | **14 (25 %)** |
+| **DL** | 59 | 5.7× | 61× | 809× | 5 (8 %) |
+| **pure-DL** | 95 | **7.9×** | 225× | 1168× | 4 (4 %) |
+
+The reasoning gap also grows monotonically: on **EL, rustdl's reasoning is within 2× of Konclude
+and beats it on 25 % of ontologies**; on pure-DL it is ~8× median with a 1168× tail and wins on
+only 4 %. (Konclude reason itself scales the same way: EL median 3 ms / max 36 ms → pure-DL
+median 9 ms / max 1219 ms.) **rustdl is competitive-to-winning on EL and loses progressively as
+expressiveness rises** — consistent with the EL/Horn-complete, SROIQ-tail-bound characterization.
+
 ## Caveats
 
 - **DNF = `KILLED`** conflates the 60 s cap with OOM; with 235 GB free, OOM was rare, so

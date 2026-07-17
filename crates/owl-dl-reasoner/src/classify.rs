@@ -996,10 +996,19 @@ pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
             _ => None,
         })
         .collect();
+    // Disjointness is admitted only when there is no functional / inverse-
+    // functional role: the disjoint×functional-merge interaction is unproven
+    // (a later increment), so disjoint+functional falls to the hybrid path.
+    let has_cardinality_role = functional_roles.iter().next().is_some()
+        || internal
+            .axioms
+            .iter()
+            .any(|ax| matches!(ax, Axiom::InverseFunctionalRole(_)));
+    let disjoint_ok = !has_cardinality_role;
     internal
         .axioms
         .iter()
-        .all(|ax| is_saturator_axiom(ax, &internal.concepts, &functional_roles))
+        .all(|ax| is_saturator_axiom(ax, &internal.concepts, &functional_roles, disjoint_ok))
 }
 
 /// True iff `c` is exactly the derived functional-enforcement consequent
@@ -1020,7 +1029,12 @@ fn is_derived_functional_max(
     )
 }
 
-fn is_saturator_axiom(ax: &Axiom, pool: &ConceptPool, functional_roles: &HashSet<Role>) -> bool {
+fn is_saturator_axiom(
+    ax: &Axiom,
+    pool: &ConceptPool,
+    functional_roles: &HashSet<Role>,
+    disjoint_ok: bool,
+) -> bool {
     match ax {
         // Recognize the derived functional-enforcement GCI
         // `∃role.⊤ ⊑ ≤1 role` (role backed by a matching functional axiom) so
@@ -1071,12 +1085,15 @@ fn is_saturator_axiom(ax: &Axiom, pool: &ConceptPool, functional_roles: &HashSet
         Axiom::DeclareClass(_)
         | Axiom::DeclareObjectProperty(_)
         | Axiom::DeclareNamedIndividual(_) => true,
-        // EXCLUDED ⟹ fall back to the hybrid path. DisjointClasses /
-        // DisjointUnion (disjoint×functional-merge unproven); all ABox
-        // assertions; InverseObjectProperties decls; Symmetric / Asymmetric
-        // / Reflexive / Irreflexive; DisjointObjectProperties;
-        // SameIndividual / DifferentIndividuals — none fully reasoned over
-        // by the saturator.
+        // Disjointness is complete in the saturator (DisjointnessClash +
+        // process_unsat back-prop) on the EL+disjoint-no-functional Horn
+        // fragment by construction. Admitted only when no functional /
+        // inverse-functional role is present (see saturator_complete_fragment).
+        Axiom::DisjointClasses(_) | Axiom::DisjointUnion { .. } => disjoint_ok,
+        // EXCLUDED ⟹ fall back to the hybrid path. All ABox assertions;
+        // InverseObjectProperties decls; Symmetric / Asymmetric / Reflexive /
+        // Irreflexive; DisjointObjectProperties; SameIndividual /
+        // DifferentIndividuals — none fully reasoned over by the saturator.
         _ => false,
     }
 }
@@ -3630,18 +3647,36 @@ Ontology(<http://rustdl.test/test>\n\
     }
 
     #[test]
-    fn saturator_fragment_rejects_disjoint_classes() {
-        // Conservative exclusion: disjoint×functional-merge is an unproven
-        // interaction, so DisjointClasses falls back (pure-EL+disjoint still
-        // takes the separate is_pure_el arm).
+    fn saturator_fragment_accepts_disjoint_without_functional() {
+        // No functional/inverse-functional roles ⇒ the disjoint×functional
+        // interaction is absent, so DisjointClasses is now in the complete
+        // fragment (one-pass fast path). The DisjointnessClash rule + unsat
+        // back-prop are complete on EL+disjoint-no-functional by construction.
         let i = internal_of(
             "    Declaration(Class(:A))\n\
     Declaration(Class(:B))\n\
     DisjointClasses(:A :B)\n",
         );
         assert!(
+            saturator_complete_fragment(&i),
+            "DisjointClasses with no functional roles must be in the complete fragment"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_disjoint_with_functional() {
+        // Functional role present ⇒ the disjoint×functional-merge interaction
+        // is unproven, so the ontology conservatively falls to the hybrid path.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    FunctionalObjectProperty(:r)\n\
+    DisjointClasses(:A :B)\n",
+        );
+        assert!(
             !saturator_complete_fragment(&i),
-            "DisjointClasses is excluded from the saturator fragment (conservative)"
+            "DisjointClasses + a functional role must fall back to the hybrid path"
         );
     }
 

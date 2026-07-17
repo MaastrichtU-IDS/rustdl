@@ -4,8 +4,8 @@ Implements `docs/superpowers/specs/2026-07-17-saturator-disjointness-design.md` 
 `docs/superpowers/plans/2026-07-17-saturator-disjointness.md`. Branch `feat/saturator-disjointness`.
 
 ## What shipped
-`DisjointClasses`/`DisjointUnion` are now admitted to the saturator's complete fragment
-(`is_saturator_axiom`) **iff the ontology has no functional/inverse-functional role** — the
+`DisjointClasses` is now admitted to the saturator's complete fragment (`is_saturator_axiom`)
+**iff the ontology has no functional/inverse-functional role** — the
 `disjoint_ok` gate. Reuses the existing `DisjointnessClash` rule + `process_unsat` back-prop
 (complete on EL+disjoint-no-functional by construction). An allowlist-gate change, no engine change.
 
@@ -34,3 +34,16 @@ here is the sound, complete, gated foundation, not ontology recovery.
 ## Follow-up (non-blocking)
 Cosmetic: `saturator_complete_fragment` uses `functional_roles.iter().next().is_some()` where
 `!functional_roles.is_empty()` is idiomatic.
+
+## Final-review correction (2026-07-17)
+
+The final whole-branch review caught that admitting `DisjointUnion` was **unsound-completeness**:
+the saturator's rule-builder registers `disjoint_pairs` from `DisjointClasses` only (no
+`DisjointUnion` arm), and `DisjointUnion` additionally carries a disjunctive covering
+(`class ≡ ⊔members`) that is out-of-fragment — so routing a `DisjointUnion` ont to the fast path
+would silently drop both halves. Fixed (commit 72baa2f): the gate accepts **`DisjointClasses`
+only**; `DisjointUnion` stays on the hybrid path. Pinned by `saturator_fragment_rejects_disjoint_union`.
+
+Follow-up (non-blocking): `has_cardinality_role` currently treats every `InverseFunctionalRole`
+axiom as blocking, including non-inverse ones the saturator DOES handle — over-conservative (a
+missed fast-path opportunity, safe direction), reconcile in a later increment.

@@ -50,6 +50,12 @@ use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 /// recover each range — and its datatype kind — by parsing the IRI.
 pub const DKEY_IRI_PREFIX: &str = "urn:rustdl-dkey:";
 
+/// Reserved IRI namespace for anonymous individuals interned during conversion.
+/// Anonymous individuals are first-class `IndividualId`s under this prefix; they
+/// participate in all ABox/identity reasoning but are filtered from named-individual
+/// output surfaces (they have no real IRI). Cannot collide with an input individual IRI.
+pub const ANON_IRI_PREFIX: &str = "urn:rustdl-anon:";
+
 /// Datatype tag for the `xsd:float` (f32-precision) `DKey` namespace.
 /// Full prefix is `urn:rustdl-dkey:f:`.
 const DKEY_FLOAT_TAG: &str = "f:";
@@ -1657,7 +1663,7 @@ pub fn convert_object_property<A: ForIRI>(
     }
 }
 
-/// Convert a horned-owl [`Individual`] (named only — anonymous is rejected).
+/// Convert a horned-owl [`Individual`] (named individuals by IRI; anonymous individuals interned under `ANON_IRI_PREFIX`).
 pub fn convert_individual<A: ForIRI>(
     i: &Individual<A>,
     vocab: &mut Vocabulary,
@@ -1667,7 +1673,11 @@ pub fn convert_individual<A: ForIRI>(
             let iri: &str = ni.0.as_ref();
             Ok(vocab.intern_individual(iri))
         }
-        Individual::Anonymous(_) => Err(ConversionError::AnonymousIndividual),
+        Individual::Anonymous(anon) => {
+            let label: &str = anon.0.as_ref();
+            let synthetic = format!("{ANON_IRI_PREFIX}{label}");
+            Ok(vocab.intern_individual(&synthetic))
+        }
     }
 }
 
@@ -2663,14 +2673,27 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_individual_rejected() {
+    fn anonymous_individual_is_interned_under_reserved_prefix() {
         use horned_owl::model::AnonymousIndividual;
         use std::rc::Rc;
-
-        let mut v = Vocabulary::new();
-        let i = Individual::<RcStr>::Anonymous(AnonymousIndividual(Rc::from("blank-0")));
-        let err = convert_individual(&i, &mut v).unwrap_err();
-        assert_eq!(err, ConversionError::AnonymousIndividual);
+        let mut vocab = Vocabulary::new();
+        let a: Individual<RcStr> = Individual::Anonymous(AnonymousIndividual(Rc::from("blank-0")));
+        let id_a = convert_individual(&a, &mut vocab).expect("anon individual interns");
+        // same label → same id (blank-node identity within a document)
+        let id_a2 = convert_individual(&a, &mut vocab).expect("anon individual interns");
+        assert_eq!(
+            id_a, id_a2,
+            "same anon label must intern to the same IndividualId"
+        );
+        // distinct label → distinct id
+        let b: Individual<RcStr> = Individual::Anonymous(AnonymousIndividual(Rc::from("blank-1")));
+        let id_b = convert_individual(&b, &mut vocab).expect("anon individual interns");
+        assert_ne!(
+            id_a, id_b,
+            "distinct anon labels must intern to distinct IndividualIds"
+        );
+        // interned under the reserved prefix
+        assert!(vocab.individual_iri(id_a).starts_with(ANON_IRI_PREFIX));
     }
 
     #[test]

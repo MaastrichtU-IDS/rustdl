@@ -37,12 +37,24 @@ fn instances_of_excludes_anonymous_individuals() {
 #[test]
 fn materialize_object_property_excludes_anonymous_subjects_and_objects() {
     use owl_dl_reasoner::materialize_object_property_assertions;
+    // Fixture has two anon-involving edges AND one named->named edge (:a -> :b).
+    // The named edge must survive; the anon edges must be filtered out.
     let o = onto(
-        "Declaration(ObjectProperty(:r)) Declaration(NamedIndividual(:a))\n\
+        "Declaration(ObjectProperty(:r))\n\
+         Declaration(NamedIndividual(:a))\n\
+         Declaration(NamedIndividual(:b))\n\
          ObjectPropertyAssertion(:r :a _:x)\n\
-         ObjectPropertyAssertion(:r _:x :a)",
+         ObjectPropertyAssertion(:r _:x :a)\n\
+         ObjectPropertyAssertion(:r :a :b)",
     );
     let rows = materialize_object_property_assertions(&o).expect("materialize");
+    // The named->named edge must be present.
+    assert!(
+        rows.iter()
+            .any(|(s, _, ob)| s == "http://e#a" && ob == "http://e#b"),
+        "named edge :a -:r-> :b must survive: {rows:?}"
+    );
+    // No anon subject or object must appear.
     for (s, _p, ob) in &rows {
         assert!(
             !s.starts_with("urn:rustdl-anon:"),
@@ -53,4 +65,29 @@ fn materialize_object_property_excludes_anonymous_subjects_and_objects() {
             "anon object leaked: {ob}"
         );
     }
+}
+
+#[test]
+fn realize_excludes_anonymous_individuals() {
+    use owl_dl_reasoner::realize;
+    // :a is a named individual; _:x is anonymous. Both are asserted to :A.
+    // realize().individuals() must contain :a but no urn:rustdl-anon: IRI.
+    let o = onto(
+        "Declaration(Class(:A))\n\
+         Declaration(NamedIndividual(:a))\n\
+         ClassAssertion(:A :a)\n\
+         ClassAssertion(:A _:x)",
+    );
+    let realization = realize(&o).expect("realize");
+    let individuals = realization.individuals();
+    assert!(
+        individuals.iter().any(|i| i == "http://e#a"),
+        "named individual :a must appear in realize output: {individuals:?}"
+    );
+    assert!(
+        individuals
+            .iter()
+            .all(|i| !i.starts_with("urn:rustdl-anon:")),
+        "anonymous individuals must NOT appear in realize().individuals(): {individuals:?}"
+    );
 }

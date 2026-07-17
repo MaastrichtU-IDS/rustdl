@@ -489,12 +489,17 @@ pub fn realize_saturation_only_internal(
         .collect();
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
+    let mut named_individual_iris: Vec<String> = Vec::new();
     for (iri, (types_owned, leaves)) in individual_iris.iter().zip(per_individual) {
+        if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+            continue;
+        }
+        named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
     }
     Ok(Realization {
-        individuals: individual_iris,
+        individuals: named_individual_iris,
         entailed_types,
         most_specific_types,
     })
@@ -589,13 +594,18 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
     let per_individual = per_individual?;
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
+    let mut named_individual_iris: Vec<String> = Vec::new();
     for (iri, (types_owned, leaves)) in individual_iris.iter().zip(per_individual) {
+        if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+            continue;
+        }
+        named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
     }
 
     Ok(Realization {
-        individuals: individual_iris,
+        individuals: named_individual_iris,
         entailed_types,
         most_specific_types,
     })

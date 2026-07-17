@@ -1,6 +1,22 @@
 # Saturator backward propagation (symmetric/inverse) — scoping (2026-07-17)
 
-> **START HERE (next, FRESH session — advisor 2026-07-17). Do NOT write engine code or a context
+> **RESOLVED (measurement done 2026-07-17) — see
+> `2026-07-17-wedge-reuse-measurement-findings.md`.** The wedge-reuse measurement was run.
+> Outcome: **(1) Option B (Sequoia contexts in the fact-based saturator) is REJECTED** — the
+> wedge already derives the symmetric counterexample per-pair (0 branching); classify's miss is a
+> *candidate-enumeration* gap, so any real miss ⇒ Option A (wedge-routing), never a saturator
+> rebuild. **(2) NO-GO on the backward-prop engine as a *symmetric-completeness fix*, on
+> payoff-vs-cost:** of 235 symmetric onts, 211 are trivially inert, 24 potentially non-inert, and
+> **every oracle-able case (incl. complete-oracle modules of both giants `ore_ont_3914` and the
+> `part_of`-symmetric `ore_ont_9835`) shows ZERO classify misses**; the mechanism fires only in an
+> adversarial synthetic. Tooling is confirm-only (giants un-oracle-able whole: complete `¬G` check
+> is disjunctive → stalls), so this is "no confirmed miss + bounded payoff," not "proven inert."
+> **Scope = symmetric only**; the shared engine also serves *inverse* (`[[inverse-aware-classification-no-win]]`
+> already suggests low payoff — run an inverse-delta sweep before a whole-engine NO-GO). Real next
+> target for this tail is **D4 scale/memory** (`ore_ont_3914` completes in 169 s but at **166 GB
+> RSS**), not calculus. The original START-HERE plan (below) is retained for context.
+
+> **(ORIGINAL) START HERE — advisor 2026-07-17. Do NOT write engine code or a context
 > design doc first.**
 > **First task = the architecture-deciding measurement: RULE OUT WEDGE-REUSE.** The wedge
 > (`crates/owl-dl-tableau/src/hyper.rs`) is already context-graph-shaped, double-blocking, and per

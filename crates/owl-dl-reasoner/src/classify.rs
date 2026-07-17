@@ -1085,11 +1085,21 @@ fn is_saturator_axiom(
         Axiom::DeclareClass(_)
         | Axiom::DeclareObjectProperty(_)
         | Axiom::DeclareNamedIndividual(_) => true,
-        // Disjointness is complete in the saturator (DisjointnessClash +
+        // DisjointClasses is complete in the saturator (DisjointnessClash +
         // process_unsat back-prop) on the EL+disjoint-no-functional Horn
         // fragment by construction. Admitted only when no functional /
         // inverse-functional role is present (see saturator_complete_fragment).
-        Axiom::DisjointClasses(_) | Axiom::DisjointUnion { .. } => disjoint_ok,
+        //
+        // DisjointUnion is deliberately EXCLUDED (stays on the hybrid path):
+        // (1) DisjointUnion{class, members} entails a disjunctive covering
+        //     `class ≡ (member1 ⊔ … ⊔ memberN)` — an Or, which is
+        //     out-of-fragment and `is_saturator_concept` rejects.
+        // (2) The saturator's rule-builder has no DisjointUnion arm — only
+        //     DisjointClasses is registered as disjoint_pairs — so admitting
+        //     DisjointUnion would silently drop both the disjointness AND
+        //     the covering, causing missed entailments reported as complete
+        //     (the D10 unsound-completeness bug class).
+        Axiom::DisjointClasses(_) => disjoint_ok,
         // EXCLUDED ⟹ fall back to the hybrid path. All ABox assertions;
         // InverseObjectProperties decls; Symmetric / Asymmetric / Reflexive /
         // Irreflexive; DisjointObjectProperties; SameIndividual /
@@ -3677,6 +3687,24 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !saturator_complete_fragment(&i),
             "DisjointClasses + a functional role must fall back to the hybrid path"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_disjoint_union() {
+        // DisjointUnion carries a disjunctive covering (class ≡ ⊔members), which
+        // is out-of-fragment (Or), and the saturator's rule-builder has no
+        // DisjointUnion arm. So it must stay on the hybrid path — even with no
+        // functional roles.
+        let i = internal_of(
+            "    Declaration(Class(:P))\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    DisjointUnion(:P :A :B)\n",
+        );
+        assert!(
+            !saturator_complete_fragment(&i),
+            "DisjointUnion must NOT be in the complete fragment (disjunctive covering + no saturator rule)"
         );
     }
 

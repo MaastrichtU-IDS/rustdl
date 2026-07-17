@@ -1,5 +1,18 @@
 # Saturator backward propagation (symmetric/inverse) — scoping (2026-07-17)
 
+> **START HERE (next, FRESH session — advisor 2026-07-17). Do NOT write engine code or a context
+> design doc first.**
+> **First task = the architecture-deciding measurement: RULE OUT WEDGE-REUSE.** The wedge
+> (`crates/owl-dl-tableau/src/hyper.rs`) is already context-graph-shaped, double-blocking, and per
+> SP1 already fires domain/range through **symmetric and inverse** roles — it *handles* symmetric.
+> The {disjoint, symmetric} giants DNF on the **per-pair** wedge at O(n²), NOT on a symmetric gap.
+> So measure what the wedge does on `ore_ont_3914` (12k) / the {disjoint,symmetric} set and decide:
+> is the win "make the existing symmetric-capable wedge **one-pass / fewer pair-probes**" (reuse a
+> working engine, order-of-magnitude cheaper) versus "reimplement Sequoia **contexts** in the
+> fact-based saturator" (multi-week, the rest of this doc)? **No engine code until that decides.**
+> Branch `feat/backward-propagation-context` (off the session tip) + this spec are the clean handoff.
+
+
 Phase A inc 2+ (`docs/2026-07-17-deficiency-roadmap.md`). This is a **scoping** document, not an
 implementation design: it defines the minimal sub-increment, the measure-first go/no-go, and the
 honest cost, so the build-vs-defer decision is made with full information. It exists because the

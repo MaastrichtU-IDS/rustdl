@@ -187,3 +187,38 @@ shows them dominating after Tier 1/2).
 
 Each item becomes its own `brainstorming → spec → writing-plans` cycle; this roadmap is the
 decomposition and the prioritisation, not an implementation plan.
+
+## Execution status (2026-07-17)
+
+- **D1 anonymous individuals — SHIPPED** (merged onto `feat/hard-antecedent-surrogate-absorption`,
+  `7626c9d..3ae6588`). 23 % of ORE (446 onts, 100 % anon-reject) now readable; FP=0; final review
+  caught + fixed a `realize()` output-leak. Real coverage win.
+- **Phase A inc 1 — disjointness — SHIPPED as a FOUNDATION** (`a97cca0..787aa2b`). `DisjointClasses`
+  admitted to the saturator complete fragment under the no-functional gate (allowlist change, reuses
+  the existing `DisjointnessClash` + `process_unsat` back-prop). Sound/complete: reasoner 59/0,
+  20/20 real ORE disjoint onts byte-identical fast-vs-hybrid, by-construction on giants; FP=0. Final
+  review caught + fixed the `DisjointUnion` unsound-completeness gap (its disjunctive covering is
+  out-of-fragment → `DisjointClasses`-only). **Standalone DNF-recovery ~0** (31/39 disjoint onts also
+  need symmetric) — the foundation half of {disjoint, symmetric}.
+- **Phase A inc 2 — symmetric — NOT BUILT (cheap gate proven unsound; the real fix is engine work).**
+  A "symmetric is inert when used only in forward `∃`" gate was designed and **refuted by a
+  4-axiom counterexample** (advisor + confirmed by rustdl `explain`):
+  ```
+  X ⊑ ∃R.C ;  ∃R.X ⊑ D ;  ∃R.D ⊑ E ;  Symmetric(R)   ⟹  X ⊑ E
+  ```
+  The forward-only saturator never builds the symmetric back-edge `c→x`, never fires the antecedent
+  trigger `∃R.X ⊑ D`, and **misses `X ⊑ E`** — every role forward-`∃`, no ∀/range/card/inverse/chain.
+  So a symmetric role is *inert* only when **write-only** (never an antecedent `∃R` trigger, no
+  domain) — but a never-triggered role produces no subsumptions anyway, so the sound-inert case is
+  the classification-irrelevant case. A write-only-only gate *might* be sound (an approximate grep
+  hints the 31 {disjoint,symmetric} onts may be write-only), but it is **FP-critical with no
+  empirical safety net** — the target onts are giants (58k–981k classes) that DNF on the hybrid path
+  and have no oracle at that scale, so an unsound admission would be undetectable. **The real fix is
+  backward / inverse propagation in the saturator (the CB "Pred rule"; Sequoia / Bate et al. JAIR
+  2018) — a research-grade engine extension, entered deliberately, not built this session.** Until
+  then the {disjoint, symmetric} giant-Horn tail (~29 onts) stays on the hybrid path (DNF).
+
+**Session takeaway:** the aligned, safe wins (anon coverage; disjointness foundation) are banked;
+Phase A's next real step is the backward-propagation engine, which is where lifting EL-CB toward
+SRIQ-CB genuinely gets hard (Sequoia confirms even a mature CB reasoner has the same expressive
+tail — `[[sequoia-cb-sroiq-paper]]`).

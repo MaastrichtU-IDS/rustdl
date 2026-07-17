@@ -285,7 +285,10 @@ pub fn instances_of_internal(
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
         if instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)? {
-            out.push(internal.vocabulary.individual_iri(individual_id).to_owned());
+            let iri = internal.vocabulary.individual_iri(individual_id);
+            if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+                out.push(iri.to_owned());
+            }
         }
     }
     Ok(out)
@@ -327,7 +330,10 @@ pub fn instances_of_saturation_only_internal(
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
         if instance_check_closure_only(internal, &closure, class_id, individual_id) {
-            out.push(internal.vocabulary.individual_iri(individual_id).to_owned());
+            let iri = internal.vocabulary.individual_iri(individual_id);
+            if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+                out.push(iri.to_owned());
+            }
         }
     }
     Ok(out)

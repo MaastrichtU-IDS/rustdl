@@ -117,7 +117,12 @@ pub fn materialize_object_property_assertions<A: horned_owl::model::ForIRI>(
                 vocab.individual_iri(b).to_string(),
             )
         })
-        .filter(|(_, p, _)| p != TOP && p != BOT)
+        .filter(|(s, p, o)| {
+            p != TOP
+                && p != BOT
+                && !s.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX)
+                && !o.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX)
+        })
         .collect();
     out.sort();
     out.dedup();
@@ -274,6 +279,7 @@ pub fn materialize_data_property_assertions<A: horned_owl::model::ForIRI>(
     }
     out.sort();
     out.dedup();
+    out.retain(|(s, ..)| !s.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX));
     Ok(out)
 }
 
@@ -374,11 +380,12 @@ pub fn materialize_existential_successors<A: horned_owl::model::ForIRI>(
     }
 
     // One stable blank id per distinct (a,R,C), in sorted order.
-    let out: Vec<(String, String, String, String)> = triples
+    let mut out: Vec<(String, String, String, String)> = triples
         .into_iter()
         .enumerate()
         .map(|(i, (a, r, c))| (a, r, format!("_:b{i}"), c))
         .collect();
+    out.retain(|(s, ..)| !s.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX));
     Ok(out)
 }
 

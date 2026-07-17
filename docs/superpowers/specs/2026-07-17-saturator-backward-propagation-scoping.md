@@ -37,17 +37,39 @@ create cycles `X→witness→X`, requiring blocking/dedup on generated backward 
 58k–981k classes. So soundness of any admission rests on a by-construction argument — with the
 counterexample as the standing proof that the naive shortcut is wrong.
 
-## Minimal sub-increment (the seed to build first)
+## ARCHITECTURAL FINDING (2026-07-17, discovered on opening the engine to build)
 
-**Symmetric-only back-edge materialization**, gated + flagged, in `owl-dl-saturation`:
-- When `X ⊑ ∃R.C` is processed and R is symmetric, also record the back-fact that the C-witness has
-  an R-edge to an X-instance (materialize `witness ⊑ ∃R.{X-marker}` / a predecessor fact), so the
-  existing antecedent-`∃R` triggers and `process_unsat` fire on the witness's back-edge.
-- **Termination:** the back-edges must be blocked/deduped (equality-blocking on witness labels, the
-  CB analogue of double-blocking) or the fact set grows unboundedly on cyclic symmetric structure.
-  This is the hard, soundness-and-termination-critical core.
-- Symmetric-first (not general inverse) because R⁻ ≡ R avoids tracking a separate inverse role —
-  the narrowest form of the Pred rule.
+rustdl's saturator is **purely fact-based** (`ExistentialFact { sub, role, target }` — class-level
+`X ⊑ ∃R.C`; `facts_by_sub` / `facts_by_target` / `existential_triggers_by_body`; ELK-style, **no
+per-successor entity**). This means the "materialize a back-edge fact" sub-increment below is
+**unsound as a class-level fact**: for symmetric R, the back-edge belongs to the *specific witness*
+(the C that is an R-successor of an X), but the only class-level encoding, `(C,R,X)` ≡ `C ⊑ ∃R.X`,
+asserts **every** C has an R-successor of type X — over-general (a standalone C, not an R-successor
+of any X, has no such edge). This is exactly why ELK is EL-only and Sequoia introduced *contexts*.
+
+**Consequence:** sound backward propagation in this engine requires **per-witness context
+synthetics + context-merging (blocking)** — for each `X ⊑ ∃R.C` (R symmetric), a synthetic witness
+`W` with `W ⊑ C ⊓ ∃R.{X-back-marker}`, antecedent triggers firing on `W`, and `W`s merged by core
+to terminate. That is **Sequoia's context architecture**, reimplemented via rustdl's Tseitin/
+synthetic allocator — a genuine architectural extension, **not** a rule/fact addition. It is
+tractable in principle (Sequoia proves it) but it is the multi-increment engine build, with
+per-witness-synthetic blow-up + context-merging (blocking) as the termination crux.
+
+## Minimal sub-increment (the seed to build first — CORRECTED: context-based, not a fact)
+
+**Symmetric-only per-witness context synthetics**, gated + flagged, in `owl-dl-saturation` (NOT a
+class-level fact — see the architectural finding above):
+- When `X ⊑ ∃R.C` is processed and R is symmetric, introduce a witness synthetic `W` (via the
+  Tseitin allocator) with `W ⊑ C` and `W ⊑ ∃R.{X-back-marker}` (a synthetic representing "an
+  R-edge back to an X-instance"), and `X ⊑ ∃R.W`. Then the existing antecedent-`∃R` triggers fire
+  on `W` via its back-edge (`∃R.X ⊑ D` ⟹ `W ⊑ D`), and forward CR5 carries it back up
+  (`X ⊑ ∃R.W`, `W ⊑ D` ⟹ `X ⊑ ∃R.D`). Sound because `W` is witness-specific, not the class `C`.
+- **Termination (the crux):** witness synthetics must be **merged by core** (two `W`s with the same
+  label set are the same context — the CB analogue of double-blocking / Sequoia's expansion
+  strategy), or the synthetic universe grows unboundedly on cyclic symmetric structure. This is the
+  soundness-AND-termination-critical core, and it is genuinely the context-machinery, not a rule.
+- Symmetric-first (not general inverse) because R⁻ ≡ R avoids a separate inverse role — the
+  narrowest form of the Pred rule — but it still needs the full context+merging machinery.
 
 ## Go/no-go gate (build the minimal sub-increment behind a flag, then measure — in order)
 

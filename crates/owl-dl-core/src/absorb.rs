@@ -317,6 +317,27 @@ fn emit_pairwise_disjoint(ids: &[ConceptId], pool: &mut ConceptPool, tbox: &mut 
 
 /// Encode `sub ⊑ sup` as `⊤ ⊑ nnf(¬sub) ⊔ sup` and try to extract a trigger.
 fn absorb_sub_sup(sub: ConceptId, sup: ConceptId, pool: &mut ConceptPool, tbox: &mut AbsorbedTBox) {
+    // Distribute a union on the LHS: `(D₁ ⊔ … ⊔ Dₙ) ⊑ sup ≡ ⋀ᵢ Dᵢ ⊑ sup`
+    // (a logical equivalence, sound). Without this, the GCI internalizes to
+    // `⊤ ⊑ (¬D₁ ⊓ … ⊓ ¬Dₙ) ⊔ sup`, whose top-level Or has no `Not(Atomic)`
+    // disjunct, so `absorb_gci` files it as a residual Or-GCI — and the
+    // saturator's forward closure never derives `Dᵢ ⊑ sup`, a classify miss
+    // (found on ore_ont_3914-class ontologies with `(A⊔B)⊑C` axioms and via
+    // the sufficient direction of `X ≡ (A⊔B)`-style equivalences). Recursion
+    // terminates because `pool.or` flattens nested unions, so each `Dᵢ` here
+    // is itself not an `Or`.
+    // Own the disjuncts before the recursive `&mut pool` calls (the `to_vec`
+    // releases the immutable borrow from `pool.get`).
+    let union_args: Option<Vec<ConceptId>> = match pool.get(sub) {
+        ConceptExpr::Or(args) => Some(args.to_vec()),
+        _ => None,
+    };
+    if let Some(args) = union_args {
+        for arg in args {
+            absorb_sub_sup(arg, sup, pool, tbox);
+        }
+        return;
+    }
     let neg_sub = pool.not(sub);
     let neg_sub_nnf = to_nnf(neg_sub, pool);
     let disjunction = pool.or([neg_sub_nnf, sup]);
@@ -472,6 +493,36 @@ mod tests {
     }
 
     #[test]
+    fn union_lhs_distributes_into_per_disjunct_rules() {
+        // (A ⊔ B) ⊑ C  ≡  A ⊑ C  ∧  B ⊑ C  →  rules (A, C) and (B, C), no
+        // residual. Without distribution this GCI becomes ⊤ ⊑ (¬A⊓¬B) ⊔ C,
+        // which has no Not(Atomic) top-level disjunct and falls to a residual
+        // Or-GCI — the classify miss found on ore_ont_3914-class ontologies.
+        let mut o = fresh(&["A", "B", "C"]);
+        let a = atom(&mut o, "A");
+        let b = atom(&mut o, "B");
+        let cc = atom(&mut o, "C");
+        let or_ab = o.concepts.or([a, b]);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: or_ab,
+            sup: cc,
+        });
+        let t = run(&mut o);
+        assert!(
+            t.residual_gcis.is_empty(),
+            "union-LHS must distribute, not fall to a residual Or-GCI"
+        );
+        assert_eq!(t.concept_rules.len(), 2);
+        let triggers: std::collections::HashSet<ClassId> =
+            t.concept_rules.iter().map(|r| r.trigger).collect();
+        assert!(triggers.contains(&cid(&o, "A")));
+        assert!(triggers.contains(&cid(&o, "B")));
+        for r in &t.concept_rules {
+            assert_eq!(r.conclusion, cc, "each disjunct-rule concludes C");
+        }
+    }
+
+    #[test]
     fn pure_existential_gci_is_residual() {
         // ⊤ ⊑ ∃R.A  has no Not(Atomic) top-level disjunct → residual.
         let mut o = fresh(&["A"]);
@@ -545,8 +596,11 @@ mod tests {
     fn disjoint_union_emits_subsumption_and_pairwise_disjoint_rules() {
         // DisjointUnion(P, [C1, C2]):
         //   1. P ⊑ C1 ⊔ C2     →  one rule (P, Or([C1, C2]))
-        //   2. C1 ⊔ C2 ⊑ P    →  residual (multi-trigger required)
+        //   2. C1 ⊔ C2 ⊑ P    →  distributes to rules (C1, P) and (C2, P)
         //   3. C1 ⌖ C2         →  one rule (C1, Not(C2))
+        // The LHS-union direction (2) is now distributed rather than dropped to
+        // a residual Or-GCI (the union-LHS completeness fix), so the sound
+        // subsumptions C1 ⊑ P / C2 ⊑ P are captured.
         let mut o = fresh(&["P", "C1", "C2"]);
         let c1 = atom(&mut o, "C1");
         let c2 = atom(&mut o, "C2");
@@ -554,12 +608,20 @@ mod tests {
             class: cid(&o, "P"),
             members: vec![c1, c2],
         });
+        let p_atom = atom(&mut o, "P");
         let t = run(&mut o);
-        // One concept rule from P ⊑ C1 ⊔ C2.
-        // One concept rule from pairwise disjoint.
-        // C1 ⊔ C2 ⊑ P drops to residual.
-        assert_eq!(t.concept_rules.len(), 2);
-        assert_eq!(t.residual_gcis.len(), 1);
+        // (P, Or[C1,C2]) + (C1, P) + (C2, P) + (C1, ¬C2) = 4 rules, 0 residual.
+        assert_eq!(t.concept_rules.len(), 4);
+        assert!(t.residual_gcis.is_empty());
+        // C1 ⊑ P and C2 ⊑ P both captured (conclusion = atom P).
+        let members_subsuming_p: std::collections::HashSet<ClassId> = t
+            .concept_rules
+            .iter()
+            .filter(|r| r.conclusion == p_atom)
+            .map(|r| r.trigger)
+            .collect();
+        assert!(members_subsuming_p.contains(&cid(&o, "C1")));
+        assert!(members_subsuming_p.contains(&cid(&o, "C2")));
     }
 
     #[test]

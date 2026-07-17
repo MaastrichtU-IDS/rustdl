@@ -15,6 +15,7 @@ pub mod convert_back;
 pub mod data_axioms;
 pub mod definitions;
 pub mod disjunction_existential;
+pub mod disjunctive_antecedent;
 pub mod ir;
 pub mod locality;
 pub mod normalize;

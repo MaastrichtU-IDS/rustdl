@@ -2160,6 +2160,11 @@ pub fn convert_ontology<A: ForIRI>(
             out.axioms.push(Axiom::SubClassOf { sub, sup });
         }
     }
+    // Split a union on the LHS of a subclass axiom into one axiom per disjunct
+    // — `(D₁ ⊔ … ⊔ Dₙ) ⊑ C ≡ ⋀ Dᵢ ⊑ C` (sound equivalence). Runs first so
+    // both the EL saturator (which drops union-LHS) and the disjunction-
+    // existential / told-table passes below see the atomic-LHS form.
+    crate::disjunctive_antecedent::split_disjunctive_antecedents(&mut out);
     // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully

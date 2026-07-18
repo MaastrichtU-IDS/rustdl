@@ -2885,7 +2885,21 @@ fn collect_el_rules(
     // Nominal/ABox transitive propagation (wine region cluster).
     // Allocates NomKeys for ABox individuals, so it must run before
     // `total_classes` is captured.
-    build_abox_nominal_reach(internal, &mut tseitin, &mut rules);
+    //
+    // GATE (2026-07-18): only run this if the TBox actually uses a nominal
+    // (`∃R.{a}` / `ObjectHasValue` / `ObjectOneOf`), which — since it is the
+    // only source of a TBox nominal — is exactly the case where
+    // `tseitin.nominal_by_ind` is non-empty at this point (TBox nominals are
+    // introduced during the axiom loop above; ABox NomKeys are introduced only
+    // *by* this function). `abox_nominal_reach` is consulted only when a
+    // processed fact TARGETS a NomKey, which cannot happen without a TBox
+    // nominal — so when there is none, this pass is provably inert and merely
+    // allocates a NomKey per ABox individual, inflating `num_total_classes` and
+    // the O(num_total_classes²) subsumer matrix (ore_ont_3914: 570K GAZ
+    // individuals ⇒ ~84 GB of dead matrix). Skipping is verdict-identical.
+    if !tseitin.nominal_by_ind.is_empty() {
+        build_abox_nominal_reach(internal, &mut tseitin, &mut rules);
+    }
 
     // Cluster-B path (b) setup: index ForallKey targets by (role, member) and
     // build the NomKey→individual reverse, so `process_fact` can fire
@@ -4864,6 +4878,42 @@ Ontology(<http://rustdl.test/test>\n\
                 class(&internal, "AlsatianWine")
             ),
             "unsound: FrenchWine ⊑ AlsatianWine should not hold"
+        );
+    }
+
+    #[test]
+    fn transitive_abox_without_tbox_nominals_allocates_no_nomkeys() {
+        // A transitive role with ABox edges but NO TBox nominal (`∃R.{a}` /
+        // ObjectHasValue). `build_abox_nominal_reach`'s output
+        // (`abox_nominal_reach`) is only ever consulted when a processed fact
+        // targets a NomKey, which requires a TBox nominal — so with none, the
+        // ABox NomKeys are provably inert and must not be allocated. Regression
+        // guard for the ore_ont_3914 memory blow-up: 570K inert ABox NomKeys
+        // were sizing the O(num_total_classes²) subsumer matrix into tens of GB.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(NamedIndividual(:x))\n\
+    Declaration(NamedIndividual(:y))\n\
+    Declaration(NamedIndividual(:z))\n\
+    Declaration(ObjectProperty(:r))\n\
+    TransitiveObjectProperty(:r)\n\
+    ObjectPropertyAssertion(:r :x :y)\n\
+    ObjectPropertyAssertion(:r :y :z)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        ));
+        let (subs, _facts, nom) = saturate_with_exists_facts(&internal);
+        // TBox subsumption is still computed correctly.
+        assert!(subs.contains(class(&internal, "A"), class(&internal, "B")));
+        // No NomKeys allocated: the transitive ABox is inert for the class
+        // hierarchy because no TBox construct consumes a nominal.
+        assert!(
+            nom.is_empty(),
+            "expected no ABox NomKeys without a TBox nominal, got {}",
+            nom.len()
         );
     }
 

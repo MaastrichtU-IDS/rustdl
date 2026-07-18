@@ -58,7 +58,19 @@ jobs:
           # subsequent add-component conflict.
           CIBW_BEFORE_ALL_LINUX: |
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default
-          CIBW_ENVIRONMENT_LINUX: 'PATH=/root/.cargo/bin:$PATH'
+          # RUSTUP_TOOLCHAIN=stable pins the wheel build to the stable
+          # toolchain installed above, bypassing rust-toolchain.toml's
+          # `channel = "1.95.0"`. Without it, maturin's `cargo metadata`
+          # honours rust-toolchain.toml and auto-installs 1.95.0 WITH its
+          # `[toolchain] components = [rustfmt, clippy]` — and on the
+          # aarch64 musllinux container that clippy add collides with the
+          # cargo-clippy binary `--profile default` already placed
+          # ("failed to install component 'clippy-preview-...': detected
+          # conflict: 'bin/cargo-clippy'"), failing the arm64 wheel build
+          # (v0.3.22 release). The pinned toolchain is a lint-consistency
+          # tool (CI fmt/clippy) — the wheel is a build artifact and builds
+          # fine on stable (see CLAUDE.md's "build with RUSTUP_TOOLCHAIN=stable").
+          CIBW_ENVIRONMENT_LINUX: 'PATH=/root/.cargo/bin:$PATH RUSTUP_TOOLCHAIN=stable'
           CIBW_BEFORE_BUILD: 'pip install maturin'
           CIBW_TEST_REQUIRES: 'pytest'
           CIBW_TEST_COMMAND: 'pytest {project}/crates/owl-dl-py/tests/python/'

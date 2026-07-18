@@ -829,19 +829,18 @@ fn classify_pure_el(
             row.insert_range(..n);
             continue;
         }
-        if let Some(closure_row) = closure.subsumers_bitset(class_id) {
-            // Iterate over set bits in the closure row; restrict to j < n and
-            // skip unsat j (mirrors the original `for j in 0..n` loop semantics).
-            for j in closure_row.ones() {
-                if j >= n {
-                    break; // synthetic Tseitin/DKey id — outside user vocabulary
-                }
-                if j == i || unsatisfiable_idxs.contains(&j) {
-                    continue; // reflexive already set; unsat-j skipped per original
-                }
-                row.insert(j);
-                stats.saturation_subsumption_hits += 1;
+        // `subsumers_of` is ascending by id (as `FixedBitSet::ones()` was), so
+        // the `>= n` break still terminates at the first synthetic id.
+        for j_id in closure.subsumers_of(class_id) {
+            let j = j_id.index() as usize;
+            if j >= n {
+                break; // synthetic Tseitin/DKey id — outside user vocabulary
             }
+            if j == i || unsatisfiable_idxs.contains(&j) {
+                continue; // reflexive already set; unsat-j skipped per original
+            }
+            row.insert(j);
+            stats.saturation_subsumption_hits += 1;
         }
     }
     let _ = internal; // closure was built from this; nothing more to read
@@ -1483,15 +1482,13 @@ pub(crate) fn classify_top_down_internal(
     }
 
     // Compute closure-subsumer counts once per class (used for sort key and
-    // tier grouping). Using subsumers_bitset (no Vec allocation) instead
-    // of subsumers_of (allocates Vec<ClassId> per call). sort_by_key calls the
-    // key fn O(n log n) times; pre-computing avoids repeated Vec allocations.
+    // tier grouping). `subsumers_count` is O(1) (no Vec allocation) vs
+    // `subsumers_of` (allocates Vec<ClassId> per call). sort_by_key calls the
+    // key fn O(n log n) times; pre-computing avoids repeated allocations.
     let subsumer_counts: Vec<usize> = (0..n)
         .map(|i| {
             let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-            closure
-                .subsumers_bitset(id)
-                .map_or(0, |bs| bs.ones().count())
+            closure.subsumers_count(id)
         })
         .collect();
 
@@ -2016,11 +2013,10 @@ pub(crate) fn classify_top_down_internal(
         }
         // Closure seed.
         let i_id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-        if let Some(row) = closure.subsumers_bitset(i_id) {
-            for j in row.ones() {
-                if j < n {
-                    entailed[i].insert(j);
-                }
+        for j_id in closure.subsumers_of(i_id) {
+            let j = j_id.index() as usize;
+            if j < n {
+                entailed[i].insert(j);
             }
         }
         // BFS over direct_supers starting from `i` to pick up the

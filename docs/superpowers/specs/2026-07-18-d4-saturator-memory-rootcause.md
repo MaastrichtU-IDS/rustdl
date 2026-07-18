@@ -102,17 +102,42 @@ all 74 saturation lib tests pass incl. the TBox-nominal canary
 (`nominal_transitive_abox_fold_classifies`); **FP=0/MISSED=0 closure-diff 22/22**
 (wine's TBox-nominal path unchanged); fmt + clippy clean.
 
-## Option 1 (sparse subsumer rep) — still the general backstop
+## Option 1 (size-adaptive subsumer rep) — SHIPPED (2026-07-18, TDD)
 
-Option A eliminates the *ABox-nominal* inflation. The dense
-O(num_total_classes²)-bit matrices remain the representation, so an ont with a
-genuinely large *TBox-synthetic* (Tseitin) universe could still blow up. Option 1
-(sparse per-class subsumer rows) is the general defense. **Gate before building
-it:** measure whether any remaining giant still blows up post-Option-A — if Option
-A clears the tail, Option 1 is lower-priority hardening (and carries the EL
-hot-path `contains` regression risk).
+Gate measurement first: large *pure-TBox* giants (no ABox, so Option A is inert)
+still blow the dense O(named²) matrix — ore_ont_16586 (148k) 18 GB, ore_ont_1673
+(186k) 25 GB, ore_ont_7646 (236k) 19 GB; the 398k/981k ones would be 100s of GB.
+So Option 1 is warranted for these.
+
+**Key constraint discovered:** the dense `Vec<FixedBitSet>` was a *deliberate* perf
+choice (its doc noted it replaced a `HashSet<ClassId>` rep for O(1) `contains`) —
+so a naive "swap to HashSet" would regress the EL/galen niche. The fix is
+therefore **size-adaptive**, not unconditionally sparse.
+
+New `IdMatrix` enum (`crates/owl-dl-saturation/src/lib.rs`) backs both
+`Subsumers.subsumers` and the engine's `subsumed_by`:
+- **`Dense(Vec<FixedBitSet>)`** when `n ≤ DENSE_MAX` (50,000) — the EL/Horn common
+  case; single cache-friendly bit-test `contains`, byte-identical to before.
+- **`Sparse(Vec<hashbrown::HashSet<u32>>)`** above — memory-bounded for the giants.
+- Row iteration is **ascending in both** (`.ones()` / sort-on-read), so output is
+  deterministic / byte-identical across reps. `subsumers_bitset` (returned a
+  borrowed `&FixedBitSet`) replaced by `subsumers_count` (O(1)) + `subsumers_of`
+  (sorted); the 3 classify.rs callers updated. Grow becomes a no-op-append for
+  sparse (also removes the old grow-every-row-width cost).
+
+**Results:** galen (EL niche, dense) **0.23 s / 27 MB — no regression**;
+ore_ont_1673 (186k, sparse) **25 GB → 8 GB (~3×)** (the residual ~8 GB is facts /
+per-class Vecs, not the matrix — a further step if needed). **Gates:** TDD RED→GREEN
++ dense-vs-sparse equivalence unit test + threshold test; 76/76 saturation lib
+tests; **FP=0/MISSED=0 closure-diff 22/22** (all fixtures dense-path,
+byte-identical); fmt + clippy clean.
+
+Note: the corpus FP gate only exercises the DENSE path (all fixtures < 50k), so the
+SPARSE path's correctness rests on the `id_matrix_dense_and_sparse_are_semantically_identical`
+unit test (same insert/contains/row_ascending as dense).
 
 ## Status
 
-Root cause found + confirmed; **Option A shipped & verified**; Option 1 pending a
-measure-first gate (does any giant still blow up post-A?).
+Root cause found + confirmed; **Option A + Option 1 both shipped & verified.**
+Remaining giant-tail memory (facts / per-class Vecs beyond the matrix, and the
+biggest 398k–981k onts) is a possible future step, not required by this arc.

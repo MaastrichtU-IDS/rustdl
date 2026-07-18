@@ -250,7 +250,7 @@ struct WorklistEngine {
     /// `C` such that `C ⊑ D` is in the closure. Maintained pairwise
     /// with `subsumers.subsumers` (every `(C, D)` pair lives in
     /// both).
-    subsumed_by: Vec<FixedBitSet>,
+    subsumed_by: IdMatrix,
 
     facts: Vec<ExistentialFact>,
     seen_facts: HashSet<(ClassId, RoleId, ClassId)>,
@@ -381,10 +381,7 @@ impl WorklistEngine {
             disjoints_by_class[a.index() as usize].push(b);
             disjoints_by_class[b.index() as usize].push(a);
         }
-        let mut subsumed_by = Vec::with_capacity(num_total_classes);
-        for _ in 0..num_total_classes {
-            subsumed_by.push(FixedBitSet::with_capacity(num_total_classes));
-        }
+        let subsumed_by = IdMatrix::with_capacity(num_total_classes);
         // Populate atomic_content_of for all static Tseitin synthetics.
         // The bodies in tseitin.by_body are sorted Vec<ClassId>; we treat
         // each body operand as atomic (the bodies contain only user-class IDs
@@ -457,30 +454,22 @@ impl WorklistEngine {
     /// `Vec<ClassId>`. Used at points where the borrow into the
     /// bitset would conflict with subsequent mutation.
     fn supers_of_class(&self, c: ClassId) -> Vec<ClassId> {
-        let ci = c.index() as usize;
         self.subsumers
             .subsumers
-            .get(ci)
-            .map(|bs| {
-                bs.ones()
-                    .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .row_ascending(c.index() as usize)
+            .into_iter()
+            .map(ClassId::new)
+            .collect()
     }
 
     /// Snapshot the reverse bitset at `subsumed_by[c.index()]` as a
     /// `Vec<ClassId>`.
     fn subs_of_class(&self, c: ClassId) -> Vec<ClassId> {
-        let ci = c.index() as usize;
         self.subsumed_by
-            .get(ci)
-            .map(|bs| {
-                bs.ones()
-                    .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .row_ascending(c.index() as usize)
+            .into_iter()
+            .map(ClassId::new)
+            .collect()
     }
 
     /// Return the transitive atomic content of class `c`. For synthetics
@@ -544,21 +533,9 @@ impl WorklistEngine {
         // Grow per-class state if the synthetic id exceeds current capacity.
         let needed = s_idx + 1;
         if needed > self.num_total_classes {
-            for bs in &mut self.subsumers.subsumers {
-                bs.grow(needed);
-            }
+            self.subsumers.subsumers.grow_to(needed);
             self.subsumers.unsatisfiable.grow(needed);
-            for bs in &mut self.subsumed_by {
-                bs.grow(needed);
-            }
-            while self.subsumers.subsumers.len() < needed {
-                self.subsumers
-                    .subsumers
-                    .push(FixedBitSet::with_capacity(needed));
-            }
-            while self.subsumed_by.len() < needed {
-                self.subsumed_by.push(FixedBitSet::with_capacity(needed));
-            }
+            self.subsumed_by.grow_to(needed);
             while self.facts_by_sub.len() < needed {
                 self.facts_by_sub.push(Vec::new());
             }
@@ -803,11 +780,13 @@ impl WorklistEngine {
     fn record_subsumer(&mut self, c: ClassId, d: ClassId) -> bool {
         let ci = c.index() as usize;
         let di = d.index() as usize;
-        let added = self.subsumers.subsumers[ci].put(di);
-        if !added {
-            // `put` returns true iff the bit was already set; we want
-            // the opposite semantic here ("newly inserted").
-            self.subsumed_by[di].insert(ci);
+        let newly = self.subsumers.subsumers.insert(
+            ci,
+            u32::try_from(di).expect("class id fits in u32"),
+        );
+        if newly {
+            self.subsumed_by
+                .insert(di, u32::try_from(ci).expect("class id fits in u32"));
             return true;
         }
         false
@@ -1953,15 +1932,106 @@ fn supers_of(role_super: &[Box<[RoleId]>], r: RoleId) -> &[RoleId] {
 /// nominals) are not consulted; if a subsumption depends on those,
 /// the table will miss it.
 #[derive(Debug, Clone)]
+/// Row-major square boolean matrix over class ids, with a **size-adaptive
+/// representation**: a dense `Vec<FixedBitSet>` (each row `n` bits) when the
+/// class universe is small — O(1) `contains`, the fast path the EL niche relies
+/// on — and a sparse `Vec<HashSet<u32>>` (per-row set) when `n` is large, where
+/// a dense `n × n`-bit matrix would cost tens–hundreds of GB (e.g. ORE giants
+/// with 148k–981k classes). Semantically identical either way; row iteration is
+/// **ascending** in both (matching `FixedBitSet::ones()`) so callers/output are
+/// byte-identical across representations.
+enum IdMatrix {
+    Dense(Vec<FixedBitSet>),
+    Sparse(Vec<hashbrown::HashSet<u32>>),
+}
+
+impl IdMatrix {
+    /// Dense whenever the full `n × n`-bit matrix stays modest; sparse above.
+    /// The threshold keeps every EL/Horn corpus ontology (thousands of classes)
+    /// dense — a dense row is a single cache-friendly bit-test — and only the
+    /// giant SROIQ `TBox`es cross into the sparse (memory-bounded) rep.
+    const DENSE_MAX: usize = 50_000;
+
+    fn with_capacity(n: usize) -> Self {
+        if n <= Self::DENSE_MAX {
+            let mut rows = Vec::with_capacity(n);
+            for _ in 0..n {
+                rows.push(FixedBitSet::with_capacity(n));
+            }
+            IdMatrix::Dense(rows)
+        } else {
+            IdMatrix::Sparse(vec![hashbrown::HashSet::default(); n])
+        }
+    }
+
+    /// Insert `j` into row `i`; return `true` iff it was newly added.
+    fn insert(&mut self, i: usize, j: u32) -> bool {
+        match self {
+            IdMatrix::Dense(rows) => !rows[i].put(j as usize),
+            IdMatrix::Sparse(rows) => rows[i].insert(j),
+        }
+    }
+
+    fn contains(&self, i: usize, j: u32) -> bool {
+        match self {
+            IdMatrix::Dense(rows) => rows
+                .get(i)
+                .is_some_and(|bs| (j as usize) < bs.len() && bs.contains(j as usize)),
+            IdMatrix::Sparse(rows) => rows.get(i).is_some_and(|s| s.contains(&j)),
+        }
+    }
+
+    fn row_len(&self, i: usize) -> usize {
+        match self {
+            IdMatrix::Dense(rows) => rows.get(i).map_or(0, |bs| bs.count_ones(..)),
+            IdMatrix::Sparse(rows) => rows.get(i).map_or(0, hashbrown::HashSet::len),
+        }
+    }
+
+    /// Row `i`'s members in **ascending** id order (matches `FixedBitSet::ones()`
+    /// for both reps, so output stays deterministic / byte-identical).
+    fn row_ascending(&self, i: usize) -> Vec<u32> {
+        match self {
+            IdMatrix::Dense(rows) => rows.get(i).map_or_else(Vec::new, |bs| {
+                bs.ones()
+                    .map(|x| u32::try_from(x).expect("class id fits in u32"))
+                    .collect()
+            }),
+            IdMatrix::Sparse(rows) => rows.get(i).map_or_else(Vec::new, |s| {
+                let mut v: Vec<u32> = s.iter().copied().collect();
+                v.sort_unstable();
+                v
+            }),
+        }
+    }
+
+    /// Grow to at least `needed` rows. Dense rows also widen to `needed` bits;
+    /// sparse rows carry no width, so this only appends empty rows.
+    fn grow_to(&mut self, needed: usize) {
+        match self {
+            IdMatrix::Dense(rows) => {
+                for bs in rows.iter_mut() {
+                    bs.grow(needed);
+                }
+                while rows.len() < needed {
+                    rows.push(FixedBitSet::with_capacity(needed));
+                }
+            }
+            IdMatrix::Sparse(rows) => {
+                while rows.len() < needed {
+                    rows.push(hashbrown::HashSet::default());
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Subsumers {
-    /// One `FixedBitSet` per class — `subsumers[i].contains(j)` is
-    /// true iff `class_i ⊑ class_j`. Each bitset is sized for the
-    /// full class universe (including Tseitin synthetic classes
-    /// allocated above the user vocabulary). Dense representation
-    /// gives O(1) `contains` and avoids the per-class
-    /// `HashSet<ClassId>` allocation overhead the previous
-    /// implementation paid.
-    subsumers: Vec<FixedBitSet>,
+    /// Size-adaptive `subsumers[i] ∋ j` iff `class_i ⊑ class_j`. Dense for the
+    /// small (EL/Horn) common case; sparse for giant SROIQ `TBox`es where a dense
+    /// `n × n`-bit matrix would be tens–hundreds of GB. See [`IdMatrix`].
+    subsumers: IdMatrix,
     /// Bit i set iff `class_i ⊑ ⊥`.
     unsatisfiable: FixedBitSet,
 }
@@ -1974,12 +2044,8 @@ impl Default for Subsumers {
 
 impl Subsumers {
     fn with_capacity(n: usize) -> Self {
-        let mut subsumers = Vec::with_capacity(n);
-        for _ in 0..n {
-            subsumers.push(FixedBitSet::with_capacity(n));
-        }
         Self {
-            subsumers,
+            subsumers: IdMatrix::with_capacity(n),
             unsatisfiable: FixedBitSet::with_capacity(n),
         }
     }
@@ -1991,34 +2057,24 @@ impl Subsumers {
     /// True iff the closure contains `sub ⊑ sup`.
     #[must_use]
     pub fn contains(&self, sub: ClassId, sup: ClassId) -> bool {
-        let si = Self::class_index(sub);
-        let pi = Self::class_index(sup);
         self.subsumers
-            .get(si)
-            .is_some_and(|bs| pi < bs.len() && bs.contains(pi))
+            .contains(Self::class_index(sub), sup.index())
     }
 
-    /// Every entailed subsumer of `c` (including `c` itself).
+    /// Number of entailed subsumers of `c` (including `c` itself).
+    #[must_use]
+    pub fn subsumers_count(&self, c: ClassId) -> usize {
+        self.subsumers.row_len(Self::class_index(c))
+    }
+
+    /// Every entailed subsumer of `c` (including `c` itself), ascending by id.
     #[must_use]
     pub fn subsumers_of(&self, c: ClassId) -> Vec<ClassId> {
-        let ci = Self::class_index(c);
         self.subsumers
-            .get(ci)
-            .map(|bs| {
-                bs.ones()
-                    .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// A reference to the raw subsumer bitset for class `c`.
-    /// The bitset may be wider than the user class vocabulary (it
-    /// includes Tseitin / `DKey` synthetic IDs ≥ n). Callers that want
-    /// only user-vocabulary subsumers must restrict to `[0, n)`.
-    #[must_use]
-    pub fn subsumers_bitset(&self, c: ClassId) -> Option<&FixedBitSet> {
-        self.subsumers.get(Self::class_index(c))
+            .row_ascending(Self::class_index(c))
+            .into_iter()
+            .map(ClassId::new)
+            .collect()
     }
 
     /// A reference to the raw unsatisfiable bitset.
@@ -4008,6 +4064,52 @@ fn build_role_super(internal: &InternalOntology) -> HashMap<RoleId, HashSet<Role
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn id_matrix_dense_and_sparse_are_semantically_identical() {
+        // The corpus FP=0/MISSED=0 gate only exercises the DENSE path (every
+        // fixture is < DENSE_MAX classes), so pin the SPARSE path's semantics
+        // directly against dense: same insert-return, contains, row_ascending.
+        let mut dense = IdMatrix::Dense(vec![FixedBitSet::with_capacity(10); 10]);
+        let mut sparse = IdMatrix::Sparse(vec![hashbrown::HashSet::default(); 10]);
+        // Insert the same edges (out of order, with duplicates) into both.
+        let edges = [(1u32, 7u32), (1, 3), (1, 7), (4, 0), (1, 3), (9, 2)];
+        for &(i, j) in &edges {
+            let d = dense.insert(i as usize, j);
+            let s = sparse.insert(i as usize, j);
+            assert_eq!(d, s, "insert newness must match for ({i},{j})");
+        }
+        for i in 0..10usize {
+            for j in 0..10u32 {
+                assert_eq!(
+                    dense.contains(i, j),
+                    sparse.contains(i, j),
+                    "contains mismatch at ({i},{j})"
+                );
+            }
+            assert_eq!(
+                dense.row_ascending(i),
+                sparse.row_ascending(i),
+                "row_ascending (must be sorted, byte-identical) mismatch at row {i}"
+            );
+            assert_eq!(dense.row_len(i), sparse.row_len(i), "row_len mismatch at {i}");
+        }
+        // row_ascending is ascending.
+        assert_eq!(dense.row_ascending(1), vec![3, 7]);
+    }
+
+    #[test]
+    fn id_matrix_with_capacity_picks_rep_by_size() {
+        assert!(matches!(
+            IdMatrix::with_capacity(IdMatrix::DENSE_MAX),
+            IdMatrix::Dense(_)
+        ));
+        assert!(matches!(
+            IdMatrix::with_capacity(IdMatrix::DENSE_MAX + 1),
+            IdMatrix::Sparse(_)
+        ));
+    }
+
     use horned_owl::io::ParserConfiguration;
     use horned_owl::io::ofn::reader::read;
     use horned_owl::model::RcStr;

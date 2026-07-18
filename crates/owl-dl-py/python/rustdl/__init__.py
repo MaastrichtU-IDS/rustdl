@@ -35,6 +35,7 @@ from rustdl._native import (
     justify_all as justify_all,
     diagnose as diagnose,
     repair as repair,
+    render_manchester as render_manchester,
 )
 
 from ._results import (
@@ -204,6 +205,7 @@ __all__ = [
     "justify_all",
     "diagnose",
     "repair",
+    "render_manchester",
     "debug",
     "Diagnosis",
     "Root",

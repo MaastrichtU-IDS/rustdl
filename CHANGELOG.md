@@ -4,6 +4,18 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.22] — 2026-07-18
+
+### Added
+
+- **`render_manchester(path) -> list[str]`** (Python binding). Renders every
+  logical axiom of the ontology at `path` as a Manchester syntax string,
+  reusing the same `AsManchester` renderer `justify`/`justify_all`/`repair`
+  already use — declarations, imports, and ontology-level annotations are
+  filtered out as non-logical noise. Lets downstream consumers (e.g. a
+  reasoner service that only has whelk/rdflib axioms) render an ontology to
+  Manchester without going through a query/justification call.
+
 ## [0.3.21] — 2026-07-02
 
 ### Added

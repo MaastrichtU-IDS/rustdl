@@ -17,11 +17,24 @@ name = "rustdl"           # Python import name: `import rustdl`
 crate-type = ["cdylib"]   # Python C extension
 
 [dependencies]
-pyo3 = { version = "0.29", features = ["abi3-py310", "extension-module"] }
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
 owl-dl-reasoner.workspace = true
 owl-dl-core.workspace = true
 horned-owl.workspace = true
 thiserror.workspace = true
+
+# `extension-module` tells pyo3 not to link libpython (Python provides those
+# symbols at runtime via dlopen). That's right for the actual Python
+# extension (built by maturin) but breaks a plain `cargo test` binary, which
+# has no Python process to resolve the symbols from and fails to link
+# (see .github/workflows/ci.yml's `--exclude owl-dl-py` comment). Standard
+# pyo3 workaround (https://pyo3.rs/main/faq): make it an opt-out default
+# feature so `cargo test -p owl-dl-py --no-default-features` links cleanly,
+# while a plain `cargo build`/maturin build (default features on) is
+# unaffected.
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
 
 [lints]
 workspace = true

@@ -200,6 +200,10 @@ def repair(path: str, query: list[str], max: int = 10) -> list[list[str]]:
     """Minimal axiom-removal sets (Manchester) that break `query`."""
     ...
 
+def render_manchester(path: str) -> list[str]:
+    """Every logical axiom of the ontology at `path` as Manchester strings."""
+    ...
+
 def debug(path: str) -> Diagnosis:
     """One-call ontology diagnosis: consistency + root/derived unsat +
     per-root justifications + repairs."""

@@ -780,10 +780,10 @@ impl WorklistEngine {
     fn record_subsumer(&mut self, c: ClassId, d: ClassId) -> bool {
         let ci = c.index() as usize;
         let di = d.index() as usize;
-        let newly = self.subsumers.subsumers.insert(
-            ci,
-            u32::try_from(di).expect("class id fits in u32"),
-        );
+        let newly = self
+            .subsumers
+            .subsumers
+            .insert(ci, u32::try_from(di).expect("class id fits in u32"));
         if newly {
             self.subsumed_by
                 .insert(di, u32::try_from(ci).expect("class id fits in u32"));
@@ -2057,8 +2057,7 @@ impl Subsumers {
     /// True iff the closure contains `sub ⊑ sup`.
     #[must_use]
     pub fn contains(&self, sub: ClassId, sup: ClassId) -> bool {
-        self.subsumers
-            .contains(Self::class_index(sub), sup.index())
+        self.subsumers.contains(Self::class_index(sub), sup.index())
     }
 
     /// Number of entailed subsumers of `c` (including `c` itself).
@@ -3496,6 +3495,48 @@ fn lower_sub_class_of(
                     });
                 }
             }
+            // Compound-existential CONSEQUENT: `∃r.B ⊑ ∃s.D` (or `∃r.B ⊑ (… ⊓ ∃s.D)`).
+            // `atomic_operands_on_right` returns [] for a `Some` head, so without
+            // this the whole GCI was silently DROPPED — an EL-completeness gap that
+            // violated the "complete on EL" guarantee (ORE ChEBI/GOCHE, 2026-07-19:
+            // `∃RO_0000087.C ⊑ ∃GOCHEREL.C` + defined `GOCHE ≡ ∃GOCHEREL.C ⊓ D`).
+            // Mirror the `And`-branch Phase-2b.5 handling: allocate a TWO-WAY
+            // equivalent marker `M ≡ ∃s.D` and emit `∃r.B ⊑ M` triggers. A class that
+            // gains `M` (as subsumer) then also inherits M's existential fact
+            // `(M, s, D)`, completing `X ⊑ ∃r.B → X ⊑ M ⊑ ∃s.D`. The marker is the
+            // SAME one a defined class's `∃s.D` conjunct keys on (memoized by
+            // `(role, body)`), so `X ⊓ D`-style defined classes are recognized.
+            // Sound: `M` is defined ≡ `∃s.D`, so this only adds the genuinely-
+            // entailed `∃r.B ⊑ ∃s.D` (negative control test guards over-firing).
+            let sup_existentials: Vec<(RoleId, ClassId)> = match pool.get(sup) {
+                ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
+                    atomic_or_tseitin_body(*s_body, pool, rules, tseitin)
+                        .map(|b| vec![(s_role.role_id(), b)])
+                        .unwrap_or_default()
+                }
+                ConceptExpr::And(operands) => operands
+                    .iter()
+                    .filter_map(|&op| match pool.get(op) {
+                        ConceptExpr::Some(s_role, s_body) if !s_role.is_inverse() => {
+                            atomic_or_tseitin_body(*s_body, pool, rules, tseitin)
+                                .map(|b| (s_role.role_id(), b))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for (s_role, s_body_id) in sup_existentials {
+                let marker =
+                    tseitin.introduce_equivalent_existential_marker(s_role, s_body_id, rules);
+                for &body_id in &body_ids {
+                    rules.existential_triggers.push(ExistentialTrigger {
+                        role: role.role_id(),
+                        body: body_id,
+                        head: marker,
+                    });
+                }
+            }
         }
         // `⊤ ⊑ C` (a named class equivalent to owl:Thing): C subsumes EVERYTHING,
         // so every named class ⊑ C. Record each atomic sup as a "top subsumer";
@@ -4092,7 +4133,11 @@ mod tests {
                 sparse.row_ascending(i),
                 "row_ascending (must be sorted, byte-identical) mismatch at row {i}"
             );
-            assert_eq!(dense.row_len(i), sparse.row_len(i), "row_len mismatch at {i}");
+            assert_eq!(
+                dense.row_len(i),
+                sparse.row_len(i),
+                "row_len mismatch at {i}"
+            );
         }
         // row_ascending is ascending.
         assert_eq!(dense.row_ascending(1), vec![3, 7]);
@@ -4347,6 +4392,56 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let subs = saturate(&internal);
         assert!(subs.contains(class(&internal, "Pizza"), class(&internal, "FoodItem")));
+    }
+
+    #[test]
+    fn existential_gci_compound_consequent_propagates() {
+        // Regression for the ORE ChEBI/GOCHE EL-completeness gap (2026-07-19):
+        // a GCI with a COMPOUND-existential CONSEQUENT `∃r.C ⊑ ∃s.C` was dropped
+        // (only atomic RHS heads were turned into existential triggers), so a
+        // defined class `GOCHE ≡ ∃s.C ⊓ D` was never recognized.
+        //   s ⊑ r
+        //   GOCHE ≡ ∃s.C ⊓ D
+        //   ∃r.C ⊑ ∃s.C                (compound-∃ consequent)
+        //   X ⊑ ∃r.C ⊓ D
+        // ⇒ X ⊑ GOCHE  (X⊑∃r.C →GCI→ ∃s.C; X⊑D ⟹ X ⊑ ∃s.C ⊓ D = GOCHE).
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:GOCHE))\n\
+    Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+    SubObjectPropertyOf(:s :r)\n\
+    EquivalentClasses(:GOCHE ObjectIntersectionOf(ObjectSomeValuesFrom(:s :C) :D))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :C) ObjectSomeValuesFrom(:s :C))\n\
+    SubClassOf(:X ObjectIntersectionOf(ObjectSomeValuesFrom(:r :C) :D))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            subs.contains(class(&internal, "X"), class(&internal, "GOCHE")),
+            "X ⊑ GOCHE must be derived via the compound-∃ consequent GCI"
+        );
+    }
+
+    #[test]
+    fn existential_gci_compound_consequent_negative_control() {
+        // Same as above but WITHOUT the `∃r.C ⊑ ∃s.C` GCI ⇒ X ⊑ GOCHE must NOT
+        // hold (guards against an over-firing fix that would be unsound).
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:GOCHE))\n\
+    Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n\
+    SubObjectPropertyOf(:s :r)\n\
+    EquivalentClasses(:GOCHE ObjectIntersectionOf(ObjectSomeValuesFrom(:s :C) :D))\n\
+    SubClassOf(:X ObjectIntersectionOf(ObjectSomeValuesFrom(:r :C) :D))\n\
+)\n"
+        ));
+        let subs = saturate(&internal);
+        assert!(
+            !subs.contains(class(&internal, "X"), class(&internal, "GOCHE")),
+            "without the GCI, X ⊑ GOCHE must NOT be derived (soundness control)"
+        );
     }
 
     #[test]

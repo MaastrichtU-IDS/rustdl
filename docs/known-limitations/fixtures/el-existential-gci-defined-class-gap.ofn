@@ -1,0 +1,9 @@
+Prefix(:=<http://ex#>)
+Ontology(<http://ex>
+Declaration(Class(:X)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:GOCHE))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+SubObjectPropertyOf(:s :r)
+EquivalentClasses(:GOCHE ObjectIntersectionOf(ObjectSomeValuesFrom(:s :C) :D))
+SubClassOf(ObjectSomeValuesFrom(:r :C) ObjectSomeValuesFrom(:s :C))
+SubClassOf(:X ObjectIntersectionOf(ObjectSomeValuesFrom(:r :C) :D))
+)

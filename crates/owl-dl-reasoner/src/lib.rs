@@ -2908,6 +2908,53 @@ pub fn wedge_consistency_enabled() -> bool {
     std::env::var_os("RUSTDL_WEDGE_CONSISTENCY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Lever A (2026-07-20): when the ontology uses NO nominals, the `ABox` is
+/// irrelevant to class subsumption, so the per-pair classification tableau
+/// probes do NOT seed it. This eliminates the `ABox`-driven completion-graph
+/// blow-up that stalls near-EL `ABox`-bearing ontologies (e.g. ORE
+/// `ore_ont_10894`: DNF → ~1.6 s, closure byte-identical to saturation/Konclude).
+/// **Sound:** absent nominals the `ABox` cannot affect `C ⊑ D`; a
+/// globally-inconsistent `ABox` is still caught by the separate
+/// `abox_check`/`abox_saturation` pre-checks (so this is FP=0 by construction —
+/// a missed inconsistency would be a MISS, gated by the corpus MISSED=0 check).
+/// `RUSTDL_CLASSIFY_TBOX_ONLY=0` reverts to seeding the full `ABox`.
+#[must_use]
+pub fn classify_tbox_only_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_TBOX_ONLY").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// True iff any axiom's class expression references a nominal (`ObjectOneOf` /
+/// `ObjectHasValue`, both lowered to `ConceptExpr::Nominal`). When false, the
+/// `ABox` is provably irrelevant to class subsumption, enabling Lever A. Scanned
+/// once at `from_internal` time over the un-mutated axioms (nominals only occur
+/// inside class expressions, so only concept-bearing axioms are walked).
+fn ontology_uses_nominals(internal: &InternalOntology) -> bool {
+    fn has_nominal(c: ConceptId, pool: &ConceptPool) -> bool {
+        match pool.get(c) {
+            ConceptExpr::Nominal(_) => true,
+            ConceptExpr::Not(x)
+            | ConceptExpr::Some(_, x)
+            | ConceptExpr::All(_, x)
+            | ConceptExpr::Min(_, _, x)
+            | ConceptExpr::Max(_, _, x) => has_nominal(*x, pool),
+            ConceptExpr::And(ops) | ConceptExpr::Or(ops) => {
+                ops.iter().any(|op| has_nominal(*op, pool))
+            }
+            _ => false,
+        }
+    }
+    let pool = &internal.concepts;
+    internal.axioms.iter().any(|ax| match ax {
+        Axiom::SubClassOf { sub, sup } => has_nominal(*sub, pool) || has_nominal(*sup, pool),
+        Axiom::EquivalentClasses(v) | Axiom::DisjointClasses(v) => {
+            v.iter().any(|c| has_nominal(*c, pool))
+        }
+        Axiom::DisjointUnion { members, .. } => members.iter().any(|c| has_nominal(*c, pool)),
+        Axiom::ClassAssertion { class, .. } => has_nominal(*class, pool),
+        _ => false,
+    })
+}
+
 /// Bounded wall budget (ms) for the main-tableau `decide(Top)`
 /// fall-through used when the consistency wedge returns `Stalled`. The
 /// whole point of the wedge route is to kill the unbounded
@@ -3966,6 +4013,13 @@ pub(crate) struct PreparedOntology {
     disjoint_role_pairs: Vec<(RoleId, RoleId)>,
     complements: Vec<(ConceptId, ConceptId)>,
     pub(crate) abox: Abox,
+    /// Lever A (2026-07-20): true iff the `ABox` is provably irrelevant to class
+    /// subsumption — the ontology has `ABox` axioms, uses NO nominals, and the
+    /// `TBox`-only-classify gate is on. When true, the per-pair classification
+    /// tableau probes (`decide_classify`) do NOT seed the `ABox`, avoiding the
+    /// completion-graph blow-up it causes on near-EL `ABox`-bearing ontologies.
+    /// `abox` is still kept full for `realize`/`materialize`/consistency.
+    abox_irrelevant_to_classify: bool,
     /// EL saturator closure over the un-mutated input ontology.
     /// Used by [`abox_check`] (P1 `is_unsatisfiable`, P2 `subsumers_of`).
     /// Computed once at build time; classify already computes the same
@@ -4237,6 +4291,11 @@ impl PreparedOntology {
     /// `decide` calls only have to allocate a fresh tableau and run
     /// the search.
     pub(crate) fn from_internal(mut internal: InternalOntology) -> Result<Self, ReasonError> {
+        // Lever A: decide up front (on the un-mutated input) whether the ABox is
+        // irrelevant to class subsumption — has-ABox, no nominals, gate on.
+        let abox_irrelevant_to_classify = classify_tbox_only_enabled()
+            && internal_has_abox(&internal)
+            && !ontology_uses_nominals(&internal);
         // Phase A1 (ABox consistency check): EL closure over the
         // un-mutated input. Used by abox_check for P1 (is_unsatisfiable)
         // and P2 (subsumers_of). Cheap on small ABox-bearing ontologies;
@@ -4320,6 +4379,7 @@ impl PreparedOntology {
             disjoint_role_pairs,
             complements,
             abox,
+            abox_irrelevant_to_classify,
             closure,
             told,
             axioms,
@@ -4471,6 +4531,39 @@ impl PreparedOntology {
         .map(|opt| opt.expect("no deadline ⇒ search always returns Some(_)"))
     }
 
+    /// Lever A: like [`Self::decide`], but for the **classification pairwise
+    /// subsumption loop only** — skips the `ABox` seed when it is provably
+    /// irrelevant to class subsumption (`abox_irrelevant_to_classify`: has
+    /// `ABox`, no nominals, gate on). MUST NOT be used for realize / consistency
+    /// / instance queries, which genuinely need the `ABox`. Global `ABox`
+    /// inconsistency is caught by the separate pre-checks before this loop runs.
+    pub(crate) fn decide_classify<F>(&self, build_test_concept: F) -> Result<bool, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        let empty = Abox::default();
+        let abox = if self.abox_irrelevant_to_classify {
+            &empty
+        } else {
+            &self.abox
+        };
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            abox,
+            &self.dkey_ranges,
+            None,
+            build_test_concept,
+        )
+        .map(|opt| opt.expect("no deadline ⇒ search always returns Some(_)"))
+    }
+
     /// Like [`Self::decide`] but the search is bounded by `deadline`.
     /// Returns `Ok(Some(sat))` if the tableau reached a verdict in
     /// time, or `Ok(None)` if the deadline elapsed first.
@@ -4492,6 +4585,40 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             &self.abox,
+            &self.dkey_ranges,
+            Some(deadline),
+            build_test_concept,
+        )
+    }
+
+    /// Lever A: like [`Self::decide_with_deadline`], but for the classification
+    /// pairwise subsumption loop only — skips the `ABox` seed when it is provably
+    /// irrelevant (`abox_irrelevant_to_classify`). Same scoping caveat as
+    /// [`Self::decide_classify`].
+    pub(crate) fn decide_classify_with_deadline<F>(
+        &self,
+        deadline: std::time::Instant,
+        build_test_concept: F,
+    ) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        let empty = Abox::default();
+        let abox = if self.abox_irrelevant_to_classify {
+            &empty
+        } else {
+            &self.abox
+        };
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            abox,
             &self.dkey_ranges,
             Some(deadline),
             build_test_concept,

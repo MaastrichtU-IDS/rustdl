@@ -674,11 +674,11 @@ pub(crate) fn classify_internal_with_timeout(
                 // assuming sat here can never cause us to claim a
                 // false subsumption later.
                 let sat = prepared
-                    .decide_with_deadline(deadline, move |pool| pool.atomic(class_id))?
+                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))?
                     .unwrap_or(true);
                 Ok((i, sat, false))
             } else {
-                let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
+                let sat = prepared.decide_classify(move |pool| pool.atomic(class_id))?;
                 Ok((i, sat, false))
             }
         })
@@ -739,7 +739,7 @@ pub(crate) fn classify_internal_with_timeout(
             };
             match per_pair_timeout {
                 None => {
-                    let sat = prepared.decide(build)?;
+                    let sat = prepared.decide_classify(build)?;
                     Ok((i, j, !sat, false, false))
                 }
                 Some(timeout) => {
@@ -749,7 +749,7 @@ pub(crate) fn classify_internal_with_timeout(
                     // extra threads, no cancellation race — the rayon
                     // worker stays bound to this single decide call.
                     let deadline = Instant::now() + timeout;
-                    match prepared.decide_with_deadline(deadline, build)? {
+                    match prepared.decide_classify_with_deadline(deadline, build)? {
                         Some(sat) => Ok((i, j, !sat, false, false)),
                         None => Ok((i, j, false, false, true)),
                     }
@@ -1455,7 +1455,7 @@ pub(crate) fn classify_top_down_internal(
                 // sound under-approximation. Crashing classify on a
                 // single oversized class is worse.
                 let sat = match prepared
-                    .decide_with_deadline(deadline, move |pool| pool.atomic(class_id))
+                    .decide_classify_with_deadline(deadline, move |pool| pool.atomic(class_id))
                 {
                     Ok(Some(s)) => s,
                     Ok(None) | Err(crate::ReasonError::NoVerdict) => true,
@@ -1463,7 +1463,7 @@ pub(crate) fn classify_top_down_internal(
                 };
                 Ok((i, sat, false))
             } else {
-                let sat = prepared.decide(move |pool| pool.atomic(class_id))?;
+                let sat = prepared.decide_classify(move |pool| pool.atomic(class_id))?;
                 Ok((i, sat, false))
             }
         })
@@ -2464,7 +2464,7 @@ fn subsumes_via_tableau(
     // tableau probe even when per_pair_timeout is None (global-only mode).
     match effective_deadline(global_deadline, per_pair_timeout) {
         None => {
-            let sat = prepared.decide(build)?;
+            let sat = prepared.decide_classify(build)?;
             stats.tableau_subsumption_calls += 1;
             let subsumed = !sat;
             if was_fast_refuted && subsumed {
@@ -2483,7 +2483,7 @@ fn subsumes_via_tableau(
             // (sound under-approximation), counted in `timed_out_pairs`.
             // Crashing classify on a single oversized pair is worse
             // than under-reporting the subsumption.
-            match prepared.decide_with_deadline(deadline, build) {
+            match prepared.decide_classify_with_deadline(deadline, build) {
                 Ok(Some(sat)) => {
                     stats.tableau_subsumption_calls += 1;
                     let subsumed = !sat;

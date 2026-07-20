@@ -20,7 +20,7 @@ use crate::data_axioms::{
     RangeBucket, StrSet, exact_string_literal, parse_data_intersection_dkey, parse_date,
     parse_datetime, parse_decimal,
 };
-use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role};
+use crate::ir::{ClassId, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 
 /// IRI namespace for synthetic *data-key* (`DKey`) classes. These are
@@ -2402,87 +2402,30 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
 
     // Phase D11b: `DisjointClasses(DKey(ra), DKey(rb))` for every PROVABLY
     // disjoint pair within a bucket — the basis of the `∃p.DKey(v) ⊓
-    // ∀p.DKey(r)` membership clash (v ∉ r). `disjoint` is conservative
-    // (true only when no value is shared), so a wrong "disjoint" — which
-    // would spuriously make a class ⊥ = FP — cannot arise from overlapping
-    // ranges. Same datatype bucketing: int / float / double / decimal / date /
-    // dateTime / string never cross-seed.
+    // ∀p.DKey(r)` membership clash (v ∉ r) AND the functional / `≤1`-data-
+    // property MERGE clash (`∃p.DKey(v1) ⊓ ∃p.DKey(v2)` at one node, v1≠v2).
+    // `disjoint` is conservative (true only when no value is shared), so a
+    // wrong "disjoint" — which would spuriously make a class ⊥ = FP — cannot
+    // arise from overlapping ranges. Same datatype bucketing: int / float /
+    // double / decimal / date / dateTime / string never cross-seed.
     //
-    // GATE (2026-07-20): the disjointness is CONSUMED ONLY by a `∀p.DKey`
-    // (`ObjectAllValuesFrom` over a DKey filler) — that is the sole construct
-    // that puts a *second* DKey on the same role at a node to clash against an
-    // `∃p.DKey`. Without any such `∀p.DKey` in the ontology the O(k²) pairwise
-    // seeding is pure dead weight — and k is NOT small when DKeys come from
-    // ABox `DataPropertyAssertion`s (ore_ont_10425: 5261 distinct values →
-    // ~14M disjoint axioms → front-end conversion DNF). So skip the seeding
-    // when no `∀p.DKey` occurs. **Sound (FP-safe) by construction**: dropping
-    // `DisjointClasses` axioms is entailment-MONOTONE — it can only fail to
-    // derive an unsatisfiability (a tolerated MISS), never introduce a false
-    // subsumption. (A functional-data-property same-value inconsistency is
-    // still caught by the `abox_check` P5 / D4 data-cardinality pre-checks.)
-    let dkey_cids: std::collections::HashSet<ClassId> = int_dkeys
-        .iter()
-        .map(|(c, _)| *c)
-        .chain(float_dkeys.iter().map(|(c, _)| *c))
-        .chain(double_dkeys.iter().map(|(c, _)| *c))
-        .chain(dec_dkeys.iter().map(|(c, _)| *c))
-        .chain(date_dkeys.iter().map(|(c, _)| *c))
-        .chain(dt_dkeys.iter().map(|(c, _)| *c))
-        .chain(str_dkeys.iter().map(|(c, _)| *c))
-        .collect();
-    if ontology_has_forall_over_dkey(out, &dkey_cids) {
-        seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b));
-        seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b));
-        seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b));
-        seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint);
-        seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint);
-        seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint);
-        seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint);
-    }
-}
-
-/// True iff some axiom's class expression contains `∀R.f` (`ConceptExpr::All`)
-/// whose filler `f` is a `DKey` class (`cid ∈ dkeys`). This is the ONLY consumer
-/// of the D11b DKey-disjointness seeding (the `∃p.DKey(v) ⊓ ∀p.DKey(r)` range-
-/// membership clash), so when it is absent the O(k²) seeding is skippable — see
-/// [`seed_dkey_subsumptions`]. Short-circuits on the first hit.
-fn ontology_has_forall_over_dkey(
-    out: &InternalOntology,
-    dkeys: &std::collections::HashSet<ClassId>,
-) -> bool {
-    fn walk(
-        cid: ConceptId,
-        pool: &ConceptPool,
-        dkeys: &std::collections::HashSet<ClassId>,
-    ) -> bool {
-        match pool.get(cid) {
-            ConceptExpr::All(_, f) => {
-                matches!(pool.get(*f), ConceptExpr::Atomic(c) if dkeys.contains(c))
-                    || walk(*f, pool, dkeys)
-            }
-            ConceptExpr::Not(x)
-            | ConceptExpr::Some(_, x)
-            | ConceptExpr::Min(_, _, x)
-            | ConceptExpr::Max(_, _, x) => walk(*x, pool, dkeys),
-            ConceptExpr::And(ops) | ConceptExpr::Or(ops) => {
-                ops.iter().any(|o| walk(*o, pool, dkeys))
-            }
-            _ => false,
-        }
-    }
-    if dkeys.is_empty() {
-        return false;
-    }
-    let pool = &out.concepts;
-    out.axioms.iter().any(|ax| match ax {
-        Axiom::SubClassOf { sub, sup } => walk(*sub, pool, dkeys) || walk(*sup, pool, dkeys),
-        Axiom::EquivalentClasses(v) | Axiom::DisjointClasses(v) => {
-            v.iter().any(|c| walk(*c, pool, dkeys))
-        }
-        Axiom::DisjointUnion { members, .. } => members.iter().any(|c| walk(*c, pool, dkeys)),
-        Axiom::ClassAssertion { class, .. } => walk(*class, pool, dkeys),
-        _ => false,
-    })
+    // NOTE (2026-07-20): this is O(k²) in the number of distinct data values k,
+    // which is LARGE when DKeys come from ABox `DataPropertyAssertion`s
+    // (ore_ont_10425: 5261 values → ~14M axioms → front-end conversion DNF).
+    // A `∀p.DKey`-only gate was tried and reverted — it dropped the functional/
+    // `≤1` merge clash (data_properties.rs POC tests) because that clash also
+    // consumes this disjointness and needs no `∀`. The sound bound is
+    // co-occurrence (only values reachable together on a merge-inducing role),
+    // which needs per-subject value tracking; left as a scoped follow-up. The
+    // O(1) `add_disjoint_pair` (told.rs) at least drops the build from O(k³) to
+    // O(k²).
+    seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b));
+    seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b));
+    seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b));
+    seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint);
+    seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint);
+    seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint);
+    seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint);
 }
 
 /// Emit `DisjointClasses([DKey(r_i), DKey(r_j)])` for every UNORDERED pair

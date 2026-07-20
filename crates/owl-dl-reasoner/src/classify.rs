@@ -978,7 +978,13 @@ fn is_el_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
 
 fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     match pool.get(c) {
-        ConceptExpr::Top | ConceptExpr::Atomic(_) => true,
+        // Bot (Lever 1b): `⊥` is EL — `X ⊑ ⊥` (unsatisfiability) and `A⊓B ⊑ ⊥`
+        // (disjointness) are both reasoned over completely by the saturator's
+        // Bot/disjointness machinery. Sound here because `is_pure_el` admits NO
+        // functional role (is_el_axiom rejects FunctionalRole), so the
+        // disjoint×functional-merge interaction excluded from
+        // `saturator_complete_fragment` cannot arise on this arm.
+        ConceptExpr::Top | ConceptExpr::Atomic(_) | ConceptExpr::Bot => true,
         ConceptExpr::And(ops) => ops.iter().all(|op| is_el_concept(*op, pool)),
         ConceptExpr::Some(role, body) => !role.is_inverse() && is_el_concept(*body, pool),
         _ => false,
@@ -1123,6 +1129,17 @@ fn is_saturator_axiom(
                 ) =>
         {
             true
+        }
+        // Lower-`⊥` GCI (Lever 1b): `X ⊑ ⊥`. A CONJUNCTIVE LHS (`A⊓B ⊑ ⊥`) is a
+        // disjointness assertion — gate on `disjoint_ok` exactly like a native
+        // `DisjointClasses` (the disjoint×functional-merge interaction is
+        // unproven, so it must fall back when a functional role is present). A
+        // non-conjunctive `A ⊑ ⊥` is a plain single-class unsatisfiability with
+        // no such interaction ⇒ always in-fragment. The LHS below `⊥` must still
+        // be a saturator concept.
+        Axiom::SubClassOf { sub, sup } if matches!(pool.get(*sup), ConceptExpr::Bot) => {
+            is_saturator_concept(*sub, pool)
+                && (disjoint_ok || !matches!(pool.get(*sub), ConceptExpr::And(_)))
         }
         Axiom::SubClassOf { sub, sup } => {
             is_saturator_concept(*sub, pool) && is_saturator_concept(*sup, pool)
@@ -3812,6 +3829,60 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !tbox_only_saturator_eligible(&i),
             "a ∀ in the TBox must reject even under the TBox-only view"
+        );
+    }
+
+    #[test]
+    fn bot_lowered_disjointness_is_pure_el() {
+        // Lever 1b: an explicit `A ⊓ B ⊑ ⊥` (SubClassOf(And, owl:Nothing)) is a
+        // sound EL disjointness/unsat the saturator handles completely. With no
+        // functional role it must be in the pure-EL fast path. RED before Bot ∈
+        // is_el_concept.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(ObjectIntersectionOf(:A :B) owl:Nothing)\n",
+        );
+        assert!(
+            is_pure_el(&i),
+            "EL + `A⊓B⊑⊥` (no functional) must be pure-EL fast-path eligible"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_accepts_atomic_unsat() {
+        // A plain `A ⊑ ⊥` (single-class unsatisfiability) carries no
+        // functional-merge interaction, so it stays in-fragment even with a
+        // functional role present.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(ObjectProperty(:r))\n\
+    FunctionalObjectProperty(:r)\n\
+    SubClassOf(:A owl:Nothing)\n",
+        );
+        assert!(
+            saturator_complete_fragment(&i),
+            "atomic `A⊑⊥` + functional must stay in the saturator fragment"
+        );
+    }
+
+    #[test]
+    fn saturator_fragment_rejects_conjunctive_bot_with_functional() {
+        // FP-CRITICAL: `A⊓B⊑⊥` is disjointness(A,B); combined with a functional
+        // role it is the UNPROVEN disjoint×functional-merge interaction the gate
+        // deliberately excludes. It must fall back to the hybrid path (same
+        // policy as a native DisjointClasses + functional).
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    FunctionalObjectProperty(:r)\n\
+    SubClassOf(ObjectIntersectionOf(:A :B) owl:Nothing)\n",
+        );
+        assert!(
+            !saturator_complete_fragment(&i),
+            "conjunctive `A⊓B⊑⊥` + functional (disjoint×functional) must fall back"
         );
     }
 

@@ -30,14 +30,25 @@ pub(crate) fn render_manchester(path: &str) -> PyResult<Vec<String>> {
 }
 
 fn is_logical_axiom(c: &Component<RcStr>) -> bool {
-    use Component::*;
+    use Component::{
+        AnnotationAssertion, DeclareAnnotationProperty, DeclareClass, DeclareDataProperty,
+        DeclareDatatype, DeclareNamedIndividual, DeclareObjectProperty, DocIRI, Import,
+        OntologyAnnotation, OntologyID,
+    };
     // Exclude declarations, imports, and ontology-level metadata; keep the
     // class/property/individual axioms that carry entailment meaning.
     !matches!(
         c,
-        OntologyID(_) | DocIRI(_) | Import(_) | OntologyAnnotation(_)
-            | DeclareClass(_) | DeclareObjectProperty(_) | DeclareAnnotationProperty(_)
-            | DeclareDataProperty(_) | DeclareNamedIndividual(_) | DeclareDatatype(_)
+        OntologyID(_)
+            | DocIRI(_)
+            | Import(_)
+            | OntologyAnnotation(_)
+            | DeclareClass(_)
+            | DeclareObjectProperty(_)
+            | DeclareAnnotationProperty(_)
+            | DeclareDataProperty(_)
+            | DeclareNamedIndividual(_)
+            | DeclareDatatype(_)
             | AnnotationAssertion(_)
     )
 }
@@ -114,7 +125,7 @@ mod tests {
     use super::*;
 
     /// A⊑B, B⊑C written to a temp `.ofn` fixture; `render_manchester` should
-    /// return one Manchester string per SubClassOf axiom, each mentioning
+    /// return one Manchester string per `SubClassOf` axiom, each mentioning
     /// its sub/super class, and skip the two `Declaration(Class(...))`
     /// components as non-logical noise.
     #[test]

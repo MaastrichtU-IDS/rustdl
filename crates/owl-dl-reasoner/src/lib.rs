@@ -2923,12 +2923,30 @@ pub fn classify_tbox_only_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_TBOX_ONLY").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Lever 1 (2026-07-20): when the ontology is nominal-free, evaluate the
+/// Horn-shortcircuit FRAGMENT gate on the `TBox` axioms only, ignoring the `ABox`.
+/// An EL/saturator-fragment `TBox` carrying a large `ABox` is otherwise kicked off
+/// the saturation fast path (`ABox` assertions fail the fragment allowlist) into
+/// the O(n²) per-pair hybrid loop, which DNFs on 8k–70k-class ontologies even
+/// though the saturation closure is already complete (verified == Konclude on
+/// the ORE ChEBI/OBO tier). **Sound by construction:** the existing fragment
+/// guarantee applies to the `TBox`; a nominal-free `ABox` cannot contribute a class
+/// subsumption (monotone, same basis as [`classify_tbox_only_enabled`]); and the
+/// inconsistent-`ABox` → all-unsat verdict is still produced by the `abox_check`
+/// pre-check that runs on the fast-path arm when `has_abox_axioms`. Recovers ~67
+/// ORE onts (e.g. `ore_ont_1043`: DNF → ~7 s, closure == Konclude).
+/// `RUSTDL_CLASSIFY_TBOX_FRAGMENT=0` reverts to the full-axiom fragment gate.
+#[must_use]
+pub fn classify_tbox_fragment_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_TBOX_FRAGMENT").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
 /// True iff any axiom's class expression references a nominal (`ObjectOneOf` /
 /// `ObjectHasValue`, both lowered to `ConceptExpr::Nominal`). When false, the
 /// `ABox` is provably irrelevant to class subsumption, enabling Lever A. Scanned
 /// once at `from_internal` time over the un-mutated axioms (nominals only occur
 /// inside class expressions, so only concept-bearing axioms are walked).
-fn ontology_uses_nominals(internal: &InternalOntology) -> bool {
+pub(crate) fn ontology_uses_nominals(internal: &InternalOntology) -> bool {
     fn has_nominal(c: ConceptId, pool: &ConceptPool) -> bool {
         match pool.get(c) {
             ConceptExpr::Nominal(_) => true,

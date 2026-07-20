@@ -638,7 +638,27 @@ pub(crate) fn classify_internal_with_timeout(
     // RUSTDL_HORN_SHORTCIRCUIT (default ON) for A/B isolation.
     if is_pure_el(internal)
         || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
+        || (crate::classify_tbox_fragment_enabled() && tbox_only_saturator_eligible(internal))
     {
+        // Lever 1 admits ABox-bearing ontologies to this fast path, so — like
+        // the top-down path — run the sound ABox-driven inconsistency pre-check
+        // first (nominal-free ABox is irrelevant to subsumption, but an
+        // inconsistent ABox still makes every class unsatisfiable). ABox-free
+        // inputs skip it (has_abox_axioms is a microsecond O(n) scan).
+        if crate::abox_check_enabled() && has_abox_axioms(internal) {
+            let prepared = PreparedOntology::from_internal(internal.clone())?;
+            if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict()
+            {
+                if std::env::var_os("RUSTDL_TRACE").is_some() {
+                    eprintln!("abox_check: inconsistent — {reason:?}");
+                }
+                return Ok(classify_inconsistent(
+                    classes,
+                    index,
+                    analyze_fragment(internal),
+                ));
+            }
+        }
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
     }
 
@@ -893,10 +913,33 @@ fn classify_inconsistent(
 /// expand to cardinality, `ABox` assertions, ...) immediately returns
 /// `false`.
 pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
+    is_pure_el_impl(internal, false)
+}
+
+/// Backing check for [`is_pure_el`]. `skip_abox` ⟹ ignore `ABox` assertion
+/// axioms — Lever 1: a nominal-free `ABox` is irrelevant to class subsumption,
+/// so an EL `TBox` carrying a big `ABox` is still classified completely by the
+/// saturation fast path.
+fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
     internal
         .axioms
         .iter()
+        .filter(|ax| !(skip_abox && is_abox_axiom(ax)))
         .all(|ax| is_el_axiom(ax, &internal.concepts))
+}
+
+/// True for the five `ABox` assertion axiom forms (individual-level). Used by
+/// Lever 1 ([`tbox_only_saturator_eligible`]) to restrict the fragment gate to
+/// the `TBox`. Kept in sync with [`has_abox_axioms`].
+fn is_abox_axiom(ax: &Axiom) -> bool {
+    matches!(
+        ax,
+        Axiom::ClassAssertion { .. }
+            | Axiom::ObjectPropertyAssertion { .. }
+            | Axiom::NegativeObjectPropertyAssertion { .. }
+            | Axiom::SameIndividual(_)
+            | Axiom::DifferentIndividuals(_)
+    )
 }
 
 fn is_el_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
@@ -967,6 +1010,15 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 /// chains>2, no inverse) stay on the fast path — verified by
 /// `galen_notgalen_in_saturator_fragment` + the corpus FP/MISSED gate.
 pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
+    saturator_complete_fragment_impl(internal, false)
+}
+
+/// Backing check for [`saturator_complete_fragment`]. `skip_abox` ⟹ evaluate the
+/// fragment allowlist over the `TBox` only (Lever 1). The functional-role /
+/// disjoint-gating prelude is computed over ALL axioms (harmless — `ABox`
+/// assertions declare no role characteristics), so only the final per-axiom
+/// allowlist walk is `TBox`-restricted.
+fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
     // The set of roles for which conversion emitted a derived `∃R.⊤ ⊑ ≤1 R`
     // GCI: `FunctionalRole(r) → r` (FORWARD only — `derive_functional_max_
     // cardinality` does not emit for inverse-functional).
@@ -1007,7 +1059,24 @@ pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
     internal
         .axioms
         .iter()
+        .filter(|ax| !(skip_abox && is_abox_axiom(ax)))
         .all(|ax| is_saturator_axiom(ax, &internal.concepts, &functional_roles, disjoint_ok))
+}
+
+/// Lever 1 eligibility: the ontology has an `ABox`, uses NO nominals, and its
+/// `TBox` (all non-`ABox` axioms) lies in the saturator's complete fragment
+/// (pure-EL, or the EL+functional/hierarchy/chains fragment). When true, the
+/// nominal-free `ABox` is provably irrelevant to class subsumption, so the
+/// ontology can take the saturation-only fast path instead of the O(n²)
+/// per-pair hybrid loop. **Sound by construction** — see
+/// [`crate::classify_tbox_fragment_enabled`]. Env gating is the caller's job
+/// (mirrors [`saturator_complete_fragment`], a pure predicate).
+pub(crate) fn tbox_only_saturator_eligible(internal: &InternalOntology) -> bool {
+    has_abox_axioms(internal)
+        && !crate::ontology_uses_nominals(internal)
+        && (is_pure_el_impl(internal, true)
+            || (crate::horn_shortcircuit_enabled()
+                && saturator_complete_fragment_impl(internal, true)))
 }
 
 /// True iff `c` is exactly the derived functional-enforcement consequent
@@ -1174,7 +1243,7 @@ pub fn classify_top_down_with_timeout<A: ForIRI>(
 
 /// Returns true iff the ontology contains any `ABox` axiom. Cheap
 /// scan over `internal.axioms` used to skip the `ABox` consistency
-/// pre-check entirely on TBox-only inputs (e.g. GALEN), where
+/// pre-check entirely on `TBox`-only inputs (e.g. GALEN), where
 /// building `PreparedOntology` solely to consult `abox_verdict()`
 /// is wasted work — the check would early-return `Unknown` on
 /// empty `individuals` anyway. Microseconds even on the largest
@@ -1294,6 +1363,7 @@ pub(crate) fn classify_top_down_internal(
     // RUSTDL_HORN_SHORTCIRCUIT.
     if is_pure_el(internal)
         || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
+        || (crate::classify_tbox_fragment_enabled() && tbox_only_saturator_eligible(internal))
     {
         // Skip the ABox check entirely on ABox-free inputs — building
         // PreparedOntology costs ~1.5 s on GALEN-sized TBoxes (NNF +
@@ -3683,6 +3753,80 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             !saturator_complete_fragment(&i),
             "DisjointClasses + a functional role must fall back to the hybrid path"
+        );
+    }
+
+    #[test]
+    fn tbox_fragment_accepts_el_tbox_with_abox() {
+        // Lever 1: an EL TBox (A ⊑ B) carrying a nominal-free ABox must be
+        // eligible for the saturation fast path — the ABox is irrelevant to
+        // class subsumption. Without Lever 1 the ClassAssertion kicks it to the
+        // O(n²) hybrid loop (the ORE ore_ont_1043 DNF shape).
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(NamedIndividual(:x))\n\
+    SubClassOf(:A :B)\n\
+    ClassAssertion(:A :x)\n",
+        );
+        assert!(
+            !is_pure_el(&i),
+            "sanity: the full-axiom gate rejects it (ABox present)"
+        );
+        assert!(
+            tbox_only_saturator_eligible(&i),
+            "EL TBox + nominal-free ABox must be Lever-1 fast-path eligible"
+        );
+    }
+
+    #[test]
+    fn tbox_fragment_rejects_nominal_abox() {
+        // A nominal in the TBox (ObjectHasValue → ConceptExpr::Nominal) makes
+        // the ABox subsumption-relevant, so Lever 1 must NOT fire.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:x))\n\
+    SubClassOf(:A ObjectHasValue(:r :x))\n\
+    ClassAssertion(:A :x)\n",
+        );
+        assert!(
+            !tbox_only_saturator_eligible(&i),
+            "an ontology using nominals must be excluded from Lever 1"
+        );
+    }
+
+    #[test]
+    fn tbox_fragment_rejects_forall_tbox() {
+        // Out-of-fragment TBox (∀) must reject even with the ABox stripped —
+        // the D10 unsound-completeness guard carries into the TBox-only view.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(NamedIndividual(:x))\n\
+    SubClassOf(:A ObjectAllValuesFrom(:r :B))\n\
+    ClassAssertion(:A :x)\n",
+        );
+        assert!(
+            !tbox_only_saturator_eligible(&i),
+            "a ∀ in the TBox must reject even under the TBox-only view"
+        );
+    }
+
+    #[test]
+    fn tbox_fragment_inert_without_abox() {
+        // No ABox ⇒ Lever 1 is inert (the ordinary gate already decides). Guards
+        // against changing ABox-free classification behaviour.
+        let i = internal_of(
+            "    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    SubClassOf(:A :B)\n",
+        );
+        assert!(
+            !tbox_only_saturator_eligible(&i),
+            "no ABox ⇒ Lever 1 must be inert"
         );
     }
 

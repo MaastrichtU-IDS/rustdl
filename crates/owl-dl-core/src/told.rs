@@ -22,6 +22,8 @@
 
 use std::collections::VecDeque;
 
+use std::collections::HashSet;
+
 use smallvec::SmallVec;
 
 use crate::ConceptPool;
@@ -106,7 +108,14 @@ impl ToldTables {
 pub fn build_told_tables(ontology: &InternalOntology) -> ToldTables {
     let n = ontology.vocabulary.num_classes();
     let mut direct_super: Vec<SmallVec<[ClassId; 4]>> = vec![SmallVec::new(); n];
-    let mut disjoint: Vec<SmallVec<[ClassId; 4]>> = vec![SmallVec::new(); n];
+    // Disjoint sets use a per-class `HashSet` (not `SmallVec`) so membership
+    // dedup during build is O(1), not O(k) linear-scan. A single large
+    // `DisjointClasses`/DKey-disjointness axiom produces O(k²) pairs; with the
+    // old `SmallVec::contains` that was O(k³) and stalled front-end conversion
+    // (ore_ont_10425: 5261 distinct data values → ~14M disjoint pairs → >150 s
+    // DNF). Output below is still a sorted `Box<[ClassId]>`, so the told table
+    // is byte-identical to the previous representation.
+    let mut disjoint: Vec<HashSet<ClassId>> = vec![HashSet::new(); n];
 
     let pool = &ontology.concepts;
 
@@ -234,14 +243,12 @@ fn add_edge(direct_super: &mut [SmallVec<[ClassId; 4]>], sub: ClassId, sup: Clas
     }
 }
 
-fn add_disjoint_pair(disjoint: &mut [SmallVec<[ClassId; 4]>], a: ClassId, b: ClassId) {
+fn add_disjoint_pair(disjoint: &mut [HashSet<ClassId>], a: ClassId, b: ClassId) {
     let ai = a.index() as usize;
     let bi = b.index() as usize;
-    if !disjoint[ai].contains(&b) {
-        disjoint[ai].push(b);
-    }
-    if a != b && !disjoint[bi].contains(&a) {
-        disjoint[bi].push(a);
+    disjoint[ai].insert(b);
+    if a != b {
+        disjoint[bi].insert(a);
     }
 }
 

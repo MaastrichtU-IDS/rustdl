@@ -6,15 +6,18 @@ consequence-based **saturation** engine handles the EL-ish fragment, a
 orchestrator picks per query. Parsing and the OWL model come from
 [`horned-owl`](https://github.com/phillord/horned-owl).
 
-## Status (v0.3.20)
+## Status (v0.3.30)
 
 A working classifier, consistency checker, and instance reasoner for SROIQ(D)
 with first-class data properties. The defining property is **soundness**: every
 reported subsumption is a genuine entailment.
 
-- **FP = 0 at scale.** Verified against the Konclude ∩ HermiT oracle across all
-  201 diffed ORE-2015 pilot ontologies *and* the curated corpus — rustdl asserts
-  nothing that neither complete reasoner does.
+- **FP = 0 at scale.** Verified against the Konclude ∪ HermiT gold across the
+  full ORE-2015 corpus (1452 gold-checked ontologies, 0 genuine false positives)
+  *and* the curated corpus — rustdl asserts nothing that neither complete reasoner
+  derives. (Union, not intersection, is the right gold for false-positive
+  adjudication: Konclude under-reports on some ∀-data / union schemas HermiT and
+  rustdl agree on, so a subsumption is a genuine FP only if *neither* derives it.)
 - **Fastest on EL.** rustdl's saturation kernel beats whelk-rs (1.4–1.9×) and ELK
   (4.5×) on galen/notgalen, deriving a sound *superset* of their closures.
 - **Competitive on DL, not the speed leader.** Most DL ontologies classify
@@ -24,8 +27,21 @@ reported subsumption is a genuine entailment.
   completely* (FP=0/MISSED=0) in ~1.8 s** (a ~30× reduction from the
   coupled-saturation ∃-seed plus wedge search-ordering work; see the
   [v0.3.16 snapshot](docs/perf-2026-06-27-bench-snapshot.md)). rustdl has no DNF on
-  the curated corpus; a residual of ~6 idiosyncratic ORE-pilot ontologies stays hard,
-  and the one durable weakness is a multi-GB memory tail on a few pathological inputs.
+  the curated corpus; on the full ORE-2015 corpus a residual tail (289 of 1920
+  ontologies at a 120 s single-thread budget) — combinatorial disjunctive SROIQ or
+  deep-saturation scale — stays beyond a practical per-pair budget.
+- **Giant-ontology memory tail — largely closed in v0.3.30.** The dominant
+  contributor was the classifier's dense n×n subsumption-result matrix (allocated
+  up front, n²/8 bytes regardless of content): on the largest ORE ontologies
+  (hundreds of thousands to ~1M classes) it reached tens to >100 GB and, with it,
+  an O(n²) hierarchy print that didn't finish. v0.3.30 makes that matrix adaptive
+  (dense ≤ 60k classes — byte-identical; sparse per-class rows above), so
+  `ore_ont_868` (981,151 classes) went from **> 20 min / 116 GB (unfinished)** to
+  **69 s / 3.3 GB (full hierarchy)** — verdict-preserving. Corpus-wide this closes
+  the OOM tail: **0 of 1920 ORE-2015 ontologies now exceed 48 GB** (peak 35.7 GB;
+  previously ≥8 OOM'd past 40 GB), and **98.5 % classify under 4 GB**. A smaller
+  residual footprint remains on the densest inputs (the EL closure's / data
+  working set), the main remaining scaling weakness.
 - Detects the **family** inconsistency (a consequence-based ABox-saturation
   pre-check) that the per-pair tableau alone misses.
 - **Explains *and* debugs — a full suite.** Built-in CLI commands turn rustdl into
@@ -171,13 +187,3 @@ Dual-licensed [Apache-2.0](LICENSE-APACHE) **OR** [MIT](LICENSE-MIT). `horned-ow
 is LGPL-3.0; binaries that statically link it inherit LGPL-3.0 obligations for that
 portion (see [`NOTICE`](NOTICE)). Contributions are accepted under the same dual
 license; no separate CLA.
-
-## More
-
-- Authoritative performance matrix: [docs/benchmarks/2026-07-11-curated/MATRIX.md](docs/benchmarks/2026-07-11-curated/MATRIX.md)
-- Latest benchmark snapshot: [`docs/perf-2026-06-27-bench-snapshot.md`](docs/perf-2026-06-27-bench-snapshot.md)
-- Reasoner comparison: [`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md)
-- Perf vs Konclude/HermiT: [`docs/perf-2026-06-08-konclude-vs-rustdl.md`](docs/perf-2026-06-08-konclude-vs-rustdl.md)
-- Completeness envelope: [`docs/fragment-completeness.md`](docs/fragment-completeness.md)
-- Strategy: [`docs/owl-dl-reasoner-rust-strategy-v2.md`](docs/owl-dl-reasoner-rust-strategy-v2.md)
-- Engineering notes & soundness contract: [`CLAUDE.md`](CLAUDE.md)

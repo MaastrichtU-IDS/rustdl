@@ -20,7 +20,7 @@ use crate::data_axioms::{
     RangeBucket, StrSet, exact_string_literal, parse_data_intersection_dkey, parse_date,
     parse_datetime, parse_decimal,
 };
-use crate::ir::{ClassId, ConceptId, IndividualId, Role};
+use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
 
 /// IRI namespace for synthetic *data-key* (`DKey`) classes. These are
@@ -2389,6 +2389,12 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_string_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
+    // Bounded DKey-disjointness seeding (2026-07-20): compute the merge-aware
+    // role-component map NOW — before `seed_bucket` pushes the told
+    // `DKey ⊑ DKey` edges, whose bare-atomic DKey operands would otherwise be
+    // conservatively classified as "unanchored" (= pair with everything) by
+    // the axiom scan, re-inflating the pair count.
+    let bounded_components = bounded_dkey_disjoint_enabled().then(|| dkey_components(out));
     // `DKey(r1) ⊑ DKey(r2)` iff `r1 ⊆ r2` (distinct keys ⟹ strict subset,
     // since equal ranges share one ClassId). Integer/float ranges are
     // `Copy`; the ordered ranges compare by reference.
@@ -2409,41 +2415,383 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // arise from overlapping ranges. Same datatype bucketing: int / float /
     // double / decimal / date / dateTime / string never cross-seed.
     //
-    // NOTE (2026-07-20): this is O(k²) in the number of distinct data values k,
-    // which is LARGE when DKeys come from ABox `DataPropertyAssertion`s
-    // (ore_ont_10425: 5261 values → ~14M axioms → front-end conversion DNF).
-    // A `∀p.DKey`-only gate was tried and reverted — it dropped the functional/
-    // `≤1` merge clash (data_properties.rs POC tests) because that clash also
-    // consumes this disjointness and needs no `∀`. The sound bound is
-    // co-occurrence (only values reachable together on a merge-inducing role),
-    // which needs per-subject value tracking; left as a scoped follow-up. The
-    // O(1) `add_disjoint_pair` (told.rs) at least drops the build from O(k³) to
-    // O(k²).
-    seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b));
-    seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b));
-    seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b));
-    seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint);
-    seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint);
-    seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint);
-    seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint);
+    // BOUNDED (2026-07-20, `RUSTDL_BOUNDED_DKEY_DISJOINT`, default ON): the
+    // unconditional all-pairs seeding is O(k²) in the number of distinct data
+    // values k, which is LARGE when DKeys come from ABox
+    // `DataPropertyAssertion`s (ore_ont_10425: 5261 values → ~14M axioms →
+    // front-end conversion DNF). A disjointness axiom is only ever CONSUMED
+    // when both DKeys land in ONE node label, which requires their data roles
+    // to be connected through a merge-inducing super-role (functional /
+    // inverse-functional / in a `≤n` / carrying a `∀role.DKey` or a
+    // DKey-range) — see `dkey_components`. Seeding only within those
+    // merge-aware role components drops zero consumable clash (NOT
+    // co-occurrence guessing; cross-component DKeys provably never share a
+    // label) and cuts the volume to O(Σ_component values²). Two prior
+    // dead-ends baked in here: the pairs are GROUPED by component first (a
+    // per-pair filter over the O(k²) walk still stalls), and the union is
+    // gated on merge-inducing supers ONLY (unioning on every `SubProperty`
+    // collapses everything under an `owl:topDataProperty`-style root back to
+    // one O(k²) component). `=0` restores the unconditional all-pairs path.
+    // Spec: docs/superpowers/specs/2026-07-20-dkey-disjointness-bounded-seeding-spec.md
+    let comp = bounded_components.as_ref();
+    seed_disjoint_bucket(out, &int_dkeys, |a, b| a.disjoint(*b), comp);
+    seed_disjoint_bucket(out, &float_dkeys, |a, b| a.disjoint(*b), comp);
+    seed_disjoint_bucket(out, &double_dkeys, |a, b| a.disjoint(*b), comp);
+    seed_disjoint_bucket(out, &dec_dkeys, OrdRange::disjoint, comp);
+    seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint, comp);
+    seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
+    seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint, comp);
 }
 
-/// Emit `DisjointClasses([DKey(r_i), DKey(r_j)])` for every UNORDERED pair
-/// of distinct keys in one bucket where `disjoint(r_i, r_j)` holds. Uses the
+/// Bounded DKey-disjointness seeding (2026-07-20). **Default ON** — set
+/// `RUSTDL_BOUNDED_DKEY_DISJOINT=0` to restore the unconditional all-pairs
+/// seeding (the pre-fix O(k²) behaviour). Read per call so tests can toggle.
+fn bounded_dkey_disjoint_enabled() -> bool {
+    std::env::var("RUSTDL_BOUNDED_DKEY_DISJOINT").map_or(true, |v| v != "0")
+}
+
+/// Merge-aware role-component map for bounded DKey-disjointness seeding.
+///
+/// `components[dkey_class]` = the set of role-component roots the `DKey` is
+/// reachable under (a `DKey` may appear under several roles). `unanchored` =
+/// `DKeys` that occur in a class position OUTSIDE any role restriction /
+/// `ObjectPropertyRange` (cannot arise from the data lowering — every lowered
+/// `DKey` is a restriction filler or a range — but handled conservatively:
+/// an unanchored `DKey` pairs with every key in its bucket).
+struct DkeyComponents {
+    components: std::collections::HashMap<ClassId, Vec<usize>>,
+    unanchored: std::collections::HashSet<ClassId>,
+}
+
+/// Does `cid`'s expression mention a `DKey` atomic WITHOUT crossing a role
+/// restriction? (Nested `Some`/`All`/`Min`/`Max` fillers are anchored by
+/// their own pool entry, which `dkey_components` visits separately.)
+fn filler_mentions_dkey(
+    pool: &ConceptPool,
+    cid: ConceptId,
+    dkeys: &std::collections::HashSet<ClassId>,
+) -> bool {
+    match pool.get(cid) {
+        ConceptExpr::Atomic(c) => dkeys.contains(c),
+        ConceptExpr::Not(inner) => filler_mentions_dkey(pool, *inner, dkeys),
+        ConceptExpr::And(items) | ConceptExpr::Or(items) => {
+            items.iter().any(|&i| filler_mentions_dkey(pool, i, dkeys))
+        }
+        _ => false,
+    }
+}
+
+/// Invoke `f` on every `DKey` atomic reachable from `cid` through
+/// `Not`/`And`/`Or` only (stopping at nested role restrictions — those are
+/// anchored by their own pool entry).
+fn collect_direct_dkeys(
+    pool: &ConceptPool,
+    cid: ConceptId,
+    dkeys: &std::collections::HashSet<ClassId>,
+    f: &mut impl FnMut(ClassId),
+) {
+    match pool.get(cid) {
+        ConceptExpr::Atomic(c) if dkeys.contains(c) => {
+            f(*c);
+        }
+        ConceptExpr::Not(inner) => collect_direct_dkeys(pool, *inner, dkeys, f),
+        ConceptExpr::And(items) | ConceptExpr::Or(items) => {
+            for &i in items {
+                collect_direct_dkeys(pool, i, dkeys, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build the merge-aware role components + `DKey` anchoring map.
+///
+/// Soundness/completeness fact (the spec's §2.1): a
+/// `DisjointClasses(DKey_a, DKey_b)` axiom is only ever CONSUMED when both
+/// `DKeys` land in one node's label, which requires their carrier roles to be
+/// (transitive) sub-roles of a common **merge-inducing** role `f`:
+/// functional / inverse-functional / occurring in a `≤n` restriction /
+/// carrying a `∀f.DKey` filler or a `DKey` `ObjectPropertyRange` (a range acts
+/// as a global `∀`). Two `DKeys` under roles NOT so connected can never share
+/// a label, so their disjointness is dead weight. The component bound is
+/// deliberately COARSE in the safe direction (over-union / over-anchor only
+/// reduces the perf win; it can never drop a consumable pair):
+/// - `M*` closes merge-inducing-ness DOWNWARD through the role hierarchy
+///   (a sub-role of a functional role relays the merge to its fillers);
+/// - `EquivalentObjectProperties` / `InverseObjectProperties` are treated as
+///   mutual sub-edges;
+/// - `DKeys` in non-restriction positions (can't arise from the lowering) are
+///   returned `unanchored` and pair with everything.
+///
+/// Load-bearing (dead-end #3): the union is gated on `M*` supers ONLY —
+/// unioning on every `SubObjectPropertyOf` collapses all data properties
+/// under an `owl:topDataProperty`-style root into one O(k²) component.
+fn dkey_components(out: &InternalOntology) -> DkeyComponents {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::locality::UnionFind;
+
+    let dkeys: HashSet<ClassId> = out
+        .vocabulary
+        .classes()
+        .filter(|(_, iri)| is_dkey_iri(iri))
+        .map(|(cid, _)| cid)
+        .collect();
+    let num_roles = out.vocabulary.num_roles();
+    if dkeys.is_empty() || num_roles == 0 {
+        return DkeyComponents {
+            components: HashMap::new(),
+            unanchored: HashSet::new(),
+        };
+    }
+
+    // (a) merge-inducing roles M. `role_id()` ignores inverse polarity —
+    // a `≤n r⁻` merge is anchored on the same named role (over-approx, safe).
+    let mut merge_inducing = vec![false; num_roles];
+    for axiom in &out.axioms {
+        match axiom {
+            Axiom::FunctionalRole(r) | Axiom::InverseFunctionalRole(r) => {
+                merge_inducing[r.role_id().index() as usize] = true;
+            }
+            // A DKey range puts the range key into EVERY successor label of
+            // the role — the same consumption shape as `∀role.DKey`.
+            Axiom::ObjectPropertyRange { role, range }
+                if filler_mentions_dkey(&out.concepts, *range, &dkeys) =>
+            {
+                merge_inducing[role.role_id().index() as usize] = true;
+            }
+            _ => {}
+        }
+    }
+    for expr in out.concepts.iter_exprs() {
+        match expr {
+            ConceptExpr::Max(_, r, _) => {
+                merge_inducing[r.role_id().index() as usize] = true;
+            }
+            ConceptExpr::All(r, f) if filler_mentions_dkey(&out.concepts, *f, &dkeys) => {
+                merge_inducing[r.role_id().index() as usize] = true;
+            }
+            _ => {}
+        }
+    }
+
+    // (b) role-hierarchy edges (sub ⊑ sup), incl. chain parts and
+    // equivalence / declared-inverse pairs (both directions).
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for axiom in &out.axioms {
+        match axiom {
+            Axiom::SubObjectPropertyOf { sub, sup } => {
+                let sup_id = sup.role_id().index() as usize;
+                match sub {
+                    SubRolePath::Role(r) => edges.push((r.role_id().index() as usize, sup_id)),
+                    SubRolePath::Chain(parts) => {
+                        for p in parts {
+                            edges.push((p.role_id().index() as usize, sup_id));
+                        }
+                    }
+                }
+            }
+            Axiom::EquivalentObjectProperties(roles) => {
+                for w in roles.windows(2) {
+                    let a = w[0].role_id().index() as usize;
+                    let b = w[1].role_id().index() as usize;
+                    edges.push((a, b));
+                    edges.push((b, a));
+                }
+            }
+            Axiom::InverseObjectProperties(p, q) => {
+                let a = p.role_id().index() as usize;
+                let b = q.role_id().index() as usize;
+                edges.push((a, b));
+                edges.push((b, a));
+            }
+            _ => {}
+        }
+    }
+
+    // (c) M* = downward closure of M along sub-edges: a role with a
+    // (transitive) merge-inducing super relays the merge/∀ to its fillers.
+    let mut subs_of: Vec<Vec<usize>> = vec![Vec::new(); num_roles];
+    for &(sub, sup) in &edges {
+        subs_of[sup].push(sub);
+    }
+    let mut m_star = merge_inducing;
+    let mut queue: Vec<usize> = (0..num_roles).filter(|&r| m_star[r]).collect();
+    while let Some(sup) = queue.pop() {
+        for &sub in &subs_of[sup] {
+            if !m_star[sub] {
+                m_star[sub] = true;
+                queue.push(sub);
+            }
+        }
+    }
+
+    // (d) union roles connected via an M*-super ONLY (dead-end #3).
+    let mut uf = UnionFind::new(num_roles);
+    for &(sub, sup) in &edges {
+        if m_star[sup] {
+            uf.union(sub, sup);
+        }
+    }
+
+    // (e) DKey → component set, from every role-restriction pool expr plus
+    // DKey-bearing `ObjectPropertyRange` axioms (range key rides the role).
+    let mut components: HashMap<ClassId, Vec<usize>> = HashMap::new();
+    let anchor = |uf: &mut UnionFind,
+                  components: &mut HashMap<ClassId, Vec<usize>>,
+                  role: Role,
+                  filler: ConceptId| {
+        let comp = uf.find(role.role_id().index() as usize);
+        collect_direct_dkeys(&out.concepts, filler, &dkeys, &mut |c| {
+            let v = components.entry(c).or_default();
+            if !v.contains(&comp) {
+                v.push(comp);
+            }
+        });
+    };
+    for expr in out.concepts.iter_exprs() {
+        match expr {
+            ConceptExpr::Some(r, f)
+            | ConceptExpr::All(r, f)
+            | ConceptExpr::Min(_, r, f)
+            | ConceptExpr::Max(_, r, f) => anchor(&mut uf, &mut components, *r, *f),
+            _ => {}
+        }
+    }
+    for axiom in &out.axioms {
+        if let Axiom::ObjectPropertyRange { role, range } = axiom {
+            anchor(&mut uf, &mut components, *role, *range);
+        }
+    }
+
+    // (f) unanchored scan: DKeys reachable (through Not/And/Or only) from a
+    // top-level class position of any axiom — a label placement NOT mediated
+    // by a role. Cannot arise from the data lowering; conservative safety net.
+    let mut unanchored: HashSet<ClassId> = HashSet::new();
+    let mut tops: Vec<ConceptId> = Vec::new();
+    for axiom in &out.axioms {
+        match axiom {
+            Axiom::SubClassOf { sub, sup } => {
+                tops.push(*sub);
+                tops.push(*sup);
+            }
+            Axiom::EquivalentClasses(cs) | Axiom::DisjointClasses(cs) => {
+                tops.extend(cs.iter().copied());
+            }
+            Axiom::DisjointUnion { class, members } => {
+                if dkeys.contains(class) {
+                    unanchored.insert(*class);
+                }
+                tops.extend(members.iter().copied());
+            }
+            Axiom::ObjectPropertyDomain { domain, .. } => tops.push(*domain),
+            Axiom::ClassAssertion { class, .. } => tops.push(*class),
+            _ => {}
+        }
+    }
+    for cid in tops {
+        collect_direct_dkeys(&out.concepts, cid, &dkeys, &mut |c| {
+            unanchored.insert(c);
+        });
+    }
+
+    DkeyComponents {
+        components,
+        unanchored,
+    }
+}
+
+/// Emit `DisjointClasses([DKey(r_i), DKey(r_j)])` for UNORDERED pairs of
+/// distinct keys in one bucket where `disjoint(r_i, r_j)` holds. Uses the
 /// native `DisjointClasses` axiom (the shape the D10 ∀-clash probe proved
-/// the tableau handles), not a synthetic `And ⊑ ⊥`. O(k²), k small.
+/// the tableau handles), not a synthetic `And ⊑ ⊥`.
+///
+/// With `components == None` (`RUSTDL_BOUNDED_DKEY_DISJOINT=0`): every
+/// provably-disjoint pair, O(k²). With `Some`: only pairs within one
+/// merge-aware role component (see [`dkey_components`]) — the pairs are
+/// GROUPED by component first (dead-end #2: a per-pair filter over the
+/// O(k²) walk still stalls), so cost is `O(Σ_component` values²). The
+/// per-pair `disjoint` range check is kept in both paths (FP-safety: the
+/// bounded set is a subset of the sound all-pairs set by construction).
 fn seed_disjoint_bucket<R>(
     out: &mut InternalOntology,
     keys: &[(ClassId, R)],
     disjoint: impl Fn(&R, &R) -> bool,
+    components: Option<&DkeyComponents>,
 ) {
-    for (i, (a_cid, a_r)) in keys.iter().enumerate() {
-        for (b_cid, b_r) in keys.iter().skip(i + 1) {
-            if disjoint(a_r, b_r) {
-                let a = out.concepts.atomic(*a_cid);
-                let b = out.concepts.atomic(*b_cid);
-                out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+    let Some(comp) = components else {
+        for (i, (a_cid, a_r)) in keys.iter().enumerate() {
+            for (b_cid, b_r) in keys.iter().skip(i + 1) {
+                if disjoint(a_r, b_r) {
+                    let a = out.concepts.atomic(*a_cid);
+                    let b = out.concepts.atomic(*b_cid);
+                    out.axioms.push(Axiom::DisjointClasses(vec![a, b]));
+                }
             }
+        }
+        return;
+    };
+    // Group bucket entries by role component. BTreeMap ⟹ deterministic
+    // iteration ⟹ deterministic axiom order across runs (byte-identical
+    // conversion output matters to the identity gates).
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    // Unanchored keys pair with every anchored/unanchored key in the bucket.
+    let mut global: Vec<usize> = Vec::new();
+    let mut anchored: Vec<usize> = Vec::new();
+    for (idx, (cid, _)) in keys.iter().enumerate() {
+        if comp.unanchored.contains(cid) {
+            global.push(idx);
+            continue;
+        }
+        if let Some(cs) = comp.components.get(cid) {
+            anchored.push(idx);
+            for &c in cs {
+                groups.entry(c).or_default().push(idx);
+            }
+        }
+        // Neither anchored nor unanchored: the DKey appears under no role
+        // restriction at all — it can never reach a node label, so its
+        // disjointness is dead weight; skip it entirely.
+    }
+    // A key can sit in several groups (several components) and `global`
+    // overlaps every group — dedup emitted pairs.
+    let mut emitted: std::collections::HashSet<(ClassId, ClassId)> =
+        std::collections::HashSet::new();
+    let InternalOntology {
+        concepts, axioms, ..
+    } = out;
+    let mut try_emit = |a_idx: usize, b_idx: usize| {
+        let (a_cid, a_r) = &keys[a_idx];
+        let (b_cid, b_r) = &keys[b_idx];
+        if !disjoint(a_r, b_r) {
+            return;
+        }
+        let pair = if a_cid.index() <= b_cid.index() {
+            (*a_cid, *b_cid)
+        } else {
+            (*b_cid, *a_cid)
+        };
+        if !emitted.insert(pair) {
+            return;
+        }
+        let a = concepts.atomic(*a_cid);
+        let b = concepts.atomic(*b_cid);
+        axioms.push(Axiom::DisjointClasses(vec![a, b]));
+    };
+    for group in groups.values() {
+        for (i, &a_idx) in group.iter().enumerate() {
+            for &b_idx in &group[i + 1..] {
+                try_emit(a_idx, b_idx);
+            }
+        }
+    }
+    for (i, &a_idx) in global.iter().enumerate() {
+        for &b_idx in &global[i + 1..] {
+            try_emit(a_idx, b_idx);
+        }
+        for &b_idx in &anchored {
+            try_emit(a_idx, b_idx);
         }
     }
 }
@@ -3803,5 +4151,231 @@ mod tests {
             matches!(ax, Some(Axiom::ObjectPropertyRange { .. })),
             "got {ax:?}"
         );
+    }
+
+    // ── Bounded DKey-disjointness seeding (RUSTDL_BOUNDED_DKEY_DISJOINT) ──
+    // Merge-aware role-component bound (2026-07-20). All tests hold
+    // DP_ENV_MUTEX: they depend on RUSTDL_DATA_PROPERTIES and (the flag-off
+    // test) toggle RUSTDL_BOUNDED_DKEY_DISJOINT.
+
+    struct BoundedGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl BoundedGuard {
+        #[allow(unsafe_code)]
+        fn off() -> Self {
+            let prior = std::env::var_os("RUSTDL_BOUNDED_DKEY_DISJOINT");
+            // SAFETY: serialized via DP_ENV_MUTEX; restored on Drop.
+            unsafe { std::env::set_var("RUSTDL_BOUNDED_DKEY_DISJOINT", "0") };
+            Self { prior }
+        }
+    }
+    impl Drop for BoundedGuard {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: see BoundedGuard::off.
+            unsafe {
+                match &self.prior {
+                    Some(v) => std::env::set_var("RUSTDL_BOUNDED_DKEY_DISJOINT", v),
+                    None => std::env::remove_var("RUSTDL_BOUNDED_DKEY_DISJOINT"),
+                }
+            }
+        }
+    }
+
+    /// Count seeded `DisjointClasses` axioms whose operands are all `DKeys`.
+    fn dkey_disjoint_count(o: &InternalOntology) -> usize {
+        o.axioms
+            .iter()
+            .filter(|ax| {
+                matches!(ax, Axiom::DisjointClasses(cs) if cs.iter().all(|&c| {
+                    matches!(o.concepts.get(c), ConceptExpr::Atomic(cid)
+                        if is_dkey_iri(o.vocabulary.class_iri(*cid)))
+                }))
+            })
+            .count()
+    }
+
+    fn ins(o: &mut SetOntology<RcStr>, c: Component<RcStr>) {
+        o.insert(ho::AnnotatedComponent::from(c));
+    }
+
+    fn sub_dp(sub: &str, sup: &str) -> Component<RcStr> {
+        Component::SubDataPropertyOf(ho::SubDataPropertyOf {
+            sub: b().data_property(sub),
+            sup: b().data_property(sup),
+        })
+    }
+
+    fn functional_dp(dp: &str) -> Component<RcStr> {
+        Component::FunctionalDataProperty(ho::FunctionalDataProperty(b().data_property(dp)))
+    }
+
+    #[test]
+    fn bounded_dkey_disjoint_skips_unrelated_roles() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let mut o = SetOntology::<RcStr>::new();
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "2", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "3", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "4", XSD_INT),
+        );
+        let out = convert_ontology(&o).unwrap();
+        // dp1/dp2 are unconnected: only the same-role pairs (1,2) and (3,4)
+        // are seeded; the four cross-role pairs are provably unconsumable.
+        assert_eq!(dkey_disjoint_count(&out), 2);
+    }
+
+    #[test]
+    fn bounded_dkey_disjoint_unions_via_functional_super() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let mut o = SetOntology::<RcStr>::new();
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "2", XSD_INT),
+        );
+        ins(&mut o, sub_dp("http://t/dp1", "http://t/f"));
+        ins(&mut o, sub_dp("http://t/dp2", "http://t/f"));
+        ins(&mut o, functional_dp("http://t/f"));
+        let out = convert_ontology(&o).unwrap();
+        // dp1 and dp2 share the merge-inducing (functional) super f: their
+        // fillers CAN co-occur after the ≤1 merge — the pair must be seeded.
+        assert_eq!(dkey_disjoint_count(&out), 1);
+    }
+
+    #[test]
+    fn bounded_dkey_disjoint_ignores_non_merge_super() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let mut o = SetOntology::<RcStr>::new();
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "2", XSD_INT),
+        );
+        ins(&mut o, sub_dp("http://t/dp1", "http://t/f"));
+        ins(&mut o, sub_dp("http://t/dp2", "http://t/f"));
+        let out = convert_ontology(&o).unwrap();
+        // Dead-end #3 guard: a shared NON-merge-inducing super (the
+        // owl:topDataProperty pattern) must NOT union dp1 with dp2 —
+        // that collapse is what re-creates the O(k²) component.
+        assert_eq!(dkey_disjoint_count(&out), 0);
+    }
+
+    #[test]
+    fn bounded_dkey_disjoint_transitive_functional_super() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let mut o = SetOntology::<RcStr>::new();
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "2", XSD_INT),
+        );
+        // dp1 ⊑ mid ⊑ f (functional), dp2 ⊑ f: merge-inducing-ness must
+        // close DOWNWARD through the hierarchy (M*), not just direct supers.
+        ins(&mut o, sub_dp("http://t/dp1", "http://t/mid"));
+        ins(&mut o, sub_dp("http://t/mid", "http://t/f"));
+        ins(&mut o, sub_dp("http://t/dp2", "http://t/f"));
+        ins(&mut o, functional_dp("http://t/f"));
+        let out = convert_ontology(&o).unwrap();
+        assert_eq!(dkey_disjoint_count(&out), 1);
+    }
+
+    #[test]
+    fn bounded_dkey_disjoint_range_anchors_sub_role() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let mut o = SetOntology::<RcStr>::new();
+        // value 1 on dp1, dp1 ⊑ f, and a DKey range [10,∞) on f: the range
+        // key lands in every f-successor label (incl. dp1-successors), so
+        // the (point, range) pair IS consumable and must be seeded even
+        // though nothing is functional.
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
+        );
+        ins(&mut o, sub_dp("http://t/dp1", "http://t/f"));
+        ins(
+            &mut o,
+            Component::DataPropertyRange(ho::DataPropertyRange {
+                dp: b().data_property("http://t/f"),
+                dr: DataRange::DatatypeRestriction(
+                    b().datatype("http://www.w3.org/2001/XMLSchema#integer"),
+                    vec![ho::FacetRestriction {
+                        f: horned_owl::vocab::Facet::MinInclusive,
+                        l: ho::Literal::Datatype {
+                            literal: "10".to_string(),
+                            datatype_iri: b().iri(XSD_INT),
+                        },
+                    }],
+                ),
+            }),
+        );
+        let out = convert_ontology(&o).unwrap();
+        assert_eq!(dkey_disjoint_count(&out), 1);
+    }
+
+    #[test]
+    fn unbounded_flag_restores_all_pairs() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let _b = BoundedGuard::off();
+        let mut o = SetOntology::<RcStr>::new();
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp1", "http://t/a", "2", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "3", XSD_INT),
+        );
+        ins(
+            &mut o,
+            int_dp_assertion("http://t/dp2", "http://t/a", "4", XSD_INT),
+        );
+        let out = convert_ontology(&o).unwrap();
+        // `RUSTDL_BOUNDED_DKEY_DISJOINT=0`: unconditional all-pairs — all
+        // C(4,2)=6 pairwise-disjoint point pairs.
+        assert_eq!(dkey_disjoint_count(&out), 6);
     }
 }

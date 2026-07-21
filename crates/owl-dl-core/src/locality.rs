@@ -181,21 +181,23 @@ fn collect_classes_in_concept_inner(
 }
 
 /// Standard union-find with path compression. Small enough to
-/// inline rather than pulling in a dep.
-struct UnionFind {
+/// inline rather than pulling in a dep. `pub(crate)` so the
+/// bounded DKey-disjointness seeding in `convert.rs` (merge-aware
+/// role components, 2026-07-20) can reuse it.
+pub(crate) struct UnionFind {
     parent: Vec<usize>,
     rank: Vec<u8>,
 }
 
 impl UnionFind {
-    fn new(n: usize) -> Self {
+    pub(crate) fn new(n: usize) -> Self {
         Self {
             parent: (0..n).collect(),
             rank: vec![0; n],
         }
     }
 
-    fn find(&mut self, mut x: usize) -> usize {
+    pub(crate) fn find(&mut self, mut x: usize) -> usize {
         while self.parent[x] != x {
             let p = self.parent[x];
             self.parent[x] = self.parent[p];
@@ -204,7 +206,7 @@ impl UnionFind {
         x
     }
 
-    fn union(&mut self, a: usize, b: usize) {
+    pub(crate) fn union(&mut self, a: usize, b: usize) {
         let ra = self.find(a);
         let rb = self.find(b);
         if ra == rb {

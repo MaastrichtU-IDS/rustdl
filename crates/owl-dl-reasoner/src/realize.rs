@@ -20,12 +20,17 @@ use horned_owl::ontology::set::SetOntology;
 use rayon::prelude::*;
 
 use owl_dl_core::convert::convert_ontology;
-use owl_dl_core::{Axiom, ClassId, ConceptExpr, IndividualId, InternalOntology};
-use owl_dl_saturation::{Subsumers, saturate};
+use owl_dl_core::{
+    Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, InternalOntology,
+};
+use owl_dl_saturation::{Subsumers, saturate, saturate_for_realize};
 
 use crate::PreparedOntology;
 use crate::ReasonError;
-use crate::classify::{classify_saturation_only_internal, classify_top_down_internal};
+use crate::classify::{
+    classify_saturation_only_internal, classify_top_down_internal, is_pure_el,
+    saturator_complete_fragment, tbox_only_saturator_eligible,
+};
 
 /// `(entailed_types, hasse_leaves)` for one individual — returned
 /// by the parallel realisation worker so the outer loop can stitch
@@ -72,9 +77,30 @@ pub fn is_instance_of_internal(
         .vocabulary
         .individual_id(individual_iri)
         .ok_or_else(|| ReasonError::UnknownClass(individual_iri.to_owned()))?;
+    // Fast path: on the saturator-complete fragment answer completely via
+    // saturation — `a : C` iff `C` subsumes `a`'s nominal class. Avoids the
+    // `{a} ⊓ ¬C` tableau probe that explodes on issue-#35-style inputs.
+    if realize_saturation_eligible(internal) {
+        let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
+        return Ok(nominal_by_ind
+            .get(&individual_id)
+            .is_some_and(|&nom| subsumers.contains(nom, class_id)));
+    }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
-    instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)
+    let pair_deadline = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    instance_check_with_closure(
+        internal,
+        &closure,
+        &prepared,
+        class_id,
+        individual_id,
+        pair_deadline,
+    )
 }
 
 /// Saturation-only counterpart of [`is_instance_of`]. Reports
@@ -145,6 +171,7 @@ fn instance_check_with_closure(
     prepared: &PreparedOntology,
     class_id: ClassId,
     individual_id: IndividualId,
+    pair_deadline: Option<std::time::Instant>,
 ) -> Result<bool, ReasonError> {
     for told in told_classes_of(internal, individual_id) {
         if closure.contains(told, class_id) {
@@ -152,13 +179,24 @@ fn instance_check_with_closure(
         }
     }
     // KB ⊨ C(a) iff `{a} ⊓ ¬C` is unsatisfiable.
-    let sat = prepared.decide(move |pool| {
+    let build = move |pool: &mut ConceptPool| {
         let cls = pool.atomic(class_id);
         let not_cls = pool.not(cls);
         let nom = pool.nominal(individual_id);
         pool.and(vec![nom, not_cls])
-    })?;
-    Ok(!sat)
+    };
+    match pair_deadline {
+        // Bounded probe: a deadline hit yields no verdict, which we treat
+        // as "not an instance" — a SOUND under-approximation (a MISS at
+        // worst, never a false membership). This restores the caller's
+        // ability to bound realize (the per-call timeout removed in 0.3.18)
+        // for genuinely out-of-fragment inputs, so realize can never hang
+        // unbounded.
+        Some(deadline) => Ok(!prepared
+            .decide_with_deadline(deadline, build)?
+            .unwrap_or(true)),
+        None => Ok(!prepared.decide(build)?),
+    }
 }
 
 /// Saturation-only counterpart to [`instance_check_with_closure`].
@@ -278,13 +316,45 @@ pub fn instances_of_internal(
         .vocabulary
         .class_id(class_iri)
         .ok_or_else(|| ReasonError::UnknownClass(class_iri.to_owned()))?;
+    // Fast path: on the saturator-complete fragment, `a ∈ C` iff `C` subsumes
+    // `a`'s nominal class (complete + terminating; no tableau).
+    if realize_saturation_eligible(internal) {
+        let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
+        let mut out = Vec::new();
+        for idx in 0..internal.vocabulary.num_individuals() {
+            let ind = IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
+            if nominal_by_ind
+                .get(&ind)
+                .is_some_and(|&nom| subsumers.contains(nom, class_id))
+            {
+                let iri = internal.vocabulary.individual_iri(ind);
+                if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+                    out.push(iri.to_owned());
+                }
+            }
+        }
+        return Ok(out);
+    }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
+    let pair_deadline_ms: Option<u64> = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&ms| ms > 0);
     let mut out = Vec::new();
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-        if instance_check_with_closure(internal, &closure, &prepared, class_id, individual_id)? {
+        let pair_deadline = pair_deadline_ms
+            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        if instance_check_with_closure(
+            internal,
+            &closure,
+            &prepared,
+            class_id,
+            individual_id,
+            pair_deadline,
+        )? {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
                 out.push(iri.to_owned());
@@ -505,12 +575,163 @@ pub fn realize_saturation_only_internal(
     })
 }
 
+/// True iff `class` (a `ClassAssertion` body) is captured EXACTLY by
+/// [`saturate_for_realize`]'s atomic-operand seeding — i.e. it is atomic,
+/// `⊤`, or a conjunction thereof. A body carrying `∃`/`∀`/nominal/cardinality/
+/// `¬` would be under-captured (the seeding drops the non-atomic operands), so
+/// such inputs must fall back to the complete tableau path.
+fn class_body_realize_safe(class: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(class) {
+        ConceptExpr::Atomic(_) | ConceptExpr::Top => true,
+        ConceptExpr::And(ops) => ops.iter().all(|op| class_body_realize_safe(*op, pool)),
+        _ => false,
+    }
+}
+
+/// Is `internal` realized COMPLETELY (== the tableau) by the saturation fast
+/// path? Two conditions:
+///
+/// 1. The `TBox` is in the saturator-complete fragment — reusing `classify`'s
+///    proven gates (`is_pure_el` / `saturator_complete_fragment` for the no-`ABox`
+///    case, or the `ABox`-admitting Lever-1 `tbox_only_saturator_eligible`, which
+///    also excludes nominals).
+/// 2. Every `ABox` axiom is a shape [`saturate_for_realize`] captures exactly:
+///    atomic/⊓ `ClassAssertion` and non-inverse `ObjectPropertyAssertion`.
+///    `NegativeObjectPropertyAssertion` / `DifferentIndividuals` add no types
+///    (an inconsistency they cause is caught by the classify/abox pre-checks),
+///    so they are permitted. `SameIndividual` (needs type-merge across
+///    individuals) and inverse-role assertions are NOT captured ⟹ fall back.
+///
+/// Unlike `classify`, realize CANNOT admit arbitrary `ABox` shapes: the `ABox` is
+/// load-bearing for individual types, whereas it is irrelevant to class
+/// subsumption.
+fn realize_saturation_eligible(internal: &InternalOntology) -> bool {
+    // RUSTDL_REALIZE_SATURATION=0 forces the tableau path (A/B isolation).
+    if std::env::var_os("RUSTDL_REALIZE_SATURATION").is_some_and(|v| v == "0") {
+        return false;
+    }
+    let tbox_ok = is_pure_el(internal)
+        || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
+        || tbox_only_saturator_eligible(internal);
+    if !tbox_ok {
+        return false;
+    }
+    internal.axioms.iter().all(|ax| match ax {
+        Axiom::ClassAssertion { class, .. } => class_body_realize_safe(*class, &internal.concepts),
+        Axiom::ObjectPropertyAssertion { role, .. } => !role.is_inverse(),
+        Axiom::SameIndividual(_) => false,
+        // Everything else is either a type-irrelevant ABox form
+        // (NegativeObjectPropertyAssertion / DifferentIndividuals) or a TBox
+        // axiom already vetted by `tbox_ok`.
+        _ => true,
+    })
+}
+
+/// Saturation fast-path realization — complete == the tableau on the
+/// [`realize_saturation_eligible`] fragment, and TERMINATING (no tableau, no
+/// disjunctive search). Materializes each named individual as a nominal class
+/// via [`saturate_for_realize`] and reads its entailed named types off the
+/// subsumer closure. This is the fix for the issue-#35 realize hang: the
+/// exploding `{a} ⊓ ¬C` tableau probe is never invoked on the EL/Horn fragment.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub(crate) fn realize_via_saturation_internal(
+    internal: &InternalOntology,
+) -> Result<Realization, ReasonError> {
+    // Complete class hierarchy on this fragment (for Hasse-leaf pruning and the
+    // unsatisfiable-class filter).
+    let hierarchy = classify_saturation_only_internal(internal)?;
+    let unsat: HashSet<&str> = hierarchy.unsatisfiable_classes().into_iter().collect();
+    let num_user_classes = internal.vocabulary.num_classes();
+
+    let (subsumers, nominal_by_ind) = saturate_for_realize(internal);
+
+    let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
+    let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
+    let mut named_individual_iris: Vec<String> = Vec::new();
+
+    for idx in 0..internal.vocabulary.num_individuals() {
+        let ind = IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
+        let iri = internal.vocabulary.individual_iri(ind).to_owned();
+        if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
+            continue;
+        }
+        // Entailed named types = subsumers of the individual's nominal class,
+        // restricted to declared user classes (synthetic Tseitin / nominal ids
+        // are ≥ num_user_classes) and to satisfiable classes.
+        let types: Vec<String> = nominal_by_ind
+            .get(&ind)
+            .map(|&nom| {
+                subsumers
+                    .subsumers_of(nom)
+                    .into_iter()
+                    .filter(|c| (c.index() as usize) < num_user_classes)
+                    .map(|c| internal.vocabulary.class_iri(c).to_owned())
+                    .filter(|iri| !unsat.contains(iri.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Filter to Hasse leaves under the classification relation.
+        let leaves: Vec<String> = types
+            .iter()
+            .filter(|cls| {
+                !types.iter().any(|other| {
+                    other != *cls
+                        && hierarchy.is_subclass(other, cls)
+                        && !hierarchy.is_subclass(cls, other)
+                })
+            })
+            .cloned()
+            .collect();
+        named_individual_iris.push(iri.clone());
+        entailed_types.insert(iri.clone(), types);
+        most_specific_types.insert(iri, leaves);
+    }
+
+    Ok(Realization {
+        individuals: named_individual_iris,
+        entailed_types,
+        most_specific_types,
+    })
+}
+
 /// Internal entry point.
 ///
 /// # Errors
 ///
 /// See [`ReasonError`].
 pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, ReasonError> {
+    // Fast path: on the saturator-complete fragment (EL/Horn TBox + simple
+    // ABox) realize completely via saturation, never touching the tableau —
+    // whose `{a} ⊓ ¬C` disjunctive search can explode on defined-class +
+    // property-domain + property-assertion inputs (issue #35).
+    if realize_saturation_eligible(internal) {
+        return realize_via_saturation_internal(internal);
+    }
+    realize_tableau_internal(internal)
+}
+
+/// The sound+complete tableau realization path — one `{a} ⊓ ¬C` satisfiability
+/// probe per (individual, satisfiable-class) pair. Used off the saturation
+/// fast-path fragment (and directly in the fast-path-vs-tableau identity test).
+/// Optionally bounds each per-pair probe via `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+/// so a genuinely-hard SROIQ input degrades to a sound under-approximation
+/// instead of hanging (restores the caller-side bound removed in 0.3.18). Unset
+/// ⟹ no bound (verdict-preserving default).
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub(crate) fn realize_tableau_internal(
+    internal: &InternalOntology,
+) -> Result<Realization, ReasonError> {
+    let pair_deadline_ms: Option<u64> = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&ms| ms > 0);
+
     // Use the top-down classifier — the same default as the public
     // `classify` entry. The N² pair-sweep that this previously
     // called (`classify_internal`) DNFs on real ontologies and
@@ -565,12 +786,15 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
             let mut types: Vec<&str> = Vec::new();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
+                let pair_deadline = pair_deadline_ms
+                    .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
                 if instance_check_with_closure(
                     internal,
                     &closure,
                     &prepared,
                     class_id,
                     individual_id,
+                    pair_deadline,
                 )? {
                     types.push(class_iri);
                 }
@@ -820,5 +1044,199 @@ Ontology(<http://rustdl.test/test>\n\
             sat.most_specific_types(alice),
             vec!["http://rustdl.test/A".to_owned()],
         );
+    }
+
+    /// Tier B fast-path realize must be COMPLETE on the EL fragment,
+    /// including conjunctive-LHS instance entailments that the old
+    /// closure-only `realize_saturation_only` drops:
+    /// `x:D1, x:D2, D1 ⊓ D2 ⊑ E ⊨ x:E`.
+    #[test]
+    fn saturation_realize_derives_conjunctive_lhs() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:D1)) Declaration(Class(:D2)) Declaration(Class(:E))\n\
+    Declaration(NamedIndividual(:x))\n\
+    SubClassOf(ObjectIntersectionOf(:D1 :D2) :E)\n\
+    ClassAssertion(:D1 :x)\n\
+    ClassAssertion(:D2 :x)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let r = realize_via_saturation_internal(&internal).expect("realize");
+        let x = "http://rustdl.test/x";
+        let types: HashSet<&str> = r.entailed_types(x).iter().map(String::as_str).collect();
+        assert!(types.contains("http://rustdl.test/D1"));
+        assert!(types.contains("http://rustdl.test/D2"));
+        assert!(
+            types.contains("http://rustdl.test/E"),
+            "conjunctive-LHS entailment x:E missed; got {types:?}",
+        );
+    }
+
+    /// Tier B fast-path realize must handle existential-filler LHS
+    /// (the family shape): `Person(a), hasSex(a,b), Male(b),
+    /// Person ⊓ ∃hasSex.Male ⊑ Man ⊨ a:Man` — the pattern that makes
+    /// the tableau path diverge on issue #35.
+    #[test]
+    fn saturation_realize_derives_existential_lhs() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Person)) Declaration(Class(:Man)) Declaration(Class(:Male))\n\
+    Declaration(ObjectProperty(:hasSex))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    EquivalentClasses(:Man ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Male)))\n\
+    ClassAssertion(:Person :a)\n\
+    ClassAssertion(:Male :b)\n\
+    ObjectPropertyAssertion(:hasSex :a :b)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let r = realize_via_saturation_internal(&internal).expect("realize");
+        let a = "http://rustdl.test/a";
+        let types: HashSet<&str> = r.entailed_types(a).iter().map(String::as_str).collect();
+        assert!(types.contains("http://rustdl.test/Person"));
+        assert!(
+            types.contains("http://rustdl.test/Man"),
+            "existential-LHS entailment a:Man missed; got {types:?}",
+        );
+    }
+
+    /// Tier B fast-path realize derives domain (subject) and range
+    /// (object) types from a property assertion, matching the tableau.
+    #[test]
+    fn saturation_realize_domain_and_range() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Parent)) Declaration(Class(:Person))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(NamedIndividual(:alice)) Declaration(NamedIndividual(:bob))\n\
+    ObjectPropertyDomain(:hasParent :Parent)\n\
+    ObjectPropertyRange(:hasParent :Person)\n\
+    ObjectPropertyAssertion(:hasParent :alice :bob)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let r = realize_via_saturation_internal(&internal).expect("realize");
+        let alice: HashSet<&str> = r
+            .entailed_types("http://rustdl.test/alice")
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let bob: HashSet<&str> = r
+            .entailed_types("http://rustdl.test/bob")
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            alice.contains("http://rustdl.test/Parent"),
+            "domain type missed on subject; got {alice:?}",
+        );
+        assert!(
+            bob.contains("http://rustdl.test/Person"),
+            "range type missed on object; got {bob:?}",
+        );
+    }
+
+    /// Correctness gate: on a fixture where BOTH paths terminate (no
+    /// defined-class `∃` to explode the tableau), the saturation fast path
+    /// must produce byte-identical entailed types to the sound+complete
+    /// tableau path. Exercises conjunction, subsumption chain, domain and
+    /// range across three individuals. Calls the two internals directly to
+    /// avoid a global-env race with the parallel test runner.
+    #[test]
+    fn fast_path_matches_tableau_on_terminating_fixture() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:D1)) Declaration(Class(:D2)) Declaration(Class(:E)) Declaration(Class(:F))\n\
+    Declaration(Class(:Parent)) Declaration(Class(:Person))\n\
+    Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(NamedIndividual(:x)) Declaration(NamedIndividual(:alice))\n\
+    Declaration(NamedIndividual(:bob))\n\
+    SubClassOf(ObjectIntersectionOf(:D1 :D2) :E)\n\
+    SubClassOf(:E :F)\n\
+    ObjectPropertyDomain(:hasParent :Parent)\n\
+    ObjectPropertyRange(:hasParent :Person)\n\
+    ClassAssertion(:D1 :x)\n\
+    ClassAssertion(:D2 :x)\n\
+    ObjectPropertyAssertion(:hasParent :alice :bob)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        assert!(
+            realize_saturation_eligible(&internal),
+            "fixture must be fast-path eligible for this A/B to be meaningful",
+        );
+        let fast = realize_via_saturation_internal(&internal).expect("fast");
+        let slow = realize_tableau_internal(&internal).expect("tableau");
+        for ind in ["x", "alice", "bob"] {
+            let iri = format!("http://rustdl.test/{ind}");
+            let f: HashSet<&str> = fast
+                .entailed_types(&iri)
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let s: HashSet<&str> = slow
+                .entailed_types(&iri)
+                .iter()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                f, s,
+                "entailed types differ for {ind}: fast={f:?} tableau={s:?}"
+            );
+        }
+    }
+
+    /// Issue #35 regression (single-query path): `is_instance_of` must
+    /// TERMINATE on the reproducer and answer `no` for `a:Male` (a is not
+    /// entailed to be Male).
+    #[test]
+    fn is_instance_of_terminates_on_issue35_reproducer() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Person)) Declaration(Class(:Man)) Declaration(Class(:Woman))\n\
+    Declaration(Class(:Male)) Declaration(Class(:Female))\n\
+    Declaration(ObjectProperty(:hasSex)) Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(ObjectProperty(:isMotherOf))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    EquivalentClasses(:Man ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Male)))\n\
+    EquivalentClasses(:Woman ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Female)))\n\
+    ObjectPropertyDomain(:hasParent :Person)\n\
+    ObjectPropertyAssertion(:isMotherOf :a :b)\n\
+)\n"
+        ));
+        assert!(
+            !is_instance_of(&onto, "http://rustdl.test/Male", "http://rustdl.test/a")
+                .expect("verdict terminates")
+        );
+    }
+
+    /// Issue #35 regression: `realize` must TERMINATE on the 4-axiom
+    /// reproducer (previously a >300s hang via the exploding tableau).
+    /// Neither individual has any entailed named type.
+    #[test]
+    fn realize_terminates_on_issue35_reproducer() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:Person)) Declaration(Class(:Man)) Declaration(Class(:Woman))\n\
+    Declaration(Class(:Male)) Declaration(Class(:Female))\n\
+    Declaration(ObjectProperty(:hasSex)) Declaration(ObjectProperty(:hasParent))\n\
+    Declaration(ObjectProperty(:isMotherOf))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n\
+    EquivalentClasses(:Man ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Male)))\n\
+    EquivalentClasses(:Woman ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Female)))\n\
+    ObjectPropertyDomain(:hasParent :Person)\n\
+    ObjectPropertyAssertion(:isMotherOf :a :b)\n\
+)\n"
+        ));
+        let r = realize(&onto).expect("realization terminates");
+        assert!(r.entailed_types("http://rustdl.test/a").is_empty());
+        assert!(r.entailed_types("http://rustdl.test/b").is_empty());
     }
 }

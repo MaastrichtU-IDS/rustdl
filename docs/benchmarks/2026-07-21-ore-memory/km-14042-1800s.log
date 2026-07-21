@@ -1,0 +1,23 @@
+t=0s tree_rss=0MB peak=0MB
+t=120s tree_rss=3897MB peak=4838MB
+t=150s tree_rss=4035MB peak=4838MB
+t=270s tree_rss=4035MB peak=4838MB
+t=390s tree_rss=4035MB peak=4838MB
+t=420s tree_rss=4035MB peak=4838MB
+t=540s tree_rss=4035MB peak=4838MB
+t=570s tree_rss=4035MB peak=4838MB
+t=690s tree_rss=4035MB peak=4838MB
+t=810s tree_rss=4035MB peak=4838MB
+t=840s tree_rss=4035MB peak=4838MB
+t=960s tree_rss=4035MB peak=4838MB
+t=1110s tree_rss=4035MB peak=4838MB
+t=1230s tree_rss=4035MB peak=4838MB
+t=1260s tree_rss=4035MB peak=4838MB
+t=1380s tree_rss=4035MB peak=4838MB
+t=1530s tree_rss=4035MB peak=4838MB
+t=1650s tree_rss=4035MB peak=4838MB
+t=1680s tree_rss=4035MB peak=4838MB
+t=1800s tree_rss=4035MB peak=4838MB
+TIMEOUT1800
+=== KM 14042long rc=137 wall=1803s peak=4838MB outbytes=0
+stderr tail:

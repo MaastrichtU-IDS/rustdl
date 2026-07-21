@@ -47,6 +47,27 @@ Dedup: `868 ≡ 10689` and `14042 ≡ 11395` (identical rustdl output); the othe
 are distinct closures. All 8 giants are thus validated (6 by direct ELK diff, 2 by
 identity to a validated twin) — no extrapolation.
 
+## Cross-reasoner comparison at giant scale (rustdl vs ELK vs KM)
+
+Three reasoners on the recovered giants (single-thread; peak = process-tree RSS):
+
+| reasoner | ore_ont_14042 (517k) | notes |
+|---|---|---|
+| **rustdl** v0.3.30 | **29 s, 2.3 GB, closure=11,609** | ELK-exact (FP=0/MISSED=0); all 6 distinct giants ≤ 67 s / ≤ 3.3 GB |
+| **ELK** (ROBOT) | ~seconds (96 s on the 981k `868` at −Xmx120g) | the EL gold standard; scales |
+| **KM** (Kobayashi-MaRust) | **DNF — 0 output at 1800 s / 4.8 GB** | stalls; see below |
+
+**KM does not classify these EL giants.** On the *smallest* (14042, 517k
+classes) it produced **zero output in 30 minutes** — RSS ramps to ~4 GB during the
+front-end parse (~120 s) then plateaus flat with no verdict. A CPU probe caught the
+stall in KM's Python front-end (`py/route.py` at ~90 % CPU, single-threaded, no CB
+binary spawned yet); the same DNF occurs on both the ROBOT `.ofn` and the raw
+`.owl` (so it is not a conversion artifact). Since KM cannot finish the smallest
+giant, the larger five (733k–981k) were not run. This extends the earlier
+whole-ORE head-to-head (rustdl faster, more-solved, less-memory, and — unlike KM —
+FP-free) to the giant tier: on 517k–981k-class EL ontologies rustdl returns the
+ELK-exact answer in seconds while KM returns nothing.
+
 ## Conclusion
 
 On the newly-classifiable EL giants, rustdl's output is **exactly** ELK's

@@ -315,6 +315,33 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   **once** so the O(n²) pairwise classify loop reuses it across pairs; the loop
   runs in parallel via rayon. `is_subclass_of` reduces to satisfiability of
   `sub ⊓ ¬sup`.
+  **Realize saturation fast path (2026-07-21, `RUSTDL_REALIZE_SATURATION`,
+  default ON) — fixes the issue-#35 realization hang.** `realize` /
+  `is_instance_of` / `instances_of` previously ran the full `{a} ⊓ ¬C` tableau
+  probe for *every* (individual, class) pair; on an EL/Horn ontology with a
+  defined class (`≡` + `∃`) + property domain + a property assertion the
+  ⊔-search explodes (100k+ branches over a blocked ~134-node graph) and never
+  terminates — a >300 s hang, while `classify` on the same file is instant
+  (saturation fast path). Now realize mirrors `classify`'s gate: on the
+  saturator-complete fragment (`realize_saturation_eligible`: TBox in
+  `is_pure_el`/`saturator_complete_fragment`/`tbox_only_saturator_eligible`
+  **and** every ABox axiom a shape the seeding captures — atomic/⊓
+  `ClassAssertion`, non-inverse `ObjectPropertyAssertion`; `SameIndividual` /
+  inverse assertions fall back) it realizes via
+  `owl_dl_saturation::saturate_for_realize`, which materializes each named
+  individual as a nominal class `N_a` and seeds `N_a ⊑ C` (ClassAssertion),
+  `N_a ⊑ ∃r.N_b` (ground edge ⟹ domain-of-`r` + existential-LHS firing) and
+  `N_b ⊑ Rng` (ground range); `types(a) = subsumers_of(N_a) ∩ named classes`.
+  **Complete == the tableau on the fragment** (incl. the conjunctive-LHS
+  `x:D1, x:D2, D1 ⊓ D2 ⊑ E ⊨ x:E` case both saturation engines otherwise drop),
+  **sound by construction**, and TERMINATING (no tableau). Off-fragment realize
+  keeps the tableau (identical prior logic) plus an opt-in per-pair deadline
+  `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` (default UNSET ⟹ no bound; restores the
+  caller-side bound removed in 0.3.18 — bounds each pair, not total wall).
+  `RUSTDL_REALIZE_SATURATION=0` reverts to the tableau path. Correctness gate:
+  `realize::tests::fast_path_matches_tableau_on_terminating_fixture` (byte-
+  identity) + conjunctive/existential/domain-range/termination unit tests. See
+  `docs/2026-07-21-realize-saturation-fast-path.md`.
   `materialize_object_property_assertions` (reasoner) / `materialize_inferred_property_assertions`
   (Python) / `realize --properties` (CLI) surface inferred OBJECT property assertions over named
   individuals, reusing the ABox saturator's derived edges (sound under-approximation: no

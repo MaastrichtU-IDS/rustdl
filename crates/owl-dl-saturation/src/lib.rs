@@ -148,6 +148,115 @@ pub fn saturate_with_exists_facts(
     (engine.subsumers, facts, nom)
 }
 
+/// Realization-oriented saturation.
+///
+/// Materializes **every named individual** `a` as an opaque nominal class
+/// `N_a` (via `introduce_nominal`) and seeds its `ABox` constraints:
+///
+/// - `N_a ⊑ C` for each `ClassAssertion(C, a)` (atomic operands of `C`),
+/// - `N_a ⊑ ∃r.N_b` for each `ObjectPropertyAssertion(r, a, b)` — a **ground**
+///   edge. This gives `Domain(r)` on `a` for free (fact-time domain propagation
+///   walks the super-role closure) and lets existential-LHS GCIs fire (e.g.
+///   `Person ⊓ ∃hasSex.Male ⊑ Man` with `Male(b)` ⟹ `a:Man`),
+/// - `N_b ⊑ Rng` for each such edge and each effective `Range(r)`. The saturator
+///   deliberately omits range propagation through `∃`-facts (unsound for
+///   *anonymous* witnesses — a `B` that is nobody's successor escapes the range
+///   obligation), but for a **ground** nominal successor `b` the obligation
+///   genuinely holds, so we seed it explicitly.
+///
+/// Runs to fixpoint and returns the subsumer closure plus the `individual → N_a`
+/// map. The entailed named types of `a` are then
+/// `subsumers_of(N_a) ∩ named-user-classes`.
+///
+/// **Sound by construction on any input** (every seeded axiom is entailed).
+/// **Complete == the tableau only on the saturator-complete EL/Horn fragment**
+/// (the fragment `classify` trusts) with `ABox` axioms restricted to atomic/⊓
+/// `ClassAssertion` + non-inverse `ObjectPropertyAssertion`; callers must gate
+/// accordingly. Off that fragment the saturator is incomplete (`∀`, `≤n`,
+/// disjunction, inverse-role *use*, `SameIndividual`, …).
+#[must_use]
+pub fn saturate_for_realize(
+    internal: &InternalOntology,
+) -> (Subsumers, HashMap<IndividualId, ClassId>) {
+    let n = internal.vocabulary.num_classes();
+    let role_super_map = build_role_super(internal);
+    let (mut rules, mut tseitin, _old_total, _trace) =
+        collect_el_rules_with_provenance(internal, &role_super_map, false);
+
+    // Effective (super-role-closed) ranges: `Range(s)` applies to every `r ⊑ s`,
+    // because an `r`-successor is also an `s`-successor.
+    let mut effective_ranges: HashMap<RoleId, Vec<ClassId>> = HashMap::new();
+    for (&r, supers) in &role_super_map {
+        let mut union: Vec<ClassId> = supers
+            .iter()
+            .flat_map(|s| rules.role_ranges.get(s).into_iter().flatten().copied())
+            .collect();
+        union.sort_unstable_by_key(|c| c.index());
+        union.dedup();
+        if !union.is_empty() {
+            effective_ranges.insert(r, union);
+        }
+    }
+
+    // Materialize a nominal class for every named individual (so the
+    // ClassAssertion/edge seeding below reaches all of them, not just any
+    // TBox-nominal fillers already introduced during `collect_el_rules`).
+    let num_individuals = internal.vocabulary.num_individuals();
+    for i in 0..num_individuals {
+        tseitin.introduce_nominal(IndividualId::new(u32::try_from(i).expect("fits u32")));
+    }
+
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::ClassAssertion { class, individual } => {
+                let nom = tseitin.introduce_nominal(*individual);
+                for sup in atomic_operands_on_right(*class, &internal.concepts) {
+                    rules
+                        .atomic_subsumptions
+                        .push(AtomicSubsumption { sub: nom, sup });
+                }
+            }
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } if !role.is_inverse() => {
+                let n_a = tseitin.introduce_nominal(*subject);
+                let n_b = tseitin.introduce_nominal(*object);
+                rules.existential_facts.push(ExistentialFact {
+                    sub: n_a,
+                    role: role.role_id(),
+                    target: n_b,
+                });
+                if let Some(ranges) = effective_ranges.get(&role.role_id()) {
+                    for &rng in ranges {
+                        rules
+                            .atomic_subsumptions
+                            .push(AtomicSubsumption { sub: n_b, sup: rng });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let nominal_by_ind = tseitin.nominal_by_ind.clone();
+    let num_total_classes = tseitin.next_id as usize;
+    let role_super = freeze_role_super(&role_super_map);
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes,
+        rules,
+        tseitin,
+        role_super,
+        false,
+        None,
+    );
+    engine.seed(internal);
+    engine.run();
+    (engine.subsumers, nominal_by_ind)
+}
+
 /// Like [`saturate`] but also supports optional proof recording.
 ///
 /// Returns `(Subsumers, Some(ProofTrace))` when `cfg.record_proofs` is `true`,

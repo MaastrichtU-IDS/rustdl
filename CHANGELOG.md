@@ -4,6 +4,35 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.31] — 2026-07-21
+
+### Fixed
+
+- **Realize saturation fast path — ends the issue #35 realization hang.**
+  `realize` / `is_instance_of` / `instances_of` (and the Python
+  `materialize_inferred_class_assertions`) ran the full SROIQ tableau
+  (`{a} ⊓ ¬C` probe) for every (individual, class) pair. On an EL/Horn ontology
+  with a defined class (`≡` + `∃`) + property domain + a property assertion, the
+  two non-absorbable GCIs from the `≡` definitions let every node speculatively
+  pick the defined class → generate a `∃` successor → recurse; the ⊔-search
+  burned 100k+ branches over a blocked ~134-node graph and never terminated
+  (> 300 s hang), while `classify` on the same file was instant (saturation fast
+  path). realize had no such gate. New `owl_dl_saturation::saturate_for_realize`
+  materializes each named individual as a nominal class `N_a` and seeds
+  `N_a ⊑ C` (ClassAssertion), `N_a ⊑ ∃r.N_b` (ground edge ⇒ domain +
+  existential-LHS firing) and `N_b ⊑ Rng` (ground range); entailed types are
+  `subsumers_of(N_a) ∩ named classes`. `realize_saturation_eligible` gates the
+  three individual queries onto this path (TBox in the saturator-complete
+  fragment **and** every ABox axiom a shape the seeding captures — atomic/⊓
+  `ClassAssertion`, non-inverse `ObjectPropertyAssertion`; `SameIndividual` /
+  inverse fall back). **Complete == the tableau on the fragment** (incl. the
+  conjunctive-LHS `x:D1, x:D2, D1 ⊓ D2 ⊑ E ⊨ x:E` case), **sound by
+  construction**, terminating (no tableau). Off-fragment keeps the identical
+  tableau path plus an opt-in per-pair deadline `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+  (default unset ⇒ no bound; restores the caller-side bound removed in 0.3.18).
+  `RUSTDL_REALIZE_SATURATION=0` reverts. FP=0 preserved; `classify` untouched.
+  See `docs/2026-07-21-realize-saturation-fast-path.md`.
+
 ## [0.3.30] — 2026-07-21
 
 ### Changed

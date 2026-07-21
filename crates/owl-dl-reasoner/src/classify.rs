@@ -54,6 +54,101 @@ fn reportable_class_iris(internal: &InternalOntology) -> Vec<String> {
         .collect()
 }
 
+/// Row-major subsumption matrix backing [`Classification::entails`].
+///
+/// `Dense` is the historical `Vec<FixedBitSet>` (n×n bits, O(1)
+/// contains) — used for every ontology up to [`dense_max`] classes,
+/// keeping the whole curated corpus on the byte-identical dense path
+/// and the EL niche fast. `Sparse` stores each row as an
+/// ASCENDING-sorted `Vec<u32>` of subsumer ids (O(log k) contains) —
+/// used only for giants where the dense n×n bitset is intractable
+/// (`ore_ont_868`: 981k classes ⇒ 112 GB dense vs a few hundred MB
+/// sparse; the accessors then iterate rows O(k) instead of scanning
+/// `0..n`, collapsing the O(n²) hierarchy print).
+///
+/// In BOTH arms, unsatisfiable classes' rows are ELIDED (left empty) —
+/// the trivial "⊥ ⊑ everything" fill (previously `insert_range(..n)`;
+/// on 868 a single such row is 122 MB) is reintroduced solely by the
+/// [`Classification::entails`] choke-point.
+#[derive(Debug, Clone)]
+enum EntailmentMatrix {
+    Dense(Vec<FixedBitSet>),
+    Sparse(Vec<Vec<u32>>),
+}
+
+/// Largest class count that still uses the [`EntailmentMatrix::Dense`]
+/// arm. The largest curated fixture is go-basic (~52k classes); 60k
+/// keeps every curated fixture on the byte-identical dense path
+/// (≤ 450 MB) while every ORE giant (≫ 100k classes) goes sparse.
+///
+/// Test-only override: `RUSTDL_CLASSIFY_DENSE_MAX` — used by the
+/// dense-vs-sparse identity gates
+/// (`tests/sparse_classification_identity.rs`, and the galen/sio
+/// self-diff) to force the sparse arm on small inputs. Not a user knob.
+fn dense_max() -> usize {
+    std::env::var("RUSTDL_CLASSIFY_DENSE_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(60_000)
+}
+
+impl EntailmentMatrix {
+    /// `Dense` iff `n <= dense_max()`, else `Sparse`. Chosen once per
+    /// classification build.
+    fn new(n: usize) -> Self {
+        if n <= dense_max() {
+            Self::Dense((0..n).map(|_| FixedBitSet::with_capacity(n)).collect())
+        } else {
+            Self::Sparse(vec![Vec::new(); n])
+        }
+    }
+
+    /// Record `classes[i] ⊑ classes[j]`. Idempotent. Sparse rows stay
+    /// ascending: an in-order append is O(1); an out-of-order insert is
+    /// O(k) (rows are small — ~16 supers/class on the giants this arm
+    /// serves).
+    fn insert(&mut self, i: usize, j: usize) {
+        match self {
+            Self::Dense(rows) => rows[i].insert(j),
+            Self::Sparse(rows) => {
+                let j = u32::try_from(j).expect("class index fits in u32");
+                let row = &mut rows[i];
+                match row.last() {
+                    Some(&last) if last < j => row.push(j),
+                    None => row.push(j),
+                    Some(&last) if last == j => {}
+                    _ => {
+                        if let Err(pos) = row.binary_search(&j) {
+                            row.insert(pos, j);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// True iff row `i` records `j` as a super. UNSAT rows are elided,
+    /// so callers other than [`Classification::entails`] are forbidden —
+    /// a raw row read would lose "⊥ ⊑ everything".
+    fn row_contains(&self, i: usize, j: usize) -> bool {
+        match self {
+            Self::Dense(rows) => rows[i].contains(j),
+            Self::Sparse(rows) => u32::try_from(j).is_ok_and(|j| rows[i].binary_search(&j).is_ok()),
+        }
+    }
+
+    /// The members of row `i` in ASCENDING id order (the accessors'
+    /// output-order contract). Returns a `Vec` rather than an iterator
+    /// so both enum arms stay trivial; sparse rows are tiny, and the
+    /// dense arm's accessors already paid an O(n) scan per call.
+    fn row_ascending(&self, i: usize) -> Vec<usize> {
+        match self {
+            Self::Dense(rows) => rows[i].ones().collect(),
+            Self::Sparse(rows) => rows[i].iter().map(|&j| j as usize).collect(),
+        }
+    }
+}
+
 /// Result of [`classify`]. Holds the complete pairwise subsumption
 /// matrix over every declared named class plus the IRIs themselves,
 /// keyed by stable insertion order.
@@ -61,12 +156,12 @@ fn reportable_class_iris(internal: &InternalOntology) -> Vec<String> {
 pub struct Classification {
     classes: Vec<String>,
     index: HashMap<String, usize>,
-    /// `entailed[i].contains(j)` is true iff `classes[i] ⊑ classes[j]`
-    /// in the input ontology (including reflexive entries `i == j`).
-    /// Stored as a row-major `FixedBitSet` so the O(n²) `Vec<Vec<bool>>`
-    /// allocation is replaced by a dense bitset (64× smaller footprint,
-    /// word-level iteration in `equivalent_classes` / `direct_subsumers`).
-    entailed: Vec<FixedBitSet>,
+    /// Row `i` holds the SATISFIABLE supers of `classes[i]` (including
+    /// the reflexive entry `i` for satisfiable classes); rows of
+    /// unsatisfiable classes are elided. Read ONLY through
+    /// [`Self::entails`] — never touch a raw row (see the invariant
+    /// there).
+    entailed: EntailmentMatrix,
     unsatisfiable_idxs: HashSet<usize>,
     stats: ClassificationStats,
 }
@@ -311,6 +406,19 @@ impl Classification {
         &self.classes
     }
 
+    /// True iff `classes[i] ⊑ classes[j]`.
+    ///
+    /// INVARIANT (the sparse-row contract): a satisfiable class's row
+    /// contains only satisfiable supers — every builder skips
+    /// unsatisfiable `j` when filling a satisfiable row `i`. An
+    /// unsatisfiable `i` subsumes everything (⊥ ⊑ *); its row is NOT
+    /// materialized, so the short-circuit below is the ONLY place that
+    /// fact is reintroduced. Every accessor MUST route through here —
+    /// no accessor may touch a raw row.
+    fn entails(&self, i: usize, j: usize) -> bool {
+        self.unsatisfiable_idxs.contains(&i) || self.entailed.row_contains(i, j)
+    }
+
     /// True iff `sub ⊑ sup` is entailed by the ontology.
     /// Returns `false` if either IRI is not a declared class
     /// (callers wanting a hard error should use
@@ -320,44 +428,73 @@ impl Classification {
         let (Some(&i), Some(&j)) = (self.index.get(sub), self.index.get(sup)) else {
             return false;
         };
-        self.entailed[i].contains(j)
+        self.entails(i, j)
     }
 
-    /// All classes equivalent to `c` (including `c` itself). Empty if
-    /// `c` is not declared in the ontology.
+    /// All classes equivalent to `c` (including `c` itself), in
+    /// ascending id order. Empty if `c` is not declared in the
+    /// ontology.
     #[must_use]
     pub fn equivalent_classes(&self, c: &str) -> Vec<&str> {
         let Some(&i) = self.index.get(c) else {
             return Vec::new();
         };
-        (0..self.classes.len())
-            .filter(|&j| self.entailed[i].contains(j) && self.entailed[j].contains(i))
+        if self.unsatisfiable_idxs.contains(&i) {
+            // All unsatisfiable classes are mutually equivalent (≡ ⊥).
+            // Their rows are elided, so read the unsat set directly
+            // (sorted ascending — the old `(0..n)` scan order).
+            let mut idxs: Vec<usize> = self.unsatisfiable_idxs.iter().copied().collect();
+            idxs.sort_unstable();
+            return idxs.into_iter().map(|j| self.classes[j].as_str()).collect();
+        }
+        // Satisfiable subject: candidates are i's supers (all
+        // satisfiable, by the `entails` invariant) — O(k), not O(n).
+        // Merge the reflexive `i` in sorted position so the output
+        // stays ascending even if a row ever lacked its reflexive bit.
+        let mut candidates = self.entailed.row_ascending(i);
+        if let Err(pos) = candidates.binary_search(&i) {
+            candidates.insert(pos, i);
+        }
+        candidates
+            .into_iter()
+            .filter(|&j| self.entails(i, j) && self.entails(j, i))
             .map(|j| self.classes[j].as_str())
             .collect()
     }
 
     /// The Hasse-direct super-classes of `c`: every `D` with
     /// `c ⊑ D`, `D ≢ c`, and no intermediate `E ≠ c, D` such that
-    /// `c ⊑ E ⊑ D`. Empty if `c` is not declared.
+    /// `c ⊑ E ⊑ D`. Empty if `c` is not declared. Ascending id order.
     #[must_use]
     pub fn direct_subsumers(&self, c: &str) -> Vec<&str> {
         let Some(&i) = self.index.get(c) else {
             return Vec::new();
         };
-        let n = self.classes.len();
-        // First: every strict super (i ⊑ j, not j ⊑ i).
-        let strict_supers: Vec<usize> = (0..n)
-            .filter(|&j| j != i && self.entailed[i].contains(j) && !self.entailed[j].contains(i))
-            .collect();
+        // First: every strict super (i ⊑ j, not j ⊑ i), ascending.
+        let strict_supers: Vec<usize> = if self.unsatisfiable_idxs.contains(&i) {
+            // Degenerate case: an unsatisfiable subject subsumes
+            // everything and its row is elided — keep the full `0..n`
+            // scan (rare; correctness over speed here).
+            (0..self.classes.len())
+                .filter(|&j| j != i && self.entails(i, j) && !self.entails(j, i))
+                .collect()
+        } else {
+            // O(k): i's row lists exactly its supers, ascending.
+            self.entailed
+                .row_ascending(i)
+                .into_iter()
+                .filter(|&j| j != i && !self.entails(j, i))
+                .collect()
+        };
         // Then: prune any `j` for which there is a `k` strictly
         // between i and j (i ⊑ k ⊑ j, neither equivalent).
         strict_supers
             .iter()
             .copied()
             .filter(|&j| {
-                !strict_supers.iter().any(|&k| {
-                    k != j && self.entailed[k].contains(j) && !self.entailed[j].contains(k)
-                })
+                !strict_supers
+                    .iter()
+                    .any(|&k| k != j && self.entails(k, j) && !self.entails(j, k))
             })
             .map(|j| self.classes[j].as_str())
             .collect()
@@ -724,15 +861,14 @@ pub(crate) fn classify_internal_with_timeout(
     // run them in parallel; reduce into the entailment matrix and
     // stats counters. Skip rows where `i` is unsatisfiable (it
     // subsumes everything trivially — fill the row).
-    let mut entailed: Vec<FixedBitSet> = (0..n).map(|_| FixedBitSet::with_capacity(n)).collect();
+    let mut entailed = EntailmentMatrix::new(n);
     let mut work: Vec<(usize, usize)> = Vec::new();
-    #[allow(clippy::needless_range_loop)]
     for i in 0..n {
-        entailed[i].insert(i);
         if unsatisfiable_idxs.contains(&i) {
-            entailed[i].insert_range(..n);
+            // Row elided — `Classification::entails` supplies ⊥ ⊑ *.
             continue;
         }
+        entailed.insert(i, i);
         for j in 0..n {
             if i == j || unsatisfiable_idxs.contains(&j) {
                 continue;
@@ -793,7 +929,9 @@ pub(crate) fn classify_internal_with_timeout(
         } else {
             stats.tableau_subsumption_calls += 1;
         }
-        entailed[i].set(j, is_entailed);
+        if is_entailed {
+            entailed.insert(i, j);
+        }
     }
     let _ = satisfiable; // currently informational only
     Ok(Classification {
@@ -834,21 +972,23 @@ fn classify_pure_el(
         }
     }
 
-    // Pass 2 — build the entailed bitset rows in one pass over the closure.
-    // For an unsat class i: all n bits set (⊥ subsumes everything).
+    // Pass 2 — build the entailed rows in one pass over the closure.
+    // For an unsat class i: row ELIDED (`Classification::entails`
+    //   supplies ⊥ ⊑ * — no per-row O(n) fill; on the ORE giants a
+    //   single dense unsat row would be n bits).
     // For a sat class i: copy the closure row for i, restricted to [0,n),
-    //   then clear bits for unsat j (unsat classes are ⊑ ⊥, not ⊒ others),
-    //   then set the reflexive bit i. Count non-reflexive, non-unsat-j hits
-    //   as saturation_subsumption_hits, matching the original counter semantics.
-    let mut entailed: Vec<FixedBitSet> = (0..n).map(|_| FixedBitSet::with_capacity(n)).collect();
-    for (i, row) in entailed.iter_mut().enumerate() {
-        row.insert(i); // reflexive
+    //   skipping unsat j (unsat classes are ⊑ ⊥, not ⊒ others — the
+    //   `entails` invariant), plus the reflexive entry i. Count
+    //   non-reflexive, non-unsat-j hits as saturation_subsumption_hits,
+    //   matching the original counter semantics.
+    let mut entailed = EntailmentMatrix::new(n);
+    for i in 0..n {
         let class_id =
             owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
         if unsatisfiable_idxs.contains(&i) {
-            row.insert_range(..n);
-            continue;
+            continue; // row elided
         }
+        entailed.insert(i, i); // reflexive
         // `subsumers_of` is ascending by id (as `FixedBitSet::ones()` was), so
         // the `>= n` break still terminates at the first synthetic id.
         for j_id in closure.subsumers_of(class_id) {
@@ -859,7 +999,7 @@ fn classify_pure_el(
             if j == i || unsatisfiable_idxs.contains(&j) {
                 continue; // reflexive already set; unsat-j skipped per original
             }
-            row.insert(j);
+            entailed.insert(i, j);
             stats.saturation_subsumption_hits += 1;
         }
     }
@@ -884,13 +1024,11 @@ fn classify_inconsistent(
     fragment: FragmentClassification,
 ) -> Classification {
     let n = classes.len();
-    let entailed: Vec<FixedBitSet> = (0..n)
-        .map(|_| {
-            let mut bs = FixedBitSet::with_capacity(n);
-            bs.insert_range(..n);
-            bs
-        })
-        .collect();
+    // Every class is unsatisfiable, so every row is elided —
+    // `Classification::entails` short-circuits each subject to `true`
+    // (the old dense `insert_range(..n)` fill, without materializing
+    // n×n bits).
+    let entailed = EntailmentMatrix::new(n);
     let unsatisfiable_idxs: HashSet<usize> = (0..n).collect();
     let stats = ClassificationStats {
         inconsistent: true,
@@ -2091,25 +2229,25 @@ pub(crate) fn classify_top_down_internal(
     // 2. **Reflexive + unsat-row trivial fill.**
     // 3. **Tableau-derived direct supers** from the top-down walk,
     //    transitively closed via BFS over `direct_supers`.
-    let mut entailed: Vec<FixedBitSet> = (0..n).map(|_| FixedBitSet::with_capacity(n)).collect();
+    let mut entailed = EntailmentMatrix::new(n);
     for i in 0..n {
-        entailed[i].insert(i);
         if unsatisfiable_idxs.contains(&i) {
-            entailed[i].insert_range(..n);
+            // Row elided — `Classification::entails` supplies ⊥ ⊑ *.
             continue;
         }
+        entailed.insert(i, i);
         // Closure seed.
         let i_id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
         for j_id in closure.subsumers_of(i_id) {
             let j = j_id.index() as usize;
             if j < n {
-                entailed[i].insert(j);
+                entailed.insert(i, j);
             }
         }
         // BFS over direct_supers starting from `i` to pick up the
         // tableau-derived transitive closure. Tracked via a
         // `visited` set so we descend through every reached node
-        // exactly once — `entailed[i].contains(j)` may already be true from
+        // exactly once — row `i` may already record `j` from
         // the closure seed above, but we still need to follow
         // `direct_supers[j]` to catch tableau-only ancestors of `j`
         // that aren't on `i`'s closure ray.
@@ -2120,7 +2258,7 @@ pub(crate) fn classify_top_down_internal(
                 continue;
             }
             visited[j] = true;
-            entailed[i].insert(j);
+            entailed.insert(i, j);
             for &k in &direct_supers[j] {
                 if !visited[k] {
                     frontier.push(k);

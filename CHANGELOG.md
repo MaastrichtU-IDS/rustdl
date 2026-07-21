@@ -4,6 +4,26 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.30] — 2026-07-21
+
+### Changed
+
+- **Sparse `Classification.entailed` matrix** — closes the giant-ontology memory
+  + hierarchy-print wall (the D4 residual). The class-subsumption result was a
+  dense `Vec<FixedBitSet>` n×n matrix allocated up front (n²/8 bytes regardless of
+  content): on `ore_ont_868` (981,151 classes) that is 112 GB, and the O(n²)
+  hierarchy print (`equivalent_classes`/`direct_subsumers` scanning `0..n` per
+  class) did not finish in 20 minutes. New adaptive `EntailmentMatrix`:
+  `Dense(Vec<FixedBitSet>)` for ≤ 60k classes (every curated fixture — byte-
+  identical to the old path) / `Sparse(Vec<Vec<u32>>)` above (ascending-sorted
+  subsumer rows, unsatisfiable rows elided). A single `entails(i,j)` choke-point
+  reintroduces `⊥ ⊑ *` for unsatisfiable subjects; the accessors iterate the
+  sparse row O(k) instead of scanning `0..n`. **`ore_ont_868` classify:
+  TIMEOUT (> 20 min) / 116 GB peak → 69 s / 3.3 GB, full 981,153-line hierarchy.**
+  Verdict-preserving: dense-vs-sparse byte-identical on galen/sio; corpus
+  FP=0/MISSED=0 unchanged; galen wall unchanged (stays on the dense path). See
+  `docs/2026-07-21-sparse-classification-results.md`.
+
 ## [0.3.23] — 2026-07-18
 
 ### Added

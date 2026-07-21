@@ -1,0 +1,20 @@
+{
+  "date": "2026-07-21",
+  "binary_version": "rustdl 0.3.30",
+  "git_commit": "a92f264",
+  "machine": { "cpu_cores": 32, "mem_total_gb": 251, "os": "Linux 5.15" },
+  "corpus": "ORE-2015 pool_sample (1920 ontologies, .owl)",
+  "sweep": {
+    "harness": "harness/perf_ore_one.sh",
+    "per_ont": "rustdl classify <ont>.owl, RAYON_NUM_THREADS=1, output to /dev/null",
+    "peak_rss": "/proc/<pid>/VmHWM polling (1s)",
+    "caps": { "memory_gb": 48, "wall_s": 120 },
+    "parallelism": "-P 4",
+    "wall_caveat": "~1s poll-granularity floor; sub-second onts read ~1s",
+    "raw": "perf_ore_v0330.tsv (cols: ont, wall_s, peakRSS_MB, status)"
+  },
+  "trajectory_probes": {
+    "caps": { "memory_gb": 100, "wall_s": 360 },
+    "files": ["gate868-before-trajectory.txt","gate868-after-trajectory.txt","probe9347-trajectory.txt","probe11085-trajectory.txt"]
+  }
+}

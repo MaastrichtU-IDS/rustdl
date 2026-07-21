@@ -1,0 +1,7 @@
+t=0s rss=0MB peak=0MB
+t=10s rss=1282MB peak=3291MB
+t=40s rss=1341MB peak=3291MB
+t=50s rss=1409MB peak=3291MB
+=== DONE status=ok exit=0 wall=69s peak=3291MB ===
+output lines: 981153  bytes: 100430993
+stderr tail:

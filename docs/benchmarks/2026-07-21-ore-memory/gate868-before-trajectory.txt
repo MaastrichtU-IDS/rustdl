@@ -1,0 +1,11 @@
+# ore_ont_868 full `rustdl classify`, PRE-v0.3.30 (dense n×n entailed matrix).
+# 150GB / 20min watchdog, VmHWM poll. Saturation+matrix build reaches 116GB by
+# t=90s, then RSS is FLAT at 116GB while the O(n²) hierarchy print streams — killed
+# at the 20-min cap, still unfinished. (Full log: original gate868.sh run.)
+t=40s   rss=1341MB  peak=3291MB
+t=90s   rss=116395MB peak=116314MB
+t=200s  rss=116330MB peak=116483MB
+t=600s  rss=116330MB peak=116483MB
+t=1190s rss=116330MB peak=116483MB
+=== DONE status=TIMEOUT1200 exit=137 wall=1206s peak=116483MB ===
+output lines: 372948 (incomplete)  bytes: 38326792

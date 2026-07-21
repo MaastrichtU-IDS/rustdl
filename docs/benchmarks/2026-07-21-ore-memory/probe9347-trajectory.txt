@@ -1,0 +1,11 @@
+t=0s rss=29MB peak=18MB
+t=15s rss=2013MB peak=2007MB
+t=30s rss=3750MB peak=5352MB
+t=120s rss=35690MB peak=35690MB
+t=135s rss=39845MB peak=39806MB
+t=150s rss=44239MB peak=49436MB
+t=240s rss=57817MB peak=58105MB
+t=255s rss=57047MB peak=68905MB
+t=345s rss=58400MB peak=68987MB
+t=360s rss=56211MB peak=68987MB
+=== DONE status=TIMEOUT360 exit=137 wall=366s peak=68987MB lines=0

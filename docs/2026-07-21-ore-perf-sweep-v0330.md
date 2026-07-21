@@ -1,5 +1,11 @@
 # ORE-2015 full-corpus perf sweep — rustdl v0.3.30 (2026-07-21)
 
+> **Authoritative, data-backed version:**
+> [`docs/benchmarks/2026-07-21-ore-memory/`](benchmarks/2026-07-21-ore-memory/README.md)
+> — same sweep plus the raw per-ont TSV, the harness, the before/after `868`
+> trajectory, and the working-set NO-GO probes. This file is the standalone
+> narrative summary.
+
 Measures **wall time + peak RSS** for every one of the 1920 ORE-2015 pool
 ontologies on the freshly-built v0.3.30 binary, to quantify the effect of the
 sparse `Classification.entailed` matrix (the D4 giant-ontology memory + print

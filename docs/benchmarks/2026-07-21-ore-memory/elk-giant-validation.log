@@ -1,0 +1,7 @@
+# EL-oracle (ELK) validation of recovered giants — raw results
+# ont : rustdl_closure = elk_closure  FP  MISS
+RESULT ore_ont_16008.owl: rustdl=11682473 elk=11682473 FP=0 MISS=0
+RESULT ore_ont_14459.owl: rustdl=13114303 elk=13114303 FP=0 MISS=0
+RESULT ore_ont_8486.owl: rustdl=13839004 elk=13839004 FP=0 MISS=0
+RESULT ore_ont_9674.owl: rustdl=14809043 elk=14809043 FP=0 MISS=0
+ore_ont_14042.owl: rustdl=11609 elk=11609 FP=0 MISS=0 (smallest distinct giant)

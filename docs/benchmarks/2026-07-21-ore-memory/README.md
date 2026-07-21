@@ -13,6 +13,10 @@ backed by the raw data and harness in this directory.
 - Harness (reproducible): [`harness/`](harness/) + [`run-metadata.json`](run-metadata.json).
 - Design + correctness of the fix: `../../superpowers/specs/2026-07-21-sparse-classification-entailed-matrix-spec.md`,
   `../../2026-07-21-sparse-classification-results.md`.
+- **Soundness/completeness of the recovered giants vs ELK:**
+  [`GIANT-VALIDATION.md`](GIANT-VALIDATION.md) — every distinct giant's output is
+  byte-for-byte ELK's closure (FP=0/MISSED=0, up to 981k classes / 14.8M
+  subsumptions). Raw: [`elk-giant-validation.log`](elk-giant-validation.log).
 
 ## Methodology
 

@@ -68,31 +68,60 @@ depending on them may be missed, never falsely asserted.
 (`rustdl` binary), `owl-dl-bench` (corpus/benchmark harness), `owl-dl-py` (Python
 bindings). `xtask` holds build automation.
 
-## Install
+## Quickstart
+
+### Python
 
 ```sh
-cargo add owl-dl-reasoner                                              # library
-cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # CLI
-pip install rustdl                                                     # Python 3.10+ (ABI3)
+pip install rustdl          # Python 3.10+, prebuilt ABI3 wheels
 ```
 
 ```python
 import rustdl
-result = rustdl.classify("ontology.ofn")   # OFN / OWX / RDF-XML / Manchester (.omn) — auto-detected
-print(f"{len(result.classes)} classes; {len(result.unsatisfiable)} unsat")
-print(result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup"))
-ok = rustdl.is_consistent("ontology.ofn")
-edges = rustdl.materialize_inferred_property_assertions("ontology.ofn")  # inferred object property assertions
-data_edges = rustdl.materialize_inferred_data_property_assertions("ontology.ofn")  # inferred data property assertions
-sub_obj = rustdl.materialize_inferred_subobjectproperty_axioms("ontology.ofn")  # object property hierarchy
-sub_dat = rustdl.materialize_inferred_subdataproperty_axioms("ontology.ofn")    # data property hierarchy
-succ = rustdl.materialize_existential_successors("ontology.ofn")  # entailed exists-successors (blank-node witnesses)
-report = rustdl.debug("ontology.ofn")   # consistency + root/derived unsat + justifications + repairs
+
+# classify — input format (OFN / OWX / RDF-XML / Manchester .omn) is auto-detected
+result = rustdl.classify("ontology.ofn")
+print(f"{len(result.classes)} classes, {len(result.unsatisfiable)} unsatisfiable")
+result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup")   # -> bool
+result.direct_subsumers("http://ex.org/Sub")                   # -> list[str]
+
+rustdl.is_consistent("ontology.ofn")   # -> bool
+rustdl.debug("ontology.ofn")           # consistency + root/derived unsat + justifications + repairs
 ```
 
-New to the Python API? Walk through
-[**Debugging an ontology with rustdl**](docs/python-ontology-qa.md) — an end-to-end
-QA tutorial (classify → `debug()` → justify/repair → fix → read inferred facts).
+More surface — inferred property assertions, subproperty axioms, existential
+successors, `justify`/`repair` — in the end-to-end
+[QA tutorial](docs/python-ontology-qa.md).
+
+### Rust
+
+```sh
+cargo add owl-dl-reasoner horned-owl   # in-process library — no JVM, no subprocess
+```
+
+```rust
+use horned_owl::io::ParserConfiguration;
+use horned_owl::io::ofn::reader::read as read_ofn;
+use horned_owl::model::RcStr;
+use horned_owl::ontology::set::SetOntology;
+use owl_dl_reasoner::classify;
+
+let src = std::fs::read_to_string("ontology.ofn")?;
+let (onto, _): (SetOntology<RcStr>, _) =
+    read_ofn(&mut std::io::Cursor::new(src), ParserConfiguration::default())?;
+
+let h = classify(&onto)?;                          // full class hierarchy
+println!("{} classes", h.classes().len());
+h.is_subclass("http://ex.org/Sub", "http://ex.org/Sup");   // -> bool
+for parent in h.direct_subsumers("http://ex.org/Sub") {
+    println!("{parent}");
+}
+```
+
+Bounded variants (`classify_with_budget`, `classify_with_timeout`) and
+consistency / instance queries live in the same crate; see
+`cargo run -p owl-dl-reasoner --example embed_classify`. For the command-line
+tool instead, see [CLI](#cli).
 
 ## Build & test
 
@@ -106,6 +135,8 @@ cargo test --workspace
 ## CLI
 
 ```sh
+cargo install --git https://github.com/MaastrichtU-IDS/rustdl owl-dl-cli   # install the `rustdl` binary
+
 rustdl classify  ontology.ofn               # full class hierarchy (default)
 rustdl classify  ontology.ofn --pair-timeout-ms 25 --global-timeout-ms 60000  # bounded run
 rustdl consistent ontology.ofn

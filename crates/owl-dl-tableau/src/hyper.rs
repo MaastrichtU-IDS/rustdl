@@ -149,6 +149,15 @@ pub mod nonhorn_probe {
     pub fn set_phase(p: u8) {
         if enabled() {
             PHASE.store(p, Ordering::Relaxed);
+            // Phase-boundary marker (stderr, epoch-stamped) so an external
+            // sampler's timestamps can be aligned to classify phases.
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |d| d.as_secs_f64());
+            eprintln!(
+                "nonhorn_probe: phase={} t={t:.3}",
+                PHASE_NAMES[(p as usize).min(NUM_PHASES - 1)]
+            );
         }
     }
 

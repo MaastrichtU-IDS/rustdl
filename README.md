@@ -15,23 +15,19 @@ A working classifier, consistency checker, and instance reasoner for SROIQ(D)
 with first-class data properties.
 
 - **Sound.** Every reported subsumption is a genuine entailment.
-- **Consistency** via a consequence-based ABox-saturation pre-check plus the
-  tableau.
+- **Consistent.** Decides ontology consistency.
 - **Completeness.** On the EL/Horn fragment with no timeout the hierarchy is
   complete by construction; beyond it the classifier trusts the wedge's `Sat`
   verdicts — empirically near-complete on the measured corpus, not *provably*
   complete.
-- **Proofs.** `prove` emits a step-level, rule-by-rule proof tree for an
-  entailment — a checkable certificate of soundness on the EL/Horn fragment
-  (elsewhere, an axiom-level justification).
-- **Explain.** `justify` gives a minimal responsible-axiom set for any entailment
-  (`--laconic` narrows each axiom to its responsible *fragment*, each still
-  entailed).
-- **Repair.** `diagnose` partitions unsatisfiable classes into **root** causes vs
-  **derived** collateral; `repair` returns minimal axiom-removal sets that *break*
-  an unwanted entailment, each verified by removal.
-- **Report.** `report` bundles the explanation, diagnosis, and repair output into
-  one self-contained HTML page.
+- **Proofs.** A step-level, rule-by-rule proof tree for any entailment — a
+  checkable certificate of soundness on the EL/Horn fragment.
+- **Explain.** A minimal responsible-axiom set for any entailment, narrowable to
+  the responsible fragment.
+- **Repair.** Root-cause diagnosis of unsatisfiability plus minimal, verified
+  fixes.
+- **Report.** A self-contained HTML report bundling the explanations, diagnosis,
+  and repairs.
 
 ## Coverage
 

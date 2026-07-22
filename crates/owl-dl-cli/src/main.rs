@@ -25,11 +25,10 @@ use horned_owl::io::rdf::reader::read as read_rdf;
 use horned_owl::model::{AnnotationSubject, AnnotationValue, Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
-    Classification, Realization, classify, classify_n2, classify_n2_with_timeout,
-    classify_saturation_only, classify_with_timeout, instances_of, instances_of_saturation_only,
-    is_class_satisfiable, is_consistent, is_instance_of, is_instance_of_saturation_only,
-    is_subclass_of, is_subclass_of_saturation_only, is_subclass_of_with_stats, realize,
-    realize_saturation_only,
+    Classification, Realization, classify_n2, classify_n2_with_timeout, classify_saturation_only,
+    classify_with_budget, instances_of, instances_of_saturation_only, is_class_satisfiable,
+    is_consistent, is_instance_of, is_instance_of_saturation_only, is_subclass_of,
+    is_subclass_of_saturation_only, is_subclass_of_with_stats, realize, realize_saturation_only,
 };
 use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
 
@@ -99,6 +98,17 @@ enum Command {
         /// only pizza-class ontologies actually need the larger default).
         #[arg(long, default_value_t = 1000)]
         pair_timeout_ms: u64,
+        /// Global wall-clock budget for the WHOLE classify, in
+        /// milliseconds; `0` = unbounded (the default). Bounds total time
+        /// regardless of pair count — pairs still undecided when the
+        /// deadline passes default to `not subsumed` (a sound
+        /// under-approximation: FP=0, real subsumptions may be missed).
+        /// Composes with `--pair-timeout-ms`: each probe is cut at the
+        /// smaller of the per-pair budget and the time left on the global
+        /// deadline. Use it for a hard "give me whatever you have in N ms"
+        /// bound on large or hard ontologies.
+        #[arg(long, default_value_t = 0)]
+        global_timeout_ms: u64,
         /// Deprecated no-op: top-down classification is now the
         /// default. Flag is retained so existing scripts keep
         /// working. To get the legacy `n²` pair-loop behaviour
@@ -524,17 +534,23 @@ fn print_classification(h: &Classification) {
 /// timeout — those pairs were recorded as "not subsumed", so the
 /// hierarchy may be missing real subsumptions. Sound (no false edges),
 /// but the user must know the result is an under-approximation.
-fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64) {
+fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64, global_timeout_ms: u64) {
     if timed_out_pairs == 0 {
         return;
     }
+    let bound = match (pair_timeout_ms, global_timeout_ms) {
+        (p, 0) => format!("{p} ms per-pair timeout"),
+        (0, g) => format!("{g} ms global timeout"),
+        (p, g) => format!("{p} ms per-pair / {g} ms global timeout"),
+    };
     eprintln!(
-        "\n⚠  INCOMPLETE: {timed_out_pairs} class pair(s) exceeded the {pair_timeout_ms} ms \
-         per-pair timeout and were recorded as 'not subsumed'."
+        "\n⚠  INCOMPLETE: {timed_out_pairs} class pair(s) hit the {bound} and were recorded \
+         as 'not subsumed'."
     );
     eprintln!(
         "   The classification is SOUND (no false subsumptions) but may be missing real ones. \
-         Re-run with `--pair-timeout-ms 0` for the complete (unbounded) result."
+         Re-run with `--pair-timeout-ms 0 --global-timeout-ms 0` for the complete (unbounded) \
+         result."
     );
 }
 
@@ -729,6 +745,7 @@ fn main() -> Result<()> {
         Command::Classify {
             file,
             pair_timeout_ms,
+            global_timeout_ms,
             top_down: _,
             n2_classify,
             saturation_only,
@@ -742,30 +759,37 @@ fn main() -> Result<()> {
             let t_parse = std::time::Instant::now();
             let onto = parse_ofn(&file)?;
             let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
-            // 0 = unbounded; any positive value bounds each pair.
+            // 0 = unbounded; any positive value bounds each pair / the whole run.
             let timeout =
                 (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            let global_budget = (global_timeout_ms != 0)
+                .then(|| std::time::Duration::from_millis(global_timeout_ms));
             let t_classify = std::time::Instant::now();
             let h = if saturation_only {
                 classify_saturation_only(&onto).context("classify_saturation_only")?
-            } else {
-                match (n2_classify, timeout) {
-                    (true, Some(t)) => {
+            } else if n2_classify {
+                // Legacy n² path honors only the per-pair budget.
+                match timeout {
+                    Some(t) => {
                         classify_n2_with_timeout(&onto, t).context("classify_n2_with_timeout")?
                     }
-                    (true, None) => classify_n2(&onto).context("classify_n2")?,
-                    (false, Some(t)) => {
-                        classify_with_timeout(&onto, t).context("classify_with_timeout")?
-                    }
-                    (false, None) => classify(&onto).context("classify")?,
+                    None => classify_n2(&onto).context("classify_n2")?,
                 }
+            } else {
+                // Default top-down path: both bounds (either/both may be None).
+                classify_with_budget(&onto, timeout, global_budget)
+                    .context("classify_with_budget")?
             };
             let classify_ms = t_classify.elapsed().as_secs_f64() * 1000.0;
             if timing {
                 eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
             }
             print_classification(&h);
-            warn_if_incomplete(h.stats().timed_out_pairs, pair_timeout_ms);
+            warn_if_incomplete(
+                h.stats().timed_out_pairs,
+                pair_timeout_ms,
+                global_timeout_ms,
+            );
         }
         Command::Instance {
             file,

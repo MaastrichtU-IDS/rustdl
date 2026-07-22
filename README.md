@@ -104,6 +104,7 @@ cargo test --workspace
 
 ```sh
 rustdl classify  ontology.ofn               # full class hierarchy (default)
+rustdl classify  ontology.ofn --pair-timeout-ms 25 --global-timeout-ms 60000  # bounded run
 rustdl consistent ontology.ofn
 rustdl subclass  ontology.ofn <sub> <sup>
 rustdl instances ontology.ofn <class>
@@ -117,12 +118,20 @@ rustdl report    ontology.ofn -o report.html # self-contained HTML debugging rep
 rustdl explain   ontology.ofn <sub> <sup>   # which engine answered (saturation vs tableau)
 ```
 
-Sound under-approximation modes (every reported subsumption still holds; positives
-may be missed): `--saturation-only` (skip the tableau, EL-closure only) and
-`--pair-timeout-ms N` (per-pair tableau deadline; cut pairs default to "not
-subsumed" — robust on pathological SROIQ inputs). Diagnostics: `RUSTDL_TRACE=1`
-(one stderr line per search/branch decision); `RUSTDL_COUNTERS=1` with
-`--features counters` (per-rule call counts).
+**Bounded classification** — sound under-approximation (every reported subsumption
+still holds; pairs not decided in time default to "not subsumed", never a false
+one):
+
+- `--pair-timeout-ms N` — cap each pairwise tableau probe (default 1000; `0` =
+  unbounded). Good for pathological SROIQ where a few pairs never terminate.
+- `--global-timeout-ms N` — cap the **total** wall for the whole classify,
+  regardless of pair count (`0` = unbounded). A hard "give me whatever you have in
+  N ms" bound; each probe is cut at the smaller of the two budgets.
+- `--saturation-only` — skip the tableau entirely and report only the EL closure.
+
+Any run that hits a bound prints a prominent `INCOMPLETE` warning to stderr.
+Diagnostics: `RUSTDL_TRACE=1` (one stderr line per search/branch decision);
+`RUSTDL_COUNTERS=1` with `--features counters` (per-rule call counts).
 
 ## Licensing
 

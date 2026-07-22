@@ -79,11 +79,17 @@ pip install rustdl          # Python 3.10+, prebuilt ABI3 wheels
 ```python
 import rustdl
 
-# classify — input format (OFN / OWX / RDF-XML / Manchester .omn) is auto-detected
+# classify — input format (OFN / OWX / RDF-XML / Manchester .omn) is auto-detected.
+# Bounded by default: per_pair_timeout_ms=100, global_deadline_ms=60000 (ms).
 result = rustdl.classify("ontology.ofn")
 print(f"{len(result.classes)} classes, {len(result.unsatisfiable)} unsatisfiable")
+result.complete                                                # False if a timeout cut any pair
 result.is_subclass("http://ex.org/Sub", "http://ex.org/Sup")   # -> bool
 result.direct_subsumers("http://ex.org/Sub")                   # -> list[str]
+
+# Tune the budgets (ms) — each cut pair defaults to "not subsumed" (sound); 0 disables a bound:
+rustdl.classify("ontology.ofn", per_pair_timeout_ms=25, global_deadline_ms=30000)
+rustdl.classify("ontology.ofn", per_pair_timeout_ms=0, global_deadline_ms=0)   # unbounded = complete
 
 rustdl.is_consistent("ontology.ofn")   # -> bool
 rustdl.debug("ontology.ofn")           # consistency + root/derived unsat + justifications + repairs

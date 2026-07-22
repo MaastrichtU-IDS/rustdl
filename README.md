@@ -16,6 +16,8 @@ with first-class data properties. Its defining property is **soundness**: every
 reported subsumption is a genuine entailment.
 
 - **Sound (FP = 0).** No false-positive subsumption on any measured ontology.
+- **Consistency** via a consequence-based ABox-saturation pre-check plus the
+  tableau.
 - **Explains *and* debugs — a full suite**, every result sound by construction
   (justifications and repairs are verified against the reasoner):
   - `justify` — a minimal responsible-axiom set for any entailment (`--laconic`
@@ -25,8 +27,6 @@ reported subsumption is a genuine entailment.
     **derived** collateral ("where to start fixing").
   - `repair` — minimal, verified axiom-removal sets to *break* an entailment.
   - `report` — a self-contained HTML debugging report combining all of the above.
-- **Consistency** via a consequence-based ABox-saturation pre-check plus the
-  tableau.
 
 **Completeness is partial** — the default classifier is empirically near-complete
 across the measured corpus but not *provably* complete in general (it trusts the

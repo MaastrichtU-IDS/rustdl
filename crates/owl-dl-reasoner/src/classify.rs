@@ -1932,6 +1932,26 @@ pub(crate) fn classify_top_down_internal(
     let defined_verify_mode = crate::classify_defined_sweep_enabled();
     let defined_set: std::collections::HashSet<usize> = defined_sups.iter().copied().collect();
     for &sup in &sweep_sups {
+        // Global-deadline bail (BEFORE the O(n) candidate enumeration below):
+        // once the aggregate deadline passes, abandon the rest of the sweep.
+        // The old code `continue`d through every remaining sup — enumerating
+        // O(n) candidates each (O(n²) total) and materializing up to O(n²)
+        // undecided-pair ids into `timed_out_pair_ids` — a multi-minute /
+        // multi-GB pathology on large out-of-EL ontologies (DL-approximated
+        // SNOMED `ore_ont_3215`: 3.3B pairs / ~26 GB / +227 s past a 90 s
+        // budget). Bail instead, recording the unswept sups so the hierarchy is
+        // flagged INCOMPLETE (`completeness_guaranteed()` false; the CLI warning
+        // fires). `undecided_pairs()` is then a lower bound, not an exhaustive
+        // enumeration. Sound: the sweep only ADDS oracle-confirmed edges, so
+        // abandoning it only omits subsumptions — a MISS at worst, never an FP.
+        if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+            // One marker (invariant-safe: +1 count, +1 id) then bail — do NOT
+            // enumerate O(n) candidates per remaining sup.
+            let s = u32::try_from(sup).expect("class index fits in u32");
+            stats.timed_out_pairs += 1;
+            stats.timed_out_pair_ids.push((s, s));
+            break;
+        }
         let sup_verify = defined_verify_mode && defined_set.contains(&sup);
         let sup_id =
             owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));
@@ -1958,34 +1978,6 @@ pub(crate) fn classify_top_down_internal(
                 !closure.contains(cand_id, sup_id)
             })
             .collect();
-        // Aggregate-deadline guard (mirrors the tier walk's short-circuit in
-        // `find_direct_parents_top_down`): the sweep previously had no
-        // aggregate guard at all, so on a pathological ontology (e.g.
-        // `ore_ont_10080`) it kept constructing a fresh `HyperEngine` per
-        // candidate — for every `sup` — long after the deadline had passed,
-        // turning a bounded per-pair budget into an effectively unbounded
-        // wall. Placed after the (cheap: BFS + closure lookups, no
-        // `HyperEngine`) candidate enumeration so each not-yet-probed
-        // `(cand, sup)` pair is recorded as timed-out — reporting-only, so
-        // `completeness_guaranteed()`/`undecided_pairs()` reflect the
-        // unverified pairs and the CLI incompleteness warning fires — before
-        // we skip the expensive parallel probe loop. The count bump and the
-        // pair-id push are kept in lockstep (the `undecided_pairs().len() ==
-        // timed_out_pairs` invariant). Sound: the sweep only ADDS
-        // oracle-confirmed edges, so skipping only omits — a MISS at worst,
-        // never an FP.
-        if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
-            stats.timed_out_pairs += candidates.len();
-            stats
-                .timed_out_pair_ids
-                .extend(candidates.iter().map(|&cand| {
-                    (
-                        u32::try_from(cand).expect("class index fits in u32"),
-                        u32::try_from(sup).expect("class index fits in u32"),
-                    )
-                }));
-            continue;
-        }
         let probe_results: Vec<(usize, bool, ClassificationStats)> = candidates
             .par_iter()
             .map(|&cand| {
@@ -2230,6 +2222,11 @@ pub(crate) fn classify_top_down_internal(
     // 3. **Tableau-derived direct supers** from the top-down walk,
     //    transitively closed via BFS over `direct_supers`.
     let mut entailed = EntailmentMatrix::new(n);
+    // Reused BFS-visited buffer with per-row generation stamps: `visited_gen[j]
+    // == gen` means "visited this row". Bumping `gen` resets it in O(1), avoiding
+    // the O(n²) `vec![false; n]`-per-class allocation (fatal on 55k-class onts).
+    let mut visited_gen = vec![0u32; n];
+    let mut cur_gen: u32 = 0;
     for i in 0..n {
         if unsatisfiable_idxs.contains(&i) {
             // Row elided — `Classification::entails` supplies ⊥ ⊑ *.
@@ -2245,22 +2242,20 @@ pub(crate) fn classify_top_down_internal(
             }
         }
         // BFS over direct_supers starting from `i` to pick up the
-        // tableau-derived transitive closure. Tracked via a
-        // `visited` set so we descend through every reached node
-        // exactly once — row `i` may already record `j` from
-        // the closure seed above, but we still need to follow
-        // `direct_supers[j]` to catch tableau-only ancestors of `j`
-        // that aren't on `i`'s closure ray.
-        let mut visited = vec![false; n];
+        // tableau-derived transitive closure. The generation stamp descends
+        // through each reached node exactly once — row `i` may already record
+        // `j` from the closure seed above, but we still follow `direct_supers[j]`
+        // to catch tableau-only ancestors of `j` off `i`'s closure ray.
+        cur_gen += 1;
         let mut frontier: Vec<usize> = direct_supers[i].clone();
         while let Some(j) = frontier.pop() {
-            if visited[j] {
+            if visited_gen[j] == cur_gen {
                 continue;
             }
-            visited[j] = true;
+            visited_gen[j] = cur_gen;
             entailed.insert(i, j);
             for &k in &direct_supers[j] {
-                if !visited[k] {
+                if visited_gen[k] != cur_gen {
                     frontier.push(k);
                 }
             }
@@ -2377,6 +2372,17 @@ fn find_direct_parents_top_down(
 ) -> Result<Vec<usize>, ReasonError> {
     let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
     let n = direct_supers.len();
+    // Global-deadline fast-exit BEFORE cloning `top_level`: under a tight budget
+    // most classes stay unplaced/top-level, so `top_level` can be ~n; cloning it
+    // per class (`to_vec()` below) would be O(n²) even though every post-deadline
+    // walk immediately bails. Return one (c,c) marker (invariant-safe: +1 count,
+    // +1 id) to flag `c` incomplete. Sound — the partial hierarchy only omits.
+    if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+        let cu = u32::try_from(c).expect("class index fits in u32");
+        stats.timed_out_pairs += 1;
+        stats.timed_out_pair_ids.push((cu, cu));
+        return Ok(Vec::new());
+    }
     let mut frontier: Vec<usize> = top_level.to_vec();
     // Phase 6: dedupe the walk. Dense subsumer lattices (e.g. GALEN's
     // 2748-class hierarchy) reach the same candidate via many parent
@@ -2393,17 +2399,22 @@ fn find_direct_parents_top_down(
             continue;
         }
         visited[d] = true;
-        // Global deadline short-circuit: if the budget has expired, flag
-        // this candidate undecided rather than paying for a probe that would
-        // instant-timeout anyway. Mark visited first so duplicate entries in
-        // the frontier don't double-count.
+        // Global-deadline bail: once the budget expires, abandon the REST of
+        // `c`'s top-down walk instead of recording every remaining (c,d')
+        // candidate. The old `continue` recorded one undecided pair per
+        // frontier candidate — O(n) per class × n classes = O(n²) pairs
+        // materialized into `timed_out_pair_ids` (ore_ont_3215: 1.3B pairs /
+        // 23 GB / minutes past the deadline). Record ONE real undecided pair
+        // (c,d) and `break`: bounded to ≤ n markers, keeps the
+        // `undecided_pairs().len() == timed_out_pairs` invariant, flags the
+        // hierarchy INCOMPLETE. Sound — the partial result only omits.
         if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
             stats.timed_out_pairs += 1;
             stats.timed_out_pair_ids.push((
                 u32::try_from(c).expect("class index fits in u32"),
                 u32::try_from(d).expect("class index fits in u32"),
             ));
-            continue;
+            break;
         }
         let d_id = owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
         let subsumed = if closure.contains(c_id, d_id) {

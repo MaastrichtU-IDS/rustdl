@@ -4,6 +4,33 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.34] — 2026-07-22
+
+### Fixed
+
+- **Realization / consistency / satisfiability hang on disjunction-dense
+  ontologies with defined classes ([#35]).** `is_consistent`,
+  `is_class_satisfiable`, and un-timed `realize` (the query paths with no
+  deadline) could hang indefinitely (>300 s) on a small ontology whose
+  completion graph is bounded by pair-blocking (~200–330 nodes) but whose
+  `EquivalentClasses` reverse-directions plus a class-union absorb into several
+  open `⊔`s per node. A clash-free model there needs hundreds of sequential
+  `⊔`/`choose` decisions — more than the old `MAX_SEARCH_DEPTH = 256` recursion
+  cap. A depth cutoff returns `DepthLimit`, which carries no clash dependencies,
+  so dependency-directed back-jumping could not prune and the driver enumerated
+  the exponential `⊔`-space without terminating. Termination on these paths now
+  rests on pair-blocking (a finite graph ⇒ a finite decision count): the search
+  runs with a deep cap on a dedicated large-stack thread, so blocking does the
+  bounding and the recursion stays stack-safe. Deadline-bounded paths
+  (classification pairs, timed realize probes) are unchanged — they check the
+  deadline at every recursive entry, cannot hang, and a cap hit is a sound MISS —
+  so the classify hot loop and its benchmark walls are untouched. This is the
+  tableau counterpart to the 0.3.31 realize saturation fast-path: that one keeps
+  realize off the tableau on the EL/Horn fragment; this one fixes the tableau
+  itself for the off-fragment case.
+
+[#35]: https://github.com/MaastrichtU-IDS/rustdl/issues/35
+
 ## [0.3.33] — 2026-07-22
 
 ### Fixed

@@ -4,6 +4,26 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.32] — 2026-07-22
+
+### Added
+
+- **`classify --global-timeout-ms N`** (CLI). A total wall-clock budget for the
+  whole classification (`0` = unbounded, the default), complementing the existing
+  `--pair-timeout-ms`. Each probe is cut at the smaller of the per-pair budget and
+  the time left on the global deadline; pairs still undecided at the deadline
+  default to "not subsumed" — a sound under-approximation (FP=0, real subsumptions
+  may be missed). Wires the reasoner's existing `classify_with_budget` entry point
+  to the CLI; the `INCOMPLETE` warning now names whichever bound was hit.
+
+### Changed
+
+- **Python `classify` / `classify_bytes`: timeout kwarg renamed
+  `global_deadline_ms` → `global_timeout_ms`** for parity with the CLI flag and
+  with `per_pair_timeout_ms`. `global_deadline_ms` is kept as an accepted
+  **deprecated alias** (emits `DeprecationWarning`), so existing code keeps working
+  — no breaking change.
+
 ## [0.3.31] — 2026-07-21
 
 ### Fixed

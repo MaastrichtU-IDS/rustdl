@@ -50,6 +50,223 @@ const MAX_BODY_VARS: usize = 8;
 /// reached well under this; hitting it yields `Stalled`, not `Unsat`.
 const FIXPOINT_ITERS: usize = 100_000;
 
+/// P0 diagnostic probe for the non-Horn fire-loop trigger-index plan
+/// (`docs/superpowers/plans/2026-07-22-match-body-trigger-index-plan.md`).
+///
+/// Process-wide, env-gated (`RUSTDL_NONHORN_PROBE=1`, default OFF) counters
+/// attributing [`HyperEngine::match_body`] calls by CALL SITE and by classify
+/// PHASE, plus the non-Horn fire-loop opportunity counters (§P0b). Read-only
+/// diagnostics: with the flag off (the default) every record call is a single
+/// cached-`bool` load + branch, no counter is touched, and behaviour is
+/// byte-identical; with the flag on, the report goes to STDERR only.
+pub mod nonhorn_probe {
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
+    /// Phase tags, set by the classify orchestrator around its sequential
+    /// phases. `OTHER` covers everything outside classify (consistency,
+    /// direct probes, tests).
+    pub const PHASE_OTHER: u8 = 0;
+    /// Label-cache build (`classify_labels` per class) — PRODUCTIVE work,
+    /// NOT reclaimable headroom for the trigger index (see plan §P0a).
+    pub const PHASE_LABEL_BUILD: u8 = 1;
+    /// Per-class unsat probes (mostly label-cache reuse).
+    pub const PHASE_UNSAT_PROBE: u8 = 2;
+    /// Tier walk (`find_direct_parents_top_down`) — the index-reclaimable phase.
+    pub const PHASE_TIER_WALK: u8 = 3;
+    /// Defined-sup / defined-sub sweeps after the tier walk.
+    pub const PHASE_SWEEP: u8 = 4;
+    const NUM_PHASES: usize = 5;
+    const PHASE_NAMES: [&str; NUM_PHASES] =
+        ["other", "label-build", "unsat-probe", "tier-walk", "sweep"];
+
+    /// `match_body` call sites (see plan §P0a).
+    /// The MRV non-Horn fire loop in `find_open_disjunction` (hyper.rs:2759
+    /// loop, call at :2768) — the site the trigger-index plan targets.
+    pub(crate) const SITE_NONHORN_LOOP: usize = 0;
+    /// The MRV-off full-scan fallback in `find_open_disjunction` (hyper.rs:2824).
+    pub(crate) const SITE_FULL_SCAN: usize = 1;
+    /// The deterministic Horn application `fire_clause` (hyper.rs:3517).
+    pub(crate) const SITE_FIRE_CLAUSE: usize = 2;
+    const NUM_SITES: usize = 3;
+    const SITE_NAMES: [&str; NUM_SITES] =
+        ["nonhorn-loop(2759)", "full-scan(2824)", "fire-clause(3517)"];
+
+    static INIT: Once = Once::new();
+    static ON: AtomicBool = AtomicBool::new(false);
+    static PHASE: AtomicU8 = AtomicU8::new(PHASE_OTHER);
+
+    type PerSitePhase = [[AtomicU64; NUM_PHASES]; NUM_SITES];
+    type PerPhase = [AtomicU64; NUM_PHASES];
+    const fn per_phase() -> PerPhase {
+        [const { AtomicU64::new(0) }; NUM_PHASES]
+    }
+    const fn per_site_phase() -> PerSitePhase {
+        [const { [const { AtomicU64::new(0) }; NUM_PHASES] }; NUM_SITES]
+    }
+
+    /// `match_body` invocations, by site × phase.
+    static MB_CALLS: PerSitePhase = per_site_phase();
+    /// Wall nanos spent inside `match_body`, by site × phase (measured only
+    /// when the probe is on — the two clock reads perturb absolute time, so
+    /// use these for RELATIVE shares).
+    static MB_NANOS: PerSitePhase = per_site_phase();
+    /// `match_body` calls returning `None` (unsupported shape) or an empty
+    /// binding vec — definitely wasted work, by site × phase.
+    static MB_EMPTY: PerSitePhase = per_site_phase();
+
+    // §P0b counters — the non-Horn fire loop (SITE_NONHORN_LOOP) only.
+    /// Loop iterations (clauses considered), by phase.
+    static NONHORN_CONSIDERED: PerPhase = per_phase();
+    /// Considered clauses skipped by the O(1) anchor reject, by phase.
+    static NONHORN_ANCHOR_REJECTED: PerPhase = per_phase();
+    /// Considered clauses with `anchor == None` (never rejectable), by phase.
+    static NONHORN_NONE_ANCHOR: PerPhase = per_phase();
+    /// `match_body` calls that produced ≥1 binding whose head was NOT already
+    /// satisfied (a genuinely open ⊔ — useful work), by phase.
+    static NONHORN_USEFUL: PerPhase = per_phase();
+
+    /// Whether the probe is on (`RUSTDL_NONHORN_PROBE=1`). Cached on first
+    /// read; a single relaxed load afterwards.
+    pub fn enabled() -> bool {
+        INIT.call_once(|| {
+            if std::env::var_os("RUSTDL_NONHORN_PROBE").is_some_and(|v| v == "1") {
+                ON.store(true, Ordering::Relaxed);
+            }
+        });
+        ON.load(Ordering::Relaxed)
+    }
+
+    /// Test-only override (bypasses the env read; keeps unit tests
+    /// independent of process env / test ordering).
+    #[cfg(test)]
+    pub(crate) fn set_enabled_for_test(v: bool) {
+        INIT.call_once(|| {});
+        ON.store(v, Ordering::Relaxed);
+    }
+
+    /// Tag the current classify phase (no-op while the probe is off).
+    pub fn set_phase(p: u8) {
+        if enabled() {
+            PHASE.store(p, Ordering::Relaxed);
+        }
+    }
+
+    fn phase_idx() -> usize {
+        (PHASE.load(Ordering::Relaxed) as usize).min(NUM_PHASES - 1)
+    }
+
+    /// Record one `match_body` call. `t0` = pre-call timestamp (`Some` only
+    /// when the probe is on); `empty` = returned `None`/empty bindings.
+    pub(crate) fn record_match_body(site: usize, t0: Option<std::time::Instant>, empty: bool) {
+        let p = phase_idx();
+        MB_CALLS[site][p].fetch_add(1, Ordering::Relaxed);
+        if let Some(t0) = t0 {
+            let ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            MB_NANOS[site][p].fetch_add(ns, Ordering::Relaxed);
+        }
+        if empty {
+            MB_EMPTY[site][p].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Record one non-Horn fire-loop iteration (clause considered).
+    pub(crate) fn record_considered(none_anchor: bool) {
+        let p = phase_idx();
+        NONHORN_CONSIDERED[p].fetch_add(1, Ordering::Relaxed);
+        if none_anchor {
+            NONHORN_NONE_ANCHOR[p].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Record an anchor-rejected non-Horn clause.
+    pub(crate) fn record_anchor_rejected() {
+        NONHORN_ANCHOR_REJECTED[phase_idx()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a useful (open-⊔-producing) fire-loop `match_body` call.
+    pub(crate) fn record_useful() {
+        NONHORN_USEFUL[phase_idx()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn read(c: &PerPhase) -> u64 {
+        c.iter().map(|a| a.load(Ordering::Relaxed)).sum()
+    }
+
+    /// Total fire-loop `match_body` calls across phases (test observability).
+    #[cfg(test)]
+    pub(crate) fn nonhorn_match_body_calls_for_test() -> u64 {
+        MB_CALLS[SITE_NONHORN_LOOP]
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// Total fire-loop iterations across phases (test observability).
+    #[cfg(test)]
+    pub(crate) fn nonhorn_considered_for_test() -> u64 {
+        read(&NONHORN_CONSIDERED)
+    }
+
+    /// Render the full counter report (stderr-destined; stdout stays clean).
+    pub fn report() -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from("nonhorn_probe report (RUSTDL_NONHORN_PROBE=1)\n");
+        let _ = writeln!(
+            out,
+            "{:<22} {:<12} {:>14} {:>14} {:>14}",
+            "site", "phase", "mb_calls", "mb_empty", "mb_self_ms"
+        );
+        for s in 0..NUM_SITES {
+            for p in 0..NUM_PHASES {
+                let calls = MB_CALLS[s][p].load(Ordering::Relaxed);
+                if calls == 0 {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "{:<22} {:<12} {:>14} {:>14} {:>14}",
+                    SITE_NAMES[s],
+                    PHASE_NAMES[p],
+                    calls,
+                    MB_EMPTY[s][p].load(Ordering::Relaxed),
+                    MB_NANOS[s][p].load(Ordering::Relaxed) / 1_000_000,
+                );
+            }
+        }
+        let _ = writeln!(
+            out,
+            "{:<12} {:>16} {:>16} {:>14} {:>14} {:>14} {:>14}",
+            "fire-loop",
+            "considered",
+            "anchor_rejected",
+            "none_anchor",
+            "mb_calls",
+            "mb_empty",
+            "mb_useful"
+        );
+        for p in 0..NUM_PHASES {
+            let considered = NONHORN_CONSIDERED[p].load(Ordering::Relaxed);
+            if considered == 0 {
+                continue;
+            }
+            let _ = writeln!(
+                out,
+                "{:<12} {:>16} {:>16} {:>14} {:>14} {:>14} {:>14}",
+                PHASE_NAMES[p],
+                considered,
+                NONHORN_ANCHOR_REJECTED[p].load(Ordering::Relaxed),
+                NONHORN_NONE_ANCHOR[p].load(Ordering::Relaxed),
+                MB_CALLS[SITE_NONHORN_LOOP][p].load(Ordering::Relaxed),
+                MB_EMPTY[SITE_NONHORN_LOOP][p].load(Ordering::Relaxed),
+                NONHORN_USEFUL[p].load(Ordering::Relaxed),
+            );
+        }
+        out
+    }
+}
+
 /// Node id in the hyper completion graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HNode(u32);
@@ -2744,6 +2961,9 @@ impl<'c> HyperEngine<'c> {
 
     fn find_open_disjunction(&mut self) -> Option<(usize, HNode, Binding)> {
         if self.mrv_ordering {
+            // P0 probe (`RUSTDL_NONHORN_PROBE=1`, default OFF): one cached-bool
+            // load per `find_open_disjunction` call; flag-off records nothing.
+            let probe = nonhorn_probe::enabled();
             let mut best: Option<(usize, (usize, HNode, Binding))> = None; // (live_count, candidate)
             for idx in 0..self.nodes.len() {
                 let node = HNode(u32::try_from(idx).expect("fits u32"));
@@ -2757,21 +2977,38 @@ impl<'c> HyperEngine<'c> {
                 // first-found tie-break is identical to the old full scan.
                 let nonhorn = std::sync::Arc::clone(&self.indexes);
                 for &(ci, anchor) in &nonhorn.nonhorn {
+                    if probe {
+                        nonhorn_probe::record_considered(anchor.is_none());
+                    }
                     if let Some(a) = anchor
                         && !self.nodes[node.index()].has(a)
                     {
+                        if probe {
+                            nonhorn_probe::record_anchor_rejected();
+                        }
                         continue;
                     }
                     if self.is_tautology_clause(ci) {
                         continue;
                     }
-                    let Some(bindings) = self.match_body(ci, node) else {
+                    let t0 = if probe { Some(Instant::now()) } else { None };
+                    let bindings_opt = self.match_body(ci, node);
+                    if probe {
+                        nonhorn_probe::record_match_body(
+                            nonhorn_probe::SITE_NONHORN_LOOP,
+                            t0,
+                            bindings_opt.as_ref().is_none_or(std::vec::Vec::is_empty),
+                        );
+                    }
+                    let Some(bindings) = bindings_opt else {
                         continue;
                     };
+                    let mut useful = false;
                     for binding in bindings {
                         if self.any_head_satisfied(ci, node, &binding) {
                             continue;
                         }
+                        useful = true;
                         let live = (0..self.clauses[ci].head.len())
                             .filter(|&k| !self.head_atom_satisfied(ci, k, node, &binding))
                             .count();
@@ -2782,6 +3019,9 @@ impl<'c> HyperEngine<'c> {
                         if better {
                             best = Some((live, (ci, node, binding)));
                         }
+                    }
+                    if probe && useful {
+                        nonhorn_probe::record_useful();
                     }
                 }
             }
@@ -2821,7 +3061,17 @@ impl<'c> HyperEngine<'c> {
                 if self.is_tautology_clause(ci) {
                     continue;
                 }
-                let Some(bindings) = self.match_body(ci, node) else {
+                let probe = nonhorn_probe::enabled();
+                let t0 = if probe { Some(Instant::now()) } else { None };
+                let bindings_opt = self.match_body(ci, node);
+                if probe {
+                    nonhorn_probe::record_match_body(
+                        nonhorn_probe::SITE_FULL_SCAN,
+                        t0,
+                        bindings_opt.as_ref().is_none_or(std::vec::Vec::is_empty),
+                    );
+                }
+                let Some(bindings) = bindings_opt else {
                     continue;
                 };
                 for binding in bindings {
@@ -3514,7 +3764,17 @@ impl<'c> HyperEngine<'c> {
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
-        let Some(bindings) = self.match_body(ci, node) else {
+        let probe = nonhorn_probe::enabled();
+        let t0 = if probe { Some(Instant::now()) } else { None };
+        let bindings_opt = self.match_body(ci, node);
+        if probe {
+            nonhorn_probe::record_match_body(
+                nonhorn_probe::SITE_FIRE_CLAUSE,
+                t0,
+                bindings_opt.as_ref().is_none_or(std::vec::Vec::is_empty),
+            );
+        }
+        let Some(bindings) = bindings_opt else {
             return FireOutcome::NoChange;
         };
         let mut changed = false;
@@ -6455,6 +6715,54 @@ mod tests {
         assert_eq!(
             on.find_open_disjunction_for_test().map(|(ci, _, _)| ci),
             Some(1)
+        );
+    }
+
+    /// P0 probe: with the flag forced ON, the non-Horn fire loop populates the
+    /// `nonhorn_probe` counters (considered + `match_body` at the 2759 site);
+    /// with it OFF (the default), the counters stay untouched. Delta-based
+    /// (`>` / `==` against a snapshot) so parallel tests — which run with the
+    /// probe OFF and record nothing — cannot perturb it beyond monotone
+    /// growth while ON.
+    #[test]
+    fn nonhorn_probe_counters_populate_when_enabled() {
+        let (a, e1, e2) = (cls(0), cls(1), cls(2));
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(a, X)],
+            head: vec![Atom::Class(e1, X), Atom::Class(e2, X)],
+        }];
+
+        // OFF (default): the fire loop must record nothing.
+        nonhorn_probe::set_enabled_for_test(false);
+        let considered0 = nonhorn_probe::nonhorn_considered_for_test();
+        let calls0 = nonhorn_probe::nonhorn_match_body_calls_for_test();
+        let mut off = HyperEngine::new(&clauses, a).with_mrv_ordering();
+        off.horn_fixpoint(FIXPOINT_ITERS);
+        assert!(off.find_open_disjunction_for_test().is_some());
+        assert_eq!(
+            nonhorn_probe::nonhorn_considered_for_test(),
+            considered0,
+            "flag-off run must not record considered clauses"
+        );
+        assert_eq!(
+            nonhorn_probe::nonhorn_match_body_calls_for_test(),
+            calls0,
+            "flag-off run must not record match_body calls"
+        );
+
+        // ON: the same scan must record ≥1 considered + ≥1 match_body call.
+        nonhorn_probe::set_enabled_for_test(true);
+        let mut on = HyperEngine::new(&clauses, a).with_mrv_ordering();
+        on.horn_fixpoint(FIXPOINT_ITERS);
+        assert!(on.find_open_disjunction_for_test().is_some());
+        nonhorn_probe::set_enabled_for_test(false);
+        assert!(
+            nonhorn_probe::nonhorn_considered_for_test() > considered0,
+            "flag-on run must record considered clauses"
+        );
+        assert!(
+            nonhorn_probe::nonhorn_match_body_calls_for_test() > calls0,
+            "flag-on run must record match_body calls at the non-Horn site"
         );
     }
 

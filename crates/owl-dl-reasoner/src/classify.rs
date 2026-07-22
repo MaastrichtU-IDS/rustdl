@@ -1575,6 +1575,12 @@ pub(crate) fn classify_top_down_internal(
     // Disabled via `RUSTDL_LABEL_HEURISTIC=0`: every slot becomes
     // `NoVerdict`, so the walk falls through to the wedge/tableau
     // path uniformly (used by tests that exercise the wedge directly).
+    // P0 probe (RUSTDL_NONHORN_PROBE=1, default OFF): tag the wedge's
+    // match_body counters with the classify phase. Phases are sequential
+    // (each par_iter joins before the next starts), so a process-wide tag
+    // is race-free. No-op when the probe is off.
+    use owl_dl_tableau::hyper::nonhorn_probe;
+    nonhorn_probe::set_phase(nonhorn_probe::PHASE_LABEL_BUILD);
     let label_cache_start = Instant::now();
     let label_cache: Vec<crate::LabelOracle> = if crate::label_heuristic_enabled() {
         // Phase 8: cache-build deadline is independent of per_pair_timeout.
@@ -1624,6 +1630,7 @@ pub(crate) fn classify_top_down_internal(
     stats.label_cache_build_wall_ms =
         u64::try_from(label_cache_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
+    nonhorn_probe::set_phase(nonhorn_probe::PHASE_UNSAT_PROBE);
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -1781,6 +1788,7 @@ pub(crate) fn classify_top_down_internal(
                 .collect()
         };
 
+    nonhorn_probe::set_phase(nonhorn_probe::PHASE_TIER_WALK);
     for tier in &tiers {
         // Each tier member walks the snapshot of `direct_children`
         // + `top_level` as of tier entry and returns its
@@ -1851,6 +1859,7 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    nonhorn_probe::set_phase(nonhorn_probe::PHASE_SWEEP);
     // Defined-sup sweep: same-tier inferred subsumptions are missed by
     // the parallel walk above ("two same-tier classes don't see each
     // other"). Empirically on pizza, **every** such missed sup is a
@@ -2221,6 +2230,7 @@ pub(crate) fn classify_top_down_internal(
     // 2. **Reflexive + unsat-row trivial fill.**
     // 3. **Tableau-derived direct supers** from the top-down walk,
     //    transitively closed via BFS over `direct_supers`.
+    nonhorn_probe::set_phase(nonhorn_probe::PHASE_OTHER);
     let mut entailed = EntailmentMatrix::new(n);
     // Reused BFS-visited buffer with per-row generation stamps: `visited_gen[j]
     // == gen` means "visited this row". Bumping `gen` resets it in O(1), avoiding
@@ -2277,6 +2287,12 @@ pub(crate) fn classify_top_down_internal(
         .saturating_sub(stats.label_cache_build_wall_ms)
         .saturating_sub(stats.snapshot_cache_build_wall_ms)
         .saturating_sub(stats.snapshot_replay_wall_ms);
+
+    // P0 probe report — STDERR only, so classify stdout stays byte-identical
+    // even with the probe on.
+    if nonhorn_probe::enabled() {
+        eprintln!("{}", nonhorn_probe::report());
+    }
 
     Ok(Classification {
         classes,

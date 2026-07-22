@@ -21,11 +21,13 @@ with first-class data properties.
   complete by construction; beyond it the classifier trusts the wedge's `Sat`
   verdicts — empirically near-complete on the measured corpus, not *provably*
   complete.
+- **Proofs.** `prove` emits a step-level, rule-by-rule proof tree for an
+  entailment — a checkable certificate of soundness on the EL/Horn fragment
+  (elsewhere, an axiom-level justification).
 - **Explains *and* debugs — a full suite**, every result sound by construction
   (justifications and repairs are verified against the reasoner):
   - `justify` — a minimal responsible-axiom set for any entailment (`--laconic`
     weakens each axiom to its responsible *fragment*).
-  - `prove` — a step-level proof tree.
   - `diagnose` — partitions unsatisfiable classes into **root** causes vs
     **derived** collateral ("where to start fixing").
   - `repair` — minimal, verified axiom-removal sets to *break* an entailment.

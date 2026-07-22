@@ -3496,10 +3496,33 @@ use owl_dl_core::{
 };
 use owl_dl_tableau::{NodeId, TableauContext};
 
-/// Recursion depth cap for the search driver — generous and
-/// defensive. Real ALCHIQ inputs terminate via pair blocking long
-/// before this matters.
+/// Recursion depth cap for the search driver on the **deadline-bounded**
+/// query paths (classification pairs, timed realize probes). Those paths
+/// cannot hang — `search` re-checks the deadline at every recursive entry —
+/// so a modest cap is fine: hitting it yields `DepthLimit`, which the caller
+/// maps to a sound MISS/NoVerdict. Kept small so it runs on the default
+/// (rayon-worker) stack with zero overhead.
 const MAX_SEARCH_DEPTH: usize = 256;
+
+/// Recursion depth cap for the **deadline-free** query paths (`is_consistent`,
+/// `is_class_satisfiable`, un-timed realize). Termination on these paths must
+/// come from pair-blocking (which bounds the completion *graph*), NOT from an
+/// artificial recursion limit — the ⊔/choose *decision count* along a single
+/// branch is ≈ nodes × disjunctions-per-node, which is finite but easily runs
+/// into the hundreds or more on a blocking-bounded-but-disjunction-dense
+/// ontology (issue #35: a 5-axiom core needs ~650). The old 256 cut such a
+/// branch off as `DepthLimit`; with no clash deps to back-jump on, the driver
+/// then enumerated the exponential ⊔-space and never returned (>300 s hang).
+/// Set far above any realistic blocking-bounded decision count; the sole
+/// remaining bound is blocking, and [`DEEP_SEARCH_STACK_BYTES`] gives the
+/// recursion room so this depth cannot overflow the stack.
+const DEEP_SEARCH_DEPTH: usize = 1_000_000;
+
+/// Dedicated stack size for the deadline-free deep search (see
+/// [`DEEP_SEARCH_DEPTH`]). The recursive `search`/`branch` pair uses one frame
+/// per ⊔/choose decision; 1 GiB of (lazily-committed) stack comfortably covers
+/// any depth pair-blocking can actually reach on a real ontology.
+const DEEP_SEARCH_STACK_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Per-query instrumentation: did the EL closure alone answer this
 /// query, or did the tableau have to run? Returned alongside the
@@ -5241,7 +5264,28 @@ where
     let test_root = ctx.new_node();
     ctx.add_label(test_root, test_concept);
 
-    let outcome = owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH);
+    // Deadline-bounded paths (classify pairs, timed realize probes) run inline
+    // on the current (possibly rayon-worker) stack with the modest cap — they
+    // cannot hang (the deadline is checked at every recursive entry) and a cap
+    // hit is a sound MISS. Deadline-free paths (`is_consistent`,
+    // `is_class_satisfiable`, un-timed realize) instead run with a deep cap on
+    // a large dedicated stack, so termination rests on pair-blocking rather
+    // than an artificial recursion limit — the issue-#35 hang was this cap
+    // cutting a blocking-bounded-but-deep branch and destroying back-jumping.
+    let outcome = if deadline.is_some() {
+        owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH)
+    } else {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(DEEP_SEARCH_STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    owl_dl_tableau::search(&mut ctx, DEEP_SEARCH_DEPTH)
+                })
+                .expect("spawn deep tableau search thread")
+                .join()
+                .expect("deep tableau search thread panicked")
+        })
+    };
     match outcome {
         owl_dl_tableau::SearchVerdict::Sat => Ok(Some(true)),
         owl_dl_tableau::SearchVerdict::Unsat(_) => Ok(Some(false)),

@@ -1,0 +1,14 @@
+Prefix(:=<http://example.org/hang2#>)
+Ontology(<http://example.org/hang2>
+  Declaration(Class(:Person)) Declaration(Class(:Man)) Declaration(Class(:Woman))
+  Declaration(Class(:Ancestor)) Declaration(Class(:Female))
+  Declaration(ObjectProperty(:hasMother)) Declaration(ObjectProperty(:hasSex))
+  Declaration(ObjectProperty(:hasParent)) Declaration(ObjectProperty(:isAncestorOf))
+  Declaration(NamedIndividual(:a))
+
+  SubClassOf(:Person ObjectSomeValuesFrom(:hasMother :Woman))
+  EquivalentClasses(:Person ObjectUnionOf(:Man :Woman))
+  EquivalentClasses(:Ancestor ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:isAncestorOf :Person)))
+  EquivalentClasses(:Woman ObjectIntersectionOf(:Person ObjectSomeValuesFrom(:hasSex :Female)))
+  ObjectPropertyDomain(:hasParent :Person)
+)

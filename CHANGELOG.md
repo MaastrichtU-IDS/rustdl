@@ -4,6 +4,32 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.33] — 2026-07-22
+
+### Fixed
+
+- **`--global-timeout-ms` now actually bounds the reasoning wall** (it didn't on
+  large out-of-EL ontologies in 0.3.32). Root cause (profiler-identified): `decide`
+  cloned the entire `ConceptPool` (~200k concepts) plus set up the tableau context
+  *before* checking the deadline, so under a global budget the tens of thousands of
+  post-deadline probes each paid a full pool clone even though the search would
+  instant-timeout. Now `decide` fast-exits when the deadline is already spent,
+  before the clone. Also bounded the post-deadline `timed_out_pair_ids`
+  materialization (was O(n²): ore_ont_3215 built a 3.3-billion-tuple vector) — the
+  sweep/tier-walk record one marker per class and break; the entailment-matrix BFS
+  uses a generation-stamped visited buffer. **ore_ont_3215 (54,973 classes) at
+  `--global-timeout-ms 30000`: 317 s / 26 GB → 42 s / 3 GB**; several other
+  disjunctive giants recover from timeout. **Verdict-preserving: 1630/1630 ORE
+  ontologies byte-identical before-vs-after on default (no-deadline) runs** (the
+  fast-exit only fires when the deadline is already expired). See
+  `docs/2026-07-22-global-timeout-fastbail.md`.
+
+### Note
+
+- The 0.3.32 description of `--global-timeout-ms` as bounding "total time" was
+  overstated and is corrected: it bounds the *reasoning/probing* wall, not the
+  fixed saturation + preprocessing overhead (which is not deadline-gated).
+
 ## [0.3.32] — 2026-07-22
 
 ### Added

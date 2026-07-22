@@ -164,9 +164,11 @@ one):
 
 - `--pair-timeout-ms N` — cap each pairwise tableau probe (default 1000; `0` =
   unbounded). Good for pathological SROIQ where a few pairs never terminate.
-- `--global-timeout-ms N` — cap the **total** wall for the whole classify,
-  regardless of pair count (`0` = unbounded). A hard "give me whatever you have in
-  N ms" bound; each probe is cut at the smaller of the two budgets.
+- `--global-timeout-ms N` — bound the **reasoning** wall for the whole classify
+  (`0` = unbounded): each probe is cut at the smaller of the per-pair and global
+  budgets, so total probing can't grow with the pair count. The fixed saturation +
+  preprocessing overhead (seconds to tens of seconds on very large ontologies) is
+  *not* deadline-gated, so the wall floor isn't zero.
 - `--saturation-only` — skip the tableau entirely and report only the EL closure.
 
 Any run that hits a bound prints a prominent `INCOMPLETE` warning to stderr.

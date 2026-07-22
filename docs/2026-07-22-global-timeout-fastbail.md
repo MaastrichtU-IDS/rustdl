@@ -56,12 +56,14 @@ Before/after, `--global-timeout-ms 60000` (external 400 s cap):
 | ore_ont_13052 | TIMEOUT400 / 51 GB | **2:48 / 50 GB** |
 | ore_ont_12128 | TIMEOUT400 / 7 GB | TIMEOUT400 / 7 GB (unchanged) |
 
-**Verdict-preserving:** 0 output diffs before-vs-after across 40 ORE onts on
-default (no-deadline) runs — the fast-exit only fires when the deadline is already
-expired, which previously produced the same timeout `None` after a wasted clone.
-Full workspace test suite green; fmt/clippy clean; the
-`global_deadline_is_sound_and_bounded` invariant test
-(`undecided_pairs().len() == timed_out_pairs`) passes.
+**Verdict-preserving — corpus-wide gate (pass 1):** before-vs-after byte-diff over
+**all 1630 completing ORE onts** at default settings (single-thread, sorted classify
+output, hash-compared): **1630/1630 identical, 0 diffs.** The fast-exit only fires
+when the deadline is already expired, which previously produced the same timeout
+`None` after a wasted clone, so no verdict can change on a non-deadline run. Full
+workspace test suite green; fmt/clippy clean; the `global_deadline_is_sound_and_bounded`
+invariant test (`undecided_pairs().len() == timed_out_pairs`) passes. Harness:
+`pass1_one.sh` / `pass1_results.tsv` on the share drive.
 
 ## Residual (follow-up)
 

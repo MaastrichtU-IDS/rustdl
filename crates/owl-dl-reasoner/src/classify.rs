@@ -2288,10 +2288,13 @@ pub(crate) fn classify_top_down_internal(
         .saturating_sub(stats.snapshot_cache_build_wall_ms)
         .saturating_sub(stats.snapshot_replay_wall_ms);
 
-    // P0 probe report — STDERR only, so classify stdout stays byte-identical
-    // even with the probe on.
+    // P0 probe reports — STDERR only, so classify stdout stays byte-identical
+    // even with the probes on.
     if nonhorn_probe::enabled() {
         eprintln!("{}", nonhorn_probe::report());
+    }
+    if owl_dl_tableau::hyper::horn_dispatch_probe::enabled() {
+        eprintln!("{}", owl_dl_tableau::hyper::horn_dispatch_probe::report());
     }
 
     Ok(Classification {

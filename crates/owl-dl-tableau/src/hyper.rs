@@ -76,8 +76,8 @@ pub mod nonhorn_probe {
     pub const PHASE_TIER_WALK: u8 = 3;
     /// Defined-sup / defined-sub sweeps after the tier walk.
     pub const PHASE_SWEEP: u8 = 4;
-    const NUM_PHASES: usize = 5;
-    const PHASE_NAMES: [&str; NUM_PHASES] =
+    pub(crate) const NUM_PHASES: usize = 5;
+    pub(crate) const PHASE_NAMES: [&str; NUM_PHASES] =
         ["other", "label-build", "unsat-probe", "tier-walk", "sweep"];
 
     /// `match_body` call sites (see plan §P0a).
@@ -145,10 +145,14 @@ pub mod nonhorn_probe {
         ON.store(v, Ordering::Relaxed);
     }
 
-    /// Tag the current classify phase (no-op while the probe is off).
+    /// Tag the current classify phase. The tag itself is always stored (one
+    /// relaxed atomic store per classify phase transition — no observable
+    /// behaviour change) so sibling probes ([`super::horn_dispatch_probe`])
+    /// can share it; the stderr marker prints only when this probe or the
+    /// standalone marker gate (`RUSTDL_PHASE_MARKERS=1`) is on.
     pub fn set_phase(p: u8) {
-        if enabled() {
-            PHASE.store(p, Ordering::Relaxed);
+        PHASE.store(p, Ordering::Relaxed);
+        if enabled() || markers_enabled() {
             // Phase-boundary marker (stderr, epoch-stamped) so an external
             // sampler's timestamps can be aligned to classify phases.
             let t = std::time::SystemTime::now()
@@ -161,7 +165,22 @@ pub mod nonhorn_probe {
         }
     }
 
-    fn phase_idx() -> usize {
+    /// Standalone phase-marker gate (`RUSTDL_PHASE_MARKERS=1`): emit the
+    /// epoch-stamped phase-boundary stderr lines WITHOUT the per-call
+    /// counter/timing overhead of the full probe — for clean
+    /// wall-to-completion runs that still need the phase split.
+    pub fn markers_enabled() -> bool {
+        static MINIT: Once = Once::new();
+        static MON: AtomicBool = AtomicBool::new(false);
+        MINIT.call_once(|| {
+            if std::env::var_os("RUSTDL_PHASE_MARKERS").is_some_and(|v| v == "1") {
+                MON.store(true, Ordering::Relaxed);
+            }
+        });
+        MON.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn phase_idx() -> usize {
         (PHASE.load(Ordering::Relaxed) as usize).min(NUM_PHASES - 1)
     }
 
@@ -271,6 +290,315 @@ pub mod nonhorn_probe {
                 MB_EMPTY[SITE_NONHORN_LOOP][p].load(Ordering::Relaxed),
                 NONHORN_USEFUL[p].load(Ordering::Relaxed),
             );
+        }
+        out
+    }
+}
+
+/// P0 diagnostic probe for the Horn `fire_clause` dispatch-precision plan
+/// (`docs/superpowers/plans/2026-07-22-horn-firecclause-dispatch-precision-plan.md` §3).
+///
+/// Process-wide, env-gated (`RUSTDL_HORN_DISPATCH_PROBE=1`, default OFF)
+/// counters attributing Horn [`HyperEngine::fire_clause`] dispatches by:
+/// - **trigger path** — which `process_event` loop dispatched the clause
+///   (`x_trigger` / `succ_trigger`-at-predecessors / `role_trigger` /
+///   `role_back_trigger` / `inverse_first_trigger` / `NodeNew` empty-body);
+/// - **classify phase** (shared with [`nonhorn_probe`]'s phase tag);
+/// - **clause body-atom count** (plan §3 Q1 — only ≥2-atom bodies can be
+///   gated tighter);
+/// - for `match_body`-EMPTY dispatches, the **missing-atom type** (plan §3
+///   Q2): X-class missing on the fired node vs no structural role binding vs
+///   successor-class constraint rejected — re-derived probe-only by
+///   re-checking the plan / re-running the enumeration without class
+///   constraints;
+/// - a **timed simulation of the proposed pre-dispatch gate** (plan §3 Q3):
+///   plan-fetch + all-X-classes-present check, so its cost and would-skip
+///   rate are measured against the real `match_body` cost.
+///
+/// Flag-off cost is one cached-`bool` load + branch per call site; behaviour
+/// is byte-identical (probe writes go to stderr only). Timing counters are
+/// probe-on only and perturb absolute wall — use them for RELATIVE shares.
+/// The trigger-path tag is a process-wide atomic, so run with
+/// `RAYON_NUM_THREADS=1` for exact path attribution.
+pub mod horn_dispatch_probe {
+    use super::nonhorn_probe::{NUM_PHASES, PHASE_NAMES, phase_idx};
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
+    /// Trigger paths (which `process_event` loop dispatched `fire_clause`).
+    pub(crate) const PATH_OTHER: u8 = 0;
+    /// `x_trigger` loop (`Event::Label`, fired at the labelled node).
+    pub(crate) const PATH_X: u8 = 1;
+    /// `succ_trigger` loop (`Event::Label`, fired at ALL predecessors).
+    pub(crate) const PATH_SUCC: u8 = 2;
+    /// `role_trigger` loop (`Event::Edge`, fired at the edge source).
+    pub(crate) const PATH_ROLE: u8 = 3;
+    /// `role_back_trigger` loop (`Event::Edge`, fired at src's predecessors).
+    pub(crate) const PATH_ROLE_BACK: u8 = 4;
+    /// `inverse_first_trigger` loop (`Event::Edge`, fired at the target).
+    pub(crate) const PATH_INV_FIRST: u8 = 5;
+    /// `empty_body` loop (`Event::NodeNew`).
+    pub(crate) const PATH_NODE_NEW: u8 = 6;
+    const NUM_PATHS: usize = 7;
+    const PATH_NAMES: [&str; NUM_PATHS] = [
+        "other",
+        "x_trigger",
+        "succ_trigger",
+        "role_trigger",
+        "role_back_trigger",
+        "inverse_first",
+        "node_new",
+    ];
+
+    /// Empty-`match_body` reasons (the missing-atom type, plan §3 Q2).
+    /// Unsupported body shape (`match_body` returned `None`).
+    pub(crate) const REASON_UNSUPPORTED: u8 = 0;
+    /// An X-class body atom is missing on the fired node (the atom the
+    /// proposed pre-dispatch gate could check).
+    pub(crate) const REASON_XCLASS: u8 = 1;
+    /// No structural binding: some role atom has no matching successor.
+    pub(crate) const REASON_ROLE: u8 = 2;
+    /// Structural bindings exist but a successor-class constraint rejected.
+    pub(crate) const REASON_SUCC_CLASS: u8 = 3;
+    const NUM_REASONS: usize = 4;
+    const REASON_NAMES: [&str; NUM_REASONS] = [
+        "unsupported",
+        "xclass-missing",
+        "role-missing",
+        "succ-class-missing",
+    ];
+
+    /// Body-atom-count histogram buckets: 0..=7 exact, 8 = "8 or more".
+    const NUM_LEN_BUCKETS: usize = 9;
+
+    static INIT: Once = Once::new();
+    static ON: AtomicBool = AtomicBool::new(false);
+    static CUR_PATH: AtomicU8 = AtomicU8::new(PATH_OTHER);
+
+    type PerPathPhase = [[AtomicU64; NUM_PHASES]; NUM_PATHS];
+    type PerPath = [AtomicU64; NUM_PATHS];
+    const fn per_path() -> PerPath {
+        [const { AtomicU64::new(0) }; NUM_PATHS]
+    }
+    const fn per_path_phase() -> PerPathPhase {
+        [const { [const { AtomicU64::new(0) }; NUM_PHASES] }; NUM_PATHS]
+    }
+
+    /// Horn `fire_clause` dispatches (post `is_horn`), by path × phase.
+    static DISPATCH: PerPathPhase = per_path_phase();
+    /// Non-Horn early returns at the `fire_clause` head, by path.
+    static NONHORN_SKIP: PerPath = per_path();
+    /// Body-atom-count histogram of dispatched clauses, by path × bucket.
+    static BODY_LEN: [[AtomicU64; NUM_LEN_BUCKETS]; NUM_PATHS] =
+        [const { [const { AtomicU64::new(0) }; NUM_LEN_BUCKETS] }; NUM_PATHS];
+    /// `match_body` wall nanos, by path (probe-on only; relative use).
+    static MB_NS: PerPath = per_path();
+    /// Empty `match_body` results, by path × phase.
+    static EMPTY: PerPathPhase = per_path_phase();
+    /// Empty results by reason × path.
+    static EMPTY_REASON: [[AtomicU64; NUM_PATHS]; NUM_REASONS] =
+        [const { [const { AtomicU64::new(0) }; NUM_PATHS] }; NUM_REASONS];
+    /// Empty results by reason × phase.
+    static EMPTY_REASON_PHASE: [[AtomicU64; NUM_PHASES]; NUM_REASONS] =
+        [const { [const { AtomicU64::new(0) }; NUM_PHASES] }; NUM_REASONS];
+    /// `match_body` wall nanos on EMPTY results, by reason.
+    static EMPTY_REASON_NS: [AtomicU64; NUM_REASONS] = [const { AtomicU64::new(0) }; NUM_REASONS];
+    /// Simulated pre-dispatch gate: wall nanos, by path.
+    static GATE_NS: PerPath = per_path();
+    /// Simulated pre-dispatch gate: would-skip verdicts, by path × phase.
+    static GATE_SKIP: PerPathPhase = per_path_phase();
+
+    /// Whether the probe is on (`RUSTDL_HORN_DISPATCH_PROBE=1`). Cached on
+    /// first read; a single relaxed load afterwards.
+    pub fn enabled() -> bool {
+        INIT.call_once(|| {
+            if std::env::var_os("RUSTDL_HORN_DISPATCH_PROBE").is_some_and(|v| v == "1") {
+                ON.store(true, Ordering::Relaxed);
+            }
+        });
+        ON.load(Ordering::Relaxed)
+    }
+
+    /// Test-only override (bypasses the env read; keeps unit tests
+    /// independent of process env / test ordering).
+    #[cfg(test)]
+    pub(crate) fn set_enabled_for_test(v: bool) {
+        INIT.call_once(|| {});
+        ON.store(v, Ordering::Relaxed);
+    }
+
+    /// Tag the trigger path about to dispatch (probe-on callers only).
+    pub(crate) fn set_path(p: u8) {
+        CUR_PATH.store(p, Ordering::Relaxed);
+    }
+
+    fn path_idx() -> usize {
+        (CUR_PATH.load(Ordering::Relaxed) as usize).min(NUM_PATHS - 1)
+    }
+
+    /// Record a non-Horn early return at the `fire_clause` head.
+    pub(crate) fn record_nonhorn_skip() {
+        NONHORN_SKIP[path_idx()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one Horn dispatch with the clause's body-atom count.
+    pub(crate) fn record_dispatch(body_len: usize) {
+        let (pa, ph) = (path_idx(), phase_idx());
+        DISPATCH[pa][ph].fetch_add(1, Ordering::Relaxed);
+        BODY_LEN[pa][body_len.min(NUM_LEN_BUCKETS - 1)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record the simulated pre-dispatch gate's cost and verdict.
+    pub(crate) fn record_gate(ns: u64, would_skip: bool) {
+        let (pa, ph) = (path_idx(), phase_idx());
+        GATE_NS[pa].fetch_add(ns, Ordering::Relaxed);
+        if would_skip {
+            GATE_SKIP[pa][ph].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Record the `match_body` outcome: its wall nanos and, for empties,
+    /// the missing-atom reason (`None` = non-empty result).
+    pub(crate) fn record_result(ns: u64, empty_reason: Option<u8>) {
+        let (pa, ph) = (path_idx(), phase_idx());
+        MB_NS[pa].fetch_add(ns, Ordering::Relaxed);
+        if let Some(r) = empty_reason {
+            let r = (r as usize).min(NUM_REASONS - 1);
+            EMPTY[pa][ph].fetch_add(1, Ordering::Relaxed);
+            EMPTY_REASON[r][pa].fetch_add(1, Ordering::Relaxed);
+            EMPTY_REASON_PHASE[r][ph].fetch_add(1, Ordering::Relaxed);
+            EMPTY_REASON_NS[r].fetch_add(ns, Ordering::Relaxed);
+        }
+    }
+
+    /// Total Horn dispatches across paths/phases (test observability).
+    #[cfg(test)]
+    pub(crate) fn dispatches_for_test() -> u64 {
+        DISPATCH
+            .iter()
+            .flat_map(|per_phase| per_phase.iter())
+            .map(|a| a.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// Total empty results across paths/phases (test observability).
+    #[cfg(test)]
+    pub(crate) fn empties_for_test() -> u64 {
+        EMPTY
+            .iter()
+            .flat_map(|per_phase| per_phase.iter())
+            .map(|a| a.load(Ordering::Relaxed))
+            .sum()
+    }
+
+    /// Estimate the cost of one `Instant::now()`+`elapsed()` timing pair
+    /// (the probe's own per-measurement clock overhead) so aggregate nanos
+    /// can be calibration-corrected in analysis.
+    fn clock_pair_ns_estimate() -> u64 {
+        let iters: u32 = 100_000;
+        let t = std::time::Instant::now();
+        let mut acc: u64 = 0;
+        for _ in 0..iters {
+            let t0 = std::time::Instant::now();
+            acc = acc.wrapping_add(u64::try_from(t0.elapsed().as_nanos()).unwrap_or(0));
+        }
+        let total = u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        std::hint::black_box(acc);
+        total / u64::from(iters)
+    }
+
+    /// Render the full counter report (stderr-destined; stdout stays clean).
+    pub fn report() -> String {
+        use std::fmt::Write as _;
+        let ld = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        let mut out = String::from("horn_dispatch_probe report (RUSTDL_HORN_DISPATCH_PROBE=1)\n");
+        let _ = writeln!(out, "clock_pair_ns_estimate {}", clock_pair_ns_estimate());
+
+        let _ = writeln!(
+            out,
+            "{:<18} {:<12} {:>14} {:>14} {:>14} {:>14} {:>14}",
+            "path", "phase", "dispatch", "empty", "gate_skip", "mb_ms", "gate_ms"
+        );
+        for pa in 0..NUM_PATHS {
+            let mb_ms = ld(&MB_NS[pa]) / 1_000_000;
+            let gate_ms = ld(&GATE_NS[pa]) / 1_000_000;
+            for ph in 0..NUM_PHASES {
+                let d = ld(&DISPATCH[pa][ph]);
+                if d == 0 {
+                    continue;
+                }
+                let _ = writeln!(
+                    out,
+                    "{:<18} {:<12} {:>14} {:>14} {:>14} {:>14} {:>14}",
+                    PATH_NAMES[pa],
+                    PHASE_NAMES[ph],
+                    d,
+                    ld(&EMPTY[pa][ph]),
+                    ld(&GATE_SKIP[pa][ph]),
+                    mb_ms,
+                    gate_ms,
+                );
+            }
+            let skips = ld(&NONHORN_SKIP[pa]);
+            if skips > 0 {
+                let _ = writeln!(out, "{:<18} nonhorn_skip {skips:>14}", PATH_NAMES[pa]);
+            }
+        }
+
+        let _ = writeln!(out, "body-atom-count histogram (bucket 8 = 8+):");
+        let _ = write!(out, "{:<18}", "path");
+        for b in 0..NUM_LEN_BUCKETS {
+            let _ = write!(out, " {b:>12}");
+        }
+        out.push('\n');
+        for (pa, row) in BODY_LEN.iter().enumerate() {
+            if row.iter().all(|a| ld(a) == 0) {
+                continue;
+            }
+            let _ = write!(out, "{:<18}", PATH_NAMES[pa]);
+            for cell in row {
+                let _ = write!(out, " {:>12}", ld(cell));
+            }
+            out.push('\n');
+        }
+
+        let _ = writeln!(out, "empty reasons by path:");
+        let _ = write!(out, "{:<20} {:>14}", "reason", "empty_ms");
+        for name in PATH_NAMES {
+            let _ = write!(out, " {name:>14}");
+        }
+        out.push('\n');
+        for (r, row) in EMPTY_REASON.iter().enumerate() {
+            if row.iter().all(|a| ld(a) == 0) {
+                continue;
+            }
+            let _ = write!(
+                out,
+                "{:<20} {:>14}",
+                REASON_NAMES[r],
+                ld(&EMPTY_REASON_NS[r]) / 1_000_000
+            );
+            for cell in row {
+                let _ = write!(out, " {:>14}", ld(cell));
+            }
+            out.push('\n');
+        }
+
+        let _ = writeln!(out, "empty reasons by phase:");
+        let _ = write!(out, "{:<20}", "reason");
+        for name in PHASE_NAMES {
+            let _ = write!(out, " {name:>14}");
+        }
+        out.push('\n');
+        for (r, row) in EMPTY_REASON_PHASE.iter().enumerate() {
+            if row.iter().all(|a| ld(a) == 0) {
+                continue;
+            }
+            let _ = write!(out, "{:<20}", REASON_NAMES[r]);
+            for cell in row {
+                let _ = write!(out, " {:>14}", ld(cell));
+            }
+            out.push('\n');
         }
         out
     }
@@ -1996,6 +2324,9 @@ impl<'c> HyperEngine<'c> {
     /// (which re-verifies the full body), so over-firing on a not-yet-
     /// complete clause is a cheap no-op.
     fn process_event(&mut self, ev: Event) -> FireOutcome {
+        // P0 horn-dispatch probe: tag which trigger loop dispatches each
+        // `fire_clause` (flag-off: one cached-bool load for the whole event).
+        let hprobe = horn_dispatch_probe::enabled();
         match ev {
             Event::Label(n, c) => {
                 // Fix#2 Layer B: adding an EXCLUDED class here is a clash (an
@@ -2024,6 +2355,9 @@ impl<'c> HyperEngine<'c> {
                 }
                 let key = c.index() as usize;
                 // Clauses with `c` as an `X`-class fire at `n`.
+                if hprobe {
+                    horn_dispatch_probe::set_path(horn_dispatch_probe::PATH_X);
+                }
                 let n_x = self.indexes.x_trigger.get(key).map_or(0, Vec::len);
                 for i in 0..n_x {
                     let ci = self.indexes.x_trigger[key][i];
@@ -2033,6 +2367,9 @@ impl<'c> HyperEngine<'c> {
                 }
                 // Clauses with `c` as a successor-class fire at `n`'s
                 // predecessors (back-propagation: a successor gained `c`).
+                if hprobe {
+                    horn_dispatch_probe::set_path(horn_dispatch_probe::PATH_SUCC);
+                }
                 let n_s = self.indexes.succ_trigger.get(key).map_or(0, Vec::len);
                 if n_s > 0 {
                     // Resolve-on-read (advisor §4): a `≤1` merge can fold a
@@ -2059,6 +2396,9 @@ impl<'c> HyperEngine<'c> {
                 // these re-check the (now-present) successor's labels,
                 // covering the edge-added-after-label case.
                 let key = role_id_index(role);
+                if hprobe {
+                    horn_dispatch_probe::set_path(horn_dispatch_probe::PATH_ROLE);
+                }
                 let n_r = self.indexes.role_trigger.get(key).map_or(0, Vec::len);
                 for i in 0..n_r {
                     let ci = self.indexes.role_trigger[key][i];
@@ -2072,6 +2412,9 @@ impl<'c> HyperEngine<'c> {
                 // at the chain root `x` = a predecessor of `src`, so fire
                 // them at `src`'s predecessors. `match_body` re-verifies,
                 // so firing at a non-root predecessor is a no-op.
+                if hprobe {
+                    horn_dispatch_probe::set_path(horn_dispatch_probe::PATH_ROLE_BACK);
+                }
                 let n_b = self.indexes.role_back_trigger.get(key).map_or(0, Vec::len);
                 if n_b > 0 {
                     // Resolve-on-read (advisor §4): fold a merged predecessor to
@@ -2095,6 +2438,9 @@ impl<'c> HyperEngine<'c> {
                 // `tgt` an `Inverse(role)`-successor (`src`). A clause
                 // `Atom::Role(Inverse(role), X, y) → …` rooted at `tgt` can now
                 // fire; `Event::Edge` otherwise only fires at `src`.
+                if hprobe {
+                    horn_dispatch_probe::set_path(horn_dispatch_probe::PATH_INV_FIRST);
+                }
                 let n_inv = self
                     .indexes
                     .inverse_first_trigger
@@ -2126,6 +2472,9 @@ impl<'c> HyperEngine<'c> {
                 }
             }
             Event::NodeNew(n) => {
+                if hprobe {
+                    horn_dispatch_probe::set_path(horn_dispatch_probe::PATH_NODE_NEW);
+                }
                 for i in 0..self.indexes.empty_body.len() {
                     let ci = self.indexes.empty_body[i];
                     if matches!(self.fire_clause(ci, n), FireOutcome::Clash) {
@@ -3768,20 +4117,54 @@ impl<'c> HyperEngine<'c> {
     /// role atoms, equality, or a class on a third variable are not
     /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
+        let hprobe = horn_dispatch_probe::enabled();
         // Disjunctive clauses are branch points, not Horn-fired here.
         if !self.clauses[ci].is_horn() {
+            if hprobe {
+                horn_dispatch_probe::record_nonhorn_skip();
+            }
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
         let probe = nonhorn_probe::enabled();
-        let t0 = if probe { Some(Instant::now()) } else { None };
+        if hprobe {
+            horn_dispatch_probe::record_dispatch(self.clauses[ci].body.len());
+            // Timed simulation of the proposed pre-dispatch gate (plan §3
+            // Q3): plan-fetch + all-X-classes-present check. Runs BEFORE the
+            // real `match_body` so the gate pays the cold plan fetch and the
+            // subsequent `match_body` re-fetch is warm — their SUM stays
+            // honest, and the gate cost is measured at its realistic
+            // (cache-cold) price.
+            let g0 = Instant::now();
+            let would_skip = self.indexes.match_plans[ci].as_ref().is_some_and(|plan| {
+                plan.x_classes
+                    .iter()
+                    .any(|&c| !self.nodes[node.index()].has(c))
+            });
+            let gns = u64::try_from(g0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            horn_dispatch_probe::record_gate(gns, would_skip);
+        }
+        let t0 = if probe || hprobe {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let bindings_opt = self.match_body(ci, node);
+        let mb_ns = t0.map(|t| u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX));
         if probe {
             nonhorn_probe::record_match_body(
                 nonhorn_probe::SITE_FIRE_CLAUSE,
                 t0,
                 bindings_opt.as_ref().is_none_or(std::vec::Vec::is_empty),
             );
+        }
+        if hprobe {
+            let reason = match &bindings_opt {
+                None => Some(horn_dispatch_probe::REASON_UNSUPPORTED),
+                Some(b) if b.is_empty() => Some(self.probe_empty_reason(ci, node)),
+                Some(_) => None,
+            };
+            horn_dispatch_probe::record_result(mb_ns.unwrap_or(0), reason);
         }
         let Some(bindings) = bindings_opt else {
             return FireOutcome::NoChange;
@@ -3823,6 +4206,43 @@ impl<'c> HyperEngine<'c> {
             }
         }
         deps
+    }
+
+    /// Probe-only (`RUSTDL_HORN_DISPATCH_PROBE=1`): classify WHY
+    /// `match_body(ci, node)` returned `Some(empty)` — the missing-atom
+    /// type of plan §3 Q2. Re-derives by re-checking the plan's X-classes
+    /// and, when those all hold, re-running the enumeration WITHOUT the
+    /// successor-class constraints to split "no structural role binding"
+    /// from "bindings exist but a successor-class rejected". Read-only and
+    /// never called on the flag-off path.
+    fn probe_empty_reason(&self, ci: usize, node: HNode) -> u8 {
+        let Some(plan) = self.indexes.match_plans[ci].as_ref() else {
+            // Unreachable for a `Some(empty)` result, but keep it total.
+            return horn_dispatch_probe::REASON_UNSUPPORTED;
+        };
+        for &c in &plan.x_classes {
+            if !self.nodes[node.index()].has(c) {
+                return horn_dispatch_probe::REASON_XCLASS;
+            }
+        }
+        if plan.role_atoms.is_empty() {
+            // X-classes all present and no role atoms: only successor-class
+            // constraints (on unresolvable vars) can have rejected.
+            return horn_dispatch_probe::REASON_SUCC_CLASS;
+        }
+        let mp = MatchPlan {
+            role_atoms: plan.role_atoms.as_slice(),
+            order: plan.order.as_slice(),
+            other_classes: &[],
+        };
+        let mut out = Vec::new();
+        let mut binding: Binding = SmallVec::new();
+        self.enumerate_matches(node, &mp, 0, &mut binding, &mut out);
+        if out.is_empty() {
+            horn_dispatch_probe::REASON_ROLE
+        } else {
+            horn_dispatch_probe::REASON_SUCC_CLASS
+        }
     }
 
     /// Match clause `ci`'s body with `x = node`, enumerating every
@@ -6772,6 +7192,64 @@ mod tests {
         assert!(
             nonhorn_probe::nonhorn_match_body_calls_for_test() > calls0,
             "flag-on run must record match_body calls at the non-Horn site"
+        );
+    }
+
+    /// The horn-dispatch probe records dispatches + missing-atom-typed
+    /// empties when enabled, and records nothing when OFF (the default).
+    /// Delta-based against snapshots so parallel flag-off tests cannot
+    /// perturb it beyond monotone growth while ON.
+    #[test]
+    fn horn_dispatch_probe_counters_populate_when_enabled() {
+        let (a, b, e) = (cls(0), cls(1), cls(2));
+        // Two Horn clauses sharing the trigger atom `a`: one fires
+        // (`a → b`), one is a doomed dispatch (`a ∧ e → …`, `e` absent →
+        // empty match with an X-class-missing reason).
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(a, X)],
+                head: vec![Atom::Class(b, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(a, X), Atom::Class(e, X)],
+                head: vec![Atom::Class(b, X)],
+            },
+        ];
+
+        // OFF (default): fire_clause must record nothing.
+        horn_dispatch_probe::set_enabled_for_test(false);
+        let d0 = horn_dispatch_probe::dispatches_for_test();
+        let e0 = horn_dispatch_probe::empties_for_test();
+        let mut off = HyperEngine::new(&clauses, a);
+        off.horn_fixpoint(FIXPOINT_ITERS);
+        assert_eq!(
+            horn_dispatch_probe::dispatches_for_test(),
+            d0,
+            "flag-off run must not record dispatches"
+        );
+        assert_eq!(
+            horn_dispatch_probe::empties_for_test(),
+            e0,
+            "flag-off run must not record empties"
+        );
+
+        // ON: the same fixpoint must record ≥1 dispatch and ≥1 empty (the
+        // doomed `a ∧ e` clause).
+        horn_dispatch_probe::set_enabled_for_test(true);
+        let mut on = HyperEngine::new(&clauses, a);
+        on.horn_fixpoint(FIXPOINT_ITERS);
+        horn_dispatch_probe::set_enabled_for_test(false);
+        assert!(
+            horn_dispatch_probe::dispatches_for_test() > d0,
+            "flag-on run must record Horn dispatches"
+        );
+        assert!(
+            horn_dispatch_probe::empties_for_test() > e0,
+            "flag-on run must record the doomed clause's empty match"
+        );
+        assert!(
+            horn_dispatch_probe::report().contains("xclass-missing"),
+            "report must attribute the empty to a missing X-class"
         );
     }
 

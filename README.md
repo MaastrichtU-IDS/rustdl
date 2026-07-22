@@ -12,10 +12,9 @@ orchestrator picks per query. Parsing and the OWL model come from
 ## Status
 
 A working classifier, consistency checker, and instance reasoner for SROIQ(D)
-with first-class data properties. Its defining property is **soundness**: every
-reported subsumption is a genuine entailment.
+with first-class data properties.
 
-- **Sound (FP = 0).** No false-positive subsumption on any measured ontology.
+- **Sound.** Every reported subsumption is a genuine entailment.
 - **Consistency** via a consequence-based ABox-saturation pre-check plus the
   tableau.
 - **Completeness.** On the EL/Horn fragment with no timeout the hierarchy is

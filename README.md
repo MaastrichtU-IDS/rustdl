@@ -50,12 +50,15 @@ in [`CLAUDE.md`](CLAUDE.md) and
   consistency via an ABox-saturation pre-check + clash-pattern checks.
 - **Data properties are first-class** (default-on) — data-property axioms lower to
   the object fragment; concrete domains cover integer / float / decimal / date /
-  dateTime / string value-membership, faceted ranges, `DataOneOf`, and bounded
-  data cardinality.
+  dateTime / string value-membership, faceted ranges, `DataOneOf`, flat
+  `DataUnionOf` / `DataIntersectionOf` / `DataComplementOf`, and bounded data
+  cardinality.
 
-**Sound under-approximation (silently dropped, never an error):** data ranges /
-nested composites outside the recognized set; positives depending on them may be
-missed, never falsely asserted.
+**Sound under-approximation (silently dropped, never an error):** the narrow
+datatype tail outside that recognized set — nested composite ranges (e.g.
+`DataComplementOf(DataUnionOf(…))`), `∀` / range / cardinality *over* a union or
+complement, and lexically-unparseable or cross-datatype literals. Positives
+depending on them may be missed, never falsely asserted.
 
 **Unsupported (errors):** `HasKey`. SWRL rules are skipped (see `convert.rs`).
 

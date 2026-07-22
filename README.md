@@ -15,7 +15,8 @@ A working classifier, consistency checker, and instance reasoner for SROIQ(D)
 with first-class data properties.
 
 - **Sound.** Every reported subsumption is a genuine entailment.
-- **Consistent.** Decides ontology consistency.
+- **Consistent.** Consistency via a consequence-based ABox-saturation pre-check
+  plus the tableau.
 - **Completeness.** On the EL/Horn fragment with no timeout the hierarchy is
   complete by construction; beyond it the classifier trusts the wedge's `Sat`
   verdicts — empirically near-complete on the measured corpus, not *provably*

@@ -5140,6 +5140,19 @@ fn decide<F>(
 where
     F: FnOnce(&mut ConceptPool) -> ConceptId,
 {
+    // Fast-exit if the deadline is already spent — BEFORE the expensive
+    // `pool.clone()` + context setup below. On large ontologies that per-call
+    // ConceptPool clone dominates: under a global classify deadline,
+    // `ore_ont_3215` issues ~55k unsat/tier-walk probes that each cloned a
+    // ~200k-concept pool even though the search would instant-timeout — minutes
+    // of deadline-oblivious setup. `None` = no verdict (timeout), which every
+    // caller already treats soundly (unsat probe → satisfiable; subsumption
+    // probe → not-subsumed).
+    if let Some(d) = deadline
+        && std::time::Instant::now() >= d
+    {
+        return Ok(None);
+    }
     let mut pool = pool.clone();
     let test_concept: ConceptId = build_test_concept(&mut pool);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);

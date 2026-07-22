@@ -28,11 +28,10 @@ reported subsumption is a genuine entailment.
   - `repair` — minimal, verified axiom-removal sets to *break* an entailment.
   - `report` — a self-contained HTML debugging report combining all of the above.
 
-**Completeness is partial** — the default classifier is empirically near-complete
-across the measured corpus but not *provably* complete in general (it trusts the
-wedge's `Sat` verdicts). Where `completeness_guaranteed()` holds — the EL/Horn
-fragment with no timeout — MISSED = 0 by construction. See the soundness contract
-in [`CLAUDE.md`](CLAUDE.md) and
+**Completeness is partial.** On the EL/Horn fragment with no timeout the hierarchy
+is complete by construction (`completeness_guaranteed()` ⟹ MISSED = 0); beyond it
+the classifier trusts the wedge's `Sat` verdicts — empirically near-complete on the
+measured corpus, not *provably* complete. See [`CLAUDE.md`](CLAUDE.md) and
 [`docs/fragment-completeness.md`](docs/fragment-completeness.md).
 
 ## Coverage

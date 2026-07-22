@@ -98,17 +98,19 @@ def classify(
     path: str,
     *,
     per_pair_timeout_ms: int = 100,
-    global_deadline_ms: int = 60000,
+    global_timeout_ms: int = 60000,
     saturation_only: bool = False,
+    global_deadline_ms: int | None = None,
 ) -> Classification:
     """Classify the ontology at `path` (format auto-detected from the
     extension: ``.ofn`` | ``.owx`` | ``.owl`` | ``.rdf`` | ``.omn``).
 
     Bounded by default: ``per_pair_timeout_ms`` caps each ``sub ⊓ ¬sup``
-    pair and ``global_deadline_ms`` caps the TOTAL wall (the backstop against
+    pair and ``global_timeout_ms`` caps the TOTAL wall (the backstop against
     wine-class hangs). Cutting is sound (no false subsumptions; real ones may
     be missing — check ``Classification.complete`` / ``.timed_out_pairs``).
-    Set either to ``0`` to disable that bound; both ``0`` ⇒ unbounded/complete."""
+    Set either to ``0`` to disable that bound; both ``0`` ⇒ unbounded/complete.
+    ``global_deadline_ms`` is a deprecated alias for ``global_timeout_ms``."""
     ...
 
 def classify_bytes(
@@ -116,11 +118,13 @@ def classify_bytes(
     *,
     format: str,
     per_pair_timeout_ms: int = 100,
-    global_deadline_ms: int = 60000,
+    global_timeout_ms: int = 60000,
     saturation_only: bool = False,
+    global_deadline_ms: int | None = None,
 ) -> Classification:
     """Like `classify`, from in-memory bytes with explicit `format`
-    (one of ``"ofn"``, ``"owx"``, ``"rdf-xml"``, ``"omn"``)."""
+    (one of ``"ofn"``, ``"owx"``, ``"rdf-xml"``, ``"omn"``).
+    ``global_deadline_ms`` is a deprecated alias for ``global_timeout_ms``."""
     ...
 
 def is_consistent(path: str) -> bool:

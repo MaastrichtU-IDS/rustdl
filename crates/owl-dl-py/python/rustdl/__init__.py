@@ -75,7 +75,7 @@ class IncompleteClassificationWarning(UserWarning):
     the returned hierarchy is a sound under-approximation (no false
     subsumptions, but real ones may be missing). Silence with the
     standard `warnings` module, or pass `per_pair_timeout_ms=0,
-    global_deadline_ms=0` to classify for the complete (unbounded)
+    global_timeout_ms=0` to classify for the complete (unbounded)
     result."""
 
 
@@ -86,7 +86,7 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             f"{n} class pair(s) exceeded the timeout and were recorded as "
             "'not subsumed' — this classification may be missing real subsumptions. "
             "It is still sound (no false subsumptions). Pass per_pair_timeout_ms=0, "
-            "global_deadline_ms=0 for the complete (unbounded) result, or check "
+            "global_timeout_ms=0 for the complete (unbounded) result, or check "
             "result.complete / result.timed_out_pairs.",
             IncompleteClassificationWarning,
             stacklevel=3,
@@ -94,43 +94,72 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
     return result
 
 
+def _resolve_global_timeout(global_timeout_ms, global_deadline_ms):
+    """Reconcile the canonical `global_timeout_ms` with the deprecated
+    `global_deadline_ms` alias (kept working for backward compatibility)."""
+    if global_deadline_ms is not None:
+        _warnings.warn(
+            "global_deadline_ms is deprecated; use global_timeout_ms instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return global_deadline_ms
+    return global_timeout_ms
+
+
 def classify(
-    path, *, per_pair_timeout_ms=100, global_deadline_ms=60000, saturation_only=False
+    path,
+    *,
+    per_pair_timeout_ms=100,
+    global_timeout_ms=60000,
+    saturation_only=False,
+    global_deadline_ms=None,
 ):
     """Classify the ontology at `path` (format auto-detected from the
     extension: .ofn / .owx / .owl / .rdf / .omn).
 
     Bounded by default so it can't hang on hard (wine-class) ontologies:
     `per_pair_timeout_ms` bounds each subsumption test (default 100), and
-    `global_deadline_ms` bounds the TOTAL wall (default 60000 = 60s). Set
+    `global_timeout_ms` bounds the TOTAL wall (default 60000 = 60s). Set
     either to `0` to disable that bound; both `0` = unbounded/complete.
     Pairs cut by a timeout are recorded as "not subsumed" — sound, but the
     result may be incomplete; an `IncompleteClassificationWarning` is
     emitted when that happens, and `result.complete` /
     `result.timed_out_pairs` report it. `saturation_only=True` skips the
-    tableau (EL-closure under-approximation; fast)."""
+    tableau (EL-closure under-approximation; fast).
+
+    `global_deadline_ms` is a deprecated alias for `global_timeout_ms`."""
+    global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
     return _warn_if_incomplete(
         _classify_native(
             path,
             per_pair_timeout_ms=per_pair_timeout_ms,
-            global_deadline_ms=global_deadline_ms,
+            global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
     )
 
 
 def classify_bytes(
-    data, *, format, per_pair_timeout_ms=100, global_deadline_ms=60000, saturation_only=False
+    data,
+    *,
+    format,
+    per_pair_timeout_ms=100,
+    global_timeout_ms=60000,
+    saturation_only=False,
+    global_deadline_ms=None,
 ):
     """Like `classify`, but from in-memory `data` with an explicit
     `format` ("ofn" | "owx" | "rdf-xml" | "omn"). See `classify` for the
-    timeout/completeness semantics."""
+    timeout/completeness semantics. `global_deadline_ms` is a deprecated
+    alias for `global_timeout_ms`."""
+    global_timeout_ms = _resolve_global_timeout(global_timeout_ms, global_deadline_ms)
     return _warn_if_incomplete(
         _classify_bytes_native(
             data,
             format=format,
             per_pair_timeout_ms=per_pair_timeout_ms,
-            global_deadline_ms=global_deadline_ms,
+            global_deadline_ms=global_timeout_ms,
             saturation_only=saturation_only,
         )
     )

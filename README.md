@@ -18,6 +18,10 @@ reported subsumption is a genuine entailment.
 - **Sound (FP = 0).** No false-positive subsumption on any measured ontology.
 - **Consistency** via a consequence-based ABox-saturation pre-check plus the
   tableau.
+- **Completeness.** On the EL/Horn fragment with no timeout the hierarchy is
+  complete by construction; beyond it the classifier trusts the wedge's `Sat`
+  verdicts — empirically near-complete on the measured corpus, not *provably*
+  complete.
 - **Explains *and* debugs — a full suite**, every result sound by construction
   (justifications and repairs are verified against the reasoner):
   - `justify` — a minimal responsible-axiom set for any entailment (`--laconic`
@@ -27,12 +31,6 @@ reported subsumption is a genuine entailment.
     **derived** collateral ("where to start fixing").
   - `repair` — minimal, verified axiom-removal sets to *break* an entailment.
   - `report` — a self-contained HTML debugging report combining all of the above.
-
-**Completeness is partial.** On the EL/Horn fragment with no timeout the hierarchy
-is complete by construction (`completeness_guaranteed()` ⟹ MISSED = 0); beyond it
-the classifier trusts the wedge's `Sat` verdicts — empirically near-complete on the
-measured corpus, not *provably* complete. See [`CLAUDE.md`](CLAUDE.md) and
-[`docs/fragment-completeness.md`](docs/fragment-completeness.md).
 
 ## Coverage
 

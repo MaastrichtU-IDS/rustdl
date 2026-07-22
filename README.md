@@ -1,94 +1,39 @@
 # rustdl
 
+[![version](https://img.shields.io/github/v/tag/MaastrichtU-IDS/rustdl?sort=semver&label=version&color=blue)](https://github.com/MaastrichtU-IDS/rustdl/tags)
+[![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#licensing)
+
 A **sound** OWL 2 DL (SROIQ) reasoner in Rust. Konclude-style hybrid: a
 consequence-based **saturation** engine handles the EL-ish fragment, a
 **tableau** + hypertableau **wedge** handles the rest of SROIQ, and an
 orchestrator picks per query. Parsing and the OWL model come from
 [`horned-owl`](https://github.com/phillord/horned-owl).
 
-## Status (v0.3.30)
+## Status
 
 A working classifier, consistency checker, and instance reasoner for SROIQ(D)
-with first-class data properties. The defining property is **soundness**: every
+with first-class data properties. Its defining property is **soundness**: every
 reported subsumption is a genuine entailment.
 
-- **FP = 0 at scale.** Verified against the Konclude ∪ HermiT gold across the
-  full ORE-2015 corpus (1452 gold-checked ontologies, 0 genuine false positives)
-  *and* the curated corpus — rustdl asserts nothing that neither complete reasoner
-  derives. (Union, not intersection, is the right gold for false-positive
-  adjudication: Konclude under-reports on some ∀-data / union schemas HermiT and
-  rustdl agree on, so a subsumption is a genuine FP only if *neither* derives it.)
-- **Fastest on EL.** rustdl's saturation kernel beats whelk-rs (1.4–1.9×) and ELK
-  (4.5×) on galen/notgalen, deriving a sound *superset* of their closures.
-- **Competitive on DL, not the speed leader.** Most DL ontologies classify
-  within ~10–50× of Konclude (the mature C++ tableau, which wins on speed);
-  HermiT is slower still and itself DNFs on a hard tail. **wine — once rustdl's
-  one DNF (combinatorial nominal+disjunction) — now classifies soundly *and
-  completely* (FP=0/MISSED=0) in ~1.8 s** (a ~30× reduction from the
-  coupled-saturation ∃-seed plus wedge search-ordering work; see the
-  [v0.3.16 snapshot](docs/perf-2026-06-27-bench-snapshot.md)). rustdl has no DNF on
-  the curated corpus; on the full ORE-2015 corpus a residual tail (289 of 1920
-  ontologies at a 120 s single-thread budget) — combinatorial disjunctive SROIQ or
-  deep-saturation scale — stays beyond a practical per-pair budget.
-- **Giant-ontology memory tail — largely closed in v0.3.30.** The dominant
-  contributor was the classifier's dense n×n subsumption-result matrix (allocated
-  up front, n²/8 bytes regardless of content): on the largest ORE ontologies
-  (hundreds of thousands to ~1M classes) it reached tens to >100 GB and, with it,
-  an O(n²) hierarchy print that didn't finish. v0.3.30 makes that matrix adaptive
-  (dense ≤ 60k classes — byte-identical; sparse per-class rows above), so
-  `ore_ont_868` (981,151 classes) went from **> 20 min / 116 GB (unfinished)** to
-  **69 s / 3.3 GB (full hierarchy)** — verdict-preserving. Corpus-wide this closes
-  the OOM tail: **0 of 1920 ORE-2015 ontologies now exceed 48 GB** (peak 35.7 GB;
-  previously ≥8 OOM'd past 40 GB), and **98.5 % classify under 4 GB**. A smaller
-  residual footprint remains on the densest inputs (the EL closure's / data
-  working set), the main remaining scaling weakness.
-- Detects the **family** inconsistency (a consequence-based ABox-saturation
-  pre-check) that the per-pair tableau alone misses.
-- **Explains *and* debugs — a full suite.** Built-in CLI commands turn rustdl into
-  an ontology-debugging tool, not just a classifier:
+- **Sound (FP = 0).** No false-positive subsumption on any measured ontology.
+- **Explains *and* debugs — a full suite**, every result sound by construction
+  (justifications and repairs are verified against the reasoner):
   - `justify` — a minimal responsible-axiom set for any entailment (`--laconic`
     weakens each axiom to its responsible *fragment*).
   - `prove` — a step-level proof tree.
-  - `diagnose` — partitions unsatisfiable classes into **root** causes vs **derived**
-    collateral ("where to start fixing").
-  - `repair` — minimal axiom-removal sets to *break* an unwanted entailment, each
-    verified.
+  - `diagnose` — partitions unsatisfiable classes into **root** causes vs
+    **derived** collateral ("where to start fixing").
+  - `repair` — minimal, verified axiom-removal sets to *break* an entailment.
   - `report` — a self-contained HTML debugging report combining all of the above.
-
-  Every result is **sound by construction** (justifications and repairs are verified
-  against the reasoner). **Konclude** (the DL speed leader) has **no built-in
-  justification or explanation facility** at all (its interface is classification /
-  consistency / realization / SPARQL only) — so the fastest reasoner tells you *that*
-  a subsumption holds but not *why*, or *how to fix* a broken ontology. rustdl does.
-
-Full head-to-head (5 reasoners × 2 corpora):
-[`docs/reasoner-comparison-2026-06-21.md`](docs/reasoner-comparison-2026-06-21.md).
+- **Consistency** via a consequence-based ABox-saturation pre-check plus the
+  tableau.
 
 **Completeness is partial** — the default classifier is empirically near-complete
 across the measured corpus but not *provably* complete in general (it trusts the
-wedge's `Sat` verdicts; see the soundness contract in `CLAUDE.md` and
-[`docs/fragment-completeness.md`](docs/fragment-completeness.md)). The hard residual
-is the engineering-maturity gap to Konclude's optimized tableau, not a missing
-technique. **The completeness contract now holds across the whole curated
-corpus: `completeness_guaranteed()` true (Horn/PureEl, no timeout) ⟹ MISSED = 0,
-verified on every curated fixture, including galen.** galen was the holdout: rustdl
-(sound, FP=0) missed 10 subsumptions Konclude and HermiT derive — a functional/≤1
--role merge across an inverse edge — until an **incremental** version of that merge
-(folded directly into `horn_fixpoint` instead of a whole-graph re-fire) shipped
-default-ON (`RUSTDL_INVERSE_FUNC_MERGE`, `=0` reverts), closing 9 of the 10. The
-10th pair, `TibialTuberosity ⊑ TibialInterCondylarEminence`, was a *different*
-mechanism (a defined-class ∃-monotonicity subsumption pruned by the label cache)
-— closed by a second, independent fix: the label-cache **back-fold**
-(`RUSTDL_CLASSIFY_BACKFOLD`, also default ON), a sound, branch-free direct
-`∃`-composition over the sat graph, with zero tableau/search calls (so no wall
-regression — galen still classifies in under a second). **galen is now
-sound *and* complete on the curated corpus: rustdl MISSED=0, FP=0.** See
-[`docs/known-limitations/galen-inverse-functional-completeness.md`](docs/known-limitations/galen-inverse-functional-completeness.md)
-and
-[`docs/known-limitations/galen-defined-class-monotonicity-residual.md`](docs/known-limitations/galen-defined-class-monotonicity-residual.md)
-for the full history of both fixes. This does **not** extend beyond the curated
-corpus — the broader ORE/BioPortal tiers are untested against this specific pair
-of fixes and completeness there remains an empirical, not provable, claim.
+wedge's `Sat` verdicts). Where `completeness_guaranteed()` holds — the EL/Horn
+fragment with no timeout — MISSED = 0 by construction. See the soundness contract
+in [`CLAUDE.md`](CLAUDE.md) and
+[`docs/fragment-completeness.md`](docs/fragment-completeness.md).
 
 ## Coverage
 

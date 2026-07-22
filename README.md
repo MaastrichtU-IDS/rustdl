@@ -24,14 +24,14 @@ with first-class data properties.
 - **Proofs.** `prove` emits a step-level, rule-by-rule proof tree for an
   entailment — a checkable certificate of soundness on the EL/Horn fragment
   (elsewhere, an axiom-level justification).
-- **Explains *and* debugs — a full suite**, every result sound by construction
-  (justifications and repairs are verified against the reasoner):
-  - `justify` — a minimal responsible-axiom set for any entailment (`--laconic`
-    weakens each axiom to its responsible *fragment*).
-  - `diagnose` — partitions unsatisfiable classes into **root** causes vs
-    **derived** collateral ("where to start fixing").
-  - `repair` — minimal, verified axiom-removal sets to *break* an entailment.
-  - `report` — a self-contained HTML debugging report combining all of the above.
+- **Explain.** `justify` gives a minimal responsible-axiom set for any entailment
+  (`--laconic` narrows each axiom to its responsible *fragment*, each still
+  entailed).
+- **Repair.** `diagnose` partitions unsatisfiable classes into **root** causes vs
+  **derived** collateral; `repair` returns minimal axiom-removal sets that *break*
+  an unwanted entailment, each verified by removal.
+- **Report.** `report` bundles the explanation, diagnosis, and repair output into
+  one self-contained HTML page.
 
 ## Coverage
 

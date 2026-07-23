@@ -4,6 +4,43 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`realize` / `materialize_inferred_class_assertions` no longer hangs on the
+  issue #35 v4 nominal + number-restriction pattern** (`ObjectMinCardinality` +
+  `ObjectOneOf` covering + `ObjectPropertyDomain`). At default settings realize
+  on the 3-axiom reproducer now completes in ~0.75 s (previously non-terminating
+  / >300 s). The fix is a deterministic **safety net**, not a completeness fix —
+  realize returns a sound under-approximation (a MISS, never a false type) on
+  inputs it cannot bound:
+  - **Default per-pair realize bound restored.** `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+    now defaults to **750 ms** when unset (was: unbounded since 0.3.18); `=0`
+    opts back into unbounded. Bounds each per-individual instance probe → realize
+    terminates fast with a sound MISS. Affects only `realize`/`instances_of`/
+    `is_instance_of` — not `classify` or `is_consistent`.
+  - **Deterministic node cap.** `RUSTDL_MAX_NODES` (default 50000, `0` disables)
+    caps the deadline-free tableau search; a trip yields a distinct `NodeCap`
+    verdict that maps to `Ok(None)` (sound MISS / consistent under-approximation),
+    with a **hard early-return** so it stops promptly. Never `Err`, never a panic,
+    never a hang.
+
+### Deferred / known-limitation
+
+- The intended **complete** fix for issue #35 v4 — "nominals-first scheduling"
+  (`RUSTDL_NOMINAL_FIRST`, **default OFF / opt-in**) — was implemented but
+  **proven not to bound the reproducer**: `ObjectPropertyDomain(r,A)` absorbs to
+  an untriggered residual disjunction that the concept-rule-keyed guard never
+  intercepts, and the covering-disjunction + cardinality merge regenerates
+  without bound. The scheduling machinery is left in place, dormant behind the
+  opt-in flag, as the foundation for a proper redesign (sound nominal-aware
+  blocking or the NN-rule). A HermiT-matching realization on this pattern remains
+  a known limitation. See
+  `docs/superpowers/specs/2026-07-23-nominal-cardinality-realize-termination-design.md`
+  (§ Outcome) and the plan
+  `docs/superpowers/plans/2026-07-23-nominal-cardinality-realize-termination-plan.md`.
+
 ## [0.3.39] — 2026-07-23
 
 ### Performance

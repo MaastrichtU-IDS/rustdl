@@ -713,6 +713,16 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
     if ctx.is_blocked(node) {
         return RuleOutcome::NoChange;
     }
+    // Nominals-first (#35 v4): defer generation while the node still carries a
+    // pending nominal-covering disjunction (materialized OR TBox concept-rule).
+    // The search driver resolves it first (search::first_open_disjunction
+    // priority), apply_nominal_assignment merges this node into its canonical
+    // nominal, and generation then fires once on the bounded canonical node.
+    // Deferral only — the node is re-dirtied on add_label/merge, so generation
+    // resumes on the survivor (completeness-preserving).
+    if crate::nominal_first_enabled() && ctx.has_pending_nominal_disjunction(node) {
+        return RuleOutcome::NoChange;
+    }
     // `(role, body, deps_of_the_some_label)` triples.
     let pending: Vec<(Role, ConceptId, DepSet)> = {
         let n = ctx.graph().node(node);
@@ -786,6 +796,16 @@ pub fn apply_exists(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleO
 pub fn apply_min(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutcome {
     crate::bump_counter!(ctx, apply_min);
     if ctx.is_blocked(node) {
+        return RuleOutcome::NoChange;
+    }
+    // Nominals-first (#35 v4): defer generation while the node still carries a
+    // pending nominal-covering disjunction (materialized OR TBox concept-rule).
+    // The search driver resolves it first (search::first_open_disjunction
+    // priority), apply_nominal_assignment merges this node into its canonical
+    // nominal, and generation then fires once on the bounded canonical node.
+    // Deferral only — the node is re-dirtied on add_label/merge, so generation
+    // resumes on the survivor (completeness-preserving).
+    if crate::nominal_first_enabled() && ctx.has_pending_nominal_disjunction(node) {
         return RuleOutcome::NoChange;
     }
     let mins: Vec<(u32, Role, ConceptId, DepSet)> = {

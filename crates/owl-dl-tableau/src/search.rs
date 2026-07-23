@@ -62,6 +62,12 @@ pub enum SearchVerdict {
     /// deadline elapsed. Callers distinguish via
     /// [`TableauContext::deadline_reached`].
     DepthLimit,
+    /// The deterministic live-node cap ([`crate::max_nodes`]) was hit.
+    /// Distinct from `DepthLimit`: on the deadline-free path a `DepthLimit`
+    /// verdict maps to `Err(NoVerdict)`, but a cap trip must degrade to a
+    /// sound `Ok(None)` MISS instead (#35 v4 safety net). Never fold this
+    /// into `DepthLimit` handling.
+    NodeCap,
 }
 
 impl SearchVerdict {
@@ -72,7 +78,10 @@ impl SearchVerdict {
         match self {
             Self::Sat => Some(true),
             Self::Unsat(_) => Some(false),
-            Self::DepthLimit => None,
+            // Both a depth/deadline stall and a live-node cap trip are
+            // "don't know" in this legacy bridge — callers that need to
+            // tell them apart use the richer `SearchVerdict` directly.
+            Self::DepthLimit | Self::NodeCap => None,
         }
     }
 }
@@ -111,6 +120,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
             SearchVerdict::Unsat(deps)
         }
         SaturationResult::Stalled => SearchVerdict::DepthLimit,
+        SaturationResult::NodeCapped => SearchVerdict::NodeCap,
         SaturationResult::Stable => {
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
@@ -278,6 +288,19 @@ fn branch(
                 ctx.rollback_to(cp);
                 depth_limited = true;
             }
+            SearchVerdict::NodeCap => {
+                // Hard early-return: a global node-cap trip means the
+                // whole search is too expensive to continue — abandon
+                // the remaining sibling disjuncts rather than trying
+                // them (Task 1's soft handling let an exploding search
+                // re-grow the graph per sibling, which was slow). This
+                // is sound: NodeCap maps to `Ok(None)` in `decide` (a
+                // sound MISS / consistent-under-approx), and giving up
+                // earlier only ever yields a MISS, never a false
+                // positive.
+                ctx.rollback_to(cp);
+                early_return = Some(SearchVerdict::NodeCap);
+            }
         }
     }
     ctx.pop_branch();
@@ -429,6 +452,14 @@ fn first_open_disjunction(
 ) -> Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> {
     let pool = ctx.pool();
     let graph = ctx.graph();
+    // #35 v4: with nominals-first scheduling on, prefer an open `Or`
+    // carrying a `Nominal` disjunct — resolving the nominal-covering
+    // disjunction first lets the o-rule merge the deferred node
+    // (rules.rs Task 3) before ∃/≥ generation resumes. Flag off (or
+    // no nominal-bearing Or open): identical to the historical
+    // first-open choice.
+    let prefer_nominal = crate::nominal_first_enabled();
+    let mut first_any: Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> = None;
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
         let node = graph.node(node_id);
@@ -446,10 +477,73 @@ fn first_open_disjunction(
                 // dependency on "this disjunction was at this node
                 // in the first place" and back-jumping skips past
                 // it — the soundness gap chased on pizza (2026-05-25).
-                let or_deps = node.label_deps[pos].clone();
-                return Some((node_id, c, args.to_vec(), or_deps));
+                let hit = (node_id, c, args.to_vec(), node.label_deps[pos].clone());
+                let has_nominal = prefer_nominal
+                    && args
+                        .iter()
+                        .any(|&d| matches!(pool.get(d), ConceptExpr::Nominal(_)));
+                if has_nominal {
+                    return Some(hit);
+                }
+                if first_any.is_none() {
+                    first_any = Some(hit);
+                }
             }
         }
     }
-    None
+    first_any
+}
+
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod tests {
+    use crate::TableauContext;
+    use owl_dl_core::{ClassId, ConceptExpr, ConceptPool, IndividualId};
+
+    #[test]
+    #[ignore = "nominal-first deferred (A redesign); opt-in RUSTDL_NOMINAL_FIRST=1, run with --ignored"]
+    fn first_open_disjunction_prefers_nominal_bearing() {
+        // #35 v4 Task 4: with nominals-first scheduling on, the search
+        // driver must resolve a nominal-covering disjunction (an `Or`
+        // with a `Nominal` disjunct) BEFORE any plain disjunction, so
+        // the o-rule can merge the deferred node (Task 3) before
+        // generation resumes.
+        //
+        // NOTE (deferred, 2026-07-23): `RUSTDL_NOMINAL_FIRST` now defaults
+        // OFF (nominal-first scheduling did not bound the issue #35 target
+        // bug; the validated fix is the realize pair-timeout + hard NodeCap
+        // safety net, independent of this flag). This test documents the
+        // deferred-A priority behaviour and only passes with
+        // `RUSTDL_NOMINAL_FIRST=1` set process-wide before the `OnceLock`
+        // initializes (run with `--ignored` in a dedicated process, since
+        // `nominal_first_enabled` is OnceLock-cached and shared with other
+        // tests in this binary).
+        let mut pool = ConceptPool::new();
+        let p = pool.atomic(ClassId::new(0));
+        let q = pool.atomic(ClassId::new(1));
+        // Interned FIRST -> smaller ConceptId -> earlier in the node's
+        // sorted label order than the nominal-bearing Or below.
+        let plain_or = pool.or([p, q]);
+        let x = pool.nominal(IndividualId::new(0));
+        let y = pool.nominal(IndividualId::new(1));
+        let nominal_or = pool.or([x, y]);
+        assert!(
+            plain_or < nominal_or,
+            "plain Or must precede in label order"
+        );
+
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label(n, plain_or);
+        ctx.add_label(n, nominal_or);
+
+        let (_, chosen, _, _) = super::first_open_disjunction(&ctx).expect("an open Or");
+        assert!(
+            matches!(ctx.pool().get(chosen), ConceptExpr::Or(args)
+                if args
+                    .iter()
+                    .any(|&d| matches!(ctx.pool().get(d), ConceptExpr::Nominal(_)))),
+            "nominal-bearing Or must win despite being second"
+        );
+    }
 }

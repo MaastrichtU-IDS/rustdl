@@ -181,6 +181,27 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   classify), `=0` forces ancestor-only everywhere (pre-fix behaviour). Complements
   the 0.3.34 deep-cap fix (search-breadth on bounded graphs); this addresses
   graph-termination on the nominal-anchored-cycle class.
+  **Realize termination — issue #35 v4 (2026-07-23).** A *new* pattern still hung
+  `realize` on 0.3.38: `ObjectMinCardinality` + `ObjectOneOf` covering +
+  `ObjectPropertyDomain` (no ABox). Root cause: `ObjectPropertyDomain(r,A)` absorbs
+  to an untriggered residual `⊤ ⊑ ¬∃r.⊤ ⊔ A`; picking its `A` disjunct on a fresh
+  `≥2 r.C` witness re-opens the covering nominal disjunction and the o-rule folds
+  the witness back into the constraint owner → unbounded generation, and blocking
+  can't cut it (every cycle node is nominal-tainted, excluded from
+  `is_blocked_anywhere`/`_ancestor` at `lib.rs:1021/1062`). **Fix shipped = a sound
+  deterministic safety net, NOT a completeness fix:** (1) `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+  now **defaults to 750 ms** (was unbounded since 0.3.18; `=0` opts out) — bounds each
+  per-individual realize probe → sound MISS; realize-only, never classify/consistency.
+  (2) `RUSTDL_MAX_NODES` (default 50000, `0` disables) caps the deadline-free tableau
+  search → a distinct `NodeCap` verdict → `Ok(None)` (sound MISS / consistent
+  under-approx) with a hard early-return in `search::branch`. Realize on the reproducer:
+  >300 s hang → ~0.75 s. The intended *complete* fix (`RUSTDL_NOMINAL_FIRST`
+  nominals-first scheduling) was **falsified** (scheduling can't bound this
+  domain-residual cycle) and is **default OFF / opt-in**, dormant scaffolding for a
+  future nominal-aware-blocking / NN-rule redesign. HermiT-matching realization on
+  this pattern is a known limitation. See
+  `docs/superpowers/specs/2026-07-23-nominal-cardinality-realize-termination-design.md`
+  (§ Outcome).
   **Wedge classify throughput (2026-07-23).** (v0.3.38) `HyperEngine::is_blocked`
   no longer clones the parent-role candidate bucket per call (iterate in place,
   stats in loop-locals) — behaviour-identical. (v0.3.39) The classify subsumption

@@ -4,6 +4,32 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.39] — 2026-07-23
+
+### Performance
+
+- **Classify subsumption oracle: amortize the per-pair `ClauseIndexes` rebuild
+  (wedge-heavy converging classify ~11–13% faster).** `HyperCache::decide_with_stats`
+  cloned the full clause vector and rebuilt the entire `ClauseIndexes` on every
+  decided pair — measured 13,772 rebuilds × ~34.6k clauses on `ore_ont_1508`, and
+  11–15% of self-time on converging wedge-heavy classify. It now reuses the
+  shared base `Arc<ClauseIndexes>` (built once in `HyperCache::build`) and applies
+  only an O(#appended-clauses) per-pair delta: a `ClauseIndexSink` trait routes
+  the base build and the per-pair delta through one shared `index_one_clause`
+  (so `x_trigger`, `match_plans`, nonhorn/empty-body, and disjoint-pairs entries
+  can never diverge), the engine branch-routes `clause(ci)`/`match_plan(ci)`
+  between the shared base slice and a small per-pair extras slice, disjointness
+  is read via a base+per-pair overlay (no HashSet clone), and the pair-invariant
+  value-disjoint clauses are folded into the base once. **Verdict-preserving by
+  construction:** classify closures byte-identical with the optimization on vs
+  off (`RUSTDL_CLASSIFY_AMORTIZE_IDX=0`) and vs the pre-change baseline across
+  ro/sio/sulo/pizza/galen + `ore_ont_1508`/`12698`; full suite green; a delta-vs-
+  full-`build_clause_indexes` equivalence unit test guards the per-clause routine.
+  `RUSTDL_CLASSIFY_AMORTIZE_IDX=0` restores the old clone+rebuild path. (Also
+  fixes a latent OOB: the pre-existing prebuilt-index path pre-applied the
+  Q-clause's `x_trigger` entry but not its `match_plans` entry.) Plan + advisor
+  review: `docs/superpowers/plans/2026-07-23-classify-clauseindex-amortization-plan.md`.
+
 ## [0.3.38] — 2026-07-23
 
 ### Performance

@@ -4,6 +4,25 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.38] — 2026-07-23
+
+### Performance
+
+- **Wedge `HyperEngine::is_blocked`: drop the per-call candidate-bucket clone.**
+  The wedge's double-blocking check (the hottest self-time leaf in a wedge
+  search, exercised by every classify pair and consistency query) cloned the
+  parent-role candidate bucket out of `block_index` on every call, just to
+  release the borrow before mutating `stats`. It now iterates the bucket in
+  place (the immutable `block_index` borrow coexists with the `nodes` borrows;
+  `block_compares`/`blocks_fired` accumulate in loop-locals written after the
+  loop), removing a per-call heap allocation on the hot path. Behaviour-identical
+  — same candidates, order, subset-pair block decision, and stats; full
+  tableau+reasoner suite green, verdicts unchanged. (Profiling note: the residual
+  ORE consistency cost, e.g. `ore_ont_9899` ~21 s, is a *convergence* wall — both
+  the wedge and the tableau fall-through run their full deadline and return the
+  correct-but-timeout-derived `consistent`, Konclude-confirmed — not a hot loop
+  this addresses; see `docs/superpowers/plans/2026-07-23-wedge-isblocked-labelsig-prefilter-plan.md` §0/§8.)
+
 ## [0.3.37] — 2026-07-23
 
 ### Performance

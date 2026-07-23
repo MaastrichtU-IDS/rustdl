@@ -1,9 +1,10 @@
 # Design: nominal + number-restriction realize-termination (issue #35, v4)
 
 **Date:** 2026-07-23
-**Status:** design — awaiting plan + advisor review
+**Status:** IMPLEMENTED WITH CHANGED OUTCOME — fix A (nominals-first) FALSIFIED during
+implementation and DEFERRED; safety net B shipped as the fix. See § Outcome at the end.
 **Scope:** main tableau (`owl-dl-tableau` `saturate`/`search`/`rules`), realize path
-**Env escape hatches:** `RUSTDL_NOMINAL_FIRST` (fix A, default ON), `RUSTDL_MAX_NODES` (safety net B, default ~50k)
+**Env escape hatches:** `RUSTDL_NOMINAL_FIRST` (fix A, **default OFF / opt-in** — deferred), `RUSTDL_MAX_NODES` (safety net B, default 50k), `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` (safety net B, default 750 ms)
 
 ## 1. Problem
 
@@ -333,3 +334,62 @@ HermiT/ROBOT realization (types per individual).
 - CHANGELOG entry; CLAUDE.md tableau section note (issue #35 v4).
 - Reply on the GitHub issue with the fix + the immediate workaround
   (`RUSTDL_REALIZE_PAIR_TIMEOUT_MS`) for users on the released 0.3.38.
+
+---
+
+## Outcome (2026-07-23, post-implementation)
+
+The plan was executed via subagent-driven development. **The result differs from
+the design's central bet.**
+
+### Fix A (nominals-first scheduling) — FALSIFIED, deferred
+Implemented as Tasks 1–4 (`RUSTDL_MAX_NODES` cap infra, TBox-aware
+`has_pending_nominal_disjunction`, the `apply_exists`/`apply_min` guard, and the
+`first_open_disjunction` nominal priority). The Task 5 acceptance gate — the
+cap-disabled, real-driver bounded-node assertion this design insisted on (§5.1,
+per advisor concern 2) — showed **A does not bound the reproducer**: with the cap
+disabled and `RUSTDL_NOMINAL_FIRST=1`, the completion graph grows without bound
+(`graph().len()` tracks `cap−1` exactly at every cap value = genuine divergence,
+not convergence), verified independently with the release binary (`realize` hangs).
+
+**Why the design was wrong.** The root-cause analysis in §2 was incomplete. The
+generating cycle is driven not only by the equivalence's residual but by
+`ObjectPropertyDomain(r,A)`, which absorbs to an **untriggered universal residual
+GCI** `⊤ ⊑ ¬∃r.⊤ ⊔ A` — a *residual-GCI disjunction*, not a `concept_rule`.
+`has_pending_nominal_disjunction` (keyed on `concept_rules_by_trigger`) never sees
+it; choosing its `A` disjunct on a fresh `≥2 r.C` witness re-opens the covering
+nominal disjunction, and the o-rule merge folds the witness into the constraint's
+own owner, forcing endless regeneration. Dropping either the domain axiom or the
+nominal covering alone terminates in <1 s (matching the reporter's 1-minimality);
+only the combination diverges. **Conclusion: nominals-first *scheduling* is the
+wrong mechanism for this cycle.** The machinery is retained, dormant behind
+`RUSTDL_NOMINAL_FIRST` (default OFF, opt-in), as scaffolding for a proper
+redesign — sound nominal-aware **blocking** (relaxing the `lib.rs:1021/1062`
+nominal exclusion) or the **NN-rule** — to be scoped as a separate spec.
+
+### Safety net B — shipped as the fix
+B is now the delivered fix. At default settings `realize` on the reproducer
+terminates in ~0.75 s with a sound result (a MISS — `x,y,z` are not reported as
+`B`/`C`; matching this is the deferred A work). B is two sound, deterministic
+bounds:
+- **`RUSTDL_REALIZE_PAIR_TIMEOUT_MS` defaults to 750 ms** (was unbounded since
+  0.3.18; `=0` opts out). Bounds each per-individual realize probe → sound MISS.
+  Affects only realize, never classify/consistency.
+- **`RUSTDL_MAX_NODES` cap** (default 50000, `0` disables) on the deadline-free
+  tableau path, returning a distinct `NodeCap` verdict → `Ok(None)` (sound MISS /
+  consistent under-approximation) with a **hard early-return**. Never `Err`, never
+  a panic.
+
+### Not done (deliberately)
+- The full corpus bake-off (planned Task 7) was **not run**: with A deferred and
+  `RUSTDL_NOMINAL_FIRST` default OFF, no default-ON engine scheduling changed, so
+  the merged branch's only default behavior change is safety net B (sound bounds
+  on realize). A bake-off is a prerequisite before ever enabling nominal-first by
+  default.
+
+### Pre-existing, unrelated bugs surfaced (file separately)
+1. `debug_assert_eq!` in `TableauContext::remove_edge_recorded` (`owl-dl-tableau/src/lib.rs:1529`)
+   **panics** on this reproducer in debug builds past ~10–19 nodes, reachable via
+   the CLI; reproduced at the base commit (predates this work).
+2. `realize`'s `entailed_types` misses an entailment that `is_instance_of` finds
+   — a realization scoping gap.

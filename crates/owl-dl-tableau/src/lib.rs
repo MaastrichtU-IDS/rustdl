@@ -2284,6 +2284,46 @@ mod tests {
     }
 
     #[test]
+    fn min_defers_under_pending_nominal_tbox() {
+        // #35 v4 Task 3: with nominals-first scheduling on, `apply_min`
+        // (and `apply_exists`) must DEFER generation while the node still
+        // carries a pending nominal-covering disjunction (here `A ⊑ {x,y}`
+        // as a TBox concept-rule) — the o-rule merges the node into its
+        // canonical nominal before it can spawn successors. Mechanical
+        // check only; end-to-end validation is the Task 5 driver gate.
+        //
+        // `RUSTDL_NOMINAL_FIRST` defaults ON and `nominal_first_enabled`
+        // is OnceLock-cached, so no env mutation is needed (and setting
+        // it here would be unreliable across test order anyway).
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let c = pool.atomic(ClassId::new(1));
+        let x = pool.nominal(IndividualId::new(0));
+        let y = pool.nominal(IndividualId::new(1));
+        let one_of = pool.or([x, y]);
+        let min_2rc = pool.min(2, Role::Named(RoleId::new(0)), c);
+        let mut tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: ClassId::new(0),
+                conclusion: one_of,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        tbox.finalize();
+        let hierarchy = RoleHierarchyBuilder::with_roles(1).build();
+        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+        let n = ctx.new_node();
+        ctx.add_label(n, a);
+        ctx.add_label(n, min_2rc);
+        assert!(ctx.has_pending_nominal_disjunction(n), "precondition");
+
+        let before = ctx.graph().len();
+        let out = apply_min(&mut ctx, n);
+        assert_eq!(out, RuleOutcome::NoChange, "≥-generation deferred");
+        assert_eq!(ctx.graph().len(), before, "no successor generated");
+    }
+
+    #[test]
     fn rollback_drops_label_and_its_deps_in_lockstep() {
         // After a checkpointed add_label_with_deps and a rollback, both
         // labels[] and label_deps[] must shrink by one.

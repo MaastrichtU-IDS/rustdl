@@ -4,6 +4,37 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.35] — 2026-07-23
+
+### Fixed
+
+- **Realize / consistency / satisfiability hang on defined-class ontologies with
+  a nominal-anchored `∃`-cycle ([#35], `hang_v3` core).** A `{a} ⊓ ¬C` instance
+  probe over `Person ⊑ ∃hasMother.Woman` + `Woman ⊑ Person` (from `Woman ≡ …`) +
+  the covering `Person ≡ Man ⊔ Woman` + a property domain, with an `ABox` edge
+  `isMotherOf(a,b)`, builds an infinite maternal `∃`-cycle **anchored at a
+  nominal root**. Ancestor-scoped pair-blocking cannot block that chain — the
+  pairwise parent-subset condition never holds near the nominal anchor — so the
+  completion graph grows near-unbounded and each probe is pathologically slow
+  (~70 s for `realize` on the 6-axiom core; `realize` /
+  `materialize_inferred_class_assertions` run one probe per (individual, class),
+  aggregating that into a multi-minute-to-hours stall on the source KG). The
+  0.3.34 deep-cap fix only let each probe eventually finish, slowly; this is the
+  underlying blocking condition behind the successive #35 cores. Fixed by
+  enabling **anywhere-blocking** (Motik/Shearer/Horrocks) on the deadline-free
+  query paths (`is_consistent` / `is_class_satisfiable` / un-timed
+  `realize` / `instance`), which blocks the chain against any earlier
+  non-nominal node and bounds the graph. `hang_v3` `realize`: ~70 s → 0.04 s,
+  verdicts matching HermiT (`a`, `b` are just `owl:Thing`; consistent).
+  Deadline-bounded paths (classification pairs, timed realize probes) keep
+  ancestor-blocking — a 152-ontology ORE + curated-corpus bake-off confirmed
+  anywhere-blocking is verdict-identical there (152/152 + corpus byte-identical,
+  0 panics, no reproducible wall regression), so the classify hot loop is left
+  untouched. Env override: `RUSTDL_ANYWHERE_BLOCKING=1` forces it on everywhere
+  (incl. classify), `=0` forces the pre-fix ancestor-only behaviour.
+
+[#35]: https://github.com/MaastrichtU-IDS/rustdl/issues/35
+
 ## [0.3.34] — 2026-07-22
 
 ### Fixed

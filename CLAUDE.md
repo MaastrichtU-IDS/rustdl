@@ -155,6 +155,25 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   "wedge"** since 2026-05-29 — the in-tree `hyper.rs` docstring calling it
   standalone/not-wired is stale; trust the `*_enabled()` defaults in
   `reasoner/src/lib.rs`.
+  **Blocking (2026-07-23, issue #35 v3):** the main tableau supports both
+  ancestor-scoped pair-blocking (`is_blocked_ancestor`) and anywhere-blocking
+  (`is_blocked_anywhere`, Motik/Shearer/Horrocks). `reasoner::decide` now enables
+  **anywhere-blocking on the deadline-FREE query paths** (`is_consistent` /
+  `is_class_satisfiable` / un-timed `realize`/`instance`) and keeps
+  ancestor-blocking on the deadline-bounded paths (classify pairs, timed realize).
+  Rationale: ancestor-only pair-blocking cannot block a generating `∃`-cycle
+  anchored at a **nominal** root (the pairwise parent-subset condition never holds
+  near the anchor), so a `{a} ⊓ ¬C` probe over a defined-class + covering-
+  disjunction + property-domain ontology with an ABox edge grows the completion
+  graph near-unbounded (issue #35 `hang_v3`: realize ~70 s → 0.04 s with the fix,
+  verdicts matching HermiT). A 152-ontology ORE + curated-corpus bake-off found
+  anywhere-blocking verdict-identical to ancestor-blocking (byte-identical
+  closures, 0 panics, no reproducible wall regression), so classify is left on
+  ancestor-blocking only to avoid perturbing the tuned hot loop, not for
+  correctness. Env `RUSTDL_ANYWHERE_BLOCKING=1` forces it on everywhere (incl.
+  classify), `=0` forces ancestor-only everywhere (pre-fix behaviour). Complements
+  the 0.3.34 deep-cap fix (search-breadth on bounded graphs); this addresses
+  graph-termination on the nominal-anchored-cycle class.
   Phase 3 (commit 64bee92) added a bloom prefilter to `needs_deferred_or`
   extending the existing 64-bit `label_sig` (was used only for ancestor
   pair-blocking). GALEN classify wall: 24.7 min → 21.1 min (−14.6%);

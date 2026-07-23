@@ -214,33 +214,18 @@ Ontology(<http://example.org/card>
 /// before completing) — asserting the type set stays EMPTY, not that it's
 /// wrong, is exactly what "sound under-approximation" means.
 ///
-/// **`cfg_attr(debug_assertions, ignore)`**: this reproducer's rapid,
-/// unbounded-shaped graph growth (the same #35 v3/v4 divergence signature
-/// as `nominal_first_bounded_divergence_canary.rs`) passes through an
-/// edge-rollback that trips a SEPARATE, pre-existing `debug_assert_eq!`
-/// mismatch in `TableauContext::remove_edge_recorded`
-/// (`crates/owl-dl-tableau/src/lib.rs`) — confirmed present on this
-/// branch's `HEAD` *before* any Task B change (reproduced against the
-/// original unbounded default, with Task B's `search.rs`/`realize.rs`
-/// edits both reverted), so it is unrelated to the hard-`NodeCap` /
-/// default-pair-timeout work here and is deliberately NOT fixed as part
-/// of this change (see `nominal_first_bounded_divergence_canary.rs`'s doc
-/// for the same bug + its recommendation to file it separately). It only
-/// fires in debug-assertion builds — `cargo test`'s default profile —
-/// never in release. So this test is skipped there and runs (asserting
-/// the real behaviour) under `cargo test --release` / `-p owl-dl-reasoner
-/// --release`, where it verifies Task B's fix directly; the CLI
-/// transcript in `task-B-report.md` is the release-mode evidence for the
-/// default `cargo test` run.
+/// Runs in BOTH debug and release. It previously carried a
+/// `cfg_attr(debug_assertions, ignore)` because this reproducer's rapid graph
+/// growth tripped a stale-index `debug_assert_eq!` in
+/// `TableauContext::remove_edge_recorded` (issue #38). That bug is now fixed
+/// (the merge re-anchor searches the mirror in-edge by the union-find
+/// representative `y_eff`, not the unresolved snapshot node), so this test also
+/// serves as the debug-build regression guard for #38: before the fix it panics
+/// under `cargo test`'s default (debug) profile; after it, it returns a sound
+/// result. (The separate *tableau completion-graph divergence* finding — fix A
+/// deferred — stays documented by `nominal_first_bounded.rs`'s `#[ignore]`d
+/// `issue35_v4_completion_graph_is_bounded` gate.)
 #[test]
-#[cfg_attr(
-    debug_assertions,
-    ignore = "issue #35 v4: hits a SEPARATE pre-existing debug_assert_eq! \
-              mismatch in TableauContext::remove_edge_recorded, confirmed \
-              present before Task B's changes too — debug-assertion builds \
-              only (see the doc comment above + task-B-report.md). Run \
-              `cargo test --release` to exercise this test for real."
-)]
 fn issue35_v4_realize_smoke_and_correct() {
     let onto = parse(&format!(
         "Prefix(:=<{NS}>)

@@ -1431,12 +1431,22 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
                 .iter()
                 .position(|&e| e == (role, source));
             let Some(from_pos) = from_pos else { continue };
+            // The forward edge was located on `y_eff` (the union-find
+            // representative), so its mirror on `source.in_edges` is
+            // `(role, y_eff)` — the pair `add_edge` always maintains. Search
+            // for `(role, y_eff)`, NOT the unresolved snapshot node `(role, y)`:
+            // when `y` has since merged into `y_eff`, `source.in_edges` can
+            // carry BOTH a stale `(role, y)` (orphaned by that earlier merge)
+            // and the live `(role, y_eff)`, and matching `(role, y)` removes the
+            // wrong mirror — `remove_edge_recorded`'s `(role, from == y_eff)`
+            // assertion then fires (issue #38), or in release silently corrupts
+            // the edge set. `y == y_eff` reduces to the original lookup.
             let in_pos = self
                 .graph
                 .node(source)
                 .in_edges
                 .iter()
-                .position(|&e| e == (role, y))
+                .position(|&e| e == (role, y_eff))
                 .expect("source in-edge present at merge time");
             let prior_edge_deps = self
                 .graph

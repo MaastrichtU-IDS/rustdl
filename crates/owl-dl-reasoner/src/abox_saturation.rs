@@ -770,60 +770,67 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             }
         }
 
-        // Rule 4: role chains — scan all pairs of edges for each chain rule
-        // We do this once per outer iteration to avoid O(n³) inner loops
+        // Rule 4: role chains. Snapshot the current edge set once per outer
+        // iteration (new edges are picked up next iteration, as before).
         let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
+
+        // Phase 1a (perf/abox-chain-index): index the snapshot by (role, src)
+        // and (role, dst) so the chain inner leg — "find the r-edges leaving
+        // node `b` in direction `inv`" — is an O(fan-out) lookup instead of an
+        // O(E) linear rescan of `edge_vec`. This does NOT change the set of
+        // derivations, their order (the index Vecs preserve `edge_vec` order),
+        // or which rule first-inserts an edge — it is byte-identical to the old
+        // brute rescan, just without the quadratic inner scan. Set
+        // `RUSTDL_ABOX_CHAIN_BRUTE=1` to force the old path for A/B validation.
+        let use_brute = std::env::var_os("RUSTDL_ABOX_CHAIN_BRUTE").is_some();
+        let mut by_src: HashMap<(RoleId, IndividualId), Vec<IndividualId>> = HashMap::new();
+        let mut by_dst: HashMap<(RoleId, IndividualId), Vec<IndividualId>> = HashMap::new();
+        if !use_brute {
+            for &(rid, a, b) in &edge_vec {
+                by_src.entry((rid, a)).or_default().push(b);
+                by_dst.entry((rid, b)).or_default().push(a);
+            }
+        }
+        // Candidate targets `c` such that role `role` holds from `node` to `c`
+        // in direction `inv`. Forward: Named(role)(node,c) → by_src[(role,node)].
+        // Inverse: Inverse(role)(node,c) = Named(role)(c,node) → by_dst[(role,node)].
+        // Brute mode reproduces the exact same set/order by filtering the snapshot.
+        let neighbors = |role: RoleId, node: IndividualId, inv: bool| -> Vec<IndividualId> {
+            if use_brute {
+                edge_vec
+                    .iter()
+                    .filter_map(|&(rid, s, d)| {
+                        if rid != role {
+                            None
+                        } else if !inv {
+                            (s == node).then_some(d)
+                        } else {
+                            (d == node).then_some(s)
+                        }
+                    })
+                    .collect()
+            } else if !inv {
+                by_src.get(&(role, node)).cloned().unwrap_or_default()
+            } else {
+                by_dst.get(&(role, node)).cloned().unwrap_or_default()
+            }
+        };
 
         for &(r1_id, r1_inv, r2_id, r2_inv, sup_id, sup_inv) in &chains2
             .iter()
             .map(|&((a, b), (c, d), (e, f))| (a, b, c, d, e, f))
             .collect::<Vec<_>>()
         {
-            // We need: edge matching r1 direction (r1_id, r1_inv) going a→b
-            //         + edge matching r2 direction (r2_id, r2_inv) going b→c
-            //         → add edge sup direction (sup_id, sup_inv) going a→c
+            // edge matching r1 (a→b) + edge matching r2 (b→c) → sup (a→c).
             for &(ea_id, ea, eb) in &edge_vec {
-                // Check if this edge matches r1 direction
-                let (a, b) = if !r1_inv {
-                    // Named(r1_id): edge (r1_id, a, b) matches
-                    if ea_id != r1_id {
-                        continue;
-                    }
-                    (ea, eb)
-                } else {
-                    // Inverse(r1_id): edge (r1_id, b, a) matches → direction a→b is (r1_id, b, a)
-                    // i.e. we need canonical edge (r1_id, eb, ea) to represent Inv(r1_id)(ea, eb)
-                    // But we store Named(r1_id)(eb, ea) which is the same edge reversed.
-                    // Actually: Inverse(r1_id)(a,b) ↔ Named(r1_id)(b,a)
-                    // So edge (r1_id, eb, ea) in our set means Inverse(r1_id)(ea, eb)
-                    // We need to check if (r1_id, eb, ea) is in edges, but we're iterating ea_id==r1_id...
-                    // Rethink: if r1_inv=true, the chain fires when Inverse(r1_id)(x,y) holds
-                    // = when Named(r1_id)(y,x) holds = edge(r1_id, y, x) in our set
-                    // So we need: find edge (r1_id, eb, ea) to mean Inv(r1_id)(ea, eb)
-                    // The current edge is (ea_id, ea, eb); for r1_inv, the source is eb and dest is ea
-                    if ea_id != r1_id {
-                        continue;
-                    }
-                    (eb, ea) // "a" in chain sense is eb, "b" is ea
-                };
+                if ea_id != r1_id {
+                    continue;
+                }
+                // r1_inv=false: Named(r1)(a,b) → (a,b)=(ea,eb).
+                // r1_inv=true : Inverse(r1)(a,b)=Named(r1)(b,a) → (a,b)=(eb,ea).
+                let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
-                // Now find edge matching r2 direction going b→c
-                for &(eb2_id, eb2, ec) in &edge_vec {
-                    let b2_src = if !r2_inv {
-                        if eb2_id != r2_id || eb2 != b {
-                            continue;
-                        }
-                        ec
-                    } else {
-                        // Inv(r2_id)(b,c) ↔ Named(r2_id)(c,b)
-                        if eb2_id != r2_id || ec != b {
-                            continue;
-                        }
-                        eb2
-                    };
-
-                    let c = b2_src;
-                    // Derive sup direction a→c
+                for c in neighbors(r2_id, b, r2_inv) {
                     let (na, nc) = if !sup_inv { (a, c) } else { (c, a) };
                     if edges.insert((sup_id, na, nc)) {
                         edge_queue.push_back((sup_id, na, nc));
@@ -834,53 +841,20 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             }
         }
 
-        // 3-hop chains
+        // 3-hop chains: r1 (a→b) + r2 (b→c) + r3 (c→d) → sup (a→d).
         for &(r1_id, r1_inv, r2_id, r2_inv, r3_id, r3_inv, sup_id, sup_inv) in &chains3
             .iter()
             .map(|&((a, b), (c, d), (e, f), (g, h))| (a, b, c, d, e, f, g, h))
             .collect::<Vec<_>>()
         {
             for &(ea_id, ea, eb) in &edge_vec {
-                let (a, b) = if !r1_inv {
-                    if ea_id != r1_id {
-                        continue;
-                    }
-                    (ea, eb)
-                } else {
-                    if ea_id != r1_id {
-                        continue;
-                    }
-                    (eb, ea)
-                };
+                if ea_id != r1_id {
+                    continue;
+                }
+                let (a, b) = if !r1_inv { (ea, eb) } else { (eb, ea) };
 
-                for &(eb2_id, eb2, ec) in &edge_vec {
-                    let (b2, c) = if !r2_inv {
-                        if eb2_id != r2_id || eb2 != b {
-                            continue;
-                        }
-                        (eb2, ec)
-                    } else {
-                        if eb2_id != r2_id || ec != b {
-                            continue;
-                        }
-                        (ec, eb2)
-                    };
-                    let _ = b2;
-
-                    for &(ec2_id, ec2, ed) in &edge_vec {
-                        let d = if !r3_inv {
-                            if ec2_id != r3_id || ec2 != c {
-                                continue;
-                            }
-                            ed
-                        } else {
-                            if ec2_id != r3_id || ed != c {
-                                continue;
-                            }
-                            ec2
-                        };
-
-                        // Derive sup direction a→d
+                for c in neighbors(r2_id, b, r2_inv) {
+                    for d in neighbors(r3_id, c, r3_inv) {
                         let (na, nd) = if !sup_inv { (a, d) } else { (d, a) };
                         if edges.insert((sup_id, na, nd)) {
                             edge_queue.push_back((sup_id, na, nd));

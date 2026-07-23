@@ -1,6 +1,21 @@
 # Plan: label_sig bloom prefilter for the wedge's `HyperEngine::is_blocked`
 
-**Status:** advisor-reviewed 2026-07-23 — **APPROVE-WITH-CHANGES, but DEMOTED**: do the divergence-aware consistency budget FIRST (separate plan); from this plan, land only the **clone-removal** unconditionally and let an honest P0 decide the `label_sig` (advisor expects NO-GO).
+**Status:** **CLOSED — P0 measured NO-GO on the `label_sig` prefilter (2026-07-23).** The clone-removal half shipped (v0.3.38). Do NOT implement the prefilter.
+
+> **P0 result (the gate that decides this — §3/B4).** Profiled two *converging*,
+> wedge-heavy classify runs (`ore_ont_1508` 12.9 s; `ore_ont_12698` 5.6 s).
+> `HyperEngine::is_blocked` self-time = **0.05 % / 0.10 %** of total — vs the
+> ≥15 % GO threshold (~150–300× below). The "is_blocked is the 7× hottest leaf"
+> figure was, exactly as the advisor warned, a **diverging-`ore_ont_9899`-run
+> artifact**; on converging workloads `is_blocked` is negligible. **NO-GO —
+> abandoned.** The clone-removal (§4.3) shipped independently in v0.3.38.
+>
+> The profiles also located the *real* converging-wedge-classify hot spots (for
+> the roadmap, not this plan): **`enumerate_matches` + `match_body` ~25 %**
+> combined on 1508 (the maintainer's in-flight non-Horn fire-loop / trigger-index
+> plans — confirms their targeting), and **`build_clause_indexes` ~11–15 % +
+> `ClauseIndexes` drop + heavy malloc/free churn** (the clause-index structure is
+> rebuilt+dropped per solve frame — a possible separate amortization target).
 **Author:** Claude, 2026-07-23. Session: issue-#35 perf arc — the "remaining tableau frontier" after the abox-saturation wins (v0.3.36/v0.3.37).
 **Branch (to create):** `perf/wedge-isblocked-labelsig`.
 

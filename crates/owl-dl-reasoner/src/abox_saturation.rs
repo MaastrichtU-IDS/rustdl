@@ -613,6 +613,27 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         }
     }
 
+    // ── Disjointness indexes (Phase 2, perf/abox-disjoint-index) ────────────────
+    // `disjoint_pairs` is static after seeding (last push above). Build two
+    // indexes ONCE so Rules 7b/8 do O(1)/O(partners) lookups instead of an
+    // O(|disjoint_pairs|) linear scan re-run every fixpoint iteration:
+    //   - `disjoint_of`: symmetric adjacency (BOTH directions) for Rule 8's
+    //     type-driven check;
+    //   - `disjoint_set`: normalized membership for Rule 7b.
+    // Rules 7b/8 write only `result.clash` (no types/edges), so this is
+    // verdict-preserving by set-membership equivalence. `RUSTDL_ABOX_DISJOINT_BRUTE=1`
+    // restores the old linear scans for A/B validation.
+    let disjoint_brute = std::env::var_os("RUSTDL_ABOX_DISJOINT_BRUTE").is_some();
+    let mut disjoint_of: HashMap<ClassId, Vec<ClassId>> = HashMap::new();
+    let mut disjoint_set: HashSet<(ClassId, ClassId)> = HashSet::new();
+    if !disjoint_brute {
+        for &(c1, c2) in &disjoint_pairs {
+            disjoint_of.entry(c1).or_default().push(c2);
+            disjoint_of.entry(c2).or_default().push(c1);
+            disjoint_set.insert(if c1 <= c2 { (c1, c2) } else { (c2, c1) });
+        }
+    }
+
     // ── Fixpoint ───────────────────────────────────────────────────────────────
 
     let mut changed = true;
@@ -922,11 +943,16 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             for i in 0..filler_vec.len() {
                 for j in (i + 1)..filler_vec.len() {
                     let (f1, f2) = (filler_vec[i], filler_vec[j]);
-                    // Check disjointness
-                    if disjoint_pairs
-                        .iter()
-                        .any(|&(d1, d2)| (d1 == f1 && d2 == f2) || (d1 == f2 && d2 == f1))
-                    {
+                    // Check disjointness: O(1) normalized-pair membership (or the
+                    // old O(|disjoint_pairs|) linear scan under the brute hatch).
+                    let is_disjoint = if disjoint_brute {
+                        disjoint_pairs
+                            .iter()
+                            .any(|&(d1, d2)| (d1 == f1 && d2 == f2) || (d1 == f2 && d2 == f1))
+                    } else {
+                        disjoint_set.contains(&if f1 <= f2 { (f1, f2) } else { (f2, f1) })
+                    };
+                    if is_disjoint {
                         if trace {
                             eprintln!(
                                 "[abox-sat] FUNCTIONAL-MARKER CLASH: {} has ∃{}.{} ∩ ∃{}.{} with Functional + Disjoint",
@@ -943,19 +969,47 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             }
         }
 
-        // Rule 8: disjoint clash check
-        for &(c1, c2) in &disjoint_pairs {
-            for (ind, ind_types) in &types {
-                if ind_types.contains(&c1) && ind_types.contains(&c2) {
-                    if trace {
-                        eprintln!(
-                            "[abox-sat] CLASH: {} has both {:?} and {:?}",
-                            vocab.individual_iri(*ind),
-                            vocab.class_iri(c1),
-                            vocab.class_iri(c2)
-                        );
+        // Rule 8: disjoint clash check.
+        if disjoint_brute {
+            // Old path (O(|disjoint_pairs| × |individuals|)); kept for A/B.
+            for &(c1, c2) in &disjoint_pairs {
+                for (ind, ind_types) in &types {
+                    if ind_types.contains(&c1) && ind_types.contains(&c2) {
+                        if trace {
+                            eprintln!(
+                                "[abox-sat] CLASH: {} has both {:?} and {:?}",
+                                vocab.individual_iri(*ind),
+                                vocab.class_iri(c1),
+                                vocab.class_iri(c2)
+                            );
+                        }
+                        result.clash = true;
                     }
-                    result.clash = true;
+                }
+            }
+        } else if !disjoint_of.is_empty() {
+            // Type-driven: for each individual, for each of its types `c1`, check
+            // whether any told-disjoint partner `c2` is also in its type set.
+            // Guarded on non-empty so disjoint-free ABoxes stay zero-cost.
+            'outer: for (ind, ind_types) in &types {
+                for c1 in ind_types {
+                    let Some(partners) = disjoint_of.get(c1) else {
+                        continue;
+                    };
+                    for c2 in partners {
+                        if ind_types.contains(c2) {
+                            if trace {
+                                eprintln!(
+                                    "[abox-sat] CLASH: {} has both {:?} and {:?}",
+                                    vocab.individual_iri(*ind),
+                                    vocab.class_iri(*c1),
+                                    vocab.class_iri(*c2)
+                                );
+                            }
+                            result.clash = true;
+                            break 'outer;
+                        }
+                    }
                 }
             }
         }

@@ -2139,13 +2139,16 @@ pub fn max_nodes() -> Option<usize> {
     })
 }
 
-/// Nominals-first scheduling (#35 v4). `RUSTDL_NOMINAL_FIRST` default ON;
-/// `=0` reverts to unconditional ∃/≥ generation. Cached once.
+/// Nominals-first scheduling (#35 v4). **Default OFF** — dormant/deferred: a
+/// bake-off found this scheduling did not bound the issue #35 target bug (the
+/// validated fix is the realize pair-timeout + hard `NodeCap` safety net, gated
+/// independently). Set `RUSTDL_NOMINAL_FIRST=1` to opt in to the deferred-A
+/// experiment (unconditional ∃/≥ generation otherwise). Cached once.
 #[must_use]
 pub fn nominal_first_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| !matches!(std::env::var("RUSTDL_NOMINAL_FIRST").as_deref(), Ok("0")))
+    *ON.get_or_init(|| matches!(std::env::var("RUSTDL_NOMINAL_FIRST").as_deref(), Ok("1")))
 }
 
 /// Count inverse-induced (`preds`/flip) successors in `≤n`/functional merges
@@ -2284,6 +2287,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "nominal-first deferred (A redesign); opt-in RUSTDL_NOMINAL_FIRST=1, run with --ignored"]
     fn min_defers_under_pending_nominal_tbox() {
         // #35 v4 Task 3: with nominals-first scheduling on, `apply_min`
         // (and `apply_exists`) must DEFER generation while the node still
@@ -2292,9 +2296,14 @@ mod tests {
         // canonical nominal before it can spawn successors. Mechanical
         // check only; end-to-end validation is the Task 5 driver gate.
         //
-        // `RUSTDL_NOMINAL_FIRST` defaults ON and `nominal_first_enabled`
-        // is OnceLock-cached, so no env mutation is needed (and setting
-        // it here would be unreliable across test order anyway).
+        // NOTE (deferred, 2026-07-23): `RUSTDL_NOMINAL_FIRST` now defaults
+        // OFF (nominal-first scheduling did not bound the issue #35 target
+        // bug; the validated fix is the realize pair-timeout + hard NodeCap
+        // safety net, independent of this flag). This test documents the
+        // deferred-A behaviour and only passes with `RUSTDL_NOMINAL_FIRST=1`
+        // set process-wide before the `OnceLock` initializes (run with
+        // `--ignored` in a dedicated process, since `nominal_first_enabled`
+        // is OnceLock-cached and shared with other tests in this binary).
         let mut pool = ConceptPool::new();
         let a = pool.atomic(ClassId::new(0));
         let c = pool.atomic(ClassId::new(1));

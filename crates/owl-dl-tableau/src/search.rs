@@ -501,6 +501,7 @@ mod tests {
     use owl_dl_core::{ClassId, ConceptExpr, ConceptPool, IndividualId};
 
     #[test]
+    #[ignore = "nominal-first deferred (A redesign); opt-in RUSTDL_NOMINAL_FIRST=1, run with --ignored"]
     fn first_open_disjunction_prefers_nominal_bearing() {
         // #35 v4 Task 4: with nominals-first scheduling on, the search
         // driver must resolve a nominal-covering disjunction (an `Or`
@@ -508,9 +509,15 @@ mod tests {
         // the o-rule can merge the deferred node (Task 3) before
         // generation resumes.
         //
-        // `RUSTDL_NOMINAL_FIRST` defaults ON and `nominal_first_enabled`
-        // is OnceLock-cached, so no env mutation is needed (and setting
-        // it here would be unreliable across test order anyway).
+        // NOTE (deferred, 2026-07-23): `RUSTDL_NOMINAL_FIRST` now defaults
+        // OFF (nominal-first scheduling did not bound the issue #35 target
+        // bug; the validated fix is the realize pair-timeout + hard NodeCap
+        // safety net, independent of this flag). This test documents the
+        // deferred-A priority behaviour and only passes with
+        // `RUSTDL_NOMINAL_FIRST=1` set process-wide before the `OnceLock`
+        // initializes (run with `--ignored` in a dedicated process, since
+        // `nominal_first_enabled` is OnceLock-cached and shared with other
+        // tests in this binary).
         let mut pool = ConceptPool::new();
         let p = pool.atomic(ClassId::new(0));
         let q = pool.atomic(ClassId::new(1));

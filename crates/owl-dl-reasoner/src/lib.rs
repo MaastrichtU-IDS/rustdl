@@ -4690,7 +4690,13 @@ impl PreparedOntology {
             None,
             build_test_concept,
         )
-        .map(|opt| opt.expect("no deadline ⇒ search always returns Some(_)"))
+        // `None` was previously impossible with no deadline set (search always
+        // returned `Some(_)`), but a live-node cap trip (#35 v4 safety net) can
+        // now legitimately yield `None` even here. Treat it the same as the
+        // deadline-bounded callers already do: "no verdict" ⇒ satisfiable ⇒
+        // not-an-instance/not-subsumed — a sound under-approximation, never a
+        // panic.
+        .map(|opt| opt.unwrap_or(true))
     }
 
     /// Lever A: like [`Self::decide`], but for the **classification pairwise
@@ -4723,7 +4729,13 @@ impl PreparedOntology {
             None,
             build_test_concept,
         )
-        .map(|opt| opt.expect("no deadline ⇒ search always returns Some(_)"))
+        // `None` was previously impossible with no deadline set (search always
+        // returned `Some(_)`), but a live-node cap trip (#35 v4 safety net) can
+        // now legitimately yield `None` even here. Treat it the same as the
+        // deadline-bounded callers already do: "no verdict" ⇒ satisfiable ⇒
+        // not-an-instance/not-subsumed — a sound under-approximation, never a
+        // panic.
+        .map(|opt| opt.unwrap_or(true))
     }
 
     /// Like [`Self::decide`] but the search is bounded by `deadline`.
@@ -5430,6 +5442,10 @@ where
     match outcome {
         owl_dl_tableau::SearchVerdict::Sat => Ok(Some(true)),
         owl_dl_tableau::SearchVerdict::Unsat(_) => Ok(Some(false)),
+        // Live-node cap hit: sound under-approximation, never an error (#35 v4
+        // safety net) — must be checked before the DepthLimit arms below so a
+        // cap trip is never mistaken for a hard NoVerdict.
+        owl_dl_tableau::SearchVerdict::NodeCap => Ok(None),
         owl_dl_tableau::SearchVerdict::DepthLimit if ctx.deadline_reached() => Ok(None),
         owl_dl_tableau::SearchVerdict::DepthLimit => Err(ReasonError::NoVerdict),
     }

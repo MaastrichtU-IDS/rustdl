@@ -542,6 +542,13 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         false
     }
 
+    /// True once live node count exceeds [`crate::max_nodes`]. Callers treat a
+    /// resulting `NodeCap` verdict as a clean "no verdict" (sound under-approx).
+    #[must_use]
+    pub fn node_cap_exceeded(&self) -> bool {
+        crate::max_nodes().is_some_and(|cap| self.graph().len() > cap)
+    }
+
     #[must_use]
     pub fn pool(&self) -> &ConceptPool {
         self.pool
@@ -2062,6 +2069,22 @@ fn is_subset_sorted(small: &[ConceptId], big: &[ConceptId]) -> bool {
 #[must_use]
 pub fn anywhere_blocking_enabled() -> bool {
     std::env::var_os("RUSTDL_ANYWHERE_BLOCKING").is_some_and(|v| v == "1")
+}
+
+/// Deterministic live-node cap for the deadline-free saturate/search path.
+/// `RUSTDL_MAX_NODES` (default 50000; `0` disables). Cached once (#35 v4).
+#[must_use]
+pub fn max_nodes() -> Option<usize> {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<Option<usize>> = OnceLock::new();
+    *CAP.get_or_init(|| match std::env::var("RUSTDL_MAX_NODES") {
+        Ok(v) => match v.trim().parse::<usize>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => Some(50_000),
+        },
+        Err(_) => Some(50_000),
+    })
 }
 
 /// Count inverse-induced (`preds`/flip) successors in `≤n`/functional merges

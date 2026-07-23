@@ -62,6 +62,12 @@ pub enum SearchVerdict {
     /// deadline elapsed. Callers distinguish via
     /// [`TableauContext::deadline_reached`].
     DepthLimit,
+    /// The deterministic live-node cap ([`crate::max_nodes`]) was hit.
+    /// Distinct from `DepthLimit`: on the deadline-free path a `DepthLimit`
+    /// verdict maps to `Err(NoVerdict)`, but a cap trip must degrade to a
+    /// sound `Ok(None)` MISS instead (#35 v4 safety net). Never fold this
+    /// into `DepthLimit` handling.
+    NodeCap,
 }
 
 impl SearchVerdict {
@@ -72,7 +78,10 @@ impl SearchVerdict {
         match self {
             Self::Sat => Some(true),
             Self::Unsat(_) => Some(false),
-            Self::DepthLimit => None,
+            // Both a depth/deadline stall and a live-node cap trip are
+            // "don't know" in this legacy bridge — callers that need to
+            // tell them apart use the richer `SearchVerdict` directly.
+            Self::DepthLimit | Self::NodeCap => None,
         }
     }
 }
@@ -111,6 +120,7 @@ pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchV
             SearchVerdict::Unsat(deps)
         }
         SaturationResult::Stalled => SearchVerdict::DepthLimit,
+        SaturationResult::NodeCapped => SearchVerdict::NodeCap,
         SaturationResult::Stable => {
             // Step 1: ⊔ branching has priority — it's structurally
             // cheaper and keeps the search shape predictable.
@@ -158,6 +168,7 @@ fn branch(
     let my_id = ctx.push_branch();
     let mut combined: DepSet = DepSet::new();
     let mut depth_limited = false;
+    let mut node_capped = false;
     let mut early_return: Option<SearchVerdict> = None;
     // Restricted semantic branching companion. When option `d_j`
     // failed and `¬d_j` is registered as a cheap literal complement,
@@ -278,12 +289,18 @@ fn branch(
                 ctx.rollback_to(cp);
                 depth_limited = true;
             }
+            SearchVerdict::NodeCap => {
+                ctx.rollback_to(cp);
+                node_capped = true;
+            }
         }
     }
     ctx.pop_branch();
 
     if let Some(v) = early_return {
         v
+    } else if node_capped {
+        SearchVerdict::NodeCap
     } else if depth_limited {
         SearchVerdict::DepthLimit
     } else {

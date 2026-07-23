@@ -50,6 +50,10 @@ pub enum SaturationResult {
     /// Reached the iteration cap without saturating or clashing.
     /// Used as a defensive guard while the ruleset is incomplete.
     Stalled,
+    /// Live node cap ([`crate::max_nodes`]) hit; sound no-verdict. Distinct
+    /// from `Stalled` (deadline) so callers on the deadline-free path can
+    /// degrade to a sound `Ok(None)` instead of `Err(NoVerdict)` (#35 v4).
+    NodeCapped,
 }
 
 /// Worklist-driven saturation loop.
@@ -108,6 +112,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             // a cheap Instant comparison, dwarfed by rule bodies.
             macro_rules! step {
                 ($apply:expr) => {{
+                    if ctx.node_cap_exceeded() {
+                        return SaturationResult::NodeCapped;
+                    }
                     if ctx.check_deadline() {
                         return SaturationResult::Stalled;
                     }
@@ -148,6 +155,9 @@ pub fn saturate(ctx: &mut TableauContext<'_, '_, '_>, max_iters: usize) -> Satur
             let mut sweep_changed = false;
             let node_count = ctx.graph().len();
             for idx in 0..node_count {
+                if ctx.node_cap_exceeded() {
+                    return SaturationResult::NodeCapped;
+                }
                 if ctx.check_deadline() {
                     return SaturationResult::Stalled;
                 }

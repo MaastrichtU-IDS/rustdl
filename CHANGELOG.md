@@ -4,6 +4,41 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.36] — 2026-07-23
+
+### Fixed
+
+- **`realize` / `materialize_inferred_class_assertions` no longer hang on an
+  inconsistent ontology.** Off the saturation-eligible fragment, realize ran a
+  `{a} ⊓ ¬C` tableau probe per (individual, class); on an inconsistent KB every
+  such membership holds vacuously, so this was both wrong to report as a
+  meaningful realization and — on a *deep* inconsistency the ABox-saturation
+  pre-check catches but classify's pattern checks do not (e.g. `family.ofn`) — a
+  multi-minute-to-hours stall over an ABox that never cheaply clashes. Pre-fix it
+  could even return a degenerate `Ok` (an individual typed into mutually-disjoint
+  classes). `realize_internal` now returns `Err(Inconsistent)` when
+  `saturate_abox_consistency` reports a clash, matching the sibling
+  `materialize_{object,data}_property_assertions`. Sound under-approximation
+  (clash ⇒ genuinely inconsistent), so consistent ontologies are unaffected.
+
+### Performance
+
+- **ABox-saturation role-chain closure: index the inner leg (family
+  `is_consistent`/`realize` ~20 s → ~1.3 s, ~15×).** `saturate_abox_consistency`'s
+  Rule-4 role-chain phase found "the r-edges leaving node `b`" with an O(E)
+  linear rescan of the edge snapshot, nested under the outer edge loop, per chain
+  rule, every fixpoint iteration — on `family.ofn` (508 individuals, ~267 k-edge
+  transitive closure) that was ~21 s of the ~21.6 s total. It now looks the inner
+  leg up in `(role, src)`/`(role, dst)` indexes (O(fan-out)), byte-identical to
+  the old scan by construction (same snapshot, same candidate order, same
+  derivation schedule). Verdict- and closure-preserving: 79/79 ABox-bearing ORE
+  ontologies verdict-identical indexed-vs-brute, closure edge-set byte-identical
+  on a transitivity+inverse-in-chain+symmetric fixture. `RUSTDL_ABOX_CHAIN_BRUTE=1`
+  restores the pre-fix scan for A/B. The win is scoped to chain-closure-dominated
+  inputs (family and its class); broad ORE consistency cost lives in the tableau,
+  not this phase (separate follow-up). Plan +
+  advisor review: `docs/superpowers/plans/2026-07-23-abox-saturation-chain-index-plan.md`.
+
 ## [0.3.35] — 2026-07-23
 
 ### Fixed

@@ -4,7 +4,7 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.40] — 2026-07-23
 
 ### Fixed
 

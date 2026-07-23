@@ -4,6 +4,30 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.37] — 2026-07-23
+
+### Performance
+
+- **ABox-saturation disjoint-clash checks indexed (ORE ABox consistency: e.g.
+  `ore_ont_9899` pre-check ~27.5 s → ~0.5 s).** After the 0.3.36 chain index,
+  `saturate_abox_consistency`'s Rule 8 (disjoint clash) was still
+  `O(|disjoint_pairs| × |individuals|)` re-scanned every fixpoint iteration, and
+  Rule 7b (functional existential-marker clash) did the same via a linear
+  `disjoint_pairs` scan inside a fillers² loop — the dominant cost on ORE ABox
+  ontologies that declare disjoint classes. Now a `disjoint_of` symmetric class
+  adjacency + a normalized membership set are built once before the fixpoint;
+  Rule 8 is type-driven (for each individual, for each of its types, check a
+  told-disjoint partner — `O(Σ types × partners)`, guarded so disjoint-free
+  ABoxes stay zero-cost) and Rule 7b uses O(1) membership. Verdict-preserving by
+  construction (Rules 7b/8 write only the `clash` bool — no types/edges, no
+  downstream consumer): 79/79 ORE ABox ontologies verdict-identical
+  indexed-vs-brute (incl. all 10 inconsistent), corpus consistency unchanged.
+  `RUSTDL_ABOX_DISJOINT_BRUTE=1` restores the pre-fix scans for A/B. Broadly
+  applicable (any ABox ontology with disjoint classes), unlike the family-scoped
+  0.3.36 chain index. The residual ORE consistency cost is now the hybrid
+  tableau, not the pre-check. Plan + advisor review:
+  `docs/superpowers/plans/2026-07-23-abox-saturation-disjoint-index-plan.md`.
+
 ## [0.3.36] — 2026-07-23
 
 ### Fixed

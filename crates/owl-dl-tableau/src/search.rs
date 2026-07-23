@@ -446,6 +446,14 @@ fn first_open_disjunction(
 ) -> Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> {
     let pool = ctx.pool();
     let graph = ctx.graph();
+    // #35 v4: with nominals-first scheduling on, prefer an open `Or`
+    // carrying a `Nominal` disjunct — resolving the nominal-covering
+    // disjunction first lets the o-rule merge the deferred node
+    // (rules.rs Task 3) before ∃/≥ generation resumes. Flag off (or
+    // no nominal-bearing Or open): identical to the historical
+    // first-open choice.
+    let prefer_nominal = crate::nominal_first_enabled();
+    let mut first_any: Option<(NodeId, ConceptId, Vec<ConceptId>, DepSet)> = None;
     for idx in 0..graph.len() {
         let node_id = NodeId::new(u32::try_from(idx).expect("node count exceeds u32"));
         let node = graph.node(node_id);
@@ -463,10 +471,66 @@ fn first_open_disjunction(
                 // dependency on "this disjunction was at this node
                 // in the first place" and back-jumping skips past
                 // it — the soundness gap chased on pizza (2026-05-25).
-                let or_deps = node.label_deps[pos].clone();
-                return Some((node_id, c, args.to_vec(), or_deps));
+                let hit = (node_id, c, args.to_vec(), node.label_deps[pos].clone());
+                let has_nominal = prefer_nominal
+                    && args
+                        .iter()
+                        .any(|&d| matches!(pool.get(d), ConceptExpr::Nominal(_)));
+                if has_nominal {
+                    return Some(hit);
+                }
+                if first_any.is_none() {
+                    first_any = Some(hit);
+                }
             }
         }
     }
-    None
+    first_any
+}
+
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod tests {
+    use crate::TableauContext;
+    use owl_dl_core::{ClassId, ConceptExpr, ConceptPool, IndividualId};
+
+    #[test]
+    fn first_open_disjunction_prefers_nominal_bearing() {
+        // #35 v4 Task 4: with nominals-first scheduling on, the search
+        // driver must resolve a nominal-covering disjunction (an `Or`
+        // with a `Nominal` disjunct) BEFORE any plain disjunction, so
+        // the o-rule can merge the deferred node (Task 3) before
+        // generation resumes.
+        //
+        // `RUSTDL_NOMINAL_FIRST` defaults ON and `nominal_first_enabled`
+        // is OnceLock-cached, so no env mutation is needed (and setting
+        // it here would be unreliable across test order anyway).
+        let mut pool = ConceptPool::new();
+        let p = pool.atomic(ClassId::new(0));
+        let q = pool.atomic(ClassId::new(1));
+        // Interned FIRST -> smaller ConceptId -> earlier in the node's
+        // sorted label order than the nominal-bearing Or below.
+        let plain_or = pool.or([p, q]);
+        let x = pool.nominal(IndividualId::new(0));
+        let y = pool.nominal(IndividualId::new(1));
+        let nominal_or = pool.or([x, y]);
+        assert!(
+            plain_or < nominal_or,
+            "plain Or must precede in label order"
+        );
+
+        let mut ctx = TableauContext::new(&pool);
+        let n = ctx.new_node();
+        ctx.add_label(n, plain_or);
+        ctx.add_label(n, nominal_or);
+
+        let (_, chosen, _, _) = super::first_open_disjunction(&ctx).expect("an open Or");
+        assert!(
+            matches!(ctx.pool().get(chosen), ConceptExpr::Or(args)
+                if args
+                    .iter()
+                    .any(|&d| matches!(ctx.pool().get(d), ConceptExpr::Nominal(_)))),
+            "nominal-bearing Or must win despite being second"
+        );
+    }
 }

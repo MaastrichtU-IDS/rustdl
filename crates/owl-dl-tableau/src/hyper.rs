@@ -607,6 +607,13 @@ pub struct SearchStats {
 )]
 pub struct HyperEngine<'c> {
     clauses: &'c [DlClause],
+    /// Per-pair clauses appended AFTER `clauses` (logical clause ids
+    /// `clauses.len()..`). Empty for every constructor except
+    /// [`Self::new_with_prebuilt_extras`] — the classify subsumption
+    /// oracle's amortized path, which shares the base clause slice
+    /// across pairs instead of cloning it. [`Self::clause`] branch-routes
+    /// `ci` between the two slices.
+    extra_clauses: &'c [DlClause],
     /// Pairwise class disjointness `(a, b)` (`a.index() < b.index()`),
     /// extracted once at construction from ⊥-headed two-`Class`-atom
     /// clauses. Read-only (never mutated during search); drives the `≤n`
@@ -625,6 +632,12 @@ pub struct HyperEngine<'c> {
     /// `HyperCache::classify_labels` probes can share the pre-built
     /// indexes via an O(1) reference-count bump instead of an O(N) clone.
     indexes: std::sync::Arc<ClauseIndexes>,
+    /// Sparse trigger/match-plan delta for `extra_clauses` (see
+    /// [`ClauseIndexDelta`]). Default-empty everywhere except the
+    /// amortized classify path; every `indexes` consultation also
+    /// consults this (base first, delta second — the combined view
+    /// equals a full rebuild over `clauses ++ extra_clauses`).
+    extra_indexes: ClauseIndexDelta,
     /// Semi-naive worklist of derivation *events* (LIFO). Each event
     /// fires only the clauses it newly enables (not all of a node's
     /// clauses), which is what prunes the re-fire cost. See
@@ -870,7 +883,8 @@ fn role_id_index(r: Role) -> usize {
 /// (memoized once at index-build, since the body is immutable). Eliminates
 /// the per-`(clause, node)` body re-partition + `eval_order` recompute from
 /// the `match_body` hot path — the matcher is the wedge's #1 hotspot.
-#[derive(Debug, Clone)]
+/// `PartialEq` backs the base-vs-delta equivalence unit test.
+#[derive(Debug, Clone, PartialEq)]
 struct ClauseMatchPlan {
     /// `Atom::Class(c, X)` atoms — checked against the home node's label.
     x_classes: SmallVec<[ClassId; 4]>,
@@ -909,6 +923,209 @@ fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
     })
 }
 
+/// Sparse per-pair index **delta** for clauses appended AFTER a shared base
+/// clause slice (the classify subsumption oracle's amortized path — see
+/// `docs/superpowers/plans/2026-07-23-classify-clauseindex-amortization-plan.md`).
+///
+/// Where [`ClauseIndexes`] is dense (per-class / per-role `Vec`s over the whole
+/// vocabulary), a delta holds only the handful of entries the appended clauses
+/// contribute, grouped by trigger key. Trigger lookups consult the base index
+/// first and then the delta, so the combined view is exactly what a full
+/// [`build_clause_indexes`] over `base ++ extras` would produce (clause ids in
+/// the delta are ascending and all `>=` the base length, matching the full
+/// build's per-key ascending order). Both builders route every clause through
+/// the SAME per-clause routine ([`index_one_clause`]) — the whole correctness
+/// story for the amortization (advisor B1).
+#[derive(Debug, Default, Clone)]
+pub struct ClauseIndexDelta {
+    /// Logical clause id of the first extra clause (`== base.len()`).
+    base_len: usize,
+    /// Match plan per extra clause, indexed by `ci - base_len`.
+    match_plans: Vec<Option<ClauseMatchPlan>>,
+    /// `(key, clause ids)` pairs, one entry per distinct trigger key.
+    x_trigger: Vec<(usize, Vec<usize>)>,
+    succ_trigger: Vec<(usize, Vec<usize>)>,
+    role_trigger: Vec<(usize, Vec<usize>)>,
+    role_back_trigger: Vec<(usize, Vec<usize>)>,
+    inverse_first_trigger: Vec<(usize, Vec<usize>)>,
+    empty_body: Vec<usize>,
+    nonhorn: Vec<(usize, Option<ClassId>)>,
+    /// Pairwise disjointness contributed by the extra clauses (the per-pair
+    /// `¬sup` clash pair; advisor B4 — consulted alongside the shared base
+    /// set, never cloned into it).
+    disjoint_pairs: Vec<(u32, u32)>,
+}
+
+impl ClauseIndexDelta {
+    /// Position of `key` in one of the sparse trigger lists, or `None` when
+    /// the key contributes nothing (the common case — a delta touches only a
+    /// couple of keys, so this linear probe is one or two comparisons).
+    #[inline]
+    fn trigger_pos(list: &[(usize, Vec<usize>)], key: usize) -> Option<usize> {
+        list.iter().position(|(k, _)| *k == key)
+    }
+
+    fn push_trigger(list: &mut Vec<(usize, Vec<usize>)>, key: usize, ci: usize) {
+        if let Some((_, cis)) = list.iter_mut().find(|(k, _)| *k == key) {
+            // Same per-key dedup semantics as the dense builder: within one
+            // clause the id repeats consecutively per key, so `last` suffices.
+            if cis.last() != Some(&ci) {
+                cis.push(ci);
+            }
+        } else {
+            list.push((key, vec![ci]));
+        }
+    }
+}
+
+/// Storage-agnostic sink for the per-clause trigger selection: implemented by
+/// the dense [`ClauseIndexes`] (base build) and the sparse [`ClauseIndexDelta`]
+/// (per-pair extras), so both are populated by the IDENTICAL routine
+/// ([`index_one_clause`]) and can never diverge on which entries a clause
+/// shape contributes.
+trait ClauseIndexSink {
+    fn push_match_plan(&mut self, ci: usize, plan: Option<ClauseMatchPlan>);
+    fn push_nonhorn(&mut self, ci: usize, anchor: Option<ClassId>);
+    fn push_empty_body(&mut self, ci: usize);
+    fn push_x_trigger(&mut self, key: usize, ci: usize);
+    fn push_succ_trigger(&mut self, key: usize, ci: usize);
+    fn push_role_trigger(&mut self, key: usize, ci: usize);
+    fn push_role_back_trigger(&mut self, key: usize, ci: usize);
+    fn push_inverse_first_trigger(&mut self, key: usize, ci: usize);
+}
+
+fn push_dense(v: &mut Vec<Vec<usize>>, key: usize, ci: usize) {
+    if key >= v.len() {
+        v.resize(key + 1, Vec::new());
+    }
+    if v[key].last() != Some(&ci) {
+        v[key].push(ci);
+    }
+}
+
+impl ClauseIndexSink for ClauseIndexes {
+    fn push_match_plan(&mut self, ci: usize, plan: Option<ClauseMatchPlan>) {
+        debug_assert_eq!(
+            self.match_plans.len(),
+            ci,
+            "match plans are pushed in clause order"
+        );
+        self.match_plans.push(plan);
+    }
+    fn push_nonhorn(&mut self, ci: usize, anchor: Option<ClassId>) {
+        self.nonhorn.push((ci, anchor));
+    }
+    fn push_empty_body(&mut self, ci: usize) {
+        self.empty_body.push(ci);
+    }
+    fn push_x_trigger(&mut self, key: usize, ci: usize) {
+        push_dense(&mut self.x_trigger, key, ci);
+    }
+    fn push_succ_trigger(&mut self, key: usize, ci: usize) {
+        push_dense(&mut self.succ_trigger, key, ci);
+    }
+    fn push_role_trigger(&mut self, key: usize, ci: usize) {
+        push_dense(&mut self.role_trigger, key, ci);
+    }
+    fn push_role_back_trigger(&mut self, key: usize, ci: usize) {
+        push_dense(&mut self.role_back_trigger, key, ci);
+    }
+    fn push_inverse_first_trigger(&mut self, key: usize, ci: usize) {
+        push_dense(&mut self.inverse_first_trigger, key, ci);
+    }
+}
+
+impl ClauseIndexSink for ClauseIndexDelta {
+    fn push_match_plan(&mut self, ci: usize, plan: Option<ClauseMatchPlan>) {
+        debug_assert_eq!(
+            self.base_len + self.match_plans.len(),
+            ci,
+            "extra match plans are pushed in clause order from base_len"
+        );
+        self.match_plans.push(plan);
+    }
+    fn push_nonhorn(&mut self, ci: usize, anchor: Option<ClassId>) {
+        self.nonhorn.push((ci, anchor));
+    }
+    fn push_empty_body(&mut self, ci: usize) {
+        self.empty_body.push(ci);
+    }
+    fn push_x_trigger(&mut self, key: usize, ci: usize) {
+        Self::push_trigger(&mut self.x_trigger, key, ci);
+    }
+    fn push_succ_trigger(&mut self, key: usize, ci: usize) {
+        Self::push_trigger(&mut self.succ_trigger, key, ci);
+    }
+    fn push_role_trigger(&mut self, key: usize, ci: usize) {
+        Self::push_trigger(&mut self.role_trigger, key, ci);
+    }
+    fn push_role_back_trigger(&mut self, key: usize, ci: usize) {
+        Self::push_trigger(&mut self.role_back_trigger, key, ci);
+    }
+    fn push_inverse_first_trigger(&mut self, key: usize, ci: usize) {
+        Self::push_trigger(&mut self.inverse_first_trigger, key, ci);
+    }
+}
+
+/// Index ONE clause (logical id `ci`) into `sink`: the match-plan entry plus
+/// every trigger entry its body contributes. This is the single copy of the
+/// per-clause trigger-selection logic — the base [`build_clause_indexes`]
+/// and the per-pair [`build_clause_index_delta`] both call it, so the delta
+/// is consistent with the base build by construction (the amortization's
+/// correctness crux; a missed entry here would be a clause that never fires
+/// = a silently missed subsumption).
+fn index_one_clause<S: ClauseIndexSink>(
+    sink: &mut S,
+    ci: usize,
+    cl: &DlClause,
+    sym: Option<&RoleHierarchy>,
+) {
+    // Per-clause match plan for ALL clauses (by global clause id) — `match_body`
+    // fires on both Horn (`fire_clause`) and non-Horn (`find_open_disjunction`)
+    // clauses, so this is not gated on `is_horn`.
+    sink.push_match_plan(ci, build_clause_match_plan(cl));
+    if !cl.is_horn() {
+        // Record the disjunctive clause with its first X-class anchor (or
+        // `None`) so `find_open_disjunction` scans only this list and skips
+        // anchored clauses absent from a node's label via an O(1) check.
+        let anchor = cl.body.iter().find_map(|a| match a {
+            Atom::Class(c, v) if *v == X => Some(*c),
+            _ => None,
+        });
+        sink.push_nonhorn(ci, anchor);
+        return;
+    }
+    if cl.body.is_empty() {
+        sink.push_empty_body(ci);
+        return;
+    }
+    for atom in &cl.body {
+        match atom {
+            Atom::Class(c, v) if *v == X => sink.push_x_trigger(c.index() as usize, ci),
+            Atom::Class(c, _) => sink.push_succ_trigger(c.index() as usize, ci),
+            Atom::Role(r, u, _) => {
+                sink.push_role_trigger(role_id_index(*r), ci);
+                // Non-first leg (`R₂(y,z)`, `u != X`): also index for
+                // predecessor back-triggering (HF3 chain second-leg).
+                if *u != X {
+                    sink.push_role_back_trigger(role_id_index(*r), ci);
+                }
+                // First-leg inverse OR symmetric role: must fire at the
+                // edge TARGET. For inverse roles, the incoming edge `src—p→tgt`
+                // gives `tgt` an `Inverse(p)`-successor. For symmetric roles,
+                // `p ≡ p⁻` so the incoming forward edge is also a reverse
+                // traversal — trigger at `tgt` too.
+                let is_symmetric = sym.is_some_and(|h| h.is_symmetric(r.role_id()));
+                if *u == X && (r.is_inverse() || is_symmetric) {
+                    sink.push_inverse_first_trigger(role_id_index(*r), ci);
+                }
+            }
+            // Head-only atoms never appear in a (Horn) body.
+            Atom::Exists(..) | Atom::AtMost(..) | Atom::AtLeast(..) | Atom::Equal(..) => {}
+        }
+    }
+}
+
 /// Build the [`ClauseIndexes`] for the Horn clauses. Non-Horn clauses
 /// are branch points handled by `find_open_disjunction`, not indexed.
 ///
@@ -917,64 +1134,54 @@ fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
 /// mechanism that fires inverse first-legs at the edge target (Part 1).
 /// Pass `None` when the hierarchy is not yet available (construction time);
 /// call [`HyperEngine::with_sub_roles`] afterwards to rebuild with symmetry.
+#[must_use]
 pub fn build_clause_indexes(clauses: &[DlClause], sym: Option<&RoleHierarchy>) -> ClauseIndexes {
     let mut ix = ClauseIndexes::default();
-    // Per-clause match plan for ALL clauses (by global clause id) — `match_body`
-    // fires on both Horn (`fire_clause`) and non-Horn (`find_open_disjunction`)
-    // clauses, so this is not gated on `is_horn`.
-    ix.match_plans
-        .extend(clauses.iter().map(build_clause_match_plan));
-    let push = |v: &mut Vec<Vec<usize>>, key: usize, ci: usize| {
-        if key >= v.len() {
-            v.resize(key + 1, Vec::new());
-        }
-        if v[key].last() != Some(&ci) {
-            v[key].push(ci);
-        }
-    };
     for (ci, cl) in clauses.iter().enumerate() {
-        if !cl.is_horn() {
-            // Record the disjunctive clause with its first X-class anchor (or
-            // `None`) so `find_open_disjunction` scans only this list and skips
-            // anchored clauses absent from a node's label via an O(1) check.
-            let anchor = cl.body.iter().find_map(|a| match a {
-                Atom::Class(c, v) if *v == X => Some(*c),
-                _ => None,
-            });
-            ix.nonhorn.push((ci, anchor));
-            continue;
-        }
-        if cl.body.is_empty() {
-            ix.empty_body.push(ci);
-            continue;
-        }
-        for atom in &cl.body {
-            match atom {
-                Atom::Class(c, v) if *v == X => push(&mut ix.x_trigger, c.index() as usize, ci),
-                Atom::Class(c, _) => push(&mut ix.succ_trigger, c.index() as usize, ci),
-                Atom::Role(r, u, _) => {
-                    push(&mut ix.role_trigger, role_id_index(*r), ci);
-                    // Non-first leg (`R₂(y,z)`, `u != X`): also index for
-                    // predecessor back-triggering (HF3 chain second-leg).
-                    if *u != X {
-                        push(&mut ix.role_back_trigger, role_id_index(*r), ci);
-                    }
-                    // First-leg inverse OR symmetric role: must fire at the
-                    // edge TARGET. For inverse roles, the incoming edge `src—p→tgt`
-                    // gives `tgt` an `Inverse(p)`-successor. For symmetric roles,
-                    // `p ≡ p⁻` so the incoming forward edge is also a reverse
-                    // traversal — trigger at `tgt` too.
-                    let is_symmetric = sym.is_some_and(|h| h.is_symmetric(r.role_id()));
-                    if *u == X && (r.is_inverse() || is_symmetric) {
-                        push(&mut ix.inverse_first_trigger, role_id_index(*r), ci);
-                    }
-                }
-                // Head-only atoms never appear in a (Horn) body.
-                Atom::Exists(..) | Atom::AtMost(..) | Atom::AtLeast(..) | Atom::Equal(..) => {}
-            }
-        }
+        index_one_clause(&mut ix, ci, cl, sym);
     }
     ix
+}
+
+/// Append ONE extra clause's entries (logical id `ci`) to an already-built
+/// dense [`ClauseIndexes`] — the shared-base pre-application hook used by
+/// `HyperCache::build` for the classify-labels Q-clause. Routes through the
+/// same [`index_one_clause`] as the base build, so the pre-applied entry
+/// carries BOTH the trigger entries and the `match_plans[ci]` entry (a
+/// trigger without a plan panics/no-ops in `match_body` — advisor B1).
+pub fn index_extra_clause(
+    ix: &mut ClauseIndexes,
+    ci: usize,
+    cl: &DlClause,
+    sym: Option<&RoleHierarchy>,
+) {
+    index_one_clause(ix, ci, cl, sym);
+}
+
+/// Build the sparse per-pair [`ClauseIndexDelta`] for `extras` appended after
+/// a base slice of length `base_len` (extra clause `i` has logical id
+/// `base_len + i`). Every clause goes through [`index_one_clause`] — the
+/// identical routine as [`build_clause_indexes`] — plus the same pairwise
+/// disjointness extraction as [`build_disjoint_pairs`].
+#[must_use]
+pub fn build_clause_index_delta(
+    base_len: usize,
+    extras: &[DlClause],
+    sym: Option<&RoleHierarchy>,
+) -> ClauseIndexDelta {
+    let mut delta = ClauseIndexDelta {
+        base_len,
+        ..ClauseIndexDelta::default()
+    };
+    for (i, cl) in extras.iter().enumerate() {
+        index_one_clause(&mut delta, base_len + i, cl, sym);
+        if let Some(pair) = disjoint_pair_of(cl)
+            && !delta.disjoint_pairs.contains(&pair)
+        {
+            delta.disjoint_pairs.push(pair);
+        }
+    }
+    delta
 }
 
 /// Extract pairwise class disjointness from the clause set. A clause
@@ -987,18 +1194,29 @@ pub fn build_clause_indexes(clauses: &[DlClause], sym: Option<&RoleHierarchy>) -
 pub fn build_disjoint_pairs(clauses: &[DlClause]) -> std::collections::HashSet<(u32, u32)> {
     let mut set = std::collections::HashSet::new();
     for cl in clauses {
-        if !cl.head.is_empty() || cl.body.len() != 2 {
-            continue;
-        }
-        if let (Atom::Class(a, va), Atom::Class(b, vb)) = (cl.body[0], cl.body[1])
-            && va == vb
-            && a != b
-        {
-            let (lo, hi) = (a.index().min(b.index()), a.index().max(b.index()));
-            set.insert((lo, hi));
+        if let Some(pair) = disjoint_pair_of(cl) {
+            set.insert(pair);
         }
     }
     set
+}
+
+/// The normalized disjointness pair one clause encodes, or `None` when the
+/// clause is not a ⊥-headed two-`Class`-same-variable clash. The single copy
+/// of the pair-extraction rule — shared by the base [`build_disjoint_pairs`]
+/// and the per-pair [`build_clause_index_delta`] so both agree by construction.
+fn disjoint_pair_of(cl: &DlClause) -> Option<(u32, u32)> {
+    if !cl.head.is_empty() || cl.body.len() != 2 {
+        return None;
+    }
+    if let (Atom::Class(a, va), Atom::Class(b, vb)) = (cl.body[0], cl.body[1])
+        && va == vb
+        && a != b
+    {
+        let (lo, hi) = (a.index().min(b.index()), a.index().max(b.index()));
+        return Some((lo, hi));
+    }
+    None
 }
 
 /// Divergence predicate (Lever #1): a wedge search is making no progress toward a
@@ -1028,12 +1246,14 @@ impl<'c> HyperEngine<'c> {
         root_node.add(root, DepSet::EMPTY);
         Self {
             clauses,
+            extra_clauses: &[],
             disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
             nodes: vec![root_node],
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
+            extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
@@ -1081,12 +1301,14 @@ impl<'c> HyperEngine<'c> {
         root_node.add(root, DepSet::EMPTY);
         Self {
             clauses,
+            extra_clauses: &[],
             disjoint_pairs,
             nodes: vec![root_node],
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
             indexes,
+            extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
             representative: vec![HNode(0)],
             sub_roles: None,
@@ -1112,6 +1334,90 @@ impl<'c> HyperEngine<'c> {
             shadow_dep_probe: false,
             current_branch_level: 0,
         }
+    }
+
+    /// Build an engine over the SHARED base clause slice plus a small
+    /// per-pair `extra_clauses` slice (logical clause ids
+    /// `base_clauses.len()..`), with the pre-built shared base
+    /// [`ClauseIndexes`]/`disjoint_pairs` and a sparse per-pair
+    /// [`ClauseIndexDelta`] covering exactly the extra clauses (build it
+    /// with [`build_clause_index_delta`] over the same `extra_clauses`).
+    /// The classify subsumption oracle's amortized path
+    /// (`RUSTDL_CLASSIFY_AMORTIZE_IDX`, default ON): O(#extras) per-pair
+    /// index work instead of the O(#clauses) clone + rebuild.
+    #[must_use]
+    pub fn new_with_prebuilt_extras(
+        base_clauses: &'c [DlClause],
+        extra_clauses: &'c [DlClause],
+        root: ClassId,
+        indexes: std::sync::Arc<ClauseIndexes>,
+        disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+        extra_indexes: ClauseIndexDelta,
+    ) -> Self {
+        debug_assert_eq!(
+            extra_indexes.base_len,
+            base_clauses.len(),
+            "delta must be built at the base slice length"
+        );
+        debug_assert_eq!(
+            extra_indexes.match_plans.len(),
+            extra_clauses.len(),
+            "delta must cover every extra clause"
+        );
+        let mut engine = Self::new_with_prebuilt(base_clauses, root, indexes, disjoint_pairs);
+        engine.extra_clauses = extra_clauses;
+        engine.extra_indexes = extra_indexes;
+        engine
+    }
+
+    /// Total logical clause count: shared base + per-pair extras.
+    #[inline]
+    fn num_clauses(&self) -> usize {
+        self.clauses.len() + self.extra_clauses.len()
+    }
+
+    /// Clause by logical id, branch-routed between the shared base slice
+    /// and the per-pair extras (`ci >= base_len` ⟹ `extra_clauses[ci -
+    /// base_len]`). The almost-always-true `ci < base_len` branch keeps
+    /// this hot-path read predictable (advisor B3: branch-routing, not a
+    /// map overlay).
+    #[inline]
+    fn clause(&self, ci: usize) -> &DlClause {
+        let base = self.clauses.len();
+        if ci < base {
+            &self.clauses[ci]
+        } else {
+            &self.extra_clauses[ci - base]
+        }
+    }
+
+    /// Match plan by logical clause id, branch-routed like [`Self::clause`]
+    /// (advisor B1: an extra clause MUST resolve to its delta-built plan —
+    /// a missing entry would panic or silently drop the clause).
+    #[inline]
+    fn match_plan(&self, ci: usize) -> Option<&ClauseMatchPlan> {
+        let base = self.clauses.len();
+        if ci < base {
+            self.indexes.match_plans[ci].as_ref()
+        } else {
+            self.extra_indexes.match_plans[ci - base].as_ref()
+        }
+    }
+
+    /// Pairwise-disjointness check over the shared base set plus the tiny
+    /// per-pair delta (advisor B4 — never clone the base `HashSet` per
+    /// pair). `(lo, hi)` must be normalized (`lo < hi`), as at every
+    /// existing call site.
+    #[inline]
+    fn pair_disjoint(&self, lo: u32, hi: u32) -> bool {
+        self.disjoint_pairs.contains(&(lo, hi))
+            || self.extra_indexes.disjoint_pairs.contains(&(lo, hi))
+    }
+
+    /// Whether NO disjointness pair exists (base and delta both empty).
+    #[inline]
+    fn no_disjoint_pairs(&self) -> bool {
+        self.disjoint_pairs.is_empty() && self.extra_indexes.disjoint_pairs.is_empty()
     }
 
     /// Opt into HF2 double-blocking — the SROIQ-sound blocking
@@ -1582,7 +1888,7 @@ impl<'c> HyperEngine<'c> {
         // snapshot's reconstructed nodes.
         self.snapshot_origin.push(false);
         // Fire empty-body (`⊤ → …`) clauses at the new node.
-        if !self.indexes.empty_body.is_empty() {
+        if !self.indexes.empty_body.is_empty() || !self.extra_indexes.empty_body.is_empty() {
             self.worklist.push(Event::NodeNew(n));
         }
         n
@@ -1741,7 +2047,7 @@ impl<'c> HyperEngine<'c> {
             if self.resolve(n) != n {
                 continue;
             }
-            if !self.indexes.empty_body.is_empty() {
+            if !self.indexes.empty_body.is_empty() || !self.extra_indexes.empty_body.is_empty() {
                 self.worklist.push(Event::NodeNew(n));
             }
             for c in self.nodes[idx].labels.clone() {
@@ -1810,10 +2116,25 @@ impl<'c> HyperEngine<'c> {
                         return FireOutcome::Clash;
                     }
                 }
+                // Per-pair extras (amortized classify decide) with `c` as an
+                // `X`-class. Delta clause ids are all ≥ base_len and ascending,
+                // so base-then-delta preserves the ascending firing order a
+                // full rebuild over base ++ extras would give.
+                if let Some(dp) = ClauseIndexDelta::trigger_pos(&self.extra_indexes.x_trigger, key)
+                {
+                    let d_x = self.extra_indexes.x_trigger[dp].1.len();
+                    for i in 0..d_x {
+                        let ci = self.extra_indexes.x_trigger[dp].1[i];
+                        if matches!(self.fire_clause(ci, n), FireOutcome::Clash) {
+                            return FireOutcome::Clash;
+                        }
+                    }
+                }
                 // Clauses with `c` as a successor-class fire at `n`'s
                 // predecessors (back-propagation: a successor gained `c`).
                 let n_s = self.indexes.succ_trigger.get(key).map_or(0, Vec::len);
-                if n_s > 0 {
+                let dp_s = ClauseIndexDelta::trigger_pos(&self.extra_indexes.succ_trigger, key);
+                if n_s > 0 || dp_s.is_some() {
                     // Resolve-on-read (advisor §4): a `≤1` merge can fold a
                     // predecessor, so read it via its representative. No-op /
                     // byte-identical when the flag is off.
@@ -1828,6 +2149,15 @@ impl<'c> HyperEngine<'c> {
                             let ci = self.indexes.succ_trigger[key][i];
                             if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
                                 return FireOutcome::Clash;
+                            }
+                        }
+                        if let Some(dp) = dp_s {
+                            let d_s = self.extra_indexes.succ_trigger[dp].1.len();
+                            for i in 0..d_s {
+                                let ci = self.extra_indexes.succ_trigger[dp].1[i];
+                                if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
+                                    return FireOutcome::Clash;
+                                }
                             }
                         }
                     }
@@ -1845,6 +2175,19 @@ impl<'c> HyperEngine<'c> {
                         return FireOutcome::Clash;
                     }
                 }
+                // Per-pair extras on this role (empty for the classify-decide
+                // extras, which are all class-body — kept for generality).
+                if let Some(dp) =
+                    ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_trigger, key)
+                {
+                    let d_r = self.extra_indexes.role_trigger[dp].1.len();
+                    for i in 0..d_r {
+                        let ci = self.extra_indexes.role_trigger[dp].1[i];
+                        if matches!(self.fire_clause(ci, src), FireOutcome::Clash) {
+                            return FireOutcome::Clash;
+                        }
+                    }
+                }
                 // HF3 second-leg back-trigger: this edge `R(src,tgt)` may
                 // be the NON-FIRST leg of a multi-role clause body (e.g.
                 // `R₁(x,src) ∧ R₂(src,tgt) → …`). Such clauses are rooted
@@ -1852,7 +2195,9 @@ impl<'c> HyperEngine<'c> {
                 // them at `src`'s predecessors. `match_body` re-verifies,
                 // so firing at a non-root predecessor is a no-op.
                 let n_b = self.indexes.role_back_trigger.get(key).map_or(0, Vec::len);
-                if n_b > 0 {
+                let dp_b =
+                    ClauseIndexDelta::trigger_pos(&self.extra_indexes.role_back_trigger, key);
+                if n_b > 0 || dp_b.is_some() {
                     // Resolve-on-read (advisor §4): fold a merged predecessor to
                     // its representative. No-op / byte-identical when flag off.
                     let resolve_reads = self.inverse_func_merge;
@@ -1866,6 +2211,15 @@ impl<'c> HyperEngine<'c> {
                             let ci = self.indexes.role_back_trigger[key][i];
                             if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
                                 return FireOutcome::Clash;
+                            }
+                        }
+                        if let Some(dp) = dp_b {
+                            let d_b = self.extra_indexes.role_back_trigger[dp].1.len();
+                            for i in 0..d_b {
+                                let ci = self.extra_indexes.role_back_trigger[dp].1[i];
+                                if matches!(self.fire_clause(ci, p), FireOutcome::Clash) {
+                                    return FireOutcome::Clash;
+                                }
                             }
                         }
                     }
@@ -1883,6 +2237,19 @@ impl<'c> HyperEngine<'c> {
                     let ci = self.indexes.inverse_first_trigger[key][i];
                     if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
                         return FireOutcome::Clash;
+                    }
+                }
+                // Per-pair extras: inverse/symmetric first-legs (empty for the
+                // classify-decide extras — class-body only).
+                if let Some(dp) =
+                    ClauseIndexDelta::trigger_pos(&self.extra_indexes.inverse_first_trigger, key)
+                {
+                    let d_inv = self.extra_indexes.inverse_first_trigger[dp].1.len();
+                    for i in 0..d_inv {
+                        let ci = self.extra_indexes.inverse_first_trigger[dp].1[i];
+                        if matches!(self.fire_clause(ci, tgt), FireOutcome::Clash) {
+                            return FireOutcome::Clash;
+                        }
                     }
                 }
                 // Incremental ≤1/functional merge (behind the flag). This edge
@@ -1907,6 +2274,14 @@ impl<'c> HyperEngine<'c> {
             Event::NodeNew(n) => {
                 for i in 0..self.indexes.empty_body.len() {
                     let ci = self.indexes.empty_body[i];
+                    if matches!(self.fire_clause(ci, n), FireOutcome::Clash) {
+                        return FireOutcome::Clash;
+                    }
+                }
+                // Per-pair extras with an empty (`⊤`) body (none for the
+                // classify-decide extras — kept for generality).
+                for i in 0..self.extra_indexes.empty_body.len() {
+                    let ci = self.extra_indexes.empty_body[i];
                     if matches!(self.fire_clause(ci, n), FireOutcome::Clash) {
                         return FireOutcome::Clash;
                     }
@@ -2281,12 +2656,14 @@ impl<'c> HyperEngine<'c> {
             .collect();
         let mut engine = Self {
             clauses,
+            extra_clauses: &[],
             disjoint_pairs: std::sync::Arc::new(build_disjoint_pairs(clauses)),
             nodes,
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
+            extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
             representative,
             sub_roles: None,
@@ -2358,7 +2735,7 @@ impl<'c> HyperEngine<'c> {
         ci: usize,
         node: HNode,
     ) -> Vec<usize> {
-        let head_len = self.clauses[ci].head.len();
+        let head_len = self.clause(ci).head.len();
         let rep = self.resolve(node);
         // Base seed: atomic labels of the resolved node.
         let atomic_base: Vec<owl_dl_core::ir::ClassId> = self.nodes[rep.index()].labels.clone();
@@ -2381,7 +2758,7 @@ impl<'c> HyperEngine<'c> {
             let mut atomic_k = atomic_base.clone();
             let mut exists_k = exists_base.clone();
             // Only seed atoms that are on the home variable X (soundness guard).
-            match &self.clauses[ci].head[k] {
+            match &self.clause(ci).head[k] {
                 Atom::Class(cls, v) if *v == X => {
                     atomic_k.push(*cls);
                 }
@@ -2454,7 +2831,7 @@ impl<'c> HyperEngine<'c> {
             let d = u32::try_from(self.init_depth - depth).unwrap_or(u32::MAX);
             let body_deps = self.clause_body_deps(ci, node, &binding);
             let decision_deps = body_deps.insert(d);
-            let head_len = self.clauses[ci].head.len();
+            let head_len = self.clause(ci).head.len();
             let mut live: Vec<usize> = if let Some(sat) = self.sat_lookahead.clone() {
                 self.lookahead_live_disjuncts(&sat, ci, node)
             } else {
@@ -2490,7 +2867,7 @@ impl<'c> HyperEngine<'c> {
                 let mut kept: Vec<usize> = Vec::with_capacity(live.len());
                 for &k in &live {
                     let mut dropped = false;
-                    if let Atom::Class(c, v) = self.clauses[ci].head[k]
+                    if let Atom::Class(c, v) = self.clause(ci).head[k]
                         && let Some(t0) = resolve_var(v, node, &binding)
                     {
                         // Check labels on the SAME node the disjunct would land
@@ -2526,7 +2903,7 @@ impl<'c> HyperEngine<'c> {
                                     continue;
                                 }
                                 let (lo, hi) = (c.index().min(e.index()), c.index().max(e.index()));
-                                if self.disjoint_pairs.contains(&(lo, hi)) {
+                                if self.pair_disjoint(lo, hi) {
                                     dead = true;
                                     kill = kill.union(self.nodes[t.index()].deps_of(e));
                                 }
@@ -2569,7 +2946,7 @@ impl<'c> HyperEngine<'c> {
                 // level `init_depth - depth + 1` is constant across this same-
                 // depth recursion, so `max_branch_depth` is not inflated.
                 if live.len() == 1 {
-                    let head_atom = self.clauses[ci].head[live[0]];
+                    let head_atom = self.clause(ci).head[live[0]];
                     let forced_deps = body_deps.union(prune_deps.remove(d));
                     let _ = self.apply_head_atom(head_atom, node, &binding, forced_deps);
                     self.stats.semantic_unit_forces += 1;
@@ -2588,7 +2965,7 @@ impl<'c> HyperEngine<'c> {
             // dep-sets into `combined`. EMPTY when the flag is off (byte-identical).
             let mut combined = prune_deps;
             for k in live {
-                let head_atom = self.clauses[ci].head[k];
+                let head_atom = self.clause(ci).head[k];
                 let saved = self.save();
                 self.stats.branches_taken += 1;
                 self.stats.disj_branches += 1;
@@ -2741,7 +3118,7 @@ impl<'c> HyperEngine<'c> {
         let Some(pairs) = &self.tautology_pairs else {
             return false;
         };
-        let head = &self.clauses[ci].head;
+        let head = &self.clause(ci).head;
         head.len() == 2
             && matches!((&head[0], &head[1]),
                 (Atom::Class(a, _), Atom::Class(b, _)) if pairs.contains(&(a.index(), b.index())))
@@ -2760,8 +3137,15 @@ impl<'c> HyperEngine<'c> {
                 // `match_body`-empty anyway — so no open ⊔ is missed; termination-
                 // preserving). The list is ascending clause-id, so the MRV
                 // first-found tie-break is identical to the old full scan.
+                // Per-pair extras chain AFTER the base list: their ids are all
+                // ≥ base_len and ascending, so the combined scan order equals
+                // the full-rebuild scan order.
                 let nonhorn = std::sync::Arc::clone(&self.indexes);
-                for &(ci, anchor) in &nonhorn.nonhorn {
+                for &(ci, anchor) in nonhorn
+                    .nonhorn
+                    .iter()
+                    .chain(self.extra_indexes.nonhorn.iter())
+                {
                     if let Some(a) = anchor
                         && !self.nodes[node.index()].has(a)
                     {
@@ -2777,7 +3161,7 @@ impl<'c> HyperEngine<'c> {
                         if self.any_head_satisfied(ci, node, &binding) {
                             continue;
                         }
-                        let live = (0..self.clauses[ci].head.len())
+                        let live = (0..self.clause(ci).head.len())
                             .filter(|&k| !self.head_atom_satisfied(ci, k, node, &binding))
                             .count();
                         let better = match &best {
@@ -2819,8 +3203,8 @@ impl<'c> HyperEngine<'c> {
             if self.is_blocked(node) {
                 continue;
             }
-            for ci in 0..self.clauses.len() {
-                if self.clauses[ci].is_horn() {
+            for ci in 0..self.num_clauses() {
+                if self.clause(ci).is_horn() {
                     continue;
                 }
                 if self.is_tautology_clause(ci) {
@@ -2846,7 +3230,7 @@ impl<'c> HyperEngine<'c> {
     /// counting live disjuncts for MRV ordering in Task 2).
     fn head_atom_satisfied(&self, ci: usize, k: usize, xnode: HNode, binding: &Binding) -> bool {
         let resolve = |v: Var| resolve_var(v, xnode, binding);
-        match &self.clauses[ci].head[k] {
+        match &self.clause(ci).head[k] {
             Atom::Class(c, v) => matches!(resolve(*v), Some(t) if self.nodes[t.index()].has(*c)),
             Atom::Exists(role, cls, v) => matches!(resolve(*v), Some(src) if
             self.nodes[src.index()].edges.iter().any(|(er, t)| {
@@ -2863,7 +3247,7 @@ impl<'c> HyperEngine<'c> {
     /// True iff some head disjunct of clause `ci` already holds at
     /// the given binding (class label present, or `∃` witness found).
     fn any_head_satisfied(&self, ci: usize, xnode: HNode, binding: &Binding) -> bool {
-        (0..self.clauses[ci].head.len()).any(|k| self.head_atom_satisfied(ci, k, xnode, binding))
+        (0..self.clause(ci).head.len()).any(|k| self.head_atom_satisfied(ci, k, xnode, binding))
     }
 
     /// SOUND, branch-free EL `∃`-composition over the already-built `sat`
@@ -3034,7 +3418,7 @@ impl<'c> HyperEngine<'c> {
     /// carry disjoint labels (`∃ ca ∈ L(a), cb ∈ L(b) : ca ⊓ cb ⊑ ⊥`).
     /// Labels are resolved through the merge union-find.
     fn labels_disjoint(&self, a: HNode, b: HNode) -> bool {
-        if self.disjoint_pairs.is_empty() {
+        if self.no_disjoint_pairs() {
             return false;
         }
         let la = &self.nodes[self.resolve(a).index()].labels;
@@ -3045,7 +3429,7 @@ impl<'c> HyperEngine<'c> {
                     continue;
                 }
                 let (lo, hi) = (ca.index().min(cb.index()), ca.index().max(cb.index()));
-                if self.disjoint_pairs.contains(&(lo, hi)) {
+                if self.pair_disjoint(lo, hi) {
                     return true;
                 }
             }
@@ -3515,7 +3899,7 @@ impl<'c> HyperEngine<'c> {
     /// matched (deferred to later phases).
     fn fire_clause(&mut self, ci: usize, node: HNode) -> FireOutcome {
         // Disjunctive clauses are branch points, not Horn-fired here.
-        if !self.clauses[ci].is_horn() {
+        if !self.clause(ci).is_horn() {
             return FireOutcome::NoChange;
         }
         self.stats.match_attempts += 1;
@@ -3551,7 +3935,7 @@ impl<'c> HyperEngine<'c> {
         for &(_, node) in binding {
             deps = deps.union(self.nodes[node.index()].birth_deps);
         }
-        for atom in &self.clauses[ci].body {
+        for atom in &self.clause(ci).body {
             if let Atom::Class(c, v) = atom
                 && let Some(node) = resolve_var(*v, xnode, binding)
             {
@@ -3579,7 +3963,7 @@ impl<'c> HyperEngine<'c> {
         // they are precomputed once at index-build (`build_clause_match_plan`).
         // `None` ⟹ unsupported body shape (equality atom or non-tree), exactly
         // as the old inline path returned. This is the matcher hot loop.
-        let plan = self.indexes.match_plans[ci].as_ref()?;
+        let plan = self.match_plan(ci)?;
 
         // X-class atoms are the only node-dependent check: a missing X-class on
         // the home node means the shape is fine but nothing matches.
@@ -3674,7 +4058,7 @@ impl<'c> HyperEngine<'c> {
         binding: &Binding,
         body_deps: DepSet,
     ) -> FireOutcome {
-        let clause = &self.clauses[ci];
+        let clause = &self.clause(ci);
         if clause.head.is_empty() {
             // body → ⊥ : the body matched, so this is a clash. Record
             // the dep-set so `solve` can backjump. If the clashing node
@@ -4235,6 +4619,184 @@ mod tests {
 
     fn cls(i: u32) -> ClassId {
         ClassId::new(i)
+    }
+
+    /// Assert that the sparse per-pair delta for `extra` (appended after
+    /// `base`) is entry-for-entry equivalent to what a FULL
+    /// `build_clause_indexes` / `build_disjoint_pairs` over `base ++ [extra]`
+    /// produces — the §5.3 correctness gate for the classify clause-index
+    /// amortization (`x_trigger` AND `match_plans` per advisor B1, plus every
+    /// other trigger family, `nonhorn`, `empty_body`, and disjoint pairs).
+    fn assert_delta_matches_full_build(base: &[DlClause], extra: &DlClause) {
+        let mut all: Vec<DlClause> = base.to_vec();
+        all.push(extra.clone());
+        let full = build_clause_indexes(&all, None);
+        let delta = build_clause_index_delta(base.len(), std::slice::from_ref(extra), None);
+        let ci = base.len();
+        // B1: the appended clause's match plan must be present in the delta
+        // and identical to the full build's entry at the same clause id.
+        assert_eq!(
+            full.match_plans[ci], delta.match_plans[0],
+            "match_plans[{ci}] differs between full build and delta"
+        );
+        // Every dense trigger family: the full build's entries with id >= ci
+        // (i.e. the extra clause's contributions) must equal the delta's
+        // sparse entries, key by key — no missing AND no spurious keys.
+        type Family<'a> = (&'a str, &'a [Vec<usize>], &'a [(usize, Vec<usize>)]);
+        let families: [Family<'_>; 5] = [
+            ("x_trigger", &full.x_trigger, &delta.x_trigger),
+            ("succ_trigger", &full.succ_trigger, &delta.succ_trigger),
+            ("role_trigger", &full.role_trigger, &delta.role_trigger),
+            (
+                "role_back_trigger",
+                &full.role_back_trigger,
+                &delta.role_back_trigger,
+            ),
+            (
+                "inverse_first_trigger",
+                &full.inverse_first_trigger,
+                &delta.inverse_first_trigger,
+            ),
+        ];
+        for (name, full_t, delta_t) in families {
+            for (key, bucket) in full_t.iter().enumerate() {
+                let expect: Vec<usize> = bucket.iter().copied().filter(|&c| c >= ci).collect();
+                let got: Vec<usize> = ClauseIndexDelta::trigger_pos(delta_t, key)
+                    .map_or_else(Vec::new, |p| delta_t[p].1.clone());
+                assert_eq!(expect, got, "{name}[{key}] extra entries differ");
+            }
+            for (key, cis) in delta_t {
+                assert!(
+                    *key < full_t.len() && !cis.is_empty(),
+                    "{name}: delta key {key} not present in the full build"
+                );
+            }
+        }
+        // Non-Horn scan list and empty-body list.
+        let expect_nonhorn: Vec<(usize, Option<ClassId>)> = full
+            .nonhorn
+            .iter()
+            .copied()
+            .filter(|&(c, _)| c >= ci)
+            .collect();
+        assert_eq!(expect_nonhorn, delta.nonhorn, "nonhorn entries differ");
+        let expect_empty: Vec<usize> = full
+            .empty_body
+            .iter()
+            .copied()
+            .filter(|&c| c >= ci)
+            .collect();
+        assert_eq!(expect_empty, delta.empty_body, "empty_body entries differ");
+        // Disjoint pairs: base ∪ delta must equal the full build's set (the
+        // read is `base.contains || delta.contains` — advisor B4).
+        let full_dis = build_disjoint_pairs(&all);
+        let base_dis = build_disjoint_pairs(base);
+        let mut union = base_dis;
+        union.extend(delta.disjoint_pairs.iter().copied());
+        assert_eq!(full_dis, union, "disjoint pairs differ");
+    }
+
+    /// §5.3 equivalence gate: for each of the six per-pair clause shapes the
+    /// classify subsumption oracle appends (plan §4 delta table), the sparse
+    /// delta must index the clause exactly as a full rebuild would. The base
+    /// includes one clause of every indexed kind so a family mix-up (e.g.
+    /// x-vs-succ trigger) cannot cancel out.
+    #[test]
+    fn classify_extra_clause_delta_matches_full_index_build() {
+        let q = cls(100); // fresh-Q analog
+        let r = Role::Named(RoleId::new(0));
+        let base: Vec<DlClause> = vec![
+            // Horn class rule: A(X) → B(X)  (x_trigger)
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X)],
+            },
+            // Back-prop: R(X,y) ∧ E(y) → F(X)  (role_trigger + succ_trigger)
+            DlClause {
+                body: vec![Atom::Role(r, X, 1), Atom::Class(cls(2), 1)],
+                head: vec![Atom::Class(cls(3), X)],
+            },
+            // Disjunctive: C(X) → D(X) ∨ E(X)  (nonhorn)
+            DlClause {
+                body: vec![Atom::Class(cls(4), X)],
+                head: vec![Atom::Class(cls(5), X), Atom::Class(cls(6), X)],
+            },
+            // Empty body: ⊤ → T(X)  (empty_body)
+            DlClause {
+                body: vec![],
+                head: vec![Atom::Class(cls(7), X)],
+            },
+            // Base disjointness: P(X) ∧ Q(X) → ⊥  (disjoint_pairs)
+            DlClause {
+                body: vec![Atom::Class(cls(8), X), Atom::Class(cls(9), X)],
+                head: vec![],
+            },
+        ];
+        let shapes: Vec<DlClause> = vec![
+            // 1. Q → sub
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(cls(1), X)],
+            },
+            // 2. Q → D (sat_seed)
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(cls(2), X)],
+            },
+            // 3. Q → ∃R.t (exists_seed; heads are never indexed)
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Exists(r, cls(3), X)],
+            },
+            // 4. value_disjoint: a(X) ∧ b(X) → ⊥ (both atoms trigger + pair)
+            DlClause {
+                body: vec![Atom::Class(cls(10), X), Atom::Class(cls(11), X)],
+                head: vec![],
+            },
+            // 5. ¬sup head-only (sup_neg expansion) — the disjunct atoms can
+            //    be one (Horn) or several (non-Horn ⊔); cover the multi-atom
+            //    variant here (the Horn variant is shapes 1/2).
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(cls(12), X), Atom::Class(cls(13), X)],
+            },
+            // 6. ¬sup empty-head clash: Q(X) ∧ sup(X) → ⊥
+            DlClause {
+                body: vec![Atom::Class(q, X), Atom::Class(cls(14), X)],
+                head: vec![],
+            },
+        ];
+        for (i, extra) in shapes.iter().enumerate() {
+            eprintln!("shape {}", i + 1);
+            assert_delta_matches_full_build(&base, extra);
+        }
+        // All six shapes appended together (the real per-pair composition):
+        // the delta must match the full rebuild as a whole, too.
+        let mut all = base.clone();
+        all.extend(shapes.iter().cloned());
+        let full = build_clause_indexes(&all, None);
+        let delta = build_clause_index_delta(base.len(), &shapes, None);
+        for (k, extra) in shapes.iter().enumerate() {
+            let ci = base.len() + k;
+            assert_eq!(
+                full.match_plans[ci], delta.match_plans[k],
+                "composed match_plans[{ci}]"
+            );
+            assert!(
+                delta.match_plans[k].is_some() || extra.body.is_empty(),
+                "every classify extra shape must yield a usable match plan"
+            );
+        }
+        for (key, bucket) in full.x_trigger.iter().enumerate() {
+            let expect: Vec<usize> = bucket
+                .iter()
+                .copied()
+                .filter(|&c| c >= base.len())
+                .collect();
+            let got: Vec<usize> = ClauseIndexDelta::trigger_pos(&delta.x_trigger, key)
+                .map_or_else(Vec::new, |p| delta.x_trigger[p].1.clone());
+            assert_eq!(expect, got, "composed x_trigger[{key}]");
+        }
     }
 
     #[test]

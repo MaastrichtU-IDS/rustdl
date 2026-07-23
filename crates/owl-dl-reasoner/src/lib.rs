@@ -1700,6 +1700,24 @@ pub(crate) fn incremental_fixpoint_enabled() -> bool {
     std::env::var_os("RUSTDL_HYPER_INCREMENTAL_FIXPOINT").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Classify per-pair `ClauseIndexes` amortization
+/// (`RUSTDL_CLASSIFY_AMORTIZE_IDX`, **DEFAULT ON**): the subsumption oracle
+/// (`HyperCache::decide_with_stats`) reuses the shared base `ClauseIndexes`
+/// (built once in `HyperCache::build`) plus a small per-pair index delta for
+/// the appended clauses, instead of cloning the full base clause `Vec` and
+/// rebuilding the whole index per decided pair (13,772 rebuilds × ~34k
+/// clauses on one `ore_ont_1508` classify — 11-15% self-time). The
+/// pair-invariant `value_disjoint` clash clauses are folded into the base
+/// clause set/index once at `build` time under the flag. `=0` reverts to the
+/// old clone + full-rebuild path (kept intact for A/B). Read once in
+/// `HyperCache::build` and stored, so build-time folding and decide-time
+/// routing can never disagree. See
+/// `docs/superpowers/plans/2026-07-23-classify-clauseindex-amortization-plan.md`.
+#[must_use]
+pub(crate) fn classify_amortize_idx_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_AMORTIZE_IDX").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
 /// Fix#2 Layer A in-search boolean constraint propagation at the `⊔` decision
 /// point (`RUSTDL_SEMANTIC_BRANCHING`). **DEFAULT OFF**: opt-in only. Returns
 /// `true` only when `RUSTDL_SEMANTIC_BRANCHING` is set to a non-empty, non-`"0"`
@@ -2054,8 +2072,11 @@ fn push_different_individuals_disjoint(
 }
 
 pub(crate) struct HyperCache {
-    /// Base clauses + complement clash clauses (the per-pair Q-clauses
-    /// are appended to a clone in `proves`).
+    /// Base clauses + complement clash clauses (+ the pair-invariant
+    /// `value_disjoint` clash clauses when `amortize_idx` is on — folded
+    /// in once at build so the shared index covers them). The per-pair
+    /// Q/seed/`¬sup` clauses live in a small per-pair extras `Vec` on the
+    /// amortized path, or are appended to a clone on the old path.
     clauses: Vec<owl_dl_core::clause::DlClause>,
     /// Per-defined-`sup` `NNF(¬def)` disjunct atoms (Q-gated).
     sup_neg: std::collections::HashMap<owl_dl_core::ir::ClassId, Vec<owl_dl_core::clause::Atom>>,
@@ -2073,6 +2094,14 @@ pub(crate) struct HyperCache {
     /// `Arc::clone` per `classify_labels` probe (Q-clause is not
     /// ⊥-headed so adds no new pairs — same set for every probe).
     base_disjoint_pairs: std::sync::Arc<std::collections::HashSet<(u32, u32)>>,
+    /// Snapshot of [`classify_amortize_idx_enabled`] at `build` time
+    /// (`RUSTDL_CLASSIFY_AMORTIZE_IDX`, default ON). When `true`,
+    /// `decide_with_stats` takes the amortized base-index + per-pair-delta
+    /// path (and `value_disjoint` was folded into `clauses`/`base_indexes`
+    /// at build); when `false`, it takes the old clone + full-rebuild path.
+    /// Stored (not re-read per call) so build-time folding and decide-time
+    /// routing can never disagree.
+    amortize_idx: bool,
     /// Role hierarchy for inverse + symmetric domain/range firing.
     /// Built once in `HyperCache::build` and passed into every engine so
     /// `domain(p⁻, C)` fires at the TARGET of `p`-edges on generated successors,
@@ -2472,17 +2501,55 @@ impl HyperCache {
         // shared index, matching what each engine gets via `with_sub_roles_keep_index`.
         // When SP1.1 is OFF the hierarchy is not threaded into the classify oracle,
         // so build without it (matches pre-SP1.1 behavior and avoids the ~2× wall).
+        // Clause-index amortization (advisor B2): the `value_disjoint` clash
+        // clauses are pair-INVARIANT, so under the amortized decide path fold
+        // them into the BASE clause vector once — the shared `base_indexes` /
+        // `base_disjoint_pairs` built below then index them for free, instead
+        // of every pair appending + re-indexing them. `value_disjoint`
+        // becomes `None` so no per-pair site appends them again (the clause
+        // SET every engine sees is unchanged). Flag OFF (`=0`): keep the
+        // pairs and the old per-pair append — byte-identical to pre-amortize.
+        let amortize_idx = classify_amortize_idx_enabled();
+        let value_disjoint = if amortize_idx {
+            if let Some(pairs) = value_disjoint {
+                use owl_dl_core::clause::{Atom, DlClause, X};
+                for &(a, b) in &pairs {
+                    clauses.push(DlClause {
+                        body: vec![Atom::Class(a, X), Atom::Class(b, X)],
+                        head: vec![],
+                    });
+                }
+            }
+            None
+        } else {
+            value_disjoint
+        };
         let same_tier = crate::classify_same_tier_enabled();
         let idx_hier = if same_tier { Some(&sub_roles) } else { None };
         let mut base_indexes_inner =
             owl_dl_tableau::hyper::build_clause_indexes(&clauses, idx_hier);
         {
+            use owl_dl_core::clause::{Atom, DlClause, X};
             let q_ci = clauses.len(); // logical index of the Q-clause in every probe
-            let q_key = fresh_q.index() as usize;
-            if q_key >= base_indexes_inner.x_trigger.len() {
-                base_indexes_inner.x_trigger.resize(q_key + 1, Vec::new());
-            }
-            base_indexes_inner.x_trigger[q_key].push(q_ci);
+            // Pre-apply the Q-clause entry through the SAME per-clause routine
+            // as the base build (`index_one_clause` via `index_extra_clause`),
+            // so it contributes BOTH `x_trigger[fresh_q] += [q_ci]` AND the
+            // `match_plans[q_ci]` entry (advisor B1 — a trigger entry without
+            // a match plan panics/no-ops in `match_body`). Every probe's
+            // Q-clause has the same body `{Class(fresh_q, X)}` and a Horn
+            // (single-atom) head, so this representative clause indexes
+            // identically to each probe's actual Q-clause; the head atom is
+            // never indexed.
+            let q_probe = DlClause {
+                body: vec![Atom::Class(fresh_q, X)],
+                head: vec![Atom::Class(fresh_q, X)],
+            };
+            owl_dl_tableau::hyper::index_extra_clause(
+                &mut base_indexes_inner,
+                q_ci,
+                &q_probe,
+                idx_hier,
+            );
         }
         let base_indexes = std::sync::Arc::new(base_indexes_inner);
         let base_disjoint_pairs =
@@ -2501,6 +2568,7 @@ impl HyperCache {
             fresh_q,
             base_indexes,
             base_disjoint_pairs,
+            amortize_idx,
             sub_roles,
             sat_lookahead,
             sat_seed,
@@ -2570,11 +2638,15 @@ impl HyperCache {
     ) {
         use owl_dl_core::clause::{Atom, DlClause, X};
         use owl_dl_tableau::hyper::HyperEngine;
-        let mut clauses = self.clauses.clone();
-        clauses.push(DlClause {
+        // The per-pair clauses appended after the shared base slice. Under the
+        // amortized path (`amortize_idx`, default ON) these stay in their own
+        // small Vec (the engine branch-routes clause ids into it); under the
+        // old path (`RUSTDL_CLASSIFY_AMORTIZE_IDX=0`) they are appended to a
+        // clone of the base Vec exactly as before.
+        let mut extras: Vec<DlClause> = vec![DlClause {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(sub, X)],
-        });
+        }];
         // SP2: seed the wedge root with the class's named saturated subsumers.
         // For each `D` in `sat_seed[sub.index()]`, assert `Q → D` so the engine
         // starts with all entailed named subsumers already on the root node.
@@ -2585,7 +2657,7 @@ impl HyperCache {
             && let Some(seeds) = tbl.get(sub.index() as usize)
         {
             for &d in seeds {
-                clauses.push(DlClause {
+                extras.push(DlClause {
                     body: vec![Atom::Class(self.fresh_q, X)],
                     head: vec![Atom::Class(d, X)],
                 });
@@ -2600,7 +2672,7 @@ impl HyperCache {
             && let Some(seeds) = tbl.get(sub.index() as usize)
         {
             for &(role, target) in seeds {
-                clauses.push(DlClause {
+                extras.push(DlClause {
                     body: vec![Atom::Class(self.fresh_q, X)],
                     head: vec![Atom::Exists(role, target, X)],
                 });
@@ -2608,40 +2680,85 @@ impl HyperCache {
         }
         // VALUE-DERIVED TYPE DISJOINTNESS (experiment): empty-head clashes for
         // value-incompatible type pairs (shallow pruning of e.g. RedWine⊓WhiteWine).
+        // Pair-INVARIANT, so under `amortize_idx` these were folded into the
+        // base clause vector once in `build` (`value_disjoint` is `None` here).
         if let Some(pairs) = &self.value_disjoint {
             for &(a, b) in pairs {
-                clauses.push(DlClause {
+                extras.push(DlClause {
                     body: vec![Atom::Class(a, X), Atom::Class(b, X)],
                     head: vec![],
                 });
             }
         }
         if let Some(atoms) = self.sup_neg.get(&sup) {
-            clauses.push(DlClause {
+            extras.push(DlClause {
                 body: vec![Atom::Class(self.fresh_q, X)],
                 head: atoms.clone(),
             });
         } else {
-            clauses.push(DlClause {
+            extras.push(DlClause {
                 body: vec![Atom::Class(self.fresh_q, X), Atom::Class(sup, X)],
                 head: vec![],
             });
         }
-        // Build with sub_roles so inverse + symmetric domain/range fire on
-        // generated successors. `with_sub_roles` rebuilds the per-pair index
-        // with the hierarchy (includes the per-pair Q + ¬sup clauses appended
-        // above), which is necessary because those clauses aren't in the base
-        // amortized index.
-        // Only thread the hierarchy in when SP1.1 is enabled (default OFF).
-        let mut engine = HyperEngine::new(&clauses, self.fresh_q);
+        // Old-path storage (flag OFF): the full clone + append lives here so it
+        // outlives the engine borrow.
+        let full_clauses: Vec<DlClause>;
+        let mut engine = if self.amortize_idx {
+            // Amortized path (default): share the base clause slice + the
+            // pre-built base indexes/disjoint pairs (O(1) Arc bumps) and build
+            // only the O(#extras) sparse index delta for the appended clauses.
+            // The delta goes through the SAME per-clause routine as the base
+            // build (`index_one_clause`), so a clause shape can never index
+            // differently between base and delta (advisor B1). The extras all
+            // have class-only bodies, so the hierarchy argument is irrelevant
+            // to them; pass the same gate as the base build for consistency.
+            let idx_hier = if crate::classify_same_tier_enabled() {
+                Some(&self.sub_roles)
+            } else {
+                None
+            };
+            let delta = owl_dl_tableau::hyper::build_clause_index_delta(
+                self.clauses.len(),
+                &extras,
+                idx_hier,
+            );
+            HyperEngine::new_with_prebuilt_extras(
+                &self.clauses,
+                &extras,
+                self.fresh_q,
+                std::sync::Arc::clone(&self.base_indexes),
+                std::sync::Arc::clone(&self.base_disjoint_pairs),
+                delta,
+            )
+        } else {
+            // Old path (`RUSTDL_CLASSIFY_AMORTIZE_IDX=0`): clone the full base
+            // clause vector, append the per-pair clauses, and rebuild the
+            // whole index in `HyperEngine::new` — kept intact for A/B.
+            let mut clauses = self.clauses.clone();
+            clauses.extend(extras.iter().cloned());
+            full_clauses = clauses;
+            HyperEngine::new(&full_clauses, self.fresh_q)
+        };
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
         }
         if crate::semantic_branching_enabled() {
             engine = engine.with_semantic_branching();
         }
+        // Thread the role hierarchy in when SP1.1 is enabled (default OFF) so
+        // inverse + symmetric domain/range fire on generated successors. On
+        // the amortized path the shared base index was already built
+        // hierarchy-aware in `build` (matched gate) and the extras have no
+        // role-body atoms, so `with_sub_roles_keep_index` suffices; the old
+        // path rebuilds the per-pair index with the hierarchy exactly as
+        // before (`with_sub_roles`).
         if crate::classify_same_tier_enabled() {
-            engine = engine.with_sub_roles(self.sub_roles.clone());
+            engine = if self.amortize_idx {
+                engine.with_sub_roles_keep_index(self.sub_roles.clone())
+            } else {
+                engine.with_sub_roles(self.sub_roles.clone())
+            };
         }
         if hyper_double_block_enabled() {
             engine = engine.with_double_blocking();
@@ -2811,6 +2928,10 @@ impl HyperCache {
         // trigger). Rebuild the full index with `new` so the seed fires. When
         // unseeded (both `sat_seed` and `exists_seed` are None) keep the amortized
         // path — byte-identical to pre-SP2.1.
+        // Note: under `amortize_idx` the `value_disjoint` clauses were folded
+        // into the base clause vector + `base_indexes` at build time
+        // (`value_disjoint` is `None` here), so they are correctly indexed on
+        // BOTH branches below.
         let mut engine = if self.sat_seed.is_some()
             || self.exists_seed.is_some()
             || self.value_disjoint.is_some()

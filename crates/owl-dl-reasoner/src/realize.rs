@@ -703,6 +703,22 @@ pub(crate) fn realize_via_saturation_internal(
 ///
 /// See [`ReasonError`].
 pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, ReasonError> {
+    // Inconsistency short-circuit. On an inconsistent ontology every individual
+    // is vacuously an instance of every class, so the per-(individual, class)
+    // `{a} ⊓ ¬C` probe loop below is both wrong to report as a meaningful
+    // realization AND, on a *deep* inconsistency, a pathological stall: the
+    // sound ABox-saturation pre-check catches such clashes cheaply (it is what
+    // makes `is_consistent` fast on `family.ofn`), but classify's own pattern
+    // checks do not, so realize would otherwise classify it as "consistent",
+    // see a large satisfiable-class set, and grind slow probes over an ABox that
+    // never cheaply clashes. Erroring here matches the sibling
+    // `materialize_{object,data}_property_assertions` convention. The check is a
+    // sound under-approximation — `clash` is only ever set when the ontology is
+    // genuinely inconsistent — so a consistent ontology falls straight through
+    // to the unchanged realization paths below.
+    if crate::abox_saturation::saturate_abox_consistency(internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
     // Fast path: on the saturator-complete fragment (EL/Horn TBox + simple
     // ABox) realize completely via saturation, never touching the tableau —
     // whose `{a} ⊓ ¬C` disjunctive search can explode on defined-class +

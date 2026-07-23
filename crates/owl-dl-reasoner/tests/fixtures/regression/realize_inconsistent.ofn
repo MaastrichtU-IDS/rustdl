@@ -1,0 +1,8 @@
+Prefix(:=<http://example.org/inc#>)
+Ontology(<http://example.org/inc>
+  Declaration(Class(:A)) Declaration(Class(:B))
+  Declaration(NamedIndividual(:x))
+  DisjointClasses(:A :B)
+  ClassAssertion(:A :x)
+  ClassAssertion(:B :x)
+)

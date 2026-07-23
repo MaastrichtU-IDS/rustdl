@@ -17,25 +17,25 @@
 //! the ~70 s+ real-KG-scale hang this fixture is modelling).
 //!
 //! **Cap value (40, not a "round" 300+ number): deliberately small.**
-//! `search::branch`'s `NodeCap` handling is intentionally *soft* — see
-//! `search.rs`'s doc comment on `SearchVerdict::NodeCap` — a cap-tripped
-//! disjunct rolls back and the loop still tries its sibling(s) (mirroring
-//! `DepthLimit`'s existing soft semantics; folding `NodeCap` into a hard
-//! immediate-abort was explicitly rejected — see the task brief). That is
-//! fine (and still sound/terminating) when few disjunctions are open, but
-//! this fixture's covering disjunction (`Person ≡ Man ⊔ Woman`) opens
-//! **one independent choice point per generated Person-successor**, so
-//! the number of sibling combinations explored after the cap trips is
-//! roughly exponential in how many successors existed *before* the cap
-//! stopped new-node creation. Empirically (see task-1-report.md): caps
-//! 15–50 resolve in well under a second; 60 already takes ~7 s; 80–100+
-//! exceed an 8 s budget. 40 keeps a comfortable margin below that wall
-//! while still exercising real multi-node growth + multiple branch
-//! points, so the test isolates B's *degrade-to-`Ok`* contract without
-//! also becoming a combinatorial-blowup stress test of `branch`'s soft
-//! semantics (a separate, legitimate concern that is NOT this task's
-//! scope). No `ObjectOneOf` / cardinality is involved, so the later
-//! nominal-first scheduling fix (Task A) does not mask this safety net.
+//! Historically (Task 1) `search::branch`'s `NodeCap` handling was
+//! *soft* — a cap-tripped disjunct rolled back and the loop still tried
+//! its sibling(s), mirroring `DepthLimit`'s soft semantics — and this
+//! fixture's covering disjunction (`Person ≡ Man ⊔ Woman`) opened one
+//! independent choice point per generated Person-successor, making the
+//! number of sibling combinations explored after the cap tripped roughly
+//! exponential in how many successors existed before the cap stopped
+//! new-node creation (empirically: caps 15–50 resolved in well under a
+//! second; 60 already took ~7 s; 80–100+ exceeded an 8 s budget; see
+//! task-1-report.md). **Task B made `NodeCap` a HARD early-return**
+//! instead (search.rs's doc comment on `SearchVerdict::NodeCap`): the
+//! first sibling to trip the cap abandons the rest immediately, so the
+//! exponential-in-cap-value blowup no longer applies — this test's cap
+//! choice is no longer load-bearing for wall time, but 40 is kept as-is
+//! (still exercises real multi-node growth before the trip) since the
+//! test's actual contract — `NodeCap` degrades to `Ok`, never a hang or
+//! error — is unaffected by which handling is in force. No `ObjectOneOf`
+//! / cardinality is involved, so the later nominal-first scheduling fix
+//! (Task A) does not mask this safety net.
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;

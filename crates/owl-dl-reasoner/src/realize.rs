@@ -37,6 +37,35 @@ use crate::classify::{
 /// the maps together.
 type IndivResult = (Vec<String>, Vec<String>);
 
+/// Default per-pair tableau probe deadline (milliseconds) used by the
+/// `{a} ⊓ ¬C` instance-check reduction when `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+/// is unset. Restores (with a sane out-of-the-box bound rather than an
+/// opt-in one) the caller-side realize bound removed in 0.3.18: off the
+/// saturation fast path, a defined-class + property-domain + nominal input
+/// (issue #35 v4) can make a single pair's disjunctive search explode the
+/// completion graph and never return. 750ms keeps the issue-#35-v4
+/// reproducer's total realize wall to a couple of seconds while staying
+/// generous enough not to prematurely cut ordinary pairs (measured: at
+/// 500ms wall was ~0.5s; at 750ms wall was still sub-second; both were
+/// tried against the reproducer — see `docs/superpowers/sdd/task-B-report.md`).
+/// Set `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` to opt out (unbounded).
+const DEFAULT_REALIZE_PAIR_TIMEOUT_MS: u64 = 750;
+
+/// Reads `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, returning the per-pair deadline
+/// in milliseconds to apply. Unset ⟹ [`DEFAULT_REALIZE_PAIR_TIMEOUT_MS`];
+/// set to a positive integer ⟹ that value; set to `0` ⟹ `None` (explicit
+/// opt-out — unbounded).
+fn realize_pair_timeout_ms_from_env() -> Option<u64> {
+    match std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS") {
+        Ok(v) => match v.parse::<u64>() {
+            Ok(0) => None,
+            Ok(ms) => Some(ms),
+            Err(_) => Some(DEFAULT_REALIZE_PAIR_TIMEOUT_MS),
+        },
+        Err(_) => Some(DEFAULT_REALIZE_PAIR_TIMEOUT_MS),
+    }
+}
+
 /// Decide whether `KB ⊨ class_iri(individual_iri)`. Returns `true`
 /// iff `individual_iri` is provably an instance of `class_iri` in
 /// every model of `ontology`.
@@ -88,10 +117,7 @@ pub fn is_instance_of_internal(
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
-    let pair_deadline = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&ms| ms > 0)
+    let pair_deadline = realize_pair_timeout_ms_from_env()
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
     instance_check_with_closure(
         internal,
@@ -337,10 +363,7 @@ pub fn instances_of_internal(
     }
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
-    let pair_deadline_ms: Option<u64> = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&ms| ms > 0);
+    let pair_deadline_ms: Option<u64> = realize_pair_timeout_ms_from_env();
     let mut out = Vec::new();
     for idx in 0..internal.vocabulary.num_individuals() {
         let individual_id =
@@ -732,10 +755,11 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
 /// The sound+complete tableau realization path — one `{a} ⊓ ¬C` satisfiability
 /// probe per (individual, satisfiable-class) pair. Used off the saturation
 /// fast-path fragment (and directly in the fast-path-vs-tableau identity test).
-/// Optionally bounds each per-pair probe via `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
-/// so a genuinely-hard SROIQ input degrades to a sound under-approximation
-/// instead of hanging (restores the caller-side bound removed in 0.3.18). Unset
-/// ⟹ no bound (verdict-preserving default).
+/// Bounds each per-pair probe via `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+/// (default [`DEFAULT_REALIZE_PAIR_TIMEOUT_MS`]) so a genuinely-hard SROIQ
+/// input degrades to a sound under-approximation instead of hanging (restores
+/// the caller-side bound removed in 0.3.18). Set the env var to `0` to opt out
+/// (unbounded).
 ///
 /// # Errors
 ///
@@ -743,10 +767,7 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
 pub(crate) fn realize_tableau_internal(
     internal: &InternalOntology,
 ) -> Result<Realization, ReasonError> {
-    let pair_deadline_ms: Option<u64> = std::env::var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&ms| ms > 0);
+    let pair_deadline_ms: Option<u64> = realize_pair_timeout_ms_from_env();
 
     // Use the top-down classifier — the same default as the public
     // `classify` entry. The N² pair-sweep that this previously

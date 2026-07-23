@@ -4,25 +4,35 @@
 //! `EquivalentClasses(B, ObjectIntersectionOf(A, ObjectMinCardinality(2, r,
 //! C)))` + `ObjectPropertyDomain(r, A)`.
 //!
-//! # HONESTY REQUIREMENT — the full 3-axiom reproducer does NOT terminate
+//! # HONESTY REQUIREMENT — the full 3-axiom reproducer's UNBOUNDED search
+//! does NOT terminate (Task A gap); the DEFAULT realize call now does
+//! (Task B safety net)
 //!
 //! Per the tableau-layer finding in `crates/owl-dl-tableau/tests/
 //! nominal_first_bounded.rs` (the load-bearing gate, currently `#[ignore]`d
 //! because it hangs even with the fix ON and the cap disabled), the FULL
-//! 3-axiom core does not terminate: the `ObjectPropertyDomain`-derived
-//! universal residual disjunction repeatedly re-derives `A` on freshly
-//! generated `≥2 r.C` witnesses, which — via the covering nominal
-//! disjunction — forces those witnesses to merge into the very individual
-//! that owns the cardinality constraint, destroying witness-distinctness
-//! and forcing regeneration. This is NOT gated by `has_pending_nominal_
-//! disjunction` (Task 2), so Tasks 1-4 do not bound it. Per the brief's
-//! honesty requirement, this file does **not** include a `realize`/
-//! `is_class_satisfiable` smoke test against the full 3-axiom core (it
-//! would hang / require an enormous node budget even under the default
-//! cap — confirmed empirically: wall time at `RUSTDL_MAX_NODES` 500/2000/
-//! 8000 was 0.5s/19.4s/>30s, a steep combinatorial blow-up, not a slow
-//! convergence). What follows instead are the tests from the brief that
-//! CAN be built safely and that remain meaningful given that finding:
+//! 3-axiom core's completion graph itself does not converge: the
+//! `ObjectPropertyDomain`-derived universal residual disjunction repeatedly
+//! re-derives `A` on freshly generated `≥2 r.C` witnesses, which — via the
+//! covering nominal disjunction — forces those witnesses to merge into the
+//! very individual that owns the cardinality constraint, destroying
+//! witness-distinctness and forcing regeneration. This is NOT gated by
+//! `has_pending_nominal_disjunction` (Task 2), so Tasks 1-4 (the deferred
+//! "real fix A") do not bound it — that remains an open gap, still
+//! documented by the ignored gate above.
+//!
+//! Task B (safety net, this file's `issue35_v4_realize_smoke_and_correct`)
+//! instead bounds the *caller-side* realize call: a default, non-zero
+//! `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` per-pair deadline plus a hard
+//! `NodeCap` early-return in `search::branch` make `realize` on the full
+//! 3-axiom core return promptly with a sound (under-approximate) result
+//! out of the box — no env vars needed. This is not a claim that the
+//! search itself converges; it is a claim that the *caller* is protected
+//! from the divergence, matching the issue reporter's original ask.
+//!
+//! What follows are the tests from the original brief that were built
+//! around the (still-true) tableau-divergence finding, plus the realize
+//! smoke test now enabled by the Task B default:
 //!
 //! - a positive-entailment canary in the nominal+cardinality shape
 //!   (Step 3d), using a variant that terminates fast (see below for why),
@@ -33,7 +43,10 @@
 //!   the CLI with `RUSTDL_MAX_NODES=0`; see the report for the transcript —
 //!   this file only runs the default, fix-ON configuration in-process,
 //!   following this crate's existing convention of not toggling
-//!   `OnceLock`-cached env vars across tests sharing a binary).
+//!   `OnceLock`-cached env vars across tests sharing a binary),
+//! - `issue35_v4_realize_smoke_and_correct`: `realize` on the full 3-axiom
+//!   core, default settings, asserting it returns (no hang) with a sound
+//!   MISS (see below).
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -180,19 +193,54 @@ Ontology(<http://example.org/card>
 }
 
 /// Step 3b/3c of the brief, verbatim shape: `realize` on the FULL 3-axiom
-/// reproducer core. Per the HONESTY REQUIREMENT (module doc), this does
-/// **not** currently pass — `realize` does not terminate on this input
-/// even with the fix on and the cap disabled (confirmed: >30s wall at
-/// `RUSTDL_MAX_NODES=8000`, cap OFF never returns). `#[ignore]`d so
-/// `cargo test` never hangs; kept verbatim (rather than deleted) so a
-/// future fix to the domain-residual/cardinality-merge gap (see
-/// `nominal_first_bounded.rs`) can flip this back on as the acceptance
-/// check the brief intended.
+/// reproducer core, run with **default settings (no env vars set)**.
+///
+/// Task B (safety net) added a default, non-zero
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` bound (see `realize.rs`'s
+/// `DEFAULT_REALIZE_PAIR_TIMEOUT_MS`) to the off-fragment tableau realize
+/// path, plus a hard early-return on a tableau `NodeCap` trip
+/// (`search::branch`) — together these make this reproducer TERMINATE
+/// FAST out of the box (previously: `#[ignore]`d because it did not
+/// terminate even with the fix ON and the node cap disabled — see the
+/// HONESTY REQUIREMENT above and task-5-report.md; that finding about the
+/// *tableau's own completion graph diverging* is unchanged and still
+/// documented by `nominal_first_bounded.rs`'s `#[ignore]`d
+/// `issue35_v4_completion_graph_is_bounded` gate, which stays ignored —
+/// this test is about the *caller-side realize bound* making the overall
+/// call return promptly with a sound result, not about the search
+/// converging on its own). The per-pair deadline bounds each (individual,
+/// class) probe, so the answer here is a sound MISS: `x`/`y`/`z` do not
+/// get typed `B`/`C` (the tableau proof that would derive it is cut off
+/// before completing) — asserting the type set stays EMPTY, not that it's
+/// wrong, is exactly what "sound under-approximation" means.
+///
+/// **`cfg_attr(debug_assertions, ignore)`**: this reproducer's rapid,
+/// unbounded-shaped graph growth (the same #35 v3/v4 divergence signature
+/// as `nominal_first_bounded_divergence_canary.rs`) passes through an
+/// edge-rollback that trips a SEPARATE, pre-existing `debug_assert_eq!`
+/// mismatch in `TableauContext::remove_edge_recorded`
+/// (`crates/owl-dl-tableau/src/lib.rs`) — confirmed present on this
+/// branch's `HEAD` *before* any Task B change (reproduced against the
+/// original unbounded default, with Task B's `search.rs`/`realize.rs`
+/// edits both reverted), so it is unrelated to the hard-`NodeCap` /
+/// default-pair-timeout work here and is deliberately NOT fixed as part
+/// of this change (see `nominal_first_bounded_divergence_canary.rs`'s doc
+/// for the same bug + its recommendation to file it separately). It only
+/// fires in debug-assertion builds — `cargo test`'s default profile —
+/// never in release. So this test is skipped there and runs (asserting
+/// the real behaviour) under `cargo test --release` / `-p owl-dl-reasoner
+/// --release`, where it verifies Task B's fix directly; the CLI
+/// transcript in `task-B-report.md` is the release-mode evidence for the
+/// default `cargo test` run.
 #[test]
-#[ignore = "issue #35 v4: realize does NOT terminate on the full 3-axiom \
-            reproducer even with the fix on (cap OFF) — see module doc + \
-            task-5-report.md. Do not remove this ignore without first \
-            fixing the domain-residual/cardinality-merge gap."]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "issue #35 v4: hits a SEPARATE pre-existing debug_assert_eq! \
+              mismatch in TableauContext::remove_edge_recorded, confirmed \
+              present before Task B's changes too — debug-assertion builds \
+              only (see the doc comment above + task-B-report.md). Run \
+              `cargo test --release` to exercise this test for real."
+)]
 fn issue35_v4_realize_smoke_and_correct() {
     let onto = parse(&format!(
         "Prefix(:=<{NS}>)

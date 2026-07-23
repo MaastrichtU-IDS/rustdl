@@ -168,7 +168,6 @@ fn branch(
     let my_id = ctx.push_branch();
     let mut combined: DepSet = DepSet::new();
     let mut depth_limited = false;
-    let mut node_capped = false;
     let mut early_return: Option<SearchVerdict> = None;
     // Restricted semantic branching companion. When option `d_j`
     // failed and `¬d_j` is registered as a cheap literal complement,
@@ -290,8 +289,17 @@ fn branch(
                 depth_limited = true;
             }
             SearchVerdict::NodeCap => {
+                // Hard early-return: a global node-cap trip means the
+                // whole search is too expensive to continue — abandon
+                // the remaining sibling disjuncts rather than trying
+                // them (Task 1's soft handling let an exploding search
+                // re-grow the graph per sibling, which was slow). This
+                // is sound: NodeCap maps to `Ok(None)` in `decide` (a
+                // sound MISS / consistent-under-approx), and giving up
+                // earlier only ever yields a MISS, never a false
+                // positive.
                 ctx.rollback_to(cp);
-                node_capped = true;
+                early_return = Some(SearchVerdict::NodeCap);
             }
         }
     }
@@ -299,8 +307,6 @@ fn branch(
 
     if let Some(v) = early_return {
         v
-    } else if node_capped {
-        SearchVerdict::NodeCap
     } else if depth_limited {
         SearchVerdict::DepthLimit
     } else {

@@ -5,14 +5,27 @@
 //! with `RUSTDL_MAX_NODES=0` (cap OFF) the reproducer's completion graph
 //! does not converge, even with `RUSTDL_NOMINAL_FIRST=1` (the fix). This
 //! test proves the same divergence WITHOUT hanging: under a small,
-//! finite node cap the search still cannot reach `Sat`/`Unsat` — it hits
-//! `NodeCap` — demonstrating the graph blows past a bound far smaller
-//! than any genuine model of this ontology needs (a hand-built model
-//! exists with 3 named individuals + 2 fresh `C`-witnesses, i.e. ~6
-//! nodes; see the task-5 report). If a future fix genuinely bounds this
-//! reproducer, this test will start failing (the verdict will become
-//! `Sat`/`Unsat` instead of `NodeCap`) — that is the intended signal to
-//! promote `nominal_first_bounded.rs`'s ignored gate back to live.
+//! finite node cap the search still cannot reach `Sat`/`Unsat` on its own
+//! — it hits `NodeCap` — demonstrating the graph blows past a bound far
+//! smaller than any genuine model of this ontology needs (a hand-built
+//! model exists with 3 named individuals + 2 fresh `C`-witnesses, i.e. ~6
+//! nodes; see the task-5 report).
+//!
+//! Task B (safety net) made `NodeCap` a HARD early-return in
+//! `search::branch` (a global node-cap trip abandons the remaining
+//! sibling disjuncts instead of soft-retrying them) — sound, since
+//! `NodeCap` maps to a MISS, never a false positive. The **observable
+//! signature of the divergence changed** as a result: it used to be
+//! "`graph_len` tracks `cap - 1`, final verdict `Sat`-via-backtrack";
+//! it is now "verdict `NodeCap`, `graph_len` rolled all the way back to
+//! (near-)initial size" — the hard early-return unwinds the diverging
+//! branch's nodes on the way out instead of leaving them packed to the
+//! cap. Both signatures equally prove the same underlying fact: this
+//! reproducer's search does not converge within a small cap. If a future
+//! fix genuinely bounds this reproducer, this test will start failing
+//! (the verdict will become `Sat`/`Unsat` even at a tiny cap) — that is
+//! the intended signal to promote `nominal_first_bounded.rs`'s ignored
+//! gate back to live.
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -105,18 +118,13 @@ fn run_probe() -> (SearchVerdict, usize) {
 }
 
 /// FAST divergence proof (small cap, fix ON): the search does NOT converge
-/// on its own — it fills the graph up to (one short of) whatever finite
-/// cap is imposed, then backtracks into a cheap satisfying branch. Verified
-/// directly (`RUSTDL_MAX_NODES` swept 50/100/300/1000 from the shell against
-/// a *release* build — see module doc / task-5-report.md): `graph().len()`
-/// lands at `cap - 1` in EVERY case, i.e. the graph size tracks the cap
-/// rather than converging to a small natural bound — the signature of
-/// genuine unbounded growth, not a slow-but-bounded search. `NodeCap`
-/// handling is deliberately *soft* (see `search.rs`'s doc comment): a
-/// cap-tripped branch rolls back and its sibling is tried, so the final
-/// verdict here is `Sat` (found via backtracking after the cap forced the
-/// diverging branch to give up) — the important fact is `graph_len`, not the
-/// verdict tag.
+/// on its own — it trips the global node cap (`NodeCap`) rather than
+/// reaching `Sat`/`Unsat`. Post-Task-B, `search::branch` treats `NodeCap`
+/// as a HARD early-return: the diverging branch's nodes are rolled back on
+/// the way out and no sibling disjunct is retried, so the *final* graph
+/// size collapses back to (near-)its pre-branch size rather than tracking
+/// the cap — the verdict tag (`NodeCap`) is now the load-bearing signal of
+/// divergence, not `graph_len`.
 ///
 /// **Cap pinned to 10, not the Step-1 gate's 64-node threshold.** A SEPARATE
 /// pre-existing bug (independent of this task, reachable through the real
@@ -129,27 +137,29 @@ fn run_probe() -> (SearchVerdict, usize) {
 /// --workspace --all-targets` runs the debug profile). Confirmed via
 /// `RUSTDL_MAX_NODES=20..70` against a debug CLI build: every value panics;
 /// `=10` does not. Using cap 10 here keeps this canary crash-free in CI
-/// while still demonstrating the divergence signature (`graph_len == cap -
-/// 1`); see the task-5 report for the full repro and a recommendation to
-/// file the edge-index bug separately.
+/// while still demonstrating the divergence (a `NodeCap` verdict); see the
+/// task-5 report for the full repro and a recommendation to file the
+/// edge-index bug separately.
 ///
-/// If a future fix genuinely bounds this reproducer, `graph_len` will stop
-/// tracking the cap (it will settle at some small constant regardless of
-/// how high the cap is set) — that is the signal to promote
-/// `nominal_first_bounded.rs`'s `#[ignore]`d gate back to live.
+/// If a future fix genuinely bounds this reproducer, the verdict will
+/// become `Sat`/`Unsat` even at this tiny cap — that is the signal to
+/// promote `nominal_first_bounded.rs`'s `#[ignore]`d gate back to live.
 #[test]
 fn issue35_v4_reproducer_diverges_graph_len_tracks_cap() {
     let _fix = SetEnvGuard::set("RUSTDL_NOMINAL_FIRST", "1");
     let _cap = SetEnvGuard::set("RUSTDL_MAX_NODES", "10");
     let (verdict, len) = run_probe();
     assert!(
-        matches!(verdict, SearchVerdict::Sat | SearchVerdict::NodeCap),
-        "expected Sat-via-backtrack-after-cap or a raw NodeCap trip, got {verdict:?}"
+        matches!(verdict, SearchVerdict::NodeCap),
+        "expected a raw NodeCap trip (hard early-return), got {verdict:?}"
     );
-    // Empirically graph_len == cap - 1 exactly; allow a little slack so this
-    // isn't pinned to an internal off-by-one that could shift harmlessly.
+    // Post-hard-early-return the diverging branch's nodes are rolled back
+    // on the way out, so the graph collapses back to near its initial size
+    // instead of tracking the cap. A little slack for the root + a handful
+    // of deterministically-derived labels/successors that aren't rolled
+    // back because they predate the diverging branch.
     assert!(
-        (7..10).contains(&len),
-        "expected graph_len to track the 10-node cap (diverging growth), got {len}"
+        len < 10,
+        "expected graph_len to have unwound below the cap, got {len}"
     );
 }

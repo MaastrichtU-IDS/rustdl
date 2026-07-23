@@ -1,8 +1,74 @@
 # Plan: amortize the per-pair ClauseIndexes rebuild in classify's subsumption oracle
 
-**Status:** proposed (scoped 2026-07-23), for advisor review then delegation to Fable.
+**Status:** advisor-reviewed 2026-07-23 — **APPROVE-WITH-CHANGES**; level-1 (full base+delta) green-lit contingent on B1–B4 below. Strongest of the four perf candidates.
 **Author:** Claude, 2026-07-23. Session: issue-#35 perf arc — the wedge-classify throughput frontier.
 **Branch (to create):** `perf/classify-clauseindex-amortize`.
+
+> **Advisor outcome (folded in — supersedes the original §1/§3/§4/§6 where they conflict).**
+>
+> **Bounding insight (shrinks the whole crux):** all six appended clause shapes
+> have **class-only bodies** (`{Class(q,X)}`, `{Class(a,X),Class(b,X)}`,
+> `{Class(q,X),Class(sup,X)}`) — **no role-body atoms, no empty bodies**.
+> `build_clause_indexes` indexes only *body* atoms, so the per-pair delta touches
+> **only `x_trigger`, `match_plans`, and `disjoint_pairs`** — ZERO
+> `role_trigger`/`inverse_first_trigger`/`empty_body` deltas. The §6
+> inverse/∃-head worries are moot; delete them.
+>
+> **Delta table verified** (against `build_clause_indexes`, hyper.rs:920–978, which
+> loops over *every* body atom): value_disjoint `{a,b}` → `x_trigger[a]+=ci` AND
+> `x_trigger[b]+=ci` (**both**); ¬sup clash `{q,sup}` → `x_trigger[q]+=ci` AND
+> `x_trigger[sup]+=ci`; exists_seed `Q→∃R.t` → **only** `x_trigger[q]+=ci` (heads
+> are never indexed — drop the "∃-head bookkeeping" uncertainty).
+>
+> **B1 (HIGH — the critical omission):** the delta must also produce
+> **`match_plans[ci]`**. `match_body` reads `self.indexes.match_plans[ci]` as a
+> **direct index** (hyper.rs:3582) — an un-built entry for `ci ≥ base_len`
+> **panics (OOB)**, or if merely `None`-padded, **silently drops the clause →
+> missed subsumption**. `index_one_clause` MUST build the match_plan
+> (`build_clause_match_plan(clause)`) and storage must route `match_plans[ci]`
+> for `ci ≥ base_len` into the extras. All six shapes yield `Some(plan)`.
+> Extend the §5.3 equivalence test to assert the `match_plans` entry too.
+>
+> **B2 (HIGH — framing was wrong):** the label-oracle path does **NOT** amortize
+> in the default config. `RUSTDL_SAT_SEED` and `RUSTDL_VALUE_TYPE_DISJOINT`
+> default **ON** (lib.rs:1585 / 2100), so `classify_labels` takes the
+> **full-rebuild `HyperEngine::new` branch (2814–2822), not `new_with_prebuilt`**.
+> So this is **not "porting working code"** — it is building the machinery the
+> label path *punted on* (2818). Also the per-pair appended set is **not "a
+> handful"**: `Q→sub` + **all** `sat_seed[sub]` (can be tens) + **all**
+> `exists_seed[sub]` + **all** `value_disjoint` + `¬sup`. `value_disjoint` is
+> **pair-invariant** → fold into `base_indexes`/`base_disjoint_pairs` **once**;
+> `Q→sub`, seeds, `¬sup` are pair-varying (the O(#extra) delta).
+>
+> **B3 (MEDIUM — API doesn't exist):** there is **no `extra_clause`/`get_clause`**
+> (the lib.rs:2464 comment is stale); `new_with_prebuilt` takes a single
+> `&[DlClause]` and ~10 sites index `self.clauses[ci]` directly (hyper.rs:2361,
+> 2384, 2457, 2493, 2572, 2591, 2744, 2849, 3554, 3677). The real change:
+> introduce a **base-slice + extra-slice `clause(ci)` accessor** and convert
+> those ~10 sites (and `match_plans[ci]`) to branch-route
+> `if ci < base_len { base } else { extra[ci-base_len] }`. More invasive than
+> "generalize extra_clause to a slice."
+>
+> **B4 (MEDIUM):** don't clone the `disjoint_pairs` HashSet per pair
+> (O(#pairs)/pair defeats the point). Read disjointness as
+> `base.contains(p) || per_pair_extra.contains(p)` with the 1 `¬sup` pair (+ any
+> non-folded value_disjoint) in a tiny per-pair set.
+>
+> **Non-blocking:** use **branch-routing, not a HashMap overlay**, for the
+> hot-path `match_plans[ci]` and `clause(ci)` reads (predictable
+> almost-always-true branch); for `x_trigger`, a tiny per-pair `Vec<(key,ci)>`
+> consulted only at the few extra keys beats overlaying every `x_trigger.get`.
+> SP1.1 `with_sub_roles` (default OFF): extras have no role atoms ⇒ hierarchy
+> irrelevant to the delta; `with_sub_roles_keep_index` on the shared base suffices.
+>
+> **Strategic ranking (decisive):** only **level 1 (full base+delta with
+> branch-routed `match_plans`/`x_trigger` + disjoint overlay)** removes the
+> measured cost — it alone is O(#extra)/pair. **Level 2 (`Arc::make_mut`-extend)
+> REJECTED** — deep-clones the whole `ClauseIndexes` every pair → still
+> O(#clauses)/pair. **Level 3 (clone-removal only) is not actually cheaper** —
+> rebuilding without cloning already needs the B3 base+extra routing, i.e. most
+> of the plumbing for a fraction of the win; keep only as a P0 fallback if the
+> index delta proves too risky. **Commit to level 1 with B1–B4, or defer.**
 
 ## 1. Problem (measured this session)
 
@@ -75,14 +141,19 @@ The per-pair extra clauses (all appended after the base) and their **exact index
 contributions** (this enumeration is the correctness crux — a missed entry ⇒ the
 clause never fires ⇒ a MISSED subsumption / wrong verdict):
 
-| appended clause (decide) | body | index delta |
-|---|---|---|
-| `Q→sub` (2574) | `{Class(q,X)}` | `x_trigger[q] += ci` |
-| `Q→D` sat_seed (2588) | `{Class(q,X)}` | `x_trigger[q] += ci` |
-| `Q→∃R.t` exists_seed (2603) | `{Class(q,X)}` | `x_trigger[q] += ci` (+ any Exists-head bookkeeping `build_clause_indexes` does for `∃`-heads) |
-| value_disjoint (2613) | `{Class(a,X),Class(b,X)}` | `x_trigger[a] += ci`, `x_trigger[b] += ci` (2-atom body: match the base builder's chosen-trigger rule — **first atom? both?** — MUST mirror `build_clause_indexes` exactly) |
-| `¬sup` head-only (2620) | `{Class(q,X)}` | `x_trigger[q] += ci` |
-| `¬sup` empty-head clash (2625) | `{Class(q,X),Class(sup,X)}` | mirror the base builder's 2-atom-body trigger rule for `(q,sup)` |
+**All deltas verified against `build_clause_indexes` (advisor).** Every shape has
+a **class-only body**, so each contributes `x_trigger` entries (one per body
+atom) **and** a `match_plans[ci] = Some(build_clause_match_plan(clause))` entry
+(B1 — mandatory), plus `disjoint_pairs` for the empty-head 2-atom clauses.
+
+| appended clause (decide) | body | `x_trigger` delta | `match_plans[ci]` | `disjoint_pairs` |
+|---|---|---|---|---|
+| `Q→sub` (2574) | `{Class(q,X)}` | `[q]+=ci` | `Some(plan)` | — |
+| `Q→D` sat_seed (2588) | `{Class(q,X)}` | `[q]+=ci` | `Some(plan)` | — |
+| `Q→∃R.t` exists_seed (2603) | `{Class(q,X)}` | `[q]+=ci` (heads NOT indexed) | `Some(plan)` | — |
+| value_disjoint (2613) | `{Class(a,X),Class(b,X)}` | `[a]+=ci` **and** `[b]+=ci` | `Some(plan)` | `(a,b)` — **pair-invariant, fold into base once (B2)** |
+| `¬sup` head-only (2620) | `{Class(q,X)}` | `[q]+=ci` | `Some(plan)` | — |
+| `¬sup` empty-head clash (2625) | `{Class(q,X),Class(sup,X)}` | `[q]+=ci` **and** `[sup]+=ci` | `Some(plan)` | `(q,sup)` — per-pair overlay (B4) |
 
 Approach:
 1. **Clause storage:** stop cloning `self.clauses` per pair. Give the engine the

@@ -795,6 +795,58 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.graph.set_residuals_saturated(node, true);
     }
 
+    /// True iff `or_id` is `Or(args)` with a `Nominal(_)` disjunct and no
+    /// disjunct already present in `labels` (sorted ascending).
+    fn is_open_nominal_or(&self, or_id: ConceptId, labels: &[ConceptId]) -> bool {
+        if let owl_dl_core::ConceptExpr::Or(args) = self.pool.get(or_id) {
+            let open = !args.iter().any(|d| labels.binary_search(d).is_ok());
+            open && args
+                .iter()
+                .any(|&d| matches!(self.pool.get(d), owl_dl_core::ConceptExpr::Nominal(_)))
+        } else {
+            false
+        }
+    }
+
+    /// True iff `node` carries a pending nominal-covering disjunction: either
+    /// a materialized open `Or`-with-`Nominal` label, OR an `Atomic(class)`
+    /// whose absorbed concept-rule conclusion is such an `Or` not yet
+    /// satisfied. The `TBox` branch is what fires on the #35 bug — the nominal
+    /// `Or` is a deferred concept-rule conclusion, unmaterialized at
+    /// generation time (`rules.rs` defers `Or` conclusions; the stable-state
+    /// sweep in `saturate.rs` materializes them later), so at generation time
+    /// the node has only the atomic trigger label.
+    #[must_use]
+    pub fn has_pending_nominal_disjunction(&self, node: NodeId) -> bool {
+        let labels = self.graph.node(node).labels();
+        // (1) materialized open Or on the node.
+        if labels.iter().any(|&c| self.is_open_nominal_or(c, labels)) {
+            return true;
+        }
+        // (2) pending via TBox concept-rule keyed by an atomic label's class.
+        let Some(tbox) = self.tbox else {
+            return false;
+        };
+        for &c in labels {
+            if let owl_dl_core::ConceptExpr::Atomic(class) = self.pool.get(c) {
+                if let Some(concls) = tbox.concept_rules_by_trigger.get(class) {
+                    if concls.iter().any(|&o| self.is_open_nominal_or(o, labels)) {
+                        return true;
+                    }
+                } else if tbox.concept_rules_by_trigger.is_empty()
+                    && tbox.concept_rules.iter().any(|r| {
+                        r.trigger == *class && self.is_open_nominal_or(r.conclusion, labels)
+                    })
+                {
+                    // Linear fallback when the index was never built
+                    // (finalize not called) — mirrors apply_concept_rules.
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     #[must_use]
     pub fn trail(&self) -> &TableauTrail {
         &self.trail
@@ -2087,6 +2139,15 @@ pub fn max_nodes() -> Option<usize> {
     })
 }
 
+/// Nominals-first scheduling (#35 v4). `RUSTDL_NOMINAL_FIRST` default ON;
+/// `=0` reverts to unconditional ∃/≥ generation. Cached once.
+#[must_use]
+pub fn nominal_first_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| !matches!(std::env::var("RUSTDL_NOMINAL_FIRST").as_deref(), Ok("0")))
+}
+
 /// Count inverse-induced (`preds`/flip) successors in `≤n`/functional merges
 /// (sound; closes a completeness gap on inverse+functional cyclic patterns,
 /// e.g. galen). **Default ON** since 2026-07-11 — the incremental
@@ -2164,6 +2225,61 @@ mod tests {
         assert_eq!(
             ctx.label_deps_of(n, a).map(smallvec::SmallVec::as_slice),
             Some(&[1u32, 2, 3][..])
+        );
+    }
+
+    #[test]
+    fn pending_nominal_disjunction_tbox_and_materialized() {
+        // #35 v4: the nominal-covering Or (`A ⊑ {x,y}`) is a DEFERRED
+        // concept-rule conclusion — at generation time the node carries only
+        // the atomic trigger, so the predicate must consult the TBox.
+        let mut pool = ConceptPool::new();
+        let a = pool.atomic(ClassId::new(0));
+        let x = pool.nominal(IndividualId::new(0));
+        let y = pool.nominal(IndividualId::new(1));
+        let one_of = pool.or([x, y]);
+        // TBox: A ⊑ {x,y} as a concept-rule (trigger A, conclusion one_of).
+        let mut tbox = AbsorbedTBox {
+            concept_rules: vec![ConceptRule {
+                trigger: ClassId::new(0),
+                conclusion: one_of,
+            }],
+            ..AbsorbedTBox::default()
+        };
+        tbox.finalize(); // builds concept_rules_by_trigger
+        let hierarchy = RoleHierarchyBuilder::with_roles(0).build();
+        let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, &tbox, &hierarchy);
+
+        // Pending case: node has only atomic A -> Or not materialized ->
+        // still pending.
+        let n = ctx.new_node();
+        ctx.add_label(n, a);
+        assert!(
+            ctx.has_pending_nominal_disjunction(n),
+            "pending via TBox concept-rule"
+        );
+
+        // Materialized-open case.
+        let n2 = ctx.new_node();
+        ctx.add_label(n2, one_of);
+        assert!(
+            ctx.has_pending_nominal_disjunction(n2),
+            "materialized open Or"
+        );
+
+        // Resolved: a disjunct present -> not pending.
+        ctx.add_label(n2, x);
+        assert!(!ctx.has_pending_nominal_disjunction(n2), "resolved");
+
+        // Plain atomic with no covering rule -> not pending.
+        let mut pool2 = ConceptPool::new();
+        let b = pool2.atomic(ClassId::new(1));
+        let mut ctx2 = TableauContext::new(&pool2);
+        let n3 = ctx2.new_node();
+        ctx2.add_label(n3, b);
+        assert!(
+            !ctx2.has_pending_nominal_disjunction(n3),
+            "plain atomic, no TBox"
         );
     }
 

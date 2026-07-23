@@ -39,7 +39,14 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > `RUSTUP_TOOLCHAIN=stable cargo …` (or `rustup component add cargo --toolchain 1.95.0`).
 > **Always confirm `target/release/rustdl` is freshly built before benchmarking** —
 > a ~2-week-stale binary produced a spurious `wine` DNF and inflated hard-case walls
-> (2026-07-11); the fresh binary classifies `wine` completely in ~1.8 s (FP=0/MISSED=0).
+> (2026-07-11). NOTE (re-measured 2026-07-23): the historical "`wine` ~1.8 s" figure
+> does NOT reproduce on current hardware/config — `wine` classify **DNFs
+> unbounded** and completes only under a per-pair budget, with wall ~linear in the
+> budget and completeness flat (`--pair-timeout-ms 25` → ~12 s / 201 subs; `50` →
+> ~21 s; `100` → ~41 s; `200` → ~80 s / 203 subs). Its cost is a fixed set of hard
+> SROIQ pairs each stalling the full budget (the per-pair wedge search), not a
+> stale-binary artifact — so use `wine --pair-timeout-ms 25` as the freshness
+> canary, and do not treat a >10 s `wine` as necessarily stale.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`), build+test on
 linux/macos/windows, and `cargo-deny`. `RUSTFLAGS: -D warnings` is set in CI, so
@@ -174,6 +181,46 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   classify), `=0` forces ancestor-only everywhere (pre-fix behaviour). Complements
   the 0.3.34 deep-cap fix (search-breadth on bounded graphs); this addresses
   graph-termination on the nominal-anchored-cycle class.
+  **Realize termination — issue #35 v4 (2026-07-23).** A *new* pattern still hung
+  `realize` on 0.3.38: `ObjectMinCardinality` + `ObjectOneOf` covering +
+  `ObjectPropertyDomain` (no ABox). Root cause: `ObjectPropertyDomain(r,A)` absorbs
+  to an untriggered residual `⊤ ⊑ ¬∃r.⊤ ⊔ A`; picking its `A` disjunct on a fresh
+  `≥2 r.C` witness re-opens the covering nominal disjunction and the o-rule folds
+  the witness back into the constraint owner → unbounded generation, and blocking
+  can't cut it (every cycle node is nominal-tainted, excluded from
+  `is_blocked_anywhere`/`_ancestor` at `lib.rs:1021/1062`). **Fix shipped = a sound
+  deterministic safety net, NOT a completeness fix:** (1) `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
+  now **defaults to 750 ms** (was unbounded since 0.3.18; `=0` opts out) — bounds each
+  per-individual realize probe → sound MISS; realize-only, never classify/consistency.
+  (2) `RUSTDL_MAX_NODES` (default 50000, `0` disables) caps the deadline-free tableau
+  search → a distinct `NodeCap` verdict → `Ok(None)` (sound MISS / consistent
+  under-approx) with a hard early-return in `search::branch`. Realize on the reproducer:
+  >300 s hang → ~0.75 s. The intended *complete* fix (`RUSTDL_NOMINAL_FIRST`
+  nominals-first scheduling) was **falsified** (scheduling can't bound this
+  domain-residual cycle) and is **default OFF / opt-in**, dormant scaffolding for a
+  future nominal-aware-blocking / NN-rule redesign. HermiT-matching realization on
+  this pattern is a known limitation. See
+  `docs/superpowers/specs/2026-07-23-nominal-cardinality-realize-termination-design.md`
+  (§ Outcome).
+  **Wedge classify throughput (2026-07-23).** (v0.3.38) `HyperEngine::is_blocked`
+  no longer clones the parent-role candidate bucket per call (iterate in place,
+  stats in loop-locals) — behaviour-identical. (v0.3.39) The classify subsumption
+  oracle (`HyperCache::decide_with_stats`) **amortizes the per-pair
+  `ClauseIndexes` rebuild**: it cloned the full clause vector + rebuilt the whole
+  index on every decided pair (measured 13,772× ~34.6k clauses on `ore_ont_1508`;
+  11–15% of self-time on converging wedge-heavy classify). Now it reuses the
+  shared base `Arc<ClauseIndexes>` + an O(#appended-clause) per-pair delta: a
+  `ClauseIndexSink` trait routes the base build and the delta through one
+  `index_one_clause` (so `x_trigger`, `match_plans`, nonhorn/empty-body, disjoint
+  entries can't diverge), the engine branch-routes `clause(ci)`/`match_plan(ci)`
+  between base slice and per-pair extras, disjointness is a base+per-pair overlay,
+  and the pair-invariant value-disjoint clauses fold into the base once.
+  Verdict-preserving (closures byte-identical on vs `RUSTDL_CLASSIFY_AMORTIZE_IDX=0`
+  vs pre-change baseline, corpus + ORE; delta-vs-full equivalence unit test).
+  ~11–13% on `ore_ont_1508`/`12698`; broad (every wedge-classified ontology).
+  NOTE: the residual wedge-classify cost is `enumerate_matches`/`match_body` (the
+  non-Horn fire loop, ~25% self-time) — separate in-flight work, not this.
+  Plan: `docs/superpowers/plans/2026-07-23-classify-clauseindex-amortization-plan.md`.
   Phase 3 (commit 64bee92) added a bloom prefilter to `needs_deferred_or`
   extending the existing 64-bit `label_sig` (was used only for ancestor
   pair-blocking). GALEN classify wall: 24.7 min → 21.1 min (−14.6%);
@@ -361,6 +408,17 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `realize::tests::fast_path_matches_tableau_on_terminating_fixture` (byte-
   identity) + conjunctive/existential/domain-range/termination unit tests. See
   `docs/2026-07-21-realize-saturation-fast-path.md`.
+  **Inconsistency short-circuit (2026-07-23, v0.3.36).** Off the saturation
+  fast-path fragment, `realize_internal` now runs the `saturate_abox_consistency`
+  pre-check first and returns `Err(Inconsistent)` on a clash — matching the
+  sibling `materialize_{object,data}_property_assertions`. Without it, realize
+  ran a `{a} ⊓ ¬C` probe per (individual, class) on an inconsistent KB (every
+  membership vacuously holds), which on a deep inconsistency the pre-check catches
+  but classify's patterns don't (`family.ofn`) was a multi-minute stall and could
+  even return a degenerate `Ok` (an individual typed into mutually-disjoint
+  classes). Sound under-approx (clash ⇒ genuinely inconsistent; consistent onts
+  unaffected). `family` realize now errors in ~0.7 s (was a hang). Regression
+  test `realize_inconsistent_shortcircuit`.
   `materialize_object_property_assertions` (reasoner) / `materialize_inferred_property_assertions`
   (Python) / `realize --properties` (CLI) surface inferred OBJECT property assertions over named
   individuals, reusing the ABox saturator's derived edges (sound under-approximation: no
@@ -833,6 +891,19 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   A-gated branch (`feat/abox-sat-A-gated`) is kept for a future bake-off with
   inverse-aware *classification* work. Spec:
   `docs/superpowers/specs/2026-06-20-abox-saturation-consistency-design.md`.
+  **Indexed (2026-07-23, v0.3.36/v0.3.37).** The fixpoint's two brute-scan hot
+  loops were indexed, verdict-preserving (the checks write only `.clash`; 79/79
+  ORE ABox onts + curated corpus verdict-identical indexed-vs-brute):
+  (1) **role-chain closure** — the inner "r-edges leaving node b" leg was an O(E)
+  rescan per chain rule per iteration over the full edge set (family: ~267k-edge
+  transitive closure); now `(role,src)`/`(role,dst)` indexed
+  (`RUSTDL_ABOX_CHAIN_BRUTE=1` reverts). (2) **Rule 8 disjoint-clash + Rule 7b
+  functional-marker clash** — were `O(|disjoint_pairs|×|individuals|)` /
+  linear-scan per iteration; now a `disjoint_of` symmetric class adjacency +
+  normalized membership set, Rule 8 type-driven (`RUSTDL_ABOX_DISJOINT_BRUTE=1`
+  reverts). Impact: **family** inconsistency detection ~21 s → ~0.7 s;
+  `ore_ont_9899` pre-check ~27 s → ~0.5 s. Plans:
+  `docs/superpowers/plans/2026-07-23-abox-saturation-{chain,disjoint}-index-plan.md`.
 
 When changing the saturation/wedge engines or caches, the failure mode that
 matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cache-project-complete.md` and `docs/abox-consistency-check-handoff.md` for
@@ -864,8 +935,12 @@ direct `∃`-composition rather than the disjunctive ¬-expansion + ∀-propagat
 path; see
 `docs/known-limitations/galen-inverse-functional-completeness.md` and
 `docs/known-limitations/galen-defined-class-monotonicity-residual.md`. `wine`
-is no longer a DNF (fixed v0.3.16, ~1.8 s at a low per-pair budget) — earlier
-"out-of-EL incomplete/DNF" notes are stale. This completeness result is scoped
+classifies (201–203 subs) but only under a per-pair budget — unbounded it DNFs,
+and wall is ~linear in the budget (~12 s at `--pair-timeout-ms 25` up to ~80 s at
+`200`, re-measured 2026-07-23; the earlier "~1.8 s" figure does not reproduce).
+Its cost is the deep per-pair SROIQ wedge search (a fixed hard-pair tail), the
+same frontier as the ORE hard cases — NOT the ABox/classify-index paths the
+2026-07 perf work sped up. This completeness result is scoped
 to the curated corpus — the ORE/BioPortal tiers are untested here and remain an
 empirical, not provable, claim.** The
 remaining rustdl weakness is the multi-GB RSS tail on a few pathological SROIQ

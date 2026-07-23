@@ -5179,6 +5179,26 @@ where
     let mut pool = pool.clone();
     let test_concept: ConceptId = build_test_concept(&mut pool);
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
+    // Anywhere-blocking on the deadline-FREE query paths (`is_consistent`,
+    // `is_class_satisfiable`, un-timed `realize`/`instance`). Ancestor-scoped
+    // pair-blocking cannot block a generating ∃-cycle anchored at a nominal
+    // root — the pairwise parent-subset condition never holds near that anchor —
+    // so a `{a} ⊓ ¬C` probe over a defined-class + covering-disjunction +
+    // property-domain ontology grows the completion graph without bound (issue
+    // #35 v3). Anywhere-blocking (Motik/Shearer/Horrocks) blocks against any
+    // earlier non-nominal node and terminates it. The deadline-BOUNDED paths
+    // (classify pairs, timed realize probes) keep ancestor-blocking: they have a
+    // deadline safety net and the tuned classify loop is left untouched (a
+    // 152-ontology ORE + curated-corpus bake-off showed anywhere-blocking is
+    // verdict-identical there, but there is no reason to perturb it). Env
+    // override: `RUSTDL_ANYWHERE_BLOCKING=1` forces it on everywhere (incl.
+    // classify), `=0` forces the pre-fix ancestor-only behaviour everywhere.
+    let anywhere = match std::env::var("RUSTDL_ANYWHERE_BLOCKING").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => deadline.is_none(),
+    };
+    ctx.set_anywhere_blocking(anywhere);
     // Concrete-domain solver (P3): supply the DKey range side-map so the
     // additive concrete-domain clash + the cardinality-suppression guard fire.
     if !dkey_ranges.is_empty() {

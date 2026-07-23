@@ -1609,42 +1609,47 @@ impl<'c> HyperEngine<'c> {
                 (np, nr)
             };
             self.stats.block_eligible += 1;
-            // Snapshot the candidate list (clone to release the
-            // immutable borrow on `block_index` before we mutate stats).
-            let candidates: Vec<HNode> = self
-                .block_index
-                .as_ref()
-                .and_then(|ix| ix.get(&nr))
-                .cloned()
-                .unwrap_or_default();
-            for m_hnode in candidates {
-                let m_order = self.nodes[m_hnode.index()].order;
-                if m_order >= ln_order {
-                    continue;
-                }
-                let Some(mp) = self.nodes[m_hnode.index()].parent else {
-                    continue;
-                };
-                self.stats.block_compares += 1;
-                // Anywhere pair-blocking (Horrocks 1998 / Motik 2009):
-                // *subset* semantics — the blocker is "at least as
-                // rich" as the blocked. Stricter than anywhere
-                // blocking (requires parent + edge-role match, so
-                // sound with inverses) but weaker than label-equality
-                // (so SROIFV-class ontologies block in tractable
-                // depth instead of generating exponentially).
-                if subset_sorted(
-                    &self.nodes[n.index()].labels,
-                    &self.nodes[m_hnode.index()].labels,
-                ) && subset_sorted(
-                    &self.nodes[np.index()].labels,
-                    &self.nodes[mp.index()].labels,
-                ) {
-                    self.stats.blocks_fired += 1;
-                    return true;
+            // Iterate the candidate bucket in place (no per-call clone — the
+            // immutable borrow of `block_index` coexists with the immutable
+            // borrows of `nodes`; `stats` is written only after the loop, so no
+            // conflicting mutable borrow is held during it). Behaviour-identical
+            // to the old clone-then-scan.
+            let mut compares: u64 = 0;
+            let mut blocked = false;
+            if let Some(bucket) = self.block_index.as_ref().and_then(|ix| ix.get(&nr)) {
+                for &m_hnode in bucket {
+                    let m_order = self.nodes[m_hnode.index()].order;
+                    if m_order >= ln_order {
+                        continue;
+                    }
+                    let Some(mp) = self.nodes[m_hnode.index()].parent else {
+                        continue;
+                    };
+                    compares += 1;
+                    // Anywhere pair-blocking (Horrocks 1998 / Motik 2009):
+                    // *subset* semantics — the blocker is "at least as
+                    // rich" as the blocked. Stricter than anywhere
+                    // blocking (requires parent + edge-role match, so
+                    // sound with inverses) but weaker than label-equality
+                    // (so SROIFV-class ontologies block in tractable
+                    // depth instead of generating exponentially).
+                    if subset_sorted(
+                        &self.nodes[n.index()].labels,
+                        &self.nodes[m_hnode.index()].labels,
+                    ) && subset_sorted(
+                        &self.nodes[np.index()].labels,
+                        &self.nodes[mp.index()].labels,
+                    ) {
+                        blocked = true;
+                        break;
+                    }
                 }
             }
-            false
+            self.stats.block_compares += compares;
+            if blocked {
+                self.stats.blocks_fired += 1;
+            }
+            blocked
         } else {
             // Anywhere blocking (legacy; sound for SHIQ-no-inverse).
             // Snapshot the node count and iterate by index to keep

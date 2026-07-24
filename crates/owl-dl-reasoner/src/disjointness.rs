@@ -35,7 +35,8 @@ const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 const NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
 /// Entailed disjoint named-class pairs. `pair_deadline` bounds each `C ⊓ D`
-/// probe; `None` = unbounded.
+/// probe, AND each per-class/per-pair probe the up-front classification pass
+/// runs to find the unsatisfiable-class set; `None` = unbounded.
 ///
 /// # Errors
 /// [`ReasonError::Inconsistent`] if the ontology is inconsistent;
@@ -50,8 +51,13 @@ pub fn disjoint_classes<A: ForIRI>(
         return Err(ReasonError::Inconsistent);
     }
     // Candidate named classes = declared classes minus unsat/Thing/Nothing.
-    // Use classify to get the unsat set + the reportable class list.
-    let classification = crate::classify_internal(&internal)?;
+    // Use classify to get the unsat set + the reportable class list. Threads
+    // the same `pair_deadline` the caller gave us into the per-class/per-pair
+    // probes classification itself runs (`classify_internal` == `_with_timeout`
+    // with `None`, so this is a no-op when the caller passes `None`) — without
+    // this, classification's own probes ignored `pair_deadline` entirely and
+    // could dominate the wall time this function is trying to bound.
+    let classification = crate::classify::classify_internal_with_timeout(&internal, pair_deadline)?;
     let unsat: std::collections::HashSet<&str> =
         classification.unsatisfiable_classes().into_iter().collect();
     let mut incomplete = !classification.completeness_guaranteed();
@@ -70,8 +76,20 @@ pub fn disjoint_classes<A: ForIRI>(
     let mut pairs: Vec<(String, String)> = Vec::new();
     for i in 0..names.len() {
         for j in (i + 1)..names.len() {
+            let (ci, cj) = (names[i].1, names[j].1);
+            // Told-disjoint (asserted `DisjointClasses`/`Not`-subclass/
+            // `DisjointUnion`) is sound on its own — the pair is entailed
+            // disjoint without running the tableau probe at all. Task 1.1:
+            // this is what turns the O(n^2) full-probe loop into "probe only
+            // the pairs that aren't already known".
+            if prepared.told.are_told_disjoint(ci, cj) {
+                let (a, b) = (&names[i].0, &names[j].0);
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                pairs.push((lo.clone(), hi.clone()));
+                continue;
+            }
             let deadline = pair_deadline.map(|d| Instant::now() + d);
-            match prepared.pair_disjoint_with_deadline(names[i].1, names[j].1, deadline)? {
+            match prepared.pair_disjoint_with_deadline(ci, cj, deadline)? {
                 Some(true) => {
                     let (a, b) = (&names[i].0, &names[j].0);
                     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };

@@ -185,6 +185,16 @@ def different_individuals(path: str) -> list[tuple[str, str]]:
     """Pairs of individuals proven distinct ({a}⊓{b} unsatisfiable)."""
     ...
 
+# ── inferred property values ────────────────────────────────────────────────
+
+def object_property_values(path: str) -> list[tuple[str, str, str]]:
+    """Inferred object property values (subject, property, object) over named individuals."""
+    ...
+
+def data_property_values(path: str) -> list[tuple[str, str, str, str]]:
+    """Inferred data property values (subject, property, lexical, datatype)."""
+    ...
+
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:

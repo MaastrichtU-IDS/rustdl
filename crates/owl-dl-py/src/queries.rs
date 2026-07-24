@@ -132,6 +132,28 @@ pub(crate) fn different_individuals(path: &str) -> PyResult<Vec<(String, String)
         .map_err(reason_error_to_py)
 }
 
+/// Inferred object property values `(subject, property, object)` over named
+/// individuals. Bounded by a 1s per-pair deadline.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn object_property_values(path: &str) -> PyResult<Vec<(String, String, String)>> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::inferred_object_property_values(&o, Some(std::time::Duration::from_secs(1)))
+        .map(|v| v.triples().to_vec())
+        .map_err(reason_error_to_py)
+}
+
+/// Inferred data property values `(subject, property, lexical, datatype)`
+/// over named individuals.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn data_property_values(path: &str) -> PyResult<Vec<(String, String, String, String)>> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::inferred_data_property_values(&o)
+        .map(|v| v.quads().to_vec())
+        .map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_consistent, m)?)?;
     m.add_function(wrap_pyfunction!(is_class_satisfiable, m)?)?;
@@ -146,5 +168,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_property_hierarchy, m)?)?;
     m.add_function(wrap_pyfunction!(same_individuals, m)?)?;
     m.add_function(wrap_pyfunction!(different_individuals, m)?)?;
+    m.add_function(wrap_pyfunction!(object_property_values, m)?)?;
+    m.add_function(wrap_pyfunction!(data_property_values, m)?)?;
     Ok(())
 }

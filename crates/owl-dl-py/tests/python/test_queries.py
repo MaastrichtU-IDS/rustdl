@@ -96,3 +96,33 @@ def test_same_individuals(tmp_path):
     assert any(
         "http://ex/#b" in group and "http://ex/#c" in group for group in groups
     )
+
+
+def test_object_property_values(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(ObjectProperty(:r))\n"
+        "  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n"
+        "  SymmetricObjectProperty(:r)\n"
+        "  ObjectPropertyAssertion(:r :a :b))\n"
+    )
+    triples = rustdl.object_property_values(str(p))
+    assert ("http://ex/#b", "http://ex/#r", "http://ex/#a") in triples
+
+
+def test_data_property_values(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(DataProperty(:dp))\n"
+        "  Declaration(NamedIndividual(:a))\n"
+        "  DataPropertyAssertion(:dp :a \"5\"^^xsd:integer))\n"
+    )
+    quads = rustdl.data_property_values(str(p))
+    assert any(
+        q[0] == "http://ex/#a" and q[1] == "http://ex/#dp" for q in quads
+    )

@@ -5,6 +5,7 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue)](#licensing)
 [![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://pypi.org/project/rustdl/)
+[![Protégé plugin](https://img.shields.io/badge/Prot%C3%A9g%C3%A9-plugin-blue)](protege/README.md)
 
 A **sound** OWL 2 DL (SROIQ) reasoner in Rust. Konclude-style hybrid: a
 consequence-based **saturation** engine handles the EL-ish fragment, a
@@ -174,6 +175,27 @@ one):
 Any run that hits a bound prints a prominent `INCOMPLETE` warning to stderr.
 Diagnostics: `RUSTDL_TRACE=1` (one stderr line per search/branch decision);
 `RUSTDL_COUNTERS=1` with `--features counters` (per-rule call counts).
+
+## Protégé plugin
+
+rustdl runs as a Protégé Desktop reasoner.
+
+**Install:** download `rustdl-protege-<version>.jar` from the
+[latest release](https://github.com/MaastrichtU-IDS/rustdl/releases/latest), drop
+it into Protégé's `plugins/` directory, and restart. Choose **rustdl** under
+Reasoner ▸, then Reasoner ▸ Start reasoner.
+
+**Computes (v1):** consistency, the inferred class hierarchy, unsatisfiable
+classes, and class assertions (types / instances). Property hierarchies & values,
+same/different individuals, disjointness, and complex-class-expression queries
+return empty for now.
+
+**Config** (JVM system property, else env var): `-Drustdl.bin=…` / `RUSTDL_BIN`
+for a specific binary; `-Drustdl.timeout.seconds=…` / `RUSTDL_TIMEOUT_SECONDS`
+(default 600) for the per-call timeout.
+
+Requires Protégé 5.6.x (Java 11+). Build-from-source and the full contract:
+[`protege/README.md`](protege/README.md), [`docs/protege-plugin.md`](docs/protege-plugin.md).
 
 ## Licensing
 

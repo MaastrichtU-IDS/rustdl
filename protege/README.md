@@ -16,7 +16,7 @@ The dev jar contains no bundled binaries; run Protégé with
 Drop the release jar (which bundles all four platform binaries) into Protégé's
 `plugins/` directory and restart. "rustdl" then appears in Reasoner ▸.
 
-- macOS: `~/Library/Application Support/Protege/plugins/` or `Protege.app/Contents/Java/plugins/`
+- macOS: `~/.Protege/plugins/` or `Protege.app/Contents/Java/plugins/`
 - Linux: `~/.Protege/plugins/` or `<Protege>/plugins/`
 - Windows: `%USERPROFILE%\.Protege\plugins\` or `<Protege>\plugins\`
 

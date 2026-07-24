@@ -1,0 +1,33 @@
+name: Java plugin CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['protege/**', '.github/workflows/java-ci.yml']
+  pull_request:
+    paths: ['protege/**', '.github/workflows/java-ci.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master, pinned
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build a rustdl binary for the smoke test
+        run: cargo build --release --bin rustdl -p owl-dl-cli
+      - name: Build + test the plugin
+        # -Dtest widened to '*Test,*IT': Surefire's default include patterns
+        # (*Test/*Tests/*TestCase) don't match RustdlSmokeIT.java, so a bare
+        # `verify` would silently never run it — this pattern set covers both
+        # the unit tests and the smoke IT in the one surefire pass.
+        run: mvn -B -f protege/pom.xml verify -Dtest='*Test,*IT' -Drustdl.bin="$PWD/target/release/rustdl"

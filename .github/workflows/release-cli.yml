@@ -129,3 +129,59 @@ jobs:
           gh release create "$tag" --title "rustdl ${tag#v}" \
             --notes "Release ${tag}. See CHANGELOG.md for details." || true
           gh release upload "$tag" dist/rustdl-* dist/SHA256SUMS --clobber
+
+  build-plugin:
+    name: Build + attach the Protégé plugin jar
+    needs: build-cli
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: 'cli-*'
+          path: cli-bins
+          merge-multiple: true
+      - name: Stage binaries into plugin resources
+        run: |
+          set -euo pipefail
+          base=protege/src/main/resources/native
+          for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin; do
+            mkdir -p "$base/$triple"
+            cp "cli-bins/rustdl-$triple" "$base/$triple/rustdl"
+            chmod +x "$base/$triple/rustdl"
+          done
+          mkdir -p "$base/x86_64-pc-windows-msvc"
+          cp "cli-bins/rustdl-x86_64-pc-windows-msvc.exe" "$base/x86_64-pc-windows-msvc/rustdl.exe"
+          ls -R "$base"
+      - name: Set plugin version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then ver="${GITHUB_REF_NAME#v}"; else ver="0.0.0-dev"; fi
+          mvn -B -f protege/pom.xml versions:set -DnewVersion="$ver" -DgenerateBackupPoms=false
+      - name: Build the bundle jar
+        # -Dtest widened to '*Test,*IT': Surefire's default include patterns
+        # don't match RustdlSmokeIT.java, so a bare `package` would silently
+        # skip it. With native/ staged and the runner linux-x64, the bundled
+        # linux-x64 binary is what actually runs — exercising the real
+        # bundled path (not just the -Drustdl.bin override), verifying
+        # end-to-end bundling.
+        run: mvn -B -f protege/pom.xml clean package -Dtest='*Test,*IT'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: protege-plugin
+          path: protege/target/rustdl-protege-*.jar
+          if-no-files-found: error
+      - name: Attach to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" --title "rustdl ${tag#v}" \
+            --notes "Release ${tag}. See CHANGELOG.md for details." || true
+          gh release upload "$tag" protege/target/rustdl-protege-*.jar --clobber

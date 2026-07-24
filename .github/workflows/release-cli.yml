@@ -117,6 +117,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}   # publish-cli has no checkout; gh needs the repo explicitly
         run: |
           tag="${GITHUB_REF_NAME}"
           # Idempotent + race-safe with release-python.yml's github-release job,
@@ -180,6 +181,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}   # publish-cli has no checkout; gh needs the repo explicitly
         run: |
           tag="${GITHUB_REF_NAME}"
           gh release create "$tag" --title "rustdl ${tag#v}" \

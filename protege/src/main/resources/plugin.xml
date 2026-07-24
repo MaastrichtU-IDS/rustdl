@@ -1,9 +1,12 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <?eclipse version="3.0"?>
 <plugin>
-   <extension id="RustdlReasonerFactory"
+   <!-- Registers "rustdl" in Protégé's Reasoner menu. The inference_reasonerfactory
+        extension point reads the <name>/<class> CHILD ELEMENTS (as ELK/HermiT do),
+        NOT name=/factoryClass= attributes. <class> is the ProtegeOWLReasonerInfo. -->
+   <extension id="rustdl.reasoner.factory"
               point="org.protege.editor.owl.inference_reasonerfactory">
-      <reasonerFactory name="rustdl"
-                       factoryClass="com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo"/>
+      <name value="rustdl"/>
+      <class value="com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo"/>
    </extension>
 </plugin>

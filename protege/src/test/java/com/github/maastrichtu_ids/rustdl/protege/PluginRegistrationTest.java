@@ -11,8 +11,10 @@ public class PluginRegistrationTest {
             assertNotNull("plugin.xml must be on the classpath", in);
             String xml = new Scanner(in, "UTF-8").useDelimiter("\\A").next();
             assertTrue(xml.contains("org.protege.editor.owl.inference_reasonerfactory"));
-            assertTrue(xml.contains("name=\"rustdl\""));
-            assertTrue(xml.contains("com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo"));
+            // Protégé reads <name value=.../> and <class value=.../> child elements
+            // (as ELK/HermiT do), not name=/factoryClass= attributes.
+            assertTrue(xml.contains("<name value=\"rustdl\""));
+            assertTrue(xml.contains("<class value=\"com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo\""));
         }
     }
 }

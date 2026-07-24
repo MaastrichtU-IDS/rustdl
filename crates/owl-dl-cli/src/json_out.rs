@@ -1,7 +1,7 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
-use owl_dl_reasoner::{Classification, Disjointness, Realization};
+use owl_dl_reasoner::{Classification, Disjointness, PropertyClassification, Realization};
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -137,6 +137,48 @@ pub(crate) fn build_realize_json(r: &Realization) -> RealizeJson {
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         individuals,
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct PropHierSide {
+    pub(crate) equivalent_groups: Vec<Vec<String>>,
+    pub(crate) direct_subsumptions: Vec<[String; 2]>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct PropHierJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) object_properties: PropHierSide,
+    pub(crate) data_properties: PropHierSide,
+}
+
+fn side(c: &PropertyClassification) -> PropHierSide {
+    let mut ds: Vec<[String; 2]> = c
+        .direct_subsumptions()
+        .iter()
+        .map(|(a, b)| [a.clone(), b.clone()])
+        .collect();
+    ds.sort();
+    let mut eg: Vec<Vec<String>> = c.equivalent_groups().to_vec();
+    eg.sort();
+    PropHierSide {
+        equivalent_groups: eg,
+        direct_subsumptions: ds,
+    }
+}
+
+#[must_use]
+pub(crate) fn build_prophier_json(
+    obj: &PropertyClassification,
+    data: &PropertyClassification,
+) -> PropHierJson {
+    PropHierJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: false,
+        object_properties: side(obj),
+        data_properties: side(data),
     }
 }
 

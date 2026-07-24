@@ -50,6 +50,13 @@ fn disjoint_tiny() -> &'static str {
     )
 }
 
+fn prophier_tiny() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/prophier_tiny.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -184,4 +191,32 @@ fn disjoint_json_reports_class_pairs() {
         })
     };
     assert!(has("http://ex/#A", "http://ex/#B"));
+}
+
+#[test]
+fn property_hierarchy_json_reports_object_edges() {
+    let out = rustdl()
+        .args(["property-hierarchy", "--json", prophier_tiny()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["incomplete"], false);
+    let obj_direct = v["object_properties"]["direct_subsumptions"]
+        .as_array()
+        .unwrap();
+    assert!(
+        obj_direct
+            .iter()
+            .any(|p| p[0] == "http://ex/#r" && p[1] == "http://ex/#s")
+    );
+    let data_direct = v["data_properties"]["direct_subsumptions"]
+        .as_array()
+        .unwrap();
+    assert!(
+        data_direct
+            .iter()
+            .any(|p| p[0] == "http://ex/#d1" && p[1] == "http://ex/#d2")
+    );
 }

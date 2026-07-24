@@ -69,6 +69,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Object + data property hierarchies (structural subsumption over
+    /// declared properties). `--json` for tooling.
+    PropertyHierarchy {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
     /// Decide whether a named class is satisfiable in the ontology.
     Sat {
         /// Path to an OWL functional-syntax (.ofn) ontology.
@@ -791,6 +800,28 @@ fn main() -> Result<()> {
             }
             println!("# disjoint data properties");
             for (a, b) in &data {
+                println!("{a}\t{b}");
+            }
+        }
+        Command::PropertyHierarchy { file, json } => {
+            let onto = parse_ofn(&file)?;
+            let obj = owl_dl_reasoner::classify_object_property_hierarchy(&onto)
+                .context("classify_object_property_hierarchy")?;
+            let data = owl_dl_reasoner::classify_data_property_hierarchy(&onto)
+                .context("classify_data_property_hierarchy")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_prophier_json(&obj, &data))?
+                );
+                return Ok(());
+            }
+            println!("# object property hierarchy");
+            for (a, b) in obj.direct_subsumptions() {
+                println!("{a}\t{b}");
+            }
+            println!("# data property hierarchy");
+            for (a, b) in data.direct_subsumptions() {
                 println!("{a}\t{b}");
             }
         }

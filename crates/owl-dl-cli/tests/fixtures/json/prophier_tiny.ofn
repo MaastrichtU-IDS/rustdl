@@ -1,0 +1,5 @@
+Prefix(:=<http://ex/#>)
+Ontology(<http://ex/>
+  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+  Declaration(DataProperty(:d1)) Declaration(DataProperty(:d2))
+  SubObjectPropertyOf(:r :s) SubDataPropertyOf(:d1 :d2))

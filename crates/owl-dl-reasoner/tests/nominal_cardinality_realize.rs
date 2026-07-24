@@ -243,14 +243,21 @@ Ontology(<http://example.org/card>
 /// Runs in BOTH debug and release. It previously carried a
 /// `cfg_attr(debug_assertions, ignore)` because this reproducer's rapid graph
 /// growth tripped a stale-index `debug_assert_eq!` in
-/// `TableauContext::remove_edge_recorded` (issue #38). That bug is now fixed
-/// (the merge re-anchor searches the mirror in-edge by the union-find
-/// representative `y_eff`, not the unresolved snapshot node), so this test also
-/// serves as the debug-build regression guard for #38: before the fix it panics
-/// under `cargo test`'s default (debug) profile; after it, it returns a sound
-/// result. (The separate *tableau completion-graph divergence* finding — fix A
-/// deferred — stays documented by `nominal_first_bounded.rs`'s `#[ignore]`d
-/// `issue35_v4_completion_graph_is_bounded` gate.)
+/// `TableauContext::remove_edge_recorded` (issue #38, fixed: the merge re-anchor
+/// now searches the mirror in-edge by the union-find representative `y_eff`, not
+/// the unresolved snapshot node), so it was un-gated.
+///
+/// It EXERCISES the fixed #38 merge path, but is NOT a deterministic #38 guard:
+/// the offending merge only arises deep in the (deferred-fix-A) unbounded
+/// divergent search and is reached nondeterministically under the parallel
+/// per-pair timeout, so its panic-without-the-fix is timing-dependent (any node
+/// cap that would make it deterministic also cuts the search before the trigger
+/// forms). The *deterministic* backstop for #38 is the `debug_assert_eq!` in
+/// `remove_edge_recorded` itself — it fires in ANY debug test that hits a
+/// mis-indexed merge, across the whole suite, so a regression cannot pass debug
+/// CI silently. See the #38 investigation notes in the ledger. (The separate
+/// *completion-graph divergence* finding — fix A deferred — stays documented by
+/// `nominal_first_bounded.rs`'s `#[ignore]`d `issue35_v4_completion_graph_is_bounded`.)
 #[test]
 fn issue35_v4_realize_smoke_and_correct() {
     let onto = parse(&format!(

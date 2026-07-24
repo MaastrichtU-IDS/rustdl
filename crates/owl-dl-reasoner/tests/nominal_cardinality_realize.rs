@@ -52,7 +52,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::{is_class_satisfiable, is_consistent, is_instance_of};
+use owl_dl_reasoner::{is_class_satisfiable, is_consistent, is_instance_of, realize};
 use std::io::Cursor;
 
 const NS: &str = "http://example.org/card#";
@@ -123,6 +123,32 @@ Ontology(<http://example.org/card>
     assert!(
         !is_instance_of(&onto, &format!("{NS}C"), &format!("{NS}w")).expect("terminates"),
         "w is not entailed C"
+    );
+
+    // Issue #39 regression: `realize` must agree with `is_instance_of`.
+    // `A ⊑ {x,y,z}` + `D` on all of x,y,z ⟹ `A ⊑ D` (sound nominal reasoning),
+    // and `B ≡ A ⊓ …` ⟹ `B ⊑ A ⊑ D`. So `w`'s entailed types are exactly
+    // {A, B, D}, and — since they form the chain `B ⊑ A ⊑ D` — the single
+    // most-specific (Hasse-leaf) type is `B`. Before #38's edge-corruption fix
+    // (v0.3.41) `realize`'s parallel per-pair probe could intermittently drop
+    // `D` from the entailed set; this pins the corrected behaviour.
+    let r = realize(&onto).expect("realize terminates");
+    let w = format!("{NS}w");
+    let entailed = r.entailed_types(&w);
+    for c in ["A", "B", "D"] {
+        assert!(
+            entailed.iter().any(|t| t == &format!("{NS}{c}")),
+            "realize entailed_types(w) must contain {c}; got {entailed:?}"
+        );
+    }
+    assert!(
+        !entailed.iter().any(|t| t == &format!("{NS}C")),
+        "realize entailed_types(w) must NOT contain C; got {entailed:?}"
+    );
+    assert_eq!(
+        r.most_specific_types(&w),
+        &[format!("{NS}B")],
+        "B ⊑ A ⊑ D ⟹ B is the sole most-specific type of w"
     );
 }
 

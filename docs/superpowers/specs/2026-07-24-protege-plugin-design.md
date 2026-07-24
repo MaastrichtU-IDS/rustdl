@@ -163,6 +163,24 @@ same/different individuals, disjoint-classes, complex-class-expression queries.
 macos-aarch64, windows-x86_64}` binaries; runtime extract + invoke; env/pref
 override. Mac-Intel (sunset) uses the override/build path.
 
+## 8a. Tracked upstream enhancements (the gaps the v1 boundary implies)
+
+The v1 "empty/unadvertised" and "dropped construct" boundaries correspond to
+filed rustdl enhancement issues — the plugin degrades gracefully today, and each
+gap closing later automatically enriches the plugin:
+
+- **Expressivity (constructs dropped):** #40 `DisjointUnion`, #41 nominal +
+  cardinality realization, #42 datatype composites / non-string `DataOneOf` /
+  data-cardinality counting, #43 surface silently-dropped axioms.
+- **API surface (methods that return empty in v1):** #44 property hierarchy,
+  #45 property values (`getObject/DataPropertyValues`), #46 same/different
+  individuals, #47 disjointness, #48 complex-class-expression queries.
+
+The §A reasoning-completeness posture (`trust_sat` misses, per-pair-budget /
+`incomplete`, timeout-derived consistency) is not a discrete feature but the
+documented soundness-vs-completeness stance (CLAUDE.md + known-limitation docs);
+the plugin surfaces it via the `incomplete` flag rather than a code change.
+
 ## 9. Risks / open items for the plan
 
 - **rustdl `classify` completeness on the user's ontology.** rustdl is

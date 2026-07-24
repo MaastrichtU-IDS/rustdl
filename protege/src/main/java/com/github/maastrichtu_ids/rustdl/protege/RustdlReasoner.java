@@ -125,6 +125,7 @@ public class RustdlReasoner extends OWLReasonerBase {
         // direct subsumption edges
         for (List<String> edge : orEmpty(classifyResult.direct_subsumptions)) {
             OWLClass sub = clazz(edge.get(0)), sup = clazz(edge.get(1));
+            if (unsatisfiable.contains(sub) || unsatisfiable.contains(sup)) continue; // degenerate ⊥⊑ edge, not a Hasse edge
             directSupers.computeIfAbsent(sub, k -> new HashSet<>()).add(sup);
             directSubs.computeIfAbsent(sup, k -> new HashSet<>()).add(sub);
         }
@@ -145,6 +146,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     private static <T> List<T> orEmpty(List<T> l) { return l == null ? Collections.emptyList() : l; }
 
     private Node<OWLClass> equivNodeOf(OWLClass c) {
+        if (unsatisfiable.contains(c) || c.isOWLNothing()) return bottomNode();
         Node<OWLClass> n = equivNodeByIri.get(c.getIRI().toString());
         return n != null ? n : new OWLClassNode(c);
     }

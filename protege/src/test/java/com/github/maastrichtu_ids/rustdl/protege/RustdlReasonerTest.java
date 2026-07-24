@@ -127,4 +127,38 @@ public class RustdlReasonerTest {
         reasoner.flush();
         assertFalse(reasoner.isPrecomputed(org.semanticweb.owlapi.reasoner.InferenceType.CLASS_HIERARCHY));
     }
+
+    private RustdlReasoner withUnsat() throws Exception {
+        // A ⊑ B (both satisfiable); U unsatisfiable. rustdl emits a phantom [U,A] ⊥⊑ edge.
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/unsat"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = true; c.incomplete = false;
+        c.unsatisfiable = java.util.Arrays.asList("http://ex/#U");
+        c.equivalent_groups = new java.util.ArrayList<>();
+        c.direct_subsumptions = java.util.Arrays.asList(
+            java.util.Arrays.asList("http://ex/#A", "http://ex/#B"),   // genuine Hasse edge
+            java.util.Arrays.asList("http://ex/#U", "http://ex/#A"));  // phantom ⊥⊑ edge
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new java.util.ArrayList<>();
+        return RustdlReasoner.forTest(o, c, r);
+    }
+
+    @Test public void unsatEdgeDoesNotCorruptLeaves() throws Exception {
+        RustdlReasoner reasoner = withUnsat();
+        // A is a genuine leaf: its direct sub is the bottom node (which includes U and owl:Nothing, MERGED into one node)
+        NodeSet<OWLClass> aSubs = reasoner.getSubClasses(cls("A"), true);
+        assertTrue(aSubs.containsEntity(df.getOWLNothing()));
+        assertTrue(aSubs.containsEntity(cls("U")));
+        Node<OWLClass> bottom = null;
+        for (Node<OWLClass> n : aSubs.getNodes()) if (n.contains(df.getOWLNothing())) bottom = n;
+        assertNotNull("A must have the bottom node as a direct sub", bottom);
+        assertTrue("U must be MERGED into the bottom node, not a separate singleton", bottom.contains(cls("U")));
+        // B's genuine sub is A (the phantom edge must not have polluted anything)
+        assertTrue(reasoner.getSubClasses(cls("B"), true).containsEntity(cls("A")));
+        // U (unsatisfiable) is equivalent to owl:Nothing and not satisfiable
+        assertTrue(reasoner.getEquivalentClasses(cls("U")).contains(df.getOWLNothing()));
+        assertFalse(reasoner.isSatisfiable(cls("U")));
+        // U's direct superclass is the real leaf frontier {A}, NOT a fallback to Thing
+        assertTrue(reasoner.getSuperClasses(cls("U"), true).containsEntity(cls("A")));
+        assertFalse(reasoner.getSuperClasses(cls("U"), true).containsEntity(df.getOWLThing()));
+    }
 }

@@ -106,9 +106,16 @@ fn classify_json_reports_equivalent_group() {
         .iter()
         .map(|m| m.as_str().unwrap())
         .collect();
-    assert!(members.contains(&"http://ex/#A"));
-    assert!(members.contains(&"http://ex/#B"));
-    let mut sorted = members.clone();
-    sorted.sort_unstable();
-    assert_eq!(members, sorted, "group members are sorted");
+    // In the fixture, :A is deliberately UNDECLARED: `convert_ontology` sorts
+    // components before interning, and `DeclareClass` sorts first (by IRI), so
+    // declared classes always get byte-ordered ids. Undeclared :A is interned
+    // later via the EquivalentClasses axiom, so the pre-sort group (ascending
+    // class-id order from `Classification::equivalent_classes`) is [B, A];
+    // only the byte-order `group.sort()` in build_classify_json yields [A, B].
+    // Exact equality therefore makes that sort load-bearing.
+    assert_eq!(
+        members,
+        vec!["http://ex/#A", "http://ex/#B"],
+        "group members are byte-sorted"
+    );
 }

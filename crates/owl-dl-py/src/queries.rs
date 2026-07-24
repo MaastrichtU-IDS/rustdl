@@ -112,6 +112,26 @@ pub(crate) fn data_property_hierarchy(
     ))
 }
 
+/// Entailed same-individual equivalence groups (asserted + functional-forced
+/// + entailed). Bounded by a 1s per-pair deadline.
+#[pyfunction]
+pub(crate) fn same_individuals(path: &str) -> PyResult<Vec<Vec<String>>> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::same_individuals(&o, Some(std::time::Duration::from_secs(1)))
+        .map(|s| s.groups().to_vec())
+        .map_err(reason_error_to_py)
+}
+
+/// Entailed different-individual pairs `(a, b)` — `{a} ⊓ {b}` is proven
+/// unsatisfiable. Bounded by a 1s per-pair deadline.
+#[pyfunction]
+pub(crate) fn different_individuals(path: &str) -> PyResult<Vec<(String, String)>> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::different_individuals(&o, Some(std::time::Duration::from_secs(1)))
+        .map(|d| d.pairs().to_vec())
+        .map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_consistent, m)?)?;
     m.add_function(wrap_pyfunction!(is_class_satisfiable, m)?)?;
@@ -124,5 +144,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(disjoint_data_properties, m)?)?;
     m.add_function(wrap_pyfunction!(object_property_hierarchy, m)?)?;
     m.add_function(wrap_pyfunction!(data_property_hierarchy, m)?)?;
+    m.add_function(wrap_pyfunction!(same_individuals, m)?)?;
+    m.add_function(wrap_pyfunction!(different_individuals, m)?)?;
     Ok(())
 }

@@ -175,6 +175,16 @@ def data_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str,
     """(equivalent_groups, direct_subsumptions) for data properties."""
     ...
 
+# ── inferred same/different individuals ─────────────────────────────────────
+
+def same_individuals(path: str) -> list[list[str]]:
+    """Groups of individuals proven equal (asserted + functional-forced + entailed)."""
+    ...
+
+def different_individuals(path: str) -> list[tuple[str, str]]:
+    """Pairs of individuals proven distinct ({a}⊓{b} unsatisfiable)."""
+    ...
+
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:

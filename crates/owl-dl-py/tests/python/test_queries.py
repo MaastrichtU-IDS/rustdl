@@ -65,3 +65,34 @@ def test_object_property_hierarchy_direct_subsumption(tmp_path):
     )
     _equivalent_groups, direct_subsumptions = rustdl.object_property_hierarchy(str(p))
     assert ("http://ex/#r", "http://ex/#s") in direct_subsumptions
+
+
+def test_different_individuals(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+        "  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n"
+        "  DisjointClasses(:A :B)\n"
+        "  ClassAssertion(:A :a) ClassAssertion(:B :b))\n"
+    )
+    pairs = rustdl.different_individuals(str(p))
+    assert ("http://ex/#a", "http://ex/#b") in pairs or ("http://ex/#b", "http://ex/#a") in pairs
+
+
+def test_same_individuals(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(ObjectProperty(:r))\n"
+        "  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n"
+        "  Declaration(NamedIndividual(:c))\n"
+        "  FunctionalObjectProperty(:r)\n"
+        "  ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c))\n"
+    )
+    groups = rustdl.same_individuals(str(p))
+    assert any(
+        "http://ex/#b" in group and "http://ex/#c" in group for group in groups
+    )

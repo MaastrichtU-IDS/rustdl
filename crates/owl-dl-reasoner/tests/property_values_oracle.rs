@@ -11,10 +11,15 @@
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
-use horned_owl::model::RcStr;
+use horned_owl::io::owx::reader::read as read_owx;
+use horned_owl::model::{Component, Individual, ObjectPropertyExpression, RcStr};
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{inferred_data_property_values, inferred_object_property_values};
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::BufReader;
 use std::io::Cursor;
+use std::path::Path;
 
 fn onto(src: &str) -> SetOntology<RcStr> {
     read_ofn(
@@ -104,4 +109,87 @@ fn object_values_transitive_seed_and_honest_incomplete_flag() {
     assert!(!has("http://ex/#c", "http://ex/#r", "http://ex/#b"));
     assert!(!has("http://ex/#c", "http://ex/#r", "http://ex/#a"));
     assert!(v.incomplete());
+}
+
+/// External completeness oracle for `inferred_object_property_values` (issue
+/// #45's FP=0 soundness guard, Task 4.4). Same design as
+/// `materialize_oracle.rs::oracle_edges` / `materialize_matches_hermit_oracle`:
+/// the oracle is generated offline by `docker/robot/property-oracle.sh`
+/// (ROBOT + embedded `HermiT`) and committed as `pv-materialized.owx`, so this
+/// test needs no docker at run time.
+///
+/// Regenerate after changing the fixture:
+///   bash docker/robot/property-oracle.sh \
+///     crates/owl-dl-reasoner/tests/fixtures/property_values/pv.ofn \
+///     crates/owl-dl-reasoner/tests/fixtures/property_values/pv-materialized.owx
+const TOP_OBJECT_PROPERTY: &str = "http://www.w3.org/2002/07/owl#topObjectProperty";
+const BOTTOM_OBJECT_PROPERTY: &str = "http://www.w3.org/2002/07/owl#bottomObjectProperty";
+
+type Triples = BTreeSet<(String, String, String)>;
+
+/// `HermiT`-inferred object-property assertions between NAMED individuals from
+/// the committed oracle (top/bottom filtered, matching
+/// `inferred_object_property_values`'s scope).
+fn oracle_object_edges(path: &Path) -> Triples {
+    let file = File::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut reader = BufReader::new(file);
+    let (onto, _): (SetOntology<RcStr>, _) = read_owx(&mut reader, ParserConfiguration::default())
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let mut set = Triples::new();
+    for ax in &onto {
+        if let Component::ObjectPropertyAssertion(opa) = &ax.component
+            && let (
+                ObjectPropertyExpression::ObjectProperty(p),
+                Individual::Named(s),
+                Individual::Named(t),
+            ) = (&opa.ope, &opa.from, &opa.to)
+        {
+            let prop = p.0.to_string();
+            if prop == TOP_OBJECT_PROPERTY || prop == BOTTOM_OBJECT_PROPERTY {
+                continue;
+            }
+            set.insert((s.0.to_string(), prop, t.0.to_string()));
+        }
+    }
+    set
+}
+
+/// FP (HARD, UNCONDITIONAL): `inferred_object_property_values` must never emit
+/// a triple `HermiT` does not entail — this is the issue #45 soundness
+/// guarantee and this assertion must never be weakened. MISSED (entailed
+/// triples the bounded extension does not surface) is only asserted empty
+/// when the result reports itself complete (`!incomplete()`); otherwise it is
+/// a documented, honestly-flagged sound under-approximation.
+#[test]
+fn object_property_values_matches_hermit_oracle() {
+    let dir = Path::new("tests/fixtures/property_values");
+    let file = File::open(dir.join("pv.ofn")).expect("fixture");
+    let mut reader = BufReader::new(file);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse fixture");
+
+    let result = inferred_object_property_values(&onto, None).expect("inferred object values");
+    let got: Triples = result.triples().iter().cloned().collect();
+    let oracle = oracle_object_edges(&dir.join("pv-materialized.owx"));
+
+    let missed: Vec<_> = oracle.difference(&got).collect();
+    let fp: Vec<_> = got.difference(&oracle).collect();
+
+    assert!(
+        fp.is_empty(),
+        "FP — inferred_object_property_values returns, HermiT does not: {fp:?}"
+    );
+    if result.incomplete() {
+        if !missed.is_empty() {
+            eprintln!(
+                "MISSED (sound under-approx, incomplete()=true) — HermiT infers, \
+                 inferred_object_property_values omits: {missed:?}"
+            );
+        }
+    } else {
+        assert!(
+            missed.is_empty(),
+            "MISSED — HermiT infers, inferred_object_property_values omits: {missed:?}"
+        );
+    }
 }

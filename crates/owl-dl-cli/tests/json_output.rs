@@ -15,6 +15,27 @@ fn tiny_consistent() -> &'static str {
     )
 }
 
+fn tiny_inconsistent() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/inconsistent_tiny.ofn"
+    )
+}
+
+fn tiny_abox() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/abox_tiny.ofn"
+    )
+}
+
+fn equivalent_pair() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/equivalent_pair.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -26,4 +47,68 @@ fn classify_json_parses_and_reports_consistent() {
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["consistent"], true);
     assert!(v["direct_subsumptions"].is_array());
+}
+
+#[test]
+fn consistent_json_reports_inconsistent() {
+    let out = rustdl()
+        .args(["consistent", "--json", tiny_inconsistent()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["consistent"], false);
+}
+
+#[test]
+fn realize_json_reports_types() {
+    let out = rustdl()
+        .args(["realize", "--json", tiny_abox()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    let inds = v["individuals"].as_array().unwrap();
+    let x = inds
+        .iter()
+        .find(|i| i["iri"] == "http://ex/#x")
+        .expect("x realized");
+    let types: Vec<&str> = x["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert!(types.contains(&"http://ex/#A"));
+    assert!(types.contains(&"http://ex/#B"));
+}
+
+#[test]
+fn classify_json_reports_equivalent_group() {
+    let out = rustdl()
+        .args(["classify", "--json", equivalent_pair()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["consistent"], true);
+    let groups = v["equivalent_groups"].as_array().unwrap();
+    let group = groups
+        .iter()
+        .find(|g| g.as_array().unwrap().iter().any(|m| m == "http://ex/#A"))
+        .expect("a group containing A");
+    let members: Vec<&str> = group
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap())
+        .collect();
+    assert!(members.contains(&"http://ex/#A"));
+    assert!(members.contains(&"http://ex/#B"));
+    let mut sorted = members.clone();
+    sorted.sort_unstable();
+    assert_eq!(members, sorted, "group members are sorted");
 }

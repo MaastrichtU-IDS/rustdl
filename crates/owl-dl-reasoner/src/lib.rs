@@ -51,6 +51,7 @@ pub mod laconic;
 mod model_cache;
 pub mod oracle_diff;
 mod property_classify;
+mod property_values;
 mod realize;
 pub mod repair;
 mod union_find;
@@ -71,6 +72,10 @@ pub use individuals::{
 pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
 pub use property_classify::{
     PropertyClassification, classify_data_property_hierarchy, classify_object_property_hierarchy,
+};
+pub use property_values::{
+    DataPropertyValues, ObjectPropertyValues, inferred_data_property_values,
+    inferred_object_property_values,
 };
 pub use realize::{
     Realization, instances_of, instances_of_internal, instances_of_saturation_only,

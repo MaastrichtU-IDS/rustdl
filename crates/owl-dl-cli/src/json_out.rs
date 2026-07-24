@@ -1,7 +1,7 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
-use owl_dl_reasoner::{Classification, Realization};
+use owl_dl_reasoner::{Classification, Disjointness, Realization};
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -33,6 +33,15 @@ pub(crate) struct IndividualTypesJson {
 pub(crate) struct RealizeJson {
     pub(crate) schema_version: u32,
     pub(crate) individuals: Vec<IndividualTypesJson>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct DisjointJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) disjoint_classes: Vec<[String; 2]>,
+    pub(crate) disjoint_object_properties: Vec<[String; 2]>,
+    pub(crate) disjoint_data_properties: Vec<[String; 2]>,
 }
 
 #[must_use]
@@ -128,6 +137,32 @@ pub(crate) fn build_realize_json(r: &Realization) -> RealizeJson {
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         individuals,
+    }
+}
+
+#[must_use]
+pub(crate) fn build_disjoint_json(
+    classes: &Disjointness,
+    obj: Vec<(String, String)>,
+    data: Vec<(String, String)>,
+) -> DisjointJson {
+    let to_arr = |v: Vec<(String, String)>| {
+        let mut a: Vec<[String; 2]> = v.into_iter().map(|(x, y)| [x, y]).collect();
+        a.sort();
+        a
+    };
+    let mut dc: Vec<[String; 2]> = classes
+        .pairs()
+        .iter()
+        .map(|(x, y)| [x.clone(), y.clone()])
+        .collect();
+    dc.sort();
+    DisjointJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: classes.incomplete(),
+        disjoint_classes: dc,
+        disjoint_object_properties: to_arr(obj),
+        disjoint_data_properties: to_arr(data),
     }
 }
 

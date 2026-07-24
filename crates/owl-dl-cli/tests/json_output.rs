@@ -43,6 +43,13 @@ fn unsat_pair() -> &'static str {
     )
 }
 
+fn disjoint_tiny() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/disjoint_tiny.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -158,4 +165,23 @@ fn classify_json_excludes_unsat_from_equivalent_groups() {
             );
         }
     }
+}
+
+#[test]
+fn disjoint_json_reports_class_pairs() {
+    let out = rustdl()
+        .args(["disjoint", "--json", disjoint_tiny()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    let dc = v["disjoint_classes"].as_array().unwrap();
+    let has = |x: &str, y: &str| {
+        dc.iter().any(|p| {
+            let a = p.as_array().unwrap();
+            (a[0] == x && a[1] == y) || (a[0] == y && a[1] == x)
+        })
+    };
+    assert!(has("http://ex/#A", "http://ex/#B"));
 }

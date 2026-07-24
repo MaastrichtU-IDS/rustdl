@@ -57,6 +57,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Inferred disjointness: disjoint class pairs (entailment) + disjoint
+    /// object/data property pairs (structural). `--json` for tooling.
+    Disjoint {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Per-pair `C ⊓ D` probe deadline in ms (0 = unbounded). Default 1000.
+        #[arg(long, default_value_t = 1000)]
+        pair_timeout_ms: u64,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
     /// Decide whether a named class is satisfiable in the ontology.
     Sat {
         /// Path to an OWL functional-syntax (.ofn) ontology.
@@ -740,6 +752,47 @@ fn main() -> Result<()> {
                     "inconsistent"
                 }
             );
+        }
+        Command::Disjoint {
+            file,
+            pair_timeout_ms,
+            json,
+        } => {
+            let onto = parse_ofn(&file)?;
+            let deadline =
+                (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            let classes =
+                owl_dl_reasoner::disjoint_classes(&onto, deadline).context("disjoint_classes")?;
+            let obj = owl_dl_reasoner::disjoint_object_properties(&onto)
+                .context("disjoint_object_properties")?;
+            let data = owl_dl_reasoner::disjoint_data_properties(&onto)
+                .context("disjoint_data_properties")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_disjoint_json(
+                        &classes, obj, data
+                    ))?
+                );
+                return Ok(());
+            }
+            println!("# disjoint classes");
+            for (a, b) in classes.pairs() {
+                println!("{a}\t{b}");
+            }
+            if classes.incomplete() {
+                eprintln!(
+                    "warning: disjointness incomplete (budget/fragment) — sound under-approximation"
+                );
+            }
+            println!("# disjoint object properties");
+            for (a, b) in &obj {
+                println!("{a}\t{b}");
+            }
+            println!("# disjoint data properties");
+            for (a, b) in &data {
+                println!("{a}\t{b}");
+            }
         }
         Command::Sat { file, class_iri } => {
             let onto = parse_ofn(&file)?;

@@ -44,6 +44,7 @@ mod abox_check;
 pub mod abox_saturation;
 mod classify;
 pub mod diagnose;
+mod disjointness;
 pub mod justify;
 pub mod laconic;
 mod model_cache;
@@ -59,6 +60,7 @@ pub use classify::{
     classify_with_global_deadline, classify_with_timeout,
 };
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
+pub use disjointness::{Disjointness, disjoint_classes};
 pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
 pub use realize::{
     Realization, instances_of, instances_of_internal, instances_of_saturation_only,
@@ -4169,9 +4171,9 @@ pub(crate) struct PreparedOntology {
     pub(crate) pool: ConceptPool,
     /// IRI ↔ id vocabulary, cloned from the input `InternalOntology` before
     /// its `concepts` are moved into `pool`. Lets downstream query surfaces
-    /// (e.g. #46/#47) resolve named classes/individuals by IRI. Phase-0
-    /// scaffolding: not yet read outside tests, wired up by later tasks.
-    #[allow(dead_code)]
+    /// resolve named classes/individuals by IRI — e.g. [`crate::disjoint_classes`]
+    /// (#47) resolves each candidate class IRI back to a [`owl_dl_core::ir::ClassId`]
+    /// here.
     pub(crate) vocabulary: owl_dl_core::vocab::Vocabulary,
     tbox: AbsorbedTBox,
     pub(crate) hierarchy: RoleHierarchy,
@@ -4783,10 +4785,8 @@ impl PreparedOntology {
 
     /// `Some(true)` iff `a ⊓ b` is unsatisfiable (the two named classes are
     /// entailed disjoint); `Some(false)` if satisfiable; `None` on timeout.
-    /// Sound: only unsat ⇒ disjoint (never a false positive). Phase-0
-    /// scaffolding: not yet called outside tests, wired up by later tasks
-    /// (#47 disjointness query).
-    #[allow(dead_code)]
+    /// Sound: only unsat ⇒ disjoint (never a false positive). Consumed by
+    /// [`crate::disjoint_classes`] (#47 disjointness query).
     pub(crate) fn pair_disjoint_with_deadline(
         &self,
         a: owl_dl_core::ir::ClassId,

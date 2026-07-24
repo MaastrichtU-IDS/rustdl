@@ -1,0 +1,4 @@
+{ "schema_version": 1, "consistent": true, "incomplete": true,
+  "unsatisfiable": ["http://ex/#Bad"],
+  "equivalent_groups": [],
+  "direct_subsumptions": [["http://ex/#Sub", "http://ex/#Sup"]] }

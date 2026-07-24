@@ -1,0 +1,3 @@
+{ "schema_version": 1,
+  "individuals": [ { "iri": "http://ex/#i", "types": ["http://ex/#A","http://ex/#C"],
+                     "direct_types": ["http://ex/#A"] } ] }

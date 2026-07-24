@@ -1,0 +1,4 @@
+{ "schema_version": 1, "consistent": true, "incomplete": false,
+  "unsatisfiable": [],
+  "equivalent_groups": [["http://ex/#A", "http://ex/#B"]],
+  "direct_subsumptions": [["http://ex/#A", "http://ex/#C"]] }

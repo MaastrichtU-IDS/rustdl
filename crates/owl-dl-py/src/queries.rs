@@ -60,6 +60,30 @@ fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<St
         .collect()
 }
 
+/// Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
+/// unsatisfiable. Bounded by a 1s per-pair deadline.
+#[pyfunction]
+pub(crate) fn disjoint_classes(path: &str) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::disjoint_classes(&ontology, Some(std::time::Duration::from_secs(1)))
+        .map(|d| d.pairs().to_vec())
+        .map_err(reason_error_to_py)
+}
+
+/// Told-disjoint object property pairs `(a, b)`.
+#[pyfunction]
+pub(crate) fn disjoint_object_properties(path: &str) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::disjoint_object_properties(&ontology).map_err(reason_error_to_py)
+}
+
+/// Told-disjoint data property pairs `(a, b)`.
+#[pyfunction]
+pub(crate) fn disjoint_data_properties(path: &str) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::disjoint_data_properties(&ontology).map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_consistent, m)?)?;
     m.add_function(wrap_pyfunction!(is_class_satisfiable, m)?)?;
@@ -67,5 +91,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_instance_of, m)?)?;
     m.add_function(wrap_pyfunction!(instances_of, m)?)?;
     m.add_function(wrap_pyfunction!(realize, m)?)?;
+    m.add_function(wrap_pyfunction!(disjoint_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(disjoint_object_properties, m)?)?;
+    m.add_function(wrap_pyfunction!(disjoint_data_properties, m)?)?;
     Ok(())
 }

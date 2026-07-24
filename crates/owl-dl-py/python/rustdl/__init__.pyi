@@ -151,6 +151,20 @@ def realize(path: str) -> dict[str, list[str]]:
     """Map each named individual to its most-specific entailed types."""
     ...
 
+# ── inferred disjointness ───────────────────────────────────────────────────
+
+def disjoint_classes(path: str) -> list[tuple[str, str]]:
+    """Entailed disjoint named-class pairs (C ⊓ D unsatisfiable)."""
+    ...
+
+def disjoint_object_properties(path: str) -> list[tuple[str, str]]:
+    """Told-disjoint object property pairs."""
+    ...
+
+def disjoint_data_properties(path: str) -> list[tuple[str, str]]:
+    """Told-disjoint data property pairs."""
+    ...
+
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:

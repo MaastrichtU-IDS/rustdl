@@ -41,3 +41,15 @@ def test_realize_returns_dict(fixtures_dir):
     assert isinstance(realization, dict)
     assert "http://t/a" in realization
     assert isinstance(realization["http://t/a"], list)
+
+
+def test_disjoint_classes(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+        "  DisjointClasses(:A :B))\n"
+    )
+    pairs = rustdl.disjoint_classes(str(p))
+    assert ("http://ex/#A", "http://ex/#B") in pairs or ("http://ex/#B", "http://ex/#A") in pairs

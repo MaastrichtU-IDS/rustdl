@@ -76,6 +76,10 @@
             <Embed-Dependency>gson;scope=compile;inline=false</Embed-Dependency>
             <Embed-Transitive>false</Embed-Transitive>
             <Include-Resource>{maven-resources}, plugin.xml=src/main/resources/plugin.xml</Include-Resource>
+            <!-- Protégé auto-update: the built jar advertises where to find the
+                 update descriptor. The release workflow keeps protege/update.properties
+                 on main current (version + download URL) after each tag. -->
+            <Update-Url>https://raw.githubusercontent.com/MaastrichtU-IDS/rustdl/main/protege/update.properties</Update-Url>
           </instructions>
         </configuration>
       </plugin>

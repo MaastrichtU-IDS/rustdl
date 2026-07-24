@@ -7,6 +7,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 /** Spawns `rustdl <subcmd> --json <ofn>`, enforces a timeout, parses stdout. Fail-closed. */
@@ -59,30 +66,68 @@ public final class RustdlProcess {
 
     private static String run(String subcommand, Path ofn, long timeoutSec) throws IOException {
         Path bin = RustdlBinary.resolve();
-        ProcessBuilder pb = new ProcessBuilder(
-            bin.toString(), subcommand, "--json", ofn.toString());
+        return runCommand(
+            Arrays.asList(bin.toString(), subcommand, "--json", ofn.toString()),
+            subcommand, timeoutSec);
+    }
+
+    /**
+     * Runs {@code command}, draining stdout/stderr concurrently on daemon threads so a
+     * child that hangs before writing/closing either stream cannot block the JVM, and
+     * enforcing {@code timeoutSec} via {@code waitFor} independently of those reads
+     * (draining alone cannot observe a timeout — a hung child never triggers EOF).
+     */
+    static String runCommand(List<String> command, String label, long timeoutSec) throws IOException {
+        ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false);
         Process proc = pb.start();
-        String out = readAll(proc.getInputStream());
-        String err = readAll(proc.getErrorStream());
-        boolean finished;
+
+        ExecutorService pool = Executors.newFixedThreadPool(2, DAEMON_THREAD_FACTORY);
         try {
-            finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            proc.destroyForcibly();
-            Thread.currentThread().interrupt();
-            throw new IOException("rustdl " + subcommand + " interrupted", e);
+            Future<String> outF = pool.submit(() -> readAll(proc.getInputStream()));
+            Future<String> errF = pool.submit(() -> readAll(proc.getErrorStream()));
+
+            boolean finished;
+            try {
+                finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                proc.destroyForcibly();
+                Thread.currentThread().interrupt();
+                throw new IOException("rustdl " + label + " interrupted", e);
+            }
+            if (!finished) {
+                proc.destroyForcibly();
+                throw new IOException("rustdl " + label + " timed out after " + timeoutSec + "s");
+            }
+
+            String out;
+            String err;
+            try {
+                out = outF.get();
+                err = errF.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("rustdl " + label + " interrupted while reading output", e);
+            } catch (ExecutionException e) {
+                throw new IOException("rustdl " + label + " failed reading output: "
+                    + e.getCause(), e);
+            }
+
+            int code = proc.exitValue();
+            if (code != 0) {
+                throw new IOException("rustdl " + label + " exited " + code + ": " + err.trim());
+            }
+            return out;
+        } finally {
+            pool.shutdownNow();
         }
-        if (!finished) {
-            proc.destroyForcibly();
-            throw new IOException("rustdl " + subcommand + " timed out after " + timeoutSec + "s");
-        }
-        int code = proc.exitValue();
-        if (code != 0) {
-            throw new IOException("rustdl " + subcommand + " exited " + code + ": " + err.trim());
-        }
-        return out;
     }
+
+    private static final ThreadFactory DAEMON_THREAD_FACTORY = r -> {
+        Thread t = new Thread(r, "rustdl-stream-drain");
+        t.setDaemon(true);
+        return t;
+    };
 
     private static String readAll(InputStream in) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();

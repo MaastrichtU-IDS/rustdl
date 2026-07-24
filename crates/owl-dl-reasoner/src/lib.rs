@@ -4892,10 +4892,9 @@ impl PreparedOntology {
     /// `None` = no verdict within `deadline` (or `None` for unbounded).
     ///
     /// Downstream consumers: #46 same-individuals (`a=b` iff
-    /// `KB ∪ {a≠b}` is inconsistent) and #45 property values (`R(a,b)` iff
-    /// `KB ∪ {¬R(a,b)}` is inconsistent). Phase-0 scaffolding: not yet called
-    /// outside tests, wired up by those later tasks.
-    #[allow(dead_code)]
+    /// `KB ∪ {a≠b}` is inconsistent, [`crate::individuals`]) and #45 property
+    /// values (`R(a,b)` iff `KB ∪ {¬R(a,b)}` is inconsistent,
+    /// [`crate::property_values`]) both call this in production.
     pub(crate) fn consistent_with_extra(
         &self,
         extra_distinct: &[(IndividualId, IndividualId)],

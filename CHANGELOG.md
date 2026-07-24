@@ -4,6 +4,23 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-07-24
+
+### Fixed
+
+- **Protégé plugin now appears in the reasoner menu.** The v0.4.0 plugin jar's
+  `plugin.xml` used a `<reasonerFactory name=.. factoryClass=../>` element, but
+  Protégé's `org.protege.editor.owl.inference_reasonerfactory` extension point
+  reads `<name value=../>` and `<class value=../>` **child elements** (as ELK and
+  HermiT do). With the wrong schema Protégé loaded a null class name, threw an
+  NPE, and dropped rustdl from the reasoner list. Verified in Protégé 5.6.9.
+- gson is now embedded as a nested jar (`inline=false`, matching the ELK/km
+  packaging) rather than unpacked, so no stray `module-info.class` lands loose
+  in the OSGi bundle.
+
+_No Rust/reasoner changes; this release only corrects the Protégé plugin
+packaging (the wheels and CLI binaries are identical to 0.4.0)._
+
 ## [0.4.0] — 2026-07-24
 
 ### Added

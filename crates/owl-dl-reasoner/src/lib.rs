@@ -45,6 +45,7 @@ pub mod abox_saturation;
 mod classify;
 pub mod diagnose;
 mod disjointness;
+mod individuals;
 pub mod justify;
 pub mod laconic;
 mod model_cache;
@@ -63,6 +64,9 @@ pub use classify::{
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
 pub use disjointness::{
     Disjointness, disjoint_classes, disjoint_data_properties, disjoint_object_properties,
+};
+pub use individuals::{
+    DifferentIndividuals, SameIndividuals, different_individuals, same_individuals,
 };
 pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
 pub use property_classify::{
@@ -4811,6 +4815,30 @@ impl PreparedOntology {
         Ok(sat.map(|s| !s)) // unsat ⇒ disjoint
     }
 
+    /// `Some(true)` iff `{a} ⊓ {b}` is unsatisfiable (the two named
+    /// individuals are entailed distinct — genuinely PROVEN, not merely
+    /// assumed under a Unique Name Assumption); `Some(false)` if
+    /// satisfiable; `None` on timeout. Sound: only unsat ⇒ distinct (never
+    /// a false positive). Consumed by [`crate::different_individuals`]
+    /// (#46 same/different-individuals query).
+    pub(crate) fn pair_individuals_disjoint_with_deadline(
+        &self,
+        a: IndividualId,
+        b: IndividualId,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Option<bool>, ReasonError> {
+        let build_test_concept = |pool: &mut ConceptPool| {
+            let na = pool.nominal(a);
+            let nb = pool.nominal(b);
+            pool.and([na, nb])
+        };
+        let sat = match deadline {
+            Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
+            None => Some(self.decide(build_test_concept)?),
+        };
+        Ok(sat.map(|s| !s)) // {a}⊓{b} unsat ⇒ a≠b
+    }
+
     /// Lever A: like [`Self::decide_with_deadline`], but for the classification
     /// pairwise subsumption loop only — skips the `ABox` seed when it is provably
     /// irrelevant (`abox_irrelevant_to_classify`). Same scoping caveat as
@@ -5781,6 +5809,41 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         assert_eq!(
             prepared
                 .pair_disjoint_with_deadline(a, a, None)
+                .expect("decide succeeds"),
+            Some(false)
+        );
+    }
+
+    /// Task 3.1 Step 1: `PreparedOntology::pair_individuals_disjoint_with_deadline`
+    /// must return `Some(true)` for a told-`DifferentIndividuals` pair
+    /// (`{a}⊓{b}` unsatisfiable) and `Some(false)` for a self-pair (never a
+    /// false positive).
+    #[test]
+    fn pair_individuals_disjoint_detects_told_different() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            DifferentIndividuals(:a :b))",
+        );
+        let a = internal
+            .vocabulary
+            .individual_id("http://ex/#a")
+            .expect("a is declared");
+        let b = internal
+            .vocabulary
+            .individual_id("http://ex/#b")
+            .expect("b is declared");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        assert_eq!(
+            prepared
+                .pair_individuals_disjoint_with_deadline(a, b, None)
+                .expect("decide succeeds"),
+            Some(true)
+        );
+        assert_eq!(
+            prepared
+                .pair_individuals_disjoint_with_deadline(a, a, None)
                 .expect("decide succeeds"),
             Some(false)
         );

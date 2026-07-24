@@ -78,6 +78,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Inferred individual (in)equality: entailed same-individual groups
+    /// (`same_individuals`) + entailed different-individual pairs
+    /// (`different_individuals`). `--json` for tooling.
+    Individuals {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Per-pair probe deadline in ms (0 = unbounded). Default 1000.
+        #[arg(long, default_value_t = 1000)]
+        pair_timeout_ms: u64,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
     /// Decide whether a named class is satisfiable in the ontology.
     Sat {
         /// Path to an OWL functional-syntax (.ofn) ontology.
@@ -801,6 +814,41 @@ fn main() -> Result<()> {
             println!("# disjoint data properties");
             for (a, b) in &data {
                 println!("{a}\t{b}");
+            }
+        }
+        Command::Individuals {
+            file,
+            pair_timeout_ms,
+            json,
+        } => {
+            let onto = parse_ofn(&file)?;
+            let deadline =
+                (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            let same =
+                owl_dl_reasoner::same_individuals(&onto, deadline).context("same_individuals")?;
+            let different = owl_dl_reasoner::different_individuals(&onto, deadline)
+                .context("different_individuals")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_individuals_json(
+                        &same, &different
+                    ))?
+                );
+                return Ok(());
+            }
+            println!("# same individuals");
+            for group in same.groups() {
+                println!("{}", group.join("\t"));
+            }
+            println!("# different individuals");
+            for (a, b) in different.pairs() {
+                println!("{a}\t{b}");
+            }
+            if same.incomplete() || different.incomplete() {
+                eprintln!(
+                    "warning: individuals incomplete (budget/fragment) — sound under-approximation"
+                );
             }
         }
         Command::PropertyHierarchy { file, json } => {

@@ -1,7 +1,10 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
-use owl_dl_reasoner::{Classification, Disjointness, PropertyClassification, Realization};
+use owl_dl_reasoner::{
+    Classification, DifferentIndividuals, Disjointness, PropertyClassification, Realization,
+    SameIndividuals,
+};
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -205,6 +208,45 @@ pub(crate) fn build_disjoint_json(
         disjoint_classes: dc,
         disjoint_object_properties: to_arr(obj),
         disjoint_data_properties: to_arr(data),
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct IndividualsJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) same_groups: Vec<Vec<String>>,
+    pub(crate) different_pairs: Vec<[String; 2]>,
+}
+
+#[must_use]
+pub(crate) fn build_individuals_json(
+    same: &SameIndividuals,
+    different: &DifferentIndividuals,
+) -> IndividualsJson {
+    let mut same_groups: Vec<Vec<String>> = same
+        .groups()
+        .iter()
+        .map(|g| {
+            let mut g = g.clone();
+            g.sort();
+            g
+        })
+        .collect();
+    same_groups.sort();
+
+    let mut different_pairs: Vec<[String; 2]> = different
+        .pairs()
+        .iter()
+        .map(|(a, b)| [a.clone(), b.clone()])
+        .collect();
+    different_pairs.sort();
+
+    IndividualsJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: same.incomplete() || different.incomplete(),
+        same_groups,
+        different_pairs,
     }
 }
 

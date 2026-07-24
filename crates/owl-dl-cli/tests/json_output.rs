@@ -57,6 +57,13 @@ fn prophier_tiny() -> &'static str {
     )
 }
 
+fn individuals_tiny() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/individuals_tiny.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -219,4 +226,23 @@ fn property_hierarchy_json_reports_object_edges() {
             .iter()
             .any(|p| p[0] == "http://ex/#d1" && p[1] == "http://ex/#d2")
     );
+}
+
+#[test]
+fn individuals_json_reports_different_pairs() {
+    let out = rustdl()
+        .args(["individuals", "--json", individuals_tiny()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    let different = v["different_pairs"].as_array().unwrap();
+    let has = |x: &str, y: &str| {
+        different.iter().any(|p| {
+            let a = p.as_array().unwrap();
+            (a[0] == x && a[1] == y) || (a[0] == y && a[1] == x)
+        })
+    };
+    assert!(has("http://ex/#a", "http://ex/#b"));
 }

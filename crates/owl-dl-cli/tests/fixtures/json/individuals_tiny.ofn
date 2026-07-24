@@ -1,0 +1,5 @@
+Prefix(:=<http://ex/#>)
+Ontology(<http://ex/>
+  Declaration(Class(:A)) Declaration(Class(:B))
+  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+  DisjointClasses(:A :B) ClassAssertion(:A :a) ClassAssertion(:B :b))

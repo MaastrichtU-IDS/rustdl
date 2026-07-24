@@ -75,4 +75,38 @@ public class RustdlProcessTest {
             "test", 30);
         assertEquals("DONE", out);
     }
+
+    /**
+     * buildClassifyCommand resolves the rustdl binary path via RustdlBinary.resolve(),
+     * which (absent a bundled binary in this dev/test jar) requires -Drustdl.bin to
+     * point at an existing regular file. Any regular file works for this purely
+     * command-list-shape assertion, so point it at a test resource and restore the
+     * property afterward so this test doesn't leak state to others.
+     */
+    @Test
+    public void classifyCommandIncludesPairTimeoutWhenPositive() throws Exception {
+        String prev = System.getProperty("rustdl.bin");
+        Path fakeBin = Paths.get(getClass().getResource("/json/classify.json").toURI());
+        System.setProperty("rustdl.bin", fakeBin.toString());
+        try {
+            java.util.List<String> cmd = RustdlProcess.buildClassifyCommand(Paths.get("ont.ofn"), 10000);
+            assertTrue(cmd.contains("--pair-timeout-ms"));
+            assertTrue(cmd.contains("10000"));
+        } finally {
+            if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
+        }
+    }
+
+    @Test
+    public void classifyCommandOmitsPairTimeoutWhenZero() throws Exception {
+        String prev = System.getProperty("rustdl.bin");
+        Path fakeBin = Paths.get(getClass().getResource("/json/classify.json").toURI());
+        System.setProperty("rustdl.bin", fakeBin.toString());
+        try {
+            java.util.List<String> cmd = RustdlProcess.buildClassifyCommand(Paths.get("ont.ofn"), 0);
+            assertFalse(cmd.contains("--pair-timeout-ms"));
+        } finally {
+            if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
+        }
+    }
 }

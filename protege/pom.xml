@@ -66,6 +66,7 @@
             <Bundle-Activator>org.protege.editor.core.plugin.DefaultPluginActivator</Bundle-Activator>
             <Export-Package>com.github.maastrichtu_ids.rustdl.protege;version="${project.version}"</Export-Package>
             <Import-Package>
+              sun.misc;resolution:=optional,
               org.protege.editor.core.*,
               org.protege.editor.owl.*,
               org.semanticweb.owlapi.*,

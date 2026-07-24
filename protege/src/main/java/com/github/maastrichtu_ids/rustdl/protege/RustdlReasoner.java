@@ -15,6 +15,7 @@ public class RustdlReasoner extends OWLReasonerBase {
 
     private final OWLDataFactory df;
     private final long timeoutSec;
+    private final long pairTimeoutMs;
 
     // Cache, populated by precompute (or injected in tests).
     private RustdlJson.ClassifyJson classifyResult;
@@ -33,6 +34,7 @@ public class RustdlReasoner extends OWLReasonerBase {
         super(rootOntology, config, mode);
         this.df = rootOntology.getOWLOntologyManager().getOWLDataFactory();
         this.timeoutSec = resolveTimeout(config);
+        this.pairTimeoutMs = resolvePairTimeoutMs();
     }
 
     /** Test seam: inject canned results, skip the subprocess. */
@@ -50,6 +52,13 @@ public class RustdlReasoner extends OWLReasonerBase {
         if (p == null || p.isEmpty()) p = System.getenv("RUSTDL_TIMEOUT_SECONDS");
         if (p != null && !p.isEmpty()) try { return Long.parseLong(p); } catch (NumberFormatException ignored) {}
         return 600L;
+    }
+
+    private static long resolvePairTimeoutMs() {
+        String p = System.getProperty("rustdl.pair.timeout.ms");
+        if (p == null || p.isEmpty()) p = System.getenv("RUSTDL_PAIR_TIMEOUT_MS");
+        if (p != null && !p.isEmpty()) try { return Long.parseLong(p); } catch (NumberFormatException ignored) {}
+        return 10000L;
     }
 
     // ---- identity ----
@@ -74,8 +83,11 @@ public class RustdlReasoner extends OWLReasonerBase {
         try {
             ofn = Files.createTempFile("rustdl-", ".ofn");
             FlattenedOntology.writeOfn(getRootOntology(), ofn);
-            if (wantHierarchy && classifyResult == null) {
-                classifyResult = RustdlProcess.classify(ofn, timeoutSec);
+            // Classify runs whenever EITHER type is requested: realize's consistency
+            // gate below needs classifyResult, and rustdl's realize errors on an
+            // inconsistent KB, so we must know consistency before ever calling it.
+            if ((wantHierarchy || wantAssertions) && classifyResult == null) {
+                classifyResult = RustdlProcess.classify(ofn, timeoutSec, pairTimeoutMs);
                 if (classifyResult.incomplete) {
                     LOG.warning("rustdl reports an INCOMPLETE classification (some class pairs timed out); "
                         + "the hierarchy is a sound under-approximation.");
@@ -83,6 +95,7 @@ public class RustdlReasoner extends OWLReasonerBase {
                 rebuildIndices();
             }
             if (wantAssertions && realizeResult == null
+                    && classifyResult != null && classifyResult.consistent
                     && !getRootOntology().getIndividualsInSignature(true).isEmpty()) {
                 realizeResult = RustdlProcess.realize(ofn, timeoutSec);
             }
@@ -255,7 +268,7 @@ public class RustdlReasoner extends OWLReasonerBase {
 
     // ---- individuals ----
     @Override public NodeSet<OWLClass> getTypes(OWLNamedIndividual ind, boolean direct) {
-        ensureRealized(); throwIfInconsistent();
+        ensureClassified(); throwIfInconsistent(); ensureRealized();
         if (realizeResult == null) return new OWLClassNodeSet();
         for (RustdlJson.IndividualJson i : orEmpty(realizeResult.individuals)) {
             if (i.iri.equals(ind.getIRI().toString())) {
@@ -269,7 +282,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     }
     @Override public NodeSet<OWLNamedIndividual> getInstances(OWLClassExpression ce, boolean direct) {
         if (ce.isAnonymous()) return new OWLNamedIndividualNodeSet();
-        ensureRealized(); throwIfInconsistent();
+        ensureClassified(); throwIfInconsistent(); ensureRealized();
         if (realizeResult == null) return new OWLNamedIndividualNodeSet();
         String target = ce.asOWLClass().getIRI().toString();
         Set<Node<OWLNamedIndividual>> nodes = new HashSet<>();

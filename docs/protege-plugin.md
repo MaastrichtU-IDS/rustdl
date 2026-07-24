@@ -18,8 +18,10 @@ rustdl`) and launch Protégé with `-Drustdl.bin=/path/to/rustdl`.
 
 Consistency, class hierarchy (classify), unsatisfiable classes, and class
 assertions (types/instances via realize). Property hierarchies/values,
-same/different individuals, disjointness, and complex-class-expression queries
-return empty (not yet backed by rustdl). An `incomplete` classification (some
+same/different individuals, and disjointness node-set queries (not yet backed
+by rustdl) return empty. `isSatisfiable`/`isEntailed` on a complex (anonymous)
+class expression instead throw `UnsupportedOperationException` — a boolean
+guess there would be unsound. An `incomplete` classification (some
 hard class pairs hit the per-pair budget) is logged; results stay sound (no false
 subsumptions, some may be missed).
 

@@ -22,8 +22,17 @@ public final class RustdlProcess {
     private static final int SCHEMA_VERSION = 1;
     private RustdlProcess() {}
 
-    public static RustdlJson.ClassifyJson classify(Path ofn, long timeoutSec) throws IOException {
-        return parseClassify(run("classify", ofn, timeoutSec));
+    public static RustdlJson.ClassifyJson classify(Path ofn, long timeoutSec, long pairTimeoutMs) throws IOException {
+        return parseClassify(runCommand(buildClassifyCommand(ofn, pairTimeoutMs), "classify", timeoutSec));
+    }
+
+    /** Package-visible so tests can assert on the command list without spawning. */
+    static List<String> buildClassifyCommand(Path ofn, long pairTimeoutMs) throws IOException {
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.Arrays.asList(
+            RustdlBinary.resolve().toString(), "classify", "--json"));
+        if (pairTimeoutMs > 0) { cmd.add("--pair-timeout-ms"); cmd.add(Long.toString(pairTimeoutMs)); }
+        cmd.add(ofn.toString());
+        return cmd;
     }
     public static RustdlJson.ConsistentJson consistent(Path ofn, long timeoutSec) throws IOException {
         return parseConsistent(run("consistent", ofn, timeoutSec));

@@ -90,6 +90,37 @@ public class RustdlReasonerTest {
         return RustdlReasoner.forTest(o, c, r);
     }
 
+    /**
+     * Same as inconsistentReasoner() but with a non-null, populated realizeResult:
+     * proves getTypes/getInstances throw InconsistentOntologyException from the
+     * consistency gate BEFORE ever reading realizeResult (i.e. the fix reorders
+     * ensureClassified/throwIfInconsistent ahead of ensureRealized).
+     */
+    private RustdlReasoner inconsistentReasonerWithRealize() throws Exception {
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/inc2"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = false;
+        c.unsatisfiable = new java.util.ArrayList<>(); c.equivalent_groups = new java.util.ArrayList<>(); c.direct_subsumptions = new java.util.ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson();
+        r.schema_version = 1;
+        RustdlJson.IndividualJson ind = new RustdlJson.IndividualJson();
+        ind.iri = "http://ex/#i"; ind.types = Arrays.asList("http://ex/#A");
+        ind.direct_types = Arrays.asList("http://ex/#A");
+        r.individuals = Arrays.asList(ind);
+        return RustdlReasoner.forTest(o, c, r);
+    }
+
+    @Test(expected = org.semanticweb.owlapi.reasoner.InconsistentOntologyException.class)
+    public void inconsistentThrowsOnTypesBeforeRealize() throws Exception {
+        OWLNamedIndividual i = df.getOWLNamedIndividual(IRI.create("http://ex/#i"));
+        inconsistentReasonerWithRealize().getTypes(i, false);
+    }
+
+    @Test(expected = org.semanticweb.owlapi.reasoner.InconsistentOntologyException.class)
+    public void inconsistentThrowsOnInstancesBeforeRealize() throws Exception {
+        inconsistentReasonerWithRealize().getInstances(cls("A"), false);
+    }
+
     @Test public void transitiveSuperClasses() throws Exception {
         NodeSet<OWLClass> s = chain().getSuperClasses(cls("A"), false);
         assertTrue(s.containsEntity(cls("B"))); assertTrue(s.containsEntity(cls("C")));

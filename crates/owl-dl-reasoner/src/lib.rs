@@ -4696,6 +4696,8 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             &self.abox,
+            &[],
+            &[],
             &self.dkey_ranges,
             None,
             build_test_concept,
@@ -4735,6 +4737,8 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             abox,
+            &[],
+            &[],
             &self.dkey_ranges,
             None,
             build_test_concept,
@@ -4769,6 +4773,8 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             &self.abox,
+            &[],
+            &[],
             &self.dkey_ranges,
             Some(deadline),
             build_test_concept,
@@ -4827,9 +4833,51 @@ impl PreparedOntology {
             &self.disjoint_role_pairs,
             &self.complements,
             abox,
+            &[],
+            &[],
             &self.dkey_ranges,
             Some(deadline),
             build_test_concept,
+        )
+    }
+
+    /// Task 0.3: snapshot-preserving augment-and-recheck. Decides whether
+    /// `KB ∪ extra_distinct ∪ extra_neg_prop` is consistent WITHOUT rebuilding
+    /// this `PreparedOntology` snapshot — reuses the frozen `pool`/`tbox`/etc.,
+    /// injecting the extra facts into the per-probe tableau seed. The test
+    /// concept is `⊤` (`pool.top()`), so satisfiability of the seeded graph
+    /// *is* consistency of `KB ∪ extra facts`.
+    ///
+    /// `Some(true)` = consistent (tableau found a model); `Some(false)` =
+    /// inconsistent (genuine clash — sound, never a false positive);
+    /// `None` = no verdict within `deadline` (or `None` for unbounded).
+    ///
+    /// Downstream consumers: #46 same-individuals (`a=b` iff
+    /// `KB ∪ {a≠b}` is inconsistent) and #45 property values (`R(a,b)` iff
+    /// `KB ∪ {¬R(a,b)}` is inconsistent). Phase-0 scaffolding: not yet called
+    /// outside tests, wired up by those later tasks.
+    #[allow(dead_code)]
+    pub(crate) fn consistent_with_extra(
+        &self,
+        extra_distinct: &[(IndividualId, IndividualId)],
+        extra_neg_prop: &[(IndividualId, RoleId, IndividualId)],
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Option<bool>, ReasonError> {
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            &self.abox,
+            extra_distinct,
+            extra_neg_prop,
+            &self.dkey_ranges,
+            deadline,
+            ConceptPool::top,
         )
     }
 }
@@ -5323,6 +5371,8 @@ fn decide<F>(
     disjoint_role_pairs: &[(RoleId, RoleId)],
     complements: &[(ConceptId, ConceptId)],
     abox: &Abox,
+    extra_distinct: &[(IndividualId, IndividualId)],
+    extra_neg_prop: &[(IndividualId, RoleId, IndividualId)],
     dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
     deadline: Option<std::time::Instant>,
     build_test_concept: F,
@@ -5345,6 +5395,21 @@ where
     }
     let mut pool = pool.clone();
     let test_concept: ConceptId = build_test_concept(&mut pool);
+    // Pre-build the `∀role.¬{obj}` concepts for `extra_neg_prop` NOW, while
+    // `pool` is still mutably available — mirrors the `NegativeObjectPropertyAssertion`
+    // encoding `collect_abox` builds (lib.rs, `Axiom::NegativeObjectPropertyAssertion`
+    // arm), just against this per-probe cloned pool. Must happen before `ctx`
+    // takes its immutable borrow of `pool` below, since `ctx` stays live through
+    // the whole seed+search below and `pool.nominal`/`not`/`all` all need `&mut`.
+    let extra_neg_prop_concepts: Vec<(IndividualId, IndividualId, ConceptId)> = extra_neg_prop
+        .iter()
+        .map(|&(subj, role, obj)| {
+            let nom = pool.nominal(obj);
+            let neg = pool.not(nom);
+            let all = pool.all(owl_dl_core::ir::Role::Named(role), neg);
+            (subj, obj, all)
+        })
+        .collect();
     let mut ctx = TableauContext::with_tbox_and_hierarchy(&pool, tbox, hierarchy);
     // Anywhere-blocking on the deadline-FREE query paths (`is_consistent`,
     // `is_class_satisfiable`, un-timed `realize`/`instance`). Ancestor-scoped
@@ -5411,6 +5476,25 @@ where
             let nleft = ctx.resolve(nleft);
             let nright = ctx.resolve(nright);
             ctx.mark_distinct(nleft, nright);
+        }
+    }
+    // Task 0.3: caller-supplied "extra ABox facts" for a snapshot-preserving
+    // augment-and-recheck probe (#46 same-individuals: KB ∪ {a≠b}; #45
+    // property values: KB ∪ {¬R(a,b)}). Seeded in the same slot as the
+    // corresponding native facts above/below — distinct pairs marked before
+    // any merges, neg-prop labels alongside the native
+    // `NegativeObjectPropertyAssertion` labels — so ordering semantics match.
+    for &(left, right) in extra_distinct {
+        if let (Some(&nl), Some(&nr)) = (roots.get(&left), roots.get(&right)) {
+            let nl = ctx.resolve(nl);
+            let nr = ctx.resolve(nr);
+            ctx.mark_distinct(nl, nr);
+        }
+    }
+    for &(subj, obj, all) in &extra_neg_prop_concepts {
+        if let (Some(&ns), Some(_)) = (roots.get(&subj), roots.get(&obj)) {
+            let n = ctx.resolve(ns);
+            ctx.add_label(n, all);
         }
     }
     for &(left, right) in &abox.same_pairs {
@@ -5691,6 +5775,89 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         assert_eq!(
             prepared
                 .pair_disjoint_with_deadline(a, a, None)
+                .expect("decide succeeds"),
+            Some(false)
+        );
+    }
+
+    /// Task 0.3: `PreparedOntology::consistent_with_extra` injects extra
+    /// `DifferentIndividuals` facts into the frozen tableau seed WITHOUT
+    /// rebuilding the `PreparedOntology` snapshot. `Functional(r); r(a,b);
+    /// r(a,c)` forces `b=c`; the base KB is consistent, but adding `b≠c`
+    /// as an extra fact must clash (⇒ `b=c` is entailed).
+    #[test]
+    fn consistent_with_extra_distinct_detects_forced_same() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c)) Declaration(ObjectProperty(:r))
+            FunctionalObjectProperty(:r)
+            ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c))",
+        );
+        let b = internal
+            .vocabulary
+            .individual_id("http://ex/#b")
+            .expect("b is declared");
+        let c = internal
+            .vocabulary
+            .individual_id("http://ex/#c")
+            .expect("c is declared");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        // Base KB is consistent…
+        assert_eq!(
+            prepared
+                .consistent_with_extra(&[], &[], None)
+                .expect("decide succeeds"),
+            Some(true)
+        );
+        // …but KB ∪ {b≠c} is inconsistent ⇒ b=c entailed.
+        assert_eq!(
+            prepared
+                .consistent_with_extra(&[(b, c)], &[], None)
+                .expect("decide succeeds"),
+            Some(false)
+        );
+    }
+
+    /// Task 0.3: the `extra_neg_prop` slice injects a `¬R(subj,obj)` fact
+    /// (encoded as `subj ⊑ ∀role.¬{obj}`, the same form `collect_abox` builds
+    /// for a native `NegativeObjectPropertyAssertion`). `R(a,b)` is asserted,
+    /// so adding `¬R(a,b)` as an extra fact must clash — proving `R(a,b)` is
+    /// entailed (the #45 property-values use case).
+    #[test]
+    fn consistent_with_extra_neg_prop_detects_asserted_edge() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(ObjectProperty(:r))
+            ObjectPropertyAssertion(:r :a :b))",
+        );
+        let a = internal
+            .vocabulary
+            .individual_id("http://ex/#a")
+            .expect("a is declared");
+        let b = internal
+            .vocabulary
+            .individual_id("http://ex/#b")
+            .expect("b is declared");
+        let r = internal
+            .vocabulary
+            .role_id("http://ex/#r")
+            .expect("r is declared");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        // Base KB is consistent…
+        assert_eq!(
+            prepared
+                .consistent_with_extra(&[], &[], None)
+                .expect("decide succeeds"),
+            Some(true)
+        );
+        // …but KB ∪ {¬r(a,b)} is inconsistent ⇒ r(a,b) entailed.
+        assert_eq!(
+            prepared
+                .consistent_with_extra(&[], &[(a, r, b)], None)
                 .expect("decide succeeds"),
             Some(false)
         );

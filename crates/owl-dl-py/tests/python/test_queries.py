@@ -53,3 +53,15 @@ def test_disjoint_classes(tmp_path):
     )
     pairs = rustdl.disjoint_classes(str(p))
     assert ("http://ex/#A", "http://ex/#B") in pairs or ("http://ex/#B", "http://ex/#A") in pairs
+
+
+def test_object_property_hierarchy_direct_subsumption(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))\n"
+        "  SubObjectPropertyOf(:r :s))\n"
+    )
+    _equivalent_groups, direct_subsumptions = rustdl.object_property_hierarchy(str(p))
+    assert ("http://ex/#r", "http://ex/#s") in direct_subsumptions

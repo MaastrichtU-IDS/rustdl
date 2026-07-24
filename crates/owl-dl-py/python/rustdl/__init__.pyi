@@ -165,6 +165,16 @@ def disjoint_data_properties(path: str) -> list[tuple[str, str]]:
     """Told-disjoint data property pairs."""
     ...
 
+# ── inferred property hierarchy ─────────────────────────────────────────────
+
+def object_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str, str]]]:
+    """(equivalent_groups, direct_subsumptions) for object properties."""
+    ...
+
+def data_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str, str]]]:
+    """(equivalent_groups, direct_subsumptions) for data properties."""
+    ...
+
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:

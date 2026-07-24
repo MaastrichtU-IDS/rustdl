@@ -84,6 +84,34 @@ pub(crate) fn disjoint_data_properties(path: &str) -> PyResult<Vec<(String, Stri
     owl_dl_reasoner::disjoint_data_properties(&ontology).map_err(reason_error_to_py)
 }
 
+/// Inferred object property hierarchy: `(equivalent_groups, direct_subsumptions)`.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn object_property_hierarchy(
+    path: &str,
+) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>)> {
+    let o = load::load_path(path)?;
+    let c = owl_dl_reasoner::classify_object_property_hierarchy(&o).map_err(reason_error_to_py)?;
+    Ok((
+        c.equivalent_groups().to_vec(),
+        c.direct_subsumptions().to_vec(),
+    ))
+}
+
+/// Inferred data property hierarchy: `(equivalent_groups, direct_subsumptions)`.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn data_property_hierarchy(
+    path: &str,
+) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>)> {
+    let o = load::load_path(path)?;
+    let c = owl_dl_reasoner::classify_data_property_hierarchy(&o).map_err(reason_error_to_py)?;
+    Ok((
+        c.equivalent_groups().to_vec(),
+        c.direct_subsumptions().to_vec(),
+    ))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_consistent, m)?)?;
     m.add_function(wrap_pyfunction!(is_class_satisfiable, m)?)?;
@@ -94,5 +122,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(disjoint_classes, m)?)?;
     m.add_function(wrap_pyfunction!(disjoint_object_properties, m)?)?;
     m.add_function(wrap_pyfunction!(disjoint_data_properties, m)?)?;
+    m.add_function(wrap_pyfunction!(object_property_hierarchy, m)?)?;
+    m.add_function(wrap_pyfunction!(data_property_hierarchy, m)?)?;
     Ok(())
 }

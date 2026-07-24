@@ -1,0 +1,30 @@
+Prefix(:=<urn:inds#>)
+Ontology(<urn:inds>
+  # Functional-role-forced same: Functional(:hasParent); a hasParent b;
+  # a hasParent c ⇒ b = c.
+  Declaration(NamedIndividual(:a))
+  Declaration(NamedIndividual(:b))
+  Declaration(NamedIndividual(:c))
+  Declaration(ObjectProperty(:hasParent))
+  FunctionalObjectProperty(:hasParent)
+  ObjectPropertyAssertion(:hasParent :a :b)
+  ObjectPropertyAssertion(:hasParent :a :c)
+
+  # Disjoint-type-forced different: DisjointClasses(:Dog :Cat); x:Dog; y:Cat
+  # ⇒ x ≠ y.
+  Declaration(Class(:Dog))
+  Declaration(Class(:Cat))
+  Declaration(NamedIndividual(:x))
+  Declaration(NamedIndividual(:y))
+  DisjointClasses(:Dog :Cat)
+  ClassAssertion(:Dog :x)
+  ClassAssertion(:Cat :y)
+
+  # Asserted SameIndividual chain, transitively closed: p = q, q = s
+  # ⇒ {p, q, s}.
+  Declaration(NamedIndividual(:p))
+  Declaration(NamedIndividual(:q))
+  Declaration(NamedIndividual(:s))
+  SameIndividual(:p :q)
+  SameIndividual(:q :s)
+)

@@ -25,6 +25,9 @@ public class RustdlReasoner extends OWLReasonerBase {
     private final Map<OWLClass, Set<OWLClass>> directSupers = new HashMap<>();
     private final Map<OWLClass, Set<OWLClass>> directSubs = new HashMap<>();
     private final Set<OWLClass> unsatisfiable = new HashSet<>();
+    private final Set<OWLClass> allNamed = new HashSet<>();      // named classes minus Thing/Nothing
+    private final Set<OWLClass> topChildren = new HashSet<>();   // satisfiable classes with no named super
+    private final Set<OWLClass> bottomLeaves = new HashSet<>();  // satisfiable classes with no named sub
 
     RustdlReasoner(OWLOntology rootOntology, OWLReasonerConfiguration config, BufferingMode mode) {
         super(rootOntology, config, mode);
@@ -103,11 +106,13 @@ public class RustdlReasoner extends OWLReasonerBase {
         classifyResult = null;
         realizeResult = null;
         equivNodeByIri.clear(); directSupers.clear(); directSubs.clear(); unsatisfiable.clear();
+        allNamed.clear(); topChildren.clear(); bottomLeaves.clear();
     }
 
     // ---- index building from classifyResult ----
     private void rebuildIndices() {
         equivNodeByIri.clear(); directSupers.clear(); directSubs.clear(); unsatisfiable.clear();
+        allNamed.clear(); topChildren.clear(); bottomLeaves.clear();
         if (classifyResult == null) return;
         for (String iri : orEmpty(classifyResult.unsatisfiable)) unsatisfiable.add(clazz(iri));
         // equivalence nodes
@@ -123,6 +128,18 @@ public class RustdlReasoner extends OWLReasonerBase {
             directSupers.computeIfAbsent(sub, k -> new HashSet<>()).add(sup);
             directSubs.computeIfAbsent(sup, k -> new HashSet<>()).add(sub);
         }
+        // collect every named class mentioned anywhere (signature + JSON), minus Thing/Nothing
+        allNamed.addAll(getRootOntology().getClassesInSignature(org.semanticweb.owlapi.model.parameters.Imports.INCLUDED));
+        for (String iri : orEmpty(classifyResult.unsatisfiable)) allNamed.add(clazz(iri));
+        for (List<String> g : orEmpty(classifyResult.equivalent_groups)) for (String iri : g) allNamed.add(clazz(iri));
+        for (List<String> e : orEmpty(classifyResult.direct_subsumptions)) { allNamed.add(clazz(e.get(0))); allNamed.add(clazz(e.get(1))); }
+        allNamed.remove(df.getOWLThing());
+        allNamed.remove(df.getOWLNothing());
+        for (OWLClass c : allNamed) {
+            if (unsatisfiable.contains(c)) continue;                 // unsat ≡ Nothing, not a real hierarchy node
+            if (directSupers.getOrDefault(c, java.util.Collections.emptySet()).isEmpty()) topChildren.add(c);
+            if (directSubs.getOrDefault(c, java.util.Collections.emptySet()).isEmpty()) bottomLeaves.add(c);
+        }
     }
     private OWLClass clazz(String iri) { return df.getOWLClass(IRI.create(iri)); }
     private static <T> List<T> orEmpty(List<T> l) { return l == null ? Collections.emptyList() : l; }
@@ -132,66 +149,111 @@ public class RustdlReasoner extends OWLReasonerBase {
         return n != null ? n : new OWLClassNode(c);
     }
 
+    private void throwIfInconsistent() {
+        if (!isConsistent()) throw new InconsistentOntologyException();
+    }
+    private Node<OWLClass> topNode() { return new OWLClassNode(df.getOWLThing()); }
+    private Node<OWLClass> bottomNode() {
+        Set<OWLClass> all = new HashSet<>(unsatisfiable); all.add(df.getOWLNothing()); return new OWLClassNode(all);
+    }
+    private Set<Node<OWLClass>> nodesOf(java.util.Collection<OWLClass> cs) {
+        Set<Node<OWLClass>> s = new HashSet<>();
+        for (OWLClass c : cs) s.add(equivNodeOf(c));
+        return s;
+    }
+    /** named ancestors/descendants of `start` as equivalence nodes (direct or transitive). */
+    private Set<Node<OWLClass>> walkNodes(OWLClass start, Map<OWLClass, Set<OWLClass>> edges, boolean direct) {
+        Set<OWLClass> reached = new HashSet<>();
+        Deque<OWLClass> stack = new ArrayDeque<>(edges.getOrDefault(start, java.util.Collections.emptySet()));
+        while (!stack.isEmpty()) {
+            OWLClass c = stack.pop();
+            if (!reached.add(c)) continue;
+            if (!direct) stack.addAll(edges.getOrDefault(c, java.util.Collections.emptySet()));
+        }
+        return nodesOf(reached);
+    }
+
     // ---- consistency / satisfiability ----
     @Override public boolean isConsistent() {
         ensureClassified();
         return classifyResult.consistent;
     }
     @Override public boolean isSatisfiable(OWLClassExpression ce) {
-        if (ce.isAnonymous()) {
-            throw new UnsupportedOperationException(
-                "rustdl answers satisfiability only for named classes");
-        }
-        ensureClassified();
-        if (!isConsistent()) throw new InconsistentOntologyException();
-        return !unsatisfiable.contains(ce.asOWLClass());
-    }
-    @Override public Node<OWLClass> getUnsatisfiableClasses() {
-        ensureClassified();
-        Set<OWLClass> all = new HashSet<>(unsatisfiable);
-        all.add(df.getOWLNothing());
-        return new OWLClassNode(all);
+        if (ce.isAnonymous()) throw new UnsupportedOperationException("rustdl answers satisfiability only for named classes");
+        ensureClassified(); throwIfInconsistent();
+        OWLClass c = ce.asOWLClass();
+        if (c.isOWLNothing()) return false;
+        if (c.isOWLThing()) return true;
+        return !unsatisfiable.contains(c);
     }
 
+    @Override public Node<OWLClass> getUnsatisfiableClasses() { ensureClassified(); return bottomNode(); }
+
     // ---- class hierarchy ----
-    @Override public Node<OWLClass> getTopClassNode() { return new OWLClassNode(df.getOWLThing()); }
-    @Override public Node<OWLClass> getBottomClassNode() { return getUnsatisfiableClasses(); }
+    @Override public Node<OWLClass> getTopClassNode() { return topNode(); }
+    @Override public Node<OWLClass> getBottomClassNode() { ensureClassified(); return bottomNode(); }
 
     @Override public Node<OWLClass> getEquivalentClasses(OWLClassExpression ce) {
         if (ce.isAnonymous()) return new OWLClassNode();
-        ensureClassified();
-        return equivNodeOf(ce.asOWLClass());
+        ensureClassified(); throwIfInconsistent();
+        OWLClass c = ce.asOWLClass();
+        if (c.isOWLThing()) return topNode();
+        if (c.isOWLNothing() || unsatisfiable.contains(c)) return bottomNode();
+        return equivNodeOf(c);
     }
 
     @Override public NodeSet<OWLClass> getSuperClasses(OWLClassExpression ce, boolean direct) {
         if (ce.isAnonymous()) return new OWLClassNodeSet();
-        ensureClassified();
-        return walk(ce.asOWLClass(), directSupers, direct);
-    }
-    @Override public NodeSet<OWLClass> getSubClasses(OWLClassExpression ce, boolean direct) {
-        if (ce.isAnonymous()) return new OWLClassNodeSet();
-        ensureClassified();
-        return walk(ce.asOWLClass(), directSubs, direct);
-    }
-
-    /** direct=true → the immediate edges; direct=false → transitive closure, grouped into equiv nodes. */
-    private NodeSet<OWLClass> walk(OWLClass start, Map<OWLClass, Set<OWLClass>> edges, boolean direct) {
-        Set<OWLClass> reached = new HashSet<>();
-        Deque<OWLClass> stack = new ArrayDeque<>(edges.getOrDefault(start, Collections.emptySet()));
-        while (!stack.isEmpty()) {
-            OWLClass c = stack.pop();
-            if (!reached.add(c)) continue;
-            if (!direct) stack.addAll(edges.getOrDefault(c, Collections.emptySet()));
+        ensureClassified(); throwIfInconsistent();
+        OWLClass c = ce.asOWLClass();
+        if (c.isOWLThing()) return new OWLClassNodeSet();
+        if (c.isOWLNothing() || unsatisfiable.contains(c)) {
+            if (direct) {
+                return bottomLeaves.isEmpty() ? new OWLClassNodeSet(topNode()) : new OWLClassNodeSet(nodesOf(bottomLeaves));
+            }
+            Set<Node<OWLClass>> nodes = new HashSet<>();
+            for (OWLClass n : allNamed) if (!unsatisfiable.contains(n)) nodes.add(equivNodeOf(n));
+            nodes.add(topNode());
+            return new OWLClassNodeSet(nodes);
         }
-        Set<Node<OWLClass>> nodes = new HashSet<>();
-        for (OWLClass c : reached) nodes.add(equivNodeOf(c));
+        if (direct) {
+            if (directSupers.getOrDefault(c, java.util.Collections.emptySet()).isEmpty()) return new OWLClassNodeSet(topNode());
+            return new OWLClassNodeSet(walkNodes(c, directSupers, true));
+        }
+        Set<Node<OWLClass>> nodes = walkNodes(c, directSupers, false);
+        nodes.add(topNode());
         return new OWLClassNodeSet(nodes);
     }
+
+    @Override public NodeSet<OWLClass> getSubClasses(OWLClassExpression ce, boolean direct) {
+        if (ce.isAnonymous()) return new OWLClassNodeSet();
+        ensureClassified(); throwIfInconsistent();
+        OWLClass c = ce.asOWLClass();
+        if (c.isOWLNothing()) return new OWLClassNodeSet();
+        if (c.isOWLThing()) {
+            if (direct) {
+                return topChildren.isEmpty() ? new OWLClassNodeSet(bottomNode()) : new OWLClassNodeSet(nodesOf(topChildren));
+            }
+            Set<Node<OWLClass>> nodes = new HashSet<>();
+            for (OWLClass n : allNamed) if (!unsatisfiable.contains(n)) nodes.add(equivNodeOf(n));
+            nodes.add(bottomNode());
+            return new OWLClassNodeSet(nodes);
+        }
+        if (unsatisfiable.contains(c)) return new OWLClassNodeSet();  // unsat ≡ Nothing: no proper subclasses
+        if (direct) {
+            if (directSubs.getOrDefault(c, java.util.Collections.emptySet()).isEmpty()) return new OWLClassNodeSet(bottomNode());
+            return new OWLClassNodeSet(walkNodes(c, directSubs, true));
+        }
+        Set<Node<OWLClass>> nodes = walkNodes(c, directSubs, false);
+        nodes.add(bottomNode());
+        return new OWLClassNodeSet(nodes);
+    }
+
     @Override public NodeSet<OWLClass> getDisjointClasses(OWLClassExpression ce) { return new OWLClassNodeSet(); }
 
     // ---- individuals ----
     @Override public NodeSet<OWLClass> getTypes(OWLNamedIndividual ind, boolean direct) {
-        ensureRealized();
+        ensureRealized(); throwIfInconsistent();
         if (realizeResult == null) return new OWLClassNodeSet();
         for (RustdlJson.IndividualJson i : orEmpty(realizeResult.individuals)) {
             if (i.iri.equals(ind.getIRI().toString())) {
@@ -205,7 +267,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     }
     @Override public NodeSet<OWLNamedIndividual> getInstances(OWLClassExpression ce, boolean direct) {
         if (ce.isAnonymous()) return new OWLNamedIndividualNodeSet();
-        ensureRealized();
+        ensureRealized(); throwIfInconsistent();
         if (realizeResult == null) return new OWLNamedIndividualNodeSet();
         String target = ce.asOWLClass().getIRI().toString();
         Set<Node<OWLNamedIndividual>> nodes = new HashSet<>();
@@ -223,6 +285,7 @@ public class RustdlReasoner extends OWLReasonerBase {
         return axiomType == AxiomType.SUBCLASS_OF;
     }
     @Override public boolean isEntailed(OWLAxiom axiom) {
+        ensureClassified(); throwIfInconsistent();
         if (axiom instanceof OWLSubClassOfAxiom) {
             OWLSubClassOfAxiom sc = (OWLSubClassOfAxiom) axiom;
             if (sc.getSubClass().isAnonymous() || sc.getSuperClass().isAnonymous()) {

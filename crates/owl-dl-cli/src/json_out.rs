@@ -48,15 +48,22 @@ pub(crate) fn build_classify_json(h: &Classification) -> ClassifyJson {
 
     // Equivalence groups: for each class, its equivalence peers; canonicalise
     // by sorting each group and deduping groups (a group is emitted once).
+    // Unsatisfiable classes are EXCLUDED: they are all mutually equivalent
+    // (≡ ⊥), so `equivalent_classes` returns the whole unsat set for any of
+    // them — a spurious peer group. They belong in `unsatisfiable` (the
+    // bottom node), not in `equivalent_groups`.
+    let unsat_set: std::collections::HashSet<&str> =
+        unsatisfiable.iter().map(String::as_str).collect();
     let mut groups: Vec<Vec<String>> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for c in h.classes() {
-        if seen.contains(c) {
+        if seen.contains(c) || unsat_set.contains(c.as_str()) {
             continue;
         }
         let mut group: Vec<String> = h
             .equivalent_classes(c)
             .into_iter()
+            .filter(|e| !unsat_set.contains(e))
             .map(str::to_owned)
             .collect();
         if !group.iter().any(|g| g == c) {

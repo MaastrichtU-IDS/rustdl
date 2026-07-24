@@ -14,6 +14,10 @@ All arrays are sorted (byte order); pairs are `[sub, sup]`.
 `incomplete` = some class pair hit the time budget (defaulted to not-subsumed);
 the hierarchy is sound (no false subsumptions) but may miss real ones.
 
+`equivalent_groups` lists only *satisfiable* equivalence classes; unsatisfiable
+classes are reported in `unsatisfiable` (they are all mutually equivalent to
+`owl:Nothing`).
+
 ## `consistent --json`
 
 ```json

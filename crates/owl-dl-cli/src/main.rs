@@ -868,6 +868,12 @@ fn main() -> Result<()> {
                 realize(&onto).context("realize")?
             };
             if json {
+                if properties {
+                    // stderr, so stdout stays a single JSON object.
+                    eprintln!(
+                        "note: --properties has no effect under --json in schema v1 (see issue #45)"
+                    );
+                }
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json_out::build_realize_json(&r))?

@@ -36,6 +36,13 @@ fn equivalent_pair() -> &'static str {
     )
 }
 
+fn unsat_pair() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/unsat_pair.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -118,4 +125,37 @@ fn classify_json_reports_equivalent_group() {
         vec!["http://ex/#A", "http://ex/#B"],
         "group members are byte-sorted"
     );
+}
+
+#[test]
+fn classify_json_excludes_unsat_from_equivalent_groups() {
+    // :C and :D are both unsatisfiable (each ⊑ :A ⊓ :B with :A, :B disjoint).
+    // Every unsatisfiable class is mutually equivalent (≡ ⊥), so without the
+    // exclusion the whole unsat set would surface as a spurious equivalence
+    // group. Unsat classes belong in `unsatisfiable` (the bottom node), not in
+    // `equivalent_groups`.
+    let out = rustdl()
+        .args(["classify", "--json", unsat_pair()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    let unsat: Vec<&str> = v["unsatisfiable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u.as_str().unwrap())
+        .collect();
+    assert!(unsat.contains(&"http://ex/#C"), "C is unsatisfiable");
+    assert!(unsat.contains(&"http://ex/#D"), "D is unsatisfiable");
+    for group in v["equivalent_groups"].as_array().unwrap() {
+        for member in group.as_array().unwrap() {
+            let iri = member.as_str().unwrap();
+            assert!(
+                !unsat.contains(&iri),
+                "equivalent_groups must not contain unsatisfiable class {iri}"
+            );
+        }
+    }
 }

@@ -1,0 +1,6 @@
+Prefix(:=<http://ex/#>)
+Ontology(<http://ex/>
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+  DisjointClasses(:A :B)
+  SubClassOf(:C ObjectIntersectionOf(:A :B))
+  SubClassOf(:D ObjectIntersectionOf(:A :B)))

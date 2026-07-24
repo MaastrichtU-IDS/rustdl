@@ -4,6 +4,20 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] — 2026-07-24
+
+### Added
+
+- **Protégé plugin auto-update.** The plugin bundle now advertises an
+  `Update-Url`, and the repo hosts an `update.properties` descriptor that the
+  release workflow keeps current on every tag — so an installed rustdl plugin
+  offers new versions through Protégé's **Check for updates**. (Registration in
+  Protégé's in-app "Check for plugins" catalog is a separate one-time step with
+  the Protégé maintainers.)
+
+_Plugin packaging only; the Rust reasoner, wheels, and CLI binaries are
+identical to 0.4.1._
+
 ## [0.4.1] — 2026-07-24
 
 ### Fixed

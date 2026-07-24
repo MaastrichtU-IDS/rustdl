@@ -32,6 +32,7 @@ use owl_dl_reasoner::{
 };
 use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
 
+mod json_out;
 mod report;
 
 #[derive(Parser, Debug)]

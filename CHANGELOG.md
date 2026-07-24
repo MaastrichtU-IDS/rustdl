@@ -4,6 +4,33 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-24
+
+### Added
+
+- **Machine-readable `--json` output** on `classify`, `consistent`, and
+  `realize` (a versioned `schema_version: 1` contract, golden-tested) — a stable
+  bridge for tooling that needs to parse rustdl's results rather than scrape the
+  human tab/`#`-comment output. See `docs/json-schema.md`.
+- **Standalone cross-platform CLI binaries**, built in CI on every release and
+  attached to the GitHub Release with `SHA256SUMS`: `x86_64`/`aarch64` Linux
+  (fully static, musl), Apple-Silicon macOS, and Windows x86_64 (static CRT).
+  See `docs/cli-binaries.md`.
+- **Protégé reasoner plugin** (`protege/`): rustdl as a first-class Protégé
+  reasoner — consistency, class hierarchy, unsatisfiable classes, and class
+  assertions (types/instances) — with the platform binary bundled in the plugin
+  jar, so there is no separate binary install or PATH setup. It is an OWLAPI
+  `OWLReasoner` (BUFFERING) whose flag-driven `precomputeInferences` maps
+  `CLASS_HIERARCHY`→`classify` and `CLASS_ASSERTIONS`→`realize` over the `--json`
+  bridge, with a per-pair classify budget (`rustdl.pair.timeout.ms`) so hard
+  ontologies degrade to a sound incomplete classification rather than hang. See
+  `docs/protege-plugin.md`.
+
+### Fixed
+
+- Test and documentation hardening for the #38 completion-graph merge fix and
+  the #39 nominal-cardinality realize typing.
+
 ## [0.3.41] — 2026-07-24
 
 ### Fixed

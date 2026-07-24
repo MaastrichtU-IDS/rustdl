@@ -1,8 +1,6 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
-// TODO(Task 2): remove this allow once the CLI `--json` flag wires these in.
-#![allow(dead_code)]
 use owl_dl_reasoner::{Classification, Realization};
 use serde::Serialize;
 

@@ -52,6 +52,10 @@ enum Command {
     Consistent {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
+        /// Emit a single machine-readable JSON object on stdout (schema v1);
+        /// diagnostics stay on stderr. The stable contract for tooling.
+        #[arg(long)]
+        json: bool,
     },
     /// Decide whether a named class is satisfiable in the ontology.
     Sat {
@@ -141,6 +145,10 @@ enum Command {
         /// `set_var` under the crate's `unsafe_code` deny.)
         #[arg(long)]
         saturation_only: bool,
+        /// Emit a single machine-readable JSON object on stdout (schema v1);
+        /// diagnostics stay on stderr. The stable contract for tooling.
+        #[arg(long)]
+        json: bool,
     },
     /// Decide whether INDIVIDUAL is provably an instance of CLASS.
     Instance {
@@ -185,6 +193,10 @@ enum Command {
         /// Also print inferred object property assertions (subject<TAB>property<TAB>object).
         #[arg(long)]
         properties: bool,
+        /// Emit a single machine-readable JSON object on stdout (schema v1);
+        /// diagnostics stay on stderr. The stable contract for tooling.
+        #[arg(long)]
+        json: bool,
     },
     /// Decide SUB ⊑ SUP and report which engine (EL saturation or
     /// tableau) produced the verdict. Useful for understanding
@@ -710,9 +722,16 @@ fn main() -> Result<()> {
     };
 
     match command {
-        Command::Consistent { file } => {
+        Command::Consistent { file, json } => {
             let onto = parse_ofn(&file)?;
             let verdict = is_consistent(&onto).context("is_consistent")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_consistent_json(verdict))?
+                );
+                return Ok(());
+            }
             println!(
                 "{}",
                 if verdict {
@@ -750,6 +769,7 @@ fn main() -> Result<()> {
             top_down: _,
             n2_classify,
             saturation_only,
+            json,
         } => {
             // Opt-in phase timing (`RUSTDL_TIMING=1`): separate parse (horned-owl
             // read) from classify (convert/preprocess + reasoning), so the wall can
@@ -784,6 +804,18 @@ fn main() -> Result<()> {
             let classify_ms = t_classify.elapsed().as_secs_f64() * 1000.0;
             if timing {
                 eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_classify_json(&h))?
+                );
+                warn_if_incomplete(
+                    h.stats().timed_out_pairs,
+                    pair_timeout_ms,
+                    global_timeout_ms,
+                );
+                return Ok(());
             }
             print_classification(&h);
             warn_if_incomplete(
@@ -827,6 +859,7 @@ fn main() -> Result<()> {
             file,
             saturation_only,
             properties,
+            json,
         } => {
             let onto = parse_ofn(&file)?;
             let r = if saturation_only {
@@ -834,6 +867,13 @@ fn main() -> Result<()> {
             } else {
                 realize(&onto).context("realize")?
             };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_realize_json(&r))?
+                );
+                return Ok(());
+            }
             print_realization(&r);
             if properties {
                 match owl_dl_reasoner::materialize_object_property_assertions(&onto) {

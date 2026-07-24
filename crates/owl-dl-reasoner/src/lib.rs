@@ -4167,6 +4167,12 @@ where
 /// preparation pass.
 pub(crate) struct PreparedOntology {
     pub(crate) pool: ConceptPool,
+    /// IRI ↔ id vocabulary, cloned from the input `InternalOntology` before
+    /// its `concepts` are moved into `pool`. Lets downstream query surfaces
+    /// (e.g. #46/#47) resolve named classes/individuals by IRI. Phase-0
+    /// scaffolding: not yet read outside tests, wired up by later tasks.
+    #[allow(dead_code)]
+    pub(crate) vocabulary: owl_dl_core::vocab::Vocabulary,
     tbox: AbsorbedTBox,
     pub(crate) hierarchy: RoleHierarchy,
     inverse_pairs: Vec<(RoleId, RoleId)>,
@@ -4453,6 +4459,9 @@ impl PreparedOntology {
     /// `decide` calls only have to allocate a fresh tableau and run
     /// the search.
     pub(crate) fn from_internal(mut internal: InternalOntology) -> Result<Self, ReasonError> {
+        // Clone the vocabulary before `internal.concepts` is moved into `pool`
+        // below, so downstream IRI↔id lookups survive `from_internal`.
+        let vocabulary = internal.vocabulary.clone();
         // Lever A: decide up front (on the un-mutated input) whether the ABox is
         // irrelevant to class subsumption — has-ABox, no nominals, gate on.
         let abox_irrelevant_to_classify = classify_tbox_only_enabled()
@@ -4533,6 +4542,7 @@ impl PreparedOntology {
         let abox = collect_abox(&mut internal);
         Ok(Self {
             pool: internal.concepts,
+            vocabulary,
             tbox,
             hierarchy,
             inverse_pairs,
@@ -4763,6 +4773,30 @@ impl PreparedOntology {
             Some(deadline),
             build_test_concept,
         )
+    }
+
+    /// `Some(true)` iff `a ⊓ b` is unsatisfiable (the two named classes are
+    /// entailed disjoint); `Some(false)` if satisfiable; `None` on timeout.
+    /// Sound: only unsat ⇒ disjoint (never a false positive). Phase-0
+    /// scaffolding: not yet called outside tests, wired up by later tasks
+    /// (#47 disjointness query).
+    #[allow(dead_code)]
+    pub(crate) fn pair_disjoint_with_deadline(
+        &self,
+        a: owl_dl_core::ir::ClassId,
+        b: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Option<bool>, ReasonError> {
+        let build_test_concept = |pool: &mut ConceptPool| {
+            let ca = pool.atomic(a);
+            let cb = pool.atomic(b);
+            pool.and([ca, cb])
+        };
+        let sat = match deadline {
+            Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
+            None => Some(self.decide(build_test_concept)?),
+        };
+        Ok(sat.map(|s| !s)) // unsat ⇒ disjoint
     }
 
     /// Lever A: like [`Self::decide_with_deadline`], but for the classification
@@ -5619,9 +5653,48 @@ mod tests {
         ontology
     }
 
+    fn parse_internal_lib(src: &str) -> InternalOntology {
+        owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
+    }
+
     const HEADER: &str = "\
 Prefix(:=<http://rustdl.test/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// Task 0.2: `PreparedOntology::pair_disjoint_with_deadline` must return
+    /// `Some(true)` for a told-disjoint pair (`a ⊓ b` unsatisfiable) and
+    /// `Some(false)` for a satisfiable pair (`a ⊓ a`, never a false positive).
+    #[test]
+    fn pair_disjoint_detects_told_disjoint() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B))
+            DisjointClasses(:A :B))",
+        );
+        let a = internal
+            .vocabulary
+            .class_id("http://ex/#A")
+            .expect("A is declared");
+        let b = internal
+            .vocabulary
+            .class_id("http://ex/#B")
+            .expect("B is declared");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        assert_eq!(
+            prepared
+                .pair_disjoint_with_deadline(a, b, None)
+                .expect("decide succeeds"),
+            Some(true)
+        );
+        // A vs A is satisfiable (A is not unsat here) ⇒ not disjoint.
+        assert_eq!(
+            prepared
+                .pair_disjoint_with_deadline(a, a, None)
+                .expect("decide succeeds"),
+            Some(false)
+        );
+    }
 
     /// P2 plumbing: `PreparedOntology` builds the `ClassId → CardRange` side-map
     /// by decoding the synthetic integer `DKey` filler classes. An ontology with

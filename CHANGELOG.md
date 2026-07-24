@@ -4,6 +4,24 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.41] — 2026-07-24
+
+### Fixed
+
+- **Completion-graph merge could corrupt the edge set (`remove_edge_recorded`).**
+  `TableauContext::merge_into_with_deps`, when re-anchoring a merged node's
+  incoming edges, located the forward edge on the union-find representative
+  `y_eff = resolve(y)` but searched the mirror in-edge for the *unresolved*
+  snapshot node `(role, y)`. When `y` had since merged into `y_eff`,
+  `source.in_edges` can hold both a stale orphaned `(role, y)` and the live
+  `(role, y_eff)`, so the wrong mirror was removed — a `debug_assert_eq!` panic
+  in debug builds, and in release a silent wrong-edge removal (edge-set
+  corruption). Now searches the mirror for `(role, y_eff)`, consistent with the
+  forward-edge lookup and the `add_edge` forward/mirror pairing invariant.
+  Surfaced by the issue #35 v4 reproducer; fixes #38. (The symmetric outgoing
+  re-anchor was reviewed and is unaffected — it disambiguates by the per-entry
+  stored endpoint.)
+
 ## [0.3.40] — 2026-07-23
 
 ### Fixed

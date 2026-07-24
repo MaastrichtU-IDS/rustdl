@@ -47,7 +47,24 @@ contract (`docs/json-schema.md`).
 
 `release-cli.yml` is independent of `release-python.yml` so a CLI-build failure
 never blocks PyPI. Both fire on the same tag and share only the GitHub Release
-object: whichever reaches release creation first makes a bare release, and
-`release-python.yml`'s `github-release` job fills in the CHANGELOG notes via its
-`edit` path. Asset uploads use `--clobber`, so re-running either workflow is
-safe.
+object: whichever reaches release creation first makes a bare release, and —
+**provided the PyPI publish succeeds** — `release-python.yml`'s `github-release`
+job then fills in the CHANGELOG notes via its `edit` path. If that job never runs
+(e.g. `publish-pypi` fails or the tag's version already exists on PyPI), the
+release keeps the generic notes `release-cli.yml` set; re-running the release
+workflow after fixing the PyPI issue restores the CHANGELOG notes. Asset uploads
+use `--clobber`, so re-running either workflow is safe.
+
+**Known caveat (benign, rare):** because both workflows create the release on the
+same tag, there is a narrow create-create window. `release-cli.yml`'s create is
+idempotent (`gh release create … || true`), but `release-python.yml`'s
+`github-release` create branch is not, so if the CLI workflow creates the release
+in the exact interval between that job's `gh release view` and its `gh release
+create`, the Python job's release-asset/notes step can fail with a 422. **PyPI
+publishing is never affected** (it completes before `github-release` runs); only
+the GitHub Release's wheel attachments/notes are, and re-running the
+`github-release` job fixes it. In practice the CLI job (gated only on the build
+matrix) almost always creates the release well before the Python `github-release`
+job (gated behind the full wheel build + `publish-pypi`), so the Python job takes
+its race-free `edit` path. A shared `concurrency:` group across both workflows
+would close the window entirely if it ever proves troublesome.

@@ -1,0 +1,13 @@
+{
+  "date": "2026-07-24",
+  "binary_version": "rustdl 0.3.38",
+  "release_commit": "2bf15d5",
+  "machine": { "cpu_cores": 32, "mem_total_gb": 251, "os": "Linux 5.15" },
+  "corpus": "ORE-2015 pool_sample (/data/dumontier/ore-run/pool_sample/files/*.owl)",
+  "method": "per-ont RAYON_NUM_THREADS=1, output to /dev/null, VmHWM peak-RSS poll; -P 4; caps 48GB + 120s (watchdog kill)",
+  "passes": {
+    "classify": { "onts": 1920, "harness": "harness/classify_one.sh", "raw": "classify.tsv" },
+    "realize":  { "onts": 1147, "note": "ABox-bearing subset (ClassAssertion/OPA/NamedIndividual/SameIndividual); realize UNBOUNDED by default at v0.3.38", "harness": "harness/realize_one.sh", "raw": "realize.tsv" }
+  },
+  "tsv_columns": ["ont", "wall_s", "peakRSS_MB", "status"]
+}

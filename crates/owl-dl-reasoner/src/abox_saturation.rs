@@ -104,6 +104,11 @@ pub struct SaturationResult {
     /// entailed. Used by `materialize_object_property_assertions`; ignored by the
     /// consistency pre-check.
     pub edges: Vec<(RoleId, IndividualId, IndividualId)>,
+    /// Pairs `(b, c)` (b.index() < c.index()) proven equal because a
+    /// functional / inverse-functional role has both `R(a,b)` and `R(a,c)`
+    /// derived. Sound under-approximation of entailed `SameIndividual`.
+    /// Empty on clash.
+    pub derived_same: Vec<(IndividualId, IndividualId)>,
 }
 
 /// Check whether `internal` is ABox-inconsistent under named-only semantics.
@@ -576,6 +581,7 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         type_additions: 0,
         edge_additions: 0,
         edges: Vec::new(),
+        derived_same: Vec::new(),
     };
 
     // Helper closures (we'll use inline logic for borrow reasons)
@@ -1068,6 +1074,41 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // documented "empty when a clash was found" contract.
     if !result.clash {
         result.edges = edges.iter().copied().collect();
+
+        // Functional-collapse `derived_same`: for each functional/inverse-
+        // functional role R and each subject a with ≥2 distinct R-fillers
+        // b, c derived over the fixpoint edge set, (b, c) is a sound
+        // under-approximation of entailed `SameIndividual` (R can have at
+        // most one filler per subject, so both fillers denote the same
+        // individual). Mirrors the Rule 7 functional-merge loop above, but
+        // reports the pairs instead of merging types.
+        let mut derived_same: Vec<(IndividualId, IndividualId)> = Vec::new();
+        for &(func_rid, func_inv) in &functional {
+            let mut fillers_by_subj: HashMap<IndividualId, Vec<IndividualId>> = HashMap::new();
+            for &(rid, a, b) in &edges {
+                if rid == func_rid {
+                    let (subj, filler) = if func_inv { (b, a) } else { (a, b) };
+                    fillers_by_subj.entry(subj).or_default().push(filler);
+                }
+            }
+            for fillers in fillers_by_subj.values() {
+                for i in 0..fillers.len() {
+                    for j in (i + 1)..fillers.len() {
+                        let (mut x, mut y) = (fillers[i], fillers[j]);
+                        if x == y {
+                            continue;
+                        }
+                        if y.index() < x.index() {
+                            std::mem::swap(&mut x, &mut y);
+                        }
+                        derived_same.push((x, y));
+                    }
+                }
+            }
+        }
+        derived_same.sort_unstable();
+        derived_same.dedup();
+        result.derived_same = derived_same;
     }
 
     result
@@ -1126,5 +1167,52 @@ fn enqueue_concept_types(
         | ConceptExpr::SelfRestriction(_) => {
             // Not handled
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse an OFN string and lower it to an `InternalOntology`, mirroring
+    /// the `read_ofn` → `convert_ontology` pattern used across this crate's
+    /// tests (see `tests/materialize_oracle.rs`, `abox_check.rs`'s
+    /// `verdict_of`).
+    fn parse_internal(src: &str) -> InternalOntology {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use horned_owl::model::RcStr;
+        use horned_owl::ontology::set::SetOntology;
+        use std::io::Cursor;
+        let mut r = Cursor::new(src.to_string());
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
+        owl_dl_core::convert::convert_ontology(&onto).expect("convert")
+    }
+
+    #[test]
+    fn functional_role_forces_same_individuals() {
+        // Functional(r); r(a,b); r(a,c)  ⟹  b = c.
+        let src = r"Prefix(:=<http://ex/#>)
+      Ontology(<http://ex/>
+        Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+        Declaration(NamedIndividual(:c)) Declaration(ObjectProperty(:r))
+        FunctionalObjectProperty(:r)
+        ObjectPropertyAssertion(:r :a :b)
+        ObjectPropertyAssertion(:r :a :c))";
+        let internal = parse_internal(src); // existing test helper in this module
+        let res = saturate_abox_consistency(&internal);
+        assert!(!res.clash);
+        let iri = |i: IndividualId| internal.vocabulary.individual_iri(i).to_string();
+        let pairs: Vec<(String, String)> = res
+            .derived_same
+            .iter()
+            .map(|&(x, y)| (iri(x), iri(y)))
+            .collect();
+        assert!(
+            pairs.contains(&("http://ex/#b".into(), "http://ex/#c".into()))
+                || pairs.contains(&("http://ex/#c".into(), "http://ex/#b".into())),
+            "expected b=c, got {pairs:?}"
+        );
     }
 }

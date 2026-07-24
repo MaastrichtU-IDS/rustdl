@@ -238,7 +238,10 @@ pub(crate) fn build_individuals_json(
     let mut different_pairs: Vec<[String; 2]> = different
         .pairs()
         .iter()
-        .map(|(a, b)| [a.clone(), b.clone()])
+        .map(|(a, b)| {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            [lo.clone(), hi.clone()]
+        })
         .collect();
     different_pairs.sort();
 

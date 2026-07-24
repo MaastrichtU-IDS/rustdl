@@ -60,7 +60,9 @@ pub use classify::{
     classify_with_global_deadline, classify_with_timeout,
 };
 pub use diagnose::{DerivedClass, Diagnosis, diagnose};
-pub use disjointness::{Disjointness, disjoint_classes};
+pub use disjointness::{
+    Disjointness, disjoint_classes, disjoint_data_properties, disjoint_object_properties,
+};
 pub use laconic::{find_all_laconic_justifications, find_laconic_justification};
 pub use realize::{
     Realization, instances_of, instances_of_internal, instances_of_saturation_only,

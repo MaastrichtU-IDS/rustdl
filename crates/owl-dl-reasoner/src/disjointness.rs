@@ -86,3 +86,81 @@ pub fn disjoint_classes<A: ForIRI>(
     pairs.dedup();
     Ok(Disjointness { pairs, incomplete })
 }
+
+fn pairwise_sorted(names: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for i in 0..names.len() {
+        for j in (i + 1)..names.len() {
+            let (a, b) = (&names[i], &names[j]);
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            out.push((lo.clone(), hi.clone()));
+        }
+    }
+    out
+}
+
+/// Told-disjoint object property pairs (`a < b`), read directly from the
+/// horned-owl ontology's `DisjointObjectProperties` axioms. Structural only
+/// (no entailment probe): only named `ObjectProperty` members are kept,
+/// `InverseObjectProperty` members are skipped.
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] if the ontology is inconsistent;
+/// [`ReasonError::Conversion`] if the input can't be lowered to the internal
+/// IR.
+pub fn disjoint_object_properties<A: ForIRI>(
+    onto: &SetOntology<A>,
+) -> Result<Vec<(String, String)>, ReasonError> {
+    use horned_owl::model::Component as C;
+    use horned_owl::model::ObjectPropertyExpression as OPE;
+
+    let internal = convert_ontology(onto)?;
+    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for ac in onto {
+        if let C::DisjointObjectProperties(ax) = &ac.component {
+            let names: Vec<String> =
+                ax.0.iter()
+                    .filter_map(|ope| match ope {
+                        OPE::ObjectProperty(op) => Some(op.0.as_ref().to_string()),
+                        OPE::InverseObjectProperty(_) => None,
+                    })
+                    .collect();
+            out.extend(pairwise_sorted(&names));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// Told-disjoint data property pairs (`a < b`), read directly from the
+/// horned-owl ontology's `DisjointDataProperties` axioms. Structural only
+/// (no entailment probe).
+///
+/// # Errors
+/// [`ReasonError::Inconsistent`] if the ontology is inconsistent;
+/// [`ReasonError::Conversion`] if the input can't be lowered to the internal
+/// IR.
+pub fn disjoint_data_properties<A: ForIRI>(
+    onto: &SetOntology<A>,
+) -> Result<Vec<(String, String)>, ReasonError> {
+    use horned_owl::model::Component as C;
+
+    let internal = convert_ontology(onto)?;
+    if crate::abox_saturation::saturate_abox_consistency(&internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for ac in onto {
+        if let C::DisjointDataProperties(ax) = &ac.component {
+            let names: Vec<String> = ax.0.iter().map(|dp| dp.0.as_ref().to_string()).collect();
+            out.extend(pairwise_sorted(&names));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}

@@ -52,3 +52,33 @@ fn disjoint_classes_errors_on_inconsistent() {
         Err(owl_dl_reasoner::ReasonError::Inconsistent)
     ));
 }
+
+#[test]
+fn disjoint_object_properties_told() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))
+            DisjointObjectProperties(:p :q))",
+    );
+    let pairs = owl_dl_reasoner::disjoint_object_properties(&o).unwrap();
+    assert_eq!(
+        pairs,
+        vec![("http://ex/#p".to_string(), "http://ex/#q".to_string())]
+    );
+}
+
+#[test]
+fn disjoint_data_properties_told() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+            DisjointDataProperties(:p :q))",
+    );
+    let pairs = owl_dl_reasoner::disjoint_data_properties(&o).unwrap();
+    assert_eq!(
+        pairs,
+        vec![("http://ex/#p".to_string(), "http://ex/#q".to_string())]
+    );
+}

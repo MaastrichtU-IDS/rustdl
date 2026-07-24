@@ -71,11 +71,40 @@ known ORE parse-crash, also the lone classify crash) + 22 clean
 `Error: realize / Caused by: ontology is inconsistent; every assertion is trivially
 entailed` (the v0.3.36 short-circuit; confirmed on samples). **Zero panics.**
 
-## Caveats
+## Before/after: v0.3.38 → v0.3.41 (termination improvements)
 
-- **No v0.3.30 realize baseline exists** (prior corpus sweeps were classify-only),
-  so realize here is a first baseline, not a before/after.
-- The unbounded-vs-120s-watchdog lens for realize separates fragment-fast from
-  off-fragment; a **bounded** realize sweep (the v0.3.40+ default) gives a more
-  useful profile (sound partials + real per-ont timings) and is the natural
-  successor measurement.
+Re-ran the full suite on v0.3.41 (commit `7249ae1`), which added the issue-#35
+realize-termination safety net (default **750 ms per-pair realize deadline** +
+**`RUSTDL_MAX_NODES = 50000`** node cap) and the #38 completion-graph merge
+edge-set corruption fix. Same harness. Raw: `*-v0341.tsv`.
+
+**Classify** — no regression, and the merge fix is verdict-neutral:
+
+| status | v0.3.38 | v0.3.41 |
+|---|---|---|
+| ok | 1633 | **1635** |
+| TIMEOUT120 | 286 | **284** |
+| crash | 1 | 1 |
+
+Verdict-diff (`classify-verdict-diff-v0338-v0341.txt`): **0 subsumption diffs** on a
+merge-exercising set (pizza, wine, ore-15672, ore-10908, + 4 ORE nominal onts) — the
+#38 merge-corruption fix shifted no verdicts.
+
+**Realize** — the termination bounds turn hangs into fast terminations:
+
+| status | v0.3.38 | v0.3.41 |
+|---|---|---|
+| completed (typed) | 365 | **373** (+8) |
+| hung to 120 s watchdog | 759 | **712** (−47) |
+| bounded early | 23 | **62** (+39) |
+
+**47 ontologies left the 120 s watchdog hang.** The 62 bounded-early
+(`realize-v0341-exit1-categorized.txt`): **39 node-cap** ("tableau bailed out — internal
+limit"), **21 graceful inconsistent** (short-circuit), 2 other (1 parse `ore_ont_10860`,
+1 slow-categorization artifact). **Zero panics.**
+
+**Honest edge:** for `realize`, a node-cap hit surfaces as an *error* ("no verdict"),
+not a sound-partial — so those 39 fail fast rather than returning the types they could
+determine. Robustness win (no unbounded hangs), not graceful degradation.
+
+An interactive version of these results is published as a Claude artifact.

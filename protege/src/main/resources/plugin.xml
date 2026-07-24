@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<?eclipse version="3.0"?>
+<plugin>
+   <extension id="RustdlReasonerFactory"
+              point="org.protege.editor.owl.inference_reasonerfactory">
+      <reasonerFactory name="rustdl"
+                       factoryClass="com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo"/>
+   </extension>
+</plugin>

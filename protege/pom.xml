@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>nl.maastrichtuniversity.ids</groupId>
+  <artifactId>rustdl-protege</artifactId>
+  <version>0.0.0-SNAPSHOT</version>
+  <packaging>bundle</packaging>
+
+  <name>rustdl Reasoner (Protégé plugin)</name>
+  <description>rustdl OWL 2 reasoner as a Protégé plugin</description>
+  <url>https://github.com/MaastrichtU-IDS/rustdl</url>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>11</maven.compiler.release>
+    <owlapi.version>4.5.29</owlapi.version>
+    <protege.version>5.6.6</protege.version>
+    <gson.version>2.11.0</gson.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>net.sourceforge.owlapi</groupId>
+      <artifactId>owlapi-distribution</artifactId>
+      <version>${owlapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>edu.stanford.protege</groupId>
+      <artifactId>protege-editor-owl</artifactId>
+      <version>${protege.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>${gson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.felix</groupId>
+        <artifactId>maven-bundle-plugin</artifactId>
+        <version>5.1.9</version>
+        <extensions>true</extensions>
+        <configuration>
+          <instructions>
+            <Bundle-SymbolicName>nl.maastrichtuniversity.ids.rustdl;singleton:=true</Bundle-SymbolicName>
+            <Bundle-Name>rustdl Reasoner</Bundle-Name>
+            <Bundle-Category>protege</Bundle-Category>
+            <Bundle-ContactAddress>https://github.com/MaastrichtU-IDS/rustdl</Bundle-ContactAddress>
+            <Bundle-Vendor>Institute of Data Science, Maastricht University</Bundle-Vendor>
+            <Bundle-RequiredExecutionEnvironment>JavaSE-11</Bundle-RequiredExecutionEnvironment>
+            <Bundle-License>Apache-2.0</Bundle-License>
+            <Bundle-Activator>org.protege.editor.core.plugin.DefaultPluginActivator</Bundle-Activator>
+            <Export-Package>com.github.maastrichtu_ids.rustdl.protege;version="${project.version}"</Export-Package>
+            <Import-Package>
+              org.protege.editor.core.*,
+              org.protege.editor.owl.*,
+              org.semanticweb.owlapi.*,
+              org.osgi.framework,
+              *
+            </Import-Package>
+            <Embed-Dependency>gson;scope=compile;inline=true</Embed-Dependency>
+            <Embed-Transitive>false</Embed-Transitive>
+            <Include-Resource>{maven-resources}, plugin.xml=src/main/resources/plugin.xml</Include-Resource>
+          </instructions>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>verify-bundle-contents</id>
+            <phase>verify</phase>
+            <goals><goal>run</goal></goals>
+            <configuration>
+              <target>
+                <unzip src="${project.build.directory}/${project.build.finalName}.jar"
+                       dest="${project.build.directory}/jar-check"/>
+                <fail message="plugin.xml missing from jar root">
+                  <condition><not><available file="${project.build.directory}/jar-check/plugin.xml"/></not></condition>
+                </fail>
+                <fail message="gson not embedded">
+                  <condition><not><available file="${project.build.directory}/jar-check/com/google/gson"/></not></condition>
+                </fail>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

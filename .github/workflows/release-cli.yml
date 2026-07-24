@@ -1,0 +1,89 @@
+name: Release CLI binaries
+
+# Standalone from release-python.yml on purpose: a CLI-build failure must
+# never block PyPI publishing. Both fire on the same v*.*.* tag; they share
+# only the GitHub Release object, reconciled idempotently in publish-cli.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-cli:
+    name: Build rustdl ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            apt: musl-tools
+          # Native ARM runner (ubuntu-24.04-arm, GA 2025) — no QEMU, ~4 min.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            apt: musl-tools
+          - os: macos-14
+            target: aarch64-apple-darwin
+            apt: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            apt: ''
+    env:
+      # Build on stable regardless of rust-toolchain.toml's 1.95.0 lint pin
+      # (see CLAUDE.md / release-python.yml). Strip line-tables debug info
+      # that [profile.release] carries. Windows adds static CRT so no VC++
+      # redistributable is needed on the user's machine.
+      RUSTUP_TOOLCHAIN: stable
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install musl build tools (Linux)
+        if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master, pinned
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+
+      - name: Set RUSTFLAGS (unix)
+        if: runner.os != 'Windows'
+        run: echo "RUSTFLAGS=-C strip=symbols" >> "$GITHUB_ENV"
+
+      - name: Set RUSTFLAGS (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C strip=symbols -C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - name: Build rustdl (release)
+        run: cargo build --release --locked --target ${{ matrix.target }} -p owl-dl-cli --bin rustdl
+
+      - name: Stage + smoke-test binary (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          cp "target/${{ matrix.target }}/release/rustdl" "staging/rustdl-${{ matrix.target }}"
+          "target/${{ matrix.target }}/release/rustdl" --version
+
+      - name: Stage + smoke-test binary (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp "target/${{ matrix.target }}/release/rustdl.exe" "staging/rustdl-${{ matrix.target }}.exe"
+          "target/${{ matrix.target }}/release/rustdl.exe" --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.target }}
+          path: staging/*
+          if-no-files-found: error

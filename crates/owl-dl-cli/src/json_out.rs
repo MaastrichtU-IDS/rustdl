@@ -2,8 +2,8 @@
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
 use owl_dl_reasoner::{
-    Classification, DifferentIndividuals, Disjointness, PropertyClassification, Realization,
-    SameIndividuals,
+    Classification, DataPropertyValues, DifferentIndividuals, Disjointness, ObjectPropertyValues,
+    PropertyClassification, Realization, SameIndividuals,
 };
 use serde::Serialize;
 
@@ -250,6 +250,41 @@ pub(crate) fn build_individuals_json(
         incomplete: same.incomplete() || different.incomplete(),
         same_groups,
         different_pairs,
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct PropertyValuesJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) object_property_values: Vec<[String; 3]>,
+    pub(crate) data_property_values: Vec<[String; 4]>,
+}
+
+#[must_use]
+pub(crate) fn build_property_values_json(
+    obj: &ObjectPropertyValues,
+    data: &DataPropertyValues,
+) -> PropertyValuesJson {
+    let mut object_property_values: Vec<[String; 3]> = obj
+        .triples()
+        .iter()
+        .map(|(s, p, o)| [s.clone(), p.clone(), o.clone()])
+        .collect();
+    object_property_values.sort();
+
+    let mut data_property_values: Vec<[String; 4]> = data
+        .quads()
+        .iter()
+        .map(|(s, p, lex, dt)| [s.clone(), p.clone(), lex.clone(), dt.clone()])
+        .collect();
+    data_property_values.sort();
+
+    PropertyValuesJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: obj.incomplete() || data.incomplete(),
+        object_property_values,
+        data_property_values,
     }
 }
 

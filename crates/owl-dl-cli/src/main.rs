@@ -26,9 +26,10 @@ use horned_owl::model::{AnnotationSubject, AnnotationValue, Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, Realization, classify_n2, classify_n2_with_timeout, classify_saturation_only,
-    classify_with_budget, instances_of, instances_of_saturation_only, is_class_satisfiable,
-    is_consistent, is_instance_of, is_instance_of_saturation_only, is_subclass_of,
-    is_subclass_of_saturation_only, is_subclass_of_with_stats, realize, realize_saturation_only,
+    classify_with_budget, inferred_data_property_values, inferred_object_property_values,
+    instances_of, instances_of_saturation_only, is_class_satisfiable, is_consistent,
+    is_instance_of, is_instance_of_saturation_only, is_subclass_of, is_subclass_of_saturation_only,
+    is_subclass_of_with_stats, realize, realize_saturation_only,
 };
 use owl_dl_reasoner::{ProveEntailmentResult, prove_entailment_rcstr, render_proof_with_defs};
 
@@ -85,6 +86,22 @@ enum Command {
         /// Path to an ontology file.
         file: PathBuf,
         /// Per-pair probe deadline in ms (0 = unbounded). Default 1000.
+        #[arg(long, default_value_t = 1000)]
+        pair_timeout_ms: u64,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inferred property values over named individuals: entailed OBJECT
+    /// property triples (`inferred_object_property_values`, sound seed +
+    /// bounded entailment extension) + entailed DATA property quads
+    /// (`inferred_data_property_values`, structural passthrough). `--json`
+    /// for tooling.
+    PropertyValues {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Per-pair entailment-probe deadline in ms (0 = unbounded).
+        /// Default 1000. Data values are structural (no deadline).
         #[arg(long, default_value_t = 1000)]
         pair_timeout_ms: u64,
         /// Emit a single machine-readable JSON object on stdout (schema v1).
@@ -848,6 +865,41 @@ fn main() -> Result<()> {
             if same.incomplete() || different.incomplete() {
                 eprintln!(
                     "warning: individuals incomplete (budget/fragment) — sound under-approximation"
+                );
+            }
+        }
+        Command::PropertyValues {
+            file,
+            pair_timeout_ms,
+            json,
+        } => {
+            let onto = parse_ofn(&file)?;
+            let deadline =
+                (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
+            let obj = inferred_object_property_values(&onto, deadline)
+                .context("inferred_object_property_values")?;
+            let data =
+                inferred_data_property_values(&onto).context("inferred_data_property_values")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_property_values_json(
+                        &obj, &data
+                    ))?
+                );
+                return Ok(());
+            }
+            println!("# object property values");
+            for (s, p, o) in obj.triples() {
+                println!("{s}\t{p}\t{o}");
+            }
+            println!("# data property values");
+            for (s, p, lex, dt) in data.quads() {
+                println!("{s}\t{p}\t{lex}\t{dt}");
+            }
+            if obj.incomplete() || data.incomplete() {
+                eprintln!(
+                    "warning: property values incomplete (budget/fragment) — sound under-approximation"
                 );
             }
         }

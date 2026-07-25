@@ -1,0 +1,12 @@
+Prefix(:=<http://ex/ce#>)
+Ontology(<http://ex/ce>
+  Declaration(Class(:A))
+  Declaration(Class(:B))
+  Declaration(Class(:C))
+  Declaration(NamedIndividual(:x))
+  Declaration(NamedIndividual(:y))
+  SubClassOf(:A :C)
+  SubClassOf(:B :C)
+  ClassAssertion(:A :x)
+  ClassAssertion(:B :y)
+)

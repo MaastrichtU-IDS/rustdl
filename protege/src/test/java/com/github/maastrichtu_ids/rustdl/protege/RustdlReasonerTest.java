@@ -287,6 +287,30 @@ public class RustdlReasonerTest {
         assertTrue(diff.containsEntity(ind("c")));
     }
 
+    /** Loads the shared propvalues.json fixture: a p b (object); a d "5"^^xsd:integer (data). */
+    private RustdlReasoner propValuesReasoner() throws Exception {
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/propvalues"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = true; c.incomplete = false;
+        c.unsatisfiable = new ArrayList<>(); c.equivalent_groups = new ArrayList<>(); c.direct_subsumptions = new ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new ArrayList<>();
+        String json = new String(java.nio.file.Files.readAllBytes(
+            java.nio.file.Paths.get(getClass().getResource("/json/propvalues.json").toURI())));
+        RustdlJson.PropertyValuesJson v = RustdlProcess.parsePropertyValues(json);
+        return RustdlReasoner.forTest(o, c, r, v);
+    }
+
+    @Test public void objectPropertyValuesContainsAssertedObject() throws Exception {
+        NodeSet<OWLNamedIndividual> vals = propValuesReasoner().getObjectPropertyValues(ind("a"), objProp("p"));
+        assertTrue(vals.containsEntity(ind("b")));
+    }
+
+    @Test public void dataPropertyValuesContainsAssertedLiteral() throws Exception {
+        OWLLiteral expected = df.getOWLLiteral("5", df.getOWLDatatype(IRI.create("http://www.w3.org/2001/XMLSchema#integer")));
+        Set<OWLLiteral> vals = propValuesReasoner().getDataPropertyValues(ind("a"), dataProp("d"));
+        assertTrue(vals.contains(expected));
+    }
+
     @Test public void unsatEdgeDoesNotCorruptLeaves() throws Exception {
         RustdlReasoner reasoner = withUnsat();
         // A is a genuine leaf: its direct sub is the bottom node (which includes U and owl:Nothing, MERGED into one node)

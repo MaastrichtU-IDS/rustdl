@@ -23,6 +23,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     private RustdlJson.PropHierJson propHierResult;
     private RustdlJson.DisjointJson disjointResult;
     private RustdlJson.IndividualsJson individualsResult;
+    private RustdlJson.PropertyValuesJson propValuesResult;
 
     // Derived indices built from classifyResult.
     private final Map<String, Node<OWLClass>> equivNodeByIri = new HashMap<>();   // iri -> its equiv-class node
@@ -96,6 +97,13 @@ public class RustdlReasoner extends OWLReasonerBase {
         RustdlReasoner reasoner = forTest(o, c, r);
         reasoner.individualsResult = i;
         reasoner.rebuildIndividualsIndices();
+        return reasoner;
+    }
+
+    /** Test seam: as {@link #forTest(OWLOntology, RustdlJson.ClassifyJson, RustdlJson.RealizeJson)}, plus an injected property-values result. */
+    static RustdlReasoner forTest(OWLOntology o, RustdlJson.ClassifyJson c, RustdlJson.RealizeJson r, RustdlJson.PropertyValuesJson v) {
+        RustdlReasoner reasoner = forTest(o, c, r);
+        reasoner.propValuesResult = v;
         return reasoner;
     }
 
@@ -177,6 +185,10 @@ public class RustdlReasoner extends OWLReasonerBase {
     private void ensureIndividuals() {
         if (individualsResult == null) precomputeInferences(InferenceType.SAME_INDIVIDUAL);
     }
+    /** Ensure object/data property values ran (lazy precompute; the subprocess wiring into precomputeInferences is a later task). */
+    private void ensurePropValues() {
+        if (propValuesResult == null) precomputeInferences(InferenceType.OBJECT_PROPERTY_ASSERTIONS);
+    }
 
     @Override protected void handleChanges(Set<OWLAxiom> added, Set<OWLAxiom> removed) {
         // BUFFERING: an edit invalidates the cache; next query re-runs the subprocess.
@@ -185,6 +197,7 @@ public class RustdlReasoner extends OWLReasonerBase {
         propHierResult = null;
         disjointResult = null;
         individualsResult = null;
+        propValuesResult = null;
         equivNodeByIri.clear(); directSupers.clear(); directSubs.clear(); unsatisfiable.clear();
         allNamed.clear(); topChildren.clear(); bottomLeaves.clear();
         objEquivByIri.clear(); objDirectSupers.clear(); objDirectSubs.clear();
@@ -690,8 +703,27 @@ public class RustdlReasoner extends OWLReasonerBase {
         return new OWLDataPropertyNodeSet(nodes);
     }
     @Override public NodeSet<OWLClass> getDataPropertyDomains(OWLDataProperty pe, boolean direct) { return new OWLClassNodeSet(); }
-    @Override public NodeSet<OWLNamedIndividual> getObjectPropertyValues(OWLNamedIndividual ind, OWLObjectPropertyExpression pe) { return new OWLNamedIndividualNodeSet(); }
-    @Override public Set<OWLLiteral> getDataPropertyValues(OWLNamedIndividual ind, OWLDataProperty pe) { return Collections.emptySet(); }
+    @Override public NodeSet<OWLNamedIndividual> getObjectPropertyValues(OWLNamedIndividual ind, OWLObjectPropertyExpression pe) {
+        if (pe.isAnonymous()) return new OWLNamedIndividualNodeSet();
+        ensurePropValues(); throwIfInconsistent();
+        String s = ind.getIRI().toString(), p = pe.asOWLObjectProperty().getIRI().toString();
+        Set<Node<OWLNamedIndividual>> nodes = new HashSet<>();
+        for (List<String> t : orEmpty(propValuesResult == null ? null : propValuesResult.object_property_values)) {
+            if (t.get(0).equals(s) && t.get(1).equals(p))
+                nodes.add(new OWLNamedIndividualNode(df.getOWLNamedIndividual(IRI.create(t.get(2)))));
+        }
+        return new OWLNamedIndividualNodeSet(nodes);
+    }
+    @Override public Set<OWLLiteral> getDataPropertyValues(OWLNamedIndividual ind, OWLDataProperty pe) {
+        ensurePropValues(); throwIfInconsistent();
+        String s = ind.getIRI().toString(), p = pe.getIRI().toString();
+        Set<OWLLiteral> out = new HashSet<>();
+        for (List<String> q : orEmpty(propValuesResult == null ? null : propValuesResult.data_property_values)) {
+            if (q.get(0).equals(s) && q.get(1).equals(p))
+                out.add(df.getOWLLiteral(q.get(2), df.getOWLDatatype(IRI.create(q.get(3)))));   // lexical + datatype
+        }
+        return out;
+    }
     @Override public Node<OWLNamedIndividual> getSameIndividuals(OWLNamedIndividual ind) {
         ensureIndividuals(); throwIfInconsistent();
         Node<OWLNamedIndividual> n = sameGroupByIri.get(ind.getIRI().toString());

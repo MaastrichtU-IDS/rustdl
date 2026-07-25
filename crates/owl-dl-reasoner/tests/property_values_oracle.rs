@@ -220,6 +220,95 @@ fn extension_positively_fires_non_seed_triple() {
     assert!(!has("http://ex/#b", "http://ex/#seed", "http://ex/#a"));
 }
 
+/// Regression test for PR #50 review Fix 2 ("proper" pass): the
+/// conjunctive-antecedent counterexample that the review found the FIRST Fix
+/// 2 (`analyze_fragment(PureEl|Horn)` gate) still under-reports on. The
+/// axioms `SubClassOf(ObjectIntersectionOf(:A :B) :C)`,
+/// `SubClassOf(:C ObjectHasValue(:R :c))`, `ClassAssertion(:A :a)`,
+/// `ClassAssertion(:B :a)` are all Horn-clausal (no disjunction anywhere), so
+/// `analyze_fragment` reports `Horn` and the OLD gate started `incomplete`
+/// at `false` — yet `R(a,c)` IS entailed (`a:A ⊓ a:B ⟹ a:C ⟹ R(a,c)`) and the
+/// `ABox` saturator's `SubClassOf` indexing DROPS the entire first axiom
+/// (`abox_saturation.rs`'s `atomic_class(*sub)` gate: `sub` is the
+/// non-atomic `And(A,B)`), so the seed never derives `a:C` and never fires
+/// `R(a,c)`. Pre-fix: `incomplete()` is `false` (BUG). Post-fix
+/// (`object_property_edge_complete`): the non-atomic `SubClassOf` antecedent
+/// is outside the whitelist ⇒ `incomplete()` is `true`.
+///
+/// FP=0 is the hard, unconditional half: this ontology's seed never connects
+/// `a` and `c` (the dropped axiom is the only thing that would), so the
+/// bounded extension has no candidate pair to probe either — `R(a,c)`
+/// structurally cannot be spuriously emitted here.
+#[test]
+fn conjunctive_antecedent_reports_incomplete_and_no_fp() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+            Declaration(ObjectProperty(:R))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:c))
+            SubClassOf(ObjectIntersectionOf(:A :B) :C)
+            SubClassOf(:C ObjectHasValue(:R :c))
+            ClassAssertion(:A :a)
+            ClassAssertion(:B :a))",
+    );
+    let v = inferred_object_property_values(&o, None).expect("KB is consistent");
+    assert!(
+        v.incomplete(),
+        "conjunctive-antecedent TBox must be honestly reported incomplete \
+         (the ABox saturator drops the whole non-atomic-sub SubClassOf axiom)"
+    );
+    assert!(
+        !v.triples()
+            .iter()
+            .any(|(s, p, o)| s == "http://ex/#a" && p == "http://ex/#R" && o == "http://ex/#c"),
+        "must not spuriously emit the entailed-but-underivable triple R(a,c)"
+    );
+}
+
+/// Completeness-POSITIVE regression test for PR #50 review Fix 2 ("proper"
+/// pass): pins that `object_property_edge_complete`'s gate is not vacuously
+/// always-incomplete. A single object property `:R`, declared BOTH
+/// `SymmetricObjectProperty` and `TransitiveObjectProperty` (both fully
+/// captured by the `ABox` saturator regardless of role polarity — see
+/// `object_property_edge_complete`'s doc), plus an atomic-antecedent
+/// `SubClassOf(:C, ObjectHasValue(:R, :b))` (captured: `sub` is atomic,
+/// `sup` is a plain `ObjectHasValue`) and `ClassAssertion(:C, :a)`. This
+/// entails `R(a,b)` (has-value trigger), `R(b,a)` (symmetric), and the
+/// self-loops `R(a,a)`/`R(b,b)` (transitive closure over the symmetric
+/// pair) — a fully self-closed neighborhood over the SOLE declared object
+/// property, so the bounded extension (which probes every declared object
+/// property against every candidate pair) finds every candidate already
+/// seeded and never runs a probe. Both conditions the honest gate requires
+/// hold: every axiom is in the whitelist, AND the extension has nothing left
+/// to probe.
+#[test]
+fn atomic_antecedent_hasvalue_with_role_characteristics_reports_complete() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:C)) Declaration(ObjectProperty(:R))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            SymmetricObjectProperty(:R) TransitiveObjectProperty(:R)
+            SubClassOf(:C ObjectHasValue(:R :b))
+            ClassAssertion(:C :a))",
+    );
+    let v = inferred_object_property_values(&o, None).expect("KB is consistent");
+    assert!(
+        !v.incomplete(),
+        "a fully-whitelisted TBox/RBox with a self-closed seed neighborhood \
+         must report complete, else the gate is vacuously always-incomplete; got {:?}",
+        v.triples()
+    );
+    let has = |s: &str, p: &str, ob: &str| {
+        v.triples()
+            .iter()
+            .any(|(x, y, z)| x == s && y == p && z == ob)
+    };
+    assert!(has("http://ex/#a", "http://ex/#R", "http://ex/#b"));
+    assert!(has("http://ex/#b", "http://ex/#R", "http://ex/#a"));
+}
+
 /// External completeness oracle for `inferred_object_property_values` (issue
 /// #45's FP=0 soundness guard, Task 4.4). Same design as
 /// `materialize_oracle.rs::oracle_edges` / `materialize_matches_hermit_oracle`:

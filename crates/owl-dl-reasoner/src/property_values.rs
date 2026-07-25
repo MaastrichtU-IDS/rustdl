@@ -21,8 +21,8 @@ use crate::{PreparedOntology, ReasonError};
 use horned_owl::model::ForIRI;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_core::convert::convert_ontology;
-use owl_dl_core::ir::{IndividualId, RoleId};
-use owl_dl_core::ontology::Axiom;
+use owl_dl_core::ir::{ConceptExpr, ConceptId, ConceptPool, IndividualId, RoleId};
+use owl_dl_core::ontology::{Axiom, InternalOntology, SubRolePath};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -42,17 +42,23 @@ impl ObjectPropertyValues {
         &self.triples
     }
 
-    /// `true` iff: the `TBox` lies outside the fragment
-    /// (`analyze_fragment`'s `PureEl`/`Horn`) where the Horn-only seed is
-    /// PROVABLY complete for every entailed edge over named individuals
-    /// (e.g. a disjunctive `C ⊑ ∃R.{b} ⊔ ∃R.{c})` — the seed may then be
-    /// missing edges the bounded extension has no candidate pair to even
-    /// probe); OR a bounded-extension probe timed out (`None`); OR the
-    /// bounded (non-exhaustive) extension ran at all. Object values beyond
-    /// the seed neighborhood — i.e. entailed edges between individuals that
-    /// never co-occur in a seed edge — may be missed whenever this is
-    /// `true`. `false` only when the `TBox` is in-fragment AND the seed alone
-    /// was returned (no extension candidates).
+    /// `true` iff: the ontology contains an axiom outside
+    /// [`object_property_edge_complete`]'s whitelist — the sound
+    /// over-approximation of the `ABox` saturator's (`abox_saturation::
+    /// saturate_abox_consistency`, which this query's seed actually runs)
+    /// genuinely edge-complete fragment (e.g. a conjunctive antecedent
+    /// `SubClassOf(A ⊓ B, C)`, or a disjunctive `C ⊑ ∃R.{b} ⊔ ∃R.{c}` — either
+    /// can entail an edge the seed's Horn-only propagation never derives);
+    /// OR a bounded-extension probe timed out (`None`); OR the bounded
+    /// (non-exhaustive) extension ran at all (even when it added nothing —
+    /// running a probe at all means the answer is no longer provably the
+    /// full closure). Object values beyond the seed neighborhood — i.e.
+    /// entailed edges between individuals that never co-occur in a seed edge
+    /// — may be missed whenever this is `true`. `false` is a genuine
+    /// guarantee: every entailed object-property edge over named individuals
+    /// is included. It requires BOTH that every axiom is in
+    /// `object_property_edge_complete`'s whitelist AND that the bounded
+    /// extension found no candidate pair to probe at all.
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
@@ -135,6 +141,237 @@ fn candidate_extension_pairs(
     pairs
 }
 
+// ─── Sound over-approximation gate for `incomplete` (PR #50 review Fix 2,
+// "proper" pass) ─────────────────────────────────────────────────────────────
+//
+// The gate previously used here (`!matches!(analyze_fragment(&internal),
+// PureEl | Horn)`) was a MISMATCHED proxy: `analyze_fragment` measures the
+// classification wedge / EL-saturation engine's completeness, not the ABox
+// saturator's (`abox_saturation::saturate_abox_consistency`, which
+// `materialize_object_property_assertions` — this query's seed — actually
+// runs). The mismatch under-reports: a Horn-classified TBox with a
+// conjunctive antecedent (`SubClassOf(A ⊓ B, C)`) was reported
+// `incomplete = false` even though the ABox saturator's own `SubClassOf`
+// indexing silently DROPS the entire axiom whenever the sub-concept is
+// non-atomic (`atomic_class(*sub)` returning `None` in `abox_saturation.rs`),
+// so a genuinely entailed edge (`C ⊑ ∃R.{c}` firing once an individual gets
+// type `C`) was missed while `incomplete` claimed otherwise.
+//
+// `object_property_edge_complete` replaces that gate with a predicate keyed
+// EXACTLY to the shapes `abox_saturation::saturate_abox_consistency` provably
+// captures for named-individual object-property EDGE derivation. It is a
+// SOUND OVER-APPROXIMATION: `true` only when every axiom is a shape
+// enumerated below; ANY axiom outside the whitelist ⇒ `false`.
+// Under-reporting completeness is acceptable; over-reporting (the bug this
+// replaces) is not.
+//
+// ## Whitelist (enumerated by reading `abox_saturation.rs`'s indexing loop,
+// `collect_existentials`/`collect_hasvalues`, and the edge-drain rules in
+// full)
+//
+// TBox / class axioms:
+// - `SubClassOf { sub, sup }`: `sub` MUST be `Atomic` — `atomic_class(*sub)`
+//   gates the ENTIRE axiom in `abox_saturation.rs` (type propagation via
+//   `sub_of`, existential markers via `existential_of`, AND `ObjectHasValue`
+//   ground-edge markers via `has_value_of` are all skipped together for any
+//   non-atomic `sub`: `And`/`Or`/`Some`/`Not`/cardinality/nominal). `sup`
+//   must satisfy [`is_edge_complete_concept`] below.
+// - `EquivalentClasses(members)`: ALL members must be `Atomic`. The saturator
+//   only derives "each atomic peer ⊑ each OTHER atomic peer" for atomic
+//   members; for a conjunctive member (`C ≡ D1 ⊓ D2`) the REVERSE direction
+//   (`D1 ⊓ D2 ⊑ C`, needed when an individual separately holds types D1 and
+//   D2) is explicitly NOT added — see the "we deliberately do NOT add the
+//   reverse direction" comment in `abox_saturation.rs` — the same
+//   conjunctive-antecedent gap as `SubClassOf`, so any non-atomic member
+//   rejects the whole axiom.
+// - `DisjointClasses(_)`: edge-irrelevant. It only ever DETECTS a clash
+//   (Rule 8) over types already derived by other axioms; it cannot itself
+//   entail a new type or edge, so it is safe regardless of member shape.
+// - `DisjointUnion { .. }`: **NOT whitelisted**, despite superficially
+//   resembling `DisjointClasses`. `DisjointUnion(P, [C1, C2, ...])` also
+//   entails `Ci ⊑ P` for every member — a genuine `SubClassOf`-shaped type
+//   entailment — but `abox_saturation.rs` has NO `DisjointUnion` arm at all
+//   (falls to the catch-all `_ => {}`), so that entailment is silently
+//   dropped: a real edge-completeness gap. (`classify.rs`'s
+//   `is_saturator_axiom` documents the identical reasoning for its own,
+//   different, saturator/fragment gate — same root cause, independently
+//   confirmed here for this module.)
+//
+// RBox / role axioms:
+// - `SubObjectPropertyOf { sub, sup }`: `sub` as a single `Role` MUST be
+//   non-inverse. The saturator's role-hierarchy lookup at edge-drain time is
+//   keyed `(role_id, false)` ONLY (`role_super.get(&(rid, false))`), but
+//   insertion keys on `role_key(*sub)` — so an axiom whose `sub` is an
+//   `Inverse` role is indexed under `(role_id, true)` and NEVER matched: a
+//   dead, silently-dropped entry. `sup`'s polarity is applied correctly at
+//   push time regardless, so no restriction is needed there. `sub` as a
+//   `Chain` is captured for length 2 or 3 ONLY (`chains2`/`chains3`); any
+//   other length is the documented "longer chains not supported" drop.
+//   Chain leg polarities are all handled correctly (the chain matcher
+//   re-derives direction from `r*_inv` at read time — unlike the single-role
+//   hierarchy lookup, it is not keyed by a fixed-polarity map slot), so no
+//   non-inverse restriction is needed for chain legs.
+// - `EquivalentObjectProperties(_)`: **NOT whitelisted** — `abox_saturation.rs`
+//   has no arm for it at all (falls to `_ => {}`); `R ≡ S` plus edge
+//   `R(a,b)` should entail `S(a,b)`, but nothing derives it.
+// - `DisjointObjectProperties(_)`: edge-irrelevant (no arm, but a pure
+//   negative constraint — it cannot itself entail a new edge).
+// - `InverseObjectProperties(_, _)`: fully captured (`inverse_rules`,
+//   consulted at `(role_id, false)` where `role_id` is ALWAYS the base
+//   `role_id()` of the declared role regardless of that role's OWN polarity
+//   — insertion is keyed the same way, so no restriction is needed).
+// - `ObjectPropertyDomain { role, domain }` / `ObjectPropertyRange { role,
+//   range }`: `role` MUST be non-inverse (the identical `(role_id,
+//   false)`-only drain-time lookup bug as `SubObjectPropertyOf`'s
+//   single-role case: `domains`/`ranges` are populated under
+//   `role_key(*role)` but drained only at `(rid, false)`). `domain`/`range`
+//   must be `Atomic`, or `And` of ALL-atomic parts (the indexing loop's
+//   `And`-unpacking silently drops any non-atomic conjunct — conservative:
+//   reject if any part isn't atomic).
+// - `TransitiveRole` / `SymmetricRole` / `FunctionalRole` /
+//   `InverseFunctionalRole`: fully captured regardless of the declared
+//   role's own polarity — verified against the exact indexing/read code for
+//   each: `TransitiveRole`/`SymmetricRole` register through the
+//   polarity-general chain / `inverse_rules` machinery (not the restricted
+//   `role_super` path), and `FunctionalRole`/`InverseFunctionalRole`'s merge
+//   loop filters the raw edge set directly by role id with no keyed lookup.
+// - `AsymmetricRole` / `IrreflexiveRole`: edge-irrelevant — pure negative
+//   constraints (no arm, and none needed: neither can entail a new edge).
+// - `ReflexiveRole`: **NOT whitelisted**. `ReflexiveRole(R)` entails
+//   `R(a,a)` for EVERY named individual `a` — a genuine, always-missed edge,
+//   since `abox_saturation.rs` has no reflexivity handling at all.
+//
+// ABox axioms:
+// - `ClassAssertion { class, individual }`: `class` must satisfy
+//   [`is_edge_complete_concept`] (the SAME recursive check as a `SubClassOf`
+//   head — deliberately shared and conservative: a bare `Not`/`Or`/`Some`
+//   filler on a `ClassAssertion` is rejected even though some such shapes
+//   are harmless no-ops for the seed, because distinguishing "harmless
+//   no-op" from "silently-dropped disjunctive entailment" case-by-case is
+//   exactly the kind of judgment call the "when in doubt, false" rule is
+//   meant to foreclose).
+// - `ObjectPropertyAssertion` / `SameIndividual`: fully captured (direct
+//   edge seed; union-find + types/edges propagation rules 9a/9b).
+// - `NegativeObjectPropertyAssertion` / `DifferentIndividuals`: edge-
+//   irrelevant (no arm; both are negative/non-generative facts that cannot
+//   themselves entail a positive edge via this saturator).
+//
+// Declarations (`DeclareClass` / `DeclareObjectProperty` /
+// `DeclareNamedIndividual`): always safe — no semantic content.
+
+/// Recursive concept-shape check shared by `SubClassOf`'s head / RHS,
+/// `EquivalentClasses`' complex members, and `ClassAssertion`'s class
+/// expression — the exact shapes `abox_saturation.rs`'s `collect_existentials`
+/// / `collect_hasvalues` / `sub_of`-`And`-unpacking capture:
+/// - `Top` / `Bot` / `Atomic`: leaves that are always safe — `Top` and `Bot`
+///   contribute no type/edge in named-only semantics (genuine no-ops for this
+///   saturator, not a silently-dropped entailment).
+/// - `And(parts)`: safe iff every conjunct is (recursively).
+/// - `Some(role, filler)` where `filler` is `Nominal`: an `ObjectHasValue`
+///   ground-edge marker, captured regardless of `role`'s polarity
+///   (`collect_hasvalues` stores the whole `Role`, normalized correctly at
+///   use).
+/// - `Some(role, filler)` where `filler` is `Atomic`: a plain existential
+///   marker, captured ONLY for a non-inverse (Named) `role`
+///   (`collect_existentials` checks `!r.is_inverse()` explicitly).
+/// - anything else (`Or`, `Not`, `All`, `Min`, `Max`, a bare `Nominal`,
+///   `SelfRestriction`, or a `Some` with any other filler shape): NOT
+///   captured ⇒ `false`.
+fn is_edge_complete_concept(cid: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(cid) {
+        ConceptExpr::Top | ConceptExpr::Bot | ConceptExpr::Atomic(_) => true,
+        ConceptExpr::And(parts) => parts.iter().all(|&p| is_edge_complete_concept(p, pool)),
+        ConceptExpr::Some(role, filler) => match pool.get(*filler) {
+            ConceptExpr::Nominal(_) => true,
+            ConceptExpr::Atomic(_) => !role.is_inverse(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `ObjectPropertyDomain`/`ObjectPropertyRange`'s concept argument: the
+/// indexing loop only ever populates `domains`/`ranges` from an `Atomic`
+/// concept, or (unpacking one level) an `And` whose parts are individually
+/// `Atomic` — any non-atomic conjunct is silently skipped for THAT part
+/// (never rejecting the whole axiom in `abox_saturation.rs` itself, but we
+/// conservatively require every conjunct be atomic here so no entailed
+/// domain/range type is ever silently lost).
+fn is_edge_complete_domain_range(cid: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(cid) {
+        ConceptExpr::Atomic(_) => true,
+        ConceptExpr::And(parts) => parts
+            .iter()
+            .all(|&p| matches!(pool.get(p), ConceptExpr::Atomic(_))),
+        _ => false,
+    }
+}
+
+/// Per-axiom whitelist check — see the module-level doc block above this
+/// function for the full enumeration and justification of every arm.
+///
+/// `match_same_arms` is deliberately silenced: several arms share a body
+/// (`true`/`false`) purely by coincidence of outcome, not of reasoning — each
+/// is enumerated and justified separately above (mirrors the same allow on
+/// `abox_saturation.rs`'s own rule-matching code, for the same readability
+/// reason: collapsing arms with different justifications into one pattern
+/// would make future edits (e.g. discovering a new gap in one shape but not
+/// its neighbor) error-prone).
+#[allow(clippy::match_same_arms)]
+fn is_edge_complete_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
+    match ax {
+        Axiom::SubClassOf { sub, sup } => {
+            matches!(pool.get(*sub), ConceptExpr::Atomic(_)) && is_edge_complete_concept(*sup, pool)
+        }
+        Axiom::EquivalentClasses(members) => members
+            .iter()
+            .all(|&c| matches!(pool.get(c), ConceptExpr::Atomic(_))),
+        Axiom::DisjointClasses(_) => true,
+        Axiom::DisjointUnion { .. } => false,
+        Axiom::SubObjectPropertyOf { sub, .. } => match sub {
+            SubRolePath::Role(r) => !r.is_inverse(),
+            SubRolePath::Chain(roles) => roles.len() == 2 || roles.len() == 3,
+        },
+        Axiom::EquivalentObjectProperties(_) => false,
+        Axiom::DisjointObjectProperties(_) => true,
+        Axiom::InverseObjectProperties(_, _) => true,
+        Axiom::ObjectPropertyDomain { role, domain } => {
+            !role.is_inverse() && is_edge_complete_domain_range(*domain, pool)
+        }
+        Axiom::ObjectPropertyRange { role, range } => {
+            !role.is_inverse() && is_edge_complete_domain_range(*range, pool)
+        }
+        Axiom::TransitiveRole(_)
+        | Axiom::SymmetricRole(_)
+        | Axiom::FunctionalRole(_)
+        | Axiom::InverseFunctionalRole(_) => true,
+        Axiom::AsymmetricRole(_) | Axiom::IrreflexiveRole(_) => true,
+        Axiom::ReflexiveRole(_) => false,
+        Axiom::ClassAssertion { class, .. } => is_edge_complete_concept(*class, pool),
+        Axiom::ObjectPropertyAssertion { .. } => true,
+        Axiom::NegativeObjectPropertyAssertion { .. } => true,
+        Axiom::SameIndividual(_) => true,
+        Axiom::DifferentIndividuals(_) => true,
+        Axiom::DeclareClass(_)
+        | Axiom::DeclareObjectProperty(_)
+        | Axiom::DeclareNamedIndividual(_) => true,
+    }
+}
+
+/// `true` iff EVERY axiom in `internal` is provably within the `ABox`
+/// saturator's (`abox_saturation::saturate_abox_consistency`) edge-complete
+/// fragment for named-individual object-property edges — see the module-level
+/// doc block above for the full whitelist and per-shape justification. A
+/// sound OVER-approximation: `false` whenever any axiom's capture is not
+/// proven (never the reverse).
+pub(crate) fn object_property_edge_complete(internal: &InternalOntology) -> bool {
+    let pool = &internal.concepts;
+    internal
+        .axioms
+        .iter()
+        .all(|ax| is_edge_complete_axiom(ax, pool))
+}
+
 /// Inferred OBJECT property values over named individuals: the sound
 /// `materialize_object_property_assertions` seed, extended by a bounded
 /// entailment probe over the seed's own individual-pair neighborhood (see the
@@ -157,35 +394,20 @@ pub fn inferred_object_property_values<A: ForIRI>(
     let internal = convert_ontology(onto)?;
     let object_properties = named_object_properties(&internal);
 
-    // Honest `incomplete` initialization (review Fix 2): the seed
-    // (`materialize_object_property_assertions`, a Horn-only fixpoint over
-    // NAMED individuals — see `abox_saturation`) plus the bounded
-    // seed-neighborhood extension below are a sound UNDER-approximation
-    // whenever the TBox carries constructs that Horn-only propagation does
-    // not reason over (general disjunction, cardinality-driven case-splits,
-    // ...) — e.g. `C ⊑ (∃R.{b} ⊔ ∃R.{c})`, which never seeds an edge and
-    // whose candidate-pair neighborhood is therefore empty, so the extension
-    // loop below never runs and never gets a chance to set `incomplete`
-    // itself. Mirrors `disjointness.rs`'s
-    // `!classification.completeness_guaranteed()` gate: `PureEl`/`Horn` ⟹
-    // every entailed fact over named individuals is Horn-derivable, so the
-    // seed is complete and starting `incomplete` at `false` is honest.
-    // `analyze_fragment` (not the full `Classification`) is used here
-    // because it is a pure TBox-shape check with no per-pair classify cost —
-    // this function never needs a class hierarchy. Role CHARACTERISTIC
-    // axioms (`Symmetric`/`Inverse`/`Transitive`/...) are handled completely
-    // by the `ABox` saturator itself regardless of fragment (that closure is
-    // exactly what the seed already reflects), and `analyze_fragment`'s
-    // clausifier does not clausify ABox axioms or these role-characteristic
-    // axioms at all, so they never push a fixture out of `PureEl`/`Horn` —
-    // see `object_values_include_asserted_and_symmetric` /
-    // `object_property_values_matches_hermit_oracle`, both of which stay
-    // `PureEl`/`Horn` under this gate.
-    let mut incomplete = !matches!(
-        crate::classify::analyze_fragment(&internal),
-        crate::classify::FragmentClassification::PureEl
-            | crate::classify::FragmentClassification::Horn
-    );
+    // Honest `incomplete` initialization (review Fix 2, "proper" pass): gate
+    // directly on whether every axiom is within the ABox saturator's OWN
+    // provably edge-complete fragment (`object_property_edge_complete`,
+    // below) — NOT on `analyze_fragment`'s `PureEl`/`Horn`, which measures a
+    // DIFFERENT engine (the classification wedge/EL-saturator) and is a
+    // mismatched proxy: a Horn-classified TBox can still contain a
+    // conjunctive antecedent (`SubClassOf(A ⊓ B, C)`) that the ABox
+    // saturator's `SubClassOf` indexing silently drops in its entirety
+    // (non-atomic `sub` ⟹ no type propagation, no existential marker, no
+    // `ObjectHasValue` ground-edge marker for that axiom at all — see
+    // `abox_saturation.rs`), which previously left `incomplete = false` while
+    // a real edge went undetected. See `object_property_edge_complete`'s doc
+    // for the full enumerated whitelist.
+    let mut incomplete = !object_property_edge_complete(&internal);
 
     // `from_internal` clones `internal.vocabulary` before consuming
     // `internal`, so `prepared.vocabulary` resolves the same IRI ↔ id mapping

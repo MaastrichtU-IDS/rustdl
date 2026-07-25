@@ -126,14 +126,22 @@ datatype]`); no entailment probe.
 
 `incomplete` = object values' `incomplete() || data values`' `incomplete()`
 (the latter is always `false` — data values are complete for their
-structural fragment). Object values' `incomplete` is `true` iff: the TBox
-lies outside the fragment (`PureEl`/`Horn`) where the Horn-only seed is
-provably complete for every entailed edge over named individuals (e.g. a
-disjunctive `ObjectHasValue` case-split can entail an edge the seed never
-derives and the bounded extension has no candidate pair to even probe); OR
-the bounded extension ran at all (even if it added nothing — the extension
-is itself a non-exhaustive, seed-neighborhood-only policy); OR an extension
-probe timed out. `false` only when the TBox is in-fragment AND the seed
-alone was returned (no extension candidates). Sound under-approximation: a
+structural fragment). Object values' `incomplete` is `true` iff: the
+ontology contains an axiom outside `object_property_edge_complete`'s
+whitelist — the sound over-approximation of the ABox saturator's OWN
+genuinely edge-complete fragment (NOT `analyze_fragment`'s `PureEl`/`Horn`,
+which measures a different engine — the classification wedge/EL-saturator —
+and was found to under-report: a Horn-classified TBox can still contain a
+conjunctive antecedent, e.g. `SubClassOf(A ⊓ B, C)`, that the ABox
+saturator's own indexing silently drops in its entirety, missing an edge
+while reporting complete); e.g. a conjunctive antecedent or a disjunctive
+`ObjectHasValue` case-split can each entail an edge the seed never derives,
+and the bounded extension has no candidate pair to even probe when that
+happens; OR the bounded extension ran at all (even if it added nothing — the
+extension is itself a non-exhaustive, seed-neighborhood-only policy); OR an
+extension probe timed out. `false` is a genuine guarantee — every entailed
+object-property edge over named individuals is included — and requires BOTH
+that every axiom is in the whitelist AND that the seed alone was returned
+(no extension candidates). Sound under-approximation: a
 reported triple is always genuinely entailed (FP=0); `incomplete` warns real
 edges may be missing.

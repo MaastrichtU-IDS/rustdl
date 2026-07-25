@@ -228,13 +228,32 @@ fn candidate_extension_pairs(
 //   must be `Atomic`, or `And` of ALL-atomic parts (the indexing loop's
 //   `And`-unpacking silently drops any non-atomic conjunct — conservative:
 //   reject if any part isn't atomic).
-// - `TransitiveRole` / `SymmetricRole` / `FunctionalRole` /
-//   `InverseFunctionalRole`: fully captured regardless of the declared
-//   role's own polarity — verified against the exact indexing/read code for
-//   each: `TransitiveRole`/`SymmetricRole` register through the
+// - `TransitiveRole` / `SymmetricRole`: fully captured regardless of the
+//   declared role's own polarity — both register through the
 //   polarity-general chain / `inverse_rules` machinery (not the restricted
-//   `role_super` path), and `FunctionalRole`/`InverseFunctionalRole`'s merge
-//   loop filters the raw edge set directly by role id with no keyed lookup.
+//   `role_super` path).
+// - `FunctionalRole` / `InverseFunctionalRole`: **NOT whitelisted** —
+//   NOT edge-safe, despite the merge loop itself scanning the raw edge set
+//   directly by role id with no keyed lookup (that part IS captured). The
+//   gap is downstream of the merge: Rule 7 (`abox_saturation.rs`) propagates
+//   only TYPES between the functionally-forced-equal fillers, never edges —
+//   edge-folding onto a merged pair only happens via Rule 9b, which fires
+//   exclusively for an EXPLICIT `SameIndividual` axiom, not for identity
+//   forced by functionality/inverse-functionality. So a named-individual
+//   identity forced by this axiom can leave a genuinely entailed
+//   object-property edge between two individuals that never co-occur in a
+//   seed edge — the bounded extension probe (`candidate_extension_pairs`)
+//   never gets a chance to check that pair either. Concretely:
+//   `InverseFunctionalObjectProperty(R)`, `SymmetricObjectProperty(R)`,
+//   `R(a,b)`, `R(a,c)`, `R(b,e)` entails `R(c,e)` (via `R(b,a)`/`R(c,a)` from
+//   symmetry, then `b=c` from inverse-functionality) but `(c,e)` is never a
+//   seed pair. `FunctionalRole` happens to be incidentally shadowed today by
+//   `convert.rs` co-emitting a non-atomic `≤1` GCI that this predicate's
+//   `SubClassOf`/concept-shape checks already reject — but that is a
+//   coincidence of a DIFFERENT lowering pass, not a property of this
+//   predicate, and `InverseFunctionalRole` has no such GCI, so it is directly
+//   exploitable. Both are rejected explicitly here rather than relying on
+//   that incidental coupling.
 // - `AsymmetricRole` / `IrreflexiveRole`: edge-irrelevant — pure negative
 //   constraints (no arm, and none needed: neither can entail a new edge).
 // - `ReflexiveRole`: **NOT whitelisted**. `ReflexiveRole(R)` entails
@@ -341,10 +360,8 @@ fn is_edge_complete_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
         Axiom::ObjectPropertyRange { role, range } => {
             !role.is_inverse() && is_edge_complete_domain_range(*range, pool)
         }
-        Axiom::TransitiveRole(_)
-        | Axiom::SymmetricRole(_)
-        | Axiom::FunctionalRole(_)
-        | Axiom::InverseFunctionalRole(_) => true,
+        Axiom::TransitiveRole(_) | Axiom::SymmetricRole(_) => true,
+        Axiom::FunctionalRole(_) | Axiom::InverseFunctionalRole(_) => false,
         Axiom::AsymmetricRole(_) | Axiom::IrreflexiveRole(_) => true,
         Axiom::ReflexiveRole(_) => false,
         Axiom::ClassAssertion { class, .. } => is_edge_complete_concept(*class, pool),

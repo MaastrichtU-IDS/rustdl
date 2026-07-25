@@ -309,6 +309,69 @@ fn atomic_antecedent_hasvalue_with_role_characteristics_reports_complete() {
     assert!(has("http://ex/#b", "http://ex/#R", "http://ex/#a"));
 }
 
+/// Regression test for the Critical under-report bug fixed alongside PR #50's
+/// review pass: `InverseFunctionalObjectProperty`/`FunctionalObjectProperty`
+/// were whitelisted in `is_edge_complete_axiom` (`incomplete` could report
+/// `false`) even though they are NOT edge-safe — they force a named-individual
+/// identity that the `ABox` saturator's Rule 7 (`abox_saturation.rs`) only
+/// propagates TYPES across, never edges (edge-folding, Rule 9b, fires only for
+/// an EXPLICIT `SameIndividual`). So an entailed edge between two individuals
+/// merged only via functionality/inverse-functionality can be missed while
+/// `incomplete()` claims completeness.
+///
+/// Counterexample: `InverseFunctionalObjectProperty(:R)` +
+/// `SymmetricObjectProperty(:R)` + `R(a,b)`, `R(a,c)`, `R(b,e)`. Symmetry gives
+/// `R(b,a)`/`R(c,a)`; inverse-functionality then forces `b = c` (both are
+/// `R`-predecessors of `a`); so `R(c,e)` is genuinely entailed (`c = b`,
+/// `R(b,e)` asserted) — but `(c,e)` never co-occurs in a seed edge (the seed
+/// only ever connects pairs that appear together in an asserted/derived edge,
+/// and nothing directly relates `c` and `e`), so the bounded extension probe
+/// never gets a chance to check that pair either: a genuine MISS.
+///
+/// Before this fix: `is_edge_complete_axiom`'s `FunctionalRole(_) |
+/// InverseFunctionalRole(_) => true` arm made `object_property_edge_complete`
+/// return `true` for this ontology (every other axiom shape here — role
+/// assertions, `SymmetricRole` — is also whitelisted), so `incomplete()` was
+/// `false` while `R(c,e)` was silently dropped: the exact under-report this
+/// test pins closed. After this fix, the arm returns `false` for
+/// `InverseFunctionalRole`, so `incomplete()` is honestly `true`.
+///
+/// FP=0 (hard, unconditional): `R(c,e)` must never be spuriously fabricated
+/// either — the fix only changes the honesty flag, not the (still sound)
+/// seed/extension machinery, so the missed edge stays missing rather than
+/// being invented.
+#[test]
+fn inverse_functional_forced_identity_reports_incomplete_and_no_fp() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(ObjectProperty(:R))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c)) Declaration(NamedIndividual(:e))
+            InverseFunctionalObjectProperty(:R)
+            SymmetricObjectProperty(:R)
+            ObjectPropertyAssertion(:R :a :b)
+            ObjectPropertyAssertion(:R :a :c)
+            ObjectPropertyAssertion(:R :b :e))",
+    );
+    let v = inferred_object_property_values(&o, None).expect("KB is consistent");
+    assert!(
+        v.incomplete(),
+        "InverseFunctionalObjectProperty forces a named-individual identity \
+         the ABox saturator does not fold edges across; must be honestly \
+         reported incomplete"
+    );
+    // FP=0: the genuinely-entailed-but-missed R(c,e) must not be spuriously
+    // fabricated by the (unchanged) seed/extension machinery.
+    assert!(
+        !v.triples()
+            .iter()
+            .any(|(s, p, o)| s == "http://ex/#c" && p == "http://ex/#R" && o == "http://ex/#e"),
+        "R(c,e) is entailed only via the identity-inducing axiom; the sound \
+         seed/extension must not fabricate it"
+    );
+}
+
 /// External completeness oracle for `inferred_object_property_values` (issue
 /// #45's FP=0 soundness guard, Task 4.4). Same design as
 /// `materialize_oracle.rs::oracle_edges` / `materialize_matches_hermit_oracle`:

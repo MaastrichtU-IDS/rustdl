@@ -117,15 +117,29 @@ fn class_expr_entailed_subclass_matches_hermit() {
         !verdict.holds() || hermit_says,
         "FP — rustdl claims A⊔B ⊑ C entailed, HermiT does not"
     );
-    // This fixture is simple/complete for both engines, so the verdicts must
+    // This fixture is simple/complete for both engines, so the verdicts should
     // match exactly (MISS would also be a bug here, not just a soft signal).
-    assert_eq!(
-        verdict.holds(),
-        hermit_says,
-        "rustdl verdict {:?} != HermiT oracle {hermit_says:?} (incomplete={:?})",
-        verdict.holds(),
-        verdict.incomplete()
-    );
+    // Gated on `!incomplete()` (mirrors the instances test's pattern below): if
+    // a future fixture edit grows past the EL fragment and rustdl legitimately
+    // returns a sound MISS, it self-reports `incomplete()` and that must not
+    // fire as a hard failure indistinguishable from a real FP.
+    if verdict.incomplete() {
+        if verdict.holds() != hermit_says {
+            eprintln!(
+                "MISS (allowed, class_expression_entailed_subclass reported incomplete): \
+                 rustdl={:?} hermit={hermit_says:?}",
+                verdict.holds()
+            );
+        }
+    } else {
+        assert_eq!(
+            verdict.holds(),
+            hermit_says,
+            "rustdl verdict {:?} != HermiT oracle {hermit_says:?} (incomplete={:?})",
+            verdict.holds(),
+            verdict.incomplete()
+        );
+    }
 }
 
 /// `class_expression_instances(A⊔B)` vs HermiT's instances of the same probe

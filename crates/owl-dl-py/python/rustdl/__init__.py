@@ -29,6 +29,9 @@ from rustdl._native import (
     different_individuals as _different_individuals_native,
     object_property_values as _object_property_values_native,
     data_property_values as data_property_values,
+    class_expression_satisfiable as _class_expression_satisfiable_native,
+    class_expression_entailed_subclass as _class_expression_entailed_subclass_native,
+    class_expression_instances as _class_expression_instances_native,
     RustdlError as RustdlError,
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
@@ -162,6 +165,36 @@ def object_property_values(path):
     triples, incomplete = _object_property_values_native(path)
     _warn_if_query_incomplete("object_property_values", incomplete)
     return triples
+
+
+def class_expression_satisfiable(path, ce):
+    """True iff the Manchester-syntax class expression `ce` is satisfiable
+    w.r.t. the ontology at `path` (`ce` is resolved against the ontology's
+    own prefix map, e.g. `:A`). Emits `IncompleteQueryWarning` when the
+    verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
+    holds, incomplete = _class_expression_satisfiable_native(path, ce)
+    _warn_if_query_incomplete("class_expression_satisfiable", incomplete)
+    return holds
+
+
+def class_expression_entailed_subclass(path, sub_ce, sup_ce):
+    """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
+    (both Manchester-syntax class expressions, resolved against the
+    ontology's own prefix map). Emits `IncompleteQueryWarning` when the
+    verdict is a sound under-approximation (see `IncompleteQueryWarning`)."""
+    holds, incomplete = _class_expression_entailed_subclass_native(path, sub_ce, sup_ce)
+    _warn_if_query_incomplete("class_expression_entailed_subclass", incomplete)
+    return holds
+
+
+def class_expression_instances(path, ce):
+    """Named individuals provably in the Manchester-syntax class expression
+    `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
+    prefix map). Emits `IncompleteQueryWarning` when the result is a sound
+    under-approximation (see `IncompleteQueryWarning`)."""
+    individuals, incomplete = _class_expression_instances_native(path, ce)
+    _warn_if_query_incomplete("class_expression_instances", incomplete)
+    return individuals
 
 
 def _resolve_global_timeout(global_timeout_ms, global_deadline_ms):
@@ -299,6 +332,9 @@ __all__ = [
     "different_individuals",
     "object_property_values",
     "data_property_values",
+    "class_expression_satisfiable",
+    "class_expression_entailed_subclass",
+    "class_expression_instances",
     "RustdlError",
     "ParseError",
     "UnsupportedAxiomError",

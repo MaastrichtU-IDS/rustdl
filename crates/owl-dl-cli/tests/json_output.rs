@@ -71,6 +71,13 @@ fn propvalues_tiny() -> &'static str {
     )
 }
 
+fn ce_tiny() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/ce_tiny.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -275,4 +282,45 @@ fn property_values_json_reports_symmetric_object_value() {
         && t[1] == "http://ex/#dp"
         && t[2] == "5"
         && t[3] == "http://www.w3.org/2001/XMLSchema#integer"));
+}
+
+#[test]
+fn sat_expr_json_reports_satisfiable() {
+    let out = rustdl()
+        .args(["sat-expr", "--json", ce_tiny(), ":A and not :A"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["satisfiable"], false); // A ⊓ ¬A unsat
+}
+
+#[test]
+fn subclass_expr_json_reports_entailed() {
+    let out = rustdl()
+        .args(["subclass-expr", "--json", ce_tiny(), ":A and :B", ":A"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["entailed"], true); // A⊓B ⊑ A
+}
+
+#[test]
+fn instances_expr_json_lists_instances() {
+    let out = rustdl()
+        .args(["instances-expr", "--json", ce_tiny(), ":A"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    let insts: Vec<&str> = v["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert!(insts.contains(&"http://ex/#x"));
 }

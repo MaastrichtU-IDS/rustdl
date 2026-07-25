@@ -47,6 +47,56 @@ pub(crate) struct DisjointJson {
     pub(crate) disjoint_data_properties: Vec<[String; 2]>,
 }
 
+#[derive(Serialize)]
+pub(crate) struct SatExprJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) satisfiable: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SubclassExprJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) entailed: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct InstancesExprJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) instances: Vec<String>,
+}
+
+#[must_use]
+pub(crate) fn build_sat_expr_json(v: owl_dl_reasoner::CeVerdict) -> SatExprJson {
+    SatExprJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: v.incomplete(),
+        satisfiable: v.holds(),
+    }
+}
+
+#[must_use]
+pub(crate) fn build_subclass_expr_json(v: owl_dl_reasoner::CeVerdict) -> SubclassExprJson {
+    SubclassExprJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: v.incomplete(),
+        entailed: v.holds(),
+    }
+}
+
+#[must_use]
+pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> InstancesExprJson {
+    let mut instances = r.individuals().to_vec();
+    instances.sort();
+    InstancesExprJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: r.incomplete(),
+        instances,
+    }
+}
+
 #[must_use]
 pub(crate) fn build_classify_json(h: &Classification) -> ClassifyJson {
     let stats = h.stats();

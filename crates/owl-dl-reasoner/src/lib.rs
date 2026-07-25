@@ -42,6 +42,7 @@
 
 mod abox_check;
 pub mod abox_saturation;
+mod class_expr_query;
 mod classify;
 pub mod diagnose;
 mod disjointness;
@@ -56,6 +57,10 @@ mod realize;
 pub mod repair;
 mod union_find;
 
+pub use class_expr_query::{
+    CeInstances, CeVerdict, class_expression_entailed_subclass, class_expression_instances,
+    class_expression_satisfiable,
+};
 pub use classify::{
     Classification, ClassificationStats, FragmentClassification, analyze_fragment, classify,
     classify_internal, classify_n2, classify_n2_with_timeout, classify_saturation_only,

@@ -173,6 +173,61 @@ public class RustdlReasonerTest {
         return RustdlReasoner.forTest(o, c, r);
     }
 
+    private OWLObjectProperty objProp(String i) { return df.getOWLObjectProperty(IRI.create("http://ex/#" + i)); }
+    private OWLDataProperty dataProp(String i) { return df.getOWLDataProperty(IRI.create("http://ex/#" + i)); }
+
+    /** Loads the shared prophier.json fixture: object p ⊑ r, p ≡ p2; data d ⊑ e. */
+    private RustdlReasoner propHierReasoner() throws Exception {
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/prophier"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = true; c.incomplete = false;
+        c.unsatisfiable = new ArrayList<>(); c.equivalent_groups = new ArrayList<>(); c.direct_subsumptions = new ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new ArrayList<>();
+        String json = new String(java.nio.file.Files.readAllBytes(
+            java.nio.file.Paths.get(getClass().getResource("/json/prophier.json").toURI())));
+        RustdlJson.PropHierJson p = RustdlProcess.parsePropHier(json);
+        return RustdlReasoner.forTest(o, c, r, p);
+    }
+
+    @Test public void directSuperObjectProperty() throws Exception {
+        NodeSet<OWLObjectPropertyExpression> supers = propHierReasoner().getSuperObjectProperties(objProp("p"), true);
+        assertTrue(supers.containsEntity(objProp("r")));
+    }
+
+    @Test public void equivalentObjectProperties() throws Exception {
+        Node<OWLObjectPropertyExpression> eq = propHierReasoner().getEquivalentObjectProperties(objProp("p"));
+        assertTrue(eq.contains(objProp("p2")));
+    }
+
+    @Test public void directSubDataProperty() throws Exception {
+        NodeSet<OWLDataProperty> subs = propHierReasoner().getSubDataProperties(dataProp("e"), true);
+        assertTrue(subs.containsEntity(dataProp("d")));
+    }
+
+    @Test public void topLevelObjectPropertyIsDirectSubOfTop() throws Exception {
+        // r has no named super in the fixture, so its direct super frontier is owl:topObjectProperty.
+        NodeSet<OWLObjectPropertyExpression> supers = propHierReasoner().getSuperObjectProperties(objProp("r"), true);
+        assertTrue(supers.containsEntity(df.getOWLTopObjectProperty()));
+    }
+
+    @Test public void leafObjectPropertyDirectSubIsBottom() throws Exception {
+        // p has no named sub in the fixture, so its direct sub frontier is owl:bottomObjectProperty.
+        NodeSet<OWLObjectPropertyExpression> subs = propHierReasoner().getSubObjectProperties(objProp("p"), true);
+        assertTrue(subs.containsEntity(df.getOWLBottomObjectProperty()));
+    }
+
+    @Test public void topLevelDataPropertyIsDirectSubOfTop() throws Exception {
+        // e has no named super in the fixture, so its direct super frontier is owl:topDataProperty.
+        NodeSet<OWLDataProperty> supers = propHierReasoner().getSuperDataProperties(dataProp("e"), true);
+        assertTrue(supers.containsEntity(df.getOWLTopDataProperty()));
+    }
+
+    @Test public void leafDataPropertyDirectSubIsBottom() throws Exception {
+        // d has no named sub in the fixture, so its direct sub frontier is owl:bottomDataProperty.
+        NodeSet<OWLDataProperty> subs = propHierReasoner().getSubDataProperties(dataProp("d"), true);
+        assertTrue(subs.containsEntity(df.getOWLBottomDataProperty()));
+    }
+
     @Test public void unsatEdgeDoesNotCorruptLeaves() throws Exception {
         RustdlReasoner reasoner = withUnsat();
         // A is a genuine leaf: its direct sub is the bottom node (which includes U and owl:Nothing, MERGED into one node)

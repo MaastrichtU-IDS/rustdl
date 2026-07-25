@@ -20,6 +20,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     // Cache, populated by precompute (or injected in tests).
     private RustdlJson.ClassifyJson classifyResult;
     private RustdlJson.RealizeJson realizeResult;
+    private RustdlJson.PropHierJson propHierResult;
 
     // Derived indices built from classifyResult.
     private final Map<String, Node<OWLClass>> equivNodeByIri = new HashMap<>();   // iri -> its equiv-class node
@@ -29,6 +30,22 @@ public class RustdlReasoner extends OWLReasonerBase {
     private final Set<OWLClass> allNamed = new HashSet<>();      // named classes minus Thing/Nothing
     private final Set<OWLClass> topChildren = new HashSet<>();   // satisfiable classes with no named super
     private final Set<OWLClass> bottomLeaves = new HashSet<>();  // satisfiable classes with no named sub
+
+    // Derived indices built from propHierResult.object_properties.
+    private final Map<String, Node<OWLObjectPropertyExpression>> objEquivByIri = new HashMap<>();
+    private final Map<OWLObjectProperty, Set<OWLObjectProperty>> objDirectSupers = new HashMap<>();
+    private final Map<OWLObjectProperty, Set<OWLObjectProperty>> objDirectSubs = new HashMap<>();
+    private final Set<OWLObjectProperty> objAllNamed = new HashSet<>();     // named obj props minus top/bottom
+    private final Set<OWLObjectProperty> objTopChildren = new HashSet<>();  // props with no named super
+    private final Set<OWLObjectProperty> objBottomLeaves = new HashSet<>(); // props with no named sub
+
+    // Derived indices built from propHierResult.data_properties.
+    private final Map<String, Node<OWLDataProperty>> dataEquivByIri = new HashMap<>();
+    private final Map<OWLDataProperty, Set<OWLDataProperty>> dataDirectSupers = new HashMap<>();
+    private final Map<OWLDataProperty, Set<OWLDataProperty>> dataDirectSubs = new HashMap<>();
+    private final Set<OWLDataProperty> dataAllNamed = new HashSet<>();     // named data props minus top/bottom
+    private final Set<OWLDataProperty> dataTopChildren = new HashSet<>();  // props with no named super
+    private final Set<OWLDataProperty> dataBottomLeaves = new HashSet<>(); // props with no named sub
 
     RustdlReasoner(OWLOntology rootOntology, OWLReasonerConfiguration config, BufferingMode mode) {
         super(rootOntology, config, mode);
@@ -44,6 +61,14 @@ public class RustdlReasoner extends OWLReasonerBase {
         reasoner.classifyResult = c;
         reasoner.realizeResult = r;
         reasoner.rebuildIndices();
+        return reasoner;
+    }
+
+    /** Test seam: as {@link #forTest(OWLOntology, RustdlJson.ClassifyJson, RustdlJson.RealizeJson)}, plus an injected property-hierarchy result. */
+    static RustdlReasoner forTest(OWLOntology o, RustdlJson.ClassifyJson c, RustdlJson.RealizeJson r, RustdlJson.PropHierJson p) {
+        RustdlReasoner reasoner = forTest(o, c, r);
+        reasoner.propHierResult = p;
+        reasoner.rebuildPropHierIndices();
         return reasoner;
     }
 
@@ -113,13 +138,22 @@ public class RustdlReasoner extends OWLReasonerBase {
     private void ensureRealized() {
         if (realizeResult == null) precomputeInferences(InferenceType.CLASS_ASSERTIONS);
     }
+    /** Ensure the property hierarchy ran (lazy precompute; wiring into precomputeInferences is a later task). */
+    private void ensurePropHier() {
+        if (propHierResult == null) precomputeInferences(InferenceType.OBJECT_PROPERTY_HIERARCHY);
+    }
 
     @Override protected void handleChanges(Set<OWLAxiom> added, Set<OWLAxiom> removed) {
         // BUFFERING: an edit invalidates the cache; next query re-runs the subprocess.
         classifyResult = null;
         realizeResult = null;
+        propHierResult = null;
         equivNodeByIri.clear(); directSupers.clear(); directSubs.clear(); unsatisfiable.clear();
         allNamed.clear(); topChildren.clear(); bottomLeaves.clear();
+        objEquivByIri.clear(); objDirectSupers.clear(); objDirectSubs.clear();
+        objAllNamed.clear(); objTopChildren.clear(); objBottomLeaves.clear();
+        dataEquivByIri.clear(); dataDirectSupers.clear(); dataDirectSubs.clear();
+        dataAllNamed.clear(); dataTopChildren.clear(); dataBottomLeaves.clear();
     }
 
     // ---- index building from classifyResult ----
@@ -157,6 +191,108 @@ public class RustdlReasoner extends OWLReasonerBase {
     }
     private OWLClass clazz(String iri) { return df.getOWLClass(IRI.create(iri)); }
     private static <T> List<T> orEmpty(List<T> l) { return l == null ? Collections.emptyList() : l; }
+
+    // ---- index building from propHierResult ----
+    private void rebuildPropHierIndices() {
+        objEquivByIri.clear(); objDirectSupers.clear(); objDirectSubs.clear();
+        objAllNamed.clear(); objTopChildren.clear(); objBottomLeaves.clear();
+        dataEquivByIri.clear(); dataDirectSupers.clear(); dataDirectSubs.clear();
+        dataAllNamed.clear(); dataTopChildren.clear(); dataBottomLeaves.clear();
+        if (propHierResult == null) return;
+        RustdlJson.PropHierSide obj = propHierResult.object_properties;
+        if (obj != null) {
+            for (List<String> group : orEmpty(obj.equivalent_groups)) {
+                Set<OWLObjectPropertyExpression> members = new HashSet<>();
+                for (String iri : group) members.add(objProp(iri));
+                Node<OWLObjectPropertyExpression> node = new OWLObjectPropertyNode(members);
+                for (OWLObjectPropertyExpression m : members) objEquivByIri.put(m.asOWLObjectProperty().getIRI().toString(), node);
+            }
+            for (List<String> edge : orEmpty(obj.direct_subsumptions)) {
+                OWLObjectProperty sub = objProp(edge.get(0)), sup = objProp(edge.get(1));
+                objDirectSupers.computeIfAbsent(sub, k -> new HashSet<>()).add(sup);
+                objDirectSubs.computeIfAbsent(sup, k -> new HashSet<>()).add(sub);
+            }
+            objAllNamed.addAll(getRootOntology().getObjectPropertiesInSignature(org.semanticweb.owlapi.model.parameters.Imports.INCLUDED));
+            for (List<String> g : orEmpty(obj.equivalent_groups)) for (String iri : g) objAllNamed.add(objProp(iri));
+            for (List<String> e : orEmpty(obj.direct_subsumptions)) { objAllNamed.add(objProp(e.get(0))); objAllNamed.add(objProp(e.get(1))); }
+            objAllNamed.remove(df.getOWLTopObjectProperty());
+            objAllNamed.remove(df.getOWLBottomObjectProperty());
+            for (OWLObjectProperty p : objAllNamed) {
+                if (objDirectSupers.getOrDefault(p, Collections.emptySet()).isEmpty()) objTopChildren.add(p);
+                if (objDirectSubs.getOrDefault(p, Collections.emptySet()).isEmpty()) objBottomLeaves.add(p);
+            }
+        }
+        RustdlJson.PropHierSide data = propHierResult.data_properties;
+        if (data != null) {
+            for (List<String> group : orEmpty(data.equivalent_groups)) {
+                Set<OWLDataProperty> members = new HashSet<>();
+                for (String iri : group) members.add(dataProp(iri));
+                Node<OWLDataProperty> node = new OWLDataPropertyNode(members);
+                for (OWLDataProperty m : members) dataEquivByIri.put(m.getIRI().toString(), node);
+            }
+            for (List<String> edge : orEmpty(data.direct_subsumptions)) {
+                OWLDataProperty sub = dataProp(edge.get(0)), sup = dataProp(edge.get(1));
+                dataDirectSupers.computeIfAbsent(sub, k -> new HashSet<>()).add(sup);
+                dataDirectSubs.computeIfAbsent(sup, k -> new HashSet<>()).add(sub);
+            }
+            dataAllNamed.addAll(getRootOntology().getDataPropertiesInSignature(org.semanticweb.owlapi.model.parameters.Imports.INCLUDED));
+            for (List<String> g : orEmpty(data.equivalent_groups)) for (String iri : g) dataAllNamed.add(dataProp(iri));
+            for (List<String> e : orEmpty(data.direct_subsumptions)) { dataAllNamed.add(dataProp(e.get(0))); dataAllNamed.add(dataProp(e.get(1))); }
+            dataAllNamed.remove(df.getOWLTopDataProperty());
+            dataAllNamed.remove(df.getOWLBottomDataProperty());
+            for (OWLDataProperty p : dataAllNamed) {
+                if (dataDirectSupers.getOrDefault(p, Collections.emptySet()).isEmpty()) dataTopChildren.add(p);
+                if (dataDirectSubs.getOrDefault(p, Collections.emptySet()).isEmpty()) dataBottomLeaves.add(p);
+            }
+        }
+    }
+    private OWLObjectProperty objProp(String iri) { return df.getOWLObjectProperty(IRI.create(iri)); }
+    private OWLDataProperty dataProp(String iri) { return df.getOWLDataProperty(IRI.create(iri)); }
+
+    private Node<OWLObjectPropertyExpression> objEquivNodeOf(OWLObjectProperty p) {
+        Node<OWLObjectPropertyExpression> n = objEquivByIri.get(p.getIRI().toString());
+        return n != null ? n : new OWLObjectPropertyNode(p);
+    }
+    private Node<OWLDataProperty> dataEquivNodeOf(OWLDataProperty p) {
+        Node<OWLDataProperty> n = dataEquivByIri.get(p.getIRI().toString());
+        return n != null ? n : new OWLDataPropertyNode(p);
+    }
+    private Node<OWLObjectPropertyExpression> objTopNode() { return new OWLObjectPropertyNode(df.getOWLTopObjectProperty()); }
+    private Node<OWLObjectPropertyExpression> objBottomNode() { return new OWLObjectPropertyNode(df.getOWLBottomObjectProperty()); }
+    private Node<OWLDataProperty> dataTopNode() { return new OWLDataPropertyNode(df.getOWLTopDataProperty()); }
+    private Node<OWLDataProperty> dataBottomNode() { return new OWLDataPropertyNode(df.getOWLBottomDataProperty()); }
+    private Set<Node<OWLObjectPropertyExpression>> objNodesOf(java.util.Collection<OWLObjectProperty> ps) {
+        Set<Node<OWLObjectPropertyExpression>> s = new HashSet<>();
+        for (OWLObjectProperty p : ps) s.add(objEquivNodeOf(p));
+        return s;
+    }
+    private Set<Node<OWLDataProperty>> dataNodesOf(java.util.Collection<OWLDataProperty> ps) {
+        Set<Node<OWLDataProperty>> s = new HashSet<>();
+        for (OWLDataProperty p : ps) s.add(dataEquivNodeOf(p));
+        return s;
+    }
+    /** named ancestors/descendants of `start` as equivalence nodes (direct or transitive). Mirrors walkNodes. */
+    private Set<Node<OWLObjectPropertyExpression>> walkObjProps(OWLObjectProperty start, Map<OWLObjectProperty, Set<OWLObjectProperty>> edges, boolean direct) {
+        Set<OWLObjectProperty> reached = new HashSet<>();
+        Deque<OWLObjectProperty> stack = new ArrayDeque<>(edges.getOrDefault(start, java.util.Collections.emptySet()));
+        while (!stack.isEmpty()) {
+            OWLObjectProperty p = stack.pop();
+            if (!reached.add(p)) continue;
+            if (!direct) stack.addAll(edges.getOrDefault(p, java.util.Collections.emptySet()));
+        }
+        return objNodesOf(reached);
+    }
+    /** named ancestors/descendants of `start` as equivalence nodes (direct or transitive). Mirrors walkNodes. */
+    private Set<Node<OWLDataProperty>> walkDataProps(OWLDataProperty start, Map<OWLDataProperty, Set<OWLDataProperty>> edges, boolean direct) {
+        Set<OWLDataProperty> reached = new HashSet<>();
+        Deque<OWLDataProperty> stack = new ArrayDeque<>(edges.getOrDefault(start, java.util.Collections.emptySet()));
+        while (!stack.isEmpty()) {
+            OWLDataProperty p = stack.pop();
+            if (!reached.add(p)) continue;
+            if (!direct) stack.addAll(edges.getOrDefault(p, java.util.Collections.emptySet()));
+        }
+        return dataNodesOf(reached);
+    }
 
     private Node<OWLClass> equivNodeOf(OWLClass c) {
         if (unsatisfiable.contains(c) || c.isOWLNothing()) return bottomNode();
@@ -320,21 +456,122 @@ public class RustdlReasoner extends OWLReasonerBase {
     // ---- interrupt / precompute misc ----
     @Override public void interrupt() { /* subprocess is bounded by timeout; nothing to interrupt mid-call */ }
 
-    // ---- unsupported node-set queries → empty (sound under-approximation) ----
-    @Override public Node<OWLObjectPropertyExpression> getTopObjectPropertyNode() { return new OWLObjectPropertyNode(df.getOWLTopObjectProperty()); }
-    @Override public Node<OWLObjectPropertyExpression> getBottomObjectPropertyNode() { return new OWLObjectPropertyNode(df.getOWLBottomObjectProperty()); }
-    @Override public NodeSet<OWLObjectPropertyExpression> getSubObjectProperties(OWLObjectPropertyExpression pe, boolean direct) { return new OWLObjectPropertyNodeSet(); }
-    @Override public NodeSet<OWLObjectPropertyExpression> getSuperObjectProperties(OWLObjectPropertyExpression pe, boolean direct) { return new OWLObjectPropertyNodeSet(); }
-    @Override public Node<OWLObjectPropertyExpression> getEquivalentObjectProperties(OWLObjectPropertyExpression pe) { return new OWLObjectPropertyNode(pe); }
+    // ---- object/data property hierarchy (cache-backed) ----
+    @Override public Node<OWLObjectPropertyExpression> getTopObjectPropertyNode() { return objTopNode(); }
+    @Override public Node<OWLObjectPropertyExpression> getBottomObjectPropertyNode() { return objBottomNode(); }
+
+    @Override public Node<OWLObjectPropertyExpression> getEquivalentObjectProperties(OWLObjectPropertyExpression pe) {
+        if (pe.isAnonymous()) return new OWLObjectPropertyNode();
+        ensurePropHier(); throwIfInconsistent();
+        OWLObjectProperty p = pe.asOWLObjectProperty();
+        if (p.isOWLTopObjectProperty()) return objTopNode();
+        if (p.isOWLBottomObjectProperty()) return objBottomNode();
+        return objEquivNodeOf(p);
+    }
+
+    @Override public NodeSet<OWLObjectPropertyExpression> getSuperObjectProperties(OWLObjectPropertyExpression pe, boolean direct) {
+        if (pe.isAnonymous()) return new OWLObjectPropertyNodeSet();
+        ensurePropHier(); throwIfInconsistent();
+        OWLObjectProperty p = pe.asOWLObjectProperty();
+        if (p.isOWLTopObjectProperty()) return new OWLObjectPropertyNodeSet();
+        if (p.isOWLBottomObjectProperty()) {
+            if (direct) {
+                return objBottomLeaves.isEmpty() ? new OWLObjectPropertyNodeSet(objTopNode()) : new OWLObjectPropertyNodeSet(objNodesOf(objBottomLeaves));
+            }
+            Set<Node<OWLObjectPropertyExpression>> nodes = new HashSet<>();
+            for (OWLObjectProperty n : objAllNamed) nodes.add(objEquivNodeOf(n));
+            nodes.add(objTopNode());
+            return new OWLObjectPropertyNodeSet(nodes);
+        }
+        if (direct) {
+            if (objDirectSupers.getOrDefault(p, Collections.emptySet()).isEmpty()) return new OWLObjectPropertyNodeSet(objTopNode());
+            return new OWLObjectPropertyNodeSet(walkObjProps(p, objDirectSupers, true));
+        }
+        Set<Node<OWLObjectPropertyExpression>> nodes = walkObjProps(p, objDirectSupers, false);
+        nodes.add(objTopNode());
+        return new OWLObjectPropertyNodeSet(nodes);
+    }
+
+    @Override public NodeSet<OWLObjectPropertyExpression> getSubObjectProperties(OWLObjectPropertyExpression pe, boolean direct) {
+        if (pe.isAnonymous()) return new OWLObjectPropertyNodeSet();
+        ensurePropHier(); throwIfInconsistent();
+        OWLObjectProperty p = pe.asOWLObjectProperty();
+        if (p.isOWLBottomObjectProperty()) return new OWLObjectPropertyNodeSet();
+        if (p.isOWLTopObjectProperty()) {
+            if (direct) {
+                return objTopChildren.isEmpty() ? new OWLObjectPropertyNodeSet(objBottomNode()) : new OWLObjectPropertyNodeSet(objNodesOf(objTopChildren));
+            }
+            Set<Node<OWLObjectPropertyExpression>> nodes = new HashSet<>();
+            for (OWLObjectProperty n : objAllNamed) nodes.add(objEquivNodeOf(n));
+            nodes.add(objBottomNode());
+            return new OWLObjectPropertyNodeSet(nodes);
+        }
+        if (direct) {
+            if (objDirectSubs.getOrDefault(p, Collections.emptySet()).isEmpty()) return new OWLObjectPropertyNodeSet(objBottomNode());
+            return new OWLObjectPropertyNodeSet(walkObjProps(p, objDirectSubs, true));
+        }
+        Set<Node<OWLObjectPropertyExpression>> nodes = walkObjProps(p, objDirectSubs, false);
+        nodes.add(objBottomNode());
+        return new OWLObjectPropertyNodeSet(nodes);
+    }
+
     @Override public NodeSet<OWLObjectPropertyExpression> getDisjointObjectProperties(OWLObjectPropertyExpression pe) { return new OWLObjectPropertyNodeSet(); }
     @Override public Node<OWLObjectPropertyExpression> getInverseObjectProperties(OWLObjectPropertyExpression pe) { return new OWLObjectPropertyNode(pe.getInverseProperty()); }
     @Override public NodeSet<OWLClass> getObjectPropertyDomains(OWLObjectPropertyExpression pe, boolean direct) { return new OWLClassNodeSet(); }
     @Override public NodeSet<OWLClass> getObjectPropertyRanges(OWLObjectPropertyExpression pe, boolean direct) { return new OWLClassNodeSet(); }
-    @Override public Node<OWLDataProperty> getTopDataPropertyNode() { return new OWLDataPropertyNode(df.getOWLTopDataProperty()); }
-    @Override public Node<OWLDataProperty> getBottomDataPropertyNode() { return new OWLDataPropertyNode(df.getOWLBottomDataProperty()); }
-    @Override public NodeSet<OWLDataProperty> getSubDataProperties(OWLDataProperty pe, boolean direct) { return new OWLDataPropertyNodeSet(); }
-    @Override public NodeSet<OWLDataProperty> getSuperDataProperties(OWLDataProperty pe, boolean direct) { return new OWLDataPropertyNodeSet(); }
-    @Override public Node<OWLDataProperty> getEquivalentDataProperties(OWLDataProperty pe) { return new OWLDataPropertyNode(pe); }
+
+    @Override public Node<OWLDataProperty> getTopDataPropertyNode() { return dataTopNode(); }
+    @Override public Node<OWLDataProperty> getBottomDataPropertyNode() { return dataBottomNode(); }
+
+    @Override public Node<OWLDataProperty> getEquivalentDataProperties(OWLDataProperty p) {
+        ensurePropHier(); throwIfInconsistent();
+        if (p.isOWLTopDataProperty()) return dataTopNode();
+        if (p.isOWLBottomDataProperty()) return dataBottomNode();
+        return dataEquivNodeOf(p);
+    }
+
+    @Override public NodeSet<OWLDataProperty> getSuperDataProperties(OWLDataProperty p, boolean direct) {
+        ensurePropHier(); throwIfInconsistent();
+        if (p.isOWLTopDataProperty()) return new OWLDataPropertyNodeSet();
+        if (p.isOWLBottomDataProperty()) {
+            if (direct) {
+                return dataBottomLeaves.isEmpty() ? new OWLDataPropertyNodeSet(dataTopNode()) : new OWLDataPropertyNodeSet(dataNodesOf(dataBottomLeaves));
+            }
+            Set<Node<OWLDataProperty>> nodes = new HashSet<>();
+            for (OWLDataProperty n : dataAllNamed) nodes.add(dataEquivNodeOf(n));
+            nodes.add(dataTopNode());
+            return new OWLDataPropertyNodeSet(nodes);
+        }
+        if (direct) {
+            if (dataDirectSupers.getOrDefault(p, Collections.emptySet()).isEmpty()) return new OWLDataPropertyNodeSet(dataTopNode());
+            return new OWLDataPropertyNodeSet(walkDataProps(p, dataDirectSupers, true));
+        }
+        Set<Node<OWLDataProperty>> nodes = walkDataProps(p, dataDirectSupers, false);
+        nodes.add(dataTopNode());
+        return new OWLDataPropertyNodeSet(nodes);
+    }
+
+    @Override public NodeSet<OWLDataProperty> getSubDataProperties(OWLDataProperty p, boolean direct) {
+        ensurePropHier(); throwIfInconsistent();
+        if (p.isOWLBottomDataProperty()) return new OWLDataPropertyNodeSet();
+        if (p.isOWLTopDataProperty()) {
+            if (direct) {
+                return dataTopChildren.isEmpty() ? new OWLDataPropertyNodeSet(dataBottomNode()) : new OWLDataPropertyNodeSet(dataNodesOf(dataTopChildren));
+            }
+            Set<Node<OWLDataProperty>> nodes = new HashSet<>();
+            for (OWLDataProperty n : dataAllNamed) nodes.add(dataEquivNodeOf(n));
+            nodes.add(dataBottomNode());
+            return new OWLDataPropertyNodeSet(nodes);
+        }
+        if (direct) {
+            if (dataDirectSubs.getOrDefault(p, Collections.emptySet()).isEmpty()) return new OWLDataPropertyNodeSet(dataBottomNode());
+            return new OWLDataPropertyNodeSet(walkDataProps(p, dataDirectSubs, true));
+        }
+        Set<Node<OWLDataProperty>> nodes = walkDataProps(p, dataDirectSubs, false);
+        nodes.add(dataBottomNode());
+        return new OWLDataPropertyNodeSet(nodes);
+    }
+
     @Override public NodeSet<OWLDataProperty> getDisjointDataProperties(OWLDataPropertyExpression pe) { return new OWLDataPropertyNodeSet(); }
     @Override public NodeSet<OWLClass> getDataPropertyDomains(OWLDataProperty pe, boolean direct) { return new OWLClassNodeSet(); }
     @Override public NodeSet<OWLNamedIndividual> getObjectPropertyValues(OWLNamedIndividual ind, OWLObjectPropertyExpression pe) { return new OWLNamedIndividualNodeSet(); }

@@ -61,12 +61,15 @@ fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<St
 }
 
 /// Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
-/// unsatisfiable. Bounded by a 1s per-pair deadline.
+/// unsatisfiable — plus a completeness flag. Bounded by a 1s per-pair
+/// deadline. The Python-level wrapper (`__init__.py`) unpacks the tuple,
+/// warns on `incomplete`, and returns just the pair list (see
+/// `IncompleteQueryWarning`).
 #[pyfunction]
-pub(crate) fn disjoint_classes(path: &str) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn disjoint_classes(path: &str) -> PyResult<(Vec<(String, String)>, bool)> {
     let ontology = load::load_path(path)?;
     owl_dl_reasoner::disjoint_classes(&ontology, Some(std::time::Duration::from_secs(1)))
-        .map(|d| d.pairs().to_vec())
+        .map(|d| (d.pairs().to_vec(), d.incomplete()))
         .map_err(reason_error_to_py)
 }
 
@@ -113,33 +116,38 @@ pub(crate) fn data_property_hierarchy(
 }
 
 /// Entailed same-individual equivalence groups (asserted + functional-forced
-/// + entailed). Bounded by a 1s per-pair deadline.
+/// + entailed), plus a completeness flag. Bounded by a 1s per-pair deadline.
+/// See `disjoint_classes` for the tuple/wrapper convention.
 #[pyfunction]
-pub(crate) fn same_individuals(path: &str) -> PyResult<Vec<Vec<String>>> {
+pub(crate) fn same_individuals(path: &str) -> PyResult<(Vec<Vec<String>>, bool)> {
     let o = load::load_path(path)?;
     owl_dl_reasoner::same_individuals(&o, Some(std::time::Duration::from_secs(1)))
-        .map(|s| s.groups().to_vec())
+        .map(|s| (s.groups().to_vec(), s.incomplete()))
         .map_err(reason_error_to_py)
 }
 
 /// Entailed different-individual pairs `(a, b)` — `{a} ⊓ {b}` is proven
-/// unsatisfiable. Bounded by a 1s per-pair deadline.
+/// unsatisfiable — plus a completeness flag. Bounded by a 1s per-pair
+/// deadline. See `disjoint_classes` for the tuple/wrapper convention.
 #[pyfunction]
-pub(crate) fn different_individuals(path: &str) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn different_individuals(path: &str) -> PyResult<(Vec<(String, String)>, bool)> {
     let o = load::load_path(path)?;
     owl_dl_reasoner::different_individuals(&o, Some(std::time::Duration::from_secs(1)))
-        .map(|d| d.pairs().to_vec())
+        .map(|d| (d.pairs().to_vec(), d.incomplete()))
         .map_err(reason_error_to_py)
 }
 
 /// Inferred object property values `(subject, property, object)` over named
-/// individuals. Bounded by a 1s per-pair deadline.
+/// individuals, plus a completeness flag. Bounded by a 1s per-pair deadline.
+/// See `disjoint_classes` for the tuple/wrapper convention.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
-pub(crate) fn object_property_values(path: &str) -> PyResult<Vec<(String, String, String)>> {
+pub(crate) fn object_property_values(
+    path: &str,
+) -> PyResult<(Vec<(String, String, String)>, bool)> {
     let o = load::load_path(path)?;
     owl_dl_reasoner::inferred_object_property_values(&o, Some(std::time::Duration::from_secs(1)))
-        .map(|v| v.triples().to_vec())
+        .map(|v| (v.triples().to_vec(), v.incomplete()))
         .map_err(reason_error_to_py)
 }
 

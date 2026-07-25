@@ -81,6 +81,26 @@ def test_different_individuals(tmp_path):
     assert ("http://ex/#a", "http://ex/#b") in pairs or ("http://ex/#b", "http://ex/#a") in pairs
 
 
+def test_different_individuals_disjoint_types_is_complete(tmp_path, recwarn):
+    # Same disjoint-types shape as test_different_individuals: the extension
+    # probe resolves the (a, b) pair well within the 1s per-pair deadline, so
+    # `incomplete` stays False and no IncompleteQueryWarning is raised — the
+    # honesty signal is observable by its ABSENCE here.
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+        "  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n"
+        "  DisjointClasses(:A :B)\n"
+        "  ClassAssertion(:A :a) ClassAssertion(:B :b))\n"
+    )
+    rustdl.different_individuals(str(p))
+    assert not any(
+        issubclass(w.category, rustdl.IncompleteQueryWarning) for w in recwarn.list
+    )
+
+
 def test_same_individuals(tmp_path):
     p = tmp_path / "o.ofn"
     p.write_text(
@@ -93,6 +113,29 @@ def test_same_individuals(tmp_path):
         "  ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c))\n"
     )
     groups = rustdl.same_individuals(str(p))
+    assert any(
+        "http://ex/#b" in group and "http://ex/#c" in group for group in groups
+    )
+
+
+def test_same_individuals_extension_probe_warns_incomplete(tmp_path):
+    # Same fixture as test_same_individuals: :a is not related to :b/:c by the
+    # sound-complete seed (SameIndividual + functional-forced merge), so
+    # resolving (a, b) / (a, c) requires an extension probe — which always
+    # marks the result `incomplete`, per SameIndividuals::incomplete's
+    # doc ("true iff ... ANY extension probe ... was consulted").
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(ObjectProperty(:r))\n"
+        "  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))\n"
+        "  Declaration(NamedIndividual(:c))\n"
+        "  FunctionalObjectProperty(:r)\n"
+        "  ObjectPropertyAssertion(:r :a :b) ObjectPropertyAssertion(:r :a :c))\n"
+    )
+    with pytest.warns(rustdl.IncompleteQueryWarning):
+        groups = rustdl.same_individuals(str(p))
     assert any(
         "http://ex/#b" in group and "http://ex/#c" in group for group in groups
     )

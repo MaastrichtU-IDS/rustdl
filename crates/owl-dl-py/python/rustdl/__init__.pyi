@@ -53,6 +53,12 @@ class IncompleteClassificationWarning(UserWarning):
     """Emitted when classification hit the per-pair timeout (sound but possibly
     incomplete)."""
 
+class IncompleteQueryWarning(UserWarning):
+    """Emitted by the budgeted inferred queries (`disjoint_classes`,
+    `same_individuals`, `different_individuals`, `object_property_values`)
+    when the per-pair budget/probe was exhausted (sound but possibly
+    incomplete)."""
+
 class Root(Mapping[str, object]):
     iri: str
     justification: tuple[str, ...]
@@ -154,7 +160,9 @@ def realize(path: str) -> dict[str, list[str]]:
 # ── inferred disjointness ───────────────────────────────────────────────────
 
 def disjoint_classes(path: str) -> list[tuple[str, str]]:
-    """Entailed disjoint named-class pairs (C ⊓ D unsatisfiable)."""
+    """Entailed disjoint named-class pairs (C ⊓ D unsatisfiable). Bounded by a
+    1s per-pair deadline; emits `IncompleteQueryWarning` if the budget was
+    exhausted."""
     ...
 
 def disjoint_object_properties(path: str) -> list[tuple[str, str]]:
@@ -178,17 +186,23 @@ def data_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str,
 # ── inferred same/different individuals ─────────────────────────────────────
 
 def same_individuals(path: str) -> list[list[str]]:
-    """Groups of individuals proven equal (asserted + functional-forced + entailed)."""
+    """Groups of individuals proven equal (asserted + functional-forced + entailed).
+    Bounded by a 1s per-pair deadline; emits `IncompleteQueryWarning` whenever any
+    extension probe beyond the sound-complete seed ran."""
     ...
 
 def different_individuals(path: str) -> list[tuple[str, str]]:
-    """Pairs of individuals proven distinct ({a}⊓{b} unsatisfiable)."""
+    """Pairs of individuals proven distinct ({a}⊓{b} unsatisfiable). Bounded by a
+    1s per-pair deadline; emits `IncompleteQueryWarning` if the budget was
+    exhausted."""
     ...
 
 # ── inferred property values ────────────────────────────────────────────────
 
 def object_property_values(path: str) -> list[tuple[str, str, str]]:
-    """Inferred object property values (subject, property, object) over named individuals."""
+    """Inferred object property values (subject, property, object) over named
+    individuals. Bounded by a 1s per-pair deadline; emits `IncompleteQueryWarning`
+    if the budget was exhausted."""
     ...
 
 def data_property_values(path: str) -> list[tuple[str, str, str, str]]:

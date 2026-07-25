@@ -42,11 +42,17 @@ impl ObjectPropertyValues {
         &self.triples
     }
 
-    /// `true` iff a bounded-extension probe timed out (`None`), OR the
-    /// bounded (non-exhaustive) extension ran at all. Object values beyond the
-    /// seed neighborhood — i.e. entailed edges between individuals that never
-    /// co-occur in a seed edge — may be missed whenever this is `true`. `false`
-    /// only when the seed alone was returned (no extension candidates).
+    /// `true` iff: the `TBox` lies outside the fragment
+    /// (`analyze_fragment`'s `PureEl`/`Horn`) where the Horn-only seed is
+    /// PROVABLY complete for every entailed edge over named individuals
+    /// (e.g. a disjunctive `C ⊑ ∃R.{b} ⊔ ∃R.{c})` — the seed may then be
+    /// missing edges the bounded extension has no candidate pair to even
+    /// probe); OR a bounded-extension probe timed out (`None`); OR the
+    /// bounded (non-exhaustive) extension ran at all. Object values beyond
+    /// the seed neighborhood — i.e. entailed edges between individuals that
+    /// never co-occur in a seed edge — may be missed whenever this is
+    /// `true`. `false` only when the `TBox` is in-fragment AND the seed alone
+    /// was returned (no extension candidates).
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
@@ -151,6 +157,36 @@ pub fn inferred_object_property_values<A: ForIRI>(
     let internal = convert_ontology(onto)?;
     let object_properties = named_object_properties(&internal);
 
+    // Honest `incomplete` initialization (review Fix 2): the seed
+    // (`materialize_object_property_assertions`, a Horn-only fixpoint over
+    // NAMED individuals — see `abox_saturation`) plus the bounded
+    // seed-neighborhood extension below are a sound UNDER-approximation
+    // whenever the TBox carries constructs that Horn-only propagation does
+    // not reason over (general disjunction, cardinality-driven case-splits,
+    // ...) — e.g. `C ⊑ (∃R.{b} ⊔ ∃R.{c})`, which never seeds an edge and
+    // whose candidate-pair neighborhood is therefore empty, so the extension
+    // loop below never runs and never gets a chance to set `incomplete`
+    // itself. Mirrors `disjointness.rs`'s
+    // `!classification.completeness_guaranteed()` gate: `PureEl`/`Horn` ⟹
+    // every entailed fact over named individuals is Horn-derivable, so the
+    // seed is complete and starting `incomplete` at `false` is honest.
+    // `analyze_fragment` (not the full `Classification`) is used here
+    // because it is a pure TBox-shape check with no per-pair classify cost —
+    // this function never needs a class hierarchy. Role CHARACTERISTIC
+    // axioms (`Symmetric`/`Inverse`/`Transitive`/...) are handled completely
+    // by the `ABox` saturator itself regardless of fragment (that closure is
+    // exactly what the seed already reflects), and `analyze_fragment`'s
+    // clausifier does not clausify ABox axioms or these role-characteristic
+    // axioms at all, so they never push a fixture out of `PureEl`/`Horn` —
+    // see `object_values_include_asserted_and_symmetric` /
+    // `object_property_values_matches_hermit_oracle`, both of which stay
+    // `PureEl`/`Horn` under this gate.
+    let mut incomplete = !matches!(
+        crate::classify::analyze_fragment(&internal),
+        crate::classify::FragmentClassification::PureEl
+            | crate::classify::FragmentClassification::Horn
+    );
+
     // `from_internal` clones `internal.vocabulary` before consuming
     // `internal`, so `prepared.vocabulary` resolves the same IRI ↔ id mapping
     // used to build the seed triples above.
@@ -171,7 +207,6 @@ pub fn inferred_object_property_values<A: ForIRI>(
     }
 
     let candidate_pairs = candidate_extension_pairs(&seed_ids);
-    let mut incomplete = false;
     for (a, b) in candidate_pairs {
         let a_iri = vocab.individual_iri(a).to_string();
         let b_iri = vocab.individual_iri(b).to_string();

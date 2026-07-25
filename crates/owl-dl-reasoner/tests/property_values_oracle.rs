@@ -111,6 +111,115 @@ fn object_values_transitive_seed_and_honest_incomplete_flag() {
     assert!(v.incomplete());
 }
 
+/// Regression test for PR #50 review Fix 2 (Important): a MISS reported as
+/// complete. The axioms `SubClassOf(:C, ObjectUnionOf(ObjectHasValue(:R :b), ObjectHasValue(:R :c)))`,
+/// `ClassAssertion(:C :a)`, and `NegativeObjectPropertyAssertion(:R :a :c)` together
+/// entail `R(a,b)` (the only remaining disjunct once `¬R(a,c)` rules the
+/// other out) — but that edge lives strictly between individuals the
+/// Horn-only `materialize_object_property_assertions` seed never connects
+/// (the seed does not reason over class-level disjunction at all), so the
+/// seed is empty, `candidate_extension_pairs` has nothing to probe, the
+/// extension loop never runs, and pre-fix `incomplete` stayed at its `false`
+/// initial value — a genuine MISS silently reported as complete.
+///
+/// Pre-fix: `v.incomplete()` is `false` (BUG). Post-fix: the disjunctive
+/// (off-`Horn`/`PureEl`-fragment) `TBox` initializes `incomplete = true`.
+///
+/// FP=0 is the hard, unconditional half: regardless of `incomplete`, this
+/// function's bounded extension has no candidate pair to consult here (empty
+/// seed ⟹ empty neighborhood), so it structurally CANNOT emit either
+/// disjunct as a spurious triple — asserted here as the non-negotiable
+/// soundness guard.
+#[test]
+fn disjunctive_has_value_reports_incomplete_and_no_fp() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:C)) Declaration(ObjectProperty(:R))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            SubClassOf(:C ObjectUnionOf(ObjectHasValue(:R :b) ObjectHasValue(:R :c)))
+            ClassAssertion(:C :a)
+            NegativeObjectPropertyAssertion(:R :a :c))",
+    );
+    let v = inferred_object_property_values(&o, None).expect("KB is consistent");
+    assert!(
+        v.incomplete(),
+        "off-fragment (disjunctive) TBox must be honestly reported incomplete"
+    );
+    let has = |s: &str, p: &str, ob: &str| {
+        v.triples()
+            .iter()
+            .any(|(x, y, z)| x == s && y == p && z == ob)
+    };
+    // FP=0 (hard, unconditional): neither disjunct may be spuriously emitted.
+    assert!(
+        !has("http://ex/#a", "http://ex/#R", "http://ex/#b"),
+        "must not spuriously emit the entailed-but-underivable triple"
+    );
+    assert!(
+        !has("http://ex/#a", "http://ex/#R", "http://ex/#c"),
+        "must not emit the ruled-out disjunct"
+    );
+}
+
+/// Regression test for PR #50 review Fix 3 (Important, test-hole): every
+/// OTHER fixture in this file is TBox-free, so the bounded extension probe
+/// (`consistent_with_extra`'s `extra_neg_prop` path) only ever sets
+/// `incomplete` and never legitimately ADDS a non-seed triple — a
+/// subject/object-swap or role-orientation bug in that probe could pass the
+/// whole suite. This fixture forces a genuine non-seed `R(a,b)` entailment
+/// via a real `TBox` axiom and asserts the extension positively fires.
+///
+/// Shape: `:seed` establishes `(a,b)` as a candidate pair (the bounded
+/// extension only probes pairs that already co-occur in a seed edge — see
+/// `candidate_extension_pairs`), while the actually-tested edge is
+/// `R(a,b)`, entailed only via a disjunctive `ObjectHasValue` case-split
+/// (`C ≡ ∃R.{b} ⊔ ∃R.{d}`, `¬R(a,d)` rules out the `d` disjunct, forcing
+/// `R(a,b)`) — VERIFIED non-seed: `abox_saturation`'s `collect_hasvalues`
+/// only descends into `Some`/`And` bodies, not `Or`
+/// (`crates/owl-dl-reasoner/src/abox_saturation.rs`), so a UNION of
+/// `ObjectHasValue`s is never captured by the Horn-only seed — this needs
+/// the tableau's disjunctive case-split (`consistent_with_extra` proving
+/// `KB ∪ {¬R(a,b)}` inconsistent), exactly the `extra_neg_prop` path this
+/// test exercises to a POSITIVE result.
+#[test]
+fn extension_positively_fires_non_seed_triple() {
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:C))
+            Declaration(ObjectProperty(:seed)) Declaration(ObjectProperty(:R))
+            Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:d))
+            ObjectPropertyAssertion(:seed :a :b)
+            SubClassOf(:C ObjectUnionOf(ObjectHasValue(:R :b) ObjectHasValue(:R :d)))
+            ClassAssertion(:C :a)
+            NegativeObjectPropertyAssertion(:R :a :d))",
+    );
+    let v = inferred_object_property_values(&o, None).expect("KB is consistent");
+    let has = |s: &str, p: &str, ob: &str| {
+        v.triples()
+            .iter()
+            .any(|(x, y, z)| x == s && y == p && z == ob)
+    };
+    // Sanity: the seed edge that established the (a,b) candidate pair.
+    assert!(has("http://ex/#a", "http://ex/#seed", "http://ex/#b"));
+    // The point of this test: the extension genuinely FIRED and added a
+    // non-seed triple, not just flagged `incomplete`.
+    assert!(
+        has("http://ex/#a", "http://ex/#R", "http://ex/#b"),
+        "the extension must positively add the entailed non-seed triple R(a,b); got {:?}",
+        v.triples()
+    );
+    // FP direction: the ruled-out disjunct, and the reverse orientation
+    // (never entailed — `:R`/`:seed` are not symmetric/inverse), must NOT
+    // appear.
+    assert!(!has("http://ex/#a", "http://ex/#R", "http://ex/#d"));
+    assert!(!has("http://ex/#b", "http://ex/#R", "http://ex/#a"));
+    assert!(!has("http://ex/#b", "http://ex/#seed", "http://ex/#a"));
+}
+
 /// External completeness oracle for `inferred_object_property_values` (issue
 /// #45's FP=0 soundness guard, Task 4.4). Same design as
 /// `materialize_oracle.rs::oracle_edges` / `materialize_matches_hermit_oracle`:

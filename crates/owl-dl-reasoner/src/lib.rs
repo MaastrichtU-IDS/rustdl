@@ -4728,6 +4728,37 @@ impl PreparedOntology {
         .map(|opt| opt.unwrap_or(true))
     }
 
+    /// Like [`Self::decide`], but does NOT fold an inconclusive `None` (a
+    /// live-node-cap trip, #35 v4 safety net) into `Some(true)`. Callers that
+    /// need to distinguish "genuinely satisfiable" from "no verdict reached"
+    /// on the deadline-FREE path — e.g. [`Self::pair_disjoint_with_deadline`]
+    /// / [`Self::pair_individuals_disjoint_with_deadline`]'s `None`-deadline
+    /// branch, whose own callers set `incomplete` on an observed `None` —
+    /// MUST use this instead of [`Self::decide`], whose `unwrap_or(true)`
+    /// would otherwise silently swallow the `NodeCap` `None` and report a
+    /// probe-capped result as complete.
+    pub(crate) fn decide_raw<F>(&self, build_test_concept: F) -> Result<Option<bool>, ReasonError>
+    where
+        F: FnOnce(&mut ConceptPool) -> ConceptId,
+    {
+        decide(
+            &self.pool,
+            &self.tbox,
+            &self.hierarchy,
+            &self.inverse_pairs,
+            &self.chain_axioms,
+            &self.asymmetric_roles,
+            &self.disjoint_role_pairs,
+            &self.complements,
+            &self.abox,
+            &[],
+            &[],
+            &self.dkey_ranges,
+            None,
+            build_test_concept,
+        )
+    }
+
     /// Lever A: like [`Self::decide`], but for the **classification pairwise
     /// subsumption loop only** — skips the `ABox` seed when it is provably
     /// irrelevant to class subsumption (`abox_irrelevant_to_classify`: has
@@ -4815,7 +4846,12 @@ impl PreparedOntology {
         };
         let sat = match deadline {
             Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
-            None => Some(self.decide(build_test_concept)?),
+            // Use the raw Option-returning decide, NOT `Self::decide` — its
+            // `unwrap_or(true)` would fold an inconclusive NodeCap `None`
+            // into `Some(true)` (satisfiable ⇒ "not disjoint"), silently
+            // discarding the inconclusive verdict instead of letting it
+            // propagate to the caller's `None => incomplete = true` arm.
+            None => self.decide_raw(build_test_concept)?,
         };
         Ok(sat.map(|s| !s)) // unsat ⇒ disjoint
     }
@@ -4839,7 +4875,11 @@ impl PreparedOntology {
         };
         let sat = match deadline {
             Some(deadline) => self.decide_with_deadline(deadline, build_test_concept)?,
-            None => Some(self.decide(build_test_concept)?),
+            // See the matching comment in `pair_disjoint_with_deadline`: use
+            // the raw Option-returning decide so a NodeCap `None` propagates
+            // instead of being folded into `Some(true)` by `Self::decide`'s
+            // `unwrap_or(true)`.
+            None => self.decide_raw(build_test_concept)?,
         };
         Ok(sat.map(|s| !s)) // {a}⊓{b} unsat ⇒ a≠b
     }

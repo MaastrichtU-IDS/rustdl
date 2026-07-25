@@ -5,6 +5,8 @@
 //! construction (a definitional extension over a fresh name adds no entailment
 //! about the original signature). Read-only on the input.
 
+use std::collections::HashSet;
+
 use crate::{
     QueryStats, ReasonError, instances_of, is_class_satisfiable_with_stats,
     is_subclass_of_with_stats,
@@ -65,18 +67,87 @@ fn incomplete_of(stats: QueryStats) -> bool {
     !stats.pure_el_mode
 }
 
-/// Error if `iri` already occurs as a declared class in the ontology
-/// signature — the probe must be fresh, never silently overwriting a
-/// pre-existing class.
-fn ensure_fresh<A: ForIRI>(onto: &SetOntology<A>, iri: &str) -> Result<(), ReasonError> {
-    for ac in onto {
-        if let Component::DeclareClass(dc) = &ac.component
-            && dc.0.0.as_ref() == iri
-        {
-            return Err(ReasonError::UnknownClass(format!(
-                "probe IRI {iri} collides with a declared class"
-            )));
+/// Add every class IRI referenced (nested) inside `ce` to `out`. Mirrors
+/// `justify::collect_ce_entities`'s recursion shape but only ever inserts on
+/// the `ClassExpression::Class` arm — properties/individuals/data-property
+/// fillers are irrelevant to "does this IRI denote a class".
+fn collect_ce_classes<A: ForIRI>(ce: &ClassExpression<A>, out: &mut HashSet<String>) {
+    use ClassExpression as CE;
+    match ce {
+        CE::Class(c) => {
+            out.insert(c.0.as_ref().to_string());
         }
+        CE::ObjectComplementOf(c) => collect_ce_classes(c, out),
+        CE::ObjectIntersectionOf(cs) | CE::ObjectUnionOf(cs) => {
+            for c in cs {
+                collect_ce_classes(c, out);
+            }
+        }
+        CE::ObjectSomeValuesFrom { bce, .. }
+        | CE::ObjectAllValuesFrom { bce, .. }
+        | CE::ObjectMinCardinality { bce, .. }
+        | CE::ObjectMaxCardinality { bce, .. }
+        | CE::ObjectExactCardinality { bce, .. } => collect_ce_classes(bce, out),
+        // ObjectHasValue/ObjectHasSelf/ObjectOneOf (individuals, not classes) and
+        // the Data* variants (datatype fillers) contribute no class IRI.
+        _ => {}
+    }
+}
+
+/// The full class signature of `onto`: every IRI that denotes a class
+/// anywhere — `Declaration(Class(...))`, a `DisjointUnion` definiendum, or a
+/// `ClassExpression::Class` occurring (recursively) in any axiom. Broader
+/// than scanning declarations alone: an IRI can be *used* as a class in e.g.
+/// `SubClassOf(<iri> Real)` with no accompanying `Declaration(Class(...))`,
+/// and the probe-freshness invariant must catch that too (horned-owl 1.4 /
+/// this pinned fork exposes no ready-made "ontology class signature" API —
+/// no `signature()`/`Signatured` trait — so this walks `Component` by hand).
+fn class_signature<A: ForIRI>(onto: &SetOntology<A>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for ac in onto {
+        match &ac.component {
+            Component::DeclareClass(dc) => {
+                out.insert(dc.0.0.as_ref().to_string());
+            }
+            Component::SubClassOf(a) => {
+                collect_ce_classes(&a.sub, &mut out);
+                collect_ce_classes(&a.sup, &mut out);
+            }
+            Component::EquivalentClasses(a) => {
+                for x in &a.0 {
+                    collect_ce_classes(x, &mut out);
+                }
+            }
+            Component::DisjointClasses(a) => {
+                for x in &a.0 {
+                    collect_ce_classes(x, &mut out);
+                }
+            }
+            Component::DisjointUnion(a) => {
+                out.insert(a.0.0.as_ref().to_string());
+                for x in &a.1 {
+                    collect_ce_classes(x, &mut out);
+                }
+            }
+            Component::ObjectPropertyDomain(a) => collect_ce_classes(&a.ce, &mut out),
+            Component::ObjectPropertyRange(a) => collect_ce_classes(&a.ce, &mut out),
+            Component::DataPropertyDomain(a) => collect_ce_classes(&a.ce, &mut out),
+            Component::HasKey(a) => collect_ce_classes(&a.ce, &mut out),
+            Component::ClassAssertion(a) => collect_ce_classes(&a.ce, &mut out),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Error if `iri` already occurs as a class anywhere in the ontology's class
+/// signature — the probe must be fresh, never silently overwriting or
+/// colliding with a pre-existing class (declared, or merely referenced).
+fn ensure_fresh<A: ForIRI>(onto: &SetOntology<A>, iri: &str) -> Result<(), ReasonError> {
+    if class_signature(onto).contains(iri) {
+        return Err(ReasonError::UnknownClass(format!(
+            "probe IRI {iri} collides with a declared class"
+        )));
     }
     Ok(())
 }

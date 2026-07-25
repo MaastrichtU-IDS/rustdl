@@ -98,3 +98,38 @@ fn ce_probe_iri_collision_errors() {
     let b = Build::<RcStr>::new();
     assert!(class_expression_satisfiable(&o, &cls(&b, "http://ex/#A")).is_err());
 }
+
+#[test]
+fn ce_probe_iri_referenced_without_declaration_errors() {
+    // The probe IRI is *used* as a class in a SubClassOf axiom but never
+    // declared — `ensure_fresh` must still catch this (full class-signature
+    // scan, not just `Declaration(Class(...))`), or the definitional-extension
+    // soundness argument for the probe reduction breaks.
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+      Ontology(<http://ex/>
+        Declaration(Class(:A))
+        Declaration(Class(:Real))
+        SubClassOf(<urn:rustdl-ce-probe:q> :Real))",
+    );
+    let b = Build::<RcStr>::new();
+    assert!(class_expression_satisfiable(&o, &cls(&b, "http://ex/#A")).is_err());
+}
+
+#[test]
+fn ce_second_probe_iri_collision_errors() {
+    // Same invariant but for PROBE_IRI_2 (urn:rustdl-ce-probe:q2), which is
+    // only exercised by `class_expression_entailed_subclass`'s second
+    // `ensure_fresh` call.
+    let o = onto(
+        r"Prefix(:=<http://ex/#>)
+      Ontology(<http://ex/>
+        Declaration(Class(:A))
+        Declaration(Class(<urn:rustdl-ce-probe:q2>)))",
+    );
+    let b = Build::<RcStr>::new();
+    assert!(
+        class_expression_entailed_subclass(&o, &cls(&b, "http://ex/#A"), &cls(&b, "http://ex/#A"))
+            .is_err()
+    );
+}

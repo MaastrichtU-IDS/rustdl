@@ -4,6 +4,33 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — 2026-07-25
+
+### Added
+
+- **Protégé plugin now answers the inferred query surface** exposed by the
+  reasoner in 0.4.2's groundwork (#44–#47): object/data **property hierarchy**,
+  **disjoint** classes & properties, **same/different individuals**, and
+  **object/data property values** — previously the plugin returned empty node
+  sets for these. Wired to the new `disjoint` / `property-hierarchy` /
+  `individuals` / `property-values` `--json` subcommands; the plugin advertises
+  all nine OWLAPI `InferenceType`s and surfaces each query's `incomplete` flag as
+  a logged sound-under-approximation warning. Only complex-class-expression
+  queries remain unbacked.
+
+### Fixed
+
+- **Inferred-query completeness honesty (`--json` `incomplete`).** `disjoint` /
+  `individuals` no longer report `incomplete:false` when a per-pair probe hits
+  the node-cap on the unbounded path; `inferred_object_property_values` now gates
+  `incomplete` on the ABox saturator's actual edge-complete fragment (a sound
+  over-approximation) instead of a mismatched proxy — so `incomplete:false` is a
+  genuine "no entailed edge missed" guarantee. Plus doc/test hardening across the
+  new query surface.
+- **Protégé plugin: inconsistent ontologies** now surface as
+  `InconsistentOntologyException` (Protégé's standard inconsistency state) rather
+  than a generic reasoner error, for the new query families too.
+
 ## [0.4.2] — 2026-07-24
 
 ### Added

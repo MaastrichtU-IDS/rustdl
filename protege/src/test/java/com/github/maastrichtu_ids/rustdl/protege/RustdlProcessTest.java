@@ -47,6 +47,46 @@ public class RustdlProcessTest {
         RustdlProcess.parseClassify("{ \"schema_version\": 2, \"consistent\": true }");
     }
 
+    @Test public void parsesDisjoint() throws Exception {
+        RustdlJson.DisjointJson d = RustdlProcess.parseDisjoint(fixture("disjoint.json"));
+        assertEquals(1, d.schema_version);
+        assertFalse(d.incomplete);
+        assertEquals("http://ex/#A", d.disjoint_classes.get(0).get(0));
+        assertEquals("http://ex/#q", d.disjoint_object_properties.get(0).get(1));
+        assertTrue(d.disjoint_data_properties.isEmpty());
+    }
+
+    @Test public void parsesPropertyHierarchy() throws Exception {
+        RustdlJson.PropHierJson p = RustdlProcess.parsePropHier(fixture("prophier.json"));
+        assertEquals(1, p.schema_version);
+        assertFalse(p.incomplete);
+        assertEquals("http://ex/#p2", p.object_properties.equivalent_groups.get(0).get(1));
+        assertEquals("http://ex/#r", p.object_properties.direct_subsumptions.get(0).get(1));
+        assertTrue(p.data_properties.equivalent_groups.isEmpty());
+        assertEquals("http://ex/#e", p.data_properties.direct_subsumptions.get(0).get(1));
+    }
+
+    @Test public void parsesIndividuals() throws Exception {
+        RustdlJson.IndividualsJson i = RustdlProcess.parseIndividuals(fixture("individuals.json"));
+        assertEquals(1, i.schema_version);
+        assertTrue(i.incomplete);
+        assertEquals("http://ex/#b", i.same_groups.get(0).get(1));
+        assertEquals("http://ex/#c", i.different_pairs.get(0).get(1));
+    }
+
+    @Test public void parsesPropertyValues() throws Exception {
+        RustdlJson.PropertyValuesJson v = RustdlProcess.parsePropertyValues(fixture("propvalues.json"));
+        assertEquals(1, v.schema_version);
+        assertFalse(v.incomplete);
+        assertEquals("http://ex/#b", v.object_property_values.get(0).get(2));
+        assertEquals("http://www.w3.org/2001/XMLSchema#integer", v.data_property_values.get(0).get(3));
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void rejectsWrongSchemaVersionDisjoint() {
+        RustdlProcess.parseDisjoint("{\"schema_version\":2}");
+    }
+
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
     }

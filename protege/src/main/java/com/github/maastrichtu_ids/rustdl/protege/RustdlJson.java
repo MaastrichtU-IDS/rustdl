@@ -27,4 +27,34 @@ public final class RustdlJson {
         public List<String> types;
         public List<String> direct_types;
     }
+
+    public static final class DisjointJson {
+        public int schema_version;
+        public boolean incomplete;
+        public List<List<String>> disjoint_classes;
+        public List<List<String>> disjoint_object_properties;
+        public List<List<String>> disjoint_data_properties;
+    }
+    public static final class PropHierSide {
+        public List<List<String>> equivalent_groups;
+        public List<List<String>> direct_subsumptions;
+    }
+    public static final class PropHierJson {
+        public int schema_version;
+        public boolean incomplete;
+        public PropHierSide object_properties;
+        public PropHierSide data_properties;
+    }
+    public static final class IndividualsJson {
+        public int schema_version;
+        public boolean incomplete;
+        public List<List<String>> same_groups;
+        public List<List<String>> different_pairs;
+    }
+    public static final class PropertyValuesJson {
+        public int schema_version;
+        public boolean incomplete;
+        public List<List<String>> object_property_values;   // [subj, prop, obj]
+        public List<List<String>> data_property_values;     // [subj, prop, lexical, datatype]
+    }
 }

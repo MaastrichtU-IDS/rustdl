@@ -1,0 +1,3 @@
+{ "schema_version": 1, "incomplete": true,
+  "same_groups": [["http://ex/#a","http://ex/#b"]],
+  "different_pairs": [["http://ex/#a","http://ex/#c"]] }

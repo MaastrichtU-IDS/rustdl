@@ -40,6 +40,18 @@ public final class RustdlProcess {
     public static RustdlJson.RealizeJson realize(Path ofn, long timeoutSec) throws IOException {
         return parseRealize(run("realize", ofn, timeoutSec));
     }
+    public static RustdlJson.DisjointJson disjoint(Path ofn, long timeoutSec) throws IOException {
+        return parseDisjoint(run("disjoint", ofn, timeoutSec));
+    }
+    public static RustdlJson.PropHierJson propertyHierarchy(Path ofn, long timeoutSec) throws IOException {
+        return parsePropHier(run("property-hierarchy", ofn, timeoutSec));
+    }
+    public static RustdlJson.IndividualsJson individuals(Path ofn, long timeoutSec) throws IOException {
+        return parseIndividuals(run("individuals", ofn, timeoutSec));
+    }
+    public static RustdlJson.PropertyValuesJson propertyValues(Path ofn, long timeoutSec) throws IOException {
+        return parsePropertyValues(run("property-values", ofn, timeoutSec));
+    }
 
     static RustdlJson.ClassifyJson parseClassify(String json) {
         RustdlJson.ClassifyJson c = fromJson(json, RustdlJson.ClassifyJson.class);
@@ -55,6 +67,18 @@ public final class RustdlProcess {
         RustdlJson.RealizeJson r = fromJson(json, RustdlJson.RealizeJson.class);
         checkVersion(r.schema_version);
         return r;
+    }
+    static RustdlJson.DisjointJson parseDisjoint(String json) {
+        RustdlJson.DisjointJson c = fromJson(json, RustdlJson.DisjointJson.class); checkVersion(c.schema_version); return c;
+    }
+    static RustdlJson.PropHierJson parsePropHier(String json) {
+        RustdlJson.PropHierJson c = fromJson(json, RustdlJson.PropHierJson.class); checkVersion(c.schema_version); return c;
+    }
+    static RustdlJson.IndividualsJson parseIndividuals(String json) {
+        RustdlJson.IndividualsJson c = fromJson(json, RustdlJson.IndividualsJson.class); checkVersion(c.schema_version); return c;
+    }
+    static RustdlJson.PropertyValuesJson parsePropertyValues(String json) {
+        RustdlJson.PropertyValuesJson c = fromJson(json, RustdlJson.PropertyValuesJson.class); checkVersion(c.schema_version); return c;
     }
 
     private static <T> T fromJson(String json, Class<T> type) {

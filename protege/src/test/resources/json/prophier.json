@@ -1,0 +1,4 @@
+{ "schema_version": 1, "incomplete": false,
+  "object_properties": { "equivalent_groups": [["http://ex/#p","http://ex/#p2"]],
+                         "direct_subsumptions": [["http://ex/#p","http://ex/#r"]] },
+  "data_properties": { "equivalent_groups": [], "direct_subsumptions": [["http://ex/#d","http://ex/#e"]] } }

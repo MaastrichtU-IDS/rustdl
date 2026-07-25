@@ -1,0 +1,4 @@
+{ "schema_version": 1, "incomplete": false,
+  "disjoint_classes": [["http://ex/#A", "http://ex/#B"]],
+  "disjoint_object_properties": [["http://ex/#p", "http://ex/#q"]],
+  "disjoint_data_properties": [] }

@@ -1,0 +1,3 @@
+{ "schema_version": 1, "incomplete": false,
+  "object_property_values": [["http://ex/#a","http://ex/#p","http://ex/#b"]],
+  "data_property_values": [["http://ex/#a","http://ex/#d","5","http://www.w3.org/2001/XMLSchema#integer"]] }

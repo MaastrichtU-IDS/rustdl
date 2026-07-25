@@ -60,6 +60,108 @@ fn realization_to_dict(realization: &owl_dl_reasoner::Realization) -> HashMap<St
         .collect()
 }
 
+/// Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
+/// unsatisfiable — plus a completeness flag. Bounded by a 1s per-pair
+/// deadline. The Python-level wrapper (`__init__.py`) unpacks the tuple,
+/// warns on `incomplete`, and returns just the pair list (see
+/// `IncompleteQueryWarning`).
+#[pyfunction]
+pub(crate) fn disjoint_classes(path: &str) -> PyResult<(Vec<(String, String)>, bool)> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::disjoint_classes(&ontology, Some(std::time::Duration::from_secs(1)))
+        .map(|d| (d.pairs().to_vec(), d.incomplete()))
+        .map_err(reason_error_to_py)
+}
+
+/// Told-disjoint object property pairs `(a, b)`.
+#[pyfunction]
+pub(crate) fn disjoint_object_properties(path: &str) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::disjoint_object_properties(&ontology).map_err(reason_error_to_py)
+}
+
+/// Told-disjoint data property pairs `(a, b)`.
+#[pyfunction]
+pub(crate) fn disjoint_data_properties(path: &str) -> PyResult<Vec<(String, String)>> {
+    let ontology = load::load_path(path)?;
+    owl_dl_reasoner::disjoint_data_properties(&ontology).map_err(reason_error_to_py)
+}
+
+/// Inferred object property hierarchy: `(equivalent_groups, direct_subsumptions)`.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn object_property_hierarchy(
+    path: &str,
+) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>)> {
+    let o = load::load_path(path)?;
+    let c = owl_dl_reasoner::classify_object_property_hierarchy(&o).map_err(reason_error_to_py)?;
+    Ok((
+        c.equivalent_groups().to_vec(),
+        c.direct_subsumptions().to_vec(),
+    ))
+}
+
+/// Inferred data property hierarchy: `(equivalent_groups, direct_subsumptions)`.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn data_property_hierarchy(
+    path: &str,
+) -> PyResult<(Vec<Vec<String>>, Vec<(String, String)>)> {
+    let o = load::load_path(path)?;
+    let c = owl_dl_reasoner::classify_data_property_hierarchy(&o).map_err(reason_error_to_py)?;
+    Ok((
+        c.equivalent_groups().to_vec(),
+        c.direct_subsumptions().to_vec(),
+    ))
+}
+
+/// Entailed same-individual equivalence groups (asserted + functional-forced
+/// + entailed), plus a completeness flag. Bounded by a 1s per-pair deadline.
+/// See `disjoint_classes` for the tuple/wrapper convention.
+#[pyfunction]
+pub(crate) fn same_individuals(path: &str) -> PyResult<(Vec<Vec<String>>, bool)> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::same_individuals(&o, Some(std::time::Duration::from_secs(1)))
+        .map(|s| (s.groups().to_vec(), s.incomplete()))
+        .map_err(reason_error_to_py)
+}
+
+/// Entailed different-individual pairs `(a, b)` — `{a} ⊓ {b}` is proven
+/// unsatisfiable — plus a completeness flag. Bounded by a 1s per-pair
+/// deadline. See `disjoint_classes` for the tuple/wrapper convention.
+#[pyfunction]
+pub(crate) fn different_individuals(path: &str) -> PyResult<(Vec<(String, String)>, bool)> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::different_individuals(&o, Some(std::time::Duration::from_secs(1)))
+        .map(|d| (d.pairs().to_vec(), d.incomplete()))
+        .map_err(reason_error_to_py)
+}
+
+/// Inferred object property values `(subject, property, object)` over named
+/// individuals, plus a completeness flag. Bounded by a 1s per-pair deadline.
+/// See `disjoint_classes` for the tuple/wrapper convention.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn object_property_values(
+    path: &str,
+) -> PyResult<(Vec<(String, String, String)>, bool)> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::inferred_object_property_values(&o, Some(std::time::Duration::from_secs(1)))
+        .map(|v| (v.triples().to_vec(), v.incomplete()))
+        .map_err(reason_error_to_py)
+}
+
+/// Inferred data property values `(subject, property, lexical, datatype)`
+/// over named individuals.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn data_property_values(path: &str) -> PyResult<Vec<(String, String, String, String)>> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::inferred_data_property_values(&o)
+        .map(|v| v.quads().to_vec())
+        .map_err(reason_error_to_py)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_consistent, m)?)?;
     m.add_function(wrap_pyfunction!(is_class_satisfiable, m)?)?;
@@ -67,5 +169,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_instance_of, m)?)?;
     m.add_function(wrap_pyfunction!(instances_of, m)?)?;
     m.add_function(wrap_pyfunction!(realize, m)?)?;
+    m.add_function(wrap_pyfunction!(disjoint_classes, m)?)?;
+    m.add_function(wrap_pyfunction!(disjoint_object_properties, m)?)?;
+    m.add_function(wrap_pyfunction!(disjoint_data_properties, m)?)?;
+    m.add_function(wrap_pyfunction!(object_property_hierarchy, m)?)?;
+    m.add_function(wrap_pyfunction!(data_property_hierarchy, m)?)?;
+    m.add_function(wrap_pyfunction!(same_individuals, m)?)?;
+    m.add_function(wrap_pyfunction!(different_individuals, m)?)?;
+    m.add_function(wrap_pyfunction!(object_property_values, m)?)?;
+    m.add_function(wrap_pyfunction!(data_property_values, m)?)?;
     Ok(())
 }

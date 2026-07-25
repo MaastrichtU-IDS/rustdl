@@ -20,6 +20,15 @@ from rustdl._native import (
     is_instance_of as is_instance_of,
     instances_of as instances_of,
     realize as realize,
+    disjoint_classes as _disjoint_classes_native,
+    disjoint_object_properties as disjoint_object_properties,
+    disjoint_data_properties as disjoint_data_properties,
+    object_property_hierarchy as object_property_hierarchy,
+    data_property_hierarchy as data_property_hierarchy,
+    same_individuals as _same_individuals_native,
+    different_individuals as _different_individuals_native,
+    object_property_values as _object_property_values_native,
+    data_property_values as data_property_values,
     RustdlError as RustdlError,
     ParseError as ParseError,
     UnsupportedAxiomError as UnsupportedAxiomError,
@@ -92,6 +101,67 @@ def _warn_if_incomplete(result: "Classification") -> "Classification":
             stacklevel=3,
         )
     return result
+
+
+class IncompleteQueryWarning(UserWarning):
+    """Raised by the budgeted inferred queries (`disjoint_classes`,
+    `same_individuals`, `different_individuals`, `object_property_values`)
+    when the reasoner's per-pair budget/probe was exhausted, so the returned
+    list is a sound under-approximation (no false pairs/groups/triples, but
+    real ones may be missing). Mirrors `IncompleteClassificationWarning`'s
+    convention for `classify`. Silence with the standard `warnings` module."""
+
+
+def _warn_if_query_incomplete(name: str, incomplete: bool) -> None:
+    if incomplete:
+        _warnings.warn(
+            f"{name} result may be incomplete (budget/fragment exhausted) — "
+            "sound under-approximation: no false entries, but real ones may be "
+            "missing.",
+            IncompleteQueryWarning,
+            stacklevel=3,
+        )
+
+
+def disjoint_classes(path):
+    """Entailed disjoint named-class pairs `(c, d)` — `C ⊓ D` is proven
+    unsatisfiable. Bounded by a 1s per-pair deadline; emits
+    `IncompleteQueryWarning` when the budget was exhausted (see
+    `IncompleteQueryWarning`)."""
+    pairs, incomplete = _disjoint_classes_native(path)
+    _warn_if_query_incomplete("disjoint_classes", incomplete)
+    return pairs
+
+
+def same_individuals(path):
+    """Entailed same-individual equivalence groups (asserted +
+    functional-forced + entailed). Bounded by a 1s per-pair deadline; emits
+    `IncompleteQueryWarning` when the budget was exhausted (see
+    `IncompleteQueryWarning`) — note this fires whenever ANY extension probe
+    beyond the sound-complete seed ran, even if no new group was found."""
+    groups, incomplete = _same_individuals_native(path)
+    _warn_if_query_incomplete("same_individuals", incomplete)
+    return groups
+
+
+def different_individuals(path):
+    """Entailed different-individual pairs `(a, b)` — `{a} ⊓ {b}` is proven
+    unsatisfiable. Bounded by a 1s per-pair deadline; emits
+    `IncompleteQueryWarning` when the budget was exhausted (see
+    `IncompleteQueryWarning`)."""
+    pairs, incomplete = _different_individuals_native(path)
+    _warn_if_query_incomplete("different_individuals", incomplete)
+    return pairs
+
+
+def object_property_values(path):
+    """Inferred object property values `(subject, property, object)` over
+    named individuals. Bounded by a 1s per-pair deadline; emits
+    `IncompleteQueryWarning` when the budget was exhausted (see
+    `IncompleteQueryWarning`)."""
+    triples, incomplete = _object_property_values_native(path)
+    _warn_if_query_incomplete("object_property_values", incomplete)
+    return triples
 
 
 def _resolve_global_timeout(global_timeout_ms, global_deadline_ms):
@@ -211,6 +281,7 @@ __all__ = [
     "examples",
     "Classification",
     "IncompleteClassificationWarning",
+    "IncompleteQueryWarning",
     "classify",
     "classify_bytes",
     "is_consistent",
@@ -219,6 +290,15 @@ __all__ = [
     "is_instance_of",
     "instances_of",
     "realize",
+    "disjoint_classes",
+    "disjoint_object_properties",
+    "disjoint_data_properties",
+    "object_property_hierarchy",
+    "data_property_hierarchy",
+    "same_individuals",
+    "different_individuals",
+    "object_property_values",
+    "data_property_values",
     "RustdlError",
     "ParseError",
     "UnsupportedAxiomError",

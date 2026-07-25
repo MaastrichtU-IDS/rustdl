@@ -1,0 +1,16 @@
+Prefix(:=<urn:dj#>)
+Ontology(<urn:dj>
+  Declaration(Class(:Animal))
+  Declaration(Class(:Plant))
+  Declaration(Class(:Dog))
+  Declaration(Class(:Tree))
+
+  # Told disjointness between two top-level classes.
+  DisjointClasses(:Animal :Plant)
+
+  # Inheritance-derived disjointness: Dog/Tree are not told disjoint, but each
+  # is a subclass of a told-disjoint parent, so Dog and Tree are entailed
+  # disjoint — within reach of rustdl's C ⊓ D unsat probe.
+  SubClassOf(:Dog :Animal)
+  SubClassOf(:Tree :Plant)
+)

@@ -1,7 +1,10 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
-use owl_dl_reasoner::{Classification, Realization};
+use owl_dl_reasoner::{
+    Classification, DataPropertyValues, DifferentIndividuals, Disjointness, ObjectPropertyValues,
+    PropertyClassification, Realization, SameIndividuals,
+};
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -33,6 +36,15 @@ pub(crate) struct IndividualTypesJson {
 pub(crate) struct RealizeJson {
     pub(crate) schema_version: u32,
     pub(crate) individuals: Vec<IndividualTypesJson>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct DisjointJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) disjoint_classes: Vec<[String; 2]>,
+    pub(crate) disjoint_object_properties: Vec<[String; 2]>,
+    pub(crate) disjoint_data_properties: Vec<[String; 2]>,
 }
 
 #[must_use]
@@ -128,6 +140,151 @@ pub(crate) fn build_realize_json(r: &Realization) -> RealizeJson {
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         individuals,
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct PropHierSide {
+    pub(crate) equivalent_groups: Vec<Vec<String>>,
+    pub(crate) direct_subsumptions: Vec<[String; 2]>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct PropHierJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) object_properties: PropHierSide,
+    pub(crate) data_properties: PropHierSide,
+}
+
+fn side(c: &PropertyClassification) -> PropHierSide {
+    let mut ds: Vec<[String; 2]> = c
+        .direct_subsumptions()
+        .iter()
+        .map(|(a, b)| [a.clone(), b.clone()])
+        .collect();
+    ds.sort();
+    let mut eg: Vec<Vec<String>> = c.equivalent_groups().to_vec();
+    eg.sort();
+    PropHierSide {
+        equivalent_groups: eg,
+        direct_subsumptions: ds,
+    }
+}
+
+#[must_use]
+pub(crate) fn build_prophier_json(
+    obj: &PropertyClassification,
+    data: &PropertyClassification,
+) -> PropHierJson {
+    PropHierJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: false,
+        object_properties: side(obj),
+        data_properties: side(data),
+    }
+}
+
+#[must_use]
+pub(crate) fn build_disjoint_json(
+    classes: &Disjointness,
+    obj: Vec<(String, String)>,
+    data: Vec<(String, String)>,
+) -> DisjointJson {
+    let to_arr = |v: Vec<(String, String)>| {
+        let mut a: Vec<[String; 2]> = v.into_iter().map(|(x, y)| [x, y]).collect();
+        a.sort();
+        a
+    };
+    let mut dc: Vec<[String; 2]> = classes
+        .pairs()
+        .iter()
+        .map(|(x, y)| [x.clone(), y.clone()])
+        .collect();
+    dc.sort();
+    DisjointJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: classes.incomplete(),
+        disjoint_classes: dc,
+        disjoint_object_properties: to_arr(obj),
+        disjoint_data_properties: to_arr(data),
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct IndividualsJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) same_groups: Vec<Vec<String>>,
+    pub(crate) different_pairs: Vec<[String; 2]>,
+}
+
+#[must_use]
+pub(crate) fn build_individuals_json(
+    same: &SameIndividuals,
+    different: &DifferentIndividuals,
+) -> IndividualsJson {
+    let mut same_groups: Vec<Vec<String>> = same
+        .groups()
+        .iter()
+        .map(|g| {
+            let mut g = g.clone();
+            g.sort();
+            g
+        })
+        .collect();
+    same_groups.sort();
+
+    let mut different_pairs: Vec<[String; 2]> = different
+        .pairs()
+        .iter()
+        .map(|(a, b)| {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            [lo.clone(), hi.clone()]
+        })
+        .collect();
+    different_pairs.sort();
+
+    IndividualsJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: same.incomplete() || different.incomplete(),
+        same_groups,
+        different_pairs,
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct PropertyValuesJson {
+    pub(crate) schema_version: u32,
+    pub(crate) incomplete: bool,
+    pub(crate) object_property_values: Vec<[String; 3]>,
+    pub(crate) data_property_values: Vec<[String; 4]>,
+}
+
+#[must_use]
+pub(crate) fn build_property_values_json(
+    obj: &ObjectPropertyValues,
+    data: &DataPropertyValues,
+) -> PropertyValuesJson {
+    let mut object_property_values: Vec<[String; 3]> = obj
+        .triples()
+        .iter()
+        .map(|(s, p, o)| [s.clone(), p.clone(), o.clone()])
+        .collect();
+    object_property_values.sort();
+
+    let mut data_property_values: Vec<[String; 4]> = data
+        .quads()
+        .iter()
+        .map(|(s, p, lex, dt)| [s.clone(), p.clone(), lex.clone(), dt.clone()])
+        .collect();
+    data_property_values.sort();
+
+    PropertyValuesJson {
+        schema_version: SCHEMA_VERSION,
+        incomplete: obj.incomplete() || data.incomplete(),
+        object_property_values,
+        data_property_values,
     }
 }
 

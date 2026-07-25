@@ -53,6 +53,12 @@ class IncompleteClassificationWarning(UserWarning):
     """Emitted when classification hit the per-pair timeout (sound but possibly
     incomplete)."""
 
+class IncompleteQueryWarning(UserWarning):
+    """Emitted by the budgeted inferred queries (`disjoint_classes`,
+    `same_individuals`, `different_individuals`, `object_property_values`)
+    when the per-pair budget/probe was exhausted (sound but possibly
+    incomplete)."""
+
 class Root(Mapping[str, object]):
     iri: str
     justification: tuple[str, ...]
@@ -149,6 +155,58 @@ def instances_of(path: str, class_iri: str) -> list[str]:
 
 def realize(path: str) -> dict[str, list[str]]:
     """Map each named individual to its most-specific entailed types."""
+    ...
+
+# ── inferred disjointness ───────────────────────────────────────────────────
+
+def disjoint_classes(path: str) -> list[tuple[str, str]]:
+    """Entailed disjoint named-class pairs (C ⊓ D unsatisfiable). Bounded by a
+    1s per-pair deadline; emits `IncompleteQueryWarning` if the budget was
+    exhausted."""
+    ...
+
+def disjoint_object_properties(path: str) -> list[tuple[str, str]]:
+    """Told-disjoint object property pairs."""
+    ...
+
+def disjoint_data_properties(path: str) -> list[tuple[str, str]]:
+    """Told-disjoint data property pairs."""
+    ...
+
+# ── inferred property hierarchy ─────────────────────────────────────────────
+
+def object_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str, str]]]:
+    """(equivalent_groups, direct_subsumptions) for object properties."""
+    ...
+
+def data_property_hierarchy(path: str) -> tuple[list[list[str]], list[tuple[str, str]]]:
+    """(equivalent_groups, direct_subsumptions) for data properties."""
+    ...
+
+# ── inferred same/different individuals ─────────────────────────────────────
+
+def same_individuals(path: str) -> list[list[str]]:
+    """Groups of individuals proven equal (asserted + functional-forced + entailed).
+    Bounded by a 1s per-pair deadline; emits `IncompleteQueryWarning` whenever any
+    extension probe beyond the sound-complete seed ran."""
+    ...
+
+def different_individuals(path: str) -> list[tuple[str, str]]:
+    """Pairs of individuals proven distinct ({a}⊓{b} unsatisfiable). Bounded by a
+    1s per-pair deadline; emits `IncompleteQueryWarning` if the budget was
+    exhausted."""
+    ...
+
+# ── inferred property values ────────────────────────────────────────────────
+
+def object_property_values(path: str) -> list[tuple[str, str, str]]:
+    """Inferred object property values (subject, property, object) over named
+    individuals. Bounded by a 1s per-pair deadline; emits `IncompleteQueryWarning`
+    if the budget was exhausted."""
+    ...
+
+def data_property_values(path: str) -> list[tuple[str, str, str, str]]:
+    """Inferred data property values (subject, property, lexical, datatype)."""
     ...
 
 # ── inference materialization ───────────────────────────────────────────────

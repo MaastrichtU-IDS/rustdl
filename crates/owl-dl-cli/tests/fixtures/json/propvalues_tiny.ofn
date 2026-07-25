@@ -1,0 +1,8 @@
+Prefix(:=<http://ex/#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex/>
+  Declaration(ObjectProperty(:r)) Declaration(DataProperty(:dp))
+  Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+  SymmetricObjectProperty(:r)
+  ObjectPropertyAssertion(:r :a :b)
+  DataPropertyAssertion(:dp :a "5"^^xsd:integer))

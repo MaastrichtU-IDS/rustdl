@@ -65,7 +65,19 @@ public class RustdlReasonerTest {
     }
 
     @Test public void unsupportedReturnsEmpty() throws Exception {
-        assertTrue(reasoner().getObjectPropertyValues(
+        // A query for an (individual, property) pair with no recorded value returns empty
+        // from the property-values cache — inject an empty cache result rather than hitting
+        // the real subprocess (that path is now live; see propValuesReasoner() below).
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/unsupported"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = true; c.incomplete = false;
+        c.unsatisfiable = new ArrayList<>(); c.equivalent_groups = new ArrayList<>(); c.direct_subsumptions = new ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new ArrayList<>();
+        RustdlJson.PropertyValuesJson v = new RustdlJson.PropertyValuesJson();
+        v.schema_version = 1; v.incomplete = false;
+        v.object_property_values = new ArrayList<>(); v.data_property_values = new ArrayList<>();
+        RustdlReasoner reasoner = RustdlReasoner.forTest(o, c, r, v);
+        assertTrue(reasoner.getObjectPropertyValues(
             df.getOWLNamedIndividual(IRI.create("http://ex/#i")),
             df.getOWLObjectProperty(IRI.create("http://ex/#p"))).isEmpty());
     }

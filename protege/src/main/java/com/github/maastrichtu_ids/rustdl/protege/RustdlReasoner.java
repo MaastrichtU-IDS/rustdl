@@ -127,18 +127,40 @@ public class RustdlReasoner extends OWLReasonerBase {
 
     // ---- precompute / buffering ----
     @Override public Set<InferenceType> getPrecomputableInferenceTypes() {
-        return EnumSet.of(InferenceType.CLASS_HIERARCHY, InferenceType.CLASS_ASSERTIONS);
+        return EnumSet.of(InferenceType.CLASS_HIERARCHY, InferenceType.CLASS_ASSERTIONS,
+            InferenceType.OBJECT_PROPERTY_HIERARCHY, InferenceType.DATA_PROPERTY_HIERARCHY,
+            InferenceType.DISJOINT_CLASSES, InferenceType.SAME_INDIVIDUAL,
+            InferenceType.DIFFERENT_INDIVIDUALS, InferenceType.OBJECT_PROPERTY_ASSERTIONS,
+            InferenceType.DATA_PROPERTY_ASSERTIONS);
     }
     @Override public boolean isPrecomputed(InferenceType type) {
         if (type == InferenceType.CLASS_HIERARCHY) return classifyResult != null;
         if (type == InferenceType.CLASS_ASSERTIONS) return realizeResult != null;
+        if (type == InferenceType.OBJECT_PROPERTY_HIERARCHY || type == InferenceType.DATA_PROPERTY_HIERARCHY) {
+            return propHierResult != null;
+        }
+        if (type == InferenceType.DISJOINT_CLASSES) return disjointResult != null;
+        if (type == InferenceType.SAME_INDIVIDUAL || type == InferenceType.DIFFERENT_INDIVIDUALS) {
+            return individualsResult != null;
+        }
+        if (type == InferenceType.OBJECT_PROPERTY_ASSERTIONS || type == InferenceType.DATA_PROPERTY_ASSERTIONS) {
+            return propValuesResult != null;
+        }
         return true; // unsupported types are trivially "precomputed" (empty)
     }
     @Override public void precomputeInferences(InferenceType... types) {
         Set<InferenceType> req = new HashSet<>(Arrays.asList(types));
         boolean wantHierarchy = req.contains(InferenceType.CLASS_HIERARCHY);
         boolean wantAssertions = req.contains(InferenceType.CLASS_ASSERTIONS);
-        if (!wantHierarchy && !wantAssertions) return;
+        boolean wantPropHier = req.contains(InferenceType.OBJECT_PROPERTY_HIERARCHY)
+            || req.contains(InferenceType.DATA_PROPERTY_HIERARCHY);
+        boolean wantDisjoint = req.contains(InferenceType.DISJOINT_CLASSES);
+        boolean wantIndividuals = req.contains(InferenceType.SAME_INDIVIDUAL)
+            || req.contains(InferenceType.DIFFERENT_INDIVIDUALS);
+        boolean wantPropValues = req.contains(InferenceType.OBJECT_PROPERTY_ASSERTIONS)
+            || req.contains(InferenceType.DATA_PROPERTY_ASSERTIONS);
+        if (!wantHierarchy && !wantAssertions && !wantPropHier && !wantDisjoint
+                && !wantIndividuals && !wantPropValues) return;
         Path ofn = null;
         try {
             ofn = Files.createTempFile("rustdl-", ".ofn");
@@ -159,6 +181,37 @@ public class RustdlReasoner extends OWLReasonerBase {
                     && !getRootOntology().getIndividualsInSignature(true).isEmpty()) {
                 realizeResult = RustdlProcess.realize(ofn, timeoutSec);
             }
+            if (wantPropHier && propHierResult == null) {
+                propHierResult = RustdlProcess.propertyHierarchy(ofn, timeoutSec);
+                if (propHierResult.incomplete) {
+                    LOG.warning("rustdl reports an INCOMPLETE property-hierarchy result; "
+                        + "sound under-approximation (may miss, never wrong).");
+                }
+                rebuildPropHierIndices();
+            }
+            if (wantDisjoint && disjointResult == null) {
+                disjointResult = RustdlProcess.disjoint(ofn, timeoutSec);
+                if (disjointResult.incomplete) {
+                    LOG.warning("rustdl reports an INCOMPLETE disjointness result; "
+                        + "sound under-approximation (may miss, never wrong).");
+                }
+                rebuildDisjointIndices();
+            }
+            if (wantIndividuals && individualsResult == null) {
+                individualsResult = RustdlProcess.individuals(ofn, timeoutSec);
+                if (individualsResult.incomplete) {
+                    LOG.warning("rustdl reports an INCOMPLETE same/different-individuals result; "
+                        + "sound under-approximation (may miss, never wrong).");
+                }
+                rebuildIndividualsIndices();
+            }
+            if (wantPropValues && propValuesResult == null) {
+                propValuesResult = RustdlProcess.propertyValues(ofn, timeoutSec);
+                if (propValuesResult.incomplete) {
+                    LOG.warning("rustdl reports an INCOMPLETE property-values result; "
+                        + "sound under-approximation (may miss, never wrong).");
+                }
+            }
         } catch (Exception e) {
             throw new ReasonerInternalException("rustdl precompute failed: " + e.getMessage(), e);
         } finally {
@@ -173,19 +226,19 @@ public class RustdlReasoner extends OWLReasonerBase {
     private void ensureRealized() {
         if (realizeResult == null) precomputeInferences(InferenceType.CLASS_ASSERTIONS);
     }
-    /** Ensure the property hierarchy ran (lazy precompute; wiring into precomputeInferences is a later task). */
+    /** Ensure the property hierarchy ran (lazy precompute). */
     private void ensurePropHier() {
         if (propHierResult == null) precomputeInferences(InferenceType.OBJECT_PROPERTY_HIERARCHY);
     }
-    /** Ensure disjointness ran (lazy precompute; the subprocess wiring into precomputeInferences is a later task). */
+    /** Ensure disjointness ran (lazy precompute). */
     private void ensureDisjoint() {
         if (disjointResult == null) precomputeInferences(InferenceType.DISJOINT_CLASSES);
     }
-    /** Ensure same/different individuals ran (lazy precompute; the subprocess wiring into precomputeInferences is a later task). */
+    /** Ensure same/different individuals ran (lazy precompute). */
     private void ensureIndividuals() {
         if (individualsResult == null) precomputeInferences(InferenceType.SAME_INDIVIDUAL);
     }
-    /** Ensure object/data property values ran (lazy precompute; the subprocess wiring into precomputeInferences is a later task). */
+    /** Ensure object/data property values ran (lazy precompute). */
     private void ensurePropValues() {
         if (propValuesResult == null) precomputeInferences(InferenceType.OBJECT_PROPERTY_ASSERTIONS);
     }

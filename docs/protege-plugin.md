@@ -16,14 +16,16 @@ rustdl`) and launch Protégé with `-Drustdl.bin=/path/to/rustdl`.
 
 ## What it computes (v1)
 
-Consistency, class hierarchy (classify), unsatisfiable classes, and class
-assertions (types/instances via realize). Property hierarchies/values,
-same/different individuals, and disjointness node-set queries (not yet backed
-by rustdl) return empty. `isSatisfiable`/`isEntailed` on a complex (anonymous)
-class expression instead throw `UnsupportedOperationException` — a boolean
-guess there would be unsound. An `incomplete` classification (some
-hard class pairs hit the per-pair budget) is logged; results stay sound (no false
-subsumptions, some may be missed).
+Consistency, class hierarchy (classify), unsatisfiable classes, class
+assertions (types/instances via realize), object/data property hierarchies,
+class/object-property/data-property disjointness, same/different
+individuals, and object/data property values (assertions) — all 9 OWLAPI
+`InferenceType`s are precomputable and cache-backed. Complex (anonymous)
+class-expression queries (`isSatisfiable`/`isEntailed`) instead throw
+`UnsupportedOperationException` — a boolean guess there would be unsound;
+this is the one remaining empty stub. An `incomplete` result from any
+subprocess (some hard pairs hit the per-pair budget) is logged; results
+stay sound (no false answers, some may be missed).
 
 ## Config
 

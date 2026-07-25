@@ -273,14 +273,10 @@ impl Clausifier {
                 }
             }
             Axiom::DisjointUnion { class, members } => {
-                // class ≡ ⊔members, plus pairwise disjoint members.
-                let cls_concept_eq = members; // handled below via gci on the union
-                let _ = cls_concept_eq;
-                // class ⊑ ⊔members and each member ⊑ class:
-                // approximate via the union concept if present is
-                // complex; defer the equivalence half, emit the
-                // pairwise disjointness which is the load-bearing
-                // part for unsat detection.
+                // class ≡ ⊔members: pairwise disjoint members, each
+                // member ⊑ class (Horn), and the covering half
+                // class ⊑ ⊔members (a genuine disjunctive-head
+                // clause — see the design doc for #40).
                 for i in 0..members.len() {
                     for j in (i + 1)..members.len() {
                         self.next_var = X + 1;
@@ -314,6 +310,35 @@ impl Clausifier {
                     } else {
                         self.defer("disjoint-union-member");
                     }
+                }
+                // class ⊑ ⊔members (the previously-deferred covering
+                // half): C(X) → D1(X) ∨ … ∨ Dn(X). Sound — a genuine
+                // DisjointUnion entailment, so it can only add true
+                // subsumptions, never an FP.
+                self.next_var = X + 1;
+                let mut head = Vec::with_capacity(members.len());
+                let mut all_atomic = true;
+                for &m in members {
+                    if let Some(cid) = self.class_id_of(m) {
+                        head.push(Atom::Class(cid, X));
+                    } else {
+                        // Complex member: sound under-approximation —
+                        // defer the covering clause rather than emit
+                        // it with a missing disjunct (which would be
+                        // an unsound *narrower* union).
+                        all_atomic = false;
+                        break;
+                    }
+                }
+                if all_atomic {
+                    // Empty members ⇒ head == [] ⇒ `C ⊑ ⊥` (empty
+                    // union), matching the ⊥-clause convention.
+                    self.clauses.push(DlClause {
+                        body: vec![Atom::Class(*class, X)],
+                        head,
+                    });
+                } else {
+                    self.defer("disjoint-union-covering");
                 }
             }
             Axiom::ObjectPropertyDomain { role, domain } => {

@@ -4,6 +4,27 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] — 2026-07-25
+
+### Added
+
+- **Complex (anonymous) class-expression queries** (#48): satisfiability of an
+  arbitrary class expression, subclass-entailment between two class expressions,
+  and instance retrieval for a class expression — exposed on the reasoner API,
+  Python (`class_expression_satisfiable` / `entailed_subclass` / `instances`),
+  and the CLI (`sat-expr` / `subclass-expr` / `instances-expr`, each with
+  `--json`). Entailment-backed and sound; the `incomplete` flag marks a sound
+  under-approximation. HermiT-oracle-tested.
+- **Protégé plugin shows its version in the Reasoner menu** — the reasoner now
+  appears as `rustdl <version>` (like ELK/HermiT), via `${project.version}`
+  resource-filtering of `plugin.xml`.
+
+### Fixed
+
+- **Wedge clausifier: `DisjointUnion` covering direction** (#40) — the covering
+  constraint of `DisjointUnion(C, D₁ … Dₙ)` is now clausified in both directions,
+  closing a wedge-classify completeness gap.
+
 ## [0.4.3] — 2026-07-25
 
 ### Added

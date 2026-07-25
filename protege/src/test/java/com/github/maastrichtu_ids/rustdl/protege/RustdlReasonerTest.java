@@ -228,6 +228,34 @@ public class RustdlReasonerTest {
         assertTrue(subs.containsEntity(df.getOWLBottomDataProperty()));
     }
 
+    /** Loads the shared disjoint.json fixture: classes A/B disjoint, object properties p/q disjoint, no disjoint data properties. */
+    private RustdlReasoner disjointReasoner() throws Exception {
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/disjoint"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = true; c.incomplete = false;
+        c.unsatisfiable = new ArrayList<>(); c.equivalent_groups = new ArrayList<>(); c.direct_subsumptions = new ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new ArrayList<>();
+        String json = new String(java.nio.file.Files.readAllBytes(
+            java.nio.file.Paths.get(getClass().getResource("/json/disjoint.json").toURI())));
+        RustdlJson.DisjointJson d = RustdlProcess.parseDisjoint(json);
+        return RustdlReasoner.forTest(o, c, r, d);
+    }
+
+    @Test public void disjointClasses() throws Exception {
+        NodeSet<OWLClass> disjoint = disjointReasoner().getDisjointClasses(cls("A"));
+        assertTrue(disjoint.containsEntity(cls("B")));
+    }
+
+    @Test public void disjointObjectProperties() throws Exception {
+        NodeSet<OWLObjectPropertyExpression> disjoint = disjointReasoner().getDisjointObjectProperties(objProp("p"));
+        assertTrue(disjoint.containsEntity(objProp("q")));
+    }
+
+    @Test public void disjointDataPropertiesEmpty() throws Exception {
+        NodeSet<OWLDataProperty> disjoint = disjointReasoner().getDisjointDataProperties(dataProp("d"));
+        assertTrue(disjoint.isEmpty());
+    }
+
     @Test public void unsatEdgeDoesNotCorruptLeaves() throws Exception {
         RustdlReasoner reasoner = withUnsat();
         // A is a genuine leaf: its direct sub is the bottom node (which includes U and owl:Nothing, MERGED into one node)

@@ -21,6 +21,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     private RustdlJson.ClassifyJson classifyResult;
     private RustdlJson.RealizeJson realizeResult;
     private RustdlJson.PropHierJson propHierResult;
+    private RustdlJson.DisjointJson disjointResult;
 
     // Derived indices built from classifyResult.
     private final Map<String, Node<OWLClass>> equivNodeByIri = new HashMap<>();   // iri -> its equiv-class node
@@ -47,6 +48,11 @@ public class RustdlReasoner extends OWLReasonerBase {
     private final Set<OWLDataProperty> dataTopChildren = new HashSet<>();  // props with no named super
     private final Set<OWLDataProperty> dataBottomLeaves = new HashSet<>(); // props with no named sub
 
+    // Derived (symmetric) adjacency built from disjointResult.
+    private final Map<OWLClass, Set<OWLClass>> disjointOf = new HashMap<>();
+    private final Map<OWLObjectProperty, Set<OWLObjectProperty>> disjointObjOf = new HashMap<>();
+    private final Map<OWLDataProperty, Set<OWLDataProperty>> disjointDataOf = new HashMap<>();
+
     RustdlReasoner(OWLOntology rootOntology, OWLReasonerConfiguration config, BufferingMode mode) {
         super(rootOntology, config, mode);
         this.df = rootOntology.getOWLOntologyManager().getOWLDataFactory();
@@ -69,6 +75,14 @@ public class RustdlReasoner extends OWLReasonerBase {
         RustdlReasoner reasoner = forTest(o, c, r);
         reasoner.propHierResult = p;
         reasoner.rebuildPropHierIndices();
+        return reasoner;
+    }
+
+    /** Test seam: as {@link #forTest(OWLOntology, RustdlJson.ClassifyJson, RustdlJson.RealizeJson)}, plus an injected disjointness result. */
+    static RustdlReasoner forTest(OWLOntology o, RustdlJson.ClassifyJson c, RustdlJson.RealizeJson r, RustdlJson.DisjointJson d) {
+        RustdlReasoner reasoner = forTest(o, c, r);
+        reasoner.disjointResult = d;
+        reasoner.rebuildDisjointIndices();
         return reasoner;
     }
 
@@ -142,18 +156,24 @@ public class RustdlReasoner extends OWLReasonerBase {
     private void ensurePropHier() {
         if (propHierResult == null) precomputeInferences(InferenceType.OBJECT_PROPERTY_HIERARCHY);
     }
+    /** Ensure disjointness ran (lazy precompute; the subprocess wiring into precomputeInferences is a later task). */
+    private void ensureDisjoint() {
+        if (disjointResult == null) precomputeInferences(InferenceType.DISJOINT_CLASSES);
+    }
 
     @Override protected void handleChanges(Set<OWLAxiom> added, Set<OWLAxiom> removed) {
         // BUFFERING: an edit invalidates the cache; next query re-runs the subprocess.
         classifyResult = null;
         realizeResult = null;
         propHierResult = null;
+        disjointResult = null;
         equivNodeByIri.clear(); directSupers.clear(); directSubs.clear(); unsatisfiable.clear();
         allNamed.clear(); topChildren.clear(); bottomLeaves.clear();
         objEquivByIri.clear(); objDirectSupers.clear(); objDirectSubs.clear();
         objAllNamed.clear(); objTopChildren.clear(); objBottomLeaves.clear();
         dataEquivByIri.clear(); dataDirectSupers.clear(); dataDirectSubs.clear();
         dataAllNamed.clear(); dataTopChildren.clear(); dataBottomLeaves.clear();
+        disjointOf.clear(); disjointObjOf.clear(); disjointDataOf.clear();
     }
 
     // ---- index building from classifyResult ----
@@ -248,6 +268,28 @@ public class RustdlReasoner extends OWLReasonerBase {
     }
     private OWLObjectProperty objProp(String iri) { return df.getOWLObjectProperty(IRI.create(iri)); }
     private OWLDataProperty dataProp(String iri) { return df.getOWLDataProperty(IRI.create(iri)); }
+
+    // ---- index building from disjointResult ----
+    /** Symmetric adjacency: each rustdl `[X,Y]` pair means Y is disjoint with X AND X is disjoint with Y. */
+    private void rebuildDisjointIndices() {
+        disjointOf.clear(); disjointObjOf.clear(); disjointDataOf.clear();
+        if (disjointResult == null) return;
+        for (List<String> pair : orEmpty(disjointResult.disjoint_classes)) {
+            OWLClass a = clazz(pair.get(0)), b = clazz(pair.get(1));
+            disjointOf.computeIfAbsent(a, k -> new HashSet<>()).add(b);
+            disjointOf.computeIfAbsent(b, k -> new HashSet<>()).add(a);
+        }
+        for (List<String> pair : orEmpty(disjointResult.disjoint_object_properties)) {
+            OWLObjectProperty a = objProp(pair.get(0)), b = objProp(pair.get(1));
+            disjointObjOf.computeIfAbsent(a, k -> new HashSet<>()).add(b);
+            disjointObjOf.computeIfAbsent(b, k -> new HashSet<>()).add(a);
+        }
+        for (List<String> pair : orEmpty(disjointResult.disjoint_data_properties)) {
+            OWLDataProperty a = dataProp(pair.get(0)), b = dataProp(pair.get(1));
+            disjointDataOf.computeIfAbsent(a, k -> new HashSet<>()).add(b);
+            disjointDataOf.computeIfAbsent(b, k -> new HashSet<>()).add(a);
+        }
+    }
 
     private Node<OWLObjectPropertyExpression> objEquivNodeOf(OWLObjectProperty p) {
         Node<OWLObjectPropertyExpression> n = objEquivByIri.get(p.getIRI().toString());
@@ -400,7 +442,21 @@ public class RustdlReasoner extends OWLReasonerBase {
         return new OWLClassNodeSet(nodes);
     }
 
-    @Override public NodeSet<OWLClass> getDisjointClasses(OWLClassExpression ce) { return new OWLClassNodeSet(); }
+    /**
+     * v1 reports the directly-entailed disjoint NAMED classes from rustdl's `disjoint_classes`
+     * pairs, grouped into their equivalence nodes — a sound under-approximation. (The full
+     * OWLReasoner contract also expects subclasses of each disjoint class in the result; that
+     * transitive closure over directSubs is not computed here yet.)
+     */
+    @Override public NodeSet<OWLClass> getDisjointClasses(OWLClassExpression ce) {
+        if (ce.isAnonymous()) return new OWLClassNodeSet();
+        ensureDisjoint(); throwIfInconsistent();
+        Set<Node<OWLClass>> nodes = new HashSet<>();
+        for (OWLClass d : disjointOf.getOrDefault(ce.asOWLClass(), Collections.emptySet())) {
+            nodes.add(equivNodeOf(d));
+        }
+        return new OWLClassNodeSet(nodes);
+    }
 
     // ---- individuals ----
     @Override public NodeSet<OWLClass> getTypes(OWLNamedIndividual ind, boolean direct) {
@@ -515,7 +571,16 @@ public class RustdlReasoner extends OWLReasonerBase {
         return new OWLObjectPropertyNodeSet(nodes);
     }
 
-    @Override public NodeSet<OWLObjectPropertyExpression> getDisjointObjectProperties(OWLObjectPropertyExpression pe) { return new OWLObjectPropertyNodeSet(); }
+    /** v1 reports the directly-entailed disjoint NAMED object properties (sound under-approximation; no subproperty closure). */
+    @Override public NodeSet<OWLObjectPropertyExpression> getDisjointObjectProperties(OWLObjectPropertyExpression pe) {
+        if (pe.isAnonymous()) return new OWLObjectPropertyNodeSet();
+        ensureDisjoint(); throwIfInconsistent();
+        Set<Node<OWLObjectPropertyExpression>> nodes = new HashSet<>();
+        for (OWLObjectProperty d : disjointObjOf.getOrDefault(pe.asOWLObjectProperty(), Collections.emptySet())) {
+            nodes.add(objEquivNodeOf(d));
+        }
+        return new OWLObjectPropertyNodeSet(nodes);
+    }
     @Override public Node<OWLObjectPropertyExpression> getInverseObjectProperties(OWLObjectPropertyExpression pe) { return new OWLObjectPropertyNode(pe.getInverseProperty()); }
     @Override public NodeSet<OWLClass> getObjectPropertyDomains(OWLObjectPropertyExpression pe, boolean direct) { return new OWLClassNodeSet(); }
     @Override public NodeSet<OWLClass> getObjectPropertyRanges(OWLObjectPropertyExpression pe, boolean direct) { return new OWLClassNodeSet(); }
@@ -572,7 +637,16 @@ public class RustdlReasoner extends OWLReasonerBase {
         return new OWLDataPropertyNodeSet(nodes);
     }
 
-    @Override public NodeSet<OWLDataProperty> getDisjointDataProperties(OWLDataPropertyExpression pe) { return new OWLDataPropertyNodeSet(); }
+    /** v1 reports the directly-entailed disjoint NAMED data properties (sound under-approximation; no subproperty closure). */
+    @Override public NodeSet<OWLDataProperty> getDisjointDataProperties(OWLDataPropertyExpression pe) {
+        if (pe.isAnonymous()) return new OWLDataPropertyNodeSet();
+        ensureDisjoint(); throwIfInconsistent();
+        Set<Node<OWLDataProperty>> nodes = new HashSet<>();
+        for (OWLDataProperty d : disjointDataOf.getOrDefault(pe.asOWLDataProperty(), Collections.emptySet())) {
+            nodes.add(dataEquivNodeOf(d));
+        }
+        return new OWLDataPropertyNodeSet(nodes);
+    }
     @Override public NodeSet<OWLClass> getDataPropertyDomains(OWLDataProperty pe, boolean direct) { return new OWLClassNodeSet(); }
     @Override public NodeSet<OWLNamedIndividual> getObjectPropertyValues(OWLNamedIndividual ind, OWLObjectPropertyExpression pe) { return new OWLNamedIndividualNodeSet(); }
     @Override public Set<OWLLiteral> getDataPropertyValues(OWLNamedIndividual ind, OWLDataProperty pe) { return Collections.emptySet(); }

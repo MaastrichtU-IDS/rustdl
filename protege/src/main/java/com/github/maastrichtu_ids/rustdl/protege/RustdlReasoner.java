@@ -159,16 +159,18 @@ public class RustdlReasoner extends OWLReasonerBase {
             || req.contains(InferenceType.DIFFERENT_INDIVIDUALS);
         boolean wantPropValues = req.contains(InferenceType.OBJECT_PROPERTY_ASSERTIONS)
             || req.contains(InferenceType.DATA_PROPERTY_ASSERTIONS);
-        if (!wantHierarchy && !wantAssertions && !wantPropHier && !wantDisjoint
-                && !wantIndividuals && !wantPropValues) return;
+        boolean wantAnyNew = wantPropHier || wantDisjoint || wantIndividuals || wantPropValues;
+        if (!wantHierarchy && !wantAssertions && !wantAnyNew) return;
         Path ofn = null;
         try {
             ofn = Files.createTempFile("rustdl-", ".ofn");
             FlattenedOntology.writeOfn(getRootOntology(), ofn);
-            // Classify runs whenever EITHER type is requested: realize's consistency
-            // gate below needs classifyResult, and rustdl's realize errors on an
-            // inconsistent KB, so we must know consistency before ever calling it.
-            if ((wantHierarchy || wantAssertions) && classifyResult == null) {
+            // Classify runs whenever ANY type is requested: realize's consistency gate
+            // below (and the 4 new subprocesses' gates further down) need classifyResult,
+            // and rustdl's realize/property-hierarchy/disjoint/individuals/property-values
+            // subcommands all error (Err(Inconsistent), non-zero exit) on an inconsistent
+            // KB, so we must know consistency before ever calling any of them.
+            if ((wantHierarchy || wantAssertions || wantAnyNew) && classifyResult == null) {
                 classifyResult = RustdlProcess.classify(ofn, timeoutSec, pairTimeoutMs);
                 if (classifyResult.incomplete) {
                     LOG.warning("rustdl reports an INCOMPLETE classification (some class pairs timed out); "
@@ -181,7 +183,14 @@ public class RustdlReasoner extends OWLReasonerBase {
                     && !getRootOntology().getIndividualsInSignature(true).isEmpty()) {
                 realizeResult = RustdlProcess.realize(ofn, timeoutSec);
             }
-            if (wantPropHier && propHierResult == null) {
+            // Each of the 4 new subprocesses is gated on consistency too (mirroring the
+            // realize gate above): rustdl's new subcommands return Err(Inconsistent) on an
+            // inconsistent ABox, so on inconsistency we deliberately SKIP the subprocess
+            // (cache stays null) and let precomputeInferences return cleanly. The
+            // corresponding query method's ensureX(); throwIfInconsistent(); ordering then
+            // raises the contract-correct InconsistentOntologyException at query time.
+            if (wantPropHier && propHierResult == null
+                    && classifyResult != null && classifyResult.consistent) {
                 propHierResult = RustdlProcess.propertyHierarchy(ofn, timeoutSec);
                 if (propHierResult.incomplete) {
                     LOG.warning("rustdl reports an INCOMPLETE property-hierarchy result; "
@@ -189,7 +198,8 @@ public class RustdlReasoner extends OWLReasonerBase {
                 }
                 rebuildPropHierIndices();
             }
-            if (wantDisjoint && disjointResult == null) {
+            if (wantDisjoint && disjointResult == null
+                    && classifyResult != null && classifyResult.consistent) {
                 disjointResult = RustdlProcess.disjoint(ofn, timeoutSec);
                 if (disjointResult.incomplete) {
                     LOG.warning("rustdl reports an INCOMPLETE disjointness result; "
@@ -197,7 +207,8 @@ public class RustdlReasoner extends OWLReasonerBase {
                 }
                 rebuildDisjointIndices();
             }
-            if (wantIndividuals && individualsResult == null) {
+            if (wantIndividuals && individualsResult == null
+                    && classifyResult != null && classifyResult.consistent) {
                 individualsResult = RustdlProcess.individuals(ofn, timeoutSec);
                 if (individualsResult.incomplete) {
                     LOG.warning("rustdl reports an INCOMPLETE same/different-individuals result; "
@@ -205,7 +216,8 @@ public class RustdlReasoner extends OWLReasonerBase {
                 }
                 rebuildIndividualsIndices();
             }
-            if (wantPropValues && propValuesResult == null) {
+            if (wantPropValues && propValuesResult == null
+                    && classifyResult != null && classifyResult.consistent) {
                 propValuesResult = RustdlProcess.propertyValues(ofn, timeoutSec);
                 if (propValuesResult.incomplete) {
                     LOG.warning("rustdl reports an INCOMPLETE property-values result; "

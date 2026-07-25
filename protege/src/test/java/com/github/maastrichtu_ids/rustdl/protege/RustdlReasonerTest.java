@@ -162,6 +162,66 @@ public class RustdlReasonerTest {
     public void inconsistentThrowsOnInstances() throws Exception {
         inconsistentReasoner().getInstances(cls("A"), false);
     }
+
+    /**
+     * Root ontology carries REAL axioms that make it genuinely inconsistent
+     * (DisjointClasses(A,B) + ClassAssertion(A,x) + ClassAssertion(B,x), mirroring
+     * RustdlSmokeIT's fixture) — not just an injected-but-disconnected ClassifyJson over
+     * an empty ontology. This matters for the regression tests below: the injected
+     * ClassifyJson (consistent=false) makes classify itself a no-op (classifyResult !=
+     * null, so ensureClassified() never re-invokes it), but pre-fix, ensureDisjoint() /
+     * ensureIndividuals() / ensurePropHier() / ensurePropValues() call
+     * precomputeInferences() UNCONDITIONALLY, which — since the 4 new-family caches are
+     * left null — actually launches the real rustdl subprocess against THIS ontology.
+     * Genuinely inconsistent axioms make that real subprocess call fail with
+     * Err(Inconsistent) (non-zero exit) exactly as described in the bug, so these tests
+     * fail pre-fix (ReasonerInternalException) with or without a configured rustdl
+     * binary, and — post-fix — never invoke the subprocess at all (the gate on
+     * classifyResult.consistent short-circuits before ever calling RustdlProcess),
+     * so they pass deterministically with zero subprocess launches.
+     */
+    private RustdlReasoner inconsistentAboxReasoner() throws Exception {
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/inc-abox"));
+        OWLOntologyManager mgr = o.getOWLOntologyManager();
+        OWLClass a = cls("A"), b = cls("B");
+        OWLNamedIndividual x = df.getOWLNamedIndividual(IRI.create("http://ex/#x"));
+        mgr.addAxiom(o, df.getOWLDisjointClassesAxiom(a, b));
+        mgr.addAxiom(o, df.getOWLClassAssertionAxiom(a, x));
+        mgr.addAxiom(o, df.getOWLClassAssertionAxiom(b, x));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = false;
+        c.unsatisfiable = new java.util.ArrayList<>(); c.equivalent_groups = new java.util.ArrayList<>(); c.direct_subsumptions = new java.util.ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new java.util.ArrayList<>();
+        return RustdlReasoner.forTest(o, c, r);
+    }
+
+    /**
+     * Regression tests for the "4 new subprocess blocks run unconditionally" bug: on an
+     * inconsistent ontology (classifyResult.consistent=false, all 4 new-family caches
+     * null), each ensureX() lazy precompute must SKIP its subprocess (rustdl's new
+     * subcommands return Err(Inconsistent) on an inconsistent ABox) rather than throwing
+     * ReasonerInternalException, so the query method's throwIfInconsistent() gets to fire
+     * the contract-correct InconsistentOntologyException instead. Confirmed to FAIL
+     * before the fix (with a reachable rustdl binary, they threw ReasonerInternalException
+     * wrapping "rustdl <subcommand> exited 1: ... ontology is inconsistent" — see the task
+     * report's before/after evidence); PASS after, with zero subprocess launches.
+     */
+    @Test(expected = org.semanticweb.owlapi.reasoner.InconsistentOntologyException.class)
+    public void inconsistentThrowsOnDisjointClasses() throws Exception {
+        inconsistentAboxReasoner().getDisjointClasses(cls("A"));
+    }
+    @Test(expected = org.semanticweb.owlapi.reasoner.InconsistentOntologyException.class)
+    public void inconsistentThrowsOnSameIndividuals() throws Exception {
+        inconsistentAboxReasoner().getSameIndividuals(ind("a"));
+    }
+    @Test(expected = org.semanticweb.owlapi.reasoner.InconsistentOntologyException.class)
+    public void inconsistentThrowsOnSuperObjectProperties() throws Exception {
+        inconsistentAboxReasoner().getSuperObjectProperties(objProp("p"), false);
+    }
+    @Test(expected = org.semanticweb.owlapi.reasoner.InconsistentOntologyException.class)
+    public void inconsistentThrowsOnObjectPropertyValues() throws Exception {
+        inconsistentAboxReasoner().getObjectPropertyValues(ind("a"), objProp("p"));
+    }
     @Test public void handleChangesInvalidatesCache() throws Exception {
         RustdlReasoner reasoner = chain();
         assertTrue(reasoner.isPrecomputed(org.semanticweb.owlapi.reasoner.InferenceType.CLASS_HIERARCHY));

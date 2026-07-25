@@ -78,4 +78,55 @@ public class RustdlSmokeIT {
         assertTrue("object-property values must be non-empty",
             r.getObjectPropertyValues(subj, subProp).containsEntity(obj));
     }
+
+    /**
+     * Regression guard for the Critical integration defect: on a genuinely inconsistent
+     * ABox ontology (DisjointClasses(A,B) + ClassAssertion(A,x) + ClassAssertion(B,x)),
+     * rustdl's new property-hierarchy/disjoint/individuals/property-values subcommands
+     * all return Err(Inconsistent) (non-zero exit). Before the fix, precomputeInferences
+     * ran those 4 subprocess blocks unconditionally, so the non-zero exit surfaced as an
+     * IOException wrapped in ReasonerInternalException — breaking Protégé's inconsistency
+     * handling. After the fix, precomputeInferences(<all 9 types>) must complete WITHOUT
+     * throwing (the 4 new blocks are skipped once classify reports inconsistent), and a
+     * subsequent query (getDisjointClasses) must throw InconsistentOntologyException, not
+     * ReasonerInternalException.
+     */
+    @Test public void precomputeDoesNotThrowOnInconsistentAboxWithRealBinary() throws Exception {
+        assumeTrue("no rustdl binary available",
+            RustdlBinary.configuredOverride() != null
+            || RustdlBinary.class.getResource("/native") != null);
+        OWLOntologyManager m = OWLManager.createOWLOntologyManager();
+        OWLDataFactory df = m.getOWLDataFactory();
+        OWLOntology o = m.createOntology(IRI.create("http://ex3/"));
+
+        OWLClass a = df.getOWLClass(IRI.create("http://ex3/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex3/#B"));
+        OWLNamedIndividual x = df.getOWLNamedIndividual(IRI.create("http://ex3/#x"));
+        m.addAxiom(o, df.getOWLDisjointClassesAxiom(a, b));
+        m.addAxiom(o, df.getOWLClassAssertionAxiom(a, x));
+        m.addAxiom(o, df.getOWLClassAssertionAxiom(b, x));
+
+        OWLReasoner r = new RustdlReasonerFactory().createReasoner(o);
+
+        // Confirm rustdl genuinely reports this ABox inconsistent before asserting anything else.
+        assertFalse("ontology must be genuinely inconsistent for this regression guard to be meaningful",
+            r.isConsistent());
+
+        // The regression guard itself: must throw NOTHING (in particular, no
+        // ReasonerInternalException from an unconditional new-subprocess call).
+        r.precomputeInferences(
+            InferenceType.CLASS_HIERARCHY, InferenceType.CLASS_ASSERTIONS,
+            InferenceType.OBJECT_PROPERTY_HIERARCHY, InferenceType.DATA_PROPERTY_HIERARCHY,
+            InferenceType.DISJOINT_CLASSES, InferenceType.SAME_INDIVIDUAL,
+            InferenceType.DIFFERENT_INDIVIDUALS, InferenceType.OBJECT_PROPERTY_ASSERTIONS,
+            InferenceType.DATA_PROPERTY_ASSERTIONS);
+
+        assertFalse(r.isConsistent());
+        try {
+            r.getDisjointClasses(a);
+            fail("expected InconsistentOntologyException");
+        } catch (org.semanticweb.owlapi.reasoner.InconsistentOntologyException expected) {
+            // correct contract behaviour
+        }
+    }
 }

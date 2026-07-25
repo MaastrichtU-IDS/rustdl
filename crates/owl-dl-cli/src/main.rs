@@ -230,6 +230,40 @@ enum Command {
         #[arg(long)]
         saturation_only: bool,
     },
+    /// Satisfiability of a Manchester class expression.
+    SatExpr {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Manchester-syntax class expression, e.g. `:A and not :B`.
+        ce: String,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Whether `SubClassOf(sub-ce, sup-ce)` is entailed, for two Manchester
+    /// class expressions.
+    SubclassExpr {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Manchester-syntax sub-class expression.
+        sub_ce: String,
+        /// Manchester-syntax super-class expression.
+        sup_ce: String,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Named individuals entailed to be instances of a Manchester class
+    /// expression.
+    InstancesExpr {
+        /// Path to an ontology file.
+        file: PathBuf,
+        /// Manchester-syntax class expression.
+        ce: String,
+        /// Emit a single machine-readable JSON object on stdout (schema v1).
+        #[arg(long)]
+        json: bool,
+    },
     /// Realize the ontology: per-individual most-specific entailed types.
     Realize {
         /// Path to an OWL functional-syntax (.ofn) ontology.
@@ -558,6 +592,15 @@ fn parse_ofn_with_pm(path: &Path) -> Result<(SetOntology<RcStr>, PrefixMapping)>
         OntFormat::Omn => read_omn(&mut reader, cfg)
             .map_err(|e| anyhow::anyhow!("parsing Manchester ontology {}: {e}", path.display())),
     }
+}
+
+/// Parse a Manchester-syntax class expression (`ce`) against the prefix map
+/// collected from the ontology file (so e.g. `:A` resolves via the file's
+/// default namespace), for the `*-expr` subcommands (issue #48).
+fn parse_ce(pm: &PrefixMapping, s: &str) -> Result<horned_owl::model::ClassExpression<RcStr>> {
+    let build: horned_owl::model::Build<RcStr> = horned_owl::model::Build::new();
+    horned_owl::io::omn::reader::parse_class_expression(s, pm, &build)
+        .map_err(|e| anyhow::anyhow!("parsing class expression '{s}': {e}"))
 }
 
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
@@ -1037,6 +1080,72 @@ fn main() -> Result<()> {
             };
             for iri in members {
                 println!("{iri}");
+            }
+        }
+        Command::SatExpr { file, ce, json } => {
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
+            let ce = parse_ce(&pm, &ce)?;
+            let v = owl_dl_reasoner::class_expression_satisfiable(&onto, &ce)
+                .context("class_expression_satisfiable")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_sat_expr_json(v))?
+                );
+                return Ok(());
+            }
+            println!(
+                "{}",
+                if v.holds() {
+                    "satisfiable"
+                } else {
+                    "unsatisfiable"
+                }
+            );
+            if v.incomplete() {
+                eprintln!("warning: verdict is a sound under-approximation (incomplete)");
+            }
+        }
+        Command::SubclassExpr {
+            file,
+            sub_ce,
+            sup_ce,
+            json,
+        } => {
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
+            let sub_ce = parse_ce(&pm, &sub_ce)?;
+            let sup_ce = parse_ce(&pm, &sup_ce)?;
+            let v = owl_dl_reasoner::class_expression_entailed_subclass(&onto, &sub_ce, &sup_ce)
+                .context("class_expression_entailed_subclass")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_subclass_expr_json(v))?
+                );
+                return Ok(());
+            }
+            println!("{}", if v.holds() { "yes" } else { "no" });
+            if v.incomplete() {
+                eprintln!("warning: verdict is a sound under-approximation (incomplete)");
+            }
+        }
+        Command::InstancesExpr { file, ce, json } => {
+            let (onto, pm) = parse_ofn_with_pm(&file)?;
+            let ce = parse_ce(&pm, &ce)?;
+            let r = owl_dl_reasoner::class_expression_instances(&onto, &ce)
+                .context("class_expression_instances")?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_instances_expr_json(&r))?
+                );
+                return Ok(());
+            }
+            for iri in r.individuals() {
+                println!("{iri}");
+            }
+            if r.incomplete() {
+                eprintln!("warning: verdict is a sound under-approximation (incomplete)");
             }
         }
         Command::Realize {

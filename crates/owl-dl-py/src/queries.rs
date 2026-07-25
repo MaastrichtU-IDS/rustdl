@@ -204,7 +204,6 @@ pub(crate) fn class_expression_entailed_subclass(
 /// Named individuals provably in `ce` w.r.t. the ontology at `path`, plus a
 /// completeness flag. See `disjoint_classes` for the tuple/wrapper convention.
 #[pyfunction]
-#[allow(clippy::type_complexity)]
 pub(crate) fn class_expression_instances(path: &str, ce: &str) -> PyResult<(Vec<String>, bool)> {
     let (o, pm) = load::load_path_with_pm(path)?;
     let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();

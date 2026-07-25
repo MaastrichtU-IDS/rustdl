@@ -209,6 +209,29 @@ def data_property_values(path: str) -> list[tuple[str, str, str, str]]:
     """Inferred data property values (subject, property, lexical, datatype)."""
     ...
 
+# ── complex class-expression queries ────────────────────────────────────────
+
+def class_expression_satisfiable(path: str, ce: str) -> bool:
+    """True iff the Manchester-syntax class expression `ce` is satisfiable
+    w.r.t. the ontology at `path` (resolved against the ontology's own prefix
+    map). Emits `IncompleteQueryWarning` if the verdict is a sound
+    under-approximation."""
+    ...
+
+def class_expression_entailed_subclass(path: str, sub_ce: str, sup_ce: str) -> bool:
+    """True iff `sub_ce ⊑ sup_ce` is entailed w.r.t. the ontology at `path`
+    (Manchester-syntax class expressions, resolved against the ontology's own
+    prefix map). Emits `IncompleteQueryWarning` if the verdict is a sound
+    under-approximation."""
+    ...
+
+def class_expression_instances(path: str, ce: str) -> list[str]:
+    """Named individuals provably in the Manchester-syntax class expression
+    `ce` w.r.t. the ontology at `path` (resolved against the ontology's own
+    prefix map). Emits `IncompleteQueryWarning` if the result is a sound
+    under-approximation."""
+    ...
+
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:

@@ -155,6 +155,39 @@ def test_object_property_values(tmp_path):
     assert ("http://ex/#b", "http://ex/#r", "http://ex/#a") in triples
 
 
+def test_ce_satisfiable(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)))\n"
+    )
+    assert rustdl.class_expression_satisfiable(str(p), ":A and not :A") is False
+    assert rustdl.class_expression_satisfiable(str(p), ":A") is True
+
+
+def test_ce_entailed_subclass(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+        "  SubClassOf(:A :B))\n"
+    )
+    assert rustdl.class_expression_entailed_subclass(str(p), ":A", ":B") is True
+    assert rustdl.class_expression_entailed_subclass(str(p), ":B", ":A") is False
+
+
+def test_ce_instances(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(NamedIndividual(:x)) ClassAssertion(:A :x))\n"
+    )
+    assert "http://ex/#x" in rustdl.class_expression_instances(str(p), ":A")
+
+
 def test_data_property_values(tmp_path):
     p = tmp_path / "o.ofn"
     p.write_text(

@@ -162,6 +162,57 @@ pub(crate) fn data_property_values(path: &str) -> PyResult<Vec<(String, String, 
         .map_err(reason_error_to_py)
 }
 
+/// Parse a Manchester-syntax class expression against the ontology's own
+/// prefix map (so e.g. `:A` resolves via the file's `Prefix(:=...)`).
+fn parse_ce(
+    ce: &str,
+    pm: &horned_owl::curie::PrefixMapping,
+    build: &horned_owl::model::Build<horned_owl::model::RcStr>,
+) -> PyResult<horned_owl::model::ClassExpression<horned_owl::model::RcStr>> {
+    horned_owl::io::omn::reader::parse_class_expression(ce, pm, build)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("class expression: {e}")))
+}
+
+/// Is `ce` satisfiable w.r.t. the ontology at `path`? Plus a completeness
+/// flag. See `disjoint_classes` for the tuple/wrapper convention.
+#[pyfunction]
+pub(crate) fn class_expression_satisfiable(path: &str, ce: &str) -> PyResult<(bool, bool)> {
+    let (o, pm) = load::load_path_with_pm(path)?;
+    let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
+    let ce = parse_ce(ce, &pm, &build)?;
+    let v = owl_dl_reasoner::class_expression_satisfiable(&o, &ce).map_err(reason_error_to_py)?;
+    Ok((v.holds(), v.incomplete()))
+}
+
+/// Is `sub_ce ⊑ sup_ce` entailed w.r.t. the ontology at `path`? Plus a
+/// completeness flag. See `disjoint_classes` for the tuple/wrapper convention.
+#[pyfunction]
+pub(crate) fn class_expression_entailed_subclass(
+    path: &str,
+    sub_ce: &str,
+    sup_ce: &str,
+) -> PyResult<(bool, bool)> {
+    let (o, pm) = load::load_path_with_pm(path)?;
+    let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
+    let sub_ce = parse_ce(sub_ce, &pm, &build)?;
+    let sup_ce = parse_ce(sup_ce, &pm, &build)?;
+    let v = owl_dl_reasoner::class_expression_entailed_subclass(&o, &sub_ce, &sup_ce)
+        .map_err(reason_error_to_py)?;
+    Ok((v.holds(), v.incomplete()))
+}
+
+/// Named individuals provably in `ce` w.r.t. the ontology at `path`, plus a
+/// completeness flag. See `disjoint_classes` for the tuple/wrapper convention.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+pub(crate) fn class_expression_instances(path: &str, ce: &str) -> PyResult<(Vec<String>, bool)> {
+    let (o, pm) = load::load_path_with_pm(path)?;
+    let build: horned_owl::model::Build<horned_owl::model::RcStr> = horned_owl::model::Build::new();
+    let ce = parse_ce(ce, &pm, &build)?;
+    let r = owl_dl_reasoner::class_expression_instances(&o, &ce).map_err(reason_error_to_py)?;
+    Ok((r.individuals().to_vec(), r.incomplete()))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_consistent, m)?)?;
     m.add_function(wrap_pyfunction!(is_class_satisfiable, m)?)?;
@@ -178,5 +229,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(different_individuals, m)?)?;
     m.add_function(wrap_pyfunction!(object_property_values, m)?)?;
     m.add_function(wrap_pyfunction!(data_property_values, m)?)?;
+    m.add_function(wrap_pyfunction!(class_expression_satisfiable, m)?)?;
+    m.add_function(wrap_pyfunction!(class_expression_entailed_subclass, m)?)?;
+    m.add_function(wrap_pyfunction!(class_expression_instances, m)?)?;
     Ok(())
 }

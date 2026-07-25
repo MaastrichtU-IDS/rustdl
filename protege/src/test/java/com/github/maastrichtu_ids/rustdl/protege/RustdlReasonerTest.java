@@ -256,6 +256,37 @@ public class RustdlReasonerTest {
         assertTrue(disjoint.isEmpty());
     }
 
+    /** Loads the shared individuals.json fixture: a same b (incomplete:true); a different c. */
+    private RustdlReasoner individualsReasoner() throws Exception {
+        OWLOntology o = OWLManager.createOWLOntologyManager().createOntology(IRI.create("http://ex/individuals"));
+        RustdlJson.ClassifyJson c = new RustdlJson.ClassifyJson();
+        c.schema_version = 1; c.consistent = true; c.incomplete = false;
+        c.unsatisfiable = new ArrayList<>(); c.equivalent_groups = new ArrayList<>(); c.direct_subsumptions = new ArrayList<>();
+        RustdlJson.RealizeJson r = new RustdlJson.RealizeJson(); r.schema_version = 1; r.individuals = new ArrayList<>();
+        String json = new String(java.nio.file.Files.readAllBytes(
+            java.nio.file.Paths.get(getClass().getResource("/json/individuals.json").toURI())));
+        RustdlJson.IndividualsJson ind = RustdlProcess.parseIndividuals(json);
+        return RustdlReasoner.forTest(o, c, r, ind);
+    }
+    private OWLNamedIndividual ind(String i) { return df.getOWLNamedIndividual(IRI.create("http://ex/#" + i)); }
+
+    @Test public void sameIndividualsContainsGroupMemberAndSelf() throws Exception {
+        Node<OWLNamedIndividual> same = individualsReasoner().getSameIndividuals(ind("a"));
+        assertTrue(same.contains(ind("b")));
+        assertTrue("node must always contain the queried individual itself", same.contains(ind("a")));
+    }
+
+    @Test public void sameIndividualsWithNoGroupReturnsSingleton() throws Exception {
+        Node<OWLNamedIndividual> same = individualsReasoner().getSameIndividuals(ind("z"));
+        assertTrue(same.contains(ind("z")));
+        assertEquals(1, same.getSize());
+    }
+
+    @Test public void differentIndividualsContainsPairedIndividual() throws Exception {
+        NodeSet<OWLNamedIndividual> diff = individualsReasoner().getDifferentIndividuals(ind("a"));
+        assertTrue(diff.containsEntity(ind("c")));
+    }
+
     @Test public void unsatEdgeDoesNotCorruptLeaves() throws Exception {
         RustdlReasoner reasoner = withUnsat();
         // A is a genuine leaf: its direct sub is the bottom node (which includes U and owl:Nothing, MERGED into one node)

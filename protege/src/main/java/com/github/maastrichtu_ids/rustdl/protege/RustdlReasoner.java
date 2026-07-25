@@ -22,6 +22,7 @@ public class RustdlReasoner extends OWLReasonerBase {
     private RustdlJson.RealizeJson realizeResult;
     private RustdlJson.PropHierJson propHierResult;
     private RustdlJson.DisjointJson disjointResult;
+    private RustdlJson.IndividualsJson individualsResult;
 
     // Derived indices built from classifyResult.
     private final Map<String, Node<OWLClass>> equivNodeByIri = new HashMap<>();   // iri -> its equiv-class node
@@ -53,6 +54,10 @@ public class RustdlReasoner extends OWLReasonerBase {
     private final Map<OWLObjectProperty, Set<OWLObjectProperty>> disjointObjOf = new HashMap<>();
     private final Map<OWLDataProperty, Set<OWLDataProperty>> disjointDataOf = new HashMap<>();
 
+    // Derived indices built from individualsResult.
+    private final Map<String, Node<OWLNamedIndividual>> sameGroupByIri = new HashMap<>();
+    private final Map<String, Set<OWLNamedIndividual>> differentOf = new HashMap<>();
+
     RustdlReasoner(OWLOntology rootOntology, OWLReasonerConfiguration config, BufferingMode mode) {
         super(rootOntology, config, mode);
         this.df = rootOntology.getOWLOntologyManager().getOWLDataFactory();
@@ -83,6 +88,14 @@ public class RustdlReasoner extends OWLReasonerBase {
         RustdlReasoner reasoner = forTest(o, c, r);
         reasoner.disjointResult = d;
         reasoner.rebuildDisjointIndices();
+        return reasoner;
+    }
+
+    /** Test seam: as {@link #forTest(OWLOntology, RustdlJson.ClassifyJson, RustdlJson.RealizeJson)}, plus an injected individuals result. */
+    static RustdlReasoner forTest(OWLOntology o, RustdlJson.ClassifyJson c, RustdlJson.RealizeJson r, RustdlJson.IndividualsJson i) {
+        RustdlReasoner reasoner = forTest(o, c, r);
+        reasoner.individualsResult = i;
+        reasoner.rebuildIndividualsIndices();
         return reasoner;
     }
 
@@ -160,6 +173,10 @@ public class RustdlReasoner extends OWLReasonerBase {
     private void ensureDisjoint() {
         if (disjointResult == null) precomputeInferences(InferenceType.DISJOINT_CLASSES);
     }
+    /** Ensure same/different individuals ran (lazy precompute; the subprocess wiring into precomputeInferences is a later task). */
+    private void ensureIndividuals() {
+        if (individualsResult == null) precomputeInferences(InferenceType.SAME_INDIVIDUAL);
+    }
 
     @Override protected void handleChanges(Set<OWLAxiom> added, Set<OWLAxiom> removed) {
         // BUFFERING: an edit invalidates the cache; next query re-runs the subprocess.
@@ -167,6 +184,7 @@ public class RustdlReasoner extends OWLReasonerBase {
         realizeResult = null;
         propHierResult = null;
         disjointResult = null;
+        individualsResult = null;
         equivNodeByIri.clear(); directSupers.clear(); directSubs.clear(); unsatisfiable.clear();
         allNamed.clear(); topChildren.clear(); bottomLeaves.clear();
         objEquivByIri.clear(); objDirectSupers.clear(); objDirectSubs.clear();
@@ -174,6 +192,7 @@ public class RustdlReasoner extends OWLReasonerBase {
         dataEquivByIri.clear(); dataDirectSupers.clear(); dataDirectSubs.clear();
         dataAllNamed.clear(); dataTopChildren.clear(); dataBottomLeaves.clear();
         disjointOf.clear(); disjointObjOf.clear(); disjointDataOf.clear();
+        sameGroupByIri.clear(); differentOf.clear();
     }
 
     // ---- index building from classifyResult ----
@@ -290,6 +309,29 @@ public class RustdlReasoner extends OWLReasonerBase {
             disjointDataOf.computeIfAbsent(b, k -> new HashSet<>()).add(a);
         }
     }
+
+    // ---- index building from individualsResult ----
+    /**
+     * Each `same_groups` entry becomes ONE shared {@link OWLNamedIndividualNode} over its
+     * members, keyed by every member's IRI string. `differentOf` is a symmetric adjacency
+     * built from `different_pairs` (each `[X,Y]` ⇒ Y ∈ differentOf(X) and X ∈ differentOf(Y)).
+     */
+    private void rebuildIndividualsIndices() {
+        sameGroupByIri.clear(); differentOf.clear();
+        if (individualsResult == null) return;
+        for (List<String> group : orEmpty(individualsResult.same_groups)) {
+            Set<OWLNamedIndividual> members = new HashSet<>();
+            for (String iri : group) members.add(namedIndividual(iri));
+            Node<OWLNamedIndividual> node = new OWLNamedIndividualNode(members);
+            for (OWLNamedIndividual i : members) sameGroupByIri.put(i.getIRI().toString(), node);
+        }
+        for (List<String> pair : orEmpty(individualsResult.different_pairs)) {
+            OWLNamedIndividual a = namedIndividual(pair.get(0)), b = namedIndividual(pair.get(1));
+            differentOf.computeIfAbsent(a.getIRI().toString(), k -> new HashSet<>()).add(b);
+            differentOf.computeIfAbsent(b.getIRI().toString(), k -> new HashSet<>()).add(a);
+        }
+    }
+    private OWLNamedIndividual namedIndividual(String iri) { return df.getOWLNamedIndividual(IRI.create(iri)); }
 
     private Node<OWLObjectPropertyExpression> objEquivNodeOf(OWLObjectProperty p) {
         Node<OWLObjectPropertyExpression> n = objEquivByIri.get(p.getIRI().toString());
@@ -650,6 +692,17 @@ public class RustdlReasoner extends OWLReasonerBase {
     @Override public NodeSet<OWLClass> getDataPropertyDomains(OWLDataProperty pe, boolean direct) { return new OWLClassNodeSet(); }
     @Override public NodeSet<OWLNamedIndividual> getObjectPropertyValues(OWLNamedIndividual ind, OWLObjectPropertyExpression pe) { return new OWLNamedIndividualNodeSet(); }
     @Override public Set<OWLLiteral> getDataPropertyValues(OWLNamedIndividual ind, OWLDataProperty pe) { return Collections.emptySet(); }
-    @Override public Node<OWLNamedIndividual> getSameIndividuals(OWLNamedIndividual ind) { return new OWLNamedIndividualNode(ind); }
-    @Override public NodeSet<OWLNamedIndividual> getDifferentIndividuals(OWLNamedIndividual ind) { return new OWLNamedIndividualNodeSet(); }
+    @Override public Node<OWLNamedIndividual> getSameIndividuals(OWLNamedIndividual ind) {
+        ensureIndividuals(); throwIfInconsistent();
+        Node<OWLNamedIndividual> n = sameGroupByIri.get(ind.getIRI().toString());
+        return n != null ? n : new OWLNamedIndividualNode(ind);   // contract: the node always contains ind itself
+    }
+    @Override public NodeSet<OWLNamedIndividual> getDifferentIndividuals(OWLNamedIndividual ind) {
+        ensureIndividuals(); throwIfInconsistent();
+        Set<Node<OWLNamedIndividual>> nodes = new HashSet<>();
+        for (OWLNamedIndividual d : differentOf.getOrDefault(ind.getIRI().toString(), Collections.emptySet())) {
+            nodes.add(new OWLNamedIndividualNode(d));
+        }
+        return new OWLNamedIndividualNodeSet(nodes);
+    }
 }

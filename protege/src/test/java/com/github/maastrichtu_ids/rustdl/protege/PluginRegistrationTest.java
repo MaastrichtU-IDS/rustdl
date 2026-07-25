@@ -13,7 +13,11 @@ public class PluginRegistrationTest {
             assertTrue(xml.contains("org.protege.editor.owl.inference_reasonerfactory"));
             // Protégé reads <name value=.../> and <class value=.../> child elements
             // (as ELK/HermiT do), not name=/factoryClass= attributes.
-            assertTrue(xml.contains("<name value=\"rustdl\""));
+            // The reasoner-menu name carries the version ("rustdl <version>"),
+            // injected by Maven resource filtering of ${project.version}.
+            assertTrue("menu name should be 'rustdl <version>'", xml.contains("<name value=\"rustdl "));
+            assertFalse("resource filtering must substitute ${project.version}",
+                xml.contains("${project.version}"));
             assertTrue(xml.contains("<class value=\"com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo\""));
         }
     }

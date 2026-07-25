@@ -6,7 +6,7 @@
         NOT name=/factoryClass= attributes. <class> is the ProtegeOWLReasonerInfo. -->
    <extension id="rustdl.reasoner.factory"
               point="org.protege.editor.owl.inference_reasonerfactory">
-      <name value="rustdl"/>
+      <name value="rustdl ${project.version}"/>
       <class value="com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo"/>
    </extension>
 </plugin>

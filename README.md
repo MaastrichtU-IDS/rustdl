@@ -157,6 +157,16 @@ rustdl consistent ontology.ofn
 rustdl subclass  ontology.ofn <sub> <sup>
 rustdl instances ontology.ofn <class>
 rustdl realize   ontology.ofn [--properties] # per-individual types (+ inferred object & data property assertions)
+
+# inferred queries (each also available as `--json` and in the Python API):
+rustdl disjoint          ontology.ofn                  # disjoint classes + disjoint object/data properties
+rustdl individuals       ontology.ofn                  # inferred same / different individuals
+rustdl property-hierarchy ontology.ofn                 # inferred object/data property hierarchy
+rustdl property-values   ontology.ofn                  # inferred object/data property values
+rustdl sat-expr          ontology.ofn '<CE>'           # satisfiability of a Manchester class expression
+rustdl subclass-expr     ontology.ofn '<sub>' '<sup>'  # is SubClassOf(ce1, ce2) entailed
+rustdl instances-expr    ontology.ofn '<CE>'           # instances of a Manchester class expression
+
 rustdl justify   ontology.ofn <query…>      # minimal responsible-axiom set (why it holds)
 rustdl justify --laconic ontology.ofn <query…>  # pinpoint the responsible PART of each axiom
 rustdl repair    ontology.ofn <query…>      # minimal axiom removals to break an entailment

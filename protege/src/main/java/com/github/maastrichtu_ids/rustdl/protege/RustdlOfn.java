@@ -54,6 +54,33 @@ final class RustdlOfn {
     }
 
     /**
+     * Parses {@code ofnDocument} (a self-contained OFN ontology document — see {@link #parse})
+     * and returns its single LOGICAL axiom (via {@link OWLAxiom#isLogicalAxiom()}, which excludes
+     * declarations/annotations), for {@code rustdl prove --json}'s per-proof-node
+     * {@code conclusion} and {@code axioms[]} documents (each documented, in
+     * {@code docs/json-schema.md}, to contain exactly one logical axiom). Fails loudly — rather
+     * than silently picking one — if the document does not contain EXACTLY one: an ambiguous
+     * proof node must never be silently resolved into a possibly-wrong axiom.
+     */
+    static OWLAxiom singleLogicalAxiom(String ofnDocument) {
+        Set<OWLAxiom> parsed = parse(ofnDocument);
+        OWLAxiom found = null;
+        int count = 0;
+        for (OWLAxiom axiom : parsed) {
+            if (axiom.isLogicalAxiom()) {
+                found = axiom;
+                count++;
+            }
+        }
+        if (count != 1) {
+            throw new IllegalStateException(
+                "expected exactly one logical axiom in rustdl proof document, found " + count
+                    + ": " + ofnDocument);
+        }
+        return found;
+    }
+
+    /**
      * Fail-hard anti-fabrication guard (mirrors km's {@code KMExplanationGenerator.materialize}):
      * every axiom in {@code parsed} must genuinely occur in {@code source}'s imports closure. If
      * ANY axiom does not, the WHOLE justification is rejected — logging a warning identifying the

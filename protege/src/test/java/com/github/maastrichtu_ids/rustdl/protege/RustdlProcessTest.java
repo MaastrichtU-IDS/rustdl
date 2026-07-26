@@ -103,6 +103,53 @@ public class RustdlProcessTest {
         RustdlProcess.parseJustify("{\"schema_version\":2}");
     }
 
+    @Test public void parsesProveWithStepProof() throws Exception {
+        RustdlJson.ProveJson p = RustdlProcess.parseProve(fixture("prove.json"));
+        assertEquals(1, p.schema_version);
+        assertTrue(p.entailed);
+        assertTrue(p.has_proof);
+        assertNull(p.justification_fallback);
+        assertNotNull(p.proof);
+        assertEquals("SubsumerTransitivity(fwd)", p.proof.rule);
+        assertTrue(p.proof.conclusion.contains("SubClassOf(:A :C)"));
+        assertTrue(p.proof.axioms.isEmpty());
+        assertEquals(2, p.proof.premises.size());
+        assertEquals("ToldSubsumer", p.proof.premises.get(0).rule);
+        assertTrue(p.proof.premises.get(0).conclusion.contains("SubClassOf(:A :B)"));
+        assertEquals(1, p.proof.premises.get(0).axioms.size());
+        assertTrue(p.proof.premises.get(1).conclusion.contains("SubClassOf(:B :C)"));
+    }
+
+    @Test public void parsesProveFallback() throws Exception {
+        RustdlJson.ProveJson p = RustdlProcess.parseProve(fixture("prove_fallback.json"));
+        assertTrue(p.entailed);
+        assertFalse(p.has_proof);
+        assertNull(p.proof);
+        assertTrue(p.justification_fallback.contains("SubClassOf(:X :Y)"));
+        assertTrue(p.justification_fallback.contains("SubClassOf(:Y :Z)"));
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void rejectsWrongSchemaVersionProve() {
+        RustdlProcess.parseProve("{\"schema_version\":2}");
+    }
+
+    @Test
+    public void proveCommandShape() throws Exception {
+        String prev = System.getProperty("rustdl.bin");
+        Path fakeBin = Paths.get(getClass().getResource("/json/classify.json").toURI());
+        System.setProperty("rustdl.bin", fakeBin.toString());
+        try {
+            java.util.List<String> cmd = RustdlProcess.buildProveCommand(
+                Paths.get("ont.ofn"), "http://ex/#A", "http://ex/#C");
+            assertEquals(Arrays.asList(
+                fakeBin.toString(), "prove", "--json", "ont.ofn",
+                "http://ex/#A", "http://ex/#C"), cmd);
+        } finally {
+            if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
+        }
+    }
+
     @Test
     public void justifyCommandShapeNonLaconic() throws Exception {
         String prev = System.getProperty("rustdl.bin");

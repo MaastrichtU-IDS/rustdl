@@ -21,6 +21,10 @@
     <gson.version>2.11.0</gson.version>
     <owlexplanation.version>2.0.1</owlexplanation.version>
     <telemetry.version>2.0.0</telemetry.version>
+    <puli.version>0.1.0</puli.version>
+    <owlapi-proof.version>0.1.0</owlapi-proof.version>
+    <protege-proof-explanation.version>0.1.0</protege-proof-explanation.version>
+    <protege-proof-justification.version>0.1.0</protege-proof-justification.version>
   </properties>
 
   <dependencies>
@@ -81,6 +85,40 @@
         </exclusion>
       </exclusions>
     </dependency>
+    <!-- Proof-service surface (Task 4): the liveontologies proof plugin's own extension point
+         (org.liveontologies.protege.explanation.proof.service.ProofService) and the puli
+         Proof/Inference types it uses. Declared `optional=true` and (in the bundle instructions
+         below) imported with `resolution:=optional` rather than embedded, mirroring ELK's own
+         protege plugin (`/tmp/elk_protege_pom.xml`): Protégé's separately-installed
+         liveontologies proof-explanation plugin supplies these at runtime, so this plugin must
+         build and its bundle must still resolve when they are ABSENT at runtime (a stock
+         Protégé install without that companion plugin). They are on this module's own
+         compile/test classpath regardless — `optional` only affects what a downstream consumer
+         of *this* artifact would transitively pull in, not what maven-bundle-plugin sees here. -->
+    <dependency>
+      <groupId>org.liveontologies</groupId>
+      <artifactId>puli</artifactId>
+      <version>${puli.version}</version>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>org.liveontologies</groupId>
+      <artifactId>owlapi-proof</artifactId>
+      <version>${owlapi-proof.version}</version>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>org.liveontologies</groupId>
+      <artifactId>protege-proof-explanation</artifactId>
+      <version>${protege-proof-explanation.version}</version>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>io.github.liveontologies</groupId>
+      <artifactId>protege-proof-justification</artifactId>
+      <version>${protege-proof-justification.version}</version>
+      <optional>true</optional>
+    </dependency>
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
@@ -129,12 +167,22 @@
             <Import-Package>
               !org.semanticweb.owl.explanation.telemetry,
               sun.misc;resolution:=optional,
+              org.liveontologies.puli;version="[0.1,1)";resolution:=optional,
+              org.liveontologies.owlapi.proof;version="[0.1,1)";resolution:=optional,
+              org.liveontologies.protege.explanation.proof.service;version="[0.1,1)";resolution:=optional,
               org.protege.editor.core.*,
               org.protege.editor.owl.*,
               org.semanticweb.owlapi.*,
               org.osgi.framework,
               *
             </Import-Package>
+            <!-- Deliberately NOT embedded (unlike gson/owlexplanation/telemetry above): the
+                 puli/owlapi-proof/protege-proof-explanation/protege-proof-justification jars
+                 back the proof-service extension (RustdlProofService) and are declared
+                 `optional=true` above, plus imported `resolution:=optional` immediately above,
+                 so this bundle resolves in a stock Protégé install that lacks the companion
+                 liveontologies proof-explanation plugin (the reasoner + explanation-dialog
+                 features stay fully functional; only the proof-tree view is then unavailable). -->
             <Embed-Dependency>gson|owlexplanation|telemetry;scope=compile;inline=false</Embed-Dependency>
             <Embed-Transitive>false</Embed-Transitive>
             <Include-Resource>{maven-resources}, plugin.xml=${project.build.outputDirectory}/plugin.xml</Include-Resource>
@@ -176,6 +224,47 @@
                 </fail>
                 <fail message="ExplanationGeneratorFactory services file missing from jar">
                   <condition><not><available file="${project.build.directory}/jar-check/META-INF/services/org.semanticweb.owl.explanation.api.ExplanationGeneratorFactory"/></not></condition>
+                </fail>
+                <!-- Task 4: the proof-service optional deps (puli/owlapi-proof/
+                     protege-proof-explanation/protege-proof-justification) must NOT be embedded:
+                     they are Import-Package resolution:=optional, supplied at runtime by
+                     Protégé's separately-installed liveontologies proof-explanation plugin. A
+                     nested jar here would mean they got swept into Embed-Dependency by mistake. -->
+                <fail message="puli must NOT be embedded (Import-Package resolution:=optional; runtime-supplied by the liveontologies proof-explanation plugin)">
+                  <condition>
+                    <resourcecount when="greater" count="0">
+                      <fileset dir="${project.build.directory}/jar-check" includes="puli-*.jar"/>
+                    </resourcecount>
+                  </condition>
+                </fail>
+                <fail message="owlapi-proof must NOT be embedded (Import-Package resolution:=optional; runtime-supplied by the liveontologies proof-explanation plugin)">
+                  <condition>
+                    <resourcecount when="greater" count="0">
+                      <fileset dir="${project.build.directory}/jar-check" includes="owlapi-proof-*.jar"/>
+                    </resourcecount>
+                  </condition>
+                </fail>
+                <fail message="protege-proof-explanation must NOT be embedded (Import-Package resolution:=optional; runtime-supplied by the liveontologies proof-explanation plugin)">
+                  <condition>
+                    <resourcecount when="greater" count="0">
+                      <fileset dir="${project.build.directory}/jar-check" includes="protege-proof-explanation-*.jar"/>
+                    </resourcecount>
+                  </condition>
+                </fail>
+                <fail message="protege-proof-justification must NOT be embedded (Import-Package resolution:=optional; runtime-supplied by the liveontologies proof-explanation plugin)">
+                  <condition>
+                    <resourcecount when="greater" count="0">
+                      <fileset dir="${project.build.directory}/jar-check" includes="protege-proof-justification-*.jar"/>
+                    </resourcecount>
+                  </condition>
+                </fail>
+                <fail message="rustdl proof-service extension missing from plugin.xml">
+                  <condition>
+                    <not>
+                      <resourcecontains resource="${project.build.directory}/jar-check/plugin.xml"
+                                         substring="org.liveontologies.protege.explanation.proof.service"/>
+                    </not>
+                  </condition>
                 </fail>
               </target>
             </configuration>

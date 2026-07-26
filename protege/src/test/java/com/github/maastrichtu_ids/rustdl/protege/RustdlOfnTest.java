@@ -87,6 +87,40 @@ public class RustdlOfnTest {
     }
 
     @Test
+    public void singleLogicalAxiomExtractsTheOneLogicalAxiom() {
+        String ofn = "Prefix(:=<http://ex/#>)\n"
+            + "Ontology(\n"
+            + "  Declaration(Class(:A))\n"
+            + "  Declaration(Class(:B))\n"
+            + "  SubClassOf(:A :B)\n"
+            + ")\n";
+        OWLAxiom axiom = RustdlOfn.singleLogicalAxiom(ofn);
+        OWLDataFactory df = OWLManager.getOWLDataFactory();
+        OWLClass a = df.getOWLClass(IRI.create("http://ex/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex/#B"));
+        assertEquals(df.getOWLSubClassOfAxiom(a, b), axiom);
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void singleLogicalAxiomRejectsZeroLogicalAxioms() {
+        String ofn = "Prefix(:=<http://ex/#>)\n"
+            + "Ontology(\n"
+            + "  Declaration(Class(:A))\n"
+            + ")\n";
+        RustdlOfn.singleLogicalAxiom(ofn);
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void singleLogicalAxiomRejectsMoreThanOneLogicalAxiom() {
+        String ofn = "Prefix(:=<http://ex/#>)\n"
+            + "Ontology(\n"
+            + "  SubClassOf(:A :B)\n"
+            + "  SubClassOf(:B :C)\n"
+            + ")\n";
+        RustdlOfn.singleLogicalAxiom(ofn);
+    }
+
+    @Test
     public void verifiedAgainstKeepsEveryGenuineAxiom() throws Exception {
         OWLOntologyManager manager = OWLManager.createOWLOntologyManager();
         OWLDataFactory df = manager.getOWLDataFactory();

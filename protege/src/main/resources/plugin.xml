@@ -9,4 +9,14 @@
       <name value="rustdl ${project.version}"/>
       <class value="com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo"/>
    </extension>
+
+   <!-- Exposes rustdl's step-level EL proof trees (`rustdl prove --json`) in Protégé's proof
+        view, via the liveontologies proof-explanation plugin's own extension point. Requires
+        that companion plugin to be installed; this bundle itself builds and resolves without it
+        (see protege/pom.xml's Import-Package resolution:=optional entries). -->
+   <extension id="rustdl.proofs"
+              point="org.liveontologies.protege.explanation.proof.service">
+      <name value="rustdl ${project.version}"/>
+      <class value="com.github.maastrichtu_ids.rustdl.protege.RustdlProofService"/>
+   </extension>
 </plugin>

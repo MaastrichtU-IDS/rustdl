@@ -70,4 +70,36 @@ public final class RustdlJson {
     public static final class JustificationJson {
         public String ofn; // self-contained OWL Functional Syntax ontology document
     }
+
+    /**
+     * `prove --json` top-level payload (docs/json-schema.md). Three mutually exclusive shapes:
+     * <ul>
+     * <li>step-level EL proof: {@code entailed=true, has_proof=true, proof} set,
+     *     {@code justification_fallback=null};</li>
+     * <li>SROIQ-only justification fallback: {@code entailed=true, has_proof=false, proof=null},
+     *     {@code justification_fallback} set (a full OFN ontology document, not a single axiom);</li>
+     * <li>not entailed: {@code entailed=false, has_proof=false}, both {@code proof} and
+     *     {@code justification_fallback} {@code null}.</li>
+     * </ul>
+     */
+    public static final class ProveJson {
+        public int schema_version;
+        public boolean entailed;
+        public boolean has_proof;
+        public ProofNodeJson proof;
+        public String justification_fallback; // self-contained OFN ontology document, or null
+    }
+
+    /**
+     * One node of a {@code prove --json} step-level proof tree. {@code conclusion} is a
+     * self-contained OFN ontology document containing exactly one logical axiom (the fact this
+     * node proves); each entry of {@code axioms} is likewise its own one-axiom OFN document (the
+     * step's cited source axioms -- possibly empty, e.g. a pure transitivity/chain step).
+     */
+    public static final class ProofNodeJson {
+        public String conclusion;
+        public String rule;
+        public List<String> axioms;
+        public List<ProofNodeJson> premises;
+    }
 }

@@ -100,6 +100,27 @@ public final class RustdlProcess {
         return j;
     }
 
+    /**
+     * Runs {@code rustdl prove --json <ofn> <sub> <sup>} — a step-level DL proof tree for
+     * {@code SUB ⊑ SUP} (full IRIs), backing {@link RustdlProofService}.
+     */
+    public static RustdlJson.ProveJson prove(Path ofn, String sub, String sup, long timeoutSec)
+            throws IOException {
+        return parseProve(runCommand(buildProveCommand(ofn, sub, sup), "prove", timeoutSec));
+    }
+
+    /** Package-visible so tests can assert on the command list without spawning. */
+    static List<String> buildProveCommand(Path ofn, String sub, String sup) throws IOException {
+        return Arrays.asList(
+            RustdlBinary.resolve().toString(), "prove", "--json", ofn.toString(), sub, sup);
+    }
+
+    static RustdlJson.ProveJson parseProve(String json) {
+        RustdlJson.ProveJson p = fromJson(json, RustdlJson.ProveJson.class);
+        checkVersion(p.schema_version);
+        return p;
+    }
+
     static RustdlJson.ClassifyJson parseClassify(String json) {
         RustdlJson.ClassifyJson c = fromJson(json, RustdlJson.ClassifyJson.class);
         checkVersion(c.schema_version);

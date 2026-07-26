@@ -80,6 +80,13 @@ final class RustdlProof extends BaseProof<Inference<OWLAxiom>> {
      * of ITS premises.
      */
     private OWLAxiom buildNode(RustdlJson.ProofNodeJson node) {
+        // No conclusion de-dup guard needed here today: rustdl's `ProofNodeJson` tree is an OWNED
+        // tree (each premise belongs to exactly one parent), not a shared DAG, so a shared
+        // sub-conclusion is simply rebuilt (and re-produce()d, harmlessly, into this Proof) once
+        // per occurrence rather than being visited once and reused. If a future rustdl change
+        // makes `ProofNode` DAG-share premises (so the same node object appears under multiple
+        // parents), this recursion would need a visited-conclusion memo to avoid redundant
+        // re-processing (still correct, just wasted work) — see the Task 4 review fold-in M4.2.
         OWLAxiom conclusion = RustdlOfn.singleLogicalAxiom(node.conclusion);
 
         List<OWLAxiom> premises = new ArrayList<>();

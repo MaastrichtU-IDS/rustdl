@@ -27,6 +27,54 @@ this is the one remaining empty stub. An `incomplete` result from any
 subprocess (some hard pairs hit the per-pair budget) is logged; results
 stay sound (no false answers, some may be missed).
 
+## Explaining inferences
+
+The plugin also backs Protégé's explanation surface, so a computed hierarchy
+edge isn't just an answer — you can ask why.
+
+**Justifications ("?" dialog).** Click the "?" next to any inferred axiom
+(e.g. a superclass rustdl added to the hierarchy) and the Explanation dialog
+now offers two rustdl entries alongside any other installed explanation
+sources:
+
+- **rustdl** — minimal justifications: each returned explanation is a
+  subset-minimal set of axioms from your ontology that entails the
+  selected axiom (`rustdl justify --json` under the hood).
+- **rustdl (laconic)** — as above, but each justification axiom is further
+  weakened to the fragment actually responsible for the entailment (e.g. one
+  disjunct of a conjunction, one `∃`-filler), which is often easier to read
+  than the full told axiom (`rustdl justify --laconic --json`).
+
+Both sources only ever surface axioms genuinely present in your ontology —
+rustdl cannot fabricate a justification axiom that isn't already there.
+
+**Proof view (step-level proofs).** Where the Explanation dialog shows the
+*minimal axiom set*, the proof view shows the *derivation steps* between
+them — e.g. how two `SubClassOf` axioms combine via transitivity to entail a
+third. For entailments in the EL fragment, rustdl provides a genuine
+step-level proof tree (`rustdl prove --json`); outside that fragment it
+degrades to a single step showing the justification as one "black box"
+inference, rather than refusing to answer.
+
+**Prerequisite — proof-explanation plugin required, like ELK.** The
+step-level proof view is a separate Protégé feature backed by the
+[Protégé proof-explanation plugin](https://github.com/liveontologies/protege-proof-explanation).
+As with ELK, rustdl's proof-tree support only appears once that companion
+plugin is also installed — this plugin's own jar does **not** bundle it (the
+proof-service dependencies are declared optional and are not embedded in the
+`rustdl-protege-<version>.jar`). Without it, rustdl's reasoning, hierarchy
+classification, and both Explanation-dialog justification sources above work
+exactly as normal; only the step-level proof-tree view is unavailable.
+
+**Config knobs** (system property / environment variable, property wins if
+both are set):
+
+- `rustdl.explain.max.justifications` / `RUSTDL_EXPLAIN_MAX_JUSTIFICATIONS` —
+  cap on the number of justifications rustdl enumerates per explanation
+  request (default 8)
+- `rustdl.explain.timeout.seconds` / `RUSTDL_EXPLAIN_TIMEOUT_SECONDS` — per-call
+  timeout for the underlying `justify`/`prove` subprocess (default 600)
+
 ## Config
 
 - `-Drustdl.bin=…` / `RUSTDL_BIN=…` — use a specific binary (default: bundled)

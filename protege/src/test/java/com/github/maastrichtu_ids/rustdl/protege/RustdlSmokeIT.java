@@ -1,11 +1,20 @@
 package com.github.maastrichtu_ids.rustdl.protege;
 
 import org.junit.Test;
+import org.liveontologies.puli.Inference;
+import org.semanticweb.owl.explanation.api.Explanation;
+import org.semanticweb.owl.explanation.api.ExplanationGenerator;
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.model.*;
+import org.semanticweb.owlapi.model.parameters.Imports;
 import org.semanticweb.owlapi.reasoner.*;
 import static org.junit.Assume.assumeTrue;
 import static org.junit.Assert.*;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Collection;
+import java.util.Set;
 
 public class RustdlSmokeIT {
     @Test public void classifiesTinyOntologyWithRealBinary() throws Exception {
@@ -127,6 +136,113 @@ public class RustdlSmokeIT {
             fail("expected InconsistentOntologyException");
         } catch (org.semanticweb.owlapi.reasoner.InconsistentOntologyException expected) {
             // correct contract behaviour
+        }
+    }
+
+    /**
+     * End-to-end justification/laconic-justification smoke against a REAL rustdl binary (Task 5,
+     * Step 1): a tiny EL ontology ({@code A ⊑ B ⊑ C}, entailing {@code A ⊑ C}) is handed to
+     * {@link RustdlExplanationGeneratorFactory#createExplanationGenerator(OWLOntology)}, which
+     * spawns {@code rustdl justify --json} as a subprocess and parses its output. Asserts a
+     * non-empty {@code Set<Explanation<OWLAxiom>>} from both the non-laconic and laconic
+     * factories, and — the anti-fabrication guarantee holding end-to-end through the real
+     * binary, not just against canned JSON — that every axiom in every returned explanation is a
+     * genuine source axiom of the ontology (mirrors the fail-hard check in
+     * {@link RustdlOfn#verifiedAgainst}, exercised here via the real subprocess rather than a
+     * test seam).
+     */
+    @Test public void justifiesEntailmentWithRealBinaryAgainstSourceAxioms() throws Exception {
+        assumeTrue("no rustdl binary available",
+            RustdlBinary.configuredOverride() != null
+            || RustdlBinary.class.getResource("/native") != null);
+        OWLOntologyManager m = OWLManager.createOWLOntologyManager();
+        OWLDataFactory df = m.getOWLDataFactory();
+        OWLOntology o = m.createOntology(IRI.create("http://ex4/"));
+
+        OWLClass a = df.getOWLClass(IRI.create("http://ex4/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex4/#B"));
+        OWLClass c = df.getOWLClass(IRI.create("http://ex4/#C"));
+        m.addAxiom(o, df.getOWLSubClassOfAxiom(a, b));
+        m.addAxiom(o, df.getOWLSubClassOfAxiom(b, c));
+
+        OWLSubClassOfAxiom entailment = df.getOWLSubClassOfAxiom(a, c);
+        Set<OWLAxiom> sourceAxioms = o.getAxioms(Imports.INCLUDED);
+
+        ExplanationGenerator<OWLAxiom> generator =
+            new RustdlExplanationGeneratorFactory().createExplanationGenerator(o);
+        Set<Explanation<OWLAxiom>> explanations = generator.getExplanations(entailment);
+        assertFalse("real rustdl binary must return at least one justification",
+            explanations.isEmpty());
+        for (Explanation<OWLAxiom> explanation : explanations) {
+            for (OWLAxiom axiom : explanation.getAxioms()) {
+                assertTrue(
+                    "explanation axiom must be a genuine source axiom of the ontology "
+                        + "(anti-fabrication): " + axiom,
+                    sourceAxioms.contains(axiom));
+            }
+        }
+
+        ExplanationGenerator<OWLAxiom> laconicGenerator =
+            new RustdlLaconicExplanationGeneratorFactory().createExplanationGenerator(o);
+        Set<Explanation<OWLAxiom>> laconicExplanations = laconicGenerator.getExplanations(entailment);
+        assertFalse("real rustdl binary must return at least one laconic justification",
+            laconicExplanations.isEmpty());
+    }
+
+    /**
+     * End-to-end proof-tree smoke against a REAL rustdl binary (Task 5, Step 1): the same tiny EL
+     * ontology as above, this time queried via {@code rustdl prove --json} directly through
+     * {@link RustdlProcess#prove} and converted with {@link RustdlProof#fromProveJson}.
+     *
+     * <p><b>Why not {@code RustdlProofService.getProof}:</b> {@code RustdlProofService} extends
+     * the liveontologies {@code ProofService} base class, whose {@code getEditorKit()} requires a
+     * full {@code org.protege.editor.owl.OWLEditorKit} — wired up only inside a running Protégé
+     * workbench ({@code ProofService.setup(OWLEditorKit, ...)}) — which cannot be constructed in
+     * a headless JUnit/Failsafe process. {@link RustdlProcess#prove} and {@link RustdlProof} are
+     * exactly the two pieces {@code RustdlProofService}'s {@code RecomputingProof.compute} calls
+     * internally (see its source), so invoking them directly here still exercises the real binary
+     * end-to-end through the proof path — the only piece skipped is the Protégé editor-kit
+     * plumbing around it, which has no reasoning logic of its own.</p>
+     */
+    @Test public void provesEntailmentWithRealBinaryProducingNonTrivialProof() throws Exception {
+        assumeTrue("no rustdl binary available",
+            RustdlBinary.configuredOverride() != null
+            || RustdlBinary.class.getResource("/native") != null);
+        OWLOntologyManager m = OWLManager.createOWLOntologyManager();
+        OWLDataFactory df = m.getOWLDataFactory();
+        OWLOntology o = m.createOntology(IRI.create("http://ex5/"));
+
+        OWLClass a = df.getOWLClass(IRI.create("http://ex5/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex5/#B"));
+        OWLClass c = df.getOWLClass(IRI.create("http://ex5/#C"));
+        m.addAxiom(o, df.getOWLSubClassOfAxiom(a, b));
+        m.addAxiom(o, df.getOWLSubClassOfAxiom(b, c));
+
+        Path ofn = Files.createTempFile("rustdl-smoke-prove-", ".ofn");
+        try {
+            FlattenedOntology.writeOfn(o, ofn);
+            RustdlJson.ProveJson json = RustdlProcess.prove(
+                ofn, "http://ex5/#A", "http://ex5/#C", 60L);
+            assertTrue("real rustdl binary must report the SubClassOf(A,C) entailment",
+                json.entailed);
+            assertTrue(
+                "real rustdl binary must return a step-level proof for this EL entailment "
+                    + "(not just the justification fallback)",
+                json.has_proof);
+
+            OWLSubClassOfAxiom goal = df.getOWLSubClassOfAxiom(a, c);
+            RustdlProof proof = RustdlProof.fromProveJson(json, goal);
+
+            Collection<? extends Inference<OWLAxiom>> rootInferences = proof.getInferences(goal);
+            assertFalse("proof must contain an inference for the root goal conclusion",
+                rootInferences.isEmpty());
+            Inference<OWLAxiom> root = rootInferences.iterator().next();
+            assertEquals(goal, root.getConclusion());
+            assertFalse(
+                "root inference must be non-trivial (at least one premise, not a bare fact)",
+                root.getPremises().isEmpty());
+        } finally {
+            Files.deleteIfExists(ofn);
         }
     }
 }

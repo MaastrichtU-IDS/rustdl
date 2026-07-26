@@ -27,6 +27,25 @@ public class PluginRegistrationTest {
         }
     }
 
+    /**
+     * Fold-in M4.1 (Task 4 review): catches a proof-service registration regression at
+     * {@code mvn test} speed rather than only at the antrun {@code verify}-phase
+     * {@code resourcecontains} check (protege/pom.xml's {@code verify-bundle-contents}
+     * execution), which only runs on a full {@code mvn verify}.
+     */
+    @Test public void pluginXmlRegistersRustdlProofService() throws Exception {
+        try (InputStream in = getClass().getResourceAsStream("/plugin.xml")) {
+            assertNotNull("plugin.xml must be on the classpath", in);
+            String xml = new Scanner(in, "UTF-8").useDelimiter("\\A").next();
+            assertTrue("plugin.xml must register the proof-service extension point",
+                xml.contains("org.liveontologies.protege.explanation.proof.service"));
+            assertTrue(
+                "plugin.xml must wire that extension point to RustdlProofService",
+                xml.contains(
+                    "<class value=\"com.github.maastrichtu_ids.rustdl.protege.RustdlProofService\""));
+        }
+    }
+
     @Test public void servicesFileListsBothExplanationFactories() throws Exception {
         String resource = "/META-INF/services/org.semanticweb.owl.explanation.api.ExplanationGeneratorFactory";
         try (InputStream in = getClass().getResourceAsStream(resource)) {

@@ -661,6 +661,29 @@ fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64, global_timeo
     );
 }
 
+/// Print a stderr warning if any axioms were dropped during conversion
+/// (unsupported constructs — see `owl_dl_reasoner::dropped_axioms`). Those
+/// axioms are simply absent from reasoning, so the result is a sound
+/// under-approximation: nothing false is reported, but something may be
+/// missing. Mirrors `warn_if_incomplete`'s placement (human path only —
+/// under `--json`, the `dropped` block itself is the signal, keeping stdout
+/// a single JSON object).
+fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
+    let total: u64 = dropped.values().sum();
+    if total == 0 {
+        return;
+    }
+    let kinds: Vec<String> = dropped
+        .iter()
+        .map(|(kind, count)| format!("{kind} ×{count}"))
+        .collect();
+    eprintln!(
+        "warning: {total} axiom(s) not understood and dropped ({}); results are a sound \
+         under-approximation",
+        kinds.join(", ")
+    );
+}
+
 fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::Result<()> {
     let classes = h.classes();
     let stats = h.stats();
@@ -819,10 +842,16 @@ fn main() -> Result<()> {
         Command::Consistent { file, json } => {
             let onto = parse_ofn(&file)?;
             let verdict = is_consistent(&onto).context("is_consistent")?;
+            // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
+            // comment) — one extra conversion per invocation, negligible
+            // vs. reasoning; accepted trade-off.
+            let dropped = json_out::dropped_block(&onto);
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_consistent_json(verdict))?
+                    serde_json::to_string_pretty(&json_out::build_consistent_json(
+                        verdict, dropped
+                    ))?
                 );
                 return Ok(());
             }
@@ -834,6 +863,7 @@ fn main() -> Result<()> {
                     "inconsistent"
                 }
             );
+            warn_if_dropped(&dropped);
         }
         Command::Disjoint {
             file,
@@ -1032,10 +1062,14 @@ fn main() -> Result<()> {
             if timing {
                 eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
             }
+            // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
+            // comment) — one extra conversion per invocation, negligible
+            // vs. reasoning; accepted trade-off.
+            let dropped = json_out::dropped_block(&onto);
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_classify_json(&h))?
+                    serde_json::to_string_pretty(&json_out::build_classify_json(&h, dropped))?
                 );
                 warn_if_incomplete(
                     h.stats().timed_out_pairs,
@@ -1050,6 +1084,7 @@ fn main() -> Result<()> {
                 pair_timeout_ms,
                 global_timeout_ms,
             );
+            warn_if_dropped(&dropped);
         }
         Command::Instance {
             file,
@@ -1160,6 +1195,10 @@ fn main() -> Result<()> {
             } else {
                 realize(&onto).context("realize")?
             };
+            // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
+            // comment) — one extra conversion per invocation, negligible
+            // vs. reasoning; accepted trade-off.
+            let dropped = json_out::dropped_block(&onto);
             if json {
                 if properties {
                     // stderr, so stdout stays a single JSON object.
@@ -1169,11 +1208,12 @@ fn main() -> Result<()> {
                 }
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&json_out::build_realize_json(&r))?
+                    serde_json::to_string_pretty(&json_out::build_realize_json(&r, dropped))?
                 );
                 return Ok(());
             }
             print_realization(&r);
+            warn_if_dropped(&dropped);
             if properties {
                 match owl_dl_reasoner::materialize_object_property_assertions(&onto) {
                     Ok(triples) => {

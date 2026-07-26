@@ -1,6 +1,10 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
+use std::collections::BTreeMap;
+
+use horned_owl::model::RcStr;
+use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::{
     Classification, DataPropertyValues, DifferentIndividuals, Disjointness, ObjectPropertyValues,
     PropertyClassification, Realization, SameIndividuals,
@@ -8,6 +12,21 @@ use owl_dl_reasoner::{
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
+
+/// The per-kind dropped-axiom counts for `ontology`, as a `--json` block.
+///
+/// NOTE: this re-runs `convert_ontology` (via `dropped_axioms`), which the
+/// caller has typically already done once to reason over the ontology — one
+/// extra conversion per CLI invocation, negligible next to actual reasoning.
+/// Kept as a separate call (rather than threading it out of the existing
+/// `Classification`/`Realization` results) because those types don't carry
+/// the conversion's `DroppedAxioms` through their public API.
+#[must_use]
+pub(crate) fn dropped_block(onto: &SetOntology<RcStr>) -> BTreeMap<String, u64> {
+    owl_dl_reasoner::dropped_axioms(onto)
+        .map(|d| d.by_kind().clone())
+        .unwrap_or_default()
+}
 
 #[derive(Serialize)]
 pub(crate) struct ClassifyJson {
@@ -17,12 +36,14 @@ pub(crate) struct ClassifyJson {
     pub(crate) unsatisfiable: Vec<String>,
     pub(crate) equivalent_groups: Vec<Vec<String>>,
     pub(crate) direct_subsumptions: Vec<[String; 2]>,
+    pub(crate) dropped: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
 pub(crate) struct ConsistentJson {
     pub(crate) schema_version: u32,
     pub(crate) consistent: bool,
+    pub(crate) dropped: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -36,6 +57,7 @@ pub(crate) struct IndividualTypesJson {
 pub(crate) struct RealizeJson {
     pub(crate) schema_version: u32,
     pub(crate) individuals: Vec<IndividualTypesJson>,
+    pub(crate) dropped: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -98,7 +120,10 @@ pub(crate) fn build_instances_expr_json(r: &owl_dl_reasoner::CeInstances) -> Ins
 }
 
 #[must_use]
-pub(crate) fn build_classify_json(h: &Classification) -> ClassifyJson {
+pub(crate) fn build_classify_json(
+    h: &Classification,
+    dropped: BTreeMap<String, u64>,
+) -> ClassifyJson {
     let stats = h.stats();
 
     let mut unsatisfiable: Vec<String> = h
@@ -158,19 +183,24 @@ pub(crate) fn build_classify_json(h: &Classification) -> ClassifyJson {
         unsatisfiable,
         equivalent_groups: groups,
         direct_subsumptions,
+        dropped,
     }
 }
 
 #[must_use]
-pub(crate) fn build_consistent_json(consistent: bool) -> ConsistentJson {
+pub(crate) fn build_consistent_json(
+    consistent: bool,
+    dropped: BTreeMap<String, u64>,
+) -> ConsistentJson {
     ConsistentJson {
         schema_version: SCHEMA_VERSION,
         consistent,
+        dropped,
     }
 }
 
 #[must_use]
-pub(crate) fn build_realize_json(r: &Realization) -> RealizeJson {
+pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>) -> RealizeJson {
     let mut individuals: Vec<IndividualTypesJson> = r
         .individuals()
         .iter()
@@ -190,6 +220,7 @@ pub(crate) fn build_realize_json(r: &Realization) -> RealizeJson {
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         individuals,
+        dropped,
     }
 }
 
@@ -366,7 +397,7 @@ mod tests {
                 Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
                 SubClassOf(:B :A) SubClassOf(:C :B))",
         );
-        let j = build_classify_json(&h);
+        let j = build_classify_json(&h, BTreeMap::new());
         assert_eq!(j.schema_version, 1);
         assert!(j.consistent);
         assert!(!j.incomplete);

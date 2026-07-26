@@ -9,6 +9,7 @@
 //! own the choice of how to break them apart.
 
 use crate::ConceptPool;
+use crate::DroppedAxioms;
 use crate::Vocabulary;
 use crate::ir::{ClassId, ConceptId, IndividualId, Role, RoleId};
 
@@ -103,6 +104,11 @@ pub struct InternalOntology {
     pub vocabulary: Vocabulary,
     pub concepts: ConceptPool,
     pub axioms: Vec<Axiom>,
+    /// Axioms dropped during conversion (issue #43), tallied by diagnostic
+    /// kind. Empty for a fully-supported ontology — the refactor that
+    /// introduced this field is inert (produces the identical `axioms` set)
+    /// when nothing is dropped.
+    pub dropped: DroppedAxioms,
 }
 
 impl InternalOntology {

@@ -162,6 +162,18 @@ pub(crate) fn data_property_values(path: &str) -> PyResult<Vec<(String, String, 
         .map_err(reason_error_to_py)
 }
 
+/// Kinds and counts of axioms conversion could not represent (a sound
+/// under-approximation) — conversion never aborts on an unsupported
+/// construct, it records the drop and continues, so `classify` /
+/// `is_consistent` / `realize` still succeed on such inputs.
+#[pyfunction]
+pub(crate) fn dropped_axioms(path: &str) -> PyResult<std::collections::BTreeMap<String, u64>> {
+    let o = load::load_path(path)?;
+    owl_dl_reasoner::dropped_axioms(&o)
+        .map(|d| d.by_kind().clone())
+        .map_err(reason_error_to_py)
+}
+
 /// Parse a Manchester-syntax class expression against the ontology's own
 /// prefix map (so e.g. `:A` resolves via the file's `Prefix(:=...)`).
 fn parse_ce(
@@ -231,5 +243,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(class_expression_satisfiable, m)?)?;
     m.add_function(wrap_pyfunction!(class_expression_entailed_subclass, m)?)?;
     m.add_function(wrap_pyfunction!(class_expression_instances, m)?)?;
+    m.add_function(wrap_pyfunction!(dropped_axioms, m)?)?;
     Ok(())
 }

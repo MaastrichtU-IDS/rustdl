@@ -4,6 +4,30 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] — 2026-07-26
+
+### Added
+
+- **Explanation surface in Protégé.** rustdl's justifications and proofs are now
+  exposed in the Protégé UI:
+  - The Explanation ("?") dialog offers **rustdl** (minimal justifications) and
+    **rustdl (laconic)** as explanation sources, via the OWL Explanation API.
+    Minimal justifications are fail-hard verified against the source ontology
+    (anti-fabrication); laconic fragments are sound-by-construction weakenings.
+  - The proof view shows rustdl step-level EL proof trees (degrading to a
+    single-step justification outside the EL fragment), via the liveontologies
+    proof-service extension point. Requires Protégé's proof-explanation plugin
+    installed; justifications work without it.
+- **`rustdl justify --json`** and **`rustdl prove --json`** — machine-readable
+  justifications (with `minimal` / `laconic` / `enumeration_complete` honesty
+  flags) and EL proof trees (or a justification fallback), each axiom rendered as
+  a self-contained OWL Functional Syntax document. Schemas in
+  `docs/json-schema.md`; these are the bridge the plugin consumes.
+- **Dropped-axiom surfacing + graceful degradation** (#43): the `classify` /
+  `consistent` / `realize` `--json` outputs (and the Python surface) now report
+  a `dropped` block of per-kind counts for axioms outside the supported fragment,
+  so a sound under-approximation is visible rather than silent.
+
 ## [0.4.4] — 2026-07-25
 
 ### Added

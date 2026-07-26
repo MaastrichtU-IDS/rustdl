@@ -43,9 +43,17 @@ constructs the `dropped` map is empty and behavior is **byte-identical** to toda
   Ok(None)              → benign drop (metadata / annotations / declarations) — ignore
   Err(reason)           → out.dropped.record(component_kind(&ac.component), reason); continue
   ```
-  After the refactor `Ok(None)` is **unambiguously benign** (no benign-set
-  classification needed), and every `Err` is a recorded incompleteness drop with its
-  precise reason.
+  After the refactor `Ok(None)` means **benign**: metadata, annotations, and bare
+  declarations (`DeclareDataProperty`, `DeclareDatatype`, …) that carry no
+  reasoning content of their own. Every axiom with reasoning-load-bearing
+  **content** that can't be represented — assertions, ranges, domains, and the
+  like — returns `Err` instead, so `convert_ontology` records it as a dropped
+  axiom with its precise reason. (Early drafts of this refactor let a few
+  data-property content arms — `DataPropertyAssertion`,
+  `NegativeDataPropertyAssertion`, `DataPropertyRange`, and the
+  `RUSTDL_DATA_PROPERTIES=0` gate-off fall-through — fall through to `Ok(None)`
+  as well; the #43 whole-branch review caught this under-reporting and it was
+  fixed to `Err` before merge.)
 - `convert_ontology`'s return type stays `Result<InternalOntology, ConversionError>`
   for API stability, but it **no longer returns `Err` for unsupported constructs**
   (they become recorded drops). It may still `Err` only on a genuinely fatal

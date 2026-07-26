@@ -372,6 +372,31 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   flamegraphs. **GALEN classify wall: 24.8 min → 12.2 min (~50%
   reduction)** — this reclaims Phase 2b's full wall regression.
   FP=0 + verdicts unchanged. See `docs/phase3c-results.md`.
+  **DisjointUnion covering in the wedge (2026-07-25, #40).** `clause.rs`'s
+  `DisjointUnion` arm now also emits the covering clause
+  `C(X) → D1(X) ∨ … ∨ Dn(X)` (it previously emitted only the pairwise-disjoint
+  + `member ⊑ class` halves, deferring the covering `C ⊑ ⊔Di`). The tableau
+  (`absorb.rs`) already had it; this closes the wedge/classify gap so
+  covering-dependent subsumptions (`C ⊑ ⊔Di ⊑ E ⟹ C ⊑ E`) are no longer MISSED
+  under default `trust_sat`. Sound (genuine DisjointUnion semantics — only adds
+  entailed subsumptions); byte-identical where no DisjointUnion covering applies.
+  NOTE: covering-dependent **same-tier** subsumptions still need
+  `RUSTDL_CLASSIFY_SAME_TIER=1` (the separate tier-walk limitation). Spec
+  `docs/superpowers/specs/2026-07-25-disjointunion-wedge-covering-design.md`.
+  **Graceful degradation + surfaced drops (2026-07-26, #43).** `convert_ontology`
+  no longer aborts on an unsupported construct: `ce_or_skip!` propagates the
+  error and the conversion loop RECORDS it on `InternalOntology.dropped:
+  DroppedAxioms` (`kind → count`) and continues, reasoning over the supported
+  fragment. `Ok(None)` is now benign-only (metadata / annotations / bare
+  declarations); every unrepresentable CONTENT axiom — unsupported data ranges,
+  `HasKey`, SWRL, and (under `RUSTDL_DATA_PROPERTIES=0`) data-property axioms —
+  returns `Err` → recorded. Surfaced via `owl_dl_reasoner::dropped_axioms(&onto)`,
+  a `dropped` block in `classify`/`consistent`/`realize --json`, a default stderr
+  warning, and Python `dropped_axioms(path)`. Sound under-approximation (weaker
+  KB ⇒ only missed entailments, never a false one); inert when nothing is dropped
+  (empty map ⇒ byte-identical). **`HasKey` and unsupported axioms no longer
+  hard-error** — they degrade. Spec
+  `docs/superpowers/specs/2026-07-25-surface-dropped-axioms-design.md`.
 
 - **`crates/owl-dl-reasoner`** — public API + orchestrator (`lib.rs`,
   `classify.rs`, `realize.rs`). Every entry point that issues a tableau query
@@ -456,6 +481,40 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `rustdl.debug()` returns a `Diagnosis` dataclass (with `Root`/`Derived`/`Inconsistency`) —
   attribute access + `Mapping` dict-compat + `to_dict()`. See
   `docs/superpowers/specs/2026-06-21-python-result-objects-design.md`.
+  **Inferred query surface (2026-07-24/25, issues #44–#48).** The reasoner-API →
+  Python → CLI `--json` surface for the OWLReasoner queries beyond class
+  classification, all sound (FP=0) by reduction to the existing
+  (un)sat/consistency engines (never from a satisfying model), each running the
+  mandatory inconsistent-KB guard first and reporting an `incomplete` signal
+  (trusted-`Sat` / budget):
+  - #47 `disjoint_classes` (entailment: `C ⊓ D` unsat, told-disjoint seed) +
+    `disjoint_{object,data}_properties` (structural told closure). CLI `disjoint --json`.
+  - #44 `classify_{object,data}_property_hierarchy` → `PropertyClassification`
+    (equiv groups + Hasse `direct_subsumptions`, from the told+equiv+inverse
+    property closure). CLI `property-hierarchy --json`.
+  - #46 `same_individuals` (asserted + functional-forced `derived_same` seed +
+    augment-recheck `KB∪{a≠b}` inconsistent) / `different_individuals`
+    (`{a}⊓{b}` unsat). CLI `individuals --json`.
+  - #45 `inferred_{object,data}_property_values` (materialize seed + budgeted
+    entailment extension via a `KB∪{¬R(a,b)}` recheck; data = structural). CLI
+    `property-values --json`.
+  - #48 `class_expression_{satisfiable,entailed_subclass,instances}` — accept an
+    anonymous **Manchester** class expression, reduced by injecting a fresh
+    `EquivalentClasses(Q, CE)` probe and querying the named `Q` (the
+    `justify::entails` probe pattern generalized; front-end parses via horned-owl
+    `parse_class_expression`). CLI `sat-expr`/`subclass-expr`/`instances-expr`.
+  Shared infra: `PreparedOntology` now carries `vocabulary` +
+  `pair_disjoint_with_deadline` / `pair_individuals_disjoint_with_deadline`
+  (`C⊓D` / `{a}⊓{b}` sat probes over the frozen snapshot via `decide`) +
+  `consistent_with_extra` (snapshot-preserving augment-and-recheck: injects one
+  extra distinct-pair / negative-property fact into the per-probe tableau seed,
+  no rebuild). `SaturationResult.derived_same` records functional/inverse-
+  functional-forced equalities. Python query wrappers emit `IncompleteQueryWarning`.
+  HermiT/ROBOT oracle FP=0 gates (`disjoint_classes`, property values; hand-
+  verified for same/different — ROBOT has no such generator; probe-trick oracle
+  for class expressions). Specs
+  `docs/superpowers/specs/2026-07-24-inferred-query-surface-44-47-design.md`,
+  `docs/superpowers/specs/2026-07-25-complex-class-expression-queries-design.md`.
   Phase 4b (commit e31439c) added a `FragmentClassification`
   diagnostic surfaced as `# fragment: …` in the CLI banner and
   `ClassificationStats::fragment` programmatically; it tells users whether

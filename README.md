@@ -53,13 +53,20 @@ with first-class data properties.
   `DataUnionOf` / `DataIntersectionOf` / `DataComplementOf`, and bounded data
   cardinality.
 
-**Sound under-approximation (silently dropped, never an error):** the narrow
-datatype tail outside that recognized set — nested composite ranges (e.g.
-`DataComplementOf(DataUnionOf(…))`), `∀` / range / cardinality *over* a union or
-complement, and lexically-unparseable or cross-datatype literals. Positives
-depending on them may be missed, never falsely asserted.
+**Inferred queries beyond classification** (reasoner API + CLI `--json` + Python):
+object/data **property hierarchy**, **property values**, **same / different
+individuals**, **disjointness**, and complex (anonymous **Manchester**)
+**class-expression** satisfiability / entailment / instances — all sound, each
+reporting an `incomplete` flag.
 
-**Unsupported (errors):** `HasKey`. SWRL rules are skipped (see `convert.rs`).
+**Sound under-approximation (dropped *and reported*, never an error):** any axiom
+the conversion can't represent — the narrow datatype tail (nested composite
+ranges like `DataComplementOf(DataUnionOf(…))`, `∀` / range / cardinality *over* a
+union or complement, unparseable / cross-datatype literals), plus `HasKey`, SWRL
+rules, and other unsupported constructs. Reasoning proceeds over the supported
+fragment; the dropped axioms are surfaced as a count-by-kind diagnostic
+(`dropped_axioms`, a `dropped` block in `--json`, a stderr warning). Positives
+depending on them may be missed, never falsely asserted.
 
 ## Crates
 
@@ -150,6 +157,16 @@ rustdl consistent ontology.ofn
 rustdl subclass  ontology.ofn <sub> <sup>
 rustdl instances ontology.ofn <class>
 rustdl realize   ontology.ofn [--properties] # per-individual types (+ inferred object & data property assertions)
+
+# inferred queries (each also available as `--json` and in the Python API):
+rustdl disjoint          ontology.ofn                  # disjoint classes + disjoint object/data properties
+rustdl individuals       ontology.ofn                  # inferred same / different individuals
+rustdl property-hierarchy ontology.ofn                 # inferred object/data property hierarchy
+rustdl property-values   ontology.ofn                  # inferred object/data property values
+rustdl sat-expr          ontology.ofn '<CE>'           # satisfiability of a Manchester class expression
+rustdl subclass-expr     ontology.ofn '<sub>' '<sup>'  # is SubClassOf(ce1, ce2) entailed
+rustdl instances-expr    ontology.ofn '<CE>'           # instances of a Manchester class expression
+
 rustdl justify   ontology.ofn <query…>      # minimal responsible-axiom set (why it holds)
 rustdl justify --laconic ontology.ofn <query…>  # pinpoint the responsible PART of each axiom
 rustdl repair    ontology.ofn <query…>      # minimal axiom removals to break an entailment

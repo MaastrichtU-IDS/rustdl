@@ -3,6 +3,7 @@
 //! determinism; `schema_version` guards drift.
 use std::collections::{BTreeMap, HashMap};
 
+use anyhow::{Result, bail};
 use horned_owl::curie::PrefixMapping;
 use horned_owl::io::ofn::writer::write as write_ofn;
 use horned_owl::model::{
@@ -481,25 +482,34 @@ pub(crate) struct ProofNodeJson {
 /// (mirrors `owl_dl_saturation::proof::render_class_expanded`/
 /// `render_synthetic_def`, but building real model objects instead of a
 /// display string, so the result can be written as OFN).
+///
+/// # Errors
+/// Returns an error if `id` is neither a named-vocabulary class nor has a
+/// `SyntheticDef` record. This should never happen for a proof the saturator
+/// itself produced (every synthetic `ClassId` it can mention is registered in
+/// `synthetic_defs` at construction time), but if a future saturator change
+/// ever broke that invariant, silently fabricating an opaque
+/// `urn:rustdl-synthetic:<idx>` class into user-facing proof JSON would be
+/// far worse than failing loudly — so this fails instead of fabricating.
 fn class_id_to_class_expression(
     id: ClassId,
     vocab: &Vocabulary,
     defs: &HashMap<ClassId, SyntheticDef>,
     build: &Build<RcStr>,
-) -> ClassExpression<RcStr> {
+) -> Result<ClassExpression<RcStr>> {
     let idx = id.index() as usize;
     if idx < vocab.num_classes() {
-        return ClassExpression::Class(build.class(vocab.class_iri(id)));
+        return Ok(ClassExpression::Class(build.class(vocab.class_iri(id))));
     }
     if let Some(def) = defs.get(&id) {
         return synthetic_def_to_class_expression(def, vocab, defs, build);
     }
-    // No user-vocabulary entry and no synthetic-def record. Not expected in
-    // practice (every synthetic `ClassId` the proof trace can mention has a
-    // `synthetic_defs` entry — see `SyntheticDef` construction in
-    // `owl-dl-saturation/src/lib.rs`), but rendered as an opaque marker class
-    // rather than panicking: faithful to the internal id, not fabricated.
-    ClassExpression::Class(build.class(format!("urn:rustdl-synthetic:{idx}")))
+    bail!(
+        "internal error rendering proof JSON: class id {idx} has no vocabulary entry and no \
+         synthetic_defs record (proof-rendering invariant violated — every synthetic ClassId a \
+         saturator proof can mention should be registered in synthetic_defs at construction \
+         time; refusing to fabricate an opaque class into the proof output)"
+    );
 }
 
 fn synthetic_def_to_class_expression(
@@ -507,13 +517,13 @@ fn synthetic_def_to_class_expression(
     vocab: &Vocabulary,
     defs: &HashMap<ClassId, SyntheticDef>,
     build: &Build<RcStr>,
-) -> ClassExpression<RcStr> {
-    match def {
+) -> Result<ClassExpression<RcStr>> {
+    Ok(match def {
         SyntheticDef::TseitinConj(bodies) => {
             let mut parts: Vec<ClassExpression<RcStr>> = bodies
                 .iter()
                 .map(|&b| class_id_to_class_expression(b, vocab, defs, build))
-                .collect();
+                .collect::<Result<Vec<_>>>()?;
             if parts.len() == 1 {
                 parts.remove(0)
             } else {
@@ -523,7 +533,7 @@ fn synthetic_def_to_class_expression(
         SyntheticDef::ExistMarkerOneWay { role, body }
         | SyntheticDef::ExistMarkerEquiv { role, body } => ClassExpression::ObjectSomeValuesFrom {
             ope: role_id_to_ope(*role, vocab, build),
-            bce: Box::new(class_id_to_class_expression(*body, vocab, defs, build)),
+            bce: Box::new(class_id_to_class_expression(*body, vocab, defs, build)?),
         },
         SyntheticDef::NominalKey(ind) => ClassExpression::ObjectOneOf(vec![Individual::Named(
             individual_id_to_named(*ind, vocab, build),
@@ -546,12 +556,16 @@ fn synthetic_def_to_class_expression(
         // Not reached in practice: `DKey` classes are interned as real named
         // vocabulary entries at conversion time (`owl_dl_core::convert`'s
         // `urn:rustdl-dkey:` classes), so they resolve via the `vocab` branch
-        // above, never via `synthetic_defs`. Kept for match exhaustiveness;
-        // rendered as an opaque named class if it ever fires.
+        // above, never via `synthetic_defs`. Kept for match exhaustiveness.
+        // Unlike the fallback in `class_id_to_class_expression`, this arm
+        // renders GENUINE content if it ever fires: `urn:rustdl-dkey:<suffix>`
+        // is the exact IRI convention `owl_dl_core::convert`'s real DKey
+        // vocabulary entries use (Phase D6), not a fabricated marker — so it
+        // is deliberately left as-is rather than hardened into an error.
         SyntheticDef::DKey(iri_suffix) => {
             ClassExpression::Class(build.class(format!("urn:rustdl-dkey:{iri_suffix}")))
         }
-    }
+    })
 }
 
 fn role_id_to_ope(
@@ -581,24 +595,24 @@ fn derived_fact_to_component(
     vocab: &Vocabulary,
     defs: &HashMap<ClassId, SyntheticDef>,
     build: &Build<RcStr>,
-) -> Component<RcStr> {
-    match fact {
+) -> Result<Component<RcStr>> {
+    Ok(match fact {
         owl_dl_reasoner::DerivedFact::Sub(s, p) => Component::SubClassOf(SubClassOf {
-            sub: class_id_to_class_expression(*s, vocab, defs, build),
-            sup: class_id_to_class_expression(*p, vocab, defs, build),
+            sub: class_id_to_class_expression(*s, vocab, defs, build)?,
+            sup: class_id_to_class_expression(*p, vocab, defs, build)?,
         }),
         owl_dl_reasoner::DerivedFact::Exist(s, r, t) => Component::SubClassOf(SubClassOf {
-            sub: class_id_to_class_expression(*s, vocab, defs, build),
+            sub: class_id_to_class_expression(*s, vocab, defs, build)?,
             sup: ClassExpression::ObjectSomeValuesFrom {
                 ope: role_id_to_ope(*r, vocab, build),
-                bce: Box::new(class_id_to_class_expression(*t, vocab, defs, build)),
+                bce: Box::new(class_id_to_class_expression(*t, vocab, defs, build)?),
             },
         }),
         owl_dl_reasoner::DerivedFact::Unsat(c) => Component::SubClassOf(SubClassOf {
-            sub: class_id_to_class_expression(*c, vocab, defs, build),
+            sub: class_id_to_class_expression(*c, vocab, defs, build)?,
             sup: ClassExpression::Class(build.class(OWL_NOTHING)),
         }),
-    }
+    })
 }
 
 /// Recursively build a `ProofNodeJson` from a `ProofNode`: the conclusion
@@ -610,9 +624,9 @@ fn build_proof_node_json(
     defs: &HashMap<ClassId, SyntheticDef>,
     pm: &PrefixMapping,
     build: &Build<RcStr>,
-) -> ProofNodeJson {
+) -> Result<ProofNodeJson> {
     let vocab = &internal.vocabulary;
-    let conclusion_component = derived_fact_to_component(&node.conclusion, vocab, defs, build);
+    let conclusion_component = derived_fact_to_component(&node.conclusion, vocab, defs, build)?;
     let conclusion = axioms_to_ofn_doc(std::slice::from_ref(&conclusion_component), pm);
 
     // `node.axiom_refs` index into `internal.axioms` (the same
@@ -637,30 +651,41 @@ fn build_proof_node_json(
         .premises
         .iter()
         .map(|p| build_proof_node_json(p, internal, defs, pm, build))
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
-    ProofNodeJson {
+    Ok(ProofNodeJson {
         conclusion,
         rule: node.rule.to_string(),
         axioms,
         premises,
-    }
+    })
 }
 
 /// Build the `prove --json` payload. `internal` must be the same ontology
 /// `result` was derived from (re-converted by the caller — see
 /// `prove_entailment_rcstr`'s own internal conversion).
-#[must_use]
+///
+/// # Errors
+/// Returns an error if rendering the proof tree hits the
+/// should-never-happen `ClassId`-resolution invariant violation described on
+/// `class_id_to_class_expression` — propagated here instead of silently
+/// emitting fabricated content, so `prove --json` exits with a real error in
+/// that case.
 pub(crate) fn build_prove_json(
     result: &ProveEntailmentResult,
     internal: &InternalOntology,
     pm: &PrefixMapping,
-) -> ProveJson {
-    match result {
+) -> Result<ProveJson> {
+    Ok(match result {
         ProveEntailmentResult::SaturatorProof(data) => {
             let build: Build<RcStr> = Build::new_rc();
-            let proof =
-                build_proof_node_json(&data.root, internal, &data.trace.synthetic_defs, pm, &build);
+            let proof = build_proof_node_json(
+                &data.root,
+                internal,
+                &data.trace.synthetic_defs,
+                pm,
+                &build,
+            )?;
             ProveJson {
                 schema_version: SCHEMA_VERSION,
                 entailed: true,
@@ -683,7 +708,7 @@ pub(crate) fn build_prove_json(
             proof: None,
             justification_fallback: None,
         },
-    }
+    })
 }
 
 #[cfg(test)]

@@ -1464,12 +1464,9 @@ fn main() -> Result<()> {
             if json {
                 let internal = owl_dl_core::convert::convert_ontology(&onto)
                     .context("re-convert for rendering")?;
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json_out::build_prove_json(
-                        &result, &internal, &pm,
-                    ))?
-                );
+                let prove_json = json_out::build_prove_json(&result, &internal, &pm)
+                    .context("rendering prove --json proof tree")?;
+                println!("{}", serde_json::to_string_pretty(&prove_json)?);
                 return Ok(());
             }
             match result {

@@ -113,6 +113,13 @@ fn prove_tableau_cardinality() -> &'static str {
     )
 }
 
+fn prove_tseitin_conjunction() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/prove_tseitin_conjunction.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -679,6 +686,100 @@ fn prove_json_el_chain_has_multi_step_proof() {
         }
     }
     assert!(saw_ab && saw_bc, "expected both A⊑B and B⊑C premises");
+}
+
+/// Recursively walk a `prove --json` proof tree, collecting `(conclusion,
+/// axioms[])` OFN strings from every node, so tests can assert properties
+/// hold tree-wide rather than just at the root.
+fn collect_proof_strings<'a>(node: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+    out.push(node["conclusion"].as_str().unwrap());
+    for ax in node["axioms"].as_array().unwrap() {
+        out.push(ax.as_str().unwrap());
+    }
+    for premise in node["premises"].as_array().unwrap() {
+        collect_proof_strings(premise, out);
+    }
+}
+
+#[test]
+fn prove_json_synthetic_def_tseitin_conjunction_renders_faithfully() {
+    // prove_tseitin_conjunction: A ⊑ ∃r.(C ⊓ D), ∃r.(C ⊓ D) ⊑ E.
+    // The compound existential filler (C ⊓ D) forces the saturator to
+    // allocate a Tseitin synthetic class for it; the proof that A ⊑ E goes
+    // through a `DerivedFact::Exist(A, r, <synthetic>)` node whose
+    // conclusion/axioms must expand that synthetic def back to
+    // `ObjectIntersectionOf(C D)` — this is the SyntheticDef-expansion path
+    // this test locks in as a regression.
+    let out = rustdl()
+        .args([
+            "prove",
+            "--json",
+            prove_tseitin_conjunction(),
+            "http://ex/#A",
+            "http://ex/#E",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["entailed"], true);
+    assert_eq!(v["has_proof"], true);
+    assert!(v["justification_fallback"].is_null());
+    let proof = &v["proof"];
+    assert!(!proof.is_null(), "proof tree must be present");
+
+    // (i) multi-step structure: the root must have at least one premise.
+    let premises = proof["premises"].as_array().unwrap();
+    assert!(
+        !premises.is_empty(),
+        "A ⊑ E via the existential trigger must have at least one premise \
+         (the told A ⊑ ∃r.(C⊓D) fact); got a leaf root"
+    );
+
+    // (ii) every conclusion and every axioms[] entry, tree-wide, must parse
+    // as valid OWL Functional Syntax.
+    let mut strings: Vec<&str> = Vec::new();
+    collect_proof_strings(proof, &mut strings);
+    assert!(
+        strings.len() >= 3,
+        "expected root + premise conclusions/axioms to yield several OFN \
+         documents; got {strings:?}"
+    );
+    let mut all_parsed_axioms: Vec<String> = Vec::new();
+    for s in &strings {
+        let parsed = ofn_doc_axiom_strings(s);
+        assert!(
+            !parsed.is_empty(),
+            "OFN document must parse to ≥1 axiom: {s}"
+        );
+        all_parsed_axioms.extend(parsed);
+    }
+
+    // Meaningful (not vacuous): somewhere in the tree the SyntheticDef for
+    // (C ⊓ D) must have been expanded back to a genuine
+    // `ObjectIntersectionOf` mentioning both C and D — proving the
+    // `∃r.(C⊓D)` filler round-tripped through the Tseitin synthetic, not
+    // just that *some* OFN happened to parse.
+    assert!(
+        all_parsed_axioms.iter().any(|a| {
+            a.contains("ObjectIntersectionOf")
+                && a.contains("http://ex/#C")
+                && a.contains("http://ex/#D")
+        }),
+        "expected a rendered axiom expanding the Tseitin synthetic to \
+         ObjectIntersectionOf(C D); got {all_parsed_axioms:?}"
+    );
+
+    // (iii) none of the rendered strings contains the fabrication marker —
+    // proving the SyntheticDef expansion produced real content, not the
+    // `urn:rustdl-synthetic:` should-never-happen fallback.
+    for s in &strings {
+        assert!(
+            !s.contains("urn:rustdl-synthetic:"),
+            "proof JSON must never contain the fabrication marker: {s}"
+        );
+    }
 }
 
 #[test]

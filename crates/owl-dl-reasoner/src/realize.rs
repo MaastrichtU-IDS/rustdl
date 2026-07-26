@@ -110,7 +110,10 @@ fn pseudo_model_enabled() -> bool {
 
 /// Reads `RUSTDL_PSEUDO_MODEL_WITNESS_MS`, returning the bounded deadline to
 /// use for the one-off pseudo-model witness build. Unset or unparsable ⟹
-/// [`DEFAULT_PSEUDO_MODEL_WITNESS_MS`].
+/// [`DEFAULT_PSEUDO_MODEL_WITNESS_MS`]. Note that (unlike
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, where `0` means unbounded) `0` here yields
+/// an immediate deadline ⟹ the witness build `Stalled`s ⟹ no witness ⟹ the
+/// shortcut safely no-ops for that call; there is no "unbounded witness" option.
 fn pseudo_model_witness_deadline_from_env() -> std::time::Instant {
     let ms = std::env::var("RUSTDL_PSEUDO_MODEL_WITNESS_MS")
         .ok()

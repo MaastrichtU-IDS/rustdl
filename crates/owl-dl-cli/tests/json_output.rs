@@ -415,6 +415,66 @@ fn justify_json_all_reports_two_justifications_complete() {
 }
 
 #[test]
+fn justify_json_all_max_equal_to_true_count_is_complete() {
+    // justify_two_paths has exactly 2 minimal justifications (A-B-C, A-D-C).
+    // `--max 2` == the true count: the max+1 probe should find no third
+    // justification, so this is exhaustion, not capping.
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            "--all",
+            "--max",
+            "2",
+            justify_two_paths(),
+            "subclass",
+            "http://ex/#A",
+            "http://ex/#C",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "entailed");
+    assert_eq!(
+        v["enumeration_complete"], true,
+        "max == true count must not be reported as capped"
+    );
+    assert_eq!(v["justifications"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn justify_json_all_max_one_below_true_count_is_capped() {
+    // `--max 1` is one less than the true count of 2: the max+1 probe (2)
+    // finds both, so the cap is genuine and enumeration_complete must be
+    // false, with exactly `max` justifications returned.
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            "--all",
+            "--max",
+            "1",
+            justify_two_paths(),
+            "subclass",
+            "http://ex/#A",
+            "http://ex/#C",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "entailed");
+    assert_eq!(
+        v["enumeration_complete"], false,
+        "max one below true count must be reported as capped"
+    );
+    assert_eq!(v["justifications"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn justify_json_laconic_flag_is_set() {
     let out = rustdl()
         .args([

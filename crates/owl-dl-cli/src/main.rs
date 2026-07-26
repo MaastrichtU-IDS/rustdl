@@ -1280,14 +1280,33 @@ fn main() -> Result<()> {
                     Vec<owl_dl_reasoner::justify::Justification<RcStr>>,
                     bool,
                 ) = if all {
-                    let js = if laconic {
-                        owl_dl_reasoner::find_all_laconic_justifications(&onto, &q, max)
+                    // Probe with `max + 1`: `find_all_*` stops as soon as
+                    // `found.len() >= max`, so a returned count of exactly
+                    // `max` is ambiguous (genuinely capped, or coincidentally
+                    // exhausted). Asking for one more disambiguates: if the
+                    // probe still returns `<= max`, the true set is that
+                    // small and enumeration is complete; if it returns
+                    // `max + 1`, the true set has more and we were capped.
+                    // `saturating_add` guards a `max` already at `usize::MAX`
+                    // — in that degenerate (effectively-unbounded) case the
+                    // probe can't add headroom, so whatever comes back is,
+                    // by construction, the full set.
+                    let probe_max = max.saturating_add(1);
+                    let mut js = if laconic {
+                        owl_dl_reasoner::find_all_laconic_justifications(&onto, &q, probe_max)
                             .context("find_all_laconic_justifications")?
                     } else {
-                        owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
+                        owl_dl_reasoner::justify::find_all_justifications(&onto, &q, probe_max)
                             .context("find_all_justifications")?
                     };
-                    let enumeration_complete = js.len() < max;
+                    let enumeration_complete = if max == usize::MAX {
+                        true
+                    } else if js.len() > max {
+                        js.truncate(max);
+                        false
+                    } else {
+                        true
+                    };
                     (js, enumeration_complete)
                 } else {
                     let one = if laconic {

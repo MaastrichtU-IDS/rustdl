@@ -1745,17 +1745,18 @@ macro_rules! ce_or_skip {
 ///
 /// Returns:
 /// - `Ok(Some(axiom))` when the component maps to an axiom in our IR.
-/// - `Ok(None)` when the component is metadata or annotation-related and
-///   has no representation in our IR (silently dropped, benign — see the
-///   module docs for the rationale). Also returned when a data-property arm
-///   deliberately treats an unrecognized literal/range as a no-op rather than
-///   an error (still sound under-approximation, but never counted as a
-///   "dropped axiom" — see the individual arms).
-/// - `Err(_)` when the component is semantically meaningful but unsupported
-///   in this phase (unsupported data ranges via the `ce_or_skip!` macro,
-///   anonymous individuals, `HasKey`, etc.). Issue #43: `convert_ontology`
-///   no longer aborts on this — it records the drop in `InternalOntology::dropped`
-///   (via [`drop_label`]) and continues with the remaining components.
+/// - `Ok(None)` when the component is metadata, annotation-related, or a
+///   benign declaration (`DeclareDataProperty`, `DeclareDatatype`, …) and
+///   has no representation in our IR — silently dropped, benign (see the
+///   module docs for the rationale); never counted as a "dropped axiom".
+/// - `Err(_)` when the component is semantically meaningful (reasoning-load-
+///   bearing content: assertions, ranges, domains, …) but unsupported in this
+///   phase — unsupported data ranges via the `ce_or_skip!` macro, unrecognized
+///   data-property literals/ranges, the `RUSTDL_DATA_PROPERTIES=0` gate-off
+///   fall-through, anonymous individuals, `HasKey`, etc. Issue #43:
+///   `convert_ontology` no longer aborts on this — it records the drop in
+///   `InternalOntology::dropped` (via [`drop_label`]) and continues with the
+///   remaining components.
 #[allow(clippy::too_many_lines)] // intrinsic to the breadth of horned-owl's Component enum
 pub fn convert_component<A: ForIRI>(
     c: &Component<A>,
@@ -1930,7 +1931,9 @@ pub fn convert_component<A: ForIRI>(
                     let individual = convert_individual(&ax.from, vocab)?;
                     Ok(Some(Axiom::ClassAssertion { class, individual }))
                 }
-                None => Ok(None), // unrecognized literal datatype — drop (sound)
+                // unrecognized literal datatype — drop (sound), but this is
+                // CONTENT (an ABox assertion), so record it (issue #43 review).
+                None => Err(ConversionError::UnsupportedDataRange),
             }
         }
 
@@ -1949,7 +1952,9 @@ pub fn convert_component<A: ForIRI>(
                     let individual = convert_individual(&ax.from, vocab)?;
                     Ok(Some(Axiom::ClassAssertion { class, individual }))
                 }
-                None => Ok(None),
+                // unrecognized literal datatype — drop (sound), but this is
+                // CONTENT (an ABox assertion), so record it (issue #43 review).
+                None => Err(ConversionError::UnsupportedDataRange),
             }
         }
 
@@ -2019,7 +2024,9 @@ pub fn convert_component<A: ForIRI>(
                         let range = pool.atomic(vocab.intern_class(&iri));
                         Ok(Some(Axiom::ObjectPropertyRange { role, range }))
                     }
-                    DataIntersectionDkey::Empty => Ok(None), // empty range → drop (sound)
+                    // empty range → drop (sound), but this is CONTENT (a
+                    // DataPropertyRange axiom), so record it (issue #43 review).
+                    DataIntersectionDkey::Empty => Err(ConversionError::UnsupportedDataRange),
                 };
             }
             // DataComplementOf: DataPropertyRange(p, DataComplementOf(r)) →
@@ -2031,18 +2038,24 @@ pub fn convert_component<A: ForIRI>(
                         role,
                         range: pool.not(range),
                     })),
-                    None => Ok(None), // unrecognized inner → drop (sound)
+                    // unrecognized inner → drop (sound), but CONTENT — record it.
+                    None => Err(ConversionError::UnsupportedDataRange),
                 };
             }
             match data_range_dkey(&ax.dr, ax.dp.0.as_ref(), vocab, pool) {
                 Some((role, range)) => Ok(Some(Axiom::ObjectPropertyRange { role, range })),
-                None => Ok(None), // unrecognized range — drop (sound)
+                // unrecognized range → drop (sound), but CONTENT — record it.
+                None => Err(ConversionError::UnsupportedDataRange),
             }
         }
 
-        // ── Data property / datatype: silently dropped per Phase D1 ─────
-        // See the DeclareDataProperty / DeclareDatatype block above for
-        // the sound-under-approximation rationale.
+        // ── Data property / datatype CONTENT axioms: dropped when the
+        // `RUSTDL_DATA_PROPERTIES` gate is OFF (or, for `DatatypeDefinition`,
+        // unconditionally — there is no gated lowering for it). Sound
+        // under-approximation (see the DeclareDataProperty / DeclareDatatype
+        // block above for the rationale), but unlike a bare declaration these
+        // are reasoning-load-bearing axioms, so issue #43's review requires
+        // recording the drop rather than silently swallowing it.
         #[allow(clippy::match_same_arms)]
         C::SubDataPropertyOf(_)
         | C::EquivalentDataProperties(_)
@@ -2052,7 +2065,7 @@ pub fn convert_component<A: ForIRI>(
         | C::FunctionalDataProperty(_)
         | C::DatatypeDefinition(_)
         | C::DataPropertyAssertion(_)
-        | C::NegativeDataPropertyAssertion(_) => Ok(None),
+        | C::NegativeDataPropertyAssertion(_) => Err(ConversionError::UnsupportedDataRange),
 
         // ── HasKey: advanced feature, deferred ──────────────────────────
         C::HasKey(_) => Err(ConversionError::UnsupportedAxiom { kind: "HasKey" }),
@@ -2091,6 +2104,16 @@ fn component_kind<A: ForIRI>(c: &Component<A>) -> &'static str {
         C::SubObjectPropertyOf(_) => "SubObjectPropertyOf",
         C::EquivalentObjectProperties(_) => "EquivalentObjectProperties",
         C::DisjointObjectProperties(_) => "DisjointObjectProperties",
+        C::HasKey(_) => "HasKey",
+        C::DataPropertyDomain(_) => "DataPropertyDomain",
+        C::DataPropertyRange(_) => "DataPropertyRange",
+        C::DataPropertyAssertion(_) => "DataPropertyAssertion",
+        C::NegativeDataPropertyAssertion(_) => "NegativeDataPropertyAssertion",
+        C::SubDataPropertyOf(_) => "SubDataPropertyOf",
+        C::EquivalentDataProperties(_) => "EquivalentDataProperties",
+        C::DisjointDataProperties(_) => "DisjointDataProperties",
+        C::FunctionalDataProperty(_) => "FunctionalDataProperty",
+        C::DatatypeDefinition(_) => "DatatypeDefinition",
         _ => "Other",
     }
 }
@@ -3653,6 +3676,115 @@ mod tests {
         );
     }
 
+    // ── #43 whole-branch review: data-property CONTENT drops must be
+    // RECORDED (not silently benign) ─────────────────────────────────────
+
+    #[test]
+    fn convert_records_dropped_data_property_assertion_unrecognized_literal() {
+        // A DataPropertyAssertion whose literal datatype (xsd:anyURI) is not
+        // DKey-recognized used to be silently dropped as `Ok(None)` — the
+        // review found this is CONTENT (an ABox assertion), so it must now
+        // be a RECORDED drop, and the axiom must NOT appear in `axioms`.
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let src = r#"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(DataProperty(:dp))
+            Declaration(NamedIndividual(:a))
+            ClassAssertion(:A :a)
+            DataPropertyAssertion(:dp :a "x"^^xsd:anyURI))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("must not abort");
+        assert_eq!(
+            internal.dropped.total(),
+            1,
+            "one dropped axiom recorded, got {:?}",
+            internal.dropped.by_kind()
+        );
+        assert!(
+            internal
+                .dropped
+                .by_kind()
+                .keys()
+                .any(|k| k.starts_with("DataPropertyAssertion:")),
+            "expected a DataPropertyAssertion drop kind, got {:?}",
+            internal.dropped.by_kind()
+        );
+        // Only the supported `ClassAssertion(:A :a)` survives as a
+        // ClassAssertion; the dropped DataPropertyAssertion (which would
+        // otherwise also lower to a ClassAssertion) contributes none of
+        // its own.
+        let class_assertions = internal
+            .axioms
+            .iter()
+            .filter(|a| matches!(a, Axiom::ClassAssertion { .. }))
+            .count();
+        assert_eq!(
+            class_assertions, 1,
+            "the unsupported data-property assertion must not surface as an axiom, got {:?}",
+            internal.axioms
+        );
+    }
+
+    #[test]
+    fn convert_records_dropped_data_property_assertion_gate_off() {
+        // RUSTDL_DATA_PROPERTIES=0: the gate-off fall-through used to drop
+        // ALL data-property axioms silently (`Ok(None)`); the review found
+        // this is CONTENT too, so it must now be recorded.
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::off();
+        let src = r#"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(DataProperty(:dp))
+            Declaration(NamedIndividual(:a))
+            ClassAssertion(:A :a)
+            DataPropertyAssertion(:dp :a "5"^^xsd:integer))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("must not abort");
+        assert_eq!(
+            internal.dropped.total(),
+            1,
+            "gate-off data-property assertion recorded, got {:?}",
+            internal.dropped.by_kind()
+        );
+        assert!(
+            internal
+                .dropped
+                .by_kind()
+                .keys()
+                .any(|k| k.starts_with("DataPropertyAssertion:")),
+            "expected a DataPropertyAssertion drop kind, got {:?}",
+            internal.dropped.by_kind()
+        );
+    }
+
+    #[test]
+    fn convert_declare_data_property_alone_not_recorded() {
+        // Benign check: a bare DeclareDataProperty (no assertions/ranges)
+        // must stay an un-recorded Ok(None) — declarations are metadata,
+        // not reasoning content.
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B))
+            Declaration(DataProperty(:dp))
+            SubClassOf(:A :B))";
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("ok");
+        assert!(
+            internal.dropped.is_empty(),
+            "a bare DeclareDataProperty must not be recorded, got {:?}",
+            internal.dropped.by_kind()
+        );
+    }
+
     #[test]
     fn convert_fully_supported_ontology_is_inert() {
         // A fully-supported ontology must yield an EMPTY `dropped` and the
@@ -4187,8 +4319,15 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _g = DpGuard::off();
         let c = int_dp_assertion("http://t/dp", "http://t/a", "5", XSD_INT);
-        let (_, ax) = convert_one(&c);
-        assert!(ax.is_none(), "gate OFF: data assertion dropped; got {ax:?}");
+        let mut o = InternalOntology::new();
+        // Issue #43 review: gate-OFF now drops via a RECORDED Err (content
+        // axiom), not a benign Ok(None) — see the `convert_ontology` loop.
+        let result = convert_component(&c, &mut o.vocabulary, &mut o.concepts);
+        assert_eq!(
+            result,
+            Err(ConversionError::UnsupportedDataRange),
+            "gate OFF: data assertion dropped as a recorded Err; got {result:?}"
+        );
     }
 
     #[test]
@@ -4197,15 +4336,22 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _g = DpGuard::on();
-        // anyURI is not a DKey-recognized datatype ⇒ drop even with gate ON
+        // anyURI is not a DKey-recognized datatype ⇒ drop even with gate ON.
+        // Issue #43 review: this is CONTENT (an ABox assertion), so it's now
+        // a recorded Err rather than a benign Ok(None).
         let c = int_dp_assertion(
             "http://t/dp",
             "http://t/a",
             "x",
             "http://www.w3.org/2001/XMLSchema#anyURI",
         );
-        let (_, ax) = convert_one(&c);
-        assert!(ax.is_none(), "unrecognized datatype dropped; got {ax:?}");
+        let mut o = InternalOntology::new();
+        let result = convert_component(&c, &mut o.vocabulary, &mut o.concepts);
+        assert_eq!(
+            result,
+            Err(ConversionError::UnsupportedDataRange),
+            "unrecognized datatype dropped as a recorded Err; got {result:?}"
+        );
     }
 
     #[test]

@@ -140,7 +140,7 @@ public class RustdlExplanationGeneratorTest {
         return j;
     }
 
-    @Test public void materializeReturnsVerifiedExplanationDroppingFabrication() throws Exception {
+    @Test public void materializeRejectsWholeJustificationContainingFabricatedAxiom() throws Exception {
         OWLOntology o = m.createOntology(IRI.create("http://ex/onto1/"));
         OWLSubClassOfAxiom ab = df.getOWLSubClassOfAxiom(cls("A"), cls("B"));
         OWLSubClassOfAxiom bc = df.getOWLSubClassOfAxiom(cls("B"), cls("C"));
@@ -159,6 +159,34 @@ public class RustdlExplanationGeneratorTest {
                 + "  SubClassOf(:A :B)\n  SubClassOf(:B :C)\n  SubClassOf(:X :Y)\n)\n"));
 
         OWLAxiom entailment = df.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        // A justification containing even one non-source axiom must be REJECTED WHOLE -- no
+        // Explanation is produced from it at all (never a silently-thinned genuine subset,
+        // which could be genuine-but-insufficient to actually entail the target).
+        try {
+            generator(o).materialize(entailment, report);
+            fail("expected ExplanationException rejecting the fabricated justification");
+        } catch (org.semanticweb.owl.explanation.api.ExplanationException expected) {
+            // correct: whole-justification reject, mirroring km's actual behavior.
+        }
+    }
+
+    @Test public void materializeReturnsExplanationForFullyGenuineJustification() throws Exception {
+        OWLOntology o = m.createOntology(IRI.create("http://ex/onto1b/"));
+        OWLSubClassOfAxiom ab = df.getOWLSubClassOfAxiom(cls("A"), cls("B"));
+        OWLSubClassOfAxiom bc = df.getOWLSubClassOfAxiom(cls("B"), cls("C"));
+        m.addAxiom(o, ab);
+        m.addAxiom(o, bc);
+
+        RustdlJson.JustifyJson report = new RustdlJson.JustifyJson();
+        report.schema_version = 1;
+        report.status = "entailed";
+        report.enumeration_complete = true;
+        report.minimal = true;
+        report.laconic = false;
+        report.justifications = Arrays.asList(justification(
+            "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n  SubClassOf(:B :C)\n)\n"));
+
+        OWLAxiom entailment = df.getOWLSubClassOfAxiom(cls("A"), cls("C"));
         Set<Explanation<OWLAxiom>> explanations = generator(o).materialize(entailment, report);
 
         assertEquals(1, explanations.size());
@@ -167,6 +195,36 @@ public class RustdlExplanationGeneratorTest {
         assertEquals(2, explanation.getAxioms().size());
         assertTrue(explanation.getAxioms().contains(ab));
         assertTrue(explanation.getAxioms().contains(bc));
+    }
+
+    @Test public void materializeAbortsWholeBatchWhenOneOfSeveralJustificationsIsFabricated()
+            throws Exception {
+        // Mirrors km's actual choice: materialize() doesn't catch the fail-hard check per
+        // justification, so ANY offending justification aborts the ENTIRE call -- including
+        // other, fully-genuine justifications in the same report/batch.
+        OWLOntology o = m.createOntology(IRI.create("http://ex/onto1c/"));
+        OWLSubClassOfAxiom ab = df.getOWLSubClassOfAxiom(cls("A"), cls("B"));
+        OWLSubClassOfAxiom bc = df.getOWLSubClassOfAxiom(cls("B"), cls("C"));
+        m.addAxiom(o, ab);
+        m.addAxiom(o, bc);
+
+        RustdlJson.JustifyJson report = new RustdlJson.JustifyJson();
+        report.schema_version = 1;
+        report.status = "entailed";
+        report.enumeration_complete = true;
+        report.minimal = true;
+        report.laconic = false;
+        report.justifications = Arrays.asList(
+            justification("Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n  SubClassOf(:B :C)\n)\n"),
+            justification("Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:X :Y)\n)\n"));
+
+        OWLAxiom entailment = df.getOWLSubClassOfAxiom(cls("A"), cls("C"));
+        try {
+            generator(o).materialize(entailment, report);
+            fail("expected ExplanationException aborting the whole batch");
+        } catch (org.semanticweb.owl.explanation.api.ExplanationException expected) {
+            // correct.
+        }
     }
 
     @Test public void materializeReturnsEmptySetForNotEntailed() throws Exception {

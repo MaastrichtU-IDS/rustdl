@@ -1,5 +1,6 @@
 package com.github.maastrichtu_ids.rustdl.protege;
 
+import org.semanticweb.owl.explanation.api.ExplanationException;
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.formats.FunctionalSyntaxDocumentFormat;
 import org.semanticweb.owlapi.io.StringDocumentSource;
@@ -53,21 +54,30 @@ final class RustdlOfn {
     }
 
     /**
-     * Anti-fabrication guard: drops any axiom in {@code parsed} that is not actually present
-     * in {@code source}'s imports closure, logging a warning for each dropped axiom. An
-     * {@code Explanation} handed to the caller must contain only genuine source axioms — never
-     * an axiom rustdl invented or one that survived only because of a parsing/round-trip quirk.
+     * Fail-hard anti-fabrication guard (mirrors km's {@code KMExplanationGenerator.materialize}):
+     * every axiom in {@code parsed} must genuinely occur in {@code source}'s imports closure. If
+     * ANY axiom does not, the WHOLE justification is rejected — logging a warning identifying the
+     * offending axiom, then throwing {@link ExplanationException} — rather than silently dropping
+     * just that axiom and surfacing the surviving subset. A partial surviving subset can be
+     * genuine-but-INSUFFICIENT to actually entail the target, which would silently produce a
+     * misleading "Explanation"; under correct rustdl operation this is inert (rustdl's
+     * {@code justify} only ever returns genuine source axioms), so this is a soundness safety
+     * net, not a normal code path. Because the caller ({@code
+     * RustdlExplanationGenerator#materialize}) does not catch this per-justification, the thrown
+     * exception also aborts every OTHER justification in the same batch — km's own choice (its
+     * equivalent check throws unguarded from inside the per-justification loop too), which this
+     * mirrors rather than the softer "skip just this one" alternative.
      */
     static Set<OWLAxiom> verifiedAgainst(Set<OWLAxiom> parsed, OWLOntology source) {
-        Set<OWLAxiom> verified = new LinkedHashSet<>();
         for (OWLAxiom axiom : parsed) {
-            if (source.containsAxiom(axiom, Imports.INCLUDED, AxiomAnnotations.IGNORE_AXIOM_ANNOTATIONS)) {
-                verified.add(axiom);
-            } else {
-                LOG.warning("Dropping rustdl justification axiom not found in the source "
-                    + "ontology (possible fabrication): " + axiom);
+            if (!source.containsAxiom(axiom, Imports.INCLUDED, AxiomAnnotations.IGNORE_AXIOM_ANNOTATIONS)) {
+                LOG.warning("Rejecting rustdl justification: axiom not found in the source "
+                    + "ontology's imports closure (possible fabrication): " + axiom);
+                throw new ExplanationException(
+                    "rustdl justification contained an axiom not present in the source ontology "
+                        + "(possible fabrication): " + axiom);
             }
         }
-        return verified;
+        return parsed;
     }
 }

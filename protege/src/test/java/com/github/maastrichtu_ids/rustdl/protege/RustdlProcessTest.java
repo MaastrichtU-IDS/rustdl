@@ -157,6 +157,60 @@ public class RustdlProcessTest {
     }
 
     @Test
+    public void pollingRunCommandAbortsPromptlyWhenCancelled() throws Exception {
+        assumeFalse(isWindows());
+        long start = System.currentTimeMillis();
+        java.util.concurrent.atomic.AtomicInteger polls = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            // A predicate that reports cancelled on its very first poll: the polling loop ticks
+            // every ~100ms, so this must destroy the still-sleeping process and abort in well
+            // under the (deliberately generous, real-timeout-would-mask-the-bug) 30s command
+            // timeout and the 30s sleep itself.
+            RustdlProcess.runCommand(
+                Arrays.asList("sh", "-c", "sleep 30"), "test", 30,
+                () -> polls.incrementAndGet() >= 1);
+            fail("expected CancelledException when the predicate reports cancelled");
+        } catch (RustdlProcess.CancelledException e) {
+            assertTrue("message should mention cancellation: " + e.getMessage(),
+                e.getMessage().contains("cancelled"));
+        }
+        long elapsed = System.currentTimeMillis() - start;
+        assertTrue("expected cancellation to fire within ~100ms polling granularity, took "
+                + elapsed + "ms",
+            elapsed < 5_000);
+        assertTrue("expected the predicate to actually be polled", polls.get() >= 1);
+    }
+
+    @Test
+    public void pollingRunCommandBehavesLikeNonPollingVariantWhenNeverCancelled() throws Exception {
+        // The plain 3-arg runCommand delegates to the polling 4-arg variant with `() -> false`;
+        // confirm that delegation preserves identical success-path behavior for the reasoner
+        // path's existing callers (no cancellation predicate involved at all).
+        String out = RustdlProcess.runCommand(
+            Arrays.asList("sh", "-c", "printf DONE"), "test", 5, () -> false);
+        assertEquals("DONE", out);
+    }
+
+    @Test
+    public void pollingRunCommandStillTimesOutWhenNeverCancelled() throws Exception {
+        assumeFalse(isWindows());
+        long start = System.currentTimeMillis();
+        try {
+            RustdlProcess.runCommand(
+                Arrays.asList("sh", "-c", "sleep 30"), "test", 1, () -> false);
+            fail("expected plain (non-Cancelled) IOException for a timed-out process");
+        } catch (RustdlProcess.CancelledException e) {
+            fail("timeout must not be reported as CancelledException: " + e.getMessage());
+        } catch (IOException e) {
+            assertTrue("message should mention timeout: " + e.getMessage(),
+                e.getMessage().contains("timed out"));
+        }
+        long elapsed = System.currentTimeMillis() - start;
+        assertTrue("expected the timeout to fire well under 30s, took " + elapsed + "ms",
+            elapsed < 10_000);
+    }
+
+    @Test
     public void noDeadlockOnLargeStderr() throws Exception {
         assumeFalse(isWindows());
         String out = RustdlProcess.runCommand(

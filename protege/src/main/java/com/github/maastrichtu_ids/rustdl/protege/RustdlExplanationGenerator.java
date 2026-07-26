@@ -43,7 +43,10 @@ import java.util.logging.Logger;
  * {@link OWLSameIndividualAxiom}. Anything else throws {@link UnsupportedEntailmentException}.
  * Every returned {@link Explanation} contains only axioms verified present in the source
  * ontology's imports closure ({@link RustdlOfn#verifiedAgainst}) — rustdl cannot fabricate
- * an axiom into a displayed justification.</p>
+ * an axiom into a displayed justification. That check is fail-hard: a justification containing
+ * even one axiom absent from the source is rejected in full (never partially surfaced), and —
+ * mirroring km's actual behavior — the resulting {@link ExplanationException} aborts the whole
+ * {@link #getExplanations} call, not just that one justification.</p>
  */
 public final class RustdlExplanationGenerator implements ExplanationGenerator<OWLAxiom> {
     private static final Logger LOG = Logger.getLogger(RustdlExplanationGenerator.class.getName());
@@ -115,8 +118,15 @@ public final class RustdlExplanationGenerator implements ExplanationGenerator<OW
 
             RustdlJson.JustifyJson report;
             try {
+                // Passing progressMonitor::isCancelled makes the wait for the rustdl subprocess
+                // itself responsive to Cancel: RustdlProcess polls it at ~100ms granularity
+                // (mirrors km's KMExplanationGenerator.waitFor) instead of blocking until the
+                // process exits or the full configured timeout elapses.
                 report = RustdlProcess.justify(
-                    source, laconic, limit, configuration.getTimeoutSeconds(), query);
+                    source, laconic, limit, configuration.getTimeoutSeconds(), query,
+                    progressMonitor::isCancelled);
+            } catch (RustdlProcess.CancelledException error) {
+                throw new ExplanationGeneratorInterruptedException();
             } catch (IOException error) {
                 throw new ExplanationException(
                     "rustdl justify failed or timed out: " + error.getMessage(), error);
@@ -158,11 +168,16 @@ public final class RustdlExplanationGenerator implements ExplanationGenerator<OW
                 throw new ExplanationException("rustdl returned a null justification document");
             }
             Set<OWLAxiom> parsed = RustdlOfn.parse(justification.ofn);
+            // Fail-hard: verifiedAgainst throws ExplanationException on the FIRST axiom it finds
+            // absent from the source ontology, rejecting this justification whole rather than
+            // returning a partial (possibly insufficient-to-entail) subset. Nothing here catches
+            // that per-justification, so it propagates out of this whole materialize() call and
+            // aborts every OTHER justification in `report` too -- km's actual whole-attempt-abort
+            // choice (see RustdlOfn.verifiedAgainst javadoc), not a per-justification skip.
             Set<OWLAxiom> verified = RustdlOfn.verifiedAgainst(parsed, ontology);
             if (verified.isEmpty()) {
                 throw new ExplanationException(
-                    "rustdl justification contained no axioms verifiable against the source "
-                        + "ontology (possible fabrication): " + justification.ofn);
+                    "rustdl justification contained no axioms: " + justification.ofn);
             }
             Explanation<OWLAxiom> explanation = new Explanation<>(entailment, verified);
             explanations.add(explanation);

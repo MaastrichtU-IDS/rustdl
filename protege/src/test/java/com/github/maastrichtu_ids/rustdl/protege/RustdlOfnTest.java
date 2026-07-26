@@ -1,6 +1,7 @@
 package com.github.maastrichtu_ids.rustdl.protege;
 
 import org.junit.Test;
+import org.semanticweb.owl.explanation.api.ExplanationException;
 import org.semanticweb.owlapi.apibinding.OWLManager;
 import org.semanticweb.owlapi.model.IRI;
 import org.semanticweb.owlapi.model.OWLAxiom;
@@ -13,15 +14,15 @@ import org.semanticweb.owlapi.model.OWLSubClassOfAxiom;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * {@link RustdlOfn} round-trips the self-contained OFN ontology DOCUMENT rustdl emits per
  * justification (Prefix(...)/Ontology(...) — see the real fixture captured in
- * {@code src/test/resources/json/justify.json}), and enforces the anti-fabrication guard: an
- * axiom absent from the source ontology's imports closure must never survive into a displayed
- * {@code Explanation}.
+ * {@code src/test/resources/json/justify.json}), and enforces the FAIL-HARD anti-fabrication
+ * guard: an axiom absent from the source ontology's imports closure must reject the WHOLE
+ * justification (never survive, partially or otherwise, into a displayed {@code Explanation}).
  */
 public class RustdlOfnTest {
 
@@ -54,7 +55,7 @@ public class RustdlOfnTest {
     }
 
     @Test
-    public void verifiedAgainstDropsFabricatedAxiom() throws Exception {
+    public void verifiedAgainstRejectsWholeJustificationOnFabricatedAxiom() throws Exception {
         OWLOntologyManager manager = OWLManager.createOWLOntologyManager();
         OWLDataFactory df = manager.getOWLDataFactory();
         OWLClass a = df.getOWLClass(IRI.create("http://ex/#A"));
@@ -72,10 +73,17 @@ public class RustdlOfnTest {
         parsed.add(genuine);
         parsed.add(fabricated);
 
-        Set<OWLAxiom> verified = RustdlOfn.verifiedAgainst(parsed, source);
-        assertEquals(1, verified.size());
-        assertTrue(verified.contains(genuine));
-        assertFalse(verified.contains(fabricated));
+        // A single fabricated/non-source axiom must reject the ENTIRE justification -- not
+        // silently surface the genuine subset, which could be genuine-but-insufficient to
+        // actually entail the target (a misleading "Explanation").
+        try {
+            RustdlOfn.verifiedAgainst(parsed, source);
+            fail("expected ExplanationException rejecting the whole justification");
+        } catch (ExplanationException expected) {
+            assertTrue("exception should identify the offending axiom: " + expected.getMessage(),
+                expected.getMessage().contains(fabricated.toString())
+                    || expected.getMessage().contains("http://ex/#X"));
+        }
     }
 
     @Test

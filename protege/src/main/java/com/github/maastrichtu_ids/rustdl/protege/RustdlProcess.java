@@ -15,6 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 /** Spawns `rustdl <subcmd> --json <ofn>`, enforces a timeout, parses stdout. Fail-closed. */
 public final class RustdlProcess {
@@ -62,8 +63,22 @@ public final class RustdlProcess {
     public static RustdlJson.JustifyJson justify(
             Path ofn, boolean laconic, int maxJustifications, long timeoutSec, List<String> query)
             throws IOException {
+        return justify(ofn, laconic, maxJustifications, timeoutSec, query, () -> false);
+    }
+
+    /**
+     * As {@link #justify(Path, boolean, int, long, List)}, but polls {@code isCancelled} at
+     * ~100ms granularity while waiting for the subprocess (see {@link #runCommand(List, String,
+     * long, BooleanSupplier)}), so a Cancel click in the Explanation dialog kills the subprocess
+     * promptly instead of waiting out the full {@code timeoutSec}.
+     */
+    public static RustdlJson.JustifyJson justify(
+            Path ofn, boolean laconic, int maxJustifications, long timeoutSec, List<String> query,
+            BooleanSupplier isCancelled)
+            throws IOException {
         return parseJustify(runCommand(
-            buildJustifyCommand(ofn, laconic, maxJustifications, query), "justify", timeoutSec));
+            buildJustifyCommand(ofn, laconic, maxJustifications, query), "justify", timeoutSec,
+            isCancelled));
     }
 
     /** Package-visible so tests can assert on the command list without spawning. */
@@ -141,8 +156,31 @@ public final class RustdlProcess {
      * child that hangs before writing/closing either stream cannot block the JVM, and
      * enforcing {@code timeoutSec} via {@code waitFor} independently of those reads
      * (draining alone cannot observe a timeout — a hung child never triggers EOF).
+     *
+     * <p>Delegates to the polling {@link #runCommand(List, String, long, BooleanSupplier)}
+     * with a predicate that never reports cancelled, so callers that don't support
+     * mid-wait cancellation (the reasoner path) see identical behavior to before: a single
+     * effective wait up to {@code timeoutSec}, then {@code destroyForcibly} + {@link IOException}
+     * on timeout.</p>
      */
     static String runCommand(List<String> command, String label, long timeoutSec) throws IOException {
+        return runCommand(command, label, timeoutSec, () -> false);
+    }
+
+    /**
+     * As {@link #runCommand(List, String, long)}, but polls {@code isCancelled} at ~100ms
+     * granularity while waiting for the process (mirrors the km reference plugin's
+     * {@code KMExplanationGenerator.waitFor}), in addition to enforcing the {@code timeoutSec}
+     * deadline. Lets a mid-wait cancellation (e.g. a Cancel click in the Explanation dialog)
+     * {@code destroyForcibly} the subprocess and abort promptly, instead of blocking until the
+     * process finishes or the full timeout elapses. {@code isCancelled} is polled from the
+     * calling thread between 100ms {@code waitFor} ticks, so it must be cheap and safe to call
+     * repeatedly. On cancellation, throws {@link CancelledException} (a distinguishable
+     * {@link IOException} subtype) rather than the plain timeout {@link IOException}, so callers
+     * that care can tell the two apart.
+     */
+    static String runCommand(List<String> command, String label, long timeoutSec,
+            BooleanSupplier isCancelled) throws IOException {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false);
         Process proc = pb.start();
@@ -152,17 +190,12 @@ public final class RustdlProcess {
             Future<String> outF = pool.submit(() -> readAll(proc.getInputStream()));
             Future<String> errF = pool.submit(() -> readAll(proc.getErrorStream()));
 
-            boolean finished;
             try {
-                finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS);
+                waitPolling(proc, label, timeoutSec, isCancelled);
             } catch (InterruptedException e) {
                 proc.destroyForcibly();
                 Thread.currentThread().interrupt();
                 throw new IOException("rustdl " + label + " interrupted", e);
-            }
-            if (!finished) {
-                proc.destroyForcibly();
-                throw new IOException("rustdl " + label + " timed out after " + timeoutSec + "s");
             }
 
             String out;
@@ -186,6 +219,43 @@ public final class RustdlProcess {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    /**
+     * Polls {@code process.waitFor(100, MILLISECONDS)} in a loop until the process finishes,
+     * {@code isCancelled} reports {@code true}, or {@code timeoutSec} elapses. On cancellation
+     * or timeout the process is {@code destroyForcibly}'d before throwing, so callers can rely
+     * on the process being dead the moment this method returns abnormally. Returns normally
+     * (without throwing) once the process has finished on its own.
+     */
+    private static void waitPolling(
+            Process process, String label, long timeoutSec, BooleanSupplier isCancelled)
+            throws InterruptedException, IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSec);
+        while (!process.waitFor(100, TimeUnit.MILLISECONDS)) {
+            if (isCancelled.getAsBoolean()) {
+                process.destroyForcibly();
+                throw new CancelledException("rustdl " + label + " cancelled");
+            }
+            if (System.nanoTime() >= deadline) {
+                process.destroyForcibly();
+                throw new IOException("rustdl " + label + " timed out after " + timeoutSec + "s");
+            }
+        }
+    }
+
+    /**
+     * Thrown by the polling {@link #runCommand(List, String, long, BooleanSupplier)} (and, in
+     * turn, {@link #justify(Path, boolean, int, long, List, BooleanSupplier)}) when the supplied
+     * cancellation predicate reports cancelled mid-wait. The process has already been
+     * {@code destroyForcibly}'d by the time this is thrown. Callers that support cancellation
+     * (the Explanation-API generator) catch this specifically and translate it into their own
+     * interruption signal ({@code ExplanationGeneratorInterruptedException}); callers that don't
+     * (the {@code () -> false} predicate used by every other {@code RustdlProcess} entry point)
+     * never see it.
+     */
+    static final class CancelledException extends IOException {
+        CancelledException(String message) { super(message); }
     }
 
     private static final ThreadFactory DAEMON_THREAD_FACTORY = r -> {

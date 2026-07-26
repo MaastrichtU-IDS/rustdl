@@ -53,13 +53,20 @@ with first-class data properties.
   `DataUnionOf` / `DataIntersectionOf` / `DataComplementOf`, and bounded data
   cardinality.
 
-**Sound under-approximation (silently dropped, never an error):** the narrow
-datatype tail outside that recognized set — nested composite ranges (e.g.
-`DataComplementOf(DataUnionOf(…))`), `∀` / range / cardinality *over* a union or
-complement, and lexically-unparseable or cross-datatype literals. Positives
-depending on them may be missed, never falsely asserted.
+**Inferred queries beyond classification** (reasoner API + CLI `--json` + Python):
+object/data **property hierarchy**, **property values**, **same / different
+individuals**, **disjointness**, and complex (anonymous **Manchester**)
+**class-expression** satisfiability / entailment / instances — all sound, each
+reporting an `incomplete` flag.
 
-**Unsupported (errors):** `HasKey`. SWRL rules are skipped (see `convert.rs`).
+**Sound under-approximation (dropped *and reported*, never an error):** any axiom
+the conversion can't represent — the narrow datatype tail (nested composite
+ranges like `DataComplementOf(DataUnionOf(…))`, `∀` / range / cardinality *over* a
+union or complement, unparseable / cross-datatype literals), plus `HasKey`, SWRL
+rules, and other unsupported constructs. Reasoning proceeds over the supported
+fragment; the dropped axioms are surfaced as a count-by-kind diagnostic
+(`dropped_axioms`, a `dropped` block in `--json`, a stderr warning). Positives
+depending on them may be missed, never falsely asserted.
 
 ## Crates
 

@@ -3626,6 +3626,24 @@ pub fn locality_stats<A: horned_owl::model::ForIRI>(
     })
 }
 
+pub use owl_dl_core::DroppedAxioms;
+
+/// The axioms conversion could not represent (sound under-approximation).
+///
+/// `convert_ontology` never aborts on an unsupported construct — it
+/// records the drop and continues — so this is the way to find out
+/// whether an ontology lost anything on the way into the reasoner.
+///
+/// # Errors
+///
+/// [`ReasonError::Conversion`] only on a genuinely fatal conversion failure
+/// (unsupported constructs are recorded, not errored).
+pub fn dropped_axioms<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<DroppedAxioms, ReasonError> {
+    Ok(owl_dl_core::convert::convert_ontology(ontology)?.dropped)
+}
+
 use std::collections::HashMap;
 
 use horned_owl::model::ForIRI;

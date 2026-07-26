@@ -76,15 +76,18 @@ const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 ///
 /// **Default ON (Task 4, 2026-07-26 — assessment passed).** A custom
 /// nominal-`ABox` fixture (`ObjectOneOf` + `ObjectPropertyDomain` + a defined
-/// class + `DisjointClasses` + assertions) and a 40-decoy-class scaled variant
-/// both showed: (1) `realize --json` byte-identical ON vs OFF
-/// (completeness-preserving); (2) the prune fires and wins (5.4ms → 3.3ms,
-/// 1.63× on the scaled fixture — real MIE-scale wins are PR #23's
-/// 110–630×); (3) a `HermiT` oracle
+/// class + `DisjointClasses` + assertions,
+/// `tests/fixtures/pseudo_model/nominal_abox.ofn`) and a 40-decoy-class scaled
+/// variant (`nominal_abox_scaled.ofn`) both showed: (1) `realize --json`
+/// byte-identical ON vs OFF (completeness-preserving); (2) the prune fires and
+/// wins (5.45ms → 3.44ms median of 9, 1.59× on the scaled fixture — real
+/// MIE-scale wins are PR #23's 110–630×); (3) a `HermiT` oracle
 /// (`robot reason --reasoner hermit --axiom-generators ClassAssertion
-/// --include-indirect true`) matched rustdl ON on every named type, FP=0 (the
-/// only diff was `owl:Thing`, which rustdl conventionally omits — not a
-/// miss). See `docs/2026-07-26-pseudo-model-assessment.md`. The ORE-tier
+/// --include-indirect true`, output committed as
+/// `tests/fixtures/pseudo_model/nominal_abox-hermit.ofn`) matched rustdl ON on
+/// every named type, FP=0 (the only diff was `owl:Thing`, which rustdl
+/// conventionally omits — not a miss). See
+/// `docs/2026-07-26-pseudo-model-assessment.md`. The ORE-tier
 /// verdict-identity bake-off could not run in-sandbox (corpus fetch is
 /// macOS-broken there) and remains the recommended CI/Linux confirmation;
 /// default-ON additionally rests on the shortcut being sound by construction

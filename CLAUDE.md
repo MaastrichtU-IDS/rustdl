@@ -460,10 +460,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `RUSTDL_SNAPSHOT_CAPTURE` trap (which asserts a positive from one model).
   Assessment (custom nominal-`ABox` fixture + a 40-decoy-class scaled variant,
   the full ORE-tier corpus bake-off being unreachable in this sandbox):
-  verdict-identity held on both fixtures; the prune fired and won (1.63× on
+  verdict-identity held on both fixtures; the prune fired and won (1.59× on
   the scaled fixture; PR #23's original prototype measured 110–630× at
   MIE scale); a HermiT oracle (`robot reason --reasoner hermit
-  --axiom-generators ClassAssertion --include-indirect true`) matched rustdl
+  --axiom-generators ClassAssertion --include-indirect true`, output committed
+  as `tests/fixtures/pseudo_model/nominal_abox-hermit.ofn`) matched rustdl
   on every named type, FP=0. `RUSTDL_PSEUDO_MODEL=0` reverts to the pre-shortcut
   per-pair-only behaviour. Silently no-ops (safe) whenever
   `PreparedOntology::realize_base_model_types` returns `None` — i.e.

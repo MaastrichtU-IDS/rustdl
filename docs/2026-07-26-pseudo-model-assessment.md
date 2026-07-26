@@ -55,11 +55,14 @@ told `Patient`; `Treated` via `ObjectPropertyDomain(:therapy :Treated)` on the
 `Healthy`, disjoint from `Treated`, and not asserted `Patient` — exercising
 the negative direction too.
 
-The 40-decoy-class scaled variant adds 40 unrelated declared classes (no
-axioms connecting them to the fixture's individuals) so the per-pair probe
-loop has 40× more `(individual, class)` pairs to prune against, without
-changing the entailed-type semantics — isolating the shortcut's per-pair
-wall-time win from the fixture's actual reasoning content.
+The 40-decoy-class scaled variant
+(`crates/owl-dl-reasoner/tests/fixtures/pseudo_model/nominal_abox_scaled.ofn`,
+committed) adds 40 unrelated declared classes (with two `SubClassOf(:Cn
+:Healthy)` edges, no axioms connecting them to the fixture's individuals) so
+the per-pair probe loop has ~40× more `(individual, class)` pairs to prune
+against. It is a variant, not a strict superset — it drops the base fixture's
+`HasTherapy` defined class — so it is used only for the wall-time measurement
+(Result 2), never for the verdict/oracle checks.
 
 ## Result 1 — verdict identity (the completeness gate)
 
@@ -76,14 +79,16 @@ unchanged with the new default.)
 
 ## Result 2 — prune fires and wins
 
-On the 40-decoy-class scaled fixture, wall time for `realize` dropped:
+On the 40-decoy-class scaled fixture, wall time for `rustdl realize --json`
+dropped (median of 9 back-to-back runs of the freshly-built release binary,
+measured with `time.perf_counter()` around the subprocess):
 
-| Configuration | Wall |
-|---|---|
-| `RUSTDL_PSEUDO_MODEL=0` (off) | 5.4 ms |
-| `RUSTDL_PSEUDO_MODEL=1` (on) | 3.3 ms |
+| Configuration | Wall (median of 9) | min |
+|---|---|---|
+| `RUSTDL_PSEUDO_MODEL=0` (off) | 5.45 ms | 5.28 ms |
+| `RUSTDL_PSEUDO_MODEL=1` (on) | 3.44 ms | 3.38 ms |
 
-**1.63× speedup.** This is a small, synthetic-scale fixture (40 decoy
+**1.59× speedup.** This is a small, synthetic-scale fixture (40 decoy
 classes, 3 individuals) built to prove the prune *fires* and *wins* without
 needing corpus access — it is not representative of real-world magnitude.
 The shortcut's design precedent, PR #23 (the original pseudo-model
@@ -94,12 +99,23 @@ than on this small fixture.
 
 ## Result 3 — HermiT oracle soundness (FP=0)
 
-Ran the ROBOT HermiT oracle on the base fixture:
+Ran the ROBOT HermiT oracle (`obolibrary/robot:v1.9.6`) on the base fixture;
+the output is committed alongside the fixture as
+`crates/owl-dl-reasoner/tests/fixtures/pseudo_model/nominal_abox-hermit.ofn`
+so this check is reproducible:
 
 ```
 robot reason --reasoner hermit --axiom-generators ClassAssertion --include-indirect true \
   --input nominal_abox.ofn --output nominal_abox-hermit.ofn
 ```
+
+HermiT's `ClassAssertion` output (the type-bearing subset):
+
+| Individual | HermiT named types | rustdl ON (`realize --json`) |
+|---|---|---|
+| `p1` | HasTherapy, Patient, Treated (+ `owl:Thing`) | HasTherapy, Patient, Treated |
+| `p2` | Healthy (+ `owl:Thing`) | Healthy |
+| `t1` | (+ `owl:Thing`) | (none) |
 
 rustdl with the shortcut ON matched HermiT on every named type for every
 individual. The only diff between the two outputs was `owl:Thing` — HermiT's
@@ -115,9 +131,16 @@ spurious entailment: **FP=0** against the oracle, with the shortcut enabled.
 All three assessment legs pass:
 1. Verdict-identity (completeness-preserving) — confirmed on both fixtures,
    and now permanently gated by a committed regression test.
-2. The prune measurably fires and wins (1.63× on this small fixture; PR #23's
+2. The prune measurably fires and wins (1.59× on this small fixture; PR #23's
    original prototype measured 110–630× at MIE scale).
 3. Soundness confirmed against an independent HermiT oracle (FP=0).
+
+All three results are backed by committed, reproducible artifacts: the base
+and scaled fixtures under `crates/owl-dl-reasoner/tests/fixtures/pseudo_model/`,
+the committed HermiT oracle output (`nominal_abox-hermit.ofn`), and the
+committed verdict-identity regression test — the wall figures and the oracle
+comparison in this doc were re-run against the freshly-built release binary
+and `obolibrary/robot:v1.9.6` at Task-4 close.
 
 `pseudo_model_enabled()` in `crates/owl-dl-reasoner/src/realize.rs` is
 flipped from default-OFF (`is_some_and`) to default-ON (`is_none_or`):

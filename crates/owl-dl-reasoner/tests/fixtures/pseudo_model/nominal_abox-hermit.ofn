@@ -1,0 +1,68 @@
+Prefix(:=<http://ex/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+
+Ontology(<http://ex/>
+
+Declaration(Class(<http://ex/#HasTherapy>))
+Declaration(Class(<http://ex/#Healthy>))
+Declaration(Class(<http://ex/#Patient>))
+Declaration(Class(<http://ex/#Treated>))
+Declaration(ObjectProperty(<http://ex/#therapy>))
+Declaration(NamedIndividual(<http://ex/#p1>))
+Declaration(NamedIndividual(<http://ex/#p2>))
+Declaration(NamedIndividual(<http://ex/#t1>))
+############################
+#   Object Properties
+############################
+
+# Object Property: <http://ex/#therapy> (<http://ex/#therapy>)
+
+ObjectPropertyDomain(<http://ex/#therapy> <http://ex/#Treated>)
+
+
+############################
+#   Classes
+############################
+
+# Class: <http://ex/#HasTherapy> (<http://ex/#HasTherapy>)
+
+EquivalentClasses(<http://ex/#HasTherapy> ObjectSomeValuesFrom(<http://ex/#therapy> owl:Thing))
+
+# Class: <http://ex/#Healthy> (<http://ex/#Healthy>)
+
+DisjointClasses(<http://ex/#Healthy> <http://ex/#Treated>)
+
+# Class: <http://ex/#Patient> (<http://ex/#Patient>)
+
+SubClassOf(<http://ex/#Patient> ObjectOneOf(<http://ex/#p1> <http://ex/#p2>))
+SubClassOf(<http://ex/#Patient> ObjectSomeValuesFrom(<http://ex/#therapy> owl:Thing))
+
+
+############################
+#   Named Individuals
+############################
+
+# Individual: <http://ex/#p1> (<http://ex/#p1>)
+
+ClassAssertion(<http://ex/#HasTherapy> <http://ex/#p1>)
+ClassAssertion(<http://ex/#Patient> <http://ex/#p1>)
+ClassAssertion(<http://ex/#Treated> <http://ex/#p1>)
+ClassAssertion(owl:Thing <http://ex/#p1>)
+ObjectPropertyAssertion(<http://ex/#therapy> <http://ex/#p1> <http://ex/#t1>)
+
+# Individual: <http://ex/#p2> (<http://ex/#p2>)
+
+ClassAssertion(<http://ex/#Healthy> <http://ex/#p2>)
+ClassAssertion(owl:Thing <http://ex/#p2>)
+
+# Individual: <http://ex/#t1> (<http://ex/#t1>)
+
+ClassAssertion(owl:Thing <http://ex/#t1>)
+
+
+)

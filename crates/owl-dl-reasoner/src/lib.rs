@@ -3329,12 +3329,9 @@ impl ConsistencyCache {
     /// `SameIndividual`/functional merge never silently under-reports a
     /// merged-away individual's types.
     ///
-    /// Not yet wired outside tests (`PreparedOntology::realize_base_model_types`
-    /// is its only non-test caller) — the realize-loop consumer lands in a
-    /// later task. `#[allow(dead_code)]` mirrors the pattern already used for
-    /// other landed-ahead-of-consumer `pub(crate)` items (e.g.
-    /// `HyperCache::defined_exists_bodies`).
-    #[allow(dead_code)]
+    /// Consumed via [`Self::realize_base_model_types`], the
+    /// realize-loop's pseudo-model shortcut (`RUSTDL_PSEUDO_MODEL`,
+    /// see `realize::pseudo_model_enabled`).
     pub(crate) fn base_model_types(
         &self,
         deadline: Option<std::time::Instant>,
@@ -4677,10 +4674,8 @@ impl PreparedOntology {
     /// treat `None` as "no usable model" (skip the prune it would otherwise
     /// enable) — never assume unsatisfiability.
     ///
-    /// Not yet wired into the realize loop outside tests — that consumer
-    /// lands in a later task; `#[allow(dead_code)]` mirrors the existing
-    /// landed-ahead-of-consumer pattern (see [`ConsistencyCache::base_model_types`]).
-    #[allow(dead_code)]
+    /// Consumer: `realize_tableau_internal`'s pseudo-model shortcut, gated
+    /// by `RUSTDL_PSEUDO_MODEL` (see `realize::pseudo_model_enabled`).
     pub(crate) fn realize_base_model_types(
         &self,
         deadline: Option<std::time::Instant>,

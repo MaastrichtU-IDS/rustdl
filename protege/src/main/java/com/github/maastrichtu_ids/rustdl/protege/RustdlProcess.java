@@ -89,6 +89,10 @@ public final class RustdlProcess {
         if (laconic) cmd.add("--laconic");
         cmd.add("--max");
         cmd.add(Integer.toString(maxJustifications));
+        // "--" ends option parsing: everything after it (the ontology path and every query
+        // token) is treated by clap as positional, regardless of a leading '-' -- so an entity
+        // IRI/query token that happens to start with '-' can't be misparsed as a flag.
+        cmd.add("--");
         cmd.add(ofn.toString());
         cmd.addAll(query);
         return cmd;
@@ -111,8 +115,10 @@ public final class RustdlProcess {
 
     /** Package-visible so tests can assert on the command list without spawning. */
     static List<String> buildProveCommand(Path ofn, String sub, String sup) throws IOException {
+        // "--" ends option parsing (see buildJustifyCommand): the ontology path and the two
+        // entity IRIs are positionals and must not be misparsed as flags if they start with '-'.
         return Arrays.asList(
-            RustdlBinary.resolve().toString(), "prove", "--json", ofn.toString(), sub, sup);
+            RustdlBinary.resolve().toString(), "prove", "--json", "--", ofn.toString(), sub, sup);
     }
 
     static RustdlJson.ProveJson parseProve(String json) {

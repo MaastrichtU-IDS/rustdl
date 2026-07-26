@@ -41,12 +41,23 @@ import java.util.logging.Logger;
  * operands), {@link OWLClassAssertionAxiom}, non-negated {@link OWLObjectPropertyAssertionAxiom},
  * named-property {@link OWLSubObjectPropertyOfAxiom}, and (exactly two named individuals)
  * {@link OWLSameIndividualAxiom}. Anything else throws {@link UnsupportedEntailmentException}.
- * Every returned {@link Explanation} contains only axioms verified present in the source
- * ontology's imports closure ({@link RustdlOfn#verifiedAgainst}) — rustdl cannot fabricate
- * an axiom into a displayed justification. That check is fail-hard: a justification containing
- * even one axiom absent from the source is rejected in full (never partially surfaced), and —
- * mirroring km's actual behavior — the resulting {@link ExplanationException} aborts the whole
- * {@link #getExplanations} call, not just that one justification.</p>
+ * Every returned {@link Explanation} is anti-fabrication-protected, but the two supported modes
+ * enforce that guarantee differently:
+ * <ul>
+ *   <li><b>Minimal (non-laconic):</b> every axiom is verified LITERALLY present in the source
+ *   ontology's imports closure ({@link RustdlOfn#verifiedAgainst}) — rustdl cannot fabricate an
+ *   axiom into a displayed justification. That check is fail-hard: a justification containing
+ *   even one axiom absent from the source is rejected in full (never partially surfaced), and —
+ *   mirroring km's actual behavior — the resulting {@link ExplanationException} aborts the whole
+ *   {@link #getExplanations} call, not just that one justification.</li>
+ *   <li><b>Laconic:</b> each justification axiom is, by design, a WEAKENED FRAGMENT of an
+ *   original source axiom (rustdl's {@code justify --laconic}), not the source axiom itself, so
+ *   literal source-membership is the wrong check and is deliberately NOT run on this path — see
+ *   {@link #materialize} for why. The anti-fabrication guarantee instead rests on rustdl's laconic
+ *   weakening being sound by construction (every fragment is provably entailed by an original
+ *   source axiom).</li>
+ * </ul>
+ * </p>
  */
 public final class RustdlExplanationGenerator implements ExplanationGenerator<OWLAxiom> {
     private static final Logger LOG = Logger.getLogger(RustdlExplanationGenerator.class.getName());
@@ -168,13 +179,41 @@ public final class RustdlExplanationGenerator implements ExplanationGenerator<OW
                 throw new ExplanationException("rustdl returned a null justification document");
             }
             Set<OWLAxiom> parsed = RustdlOfn.parse(justification.ofn);
-            // Fail-hard: verifiedAgainst throws ExplanationException on the FIRST axiom it finds
-            // absent from the source ontology, rejecting this justification whole rather than
-            // returning a partial (possibly insufficient-to-entail) subset. Nothing here catches
-            // that per-justification, so it propagates out of this whole materialize() call and
-            // aborts every OTHER justification in `report` too -- km's actual whole-attempt-abort
-            // choice (see RustdlOfn.verifiedAgainst javadoc), not a per-justification skip.
-            Set<OWLAxiom> verified = RustdlOfn.verifiedAgainst(parsed, ontology);
+            Set<OWLAxiom> verified;
+            if (laconic) {
+                // Laconic justifications are, BY DESIGN, WEAKENED FRAGMENTS of a source axiom
+                // (rustdl `justify --laconic`: RHS-conjunction / existential-filler /
+                // equivalence / pairwise-disjoint weakening, re-minimized via QuickXplain -- see
+                // docs/superpowers/specs/2026-06-21-laconic-justifications-design.md). Each
+                // fragment is ENTAILED BY an original source axiom, not literally EQUAL to one
+                // (e.g. source `SubClassOf(:A, ObjectIntersectionOf(:B,:C))` laconic-weakens to
+                // `SubClassOf(:A,:B)`, which is genuinely absent from the source). So
+                // RustdlOfn#verifiedAgainst's literal `source.containsAxiom(...)` check is the
+                // WRONG invariant here: running it would reject every genuinely-weakened laconic
+                // justification as "fabrication" and abort the whole request -- the exact bug
+                // this comment guards a future reader from re-introducing by "restoring" the
+                // guard. We deliberately do NOT call verifiedAgainst on this path. The
+                // anti-fabrication INTENT still holds end-to-end for laconic output: it now rests
+                // on rustdl's laconic weakening being SOUND BY CONSTRUCTION (every emitted
+                // fragment is provably entailed by an original source axiom) rather than on
+                // client-side literal-membership verification.
+                LOG.fine("Skipping literal source-membership verification for a laconic "
+                    + "justification; soundness rests on rustdl's laconic weakening being sound "
+                    + "by construction (each fragment is entailed by an original source axiom), "
+                    + "not on literal membership: " + justification.ofn);
+                verified = parsed;
+            } else {
+                // Fail-hard: verifiedAgainst throws ExplanationException on the FIRST axiom it
+                // finds absent from the source ontology, rejecting this justification whole
+                // rather than returning a partial (possibly insufficient-to-entail) subset.
+                // Nothing here catches that per-justification, so it propagates out of this
+                // whole materialize() call and aborts every OTHER justification in `report` too
+                // -- km's actual whole-attempt-abort choice (see RustdlOfn.verifiedAgainst
+                // javadoc), not a per-justification skip. Minimal justifications ARE genuine
+                // source axioms, so literal-membership verification is the correct anti-
+                // fabrication defense here and must stay fail-hard.
+                verified = RustdlOfn.verifiedAgainst(parsed, ontology);
+            }
             if (verified.isEmpty()) {
                 throw new ExplanationException(
                     "rustdl justification contained no axioms: " + justification.ofn);

@@ -190,6 +190,110 @@ public class RustdlSmokeIT {
     }
 
     /**
+     * Regression guard for the Critical bug fixed alongside this test: a laconic justification is
+     * a WEAKENED FRAGMENT of a source axiom, genuinely absent (as such, verbatim) from the source
+     * ontology by design -- {@code materialize} must NOT run the literal source-membership guard
+     * ({@link RustdlOfn#verifiedAgainst}) on the laconic path.
+     *
+     * <p>Ontology: {@code SubClassOf(:A, ObjectIntersectionOf(:B,:C))} only. Querying
+     * {@code justify --laconic subclass A B} against a REAL rustdl binary weakens the sole source
+     * axiom's RHS conjunction down to {@code SubClassOf(:A,:B)} -- entailed by the source axiom,
+     * but not literally equal to (or contained in) it. Before the fix, this genuinely-weakened
+     * case aborted the whole request via {@code ExplanationException} ("possible fabrication"),
+     * breaking laconic explanations in exactly the case they exist for. After the fix, the laconic
+     * generator must return a non-empty {@code Explanation} containing the weakened fragment.</p>
+     */
+    @Test public void laconicExplanationAcceptsGenuinelyWeakenedAxiomWithRealBinary() throws Exception {
+        assumeTrue("no rustdl binary available",
+            RustdlBinary.configuredOverride() != null
+            || RustdlBinary.class.getResource("/native") != null);
+        OWLOntologyManager m = OWLManager.createOWLOntologyManager();
+        OWLDataFactory df = m.getOWLDataFactory();
+        OWLOntology o = m.createOntology(IRI.create("http://ex7/"));
+
+        OWLClass a = df.getOWLClass(IRI.create("http://ex7/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex7/#B"));
+        OWLClass c = df.getOWLClass(IRI.create("http://ex7/#C"));
+        // The ONLY source axiom: A subclass-of (B and C). Entails A subclass-of B, but that
+        // entailment is nowhere LITERALLY present as its own axiom in the source.
+        m.addAxiom(o, df.getOWLSubClassOfAxiom(a, df.getOWLObjectIntersectionOf(b, c)));
+
+        OWLSubClassOfAxiom entailment = df.getOWLSubClassOfAxiom(a, b);
+        ExplanationGenerator<OWLAxiom> laconicGenerator =
+            new RustdlLaconicExplanationGeneratorFactory().createExplanationGenerator(o);
+
+        Set<Explanation<OWLAxiom>> explanations = laconicGenerator.getExplanations(entailment);
+        assertFalse(
+            "real rustdl binary's laconic weakening must produce a genuine, non-empty "
+                + "Explanation instead of the fabrication guard aborting the whole request",
+            explanations.isEmpty());
+        boolean containsWeakenedFragment = explanations.stream()
+            .anyMatch(exp -> exp.getAxioms().contains(entailment));
+        assertTrue(
+            "expected at least one explanation to contain the weakened fragment SubClassOf(A,B)",
+            containsWeakenedFragment);
+    }
+
+    /**
+     * Minor hardening #4: round-trips a NON-TRIVIAL axiom shape (here, {@code
+     * ObjectSomeValuesFrom}) through the full in-memory-OWLAPI -> OFN -> {@code rustdl justify
+     * --json} -> OFN-parse -> {@code containsAxiom} path (the non-laconic/minimal
+     * anti-fabrication guard, {@link RustdlOfn#verifiedAgainst}), asserting the genuine axioms are
+     * NOT dropped. Guards against a future OFN writer/parser normalization mismatch silently
+     * rejecting genuine explanations for anything beyond bare named-class SubClassOf axioms.
+     *
+     * <p>Ontology: {@code A ⊑ ∃hasParent.B}, {@code B ⊑ C}, {@code ∃hasParent.C ⊑ D}, entailing
+     * {@code A ⊑ D} (via {@code B ⊑ C} monotonicity through the existential). The minimal
+     * justification for this entailment is exactly those three axioms, each involving
+     * {@code ObjectSomeValuesFrom} -- confirmed against the real binary before finalizing this
+     * test.</p>
+     */
+    @Test public void justifyRoundTripsNonTrivialExistentialAxiomWithRealBinary() throws Exception {
+        assumeTrue("no rustdl binary available",
+            RustdlBinary.configuredOverride() != null
+            || RustdlBinary.class.getResource("/native") != null);
+        OWLOntologyManager m = OWLManager.createOWLOntologyManager();
+        OWLDataFactory df = m.getOWLDataFactory();
+        OWLOntology o = m.createOntology(IRI.create("http://ex8/"));
+
+        OWLClass a = df.getOWLClass(IRI.create("http://ex8/#A"));
+        OWLClass b = df.getOWLClass(IRI.create("http://ex8/#B"));
+        OWLClass c = df.getOWLClass(IRI.create("http://ex8/#C"));
+        OWLClass d = df.getOWLClass(IRI.create("http://ex8/#D"));
+        OWLObjectProperty hasParent = df.getOWLObjectProperty(IRI.create("http://ex8/#hasParent"));
+
+        OWLSubClassOfAxiom aExistsB = df.getOWLSubClassOfAxiom(
+            a, df.getOWLObjectSomeValuesFrom(hasParent, b));
+        OWLSubClassOfAxiom bc = df.getOWLSubClassOfAxiom(b, c);
+        OWLSubClassOfAxiom existsCD = df.getOWLSubClassOfAxiom(
+            df.getOWLObjectSomeValuesFrom(hasParent, c), d);
+        m.addAxiom(o, aExistsB);
+        m.addAxiom(o, bc);
+        m.addAxiom(o, existsCD);
+
+        OWLSubClassOfAxiom entailment = df.getOWLSubClassOfAxiom(a, d);
+        ExplanationGenerator<OWLAxiom> generator =
+            new RustdlExplanationGeneratorFactory().createExplanationGenerator(o);
+        Set<Explanation<OWLAxiom>> explanations = generator.getExplanations(entailment);
+
+        assertFalse("real rustdl binary must return at least one justification for A subclass-of D",
+            explanations.isEmpty());
+        Explanation<OWLAxiom> explanation = explanations.iterator().next();
+        assertTrue(
+            "genuine ObjectSomeValuesFrom-bearing axiom A subclass-of ExistsHasParent.B must "
+                + "round-trip through OFN-write/rustdl-justify/OFN-parse and NOT be dropped by "
+                + "the literal-membership anti-fabrication guard",
+            explanation.getAxioms().contains(aExistsB));
+        assertTrue(
+            "genuine axiom B subclass-of C must round-trip and NOT be dropped",
+            explanation.getAxioms().contains(bc));
+        assertTrue(
+            "genuine ObjectSomeValuesFrom-bearing axiom ExistsHasParent.C subclass-of D must "
+                + "round-trip and NOT be dropped",
+            explanation.getAxioms().contains(existsCD));
+    }
+
+    /**
      * End-to-end proof-tree smoke against a REAL rustdl binary (Task 5, Step 1): the same tiny EL
      * ontology as above, this time queried via {@code rustdl prove --json} directly through
      * {@link RustdlProcess#prove} and converted with {@link RustdlProof#fromProveJson}.

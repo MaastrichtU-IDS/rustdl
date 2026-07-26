@@ -134,6 +134,12 @@ public class RustdlExplanationGeneratorTest {
             new RustdlExplainConfiguration(600L, 8), false);
     }
 
+    private RustdlExplanationGenerator laconicGenerator(OWLOntology ontology) {
+        return new RustdlExplanationGenerator(
+            ontology, new NullExplanationProgressMonitor<OWLAxiom>(),
+            new RustdlExplainConfiguration(600L, 8), true);
+    }
+
     private RustdlJson.JustificationJson justification(String ofn) {
         RustdlJson.JustificationJson j = new RustdlJson.JustificationJson();
         j.ofn = ofn;
@@ -266,6 +272,80 @@ public class RustdlExplanationGeneratorTest {
         OWLAxiom entailment = df.getOWLSubClassOfAxiom(cls("A"), cls("C"));
         Set<Explanation<OWLAxiom>> explanations = generator(o).materialize(entailment, report);
         assertEquals(2, explanations.size());
+    }
+
+    // --- Critical regression: laconic must bypass the literal source-membership guard ---------
+
+    /**
+     * Regression test for the Critical bug: a laconic justification is a WEAKENED FRAGMENT of a
+     * source axiom, genuinely absent (as such) from the source ontology by design -- source has
+     * {@code SubClassOf(:A, ObjectIntersectionOf(:B,:C))}, the laconic-weakened justification for
+     * {@code SubClassOf(:A,:B)} is just {@code SubClassOf(:A,:B)} itself, which the source never
+     * literally contains. Before the fix, {@code materialize} unconditionally ran the literal
+     * {@code verifiedAgainst} guard even on the laconic path, so this canned report threw
+     * {@code ExplanationException} ("possible fabrication") instead of returning an Explanation.
+     * After the fix, the laconic generator must return a non-empty Explanation containing exactly
+     * the weakened fragment, without throwing.
+     */
+    @Test public void laconicMaterializeAcceptsGenuinelyWeakenedAxiomNotLiterallyInSource()
+            throws Exception {
+        OWLOntology o = m.createOntology(IRI.create("http://ex/onto5/"));
+        OWLSubClassOfAxiom sourceAxiom = df.getOWLSubClassOfAxiom(
+            cls("A"), df.getOWLObjectIntersectionOf(cls("B"), cls("C")));
+        m.addAxiom(o, sourceAxiom);
+
+        RustdlJson.JustifyJson report = new RustdlJson.JustifyJson();
+        report.schema_version = 1;
+        report.status = "entailed";
+        report.enumeration_complete = true;
+        report.minimal = true;
+        report.laconic = true;
+        // The weakened fragment SubClassOf(:A :B) is NOT literally in the source ontology (the
+        // source only has SubClassOf(:A, ObjectIntersectionOf(:B :C))) -- entailed by it, not
+        // equal to it.
+        report.justifications = Arrays.asList(justification(
+            "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n)\n"));
+
+        OWLAxiom entailment = df.getOWLSubClassOfAxiom(cls("A"), cls("B"));
+        Set<Explanation<OWLAxiom>> explanations = laconicGenerator(o).materialize(entailment, report);
+
+        assertEquals(1, explanations.size());
+        Explanation<OWLAxiom> explanation = explanations.iterator().next();
+        assertEquals(entailment, explanation.getEntailment());
+        assertEquals(1, explanation.getAxioms().size());
+        assertTrue(explanation.getAxioms().contains(
+            df.getOWLSubClassOfAxiom(cls("A"), cls("B"))));
+    }
+
+    /**
+     * The non-laconic (minimal) generator must keep rejecting the SAME weakened-fragment
+     * justification whole -- literal source-membership verification is the correct anti-
+     * fabrication defense for minimal justifications and must stay fail-hard even though the
+     * laconic generator now accepts an analogous fragment.
+     */
+    @Test public void nonLaconicMaterializeStillRejectsAxiomAbsentFromSource() throws Exception {
+        OWLOntology o = m.createOntology(IRI.create("http://ex/onto6/"));
+        OWLSubClassOfAxiom sourceAxiom = df.getOWLSubClassOfAxiom(
+            cls("A"), df.getOWLObjectIntersectionOf(cls("B"), cls("C")));
+        m.addAxiom(o, sourceAxiom);
+
+        RustdlJson.JustifyJson report = new RustdlJson.JustifyJson();
+        report.schema_version = 1;
+        report.status = "entailed";
+        report.enumeration_complete = true;
+        report.minimal = true;
+        report.laconic = false;
+        report.justifications = Arrays.asList(justification(
+            "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n)\n"));
+
+        OWLAxiom entailment = df.getOWLSubClassOfAxiom(cls("A"), cls("B"));
+        try {
+            generator(o).materialize(entailment, report);
+            fail("expected ExplanationException: SubClassOf(:A :B) is not literally a source "
+                + "axiom, and the non-laconic path must keep the fail-hard literal guard");
+        } catch (org.semanticweb.owl.explanation.api.ExplanationException expected) {
+            // correct.
+        }
     }
 
     @Test public void getExplanationsWithZeroLimitStillValidatesEntailmentSurface() throws Exception {

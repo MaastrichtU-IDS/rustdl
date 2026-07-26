@@ -143,7 +143,7 @@ public class RustdlProcessTest {
             java.util.List<String> cmd = RustdlProcess.buildProveCommand(
                 Paths.get("ont.ofn"), "http://ex/#A", "http://ex/#C");
             assertEquals(Arrays.asList(
-                fakeBin.toString(), "prove", "--json", "ont.ofn",
+                fakeBin.toString(), "prove", "--json", "--", "ont.ofn",
                 "http://ex/#A", "http://ex/#C"), cmd);
         } finally {
             if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
@@ -160,7 +160,7 @@ public class RustdlProcessTest {
                 Paths.get("ont.ofn"), false, 8,
                 Arrays.asList("subclass", "http://ex/#A", "http://ex/#C"));
             assertEquals(Arrays.asList(
-                fakeBin.toString(), "justify", "--all", "--json", "--max", "8",
+                fakeBin.toString(), "justify", "--all", "--json", "--max", "8", "--",
                 "ont.ofn", "subclass", "http://ex/#A", "http://ex/#C"), cmd);
         } finally {
             if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
@@ -176,7 +176,7 @@ public class RustdlProcessTest {
             java.util.List<String> cmd = RustdlProcess.buildJustifyCommand(
                 Paths.get("ont.ofn"), true, 3, Arrays.asList("inconsistent"));
             assertEquals(Arrays.asList(
-                fakeBin.toString(), "justify", "--all", "--json", "--laconic", "--max", "3",
+                fakeBin.toString(), "justify", "--all", "--json", "--laconic", "--max", "3", "--",
                 "ont.ofn", "inconsistent"), cmd);
         } finally {
             if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);

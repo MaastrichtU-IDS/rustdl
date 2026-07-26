@@ -2386,6 +2386,45 @@ impl<'c> HyperEngine<'c> {
         }
     }
 
+    /// After a `Sat` verdict on a [`Self::new_seeded`] (`ABox`) engine, the
+    /// COMPLETE atomic-class label set of the nominal node for individual
+    /// index `individual_idx` in the witness completion. `None` if there was
+    /// no satisfying completion — call only after [`Self::decide`] /
+    /// [`Self::decide_with_deadline`] returned [`HyperResult::Sat`].
+    ///
+    /// Mirrors [`Self::satisfiability_labels`], but for the per-individual
+    /// node [`Self::new_seeded`] creates — node `i` ↔ individual index `i`
+    /// (see the [`AboxSeed`] doc) — instead of the root node 0.
+    ///
+    /// **Soundness (load-bearing):** a `SameIndividual` merge (`AboxSeed`'s
+    /// `same_pairs`) or a functional/`≤1` merge folds `individual_idx`'s node
+    /// into another node's survivor via the union-find, and `merge` leaves
+    /// STALE labels behind on the merged-away node (it copies `s_j`'s labels
+    /// onto the survivor `s_i` but never clears `s_j`'s own `labels`). Reading
+    /// `self.nodes[individual_idx].labels` directly would silently return the
+    /// pre-merge label set for a merged-away individual — an under-report
+    /// that, propagated downstream, prunes a genuine class member (a MISS,
+    /// not merely stale data). So this resolves through the union-find
+    /// (`resolve`) exactly like `satisfiability_labels` resolves node 0.
+    ///
+    /// Returns the labels **raw, unfiltered** — like `satisfiability_labels`
+    /// (over-inclusion of nominal/Tseitin ids is harmless: a query `class_id`
+    /// is always a real named class, so extras never match; filtering risks
+    /// dropping a genuine class, the completeness landmine).
+    ///
+    /// Defensive `None` if `individual_idx` is out of range for this
+    /// engine's node set (shouldn't happen for a `new_seeded` engine whose
+    /// caller passes an index `< AboxSeed::num_individuals`).
+    #[must_use]
+    pub fn seeded_individual_labels(&self, individual_idx: u32) -> Option<Vec<ClassId>> {
+        let idx = individual_idx as usize;
+        if idx >= self.nodes.len() {
+            return None;
+        }
+        let rep = self.resolve(HNode(individual_idx));
+        Some(self.nodes[rep.index()].labels.clone())
+    }
+
     /// Capture a [`crate::snapshot::GraphSnapshot`] of the current
     /// completion graph. Soundly callable only after [`Self::decide`]
     /// (or [`Self::decide_with_deadline`]) has returned
@@ -6488,6 +6527,172 @@ mod tests {
         assert!(labels.contains(&a), "labels must contain A: {labels:?}");
         assert!(labels.contains(&b), "labels must contain B: {labels:?}");
         assert!(labels.contains(&q));
+    }
+
+    // ── seeded_individual_labels (pseudo-model realize shortcut, Task 1) ──
+
+    /// **Derived-label canary (Step 2).** Seed `{a} ⊑ D`, `D ⊑ E` over a
+    /// single-individual `new_seeded` engine. After `Sat`,
+    /// `seeded_individual_labels(a_idx)` must contain BOTH `D` (asserted-via-
+    /// nominal) and `E` (Horn-derived, NOT asserted) — guards the
+    /// under-reporting landmine (a naive read that stops at asserted labels
+    /// would miss `E`).
+    #[test]
+    fn seeded_individual_labels_includes_derived_class() {
+        let (d, e) = (cls(0), cls(1));
+        let nom_a = cls(10); // nominal_base = 10, individual a = index 0
+        let clauses = vec![
+            // {a} ⊑ D
+            DlClause {
+                body: vec![Atom::Class(nom_a, X)],
+                head: vec![Atom::Class(d, X)],
+            },
+            // D ⊑ E
+            DlClause {
+                body: vec![Atom::Class(d, X)],
+                head: vec![Atom::Class(e, X)],
+            },
+        ];
+        let seed = AboxSeed {
+            num_individuals: 1,
+            nominal_base: 10,
+            property_assertions: vec![],
+            same_pairs: vec![],
+        };
+        let mut engine = HyperEngine::new_seeded(&clauses, &seed).with_nominals(10, 1);
+        let result = engine.decide(64);
+        assert_eq!(result, HyperResult::Sat);
+
+        let labels = engine
+            .seeded_individual_labels(0)
+            .expect("Sat result must expose individual 0's labels");
+        assert!(
+            labels.contains(&d),
+            "labels must contain D (asserted): {labels:?}"
+        );
+        assert!(
+            labels.contains(&e),
+            "labels must contain E (Horn-derived, not asserted): {labels:?}"
+        );
+    }
+
+    /// **Merge canary (Step 4 — mandatory, the landmine).** Seed
+    /// `SameIndividual(a, b)` + `ClassAssertion(D, a)` + `D ⊑ E` over a
+    /// 2-individual `new_seeded` engine. `new_seeded`'s `same_pairs` loop
+    /// merges `b`'s node into `a`'s survivor via `HyperEngine::merge` at
+    /// CONSTRUCTION time (before `decide` runs), so `b`'s own node keeps its
+    /// stale pre-merge labels (just its own nominal) forever — the Horn
+    /// fixpoint only ever derives `D`/`E` on the survivor `a`. A naive
+    /// `nodes[b_idx].labels` read would therefore miss both `D` and `E`.
+    /// `seeded_individual_labels(b_idx)` MUST resolve through the union-find
+    /// to `a`'s node and return both.
+    #[test]
+    fn seeded_individual_labels_resolves_through_same_individual_merge() {
+        let (d, e) = (cls(0), cls(1));
+        let (nom_a, nom_b) = (cls(10), cls(11)); // nominal_base = 10
+        let clauses = vec![
+            // ClassAssertion(D, a): {a} ⊑ D
+            DlClause {
+                body: vec![Atom::Class(nom_a, X)],
+                head: vec![Atom::Class(d, X)],
+            },
+            // D ⊑ E
+            DlClause {
+                body: vec![Atom::Class(d, X)],
+                head: vec![Atom::Class(e, X)],
+            },
+        ];
+        let seed = AboxSeed {
+            num_individuals: 2,
+            nominal_base: 10,
+            property_assertions: vec![],
+            same_pairs: vec![(0, 1)], // SameIndividual(a, b): a survives, b merged away
+        };
+        let mut engine = HyperEngine::new_seeded(&clauses, &seed).with_nominals(10, 2);
+        let result = engine.decide(64);
+        assert_eq!(result, HyperResult::Sat);
+
+        let labels_a = engine
+            .seeded_individual_labels(0)
+            .expect("Sat result must expose individual 0's (survivor's) labels");
+        assert!(labels_a.contains(&d) && labels_a.contains(&e));
+
+        let labels_b = engine
+            .seeded_individual_labels(1)
+            .expect("Sat result must expose individual 1's (merged-away) labels");
+        assert!(
+            labels_b.contains(&nom_b),
+            "b's own nominal must still be present: {labels_b:?}"
+        );
+        assert!(
+            labels_b.contains(&d),
+            "b's node merged into a's survivor — labels must resolve and contain D: {labels_b:?}"
+        );
+        assert!(
+            labels_b.contains(&e),
+            "b's node merged into a's survivor — labels must resolve and contain E: {labels_b:?}"
+        );
+    }
+
+    /// **Negative canary.** A class `F` the individual is provably NOT in
+    /// (no clause derives it) must be absent from its labels — guards
+    /// against an over-eager implementation that returns some superset
+    /// (e.g. all classes in the clause set) instead of the node's actual
+    /// completed label set.
+    #[test]
+    fn seeded_individual_labels_excludes_unrelated_class() {
+        let (d, e, f) = (cls(0), cls(1), cls(2));
+        let nom_a = cls(10);
+        let clauses = vec![
+            DlClause {
+                body: vec![Atom::Class(nom_a, X)],
+                head: vec![Atom::Class(d, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(d, X)],
+                head: vec![Atom::Class(e, X)],
+            },
+            // F is never triggered by anything reachable from {a}.
+        ];
+        let seed = AboxSeed {
+            num_individuals: 1,
+            nominal_base: 10,
+            property_assertions: vec![],
+            same_pairs: vec![],
+        };
+        let mut engine = HyperEngine::new_seeded(&clauses, &seed).with_nominals(10, 1);
+        let result = engine.decide(64);
+        assert_eq!(result, HyperResult::Sat);
+
+        let labels = engine
+            .seeded_individual_labels(0)
+            .expect("Sat result must expose individual 0's labels");
+        assert!(labels.contains(&d) && labels.contains(&e));
+        assert!(
+            !labels.contains(&f),
+            "F is not derivable from {{a}} and must be absent: {labels:?}"
+        );
+    }
+
+    /// Defensive bounds check: an out-of-range individual index returns
+    /// `None` rather than panicking.
+    #[test]
+    fn seeded_individual_labels_out_of_range_is_none() {
+        let d = cls(0);
+        let nom_a = cls(10);
+        let clauses = vec![DlClause {
+            body: vec![Atom::Class(nom_a, X)],
+            head: vec![Atom::Class(d, X)],
+        }];
+        let seed = AboxSeed {
+            num_individuals: 1,
+            nominal_base: 10,
+            property_assertions: vec![],
+            same_pairs: vec![],
+        };
+        let mut engine = HyperEngine::new_seeded(&clauses, &seed).with_nominals(10, 1);
+        assert_eq!(engine.decide(64), HyperResult::Sat);
+        assert!(engine.seeded_individual_labels(5).is_none());
     }
 
     /// Phase 1b T3 sentinel test: `add_label_via_backprop` on a

@@ -1,8 +1,13 @@
 package com.github.maastrichtu_ids.rustdl.protege;
 
 import org.junit.Test;
+import org.semanticweb.owl.explanation.api.ExplanationGeneratorFactory;
+
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Scanner;
+import java.util.ServiceLoader;
 import static org.junit.Assert.*;
 
 public class PluginRegistrationTest {
@@ -20,5 +25,29 @@ public class PluginRegistrationTest {
                 xml.contains("${project.version}"));
             assertTrue(xml.contains("<class value=\"com.github.maastrichtu_ids.rustdl.protege.RustdlReasonerInfo\""));
         }
+    }
+
+    @Test public void servicesFileListsBothExplanationFactories() throws Exception {
+        String resource = "/META-INF/services/org.semanticweb.owl.explanation.api.ExplanationGeneratorFactory";
+        try (InputStream in = getClass().getResourceAsStream(resource)) {
+            assertNotNull(resource + " must be on the classpath", in);
+            String contents = new Scanner(in, "UTF-8").useDelimiter("\\A").next();
+            assertTrue(contents.contains(
+                "com.github.maastrichtu_ids.rustdl.protege.RustdlExplanationGeneratorFactory"));
+            assertTrue(contents.contains(
+                "com.github.maastrichtu_ids.rustdl.protege.RustdlLaconicExplanationGeneratorFactory"));
+        }
+    }
+
+    @Test public void serviceLoaderDiscoversBothExplanationFactories() {
+        List<String> names = new ArrayList<>();
+        for (ExplanationGeneratorFactory<?> factory
+                : ServiceLoader.load(ExplanationGeneratorFactory.class, getClass().getClassLoader())) {
+            names.add(factory.getClass().getName());
+        }
+        assertTrue("ServiceLoader must discover RustdlExplanationGeneratorFactory: " + names,
+            names.contains("com.github.maastrichtu_ids.rustdl.protege.RustdlExplanationGeneratorFactory"));
+        assertTrue("ServiceLoader must discover RustdlLaconicExplanationGeneratorFactory: " + names,
+            names.contains("com.github.maastrichtu_ids.rustdl.protege.RustdlLaconicExplanationGeneratorFactory"));
     }
 }

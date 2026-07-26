@@ -53,6 +53,38 @@ public final class RustdlProcess {
         return parsePropertyValues(run("property-values", ofn, timeoutSec));
     }
 
+    /**
+     * Runs {@code rustdl justify --all --json [--laconic] --max <maxJustifications> <ofn> <query...>}.
+     * The query keywords/arity are those of {@code owl_dl_reasoner::justify::parse_query}
+     * (e.g. {@code subclass S T}, {@code unsat C}, {@code inconsistent}, ...); the caller
+     * (the Explanation-API generator) builds {@code query} from the entailment being explained.
+     */
+    public static RustdlJson.JustifyJson justify(
+            Path ofn, boolean laconic, int maxJustifications, long timeoutSec, List<String> query)
+            throws IOException {
+        return parseJustify(runCommand(
+            buildJustifyCommand(ofn, laconic, maxJustifications, query), "justify", timeoutSec));
+    }
+
+    /** Package-visible so tests can assert on the command list without spawning. */
+    static List<String> buildJustifyCommand(
+            Path ofn, boolean laconic, int maxJustifications, List<String> query) throws IOException {
+        List<String> cmd = new java.util.ArrayList<>(Arrays.asList(
+            RustdlBinary.resolve().toString(), "justify", "--all", "--json"));
+        if (laconic) cmd.add("--laconic");
+        cmd.add("--max");
+        cmd.add(Integer.toString(maxJustifications));
+        cmd.add(ofn.toString());
+        cmd.addAll(query);
+        return cmd;
+    }
+
+    static RustdlJson.JustifyJson parseJustify(String json) {
+        RustdlJson.JustifyJson j = fromJson(json, RustdlJson.JustifyJson.class);
+        checkVersion(j.schema_version);
+        return j;
+    }
+
     static RustdlJson.ClassifyJson parseClassify(String json) {
         RustdlJson.ClassifyJson c = fromJson(json, RustdlJson.ClassifyJson.class);
         checkVersion(c.schema_version);

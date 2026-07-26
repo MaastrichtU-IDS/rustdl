@@ -87,6 +87,55 @@ public class RustdlProcessTest {
         RustdlProcess.parseDisjoint("{\"schema_version\":2}");
     }
 
+    @Test public void parsesJustify() throws Exception {
+        RustdlJson.JustifyJson j = RustdlProcess.parseJustify(fixture("justify.json"));
+        assertEquals(1, j.schema_version);
+        assertEquals("entailed", j.status);
+        assertTrue(j.enumeration_complete);
+        assertTrue(j.minimal);
+        assertFalse(j.laconic);
+        assertEquals(1, j.justifications.size());
+        assertTrue(j.justifications.get(0).ofn.contains("SubClassOf(:A :B)"));
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void rejectsWrongSchemaVersionJustify() {
+        RustdlProcess.parseJustify("{\"schema_version\":2}");
+    }
+
+    @Test
+    public void justifyCommandShapeNonLaconic() throws Exception {
+        String prev = System.getProperty("rustdl.bin");
+        Path fakeBin = Paths.get(getClass().getResource("/json/classify.json").toURI());
+        System.setProperty("rustdl.bin", fakeBin.toString());
+        try {
+            java.util.List<String> cmd = RustdlProcess.buildJustifyCommand(
+                Paths.get("ont.ofn"), false, 8,
+                Arrays.asList("subclass", "http://ex/#A", "http://ex/#C"));
+            assertEquals(Arrays.asList(
+                fakeBin.toString(), "justify", "--all", "--json", "--max", "8",
+                "ont.ofn", "subclass", "http://ex/#A", "http://ex/#C"), cmd);
+        } finally {
+            if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
+        }
+    }
+
+    @Test
+    public void justifyCommandShapeLaconicIncludesFlag() throws Exception {
+        String prev = System.getProperty("rustdl.bin");
+        Path fakeBin = Paths.get(getClass().getResource("/json/classify.json").toURI());
+        System.setProperty("rustdl.bin", fakeBin.toString());
+        try {
+            java.util.List<String> cmd = RustdlProcess.buildJustifyCommand(
+                Paths.get("ont.ofn"), true, 3, Arrays.asList("inconsistent"));
+            assertEquals(Arrays.asList(
+                fakeBin.toString(), "justify", "--all", "--json", "--laconic", "--max", "3",
+                "ont.ofn", "inconsistent"), cmd);
+        } finally {
+            if (prev == null) System.clearProperty("rustdl.bin"); else System.setProperty("rustdl.bin", prev);
+        }
+    }
+
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
     }

@@ -57,4 +57,17 @@ public final class RustdlJson {
         public List<List<String>> object_property_values;   // [subj, prop, obj]
         public List<List<String>> data_property_values;     // [subj, prop, lexical, datatype]
     }
+
+    /** `justify --json` top-level payload (docs/json-schema.md). */
+    public static final class JustifyJson {
+        public int schema_version;
+        public String status;               // "entailed" | "not-entailed"
+        public boolean enumeration_complete;
+        public boolean minimal;             // true iff every justification is subset-minimal-guaranteed
+        public boolean laconic;
+        public List<JustificationJson> justifications;
+    }
+    public static final class JustificationJson {
+        public String ofn; // self-contained OWL Functional Syntax ontology document
+    }
 }

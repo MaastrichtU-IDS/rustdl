@@ -19,6 +19,8 @@
     <owlapi.version>4.5.29</owlapi.version>
     <protege.version>5.6.6</protege.version>
     <gson.version>2.11.0</gson.version>
+    <owlexplanation.version>2.0.1</owlexplanation.version>
+    <telemetry.version>2.0.0</telemetry.version>
   </properties>
 
   <dependencies>
@@ -38,6 +40,46 @@
       <groupId>com.google.code.gson</groupId>
       <artifactId>gson</artifactId>
       <version>${gson.version}</version>
+    </dependency>
+    <!-- OWL Explanation API ("?" dialog): the standard OWLAPI explanation SPI.
+         Excludes its transitive owlapi-osgidistribution (we already provide
+         owlapi-distribution) and telemetry (declared explicitly below so its
+         own transitives can be pruned too). -->
+    <dependency>
+      <groupId>net.sourceforge.owlapi</groupId>
+      <artifactId>owlexplanation</artifactId>
+      <version>${owlexplanation.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>net.sourceforge.owlapi</groupId>
+          <artifactId>owlapi-osgidistribution</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>net.sourceforge.owlapi</groupId>
+          <artifactId>telemetry</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!-- Required at runtime by owlexplanation; embedded so the bundle resolves
+         in a stock Protégé installation. -->
+    <dependency>
+      <groupId>net.sourceforge.owlapi</groupId>
+      <artifactId>telemetry</artifactId>
+      <version>${telemetry.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>net.sourceforge.owlapi</groupId>
+          <artifactId>owlapi-osgidistribution</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>net.sourceforge.owlapi</groupId>
+          <artifactId>owlapi-distribution</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
@@ -80,8 +122,12 @@
             <Bundle-RequiredExecutionEnvironment>JavaSE-11</Bundle-RequiredExecutionEnvironment>
             <Bundle-License>Apache-2.0</Bundle-License>
             <Bundle-Activator>org.protege.editor.core.plugin.DefaultPluginActivator</Bundle-Activator>
-            <Export-Package>com.github.maastrichtu_ids.rustdl.protege;version="${project.version}"</Export-Package>
+            <Export-Package>
+              com.github.maastrichtu_ids.rustdl.protege;version="${project.version}",
+              org.semanticweb.owl.explanation.api;version="${owlexplanation.version}"
+            </Export-Package>
             <Import-Package>
+              !org.semanticweb.owl.explanation.telemetry,
               sun.misc;resolution:=optional,
               org.protege.editor.core.*,
               org.protege.editor.owl.*,
@@ -89,7 +135,7 @@
               org.osgi.framework,
               *
             </Import-Package>
-            <Embed-Dependency>gson;scope=compile;inline=false</Embed-Dependency>
+            <Embed-Dependency>gson|owlexplanation|telemetry;scope=compile;inline=false</Embed-Dependency>
             <Embed-Transitive>false</Embed-Transitive>
             <Include-Resource>{maven-resources}, plugin.xml=${project.build.outputDirectory}/plugin.xml</Include-Resource>
             <!-- Protégé auto-update: the built jar advertises where to find the
@@ -121,6 +167,15 @@
                       <fileset dir="${project.build.directory}/jar-check" includes="gson*.jar"/>
                     </resourcecount>
                   </condition>
+                </fail>
+                <fail message="owlexplanation not embedded (expected a nested owlexplanation-${owlexplanation.version}.jar)">
+                  <condition><not><available file="${project.build.directory}/jar-check/owlexplanation-${owlexplanation.version}.jar"/></not></condition>
+                </fail>
+                <fail message="telemetry not embedded (expected a nested telemetry-${telemetry.version}.jar)">
+                  <condition><not><available file="${project.build.directory}/jar-check/telemetry-${telemetry.version}.jar"/></not></condition>
+                </fail>
+                <fail message="ExplanationGeneratorFactory services file missing from jar">
+                  <condition><not><available file="${project.build.directory}/jar-check/META-INF/services/org.semanticweb.owl.explanation.api.ExplanationGeneratorFactory"/></not></condition>
                 </fail>
               </target>
             </configuration>

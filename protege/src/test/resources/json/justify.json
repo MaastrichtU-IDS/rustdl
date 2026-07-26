@@ -1,0 +1,4 @@
+{ "schema_version": 1, "status": "entailed", "enumeration_complete": true, "minimal": true, "laconic": false,
+  "justifications": [
+    { "ofn": "Prefix(:=<http://ex/#>)\nOntology(\n  SubClassOf(:A :B)\n  SubClassOf(:B :C)\n)\n" }
+  ] }

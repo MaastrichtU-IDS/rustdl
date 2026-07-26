@@ -145,3 +145,71 @@ that every axiom is in the whitelist AND that the seed alone was returned
 (no extension candidates). Sound under-approximation: a
 reported triple is always genuinely entailed (FP=0); `incomplete` warns real
 edges may be missing.
+
+## `justify --json`
+
+```json
+{ "schema_version": 1, "status": "entailed" | "not-entailed",
+  "enumeration_complete": bool, "minimal": bool, "laconic": bool,
+  "justifications": [ { "ofn": ofn_document } ] }
+```
+
+`status` is `"not-entailed"` iff `justifications` is empty (no query holds
+without at least one justification). `minimal` = every returned
+justification is *guaranteed* minimal (`Justification::minimal_guaranteed`
+across the whole saturator/tableau fragment the query resolved in — some
+SROIQ-only entailments return a sound but not-provably-minimal axiom set,
+e.g. `--all`-independent disjunctive derivations). `laconic` echoes the
+`--laconic` flag (each justification's axioms are weakened to their
+responsible fragment when set). `enumeration_complete` is `true` for the
+default single-justification query; for `--all`, `false` only when the
+`--max` cap genuinely truncated the true set (probed via `max + 1`, so a
+returned count that happens to equal `max` is not conflated with a cap).
+
+Each `justifications[i].ofn` is a **self-contained OFN ontology document** —
+a fresh ontology holding exactly that justification's axioms (no more, no
+fewer), written with the source ontology's prefixes so it re-parses
+standalone. This is the shared rendering `prove --json`'s
+`justification_fallback` and per-node `conclusion`/`axioms` reuse (see
+below).
+
+## `prove --json`
+
+```json
+{ "schema_version": 1, "entailed": bool, "has_proof": bool,
+  "proof": ProofNodeJson | null,
+  "justification_fallback": ofn_document | null }
+```
+
+```json
+// ProofNodeJson
+{ "conclusion": ofn_document, "rule": rule_name,
+  "axioms": [ofn_document, ...], "premises": [ProofNodeJson, ...] }
+```
+
+Three mutually exclusive shapes, mirroring `ProveEntailmentResult`:
+
+- **Step-level EL proof** (entailment held by the EL saturation fragment):
+  `entailed: true, has_proof: true`, `proof` is the recursively-built
+  `ProofNode` tree rooted at the queried `SUB ⊑ SUP`, `justification_fallback:
+  null`. Each node's `conclusion` is a one-axiom OFN document rendering that
+  node's `DerivedFact` (`Sub(s,p)` → `SubClassOf(s p)`; `Exist(s,r,t)` →
+  `SubClassOf(s ObjectSomeValuesFrom(r t))`; `Unsat(c)` → `SubClassOf(c
+  owl:Nothing)`) — classes beyond the source vocabulary (Tseitin/marker/
+  nominal-key/cardinality-key synthetics the saturator introduced) are
+  expanded to their defining expression via the same `SyntheticDef` table the
+  text `prove` renderer (`render_proof_with_defs`) uses, so the OFN is
+  faithful, never fabricated. `rule` is the `ElRule`'s display name (e.g.
+  `"ToldSubsumer"`, `"SubsumerTransitivity(fwd)"`). `axioms` are that step's
+  cited source axioms — each `node.axiom_refs` index resolved against the
+  same `InternalOntology` the query ran over and reverse-converted to a
+  horned-owl axiom, each its own one-axiom OFN document; empty for a pure
+  transitivity/chain step with no direct axiom. `premises` recurses; a leaf
+  step has `premises: []`.
+- **Justification fallback** (entailment holds, but not via the EL
+  saturation fragment — SROIQ-only, e.g. genuine disjunctive/cardinality
+  tableau reasoning): `entailed: true, has_proof: false`, `proof: null`,
+  `justification_fallback` is the axiom-level justification's OFN document
+  (may be empty-axioms if none could be found).
+- **Not entailed**: `entailed: false, has_proof: false`, `proof: null,
+  justification_fallback: null`.

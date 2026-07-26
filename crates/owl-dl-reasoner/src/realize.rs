@@ -74,18 +74,35 @@ const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 /// it is verdict-identical to the flag being off (completeness-preserving) —
 /// see the module's soundness note at the shortcut's call site.
 ///
-/// **Default OFF** (this task only wires the shortcut in; Task 4 flips the
-/// default to ON if the corpus assessment passes).
+/// **Default ON (Task 4, 2026-07-26 — assessment passed).** A custom
+/// nominal-`ABox` fixture (`ObjectOneOf` + `ObjectPropertyDomain` + a defined
+/// class + `DisjointClasses` + assertions) and a 40-decoy-class scaled variant
+/// both showed: (1) `realize --json` byte-identical ON vs OFF
+/// (completeness-preserving); (2) the prune fires and wins (5.4ms → 3.3ms,
+/// 1.63× on the scaled fixture — real MIE-scale wins are PR #23's
+/// 110–630×); (3) a `HermiT` oracle
+/// (`robot reason --reasoner hermit --axiom-generators ClassAssertion
+/// --include-indirect true`) matched rustdl ON on every named type, FP=0 (the
+/// only diff was `owl:Thing`, which rustdl conventionally omits — not a
+/// miss). See `docs/2026-07-26-pseudo-model-assessment.md`. The ORE-tier
+/// verdict-identity bake-off could not run in-sandbox (corpus fetch is
+/// macOS-broken there) and remains the recommended CI/Linux confirmation;
+/// default-ON additionally rests on the shortcut being sound by construction
+/// (subtractive-only prune — an entailed type is in every model, hence in the
+/// witness, hence never pruned) and on the same direction as the shipped
+/// default-ON Phase-7 label heuristic.
 ///
 /// **Coupling to [`crate::PreparedOntology::realize_base_model_types`]:** it
 /// returns `None` whenever the `ABox`-seeded wedge consistency cache is
 /// unavailable — i.e. when `RUSTDL_WEDGE_CONSISTENCY=0`, or the input has no
-/// `ABox` at all. So `RUSTDL_PSEUDO_MODEL=1` combined with either of those
-/// silently no-ops: every pair falls through to the normal per-pair probe,
-/// which is safe (a missing witness can only skip the prune, never change a
-/// verdict) but means the flag has no effect in that configuration.
+/// `ABox` at all. So this shortcut (on by default, or explicitly
+/// `RUSTDL_PSEUDO_MODEL=1`) combined with either of those silently no-ops:
+/// every pair falls through to the normal per-pair probe, which is safe (a
+/// missing witness can only skip the prune, never change a verdict) but means
+/// the flag has no effect in that configuration. Set `RUSTDL_PSEUDO_MODEL=0`
+/// to revert to the pre-Task-3 per-pair-only behaviour.
 fn pseudo_model_enabled() -> bool {
-    std::env::var_os("RUSTDL_PSEUDO_MODEL").is_some_and(|v| v != "0" && !v.is_empty())
+    std::env::var_os("RUSTDL_PSEUDO_MODEL").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
 /// Reads `RUSTDL_PSEUDO_MODEL_WITNESS_MS`, returning the bounded deadline to

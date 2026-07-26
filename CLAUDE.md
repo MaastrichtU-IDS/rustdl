@@ -444,6 +444,33 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   classes). Sound under-approx (clash ⇒ genuinely inconsistent; consistent onts
   unaffected). `family` realize now errors in ~0.7 s (was a hang). Regression
   test `realize_inconsistent_shortcircuit`.
+  **Pseudo-model realize shortcut (2026-07-26, `RUSTDL_PSEUDO_MODEL`, default
+  ON).** On the off-fragment (tableau) realize path, `realize_tableau_internal`
+  computes ONE `ABox` witness model (one wedge `Sat` completion) once per
+  `realize` call and prunes each per-(individual, class) `{a} ⊓ ¬C` probe with
+  `class ∉ witness_types(individual) ⇒ Ok(false)`, checked after the
+  told-closure `Ok(true)` fast path and before the tableau probe is built.
+  **Completeness-preserving** (ON vs OFF `realize --json` byte-identical) and
+  **sound by construction**: subtractive-only (`Ok(false)` only), and an
+  entailed type is in every model — including the witness — so it is never
+  pruned; the same "absence in one `Sat` completion's labels ⇒ genuine
+  non-entailment" direction as the shipped default-ON Phase-7 label heuristic
+  (`satisfiability_labels`), applied to instance-checking instead of
+  subsumption-checking — the opposite, sound direction from the FP-unsound
+  `RUSTDL_SNAPSHOT_CAPTURE` trap (which asserts a positive from one model).
+  Assessment (custom nominal-`ABox` fixture + a 40-decoy-class scaled variant,
+  the full ORE-tier corpus bake-off being unreachable in this sandbox):
+  verdict-identity held on both fixtures; the prune fired and won (1.63× on
+  the scaled fixture; PR #23's original prototype measured 110–630× at
+  MIE scale); a HermiT oracle (`robot reason --reasoner hermit
+  --axiom-generators ClassAssertion --include-indirect true`) matched rustdl
+  on every named type, FP=0. `RUSTDL_PSEUDO_MODEL=0` reverts to the pre-shortcut
+  per-pair-only behaviour. Silently no-ops (safe) whenever
+  `PreparedOntology::realize_base_model_types` returns `None` — i.e.
+  `RUSTDL_WEDGE_CONSISTENCY=0` or no `ABox` at all. Regression test
+  `nominal_abox_fixture_pseudo_model_on_matches_off` in
+  `crates/owl-dl-reasoner/tests/pseudo_model_realize.rs`. See
+  `docs/2026-07-26-pseudo-model-assessment.md`.
   `materialize_object_property_assertions` (reasoner) / `materialize_inferred_property_assertions`
   (Python) / `realize --properties` (CLI) surface inferred OBJECT property assertions over named
   individuals, reusing the ABox saturator's derived edges (sound under-approximation: no

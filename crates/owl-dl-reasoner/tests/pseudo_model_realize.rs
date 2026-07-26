@@ -1,5 +1,9 @@
 //! Task 3: wire the pseudo-model witness shortcut into `realize` behind
-//! `RUSTDL_PSEUDO_MODEL` (default OFF).
+//! `RUSTDL_PSEUDO_MODEL`. Task 4 (2026-07-26) flipped the default to ON after
+//! the corpus assessment passed — see
+//! `docs/2026-07-26-pseudo-model-assessment.md` and the committed
+//! ON-vs-OFF regression at the bottom of this file
+//! (`nominal_abox_fixture_pseudo_model_on_matches_off`).
 //!
 //! Fixture is deliberately OFF the saturation fast path
 //! (`realize_saturation_eligible`): the `ABox` (`ClassAssertion`) alone
@@ -200,5 +204,97 @@ fn pseudo_model_on_with_no_witness_matches_off() {
     for iri in off.individuals() {
         assert_eq!(off.entailed_types(iri), on.entailed_types(iri));
         assert_eq!(off.most_specific_types(iri), on.most_specific_types(iri));
+    }
+}
+
+/// Task 4 committed regression: a custom nominal-`ABox` fixture — `ObjectOneOf`
+/// (nominal covering) + `ObjectPropertyDomain` + a defined class
+/// (`EquivalentClasses(:HasTherapy ObjectSomeValuesFrom(…))`) +
+/// `DisjointClasses` + assertions — of the same shape used in the corpus
+/// assessment that justified flipping [`RUSTDL_PSEUDO_MODEL`]'s default to ON
+/// (see `docs/2026-07-26-pseudo-model-assessment.md`). Committed here as the
+/// in-repo completeness gate: NO ROBOT/HermiT oracle dependency (that
+/// comparison lives in the assessment doc, run manually) — just the ON-vs-OFF
+/// verdict-identity invariant the shortcut must hold everywhere.
+///
+/// The `ObjectOneOf` nominal keeps this fixture off the saturation fast path
+/// (`realize_saturation_eligible`), so `realize` here always runs
+/// `realize_tableau_internal` — the per-(individual, class) `{a} ⊓ ¬C` probe
+/// loop the pseudo-model shortcut prunes.
+const NOMINAL_ABOX_FIXTURE: &str = include_str!("fixtures/pseudo_model/nominal_abox.ofn");
+
+fn nominal_abox_fixture() -> SetOntology<RcStr> {
+    parse(NOMINAL_ABOX_FIXTURE)
+}
+
+/// Non-trivial-realization sanity check: `p1`'s entailed types include
+/// `Patient` (told), `Treated` (via `ObjectPropertyDomain(:therapy :Treated)`
+/// on the `:therapy :p1 :t1` assertion), and `HasTherapy` (via the defined
+/// class `HasTherapy ≡ ∃therapy.⊤`, `p1`'s therapy assertion witnessing the
+/// filler). Proves the fixture exercises real off-fragment derivation, not an
+/// empty or parse-failed run — run with the shortcut at its (now default) ON
+/// setting, matching normal production behaviour.
+#[test]
+fn nominal_abox_fixture_realizes_non_trivially() {
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _flag = SetEnvGuard::set("RUSTDL_PSEUDO_MODEL", "1");
+
+    let onto = nominal_abox_fixture();
+    let r = realize(&onto).expect("realization");
+    let p1 = "http://ex/#p1";
+    let entailed = r.entailed_types(p1);
+    assert!(
+        entailed.iter().any(|c| c == "http://ex/#Patient"),
+        "p1 must be entailed Patient (told); got {entailed:?}",
+    );
+    assert!(
+        entailed.iter().any(|c| c == "http://ex/#Treated"),
+        "p1 must be entailed Treated via ObjectPropertyDomain(:therapy :Treated); got {entailed:?}",
+    );
+    assert!(
+        entailed.iter().any(|c| c == "http://ex/#HasTherapy"),
+        "p1 must be entailed HasTherapy via the defined class; got {entailed:?}",
+    );
+}
+
+/// Task 4 regression gate: `realize` ON vs OFF must be byte-identical on the
+/// nominal-`ABox` fixture — the completeness-preservation invariant the
+/// default-ON flip rests on. Compares full `entailed_types`/
+/// `most_specific_types` for every individual, in order.
+#[test]
+fn nominal_abox_fixture_pseudo_model_on_matches_off() {
+    let _serial = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    let onto = nominal_abox_fixture();
+
+    let off = {
+        let _flag = SetEnvGuard::set("RUSTDL_PSEUDO_MODEL", "0");
+        realize(&onto).expect("realization (flag off)")
+    };
+    let on = {
+        let _flag = SetEnvGuard::set("RUSTDL_PSEUDO_MODEL", "1");
+        realize(&onto).expect("realization (flag on)")
+    };
+
+    assert_eq!(
+        off.individuals(),
+        on.individuals(),
+        "individual set must match"
+    );
+    for iri in off.individuals() {
+        assert_eq!(
+            off.entailed_types(iri),
+            on.entailed_types(iri),
+            "entailed_types diverged for {iri}",
+        );
+        assert_eq!(
+            off.most_specific_types(iri),
+            on.most_specific_types(iri),
+            "most_specific_types diverged for {iri}",
+        );
     }
 }

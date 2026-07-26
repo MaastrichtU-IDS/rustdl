@@ -351,6 +351,9 @@ enum Command {
         /// Weaken each justification axiom to its responsible fragment (laconic).
         #[arg(long)]
         laconic: bool,
+        /// Emit machine-readable JSON (schema v1) instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// Suggest minimal axiom removals to break an unwanted entailment.
     Repair {
@@ -1267,10 +1270,46 @@ fn main() -> Result<()> {
             max,
             labels,
             laconic,
+            json,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
             let q =
                 owl_dl_reasoner::justify::parse_query(&query).map_err(|e| anyhow::anyhow!(e))?;
+            if json {
+                let (justs, enumeration_complete): (
+                    Vec<owl_dl_reasoner::justify::Justification<RcStr>>,
+                    bool,
+                ) = if all {
+                    let js = if laconic {
+                        owl_dl_reasoner::find_all_laconic_justifications(&onto, &q, max)
+                            .context("find_all_laconic_justifications")?
+                    } else {
+                        owl_dl_reasoner::justify::find_all_justifications(&onto, &q, max)
+                            .context("find_all_justifications")?
+                    };
+                    let enumeration_complete = js.len() < max;
+                    (js, enumeration_complete)
+                } else {
+                    let one = if laconic {
+                        owl_dl_reasoner::find_laconic_justification(&onto, &q)
+                            .context("find_laconic_justification")?
+                    } else {
+                        owl_dl_reasoner::justify::find_one_justification(&onto, &q)
+                            .context("find_one_justification")?
+                    };
+                    (one.into_iter().collect(), true)
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_justify_json(
+                        &justs,
+                        &pm,
+                        laconic,
+                        enumeration_complete,
+                    ))?
+                );
+                return Ok(());
+            }
             let label_map = labels.then(|| build_label_map(&onto));
             let render = |j: &owl_dl_reasoner::justify::Justification<RcStr>| {
                 let note = if j.minimal_guaranteed {

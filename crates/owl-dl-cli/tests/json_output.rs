@@ -85,6 +85,27 @@ fn dropped_tiny() -> &'static str {
     )
 }
 
+fn justify_el_chain() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/justify_el_chain.ofn"
+    )
+}
+
+fn justify_two_paths() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/justify_two_paths.ofn"
+    )
+}
+
+fn justify_sroiq() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/justify_sroiq.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -313,6 +334,146 @@ fn subclass_expr_json_reports_entailed() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["entailed"], true); // A⊓B ⊑ A
+}
+
+/// Parse an OFN document string and return its logical-axiom strings
+/// (Manchester-rendered, prefix-free full IRIs) for containment checks.
+fn ofn_doc_axiom_strings(doc: &str) -> Vec<String> {
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    let (onto, _): (SetOntology<RcStr>, _) = read_ofn(
+        &mut std::io::Cursor::new(doc.to_owned()),
+        ParserConfiguration::default(),
+    )
+    .expect("emitted `ofn` field must be a parseable OFN document");
+    onto.iter()
+        .map(|ac| format!("{:?}", ac.component))
+        .collect()
+}
+
+#[test]
+fn justify_json_entailed_el_chain_is_minimal() {
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            justify_el_chain(),
+            "subclass",
+            "http://ex/#A",
+            "http://ex/#C",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "entailed");
+    assert_eq!(v["minimal"], true);
+    assert_eq!(v["laconic"], false);
+    assert_eq!(v["enumeration_complete"], true);
+    let js = v["justifications"].as_array().unwrap();
+    assert_eq!(js.len(), 1, "exactly one justification for A subclass C");
+    let ofn = js[0]["ofn"].as_str().unwrap();
+    let axioms = ofn_doc_axiom_strings(ofn);
+    assert!(
+        axioms
+            .iter()
+            .any(|a| a.contains("http://ex/#A") && a.contains("http://ex/#B")),
+        "ofn doc should contain SubClassOf(A B); got {axioms:?}"
+    );
+    assert!(
+        axioms
+            .iter()
+            .any(|a| a.contains("http://ex/#B") && a.contains("http://ex/#C")),
+        "ofn doc should contain SubClassOf(B C); got {axioms:?}"
+    );
+}
+
+#[test]
+fn justify_json_all_reports_two_justifications_complete() {
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            "--all",
+            justify_two_paths(),
+            "subclass",
+            "http://ex/#A",
+            "http://ex/#C",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "entailed");
+    assert_eq!(v["enumeration_complete"], true);
+    let js = v["justifications"].as_array().unwrap();
+    assert_eq!(js.len(), 2, "two independent A-B-C / A-D-C paths");
+}
+
+#[test]
+fn justify_json_laconic_flag_is_set() {
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            "--laconic",
+            justify_el_chain(),
+            "subclass",
+            "http://ex/#A",
+            "http://ex/#C",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "entailed");
+    assert_eq!(v["laconic"], true);
+    assert!(!v["justifications"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn justify_json_not_entailed_reports_empty() {
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            justify_el_chain(),
+            "subclass",
+            "http://ex/#C",
+            "http://ex/#A",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "not-entailed");
+    assert!(v["justifications"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn justify_json_sroiq_is_not_minimal() {
+    let out = rustdl()
+        .args([
+            "justify",
+            "--json",
+            justify_sroiq(),
+            "subclass",
+            "http://ex/#C",
+            "http://ex/#A",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["status"], "entailed");
+    assert_eq!(v["minimal"], false);
 }
 
 #[test]

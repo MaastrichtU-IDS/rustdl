@@ -1,0 +1,5 @@
+Prefix(:=<http://ex/#>)
+Ontology(<http://ex/>
+  Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+  SubClassOf(:B :A)
+  SubClassOf(:C ObjectUnionOf(:B :A)))

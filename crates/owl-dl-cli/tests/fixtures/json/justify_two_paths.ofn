@@ -1,0 +1,6 @@
+Prefix(:=<http://ex/#>)
+Ontology(<http://ex/>
+  Declaration(Class(:A)) Declaration(Class(:B))
+  Declaration(Class(:C)) Declaration(Class(:D))
+  SubClassOf(:A :B) SubClassOf(:B :C)
+  SubClassOf(:A :D) SubClassOf(:D :C))

@@ -3,8 +3,12 @@
 //! determinism; `schema_version` guards drift.
 use std::collections::BTreeMap;
 
-use horned_owl::model::RcStr;
+use horned_owl::curie::PrefixMapping;
+use horned_owl::io::ofn::writer::write as write_ofn;
+use horned_owl::model::{Component, MutableOntology, RcStr};
+use horned_owl::ontology::component_mapped::RcComponentMappedOntology;
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_reasoner::justify::Justification;
 use owl_dl_reasoner::{
     Classification, DataPropertyValues, DifferentIndividuals, Disjointness, ObjectPropertyValues,
     PropertyClassification, Realization, SameIndividuals,
@@ -366,6 +370,72 @@ pub(crate) fn build_property_values_json(
         incomplete: obj.incomplete() || data.incomplete(),
         object_property_values,
         data_property_values,
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct JustifyJson {
+    pub(crate) schema_version: u32,
+    pub(crate) status: String, // "entailed" | "not-entailed"
+    pub(crate) enumeration_complete: bool,
+    pub(crate) minimal: bool, // all justifications minimal_guaranteed
+    pub(crate) laconic: bool,
+    pub(crate) justifications: Vec<JustificationJson>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct JustificationJson {
+    pub(crate) ofn: String, // self-contained OFN ontology document
+}
+
+/// Render one justification's axioms as a self-contained OFN ontology
+/// document: a fresh `SetOntology` holding exactly those axioms (no more, no
+/// fewer — anti-fabrication), written with the SOURCE ontology's
+/// `PrefixMapping` so prefixes round-trip on reparse.
+fn justification_ofn_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String {
+    let mut so: SetOntology<RcStr> = SetOntology::new();
+    for ax in axioms {
+        so.insert(ax.clone());
+    }
+    let cmo: RcComponentMappedOntology = so.into();
+    let mut buf: Vec<u8> = Vec::new();
+    write_ofn(&mut buf, &cmo, Some(pm)).expect(
+        "writing a justification's axioms (no OntologyID, single ontology) to an in-memory \
+         buffer cannot fail",
+    );
+    String::from_utf8(buf).expect("horned-owl's OFN writer emits valid UTF-8")
+}
+
+/// Build the `justify --json` payload. `enumeration_complete` reflects
+/// whether `justs` is the FULL set of minimal justifications (always `true`
+/// for the default single-justification query; for `--all`, `false` when the
+/// `--max` cap was hit — see the call site).
+#[must_use]
+pub(crate) fn build_justify_json(
+    justs: &[Justification<RcStr>],
+    pm: &PrefixMapping,
+    laconic: bool,
+    enumeration_complete: bool,
+) -> JustifyJson {
+    let minimal = justs.iter().all(|j| j.minimal_guaranteed);
+    let justifications = justs
+        .iter()
+        .map(|j| JustificationJson {
+            ofn: justification_ofn_doc(&j.axioms, pm),
+        })
+        .collect();
+    JustifyJson {
+        schema_version: SCHEMA_VERSION,
+        status: if justs.is_empty() {
+            "not-entailed"
+        } else {
+            "entailed"
+        }
+        .to_owned(),
+        enumeration_complete,
+        minimal,
+        laconic,
+        justifications,
     }
 }
 

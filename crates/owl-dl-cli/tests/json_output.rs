@@ -106,6 +106,13 @@ fn justify_sroiq() -> &'static str {
     )
 }
 
+fn prove_tableau_cardinality() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/prove_tableau_cardinality.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -597,4 +604,134 @@ fn instances_expr_json_lists_instances() {
         .map(|s| s.as_str().unwrap())
         .collect();
     assert!(insts.contains(&"http://ex/#x"));
+}
+
+// ---------------------------------------------------------------------------
+// `prove --json`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prove_json_el_chain_has_multi_step_proof() {
+    // justify_el_chain: A ⊑ B, B ⊑ C ⟹ A ⊑ C via EL saturation
+    // transitivity — a two-premise proof tree.
+    let out = rustdl()
+        .args([
+            "prove",
+            "--json",
+            justify_el_chain(),
+            "http://ex/#A",
+            "http://ex/#C",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["entailed"], true);
+    assert_eq!(v["has_proof"], true);
+    assert!(v["justification_fallback"].is_null());
+    let proof = &v["proof"];
+    assert!(!proof.is_null(), "proof tree must be present");
+
+    // Root conclusion should be a parseable OFN SubClassOf(A C).
+    let concl = proof["conclusion"].as_str().unwrap();
+    let concl_axioms = ofn_doc_axiom_strings(concl);
+    assert!(
+        concl_axioms
+            .iter()
+            .any(|a| a.contains("http://ex/#A") && a.contains("http://ex/#C")),
+        "root conclusion should be SubClassOf(A C); got {concl_axioms:?}"
+    );
+    assert!(!proof["rule"].as_str().unwrap().is_empty());
+
+    // Multi-step: premises non-empty, and each premise's axioms parse as OFN
+    // and trace back to the source axioms (A⊑B / B⊑C).
+    let premises = proof["premises"].as_array().unwrap();
+    assert!(
+        !premises.is_empty(),
+        "A⊑C via transitivity must have premises"
+    );
+    let mut saw_ab = false;
+    let mut saw_bc = false;
+    for premise in premises {
+        let premise_concl = ofn_doc_axiom_strings(premise["conclusion"].as_str().unwrap());
+        if premise_concl
+            .iter()
+            .any(|a| a.contains("http://ex/#A") && a.contains("http://ex/#B"))
+        {
+            saw_ab = true;
+        }
+        if premise_concl
+            .iter()
+            .any(|a| a.contains("http://ex/#B") && a.contains("http://ex/#C"))
+        {
+            saw_bc = true;
+        }
+        // Each premise cites its source axiom, and it parses as OFN.
+        let axioms = premise["axioms"].as_array().unwrap();
+        assert!(
+            !axioms.is_empty(),
+            "ToldSubsumer premise must cite its source axiom"
+        );
+        for ax in axioms {
+            let parsed = ofn_doc_axiom_strings(ax.as_str().unwrap());
+            assert!(!parsed.is_empty(), "axiom fragment must parse as OFN");
+        }
+    }
+    assert!(saw_ab && saw_bc, "expected both A⊑B and B⊑C premises");
+}
+
+#[test]
+fn prove_json_sroiq_falls_back_to_justification() {
+    // prove_tableau_cardinality: C ⊑ ≤1 r, C ⊑ ∃r.A, C ⊑ ∃r.B, Disjoint(A,B).
+    // Without a `Functional(r)` declaration the ≤1-cardinality merge of the
+    // two r-successors is genuine tableau reasoning (no `ElRule` variant
+    // covers unqualified max-cardinality merge), so C is unsatisfiable only
+    // via the tableau — out of the EL saturation fragment. C unsat entails
+    // C ⊑ D for the unrelated declared class D.
+    let out = rustdl()
+        .args([
+            "prove",
+            "--json",
+            prove_tableau_cardinality(),
+            "http://ex/#C",
+            "http://ex/#D",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["entailed"], true);
+    assert_eq!(v["has_proof"], false);
+    assert!(v["proof"].is_null());
+    let fallback = v["justification_fallback"]
+        .as_str()
+        .expect("justification_fallback must be present when has_proof is false");
+    let axioms = ofn_doc_axiom_strings(fallback);
+    assert!(
+        !axioms.is_empty(),
+        "fallback OFN doc should carry the justification's axioms"
+    );
+}
+
+#[test]
+fn prove_json_not_entailed() {
+    let out = rustdl()
+        .args([
+            "prove",
+            "--json",
+            justify_el_chain(),
+            "http://ex/#C",
+            "http://ex/#A",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["entailed"], false);
+    assert_eq!(v["has_proof"], false);
+    assert!(v["proof"].is_null());
+    assert!(v["justification_fallback"].is_null());
 }

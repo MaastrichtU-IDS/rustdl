@@ -1,19 +1,27 @@
 //! Machine-readable JSON output for the CLI (`--json`). The stable bridge
 //! contract consumed by the Protégé plugin. All arrays are sorted for
 //! determinism; `schema_version` guards drift.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use horned_owl::curie::PrefixMapping;
 use horned_owl::io::ofn::writer::write as write_ofn;
-use horned_owl::model::{Component, MutableOntology, RcStr};
+use horned_owl::model::{
+    Build, ClassExpression, Component, Individual, MutableOntology, NamedIndividual, RcStr,
+    SubClassOf,
+};
 use horned_owl::ontology::component_mapped::RcComponentMappedOntology;
 use horned_owl::ontology::set::SetOntology;
+use owl_dl_core::{ClassId, IndividualId, InternalOntology, RoleId, Vocabulary};
 use owl_dl_reasoner::justify::Justification;
 use owl_dl_reasoner::{
     Classification, DataPropertyValues, DifferentIndividuals, Disjointness, ObjectPropertyValues,
-    PropertyClassification, Realization, SameIndividuals,
+    PropertyClassification, ProveEntailmentResult, Realization, SameIndividuals, SyntheticDef,
 };
 use serde::Serialize;
+
+/// IRI of `owl:Nothing`, used to render a `DerivedFact::Unsat` conclusion as
+/// a plain `SubClassOf(C owl:Nothing)`.
+const OWL_NOTHING: &str = "http://www.w3.org/2002/07/owl#Nothing";
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -388,11 +396,13 @@ pub(crate) struct JustificationJson {
     pub(crate) ofn: String, // self-contained OFN ontology document
 }
 
-/// Render one justification's axioms as a self-contained OFN ontology
-/// document: a fresh `SetOntology` holding exactly those axioms (no more, no
-/// fewer — anti-fabrication), written with the SOURCE ontology's
-/// `PrefixMapping` so prefixes round-trip on reparse.
-fn justification_ofn_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String {
+/// Render a set of axioms as a self-contained OFN ontology document: a fresh
+/// `SetOntology` holding exactly those axioms (no more, no fewer —
+/// anti-fabrication), written with the SOURCE ontology's `PrefixMapping` so
+/// prefixes round-trip on reparse. Shared by `justify --json`'s
+/// per-justification rendering and `prove --json`'s per-node/fallback
+/// rendering.
+fn axioms_to_ofn_doc(axioms: &[Component<RcStr>], pm: &PrefixMapping) -> String {
     let mut so: SetOntology<RcStr> = SetOntology::new();
     for ax in axioms {
         so.insert(ax.clone());
@@ -421,7 +431,7 @@ pub(crate) fn build_justify_json(
     let justifications = justs
         .iter()
         .map(|j| JustificationJson {
-            ofn: justification_ofn_doc(&j.axioms, pm),
+            ofn: axioms_to_ofn_doc(&j.axioms, pm),
         })
         .collect();
     JustifyJson {
@@ -436,6 +446,243 @@ pub(crate) fn build_justify_json(
         minimal,
         laconic,
         justifications,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `prove --json`
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub(crate) struct ProveJson {
+    pub(crate) schema_version: u32,
+    pub(crate) entailed: bool,
+    pub(crate) has_proof: bool,
+    pub(crate) proof: Option<ProofNodeJson>,
+    /// OFN ontology document (present iff `has_proof` is `false` and
+    /// `entailed` is `true`).
+    pub(crate) justification_fallback: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProofNodeJson {
+    /// OFN ontology document containing the single derived axiom this node
+    /// proves.
+    pub(crate) conclusion: String,
+    /// `ElRule` name (its `Display` impl — matches the text renderer).
+    pub(crate) rule: String,
+    /// Source axioms used at this step, each its own OFN ontology document.
+    pub(crate) axioms: Vec<String>,
+    pub(crate) premises: Vec<ProofNodeJson>,
+}
+
+/// Resolve a class id to a horned-owl `ClassExpression`: a named class if
+/// `id` is within the source vocabulary, else its `SyntheticDef` expansion
+/// (mirrors `owl_dl_saturation::proof::render_class_expanded`/
+/// `render_synthetic_def`, but building real model objects instead of a
+/// display string, so the result can be written as OFN).
+fn class_id_to_class_expression(
+    id: ClassId,
+    vocab: &Vocabulary,
+    defs: &HashMap<ClassId, SyntheticDef>,
+    build: &Build<RcStr>,
+) -> ClassExpression<RcStr> {
+    let idx = id.index() as usize;
+    if idx < vocab.num_classes() {
+        return ClassExpression::Class(build.class(vocab.class_iri(id)));
+    }
+    if let Some(def) = defs.get(&id) {
+        return synthetic_def_to_class_expression(def, vocab, defs, build);
+    }
+    // No user-vocabulary entry and no synthetic-def record. Not expected in
+    // practice (every synthetic `ClassId` the proof trace can mention has a
+    // `synthetic_defs` entry — see `SyntheticDef` construction in
+    // `owl-dl-saturation/src/lib.rs`), but rendered as an opaque marker class
+    // rather than panicking: faithful to the internal id, not fabricated.
+    ClassExpression::Class(build.class(format!("urn:rustdl-synthetic:{idx}")))
+}
+
+fn synthetic_def_to_class_expression(
+    def: &SyntheticDef,
+    vocab: &Vocabulary,
+    defs: &HashMap<ClassId, SyntheticDef>,
+    build: &Build<RcStr>,
+) -> ClassExpression<RcStr> {
+    match def {
+        SyntheticDef::TseitinConj(bodies) => {
+            let mut parts: Vec<ClassExpression<RcStr>> = bodies
+                .iter()
+                .map(|&b| class_id_to_class_expression(b, vocab, defs, build))
+                .collect();
+            if parts.len() == 1 {
+                parts.remove(0)
+            } else {
+                ClassExpression::ObjectIntersectionOf(parts)
+            }
+        }
+        SyntheticDef::ExistMarkerOneWay { role, body }
+        | SyntheticDef::ExistMarkerEquiv { role, body } => ClassExpression::ObjectSomeValuesFrom {
+            ope: role_id_to_ope(*role, vocab, build),
+            bce: Box::new(class_id_to_class_expression(*body, vocab, defs, build)),
+        },
+        SyntheticDef::NominalKey(ind) => ClassExpression::ObjectOneOf(vec![Individual::Named(
+            individual_id_to_named(*ind, vocab, build),
+        )]),
+        SyntheticDef::MaxKey { n, role } => ClassExpression::ObjectMaxCardinality {
+            n: *n,
+            ope: role_id_to_ope(*role, vocab, build),
+            bce: Box::new(ClassExpression::ObjectIntersectionOf(vec![])), // unqualified: ⊤
+        },
+        SyntheticDef::ForallKey { role, members } => {
+            let mems: Vec<Individual<RcStr>> = members
+                .iter()
+                .map(|&ind| Individual::Named(individual_id_to_named(ind, vocab, build)))
+                .collect();
+            ClassExpression::ObjectAllValuesFrom {
+                ope: role_id_to_ope(*role, vocab, build),
+                bce: Box::new(ClassExpression::ObjectOneOf(mems)),
+            }
+        }
+        // Not reached in practice: `DKey` classes are interned as real named
+        // vocabulary entries at conversion time (`owl_dl_core::convert`'s
+        // `urn:rustdl-dkey:` classes), so they resolve via the `vocab` branch
+        // above, never via `synthetic_defs`. Kept for match exhaustiveness;
+        // rendered as an opaque named class if it ever fires.
+        SyntheticDef::DKey(iri_suffix) => {
+            ClassExpression::Class(build.class(format!("urn:rustdl-dkey:{iri_suffix}")))
+        }
+    }
+}
+
+fn role_id_to_ope(
+    role: RoleId,
+    vocab: &Vocabulary,
+    build: &Build<RcStr>,
+) -> horned_owl::model::ObjectPropertyExpression<RcStr> {
+    horned_owl::model::ObjectPropertyExpression::ObjectProperty(
+        build.object_property(vocab.role_iri(role)),
+    )
+}
+
+fn individual_id_to_named(
+    id: IndividualId,
+    vocab: &Vocabulary,
+    build: &Build<RcStr>,
+) -> NamedIndividual<RcStr> {
+    build.named_individual(vocab.individual_iri(id))
+}
+
+/// Render a `DerivedFact` (a saturator proof-node conclusion) as the
+/// horned-owl axiom it faithfully represents — always a `SubClassOf`
+/// (`Exist` is `SubClassOf(sub, ObjectSomeValuesFrom(role, target))`,
+/// `Unsat` is `SubClassOf(class, owl:Nothing)`).
+fn derived_fact_to_component(
+    fact: &owl_dl_reasoner::DerivedFact,
+    vocab: &Vocabulary,
+    defs: &HashMap<ClassId, SyntheticDef>,
+    build: &Build<RcStr>,
+) -> Component<RcStr> {
+    match fact {
+        owl_dl_reasoner::DerivedFact::Sub(s, p) => Component::SubClassOf(SubClassOf {
+            sub: class_id_to_class_expression(*s, vocab, defs, build),
+            sup: class_id_to_class_expression(*p, vocab, defs, build),
+        }),
+        owl_dl_reasoner::DerivedFact::Exist(s, r, t) => Component::SubClassOf(SubClassOf {
+            sub: class_id_to_class_expression(*s, vocab, defs, build),
+            sup: ClassExpression::ObjectSomeValuesFrom {
+                ope: role_id_to_ope(*r, vocab, build),
+                bce: Box::new(class_id_to_class_expression(*t, vocab, defs, build)),
+            },
+        }),
+        owl_dl_reasoner::DerivedFact::Unsat(c) => Component::SubClassOf(SubClassOf {
+            sub: class_id_to_class_expression(*c, vocab, defs, build),
+            sup: ClassExpression::Class(build.class(OWL_NOTHING)),
+        }),
+    }
+}
+
+/// Recursively build a `ProofNodeJson` from a `ProofNode`: the conclusion
+/// and each cited source axiom are each rendered as their own self-contained
+/// OFN ontology document.
+fn build_proof_node_json(
+    node: &owl_dl_reasoner::ProofNode,
+    internal: &InternalOntology,
+    defs: &HashMap<ClassId, SyntheticDef>,
+    pm: &PrefixMapping,
+    build: &Build<RcStr>,
+) -> ProofNodeJson {
+    let vocab = &internal.vocabulary;
+    let conclusion_component = derived_fact_to_component(&node.conclusion, vocab, defs, build);
+    let conclusion = axioms_to_ofn_doc(std::slice::from_ref(&conclusion_component), pm);
+
+    // `node.axiom_refs` index into `internal.axioms` (the same
+    // `InternalOntology` `prove_entailment_rcstr` converted the source
+    // ontology into) — resolved via `owl_dl_core::axiom_to_component`, the
+    // same reverse-conversion `owl_dl_core::convert_back` uses to reverse a
+    // whole `InternalOntology`. An out-of-range ref is silently skipped
+    // (mirrors the text renderer's `if let Some(ax) = ...` at the CLI's
+    // axiom-provenance printout); it should not occur for a proof the
+    // saturator itself produced.
+    let axioms: Vec<String> = node
+        .axiom_refs
+        .iter()
+        .filter_map(|r| internal.axioms.get(r.0))
+        .map(|ax| {
+            let component = owl_dl_core::axiom_to_component(ax, internal, build);
+            axioms_to_ofn_doc(std::slice::from_ref(&component), pm)
+        })
+        .collect();
+
+    let premises = node
+        .premises
+        .iter()
+        .map(|p| build_proof_node_json(p, internal, defs, pm, build))
+        .collect();
+
+    ProofNodeJson {
+        conclusion,
+        rule: node.rule.to_string(),
+        axioms,
+        premises,
+    }
+}
+
+/// Build the `prove --json` payload. `internal` must be the same ontology
+/// `result` was derived from (re-converted by the caller — see
+/// `prove_entailment_rcstr`'s own internal conversion).
+#[must_use]
+pub(crate) fn build_prove_json(
+    result: &ProveEntailmentResult,
+    internal: &InternalOntology,
+    pm: &PrefixMapping,
+) -> ProveJson {
+    match result {
+        ProveEntailmentResult::SaturatorProof(data) => {
+            let build: Build<RcStr> = Build::new_rc();
+            let proof =
+                build_proof_node_json(&data.root, internal, &data.trace.synthetic_defs, pm, &build);
+            ProveJson {
+                schema_version: SCHEMA_VERSION,
+                entailed: true,
+                has_proof: true,
+                proof: Some(proof),
+                justification_fallback: None,
+            }
+        }
+        ProveEntailmentResult::JustificationFallback(j) => ProveJson {
+            schema_version: SCHEMA_VERSION,
+            entailed: true,
+            has_proof: false,
+            proof: None,
+            justification_fallback: Some(axioms_to_ofn_doc(&j.axioms, pm)),
+        },
+        ProveEntailmentResult::NotEntailed => ProveJson {
+            schema_version: SCHEMA_VERSION,
+            entailed: false,
+            has_proof: false,
+            proof: None,
+            justification_fallback: None,
+        },
     }
 }
 

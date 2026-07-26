@@ -387,6 +387,9 @@ enum Command {
         /// semantic definition (slower; for debugging).
         #[arg(long)]
         verify_proof: bool,
+        /// Emit machine-readable JSON (schema v1) instead of text.
+        #[arg(long)]
+        json: bool,
     },
     /// Diagnose a broken ontology: partition unsatisfiable classes into ROOT
     /// (genuine causes) and DERIVED (collateral), justify the roots, and on an
@@ -1454,9 +1457,22 @@ fn main() -> Result<()> {
             sub,
             sup,
             verify_proof,
+            json,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
-            match prove_entailment_rcstr(&onto, &sub, &sup).context("prove_entailment")? {
+            let result = prove_entailment_rcstr(&onto, &sub, &sup).context("prove_entailment")?;
+            if json {
+                let internal = owl_dl_core::convert::convert_ontology(&onto)
+                    .context("re-convert for rendering")?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_out::build_prove_json(
+                        &result, &internal, &pm,
+                    ))?
+                );
+                return Ok(());
+            }
+            match result {
                 ProveEntailmentResult::SaturatorProof(data) => {
                     let root = &data.root;
                     // Render using the internal vocabulary and synthetic defs.

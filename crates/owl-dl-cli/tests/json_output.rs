@@ -78,6 +78,13 @@ fn ce_tiny() -> &'static str {
     )
 }
 
+fn dropped_tiny() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/json/dropped_tiny.ofn"
+    )
+}
+
 #[test]
 fn classify_json_parses_and_reports_consistent() {
     let out = rustdl()
@@ -306,6 +313,52 @@ fn subclass_expr_json_reports_entailed() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["entailed"], true); // A⊓B ⊑ A
+}
+
+#[test]
+fn classify_json_reports_dropped() {
+    // Fixture has a supported `SubClassOf(:A :B)` plus an unsupported
+    // `HasKey(:A (:r) ())` — the confirmed "was-aborting" drop (see
+    // `crates/owl-dl-reasoner/tests/dropped_axioms.rs`). Graceful
+    // degradation: classify must still succeed and still report the
+    // supported subsumption, with the drop surfaced in `dropped`.
+    let out = rustdl()
+        .args(["classify", "--json", dropped_tiny()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    assert_eq!(v["schema_version"], 1);
+
+    let dropped = v["dropped"].as_object().expect("dropped is an object");
+    assert!(!dropped.is_empty(), "expected a non-empty dropped block");
+    assert!(
+        dropped.keys().any(|k| k.contains("HasKey")),
+        "expected a dropped kind mentioning HasKey, got {dropped:?}"
+    );
+
+    let direct = v["direct_subsumptions"].as_array().unwrap();
+    assert!(
+        direct
+            .iter()
+            .any(|p| p[0] == "http://ex/#A" && p[1] == "http://ex/#B"),
+        "supported SubClassOf(:A :B) must still be reflected despite the dropped HasKey"
+    );
+}
+
+#[test]
+fn classify_json_reports_empty_dropped_when_fully_supported() {
+    let out = rustdl()
+        .args(["classify", "--json", tiny_consistent()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    let dropped = v["dropped"].as_object().expect("dropped is an object");
+    assert!(
+        dropped.is_empty(),
+        "expected empty dropped, got {dropped:?}"
+    );
 }
 
 #[test]

@@ -232,6 +232,13 @@ def class_expression_instances(path: str, ce: str) -> list[str]:
     under-approximation."""
     ...
 
+# ── conversion diagnostics ──────────────────────────────────────────────────
+
+def dropped_axioms(path: str) -> dict[str, int]:
+    """Kinds and counts of axioms conversion could not represent (a sound
+    under-approximation)."""
+    ...
+
 # ── inference materialization ───────────────────────────────────────────────
 
 def materialize_inferred_subclass_axioms(path: str) -> list[tuple[str, str]]:

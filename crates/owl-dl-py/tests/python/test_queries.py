@@ -188,6 +188,42 @@ def test_ce_instances(tmp_path):
     assert "http://ex/#x" in rustdl.class_expression_instances(str(p), ":A")
 
 
+def test_dropped_axioms(tmp_path):
+    # SubClassOf(:A :B) is fully supported; HasKey(:A (:r) ()) is the
+    # confirmed live drop (see crates/owl-dl-reasoner/tests/dropped_axioms.rs)
+    # — conversion records it instead of aborting, so classify/consistent
+    # still succeed (graceful degradation).
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+        "  Declaration(ObjectProperty(:r))\n"
+        "  SubClassOf(:A :B)\n"
+        "  HasKey(:A (:r) ()))\n"
+    )
+    dropped = rustdl.dropped_axioms(str(p))
+    assert isinstance(dropped, dict)
+    assert dropped
+    assert any("HasKey" in k for k in dropped)
+
+    # graceful degradation: classify/consistent must not raise despite the drop
+    classification = rustdl.classify(str(p))
+    assert classification.is_subclass("http://ex/#A", "http://ex/#B")
+    assert rustdl.is_consistent(str(p)) is True
+
+
+def test_dropped_axioms_empty_for_fully_supported_ontology(tmp_path):
+    p = tmp_path / "o.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(Class(:A)) Declaration(Class(:B))\n"
+        "  SubClassOf(:A :B))\n"
+    )
+    assert rustdl.dropped_axioms(str(p)) == {}
+
+
 def test_data_property_values(tmp_path):
     p = tmp_path / "o.ofn"
     p.write_text(

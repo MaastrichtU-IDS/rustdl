@@ -16,6 +16,7 @@ pub mod data_axioms;
 pub mod definitions;
 pub mod disjunction_existential;
 pub mod disjunctive_antecedent;
+pub mod dropped;
 pub mod ir;
 pub mod locality;
 pub mod normalize;
@@ -39,6 +40,7 @@ pub use data_axioms::{
     DateKey, DateTimeKey, Decimal, OrdF64, StrSet, literal_provably_outside_range,
 };
 pub use definitions::{Definitions, extract_definitions};
+pub use dropped::DroppedAxioms;
 pub use ir::{ClassId, ConceptExpr, ConceptId, ConceptPool, IndividualId, Role, RoleId};
 pub use normalize::{is_nnf, nnf_axioms, nnf_complement, to_nnf};
 pub use ontology::{Axiom, InternalOntology, SubRolePath};

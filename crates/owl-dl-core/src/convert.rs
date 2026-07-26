@@ -1726,17 +1726,16 @@ fn convert_roles<A: ForIRI>(
     Ok(out)
 }
 
-/// Axiom-site helper: convert a `ClassExpression`, but if the
-/// expression contains a data-range constructor
-/// ([`ConversionError::UnsupportedDataRange`]), return `Ok(None)` for
-/// the enclosing axiom (drops it silently — sound under-approximation,
-/// see Phase D1 notes in the data-property arms). Other errors
-/// propagate via `?`.
+/// Axiom-site helper: convert a `ClassExpression`, propagating ANY error
+/// (including [`ConversionError::UnsupportedDataRange`]) out of
+/// `convert_component` via `Err`. Issue #43: this axiom-carrying component is
+/// no longer silently swallowed here — `convert_ontology`'s caller-side match
+/// records the drop (`DroppedAxioms`) and continues, so nothing aborts and
+/// nothing is lost from the diagnostic surface.
 macro_rules! ce_or_skip {
     ($expr:expr) => {
         match $expr {
             Ok(c) => c,
-            Err(ConversionError::UnsupportedDataRange) => return Ok(None),
             Err(e) => return Err(e),
         }
     };
@@ -1747,13 +1746,16 @@ macro_rules! ce_or_skip {
 /// Returns:
 /// - `Ok(Some(axiom))` when the component maps to an axiom in our IR.
 /// - `Ok(None)` when the component is metadata or annotation-related and
-///   has no representation in our IR (silently dropped — see the module
-///   docs for the rationale). Also returned for axioms dropped under
-///   Phase D1 data-axiom sound-under-approximation (see the data property
-///   arms below + the `ce_or_skip!` macro above).
-/// - `Err(_)` when the component is semantically meaningful but
-///   unsupported in this phase (data ranges, datatypes, SWRL rules,
-///   inverse-property expressions, anonymous individuals, etc.).
+///   has no representation in our IR (silently dropped, benign — see the
+///   module docs for the rationale). Also returned when a data-property arm
+///   deliberately treats an unrecognized literal/range as a no-op rather than
+///   an error (still sound under-approximation, but never counted as a
+///   "dropped axiom" — see the individual arms).
+/// - `Err(_)` when the component is semantically meaningful but unsupported
+///   in this phase (unsupported data ranges via the `ce_or_skip!` macro,
+///   anonymous individuals, `HasKey`, etc.). Issue #43: `convert_ontology`
+///   no longer aborts on this — it records the drop in `InternalOntology::dropped`
+///   (via [`drop_label`]) and continues with the remaining components.
 #[allow(clippy::too_many_lines)] // intrinsic to the breadth of horned-owl's Component enum
 pub fn convert_component<A: ForIRI>(
     c: &Component<A>,
@@ -2069,13 +2071,57 @@ pub fn convert_component<A: ForIRI>(
     }
 }
 
+/// Stable discriminant name for the axiom-carrying `Component` variants that
+/// can be dropped (i.e. can make [`convert_component`] return `Err`). Used
+/// only to build the [`drop_label`] diagnostic string — never affects
+/// reasoning. The `_ => "Other"` fallback keeps this sound (just a coarser
+/// label) for any variant not spelled out here.
+fn component_kind<A: ForIRI>(c: &Component<A>) -> &'static str {
+    use Component as C;
+    match c {
+        C::SubClassOf(_) => "SubClassOf",
+        C::EquivalentClasses(_) => "EquivalentClasses",
+        C::DisjointClasses(_) => "DisjointClasses",
+        C::DisjointUnion(_) => "DisjointUnion",
+        C::ClassAssertion(_) => "ClassAssertion",
+        C::ObjectPropertyAssertion(_) => "ObjectPropertyAssertion",
+        C::NegativeObjectPropertyAssertion(_) => "NegativeObjectPropertyAssertion",
+        C::ObjectPropertyDomain(_) => "ObjectPropertyDomain",
+        C::ObjectPropertyRange(_) => "ObjectPropertyRange",
+        C::SubObjectPropertyOf(_) => "SubObjectPropertyOf",
+        C::EquivalentObjectProperties(_) => "EquivalentObjectProperties",
+        C::DisjointObjectProperties(_) => "DisjointObjectProperties",
+        _ => "Other",
+    }
+}
+
+/// `"<component>: <reason>"` — the diagnostic kind label recorded in
+/// [`crate::DroppedAxioms`] for a component that [`convert_component`]
+/// dropped (returned `Err` for).
+fn drop_label<A: ForIRI>(c: &Component<A>, e: &ConversionError) -> String {
+    let comp = component_kind(c);
+    match e {
+        ConversionError::UnsupportedDataRange => format!("{comp}: unsupported data range"),
+        ConversionError::AnonymousIndividual => format!("{comp}: anonymous individual"),
+        ConversionError::UnsupportedConcept { kind } => {
+            format!("{comp}: unsupported concept ({kind})")
+        }
+        ConversionError::UnsupportedAxiom { kind } => format!("{comp}: unsupported axiom ({kind})"),
+    }
+}
+
 /// Convert an entire horned-owl [`SetOntology`] into an [`InternalOntology`].
 ///
-/// Returns the first error encountered. horned-owl iterates a `HashSet`, so
-/// the components arrive in HashMap-iteration order (different between
-/// processes). Two stabilizations make every downstream pass — vocabulary
-/// interning, absorption, saturation, the tableau search — deterministic
-/// across runs:
+/// Issue #43: a component that `convert_component` can't lower no longer
+/// aborts the whole conversion. Its error is recorded (via [`drop_label`])
+/// into the returned ontology's [`InternalOntology::dropped`] tally instead,
+/// and conversion continues with the remaining components — a sound
+/// under-approximation (a dropped axiom can only make the resulting KB
+/// weaker, never introduce a false entailment). horned-owl iterates a
+/// `HashSet`, so the components arrive in HashMap-iteration order (different
+/// between processes). Two stabilizations make every downstream pass —
+/// vocabulary interning, absorption, saturation, the tableau search —
+/// deterministic across runs:
 ///
 /// 1. Sort components by their derived `Ord` *before* lowering, so the
 ///    sequence of `intern_class` / `intern_role` / `intern_individual`
@@ -2096,10 +2142,10 @@ pub fn convert_ontology<A: ForIRI>(
     components.sort();
     let mut out = InternalOntology::new();
     for ac in components {
-        if let Some(axiom) =
-            convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts)?
-        {
-            out.axioms.push(axiom);
+        match convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts) {
+            Ok(Some(axiom)) => out.axioms.push(axiom),
+            Ok(None) => {} // benign: metadata / annotation / declaration — no reasoning content
+            Err(e) => out.dropped.record(drop_label(&ac.component, &e)),
         }
     }
     // Phase D4 (2026-06-03): scan for data-axiom patterns the main
@@ -3422,7 +3468,11 @@ mod tests {
             "expected the SUP to lower to Max(1, dp, DKey(str))"
         );
 
-        // (c) gate-OFF: rdfs:Literal (unqualified) still drops.
+        // (c) gate-OFF: rdfs:Literal (unqualified) still drops — but as of
+        // issue #43, "drop" at the `convert_component` level is now signaled
+        // via `Err(UnsupportedDataRange)` (the `ce_or_skip!` macro no longer
+        // intercepts it and downgrades to `Ok(None)`); `convert_ontology` is
+        // what turns that `Err` into a recorded, non-aborting drop.
         {
             let _lock = DP_ENV_MUTEX
                 .lock()
@@ -3439,11 +3489,10 @@ mod tests {
                 },
             });
             let mut o3 = InternalOntology::new();
-            assert!(
-                convert_component(&other_card, &mut o3.vocabulary, &mut o3.concepts)
-                    .unwrap()
-                    .is_none(),
-                "gate OFF: unqualified rdfs:Literal cardinality still drops"
+            assert_eq!(
+                convert_component(&other_card, &mut o3.vocabulary, &mut o3.concepts),
+                Err(ConversionError::UnsupportedDataRange),
+                "gate OFF: unqualified rdfs:Literal cardinality still drops (now via Err)"
             );
         }
 
@@ -3505,6 +3554,135 @@ mod tests {
         )));
         let internal = InternalOntology::try_from(&o).unwrap();
         assert_eq!(internal.num_axioms(), 1);
+    }
+
+    // ── Issue #43: graceful degradation (drop + record) ──────────────────
+
+    /// Parse an OFN-functional-syntax string into a `SetOntology`, mirroring
+    /// the `parse_str` helper in `data_axioms.rs`'s test module. The prefix
+    /// mapping `read_ofn` also returns isn't needed by these tests, so it's
+    /// discarded here.
+    fn read_ofn_str(src: &str) -> SetOntology<RcStr> {
+        use horned_owl::io::ParserConfiguration;
+        use horned_owl::io::ofn::reader::read as read_ofn;
+        use std::io::Cursor;
+        let mut r = Cursor::new(src);
+        let (onto, _prefixes) =
+            read_ofn(&mut r, ParserConfiguration::default()).expect("test fixture parses");
+        onto
+    }
+
+    #[test]
+    fn convert_records_dropped_unsupported_axiom_and_continues() {
+        // NOTE (deviation from the design brief, VERIFIED against this
+        // codebase's current state): the brief's canonical "aborts today"
+        // example was an anonymous-individual `ClassAssertion`
+        // (`ConversionError::AnonymousIndividual`). That is no longer true
+        // here — `convert_individual` (see `ANON_IRI_PREFIX` docs above)
+        // already interns anonymous individuals as first-class
+        // `IndividualId`s, so `AnonymousIndividual` is dead code (never
+        // constructed). The one LIVE `Err(ConversionError::UnsupportedAxiom
+        // { .. })` path in `convert_component` is `HasKey` (deferred
+        // advanced feature — see its match arm). Before this fix, a
+        // `HasKey` component aborted the whole `convert_ontology` call via
+        // `?`; after the fix, it converts, the axiom is recorded as
+        // dropped, and the supported axioms survive.
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B))
+            Declaration(ObjectProperty(:r))
+            SubClassOf(:A :B)
+            HasKey(:A (:r) ()))";
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("must not abort");
+        assert!(
+            internal
+                .axioms
+                .iter()
+                .any(|a| matches!(a, Axiom::SubClassOf { .. })),
+            "supported axiom survives"
+        );
+        assert_eq!(
+            internal.dropped.total(),
+            1,
+            "one dropped axiom recorded, got {:?}",
+            internal.dropped.by_kind()
+        );
+        assert!(
+            internal
+                .dropped
+                .by_kind()
+                .keys()
+                .any(|k| k.contains("HasKey"))
+        );
+    }
+
+    #[test]
+    fn convert_records_dropped_data_range_axiom() {
+        // A SubClassOf whose filler is an unsupported nested composite data
+        // range: silently dropped today (ce_or_skip → Ok(None)); now recorded.
+        let src = r"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(DataProperty(:p))
+            SubClassOf(:A DataSomeValuesFrom(:p DataComplementOf(DataUnionOf(xsd:integer xsd:string)))))";
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("must not abort");
+        assert_eq!(internal.dropped.total(), 1);
+        assert!(
+            internal
+                .dropped
+                .by_kind()
+                .keys()
+                .any(|k| k.contains("data range"))
+        );
+    }
+
+    #[test]
+    fn convert_benign_drops_not_recorded() {
+        // Metadata / annotations must NOT count as dropped.
+        let src = r#"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B)) SubClassOf(:A :B)
+            AnnotationAssertion(<http://x/lbl> :A "hi"))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("ok");
+        assert!(
+            internal.dropped.is_empty(),
+            "benign drops not recorded, got {:?}",
+            internal.dropped.by_kind()
+        );
+    }
+
+    #[test]
+    fn convert_fully_supported_ontology_is_inert() {
+        // A fully-supported ontology must yield an EMPTY `dropped` and the
+        // expected axiom set unchanged by this refactor.
+        let src = r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+            SubClassOf(:A :B)
+            EquivalentClasses(:B :C))";
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("ok");
+        assert!(
+            internal.dropped.is_empty(),
+            "fully-supported ontology drops nothing, got {:?}",
+            internal.dropped.by_kind()
+        );
+        assert!(
+            internal
+                .axioms
+                .iter()
+                .any(|a| matches!(a, Axiom::SubClassOf { .. })),
+            "SubClassOf axiom present"
+        );
+        assert!(
+            internal
+                .axioms
+                .iter()
+                .any(|a| matches!(a, Axiom::EquivalentClasses(_))),
+            "EquivalentClasses axiom present"
+        );
     }
 
     // ── Phase D8: DKey codec + parser-matrix + ordering unit tests ───────

@@ -304,15 +304,22 @@ fn instance_check_with_closure(
         pool.and(vec![nom, not_cls])
     };
     match pair_deadline {
-        // Bounded probe: a deadline hit yields no verdict, which we treat
-        // as "not an instance" — a SOUND under-approximation (a MISS at
-        // worst, never a false membership). This restores the caller's
-        // ability to bound realize (the per-call timeout removed in 0.3.18)
-        // for genuinely out-of-fragment inputs, so realize can never hang
-        // unbounded.
-        Some(deadline) => Ok(!prepared
-            .decide_with_deadline(deadline, build)?
-            .unwrap_or(true)),
+        // Bounded probe: ANY non-verdict within the budget — a deadline hit
+        // (`Ok(None)`), a node-cap trip (`Ok(None)`), or a depth-limit bail
+        // (`Err(NoVerdict)`) — is treated as "not an instance": a SOUND
+        // under-approximation (a MISS at worst, never a false membership,
+        // since we could not prove `{a} ⊓ ¬C` unsatisfiable). A per-pair
+        // non-verdict must NOT fail the whole `realize` — it degrades to a
+        // partial result, mirroring classify's `subsumes_via_tableau`
+        // handling. The #57 pseudo-model shortcut avoids the tableau for
+        // eligible pairs; this makes the tableau FALLBACK graceful for
+        // shortcut-ineligible pairs (e.g. `ore_ont_7988`), which otherwise
+        // errored the whole realize on a single depth-limit bail.
+        Some(deadline) => match prepared.decide_with_deadline(deadline, build) {
+            Ok(sat) => Ok(!sat.unwrap_or(true)),
+            Err(ReasonError::NoVerdict) => Ok(false),
+            Err(e) => Err(e),
+        },
         None => Ok(!prepared.decide(build)?),
     }
 }

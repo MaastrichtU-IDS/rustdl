@@ -3267,15 +3267,17 @@ impl ConsistencyCache {
         }
     }
 
-    /// Run the ABox-seeded wedge. Returns the three-valued
-    /// [`owl_dl_tableau::hyper::HyperResult`] (`Unsat`=inconsistent,
-    /// `Sat`=consistent, `Stalled`=undetermined). Configured exactly
-    /// as the classify wedge (`with_nominals` + `with_sub_roles` +
-    /// double-blocking + precise-card-deps, under their env gates).
-    pub(crate) fn decide(
-        &self,
-        deadline: Option<std::time::Instant>,
-    ) -> owl_dl_tableau::hyper::HyperResult {
+    /// Build a fresh ABox-seeded [`owl_dl_tableau::hyper::HyperEngine`]
+    /// configured EXACTLY like the classify wedge — the nine configurators
+    /// `with_sub_roles` + `with_nominals` (unconditional) and the gated
+    /// `with_incremental_fixpoint` / `with_semantic_branching` /
+    /// `with_double_blocking` / `with_precise_card_deps` / `with_mrv_ordering`
+    /// / `with_sat_lookahead` / `with_adaptive_budget`. Shared by [`Self::decide`]
+    /// and [`Self::base_model_types`] so both ALWAYS build an identical engine
+    /// by construction — a hand-duplicated subset of these configurators would
+    /// silently produce a different completion (or a non-model), which would be
+    /// unsound for `base_model_types`'s witness-model contract.
+    fn build_seeded_engine(&self) -> owl_dl_tableau::hyper::HyperEngine<'_> {
         use owl_dl_tableau::hyper::HyperEngine;
         let mut engine = HyperEngine::new_seeded(&self.clauses, &self.seed)
             .with_sub_roles(self.sub_roles.clone())
@@ -3301,7 +3303,55 @@ impl ConsistencyCache {
         if crate::adaptive_budget_enabled() {
             engine = engine.with_adaptive_budget();
         }
+        engine
+    }
+
+    /// Run the ABox-seeded wedge. Returns the three-valued
+    /// [`owl_dl_tableau::hyper::HyperResult`] (`Unsat`=inconsistent,
+    /// `Sat`=consistent, `Stalled`=undetermined). Configured exactly
+    /// as the classify wedge (`with_nominals` + `with_sub_roles` +
+    /// double-blocking + precise-card-deps, under their env gates).
+    pub(crate) fn decide(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> owl_dl_tableau::hyper::HyperResult {
+        let mut engine = self.build_seeded_engine();
         engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
+    }
+
+    /// One `ABox` witness model → each individual's COMPLETE atomic-class type
+    /// set, or `None` when no clash-free completion is available
+    /// (`Unsat`/`Stalled`/deadline). Builds the SAME engine configuration as
+    /// [`Self::decide`] (via [`Self::build_seeded_engine`]) so the returned
+    /// labels come from a genuine model of the `ABox`, not a divergent
+    /// completion. Indexed by individual id (`0..self.num_individuals`);
+    /// `seeded_individual_labels` resolves through the union-find so a
+    /// `SameIndividual`/functional merge never silently under-reports a
+    /// merged-away individual's types.
+    ///
+    /// Consumed via [`Self::realize_base_model_types`], the
+    /// realize-loop's pseudo-model shortcut (`RUSTDL_PSEUDO_MODEL`,
+    /// see `realize::pseudo_model_enabled`).
+    pub(crate) fn base_model_types(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>> {
+        use owl_dl_tableau::hyper::HyperResult;
+        let mut engine = self.build_seeded_engine();
+        match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
+            HyperResult::Sat => Some(
+                (0..self.num_individuals)
+                    .map(|i| {
+                        engine
+                            .seeded_individual_labels(i)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect()
+                    })
+                    .collect(),
+            ),
+            HyperResult::Unsat | HyperResult::Stalled => None,
+        }
     }
 }
 
@@ -4615,6 +4665,24 @@ impl PreparedOntology {
         deadline: Option<std::time::Instant>,
     ) -> Option<owl_dl_tableau::hyper::HyperResult> {
         self.consistency.as_ref().map(|c| c.decide(deadline))
+    }
+
+    /// One `ABox` witness model's per-individual COMPLETE type sets, or `None`
+    /// when the wedge consistency route is disabled / there is no `ABox` /
+    /// no clash-free completion is available (`Unsat`/`Stalled`/deadline).
+    /// Mirrors [`Self::consistency_wedge`]'s accessor pattern. Callers MUST
+    /// treat `None` as "no usable model" (skip the prune it would otherwise
+    /// enable) — never assume unsatisfiability.
+    ///
+    /// Consumer: `realize_tableau_internal`'s pseudo-model shortcut, gated
+    /// by `RUSTDL_PSEUDO_MODEL` (see `realize::pseudo_model_enabled`).
+    pub(crate) fn realize_base_model_types(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>> {
+        self.consistency
+            .as_ref()
+            .and_then(|c| c.base_model_types(deadline))
     }
 
     /// Lazy accessor for the `ABox` consistency check verdict.
@@ -5996,6 +6064,56 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .consistent_with_extra(&[], &[(a, r, b)], None)
                 .expect("decide succeeds"),
             Some(false)
+        );
+    }
+
+    /// Task 2 Step 1 (RED): `realize_base_model_types` returns one `ABox`
+    /// witness model's per-individual COMPLETE type sets. `a` is asserted
+    /// `D`; `D ⊑ E` so `E` is derived; `F` is a declared, disjoint sibling
+    /// class so `a` is provably NOT an `F`. The returned set for `a` must
+    /// be a superset of `{D, E}` and must not contain `F`.
+    #[test]
+    fn realize_base_model_types_returns_witness_type_sets() {
+        let internal = parse_internal_lib(
+            r"Prefix(:=<http://ex/#>)
+          Ontology(<http://ex/>
+            Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:F))
+            Declaration(NamedIndividual(:a))
+            SubClassOf(:D :E)
+            DisjointClasses(:D :F)
+            ClassAssertion(:D :a))",
+        );
+        let d = internal
+            .vocabulary
+            .class_id("http://ex/#D")
+            .expect("D is declared");
+        let e = internal
+            .vocabulary
+            .class_id("http://ex/#E")
+            .expect("E is declared");
+        let f = internal
+            .vocabulary
+            .class_id("http://ex/#F")
+            .expect("F is declared");
+        let a = internal
+            .vocabulary
+            .individual_id("http://ex/#a")
+            .expect("a is declared");
+        let prepared = PreparedOntology::from_internal(internal).expect("prepares");
+        let types = prepared
+            .realize_base_model_types(None)
+            .expect("a consistent ABox yields a witness model");
+        let a_types = types
+            .get(a.index() as usize)
+            .expect("witness types indexed by individual");
+        assert!(a_types.contains(&d), "witness model must type a as D");
+        assert!(
+            a_types.contains(&e),
+            "witness model must derive a:E via D⊑E"
+        );
+        assert!(
+            !a_types.contains(&f),
+            "a is provably NOT F (DisjointClasses(D,F) + a:D)"
         );
     }
 

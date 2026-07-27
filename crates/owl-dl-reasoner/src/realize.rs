@@ -51,6 +51,77 @@ type IndivResult = (Vec<String>, Vec<String>);
 /// Set `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0` to opt out (unbounded).
 const DEFAULT_REALIZE_PAIR_TIMEOUT_MS: u64 = 750;
 
+/// Default bounded deadline (milliseconds) for the ONE-OFF pseudo-model
+/// witness build `realize_tableau_internal` performs when
+/// [`pseudo_model_enabled`] is on, used when `RUSTDL_PSEUDO_MODEL_WITNESS_MS`
+/// is unset. Deliberately bounded (never `None`/unbounded) — the witness is a
+/// single extra wedge run per `realize` call, not per pair, but an unbounded
+/// deadline on an off-fragment `ABox` reintroduces exactly the long-run risk
+/// the #35-v4 per-pair timeout was built to bound.
+const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
+
+/// Is the pseudo-model realize shortcut enabled?
+///
+/// When on, `realize_tableau_internal` computes one `ABox` witness model
+/// (via [`crate::PreparedOntology::realize_base_model_types`]) ONCE per
+/// `realize` call, under a bounded deadline
+/// (`RUSTDL_PSEUDO_MODEL_WITNESS_MS`, default
+/// [`DEFAULT_PSEUDO_MODEL_WITNESS_MS`]), and threads each individual's
+/// witness type set into [`instance_check_with_closure`] as a subtractive
+/// prune: `class ∉ witness_types(individual) ⇒ Ok(false)`, skipping the
+/// per-pair `{a} ⊓ ¬C` tableau probe entirely. The prune only ever returns
+/// `Ok(false)` and only fires AFTER the told-closure `Ok(true)` fast path, so
+/// it is verdict-identical to the flag being off (completeness-preserving) —
+/// see the module's soundness note at the shortcut's call site.
+///
+/// **Default ON (Task 4, 2026-07-26 — assessment passed).** A custom
+/// nominal-`ABox` fixture (`ObjectOneOf` + `ObjectPropertyDomain` + a defined
+/// class + `DisjointClasses` + assertions,
+/// `tests/fixtures/pseudo_model/nominal_abox.ofn`) and a 40-decoy-class scaled
+/// variant (`nominal_abox_scaled.ofn`) both showed: (1) `realize --json`
+/// byte-identical ON vs OFF (completeness-preserving); (2) the prune fires and
+/// wins (5.45ms → 3.44ms median of 9, 1.59× on the scaled fixture — real
+/// MIE-scale wins are PR #23's 110–630×); (3) a `HermiT` oracle
+/// (`robot reason --reasoner hermit --axiom-generators ClassAssertion
+/// --include-indirect true`, output committed as
+/// `tests/fixtures/pseudo_model/nominal_abox-hermit.ofn`) matched rustdl ON on
+/// every named type, FP=0 (the only diff was `owl:Thing`, which rustdl
+/// conventionally omits — not a miss). See
+/// `docs/2026-07-26-pseudo-model-assessment.md`. The ORE-tier
+/// verdict-identity bake-off could not run in-sandbox (corpus fetch is
+/// macOS-broken there) and remains the recommended CI/Linux confirmation;
+/// default-ON additionally rests on the shortcut being sound by construction
+/// (subtractive-only prune — an entailed type is in every model, hence in the
+/// witness, hence never pruned) and on the same direction as the shipped
+/// default-ON Phase-7 label heuristic.
+///
+/// **Coupling to [`crate::PreparedOntology::realize_base_model_types`]:** it
+/// returns `None` whenever the `ABox`-seeded wedge consistency cache is
+/// unavailable — i.e. when `RUSTDL_WEDGE_CONSISTENCY=0`, or the input has no
+/// `ABox` at all. So this shortcut (on by default, or explicitly
+/// `RUSTDL_PSEUDO_MODEL=1`) combined with either of those silently no-ops:
+/// every pair falls through to the normal per-pair probe, which is safe (a
+/// missing witness can only skip the prune, never change a verdict) but means
+/// the flag has no effect in that configuration. Set `RUSTDL_PSEUDO_MODEL=0`
+/// to revert to the pre-Task-3 per-pair-only behaviour.
+fn pseudo_model_enabled() -> bool {
+    std::env::var_os("RUSTDL_PSEUDO_MODEL").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// Reads `RUSTDL_PSEUDO_MODEL_WITNESS_MS`, returning the bounded deadline to
+/// use for the one-off pseudo-model witness build. Unset or unparsable ⟹
+/// [`DEFAULT_PSEUDO_MODEL_WITNESS_MS`]. Note that (unlike
+/// `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, where `0` means unbounded) `0` here yields
+/// an immediate deadline ⟹ the witness build `Stalled`s ⟹ no witness ⟹ the
+/// shortcut safely no-ops for that call; there is no "unbounded witness" option.
+fn pseudo_model_witness_deadline_from_env() -> std::time::Instant {
+    let ms = std::env::var("RUSTDL_PSEUDO_MODEL_WITNESS_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PSEUDO_MODEL_WITNESS_MS);
+    std::time::Instant::now() + std::time::Duration::from_millis(ms)
+}
+
 /// Reads `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`, returning the per-pair deadline
 /// in milliseconds to apply. Unset ⟹ [`DEFAULT_REALIZE_PAIR_TIMEOUT_MS`];
 /// set to a positive integer ⟹ that value; set to `0` ⟹ `None` (explicit
@@ -119,6 +190,9 @@ pub fn is_instance_of_internal(
     let prepared = PreparedOntology::from_internal(internal.clone())?;
     let pair_deadline = realize_pair_timeout_ms_from_env()
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    // Single-pair path — the witness is a realize-loop optimization (one
+    // witness amortized across the whole per-individual, per-class loop);
+    // it isn't worth building for a lone instance check.
     instance_check_with_closure(
         internal,
         &closure,
@@ -126,6 +200,7 @@ pub fn is_instance_of_internal(
         class_id,
         individual_id,
         pair_deadline,
+        None,
     )
 }
 
@@ -191,6 +266,17 @@ pub fn is_instance_of_saturation_only_internal(
 ///    via the role hierarchy.
 ///
 /// Falls through to the `{a} ⊓ ¬C` satisfiability reduction otherwise.
+///
+/// `base_types`, when `Some`, is one `ABox` witness model's COMPLETE type set
+/// for `individual_id` (see [`crate::PreparedOntology::realize_base_model_types`]
+/// / [`pseudo_model_enabled`]): a subtractive prune, checked AFTER the
+/// told-closure `Ok(true)` loop and BEFORE the `{a} ⊓ ¬C` probe is built —
+/// `class_id ∉ base_types ⇒ Ok(false)`, skipping the probe entirely. Sound
+/// and verdict-identical to `base_types: None` PROVIDED `base_types` is a
+/// genuine witness model's type set (every told/derived membership already
+/// returned `true` above, so it is never pruned; a class the individual
+/// genuinely has is always present in a real witness model's label). `None`
+/// (no witness available) takes the unchanged normal path.
 fn instance_check_with_closure(
     internal: &InternalOntology,
     closure: &Subsumers,
@@ -198,11 +284,17 @@ fn instance_check_with_closure(
     class_id: ClassId,
     individual_id: IndividualId,
     pair_deadline: Option<std::time::Instant>,
+    base_types: Option<&HashSet<ClassId>>,
 ) -> Result<bool, ReasonError> {
     for told in told_classes_of(internal, individual_id) {
         if closure.contains(told, class_id) {
             return Ok(true);
         }
+    }
+    if let Some(bt) = base_types
+        && !bt.contains(&class_id)
+    {
+        return Ok(false);
     }
     // KB ⊨ C(a) iff `{a} ⊓ ¬C` is unsatisfiable.
     let build = move |pool: &mut ConceptPool| {
@@ -370,6 +462,8 @@ pub fn instances_of_internal(
             IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
         let pair_deadline = pair_deadline_ms
             .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        // Single-pair-per-individual path — same rationale as
+        // `is_instance_of_internal`: no shared witness to amortize here.
         if instance_check_with_closure(
             internal,
             &closure,
@@ -377,6 +471,7 @@ pub fn instances_of_internal(
             class_id,
             individual_id,
             pair_deadline,
+            None,
         )? {
             let iri = internal.vocabulary.individual_iri(individual_id);
             if !iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
@@ -810,6 +905,27 @@ pub(crate) fn realize_tableau_internal(
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
 
+    // Pseudo-model shortcut (Task 3): compute ONE `ABox` witness model,
+    // ONCE, under a bounded deadline (never unbounded — see
+    // `pseudo_model_witness_deadline_from_env`'s doc). `None` (flag off,
+    // `Stalled`/deadline hit, or no wedge-consistency cache — see
+    // `pseudo_model_enabled`'s coupling note) ⇒ every pair below takes the
+    // unchanged normal path, so this can only ever skip probes, never
+    // change a verdict.
+    let base_model: Option<Vec<HashSet<ClassId>>> = if pseudo_model_enabled() {
+        let witness_deadline = pseudo_model_witness_deadline_from_env();
+        prepared.realize_base_model_types(Some(witness_deadline))
+    } else {
+        None
+    };
+    if let Some(ref m) = base_model {
+        debug_assert_eq!(
+            m.len(),
+            individual_iris.len(),
+            "witness model must carry one type set per individual",
+        );
+    }
+
     // Per-individual realization is independent across individuals
     // (each builds a fresh tableau context per class probe via
     // `prepared.decide`). Parallelise the outer loop with rayon; the
@@ -820,6 +936,7 @@ pub(crate) fn realize_tableau_internal(
         .map(|(idx, _iri)| {
             let individual_id =
                 IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
+            let base_types = base_model.as_ref().and_then(|m| m.get(idx));
             let mut types: Vec<&str> = Vec::new();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
@@ -832,6 +949,7 @@ pub(crate) fn realize_tableau_internal(
                     class_id,
                     individual_id,
                     pair_deadline,
+                    base_types,
                 )? {
                     types.push(class_iri);
                 }
@@ -1013,6 +1131,135 @@ Ontology(<http://rustdl.test/test>\n\
         assert!(
             is_instance_of(&onto, "http://rustdl.test/Person", "http://rustdl.test/bob")
                 .expect("verdict")
+        );
+    }
+
+    /// White-box canary (Task 3, RED before `base_types` exists — this test
+    /// only compiles once `instance_check_with_closure` gains the param):
+    /// the `base_types` prune is a genuine short-circuit that takes
+    /// precedence over the `{a} ⊓ ¬C` tableau probe, not a no-op parameter.
+    ///
+    /// `a : (A ⊔ B)`, `A ⊑ E`, `B ⊑ E` ⇒ `a : E` is entailed by case-split
+    /// tableau reasoning, but NOT by the told-closure fast path
+    /// (`told_classes_of` only captures atomic `ClassAssertion` bodies, and
+    /// here the asserted body is a disjunction). So with `base_types: None`
+    /// the function must reach the tableau probe and correctly return
+    /// `Ok(true)`. Feeding a deliberately-wrong `base_types` (empty, i.e.
+    /// claiming `a` has no `ABox` witness type at all) that EXCLUDES `E`
+    /// must flip the answer to `Ok(false)` — proving the prune is consulted
+    /// and dominates. (Production callers only ever pass a genuine witness
+    /// model's type set, which — per the soundness note on
+    /// `instance_check_with_closure` — never excludes a genuinely-entailed
+    /// class; this test isolates the mechanism with a synthetic input.)
+    #[test]
+    fn pseudo_model_prune_short_circuits_before_tableau_probe() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:E))\n\
+    Declaration(NamedIndividual(:a))\n\
+    SubClassOf(:A :E)\n\
+    SubClassOf(:B :E)\n\
+    ClassAssertion(ObjectUnionOf(:A :B) :a)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let e_id = internal
+            .vocabulary
+            .class_id("http://rustdl.test/E")
+            .expect("E declared");
+        let a_id = internal
+            .vocabulary
+            .individual_id("http://rustdl.test/a")
+            .expect("a declared");
+        let closure = saturate(&internal);
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepares");
+
+        // Baseline: no witness ⇒ the tableau probe alone correctly derives
+        // a:E via the disjunctive case split.
+        assert!(
+            instance_check_with_closure(&internal, &closure, &prepared, e_id, a_id, None, None)
+                .expect("verdict"),
+            "a:E must be entailed via case-split tableau reasoning",
+        );
+
+        // A witness claiming `a` has no types at all (E excluded) must
+        // short-circuit to `Ok(false)`, overriding the (correct) tableau
+        // answer — proof the prune actually fires.
+        let empty: HashSet<ClassId> = HashSet::new();
+        assert!(
+            !instance_check_with_closure(
+                &internal,
+                &closure,
+                &prepared,
+                e_id,
+                a_id,
+                None,
+                Some(&empty),
+            )
+            .expect("verdict"),
+            "base_types excluding E must short-circuit to Ok(false)",
+        );
+
+        // A witness that DOES carry E falls through normally and still
+        // gives the correct answer.
+        let with_e: HashSet<ClassId> = HashSet::from([e_id]);
+        assert!(
+            instance_check_with_closure(
+                &internal,
+                &closure,
+                &prepared,
+                e_id,
+                a_id,
+                None,
+                Some(&with_e),
+            )
+            .expect("verdict"),
+            "base_types containing E must not block the correct Ok(true)",
+        );
+    }
+
+    /// Soundness ordering invariant: the told-closure `Ok(true)` fast path
+    /// runs BEFORE the `base_types` prune is even consulted, so a told/
+    /// derived membership is never pruned — even a deliberately-wrong
+    /// (empty) `base_types` cannot override it. `alice : A`, `A ⊑ C` ⇒
+    /// `alice : C` is told-closure-derivable.
+    #[test]
+    fn pseudo_model_prune_never_overrides_told_closure() {
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A)) Declaration(Class(:C))\n\
+    Declaration(NamedIndividual(:alice))\n\
+    SubClassOf(:A :C)\n\
+    ClassAssertion(:A :alice)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+        let c_id = internal
+            .vocabulary
+            .class_id("http://rustdl.test/C")
+            .expect("C declared");
+        let alice_id = internal
+            .vocabulary
+            .individual_id("http://rustdl.test/alice")
+            .expect("alice declared");
+        let closure = saturate(&internal);
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepares");
+
+        let empty: HashSet<ClassId> = HashSet::new();
+        assert!(
+            instance_check_with_closure(
+                &internal,
+                &closure,
+                &prepared,
+                c_id,
+                alice_id,
+                None,
+                Some(&empty),
+            )
+            .expect("verdict"),
+            "told/derived membership must win before base_types is consulted",
         );
     }
 

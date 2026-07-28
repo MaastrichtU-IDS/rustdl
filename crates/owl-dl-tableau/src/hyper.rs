@@ -159,6 +159,13 @@ impl DepSet {
         }
     }
 
+    /// `true` iff no decision level is present. `ALL` (overflow) is NOT empty —
+    /// it means "depends on everything", so it reports `false`. This is the
+    /// read-off soundness test: empty ⟺ derived with no branch decision.
+    pub(crate) fn is_empty(self) -> bool {
+        self.highest_level().is_none()
+    }
+
     /// Number of decision levels present (bit-count; `ALL`/overflow ⇒ 0 bits set).
     pub(crate) fn count(self) -> u32 {
         self.bits.count_ones()
@@ -271,6 +278,12 @@ struct HyperNode {
     /// Precise causation of all merges this node has absorbed — the dep-set
     /// that the real path discards when it sets `at_most_tainted`/`nn_tainted`.
     shadow_merge_cause: DepSet,
+    /// Set on the surviving representative whenever any node is merged into
+    /// it via `merge_with_cause`. Read-off (`seeded_individual_deterministic_labels`)
+    /// excludes merge-touched individuals: the `≤n`/functional merge caller
+    /// passes `cause_deps = EMPTY`, so a branch-triggered merge can leave a
+    /// moved label with an `EMPTY` dep — reading it as entailed would be an FP.
+    absorbed_merge: bool,
 }
 
 impl HyperNode {
@@ -2425,6 +2438,35 @@ impl<'c> HyperEngine<'c> {
         Some(self.nodes[rep.index()].labels.clone())
     }
 
+    /// The empty-`label_deps` (deterministic ⟹ entailed-in-all-models) labels of
+    /// individual `individual_idx`, for the model-derived realize read-off
+    /// (`RUSTDL_MODEL_DERIVED_TYPES`). Returns `None` when the index is out of
+    /// range OR the individual is **merge-touched** — its representative differs
+    /// from `individual_idx` (merged away) or absorbed a merge — because the
+    /// `≤n`/functional merge path (`merge_with_cause`, EMPTY cause) can leave a
+    /// moved label EMPTY-dep, which is NOT safe to read as entailed. Callers treat
+    /// `None` as "no read-off for this individual" (fall through to probing).
+    #[must_use]
+    pub fn seeded_individual_deterministic_labels(&self, individual_idx: u32) -> Option<Vec<ClassId>> {
+        let idx = individual_idx as usize;
+        if idx >= self.nodes.len() {
+            return None;
+        }
+        let rep = self.resolve(HNode(individual_idx));
+        if rep != HNode(individual_idx) || self.nodes[rep.index()].absorbed_merge {
+            return None; // merge-touched ⇒ no read-off (sound: probe instead)
+        }
+        let node = &self.nodes[rep.index()];
+        Some(
+            node.labels
+                .iter()
+                .zip(node.label_deps.iter())
+                .filter(|(_, d)| d.is_empty())
+                .map(|(c, _)| *c)
+                .collect(),
+        )
+    }
+
     /// Capture a [`crate::snapshot::GraphSnapshot`] of the current
     /// completion graph. Soundly callable only after [`Self::decide`]
     /// (or [`Self::decide_with_deadline`]) has returned
@@ -3789,6 +3831,13 @@ impl<'c> HyperEngine<'c> {
             return true;
         }
         self.representative[s_j.index()] = s_i;
+        // Read-off guard: mark the survivor merge-touched so
+        // `seeded_individual_deterministic_labels` excludes it (the `≤n`
+        // EMPTY-cause path passes `cause_deps = EMPTY`, which can leave a
+        // moved label EMPTY-dep — an FP if read as entailed-in-all-models).
+        // Placed unconditionally: must fire on BOTH the NN-merge (non-EMPTY)
+        // AND the `≤n`/functional merge (EMPTY) paths.
+        self.nodes[s_i.index()].absorbed_merge = true;
         if cause_deps != DepSet::EMPTY {
             // Fold the merge-causation dep into the survivor's `birth_deps`.
             // `clause_body_deps` unions `birth_deps` of the firing node AND
@@ -7243,6 +7292,65 @@ mod tests {
             HyperEngine::new(&clauses, a)
                 .with_mrv_ordering()
                 .mrv_ordering_for_test()
+        );
+    }
+
+    // ── Task 1: merge-touch flag + deterministic-label accessor ──────────────
+
+    #[test]
+    fn depset_is_empty_only_for_empty_not_all() {
+        assert!(DepSet::EMPTY.is_empty());
+        assert!(!DepSet::ALL.is_empty()); // overflow ⇒ not empty (excludes ALL)
+        assert!(!DepSet::singleton(3).is_empty());
+    }
+
+    /// Merging node `b` into survivor `a` must mark the survivor `absorbed_merge`.
+    /// Uses `DepSet::EMPTY` (the `≤n`/functional path) — the exact case the guard
+    /// is designed to catch.
+    #[test]
+    fn merge_marks_survivor_absorbed() {
+        let a_class = cls(0);
+        let clauses: Vec<DlClause> = vec![];
+        let mut eng = HyperEngine::new(&clauses, a_class);
+        // HNode(0) = root (a), create HNode(1) = b.
+        let b = eng.new_node();
+        let a = HNode(0);
+        assert!(
+            !eng.merge_with_cause(a, b, DepSet::EMPTY),
+            "merge must not clash on this fixture"
+        );
+        let rep = eng.resolve(a);
+        assert!(
+            eng.nodes[rep.index()].absorbed_merge,
+            "survivor must be flagged absorbed_merge after a merge"
+        );
+    }
+
+    /// Empty-dep labels on a merge-untouched node are returned; branch-dep labels
+    /// are filtered out; and a merge-touched node returns `None`.
+    #[test]
+    fn deterministic_labels_only_empty_dep_and_skip_merged() {
+        let (c, d) = (cls(5), cls(6));
+        // Build a minimal engine and manually set up node 0's labels.
+        let clauses: Vec<DlClause> = vec![];
+        let mut e = HyperEngine::new(&clauses, cls(99)); // root label cls(99)
+        // Override node 0's labels to exactly [c(empty dep), d(dep on level 2)].
+        e.nodes[0].labels.clear();
+        e.nodes[0].label_deps.clear();
+        e.nodes[0].add(c, DepSet::EMPTY);
+        e.nodes[0].add(d, DepSet::singleton(2));
+        // read-off: only c has empty dep
+        assert_eq!(
+            e.seeded_individual_deterministic_labels(0),
+            Some(vec![c]),
+            "only empty-dep label c should be returned"
+        );
+        // After marking node 0 merge-touched, read-off returns None.
+        e.nodes[0].absorbed_merge = true;
+        assert_eq!(
+            e.seeded_individual_deterministic_labels(0),
+            None,
+            "merge-touched node must return None"
         );
     }
 }

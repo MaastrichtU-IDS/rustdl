@@ -268,16 +268,15 @@ fn merge_moved_label_not_read_off() {
         "a must be entailed C (via A⊑C, deterministic); got {a_entailed:?}"
     );
     let b_iri = "http://rustdl.test/b";
-    if let Some((b_entailed, _)) = on.get(b_iri) {
-        assert!(
-            !b_entailed.iter().any(|c| c == "http://rustdl.test/P"),
-            "b must NOT be entailed P (branch-only) — spurious read-off; got {b_entailed:?}"
-        );
-        assert!(
-            !b_entailed.iter().any(|c| c == "http://rustdl.test/Q"),
-            "b must NOT be entailed Q (branch-only) — spurious read-off; got {b_entailed:?}"
-        );
-    }
+    let (b_entailed, _) = on.get(b_iri).expect("individual b present in realization");
+    assert!(
+        !b_entailed.iter().any(|c| c == "http://rustdl.test/P"),
+        "b must NOT be entailed P (branch-only) — spurious read-off; got {b_entailed:?}"
+    );
+    assert!(
+        !b_entailed.iter().any(|c| c == "http://rustdl.test/Q"),
+        "b must NOT be entailed Q (branch-only) — spurious read-off; got {b_entailed:?}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────

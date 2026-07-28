@@ -27,6 +27,7 @@ use owl_dl_saturation::{Subsumers, saturate, saturate_for_realize};
 
 use crate::PreparedOntology;
 use crate::ReasonError;
+use crate::WitnessModel;
 use crate::classify::{
     classify_saturation_only_internal, classify_top_down_internal, is_pure_el,
     saturator_complete_fragment, tbox_only_saturator_eligible,
@@ -106,6 +107,13 @@ const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 /// to revert to the pre-Task-3 per-pair-only behaviour.
 fn pseudo_model_enabled() -> bool {
     std::env::var_os("RUSTDL_PSEUDO_MODEL").is_none_or(|v| v != "0" && !v.is_empty())
+}
+
+/// The model-derived deterministic type read-off (increment-1). **Default
+/// OFF** — enabled only by explicit `RUSTDL_MODEL_DERIVED_TYPES=1` (or any
+/// non-empty, non-"0" value) — until the differential+oracle gate passes.
+fn model_derived_types_enabled() -> bool {
+    std::env::var_os("RUSTDL_MODEL_DERIVED_TYPES").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 /// Reads `RUSTDL_PSEUDO_MODEL_WITNESS_MS`, returning the bounded deadline to
@@ -201,6 +209,7 @@ pub fn is_instance_of_internal(
         individual_id,
         pair_deadline,
         None,
+        None,
     )
 }
 
@@ -277,6 +286,7 @@ pub fn is_instance_of_saturation_only_internal(
 /// returned `true` above, so it is never pruned; a class the individual
 /// genuinely has is always present in a real witness model's label). `None`
 /// (no witness available) takes the unchanged normal path.
+#[allow(clippy::too_many_arguments)]
 fn instance_check_with_closure(
     internal: &InternalOntology,
     closure: &Subsumers,
@@ -285,11 +295,20 @@ fn instance_check_with_closure(
     individual_id: IndividualId,
     pair_deadline: Option<std::time::Instant>,
     base_types: Option<&HashSet<ClassId>>,
+    deterministic_types: Option<&HashSet<ClassId>>,
 ) -> Result<bool, ReasonError> {
     for told in told_classes_of(internal, individual_id) {
         if closure.contains(told, class_id) {
             return Ok(true);
         }
+    }
+    // Model-derived read-off: a deterministic (empty-dep) label on a
+    // merge-untouched individual node is entailed in every model ⇒ Ok(true)
+    // with no probe. Verdict-preserving: probing would return the same true.
+    if let Some(dt) = deterministic_types
+        && dt.contains(&class_id)
+    {
+        return Ok(true);
     }
     if let Some(bt) = base_types
         && !bt.contains(&class_id)
@@ -478,6 +497,7 @@ pub fn instances_of_internal(
             class_id,
             individual_id,
             pair_deadline,
+            None,
             None,
         )? {
             let iri = internal.vocabulary.individual_iri(individual_id);
@@ -912,20 +932,28 @@ pub(crate) fn realize_tableau_internal(
     let closure = saturate(internal);
     let prepared = PreparedOntology::from_internal(internal.clone())?;
 
-    // Pseudo-model shortcut (Task 3): compute ONE `ABox` witness model,
-    // ONCE, under a bounded deadline (never unbounded — see
-    // `pseudo_model_witness_deadline_from_env`'s doc). `None` (flag off,
-    // `Stalled`/deadline hit, or no wedge-consistency cache — see
-    // `pseudo_model_enabled`'s coupling note) ⇒ every pair below takes the
-    // unchanged normal path, so this can only ever skip probes, never
-    // change a verdict.
-    let base_model: Option<Vec<HashSet<ClassId>>> = if pseudo_model_enabled() {
+    // Witness model (Task 3 / #57): compute ONE `ABox` witness model, ONCE,
+    // under a bounded deadline (never unbounded — see
+    // `pseudo_model_witness_deadline_from_env`'s doc), when EITHER shortcut is
+    // on.  `complete` feeds the #57 prune only when pseudo-model is on;
+    // `deterministic` feeds the read-off only when model-derived is on.  Either
+    // being off ⇒ that view is treated as absent for every pair (unchanged
+    // behaviour). `None` (both off, `Stalled`/deadline hit, or no
+    // wedge-consistency cache — see `pseudo_model_enabled`'s coupling note) ⇒
+    // every pair below takes the unchanged normal path, so this can only ever
+    // skip probes, never change a verdict.
+    let witness: Option<WitnessModel> = if pseudo_model_enabled() || model_derived_types_enabled() {
         let witness_deadline = pseudo_model_witness_deadline_from_env();
-        prepared.realize_base_model_types(Some(witness_deadline))
+        prepared.realize_witness_model(Some(witness_deadline))
     } else {
         None
     };
-    if let Some(ref m) = base_model {
+    // `complete` feeds the #57 prune only when pseudo-model is on; `deterministic`
+    // feeds the read-off only when model-derived is on. Either being off ⇒ that
+    // view is treated as absent for every pair (unchanged behaviour).
+    let complete_view = witness.as_ref().filter(|_| pseudo_model_enabled()).map(|m| &m.complete);
+    let det_view = witness.as_ref().filter(|_| model_derived_types_enabled()).map(|m| &m.deterministic);
+    if let Some(m) = complete_view {
         debug_assert_eq!(
             m.len(),
             individual_iris.len(),
@@ -943,7 +971,8 @@ pub(crate) fn realize_tableau_internal(
         .map(|(idx, _iri)| {
             let individual_id =
                 IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
-            let base_types = base_model.as_ref().and_then(|m| m.get(idx));
+            let base_types = complete_view.and_then(|m| m.get(idx));
+            let det_types = det_view.and_then(|m| m.get(idx));
             let mut types: Vec<&str> = Vec::new();
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
@@ -957,6 +986,7 @@ pub(crate) fn realize_tableau_internal(
                     individual_id,
                     pair_deadline,
                     base_types,
+                    det_types,
                 )? {
                     types.push(class_iri);
                 }
@@ -1185,8 +1215,10 @@ Ontology(<http://rustdl.test/test>\n\
         // Baseline: no witness ⇒ the tableau probe alone correctly derives
         // a:E via the disjunctive case split.
         assert!(
-            instance_check_with_closure(&internal, &closure, &prepared, e_id, a_id, None, None)
-                .expect("verdict"),
+            instance_check_with_closure(
+                &internal, &closure, &prepared, e_id, a_id, None, None, None,
+            )
+            .expect("verdict"),
             "a:E must be entailed via case-split tableau reasoning",
         );
 
@@ -1203,6 +1235,7 @@ Ontology(<http://rustdl.test/test>\n\
                 a_id,
                 None,
                 Some(&empty),
+                None,
             )
             .expect("verdict"),
             "base_types excluding E must short-circuit to Ok(false)",
@@ -1220,6 +1253,7 @@ Ontology(<http://rustdl.test/test>\n\
                 a_id,
                 None,
                 Some(&with_e),
+                None,
             )
             .expect("verdict"),
             "base_types containing E must not block the correct Ok(true)",
@@ -1264,6 +1298,7 @@ Ontology(<http://rustdl.test/test>\n\
                 alice_id,
                 None,
                 Some(&empty),
+                None,
             )
             .expect("verdict"),
             "told/derived membership must win before base_types is consulted",
@@ -1529,5 +1564,20 @@ Ontology(<http://rustdl.test/test>\n\
         let r = realize(&onto).expect("realization terminates");
         assert!(r.entailed_types("http://rustdl.test/a").is_empty());
         assert!(r.entailed_types("http://rustdl.test/b").is_empty());
+    }
+
+    /// Gate test: `RUSTDL_MODEL_DERIVED_TYPES` defaults to OFF (unset ⇒
+    /// `model_derived_types_enabled()` is `false`). Setting it to `"1"` flips
+    /// it ON; clearing it restores OFF. Serialised via the crate's env lock so
+    /// concurrent env-touching tests do not interfere.
+    #[test]
+    #[allow(unsafe_code)]
+    fn model_derived_types_default_off() {
+        let _g = crate::test_env_lock();
+        unsafe { std::env::remove_var("RUSTDL_MODEL_DERIVED_TYPES") };
+        assert!(!super::model_derived_types_enabled());
+        unsafe { std::env::set_var("RUSTDL_MODEL_DERIVED_TYPES", "1") };
+        assert!(super::model_derived_types_enabled());
+        unsafe { std::env::remove_var("RUSTDL_MODEL_DERIVED_TYPES") };
     }
 }

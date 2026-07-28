@@ -3372,6 +3372,7 @@ impl ConsistencyCache {
     /// Thin wrapper over [`Self::witness_model`]; keeps the existing #57
     /// pseudo-model prune consumer ([`PreparedOntology::realize_base_model_types`])
     /// byte-identical.
+    #[allow(dead_code)]
     pub(crate) fn base_model_types(
         &self,
         deadline: Option<std::time::Instant>,
@@ -4720,6 +4721,7 @@ impl PreparedOntology {
     ///
     /// Consumer: `realize_tableau_internal`'s pseudo-model shortcut, gated
     /// by `RUSTDL_PSEUDO_MODEL` (see `realize::pseudo_model_enabled`).
+    #[allow(dead_code)]
     pub(crate) fn realize_base_model_types(
         &self,
         deadline: Option<std::time::Instant>,

@@ -11,5 +11,10 @@ repository.workspace = true
 owl-dl-core = { workspace = true }
 hashbrown = { workspace = true }
 
+[dev-dependencies]
+# Needed by the integration tests (cb_alch, cb_fragment_gate) to parse OFN
+# into a SetOntology and convert it to InternalOntology via convert_ontology.
+horned-owl = { workspace = true }
+
 [lints]
 workspace = true

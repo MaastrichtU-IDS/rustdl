@@ -876,7 +876,19 @@ pub(crate) fn realize_tableau_internal(
     // called (`classify_internal`) DNFs on real ontologies and
     // forced any realize call on SIO-scale inputs to time out
     // before per-individual probing ever started.
-    let hierarchy = classify_top_down_internal(internal, None, None)?;
+    // Bound the classify step with the same per-pair budget that realize
+    // already applies to its own probe loop.  An unbounded classify could hang
+    // here on one hard class-subsumption pair before the per-individual loop
+    // ever starts (verified: ore_ont_14379 DNF → completes with this bound).
+    // A cut pair is a sound under-approximation (MISS, never a false
+    // subsumption); at worst it makes `most_specific_types` less minimal, but
+    // every reported type is still a genuine type. `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=0`
+    // ⟹ `pair_deadline_ms = None` ⟹ unbounded (opt-out preserved).
+    let hierarchy = classify_top_down_internal(
+        internal,
+        pair_deadline_ms.map(std::time::Duration::from_millis),
+        None,
+    )?;
     let class_iris: Vec<String> = (0..internal.vocabulary.num_classes())
         .map(|i| {
             internal
@@ -1529,5 +1541,104 @@ Ontology(<http://rustdl.test/test>\n\
         let r = realize(&onto).expect("realization terminates");
         assert!(r.entailed_types("http://rustdl.test/a").is_empty());
         assert!(r.entailed_types("http://rustdl.test/b").is_empty());
+    }
+
+    /// Verdict-preservation guard for the bounded-classify fix.
+    ///
+    /// `realize_tableau_internal` bounds its internal `classify_top_down_internal`
+    /// call with `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` (default 750 ms).  On any
+    /// fixture whose classify completes well within that budget the two modes
+    /// (bounded default vs unbounded `=0`) must produce identical output.
+    ///
+    /// The fixture uses `EquivalentClasses(:Nom ObjectOneOf(:a))` to push the
+    /// ontology out of the EL/saturation-eligible fragment so the call
+    /// actually exercises `realize_tableau_internal` (not the saturation fast
+    /// path).  It also includes `SubClassOf` + `ClassAssertion` axioms so
+    /// individual `:alice` acquires ≥1 most-specific type (non-vacuity).
+    #[test]
+    fn bounded_classify_verdict_preserved() {
+        // Fixture: Nom ≡ {a} (nominal), A ⊑ B ⊑ C, alice : A.
+        // alice's most-specific type must be A (leaf under A ⊑ B ⊑ C).
+        let onto = parse(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+    Declaration(Class(:Nom))\n\
+    Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:alice))\n\
+    EquivalentClasses(:Nom ObjectOneOf(:a))\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+    ClassAssertion(:A :alice)\n\
+)\n"
+        ));
+        let internal = convert_ontology(&onto).expect("convert");
+
+        // The nominal makes the ontology off-fragment; verify so the A/B comparison
+        // is exercising `realize_tableau_internal` in both branches.
+        assert!(
+            !realize_saturation_eligible(&internal),
+            "fixture must NOT be saturation-eligible so realize_tableau_internal is the live path",
+        );
+
+        // Save/restore RUSTDL_REALIZE_PAIR_TIMEOUT_MS under the global env lock.
+        // Bounded run: use default (unset env ⟹ 750 ms).
+        // Unbounded run: set env to "0".
+        let bounded = {
+            let _lock = crate::test_env_lock();
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS");
+            }
+            realize_tableau_internal(&internal).expect("bounded realize")
+        };
+        let unbounded = {
+            let _lock = crate::test_env_lock();
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::set_var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS", "0");
+            }
+            let r = realize_tableau_internal(&internal).expect("unbounded realize");
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var("RUSTDL_REALIZE_PAIR_TIMEOUT_MS");
+            }
+            r
+        };
+
+        let alice = "http://rustdl.test/alice";
+        let bounded_types: std::collections::HashSet<&str> = bounded
+            .entailed_types(alice)
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let unbounded_types: std::collections::HashSet<&str> = unbounded
+            .entailed_types(alice)
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            bounded_types, unbounded_types,
+            "entailed_types differ: bounded={bounded_types:?} unbounded={unbounded_types:?}",
+        );
+        // Clone into owned Vec so we can sort without holding a borrow.
+        let mut bounded_leaves: Vec<String> = bounded.most_specific_types(alice).to_vec();
+        let mut unbounded_leaves: Vec<String> = unbounded.most_specific_types(alice).to_vec();
+        bounded_leaves.sort();
+        unbounded_leaves.sort();
+        assert_eq!(
+            bounded_leaves, unbounded_leaves,
+            "most_specific_types differ: bounded={bounded_leaves:?} unbounded={unbounded_leaves:?}",
+        );
+
+        // Non-vacuity: alice must appear as A (which is a leaf under A ⊑ B ⊑ C).
+        assert!(
+            bounded_types.contains("http://rustdl.test/A"),
+            "alice must be typed as A; got {bounded_types:?}",
+        );
+        assert_eq!(
+            bounded_leaves,
+            vec!["http://rustdl.test/A".to_owned()],
+            "A must be alice's sole most-specific type; got {bounded_leaves:?}",
+        );
     }
 }

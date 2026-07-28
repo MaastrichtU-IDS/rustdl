@@ -3319,28 +3319,31 @@ impl ConsistencyCache {
         engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline)
     }
 
-    /// One `ABox` witness model → each individual's COMPLETE atomic-class type
-    /// set, or `None` when no clash-free completion is available
+    /// One `ABox` witness model — both views — from a SINGLE engine build.
+    /// Returns `None` when no clash-free completion is available
     /// (`Unsat`/`Stalled`/deadline). Builds the SAME engine configuration as
     /// [`Self::decide`] (via [`Self::build_seeded_engine`]) so the returned
     /// labels come from a genuine model of the `ABox`, not a divergent
-    /// completion. Indexed by individual id (`0..self.num_individuals`);
-    /// `seeded_individual_labels` resolves through the union-find so a
-    /// `SameIndividual`/functional merge never silently under-reports a
-    /// merged-away individual's types.
+    /// completion. Indexed by individual id (`0..self.num_individuals`).
     ///
-    /// Consumed via [`Self::realize_base_model_types`], the
-    /// realize-loop's pseudo-model shortcut (`RUSTDL_PSEUDO_MODEL`,
-    /// see `realize::pseudo_model_enabled`).
-    pub(crate) fn base_model_types(
+    /// `complete`: every individual's full atomic-class label set
+    /// (`seeded_individual_labels` resolves through the union-find so a
+    /// `SameIndividual`/functional merge never silently under-reports a
+    /// merged-away individual's types). The #57 pseudo-model prune source.
+    ///
+    /// `deterministic`: empty-dep (entailed-in-all-models) subset per
+    /// individual; empty set for a merge-touched individual (accessor
+    /// returns `None` → `.unwrap_or_default()`).
+    pub(crate) fn witness_model(
         &self,
         deadline: Option<std::time::Instant>,
-    ) -> Option<Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>> {
+    ) -> Option<WitnessModel> {
         use owl_dl_tableau::hyper::HyperResult;
         let mut engine = self.build_seeded_engine();
         match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {
-            HyperResult::Sat => Some(
-                (0..self.num_individuals)
+            HyperResult::Sat => {
+                let n = self.num_individuals;
+                let complete = (0..n)
                     .map(|i| {
                         engine
                             .seeded_individual_labels(i)
@@ -3348,11 +3351,52 @@ impl ConsistencyCache {
                             .into_iter()
                             .collect()
                     })
-                    .collect(),
-            ),
+                    .collect();
+                let deterministic = (0..n)
+                    .map(|i| {
+                        engine
+                            .seeded_individual_deterministic_labels(i)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect()
+                    })
+                    .collect();
+                Some(WitnessModel { complete, deterministic })
+            }
             HyperResult::Unsat | HyperResult::Stalled => None,
         }
     }
+
+    /// One `ABox` witness model → each individual's COMPLETE atomic-class type
+    /// set, or `None` when no clash-free completion is available.
+    /// Thin wrapper over [`Self::witness_model`]; keeps the existing #57
+    /// pseudo-model prune consumer ([`PreparedOntology::realize_base_model_types`])
+    /// byte-identical.
+    pub(crate) fn base_model_types(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>> {
+        self.witness_model(deadline).map(|m| m.complete)
+    }
+}
+
+/// One `ABox` witness model, both views, from a single engine build.
+///
+/// `complete`: every individual's full atomic-class label set (the #57
+/// pseudo-model prune source — indexed by individual id, resolves through
+/// the union-find for merged individuals).
+///
+/// `deterministic`: the empty-dep (entailed-in-all-models) subset per
+/// individual.  A merge-touched individual's entry is the empty set
+/// (the accessor returns `None` → `.unwrap_or_default()`).
+///
+/// Produced by [`ConsistencyCache::witness_model`]; exposed to the realize
+/// loop via [`PreparedOntology::realize_witness_model`].
+pub(crate) struct WitnessModel {
+    pub(crate) complete: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>,
+    /// Empty-dep (entailed-in-all-models) subset; consumed by Task 3.
+    #[allow(dead_code)]
+    pub(crate) deterministic: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>>,
 }
 
 /// Per-class snapshot cache for the Konclude snapshot cache project
@@ -4683,6 +4727,26 @@ impl PreparedOntology {
         self.consistency
             .as_ref()
             .and_then(|c| c.base_model_types(deadline))
+    }
+
+    /// One `ABox` witness model — both views — or `None` when the wedge
+    /// consistency route is disabled / there is no `ABox` / no clash-free
+    /// completion is available (`Unsat`/`Stalled`/deadline).
+    ///
+    /// Thin wrapper over [`ConsistencyCache::witness_model`]. Exposes both
+    /// the `complete` (#57 pseudo-model prune source, identical to
+    /// [`Self::realize_base_model_types`]) and the `deterministic` (empty-dep
+    /// subset) views from a SINGLE engine build.
+    ///
+    /// Consumed by Task 3 (model-derived realize read-off).
+    #[allow(dead_code)]
+    pub(crate) fn realize_witness_model(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<crate::WitnessModel> {
+        self.consistency
+            .as_ref()
+            .and_then(|c| c.witness_model(deadline))
     }
 
     /// Lazy accessor for the `ABox` consistency check verdict.

@@ -112,3 +112,29 @@ off an aggregate):
 Branch parked unmerged (protects the commits; nothing builds on this, so it is not
 merged as dormant scaffolding). Do **not** build the FP fix. This document + the
 spec + the plan are the durable record of the measure-out.
+
+## Addendum (2026-07-28): Phase-0 refutes lead #1 (classify cost)
+
+Decomposed realize into classify-alone vs probe-loop on 4 model-builders (300 s cap,
+isolated). Classify is **not** the binding constraint:
+
+| ont | classify alone | realize (300 s cap) | ⇒ probe-loop |
+|---|---|---|---|
+| `ore_ont_13545` | 6 ms | ok 7 ms (rows=0, empty realize) | ~0 |
+| `ore_ont_14379` | 2.0 s | DNF (300 s) | ~298 s |
+| `ore_ont_10197` | 28 s | DNF (300 s) | ~272 s |
+| `ore_ont_9053` | 56 s | DNF (300 s) | ~244 s |
+
+The per-individual **probe loop** runs 244–298 s and still produces zero output.
+Removing/cheapening `classify_top_down` saves 2–56 s where the probe loop needs
+cutting by 200 s+ — a red herring. (The earlier "classify-dominant on some" framing
+was misleading: classify is a *visible* cost but never the binding one; and `13545`'s
+earlier 130 s DNF was a contention anomaly — its realize is empty and instant.)
+
+**Both leads collapse to one root:** the O(individuals × classes) probe loop dominated
+by expensive branch-dependent hard-SROIQ probes = the one-model-realize / wine-wall
+frontier (`wine-wall-bjgap1-genuine`). Lead #1 is closed. Separately notable: realize
+is **all-or-nothing** — it prints types only after the full parallel loop completes, so
+a DNF yields *nothing* even for individuals already typed. A global-deadline
+partial-output path (analogous to classify's `--global-timeout-ms`) is a cheap
+*robustness* win (DNF→partial), distinct from the hard completeness frontier.

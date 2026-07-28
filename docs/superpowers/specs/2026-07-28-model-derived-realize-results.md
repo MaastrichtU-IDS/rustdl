@@ -138,3 +138,33 @@ is **all-or-nothing** — it prints types only after the full parallel loop comp
 a DNF yields *nothing* even for individuals already typed. A global-deadline
 partial-output path (analogous to classify's `--global-timeout-ms`) is a cheap
 *robustness* win (DNF→partial), distinct from the hard completeness frontier.
+
+## Addendum 2 (2026-07-28): Phase-0 on lead #2 finds a real classify-bug (modest lever) + confirms the hard frontier
+
+Instrumented `realize_tableau_internal` (heartbeat + stage timers + probe-loop
+counters, temp, reverted). The per-individual probe loop was NOT the first
+blocker on the classify-heavy onts — **`classify_top_down_internal` is called
+UNBOUNDED** (`realize.rs:940`, `(internal, None, None)`) while the CLI `classify`
+passes default budgets. Verified: `classify --pair-timeout-ms 0` (unbounded, what
+realize does) DNFs at 90 s; default-budget classify is 2 s. So on classify-heavy
+onts, one hard class-subsumption pair hangs *inside realize's classify step*,
+before the individual loop starts. **This is a genuine correctness/robustness bug**
+(realize can hang unboundedly in a step the CLI bounds), sound to fix (bounded
+classify = sound under-approx: at worst a less-*minimal* `most_specific_types`,
+never a false type).
+
+**Value of bounding it (1000 ms/pair, shippable defaults, over the 58): 2/58
+rescued** (`14379`: DNF→instant with told+#57-prune handling all 5490 pairs,
+**probe=0**; `8250`). The other **56 DNF** are the hard frontier: on `10197`/`9053`
+bounded classify unblocks the classify step (26 s/56 s) but the per-individual loop
+is then dominated by **expensive in-witness probes** (~830 ms each, `probe_true=0` —
+hard negatives hitting the 750 ms deadline), confirmed by heartbeat (probe 48→144,
+probe_total 40→120 s). That is the one-model-realize / hard-SROIQ-probe frontier
+(`wine-wall-bjgap1-genuine`), unchanged.
+
+**Net:** lead #2 decomposes into (a) a small standalone robustness fix — bound
+realize's internal classify — worth shipping on its own merit (closes the
+unbounded-hang, rescues the classify-bug-only tail), and (b) the hard in-witness
+probe frontier for the remaining ~56/58 (measured-out territory). The
+"iterate witness labels not all-classes" idea does NOT help (b): the expensive
+probes are in-witness, not pruned iterations.

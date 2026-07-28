@@ -160,6 +160,24 @@ pub(crate) fn run_with_timeout(
     rx.recv_timeout(timeout).ok().map(|()| t.elapsed())
 }
 
+/// Run `classify_sequoia(&onto)` on a background thread with a wall-clock
+/// deadline, returning `Some((elapsed, outcome))` if it finished in time and
+/// `None` if it was still running (a leaked worker; process exits cleanly).
+/// Unlike [`run_with_timeout`] this carries the `CbOutcome` back so the caller
+/// can self-check the verdict (Gate 2 needs C-unsat, not just termination).
+fn sequoia_with_timeout(
+    onto: owl_dl_core::ontology::InternalOntology,
+    timeout: Duration,
+) -> Option<(Duration, CbOutcome)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t = Instant::now();
+    std::thread::spawn(move || {
+        let out = classify_sequoia(&onto);
+        let _ = tx.send(out);
+    });
+    rx.recv_timeout(timeout).ok().map(|out| (t.elapsed(), out))
+}
+
 // ── Sanity / agreement test (non-ignored — runs in CI) ────────────────────
 
 /// Both B1 (unordered, directly complete) and S1 (ordered) must agree on a
@@ -171,6 +189,8 @@ pub(crate) fn run_with_timeout(
 /// `n_pairs=2` → 4 atoms, 6 pairwise disjointness axioms, 2 universals.
 #[test]
 fn agreement_on_tiny() {
+    // Default-mode S1 call: fence against flag-ON tests in this binary.
+    let _serial = env_serial();
     let internal = adversarial(2);
 
     let b1_out = classify_unordered(&internal);
@@ -240,6 +260,9 @@ fn agreement_on_tiny() {
 #[test]
 #[ignore = "baseline: S1 expected to hang; run explicitly to verify the blowup reproduces"]
 fn s1_blows_up_on_adversarial() {
+    // Default-mode baseline: fence against flag-ON tests (also ensures the flag
+    // is in its default-unset state for this measurement).
+    let _serial = env_serial();
     let o = adversarial(N_BLOWUP);
     let done = Arc::new(AtomicBool::new(false));
     let done2 = Arc::clone(&done);
@@ -260,4 +283,133 @@ fn s1_blows_up_on_adversarial() {
         finished.unwrap_or_default()
     );
     // Worker thread is deliberately leaked; the test process exits cleanly.
+}
+
+// ── Candidate-1 taming regression (Task 3, Gate 2) ─────────────────────────
+
+/// Serializes every test in this binary that reads OR writes
+/// `RUSTDL_CB_SECOND_MAXIMAL` (cargo runs `#[test]` fns concurrently within one
+/// process; `classify_sequoia` snapshots the flag via `var_os` at
+/// `OrderBuilder::build`). Both flag-ON tests and the default-mode tests take
+/// this lock so none observes another's env mutation. Mirrors the reasoner
+/// crate's `ENV_MUTEX` prior art.
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take `ENV_MUTEX` (no mutation) so a default-mode `classify_*` test cannot
+/// run concurrently with a flag-ON test.
+fn env_serial() -> std::sync::MutexGuard<'static, ()> {
+    ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// RAII guard: set `RUSTDL_CB_SECOND_MAXIMAL=1` for its lifetime, restore on
+/// drop (panic-safe). Holds `ENV_MUTEX` for its whole lifetime. Snapshotted per
+/// `classify_*` call at `OrderBuilder::build`.
+struct SecondMaximalGuard {
+    prev: Option<std::ffi::OsString>,
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+impl SecondMaximalGuard {
+    #[allow(unsafe_code)]
+    fn set() -> Self {
+        let serial = env_serial();
+        let prev = std::env::var_os("RUSTDL_CB_SECOND_MAXIMAL");
+        // SAFETY: set_var is unsafe under edition 2024. Held only for one test,
+        // serialized via ENV_MUTEX, restored on Drop.
+        unsafe { std::env::set_var("RUSTDL_CB_SECOND_MAXIMAL", "1") };
+        Self {
+            prev,
+            _serial: serial,
+        }
+    }
+}
+
+impl Drop for SecondMaximalGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see `set`.
+        unsafe {
+            match &self.prev {
+                Some(v) => std::env::set_var("RUSTDL_CB_SECOND_MAXIMAL", v),
+                None => std::env::remove_var("RUSTDL_CB_SECOND_MAXIMAL"),
+            }
+        }
+    }
+}
+
+/// Resolve `:C`'s `ClassId` and assert it is reported unsatisfiable in `h`.
+/// (The complete oracle B1 reports C in `.unsat` on this pattern — validated
+/// against `adversarial(3)` in [`ground_truth_c_unsat_small`].)
+fn assert_c_unsat(internal: &owl_dl_core::ontology::InternalOntology, h: &owl_dl_cb::CbHierarchy) {
+    let c = internal
+        .vocabulary
+        .class_id("http://t/C")
+        .expect(":C must be interned");
+    assert!(
+        h.unsat.contains(&c),
+        "C must be reported unsatisfiable (C ⊑ owl:Nothing); unsat set = {:?}",
+        h.unsat
+    );
+}
+
+/// GATE-2 SANITY: on a SMALL adversarial instance where B1 (the complete
+/// oracle) terminates, confirm B1 reports C unsatisfiable — this validates the
+/// "correct answer = C ⊑ owl:Nothing" claim used as the expected verdict at
+/// N=13, AND that flag-ON tamed-S1 agrees with B1 there.
+#[test]
+fn ground_truth_c_unsat_small() {
+    // Hold the guard (and thus ENV_MUTEX) for the whole test. B1 is
+    // flag-insensitive (engine.rs never reads RUSTDL_CB_SECOND_MAXIMAL), so
+    // running it under the flag is harmless; only the S1 call needs it ON.
+    let _guard = SecondMaximalGuard::set();
+    let internal = adversarial(3);
+
+    let b1 = match classify_unordered(&internal) {
+        CbOutcome::Classified(h) => h,
+        CbOutcome::OutOfFragment(r) => panic!("B1 OOF on adversarial(3): {r}"),
+    };
+    assert_c_unsat(&internal, &b1);
+
+    let s1 = match classify_sequoia(&internal) {
+        CbOutcome::Classified(h) => h,
+        CbOutcome::OutOfFragment(r) => panic!("tamed-S1 OOF on adversarial(3): {r}"),
+    };
+    assert_c_unsat(&internal, &s1);
+}
+
+/// GATE-2 (the crux) — Candidate 1 result: **UNDER-TAMES** (measured 2026-07-28).
+///
+/// The plan's intended acceptance: with `RUSTDL_CB_SECOND_MAXIMAL=1`, tamed-S1
+/// (a) FINISHES fast (< 5 s) on `adversarial(N_BLOWUP)` AND (b) reports C
+/// unsatisfiable. Part (b) holds (parity with B1 is preserved — see
+/// [`ground_truth_c_unsat_small`] and `cb_sequoia_diff`), but part (a) does NOT:
+/// second-maximal eligibility is a strict SUPERSET of the single-maximal Hyper
+/// resolutions, so it does MORE work, and `add_clause`'s backward subsumption
+/// cannot collapse the resulting incomparable disjunctive antichain. Flag-ON is
+/// ~3× SLOWER than flag-OFF at every N (release sweep n=4..12: OFF n=12 ≈ 2.4 s,
+/// ON n=12 TIMEOUT >20 s), i.e. Candidate 1 makes the blowup WORSE, not tamer.
+///
+/// This test is therefore `#[ignore]`d and DOCUMENTS the under-tame: it asserts
+/// tamed-S1 does NOT finish in 5 s (the empirical Candidate-1 verdict). Under-
+/// taming routes to Task 5 (KM's disjunct-count cap + splitting). Run:
+/// `cargo test -p owl-dl-cb --test cb_blowup -- --ignored second_maximal_under_tames`
+#[test]
+#[ignore = "Candidate-1 result: under-tames (flag-ON is slower); documents the finding, routes to Task 5"]
+fn second_maximal_under_tames() {
+    let _guard = SecondMaximalGuard::set();
+    let internal = adversarial(N_BLOWUP);
+
+    let result = sequoia_with_timeout(internal.clone(), Duration::from_secs(5));
+
+    assert!(
+        result.is_none(),
+        "UNEXPECTED: Candidate-1 (second-maximal) finished adversarial({N_BLOWUP}) in {:?}. \
+         The under-tame no longer reproduces — re-assess Task 4/5.",
+        result.map(|(d, _)| d).unwrap_or_default()
+    );
+    // NB: at small N (see `ground_truth_c_unsat_small`) tamed-S1 DOES report C
+    // unsat and matches B1 — completeness (Gate 1) is preserved; only the
+    // blowup-taming (Gate 2a) fails.
 }

@@ -46,6 +46,19 @@ pub(crate) struct OrderBuilder {
     /// Told-disjoint pairs `A ⊓ X ⊑ ⊥` (empty-head two-premise clause), stored
     /// SYMMETRICALLY: `told_disjoint[A] ∋ X` AND `told_disjoint[X] ∋ A`.
     told_disjoint: HashMap<ConceptId, HashSet<ConceptId>>,
+    /// Candidate-1 taming: `RUSTDL_CB_SECOND_MAXIMAL`. When true, `eligible`
+    /// relaxes the Hyper side-condition to allow the resolved atom to be the
+    /// maximal OR second-maximal head atom (`≤1` greater atomic literal in the
+    /// residual) — the Bate et al. SRIQ-CB refinement. Snapshotted ONCE at
+    /// build time (not read per-call): keeps `eligible` allocation-free in the
+    /// O(head²) Hyper loop and lets flag-on/flag-off coexist in one process.
+    second_maximal: bool,
+}
+
+/// Read the `RUSTDL_CB_SECOND_MAXIMAL` taming flag. Default OFF (unset / `"0"` /
+/// empty ⟹ current single-maximal S1). Snapshotted once by `OrderBuilder::build`.
+fn second_maximal_enabled() -> bool {
+    std::env::var_os("RUSTDL_CB_SECOND_MAXIMAL").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 impl OrderBuilder {
@@ -147,6 +160,7 @@ impl OrderBuilder {
             depth,
             global_unsat,
             told_disjoint,
+            second_maximal: second_maximal_enabled(),
         }
     }
 
@@ -187,6 +201,7 @@ impl OrderBuilder {
                 OrderMode::PerClass => None,
                 OrderMode::PerQuery(head) => Some(head),
             },
+            second_maximal: self.second_maximal,
         }
     }
 }
@@ -211,6 +226,8 @@ pub(crate) struct PerContextOrder {
     core: HashSet<ConceptId>,
     /// R1 only: the query head atom forced strictly `≻`-minimal (Condition C2).
     query_minimal: Option<ConceptId>,
+    /// Candidate-1 taming flag, snapshotted from the `OrderBuilder` (see there).
+    second_maximal: bool,
 }
 
 impl PerContextOrder {
@@ -252,18 +269,32 @@ impl PerContextOrder {
         self.atom_key(a) > self.atom_key(b)
     }
 
-    /// The Hyper side-condition predicate `Δ ⊁ᵥ a`: NO atomic literal in the
-    /// residual `delta` is strictly `≻ᵥ` the resolved atom `a`. Non-atomic
-    /// literals never block (discharged by Succ/All) — MISS-biased, never FP.
+    /// The Hyper side-condition predicate. In the DEFAULT (single-maximal) mode
+    /// this is `Δ ⊁ᵥ a`: NO atomic literal in the residual `delta` is strictly
+    /// `≻ᵥ` the resolved atom `a` — i.e. `a` is the `≻ᵥ`-maximal head atom.
+    ///
+    /// Under Candidate-1 taming (`RUSTDL_CB_SECOND_MAXIMAL`) it relaxes to allow
+    /// `≤1` atomic literal of `delta` above `a` — so `a` may be the maximal OR
+    /// the second-maximal head atom (the Bate et al. SRIQ-CB refinement). Since
+    /// `delta` is the head with `a` removed and `atom_gt` is strict, "atoms of
+    /// `delta` above `a`" equals "head atoms above `a`", so `≤1` is exactly
+    /// "`a` is maximal or second-maximal in the WHOLE head".
+    ///
+    /// Non-atomic literals (`∃R.B`/`∀R.B`) never block (discharged by Succ/All)
+    /// — MISS-biased, never FP; unchanged in both modes.
     #[must_use]
     pub(crate) fn eligible(&self, pool: &ConceptPool, delta: &[ConceptId], a: ConceptId) -> bool {
-        delta.iter().all(|&l| {
-            if Self::is_atomic(pool, l) {
-                !self.atom_gt(l, a)
-            } else {
-                true
+        let allow = u8::from(self.second_maximal);
+        let mut greater: u8 = 0;
+        for &l in delta {
+            if Self::is_atomic(pool, l) && self.atom_gt(l, a) {
+                greater += 1;
+                if greater > allow {
+                    return false;
+                }
             }
-        })
+        }
+        true
     }
 
     /// Sort a head disjunction by `≻ᵥ` ascending so the maximal literal is last.

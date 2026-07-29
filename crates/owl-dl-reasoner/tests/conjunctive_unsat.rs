@@ -748,3 +748,60 @@ fn conjunctive_unsat_provenance_wired() {
          broken if conjunctive_unsat_axiom provenance lookup always yields None"
     );
 }
+
+// ── Task 4: complex-body, n-ary, and FP-guard canaries for ConjunctiveUnsat ──
+
+/// COMPLEX BODY. `∃R.C ⊓ D ⊑ ⊥` — the `bodies` collector lowers the `∃R.C`
+/// operand to a marker class, so the same rule covers it.
+#[test]
+fn conjunctive_bot_with_existential_body_derives_unsat() {
+    let body = "    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:X))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(ObjectIntersectionOf(ObjectSomeValuesFrom(:R :C) :D) owl:Nothing)
+    SubClassOf(:X ObjectSomeValuesFrom(:R :C))
+    SubClassOf(:X :D)";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/X".to_string()],
+        "X has both ∃R.C and D, and their conjunction is unsatisfiable"
+    );
+}
+
+/// FP GUARD for the complex-body case: only the existential, no D.
+#[test]
+fn conjunctive_bot_with_existential_body_does_not_over_fire() {
+    let body = "    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:X))
+    Declaration(ObjectProperty(:R))
+    SubClassOf(ObjectIntersectionOf(ObjectSomeValuesFrom(:R :C) :D) owl:Nothing)
+    SubClassOf(:X ObjectSomeValuesFrom(:R :C))";
+    assert!(
+        unsat_of(body).is_empty(),
+        "X has only ∃R.C, so nothing is unsatisfiable"
+    );
+}
+
+/// N-ARY. Three-operand conjunction; a class with two of the three stays
+/// satisfiable, a class with all three does not.
+#[test]
+fn conjunctive_bot_ternary_requires_all_bodies() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:E))
+    Declaration(Class(:Two))
+    Declaration(Class(:Three))
+    SubClassOf(ObjectIntersectionOf(:A :B :E) owl:Nothing)
+    SubClassOf(:Two :A)
+    SubClassOf(:Two :B)
+    SubClassOf(:Three :A)
+    SubClassOf(:Three :B)
+    SubClassOf(:Three :E)";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/Three".to_string()],
+        "only the class carrying all three conjuncts is unsatisfiable"
+    );
+}

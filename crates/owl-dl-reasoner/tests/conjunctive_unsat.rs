@@ -506,8 +506,10 @@ fn nested_existential_filler_stays_sat() {
 /// false` while listing both classes in the unsatisfiable set — a self-contradiction
 /// in the JSON output (`"consistent": true` + non-empty `"unsatisfiable"`).
 ///
-/// The fix: after Pass 1 (unsat set built), if `n > 0 && |unsat| == n` then set
-/// `stats.inconsistent = true`.
+/// The fix: `Subsumers::top_is_unsat()` checks whether any `⊤`-subsumer class
+/// ended up unsat; if so, ⊤ is itself unsat → KB is inconsistent.  Unlike the
+/// naive "all user classes unsat" heuristic, this does NOT fire for
+/// `{A ⊑ ⊥, B ⊑ ⊥}` where no `⊤ ⊑ …` axiom was asserted (consistent KB).
 #[test]
 fn derived_all_unsat_flags_inconsistent() {
     let onto = parse(
@@ -640,5 +642,47 @@ fn poisoned_sub_role_some_top_bot_does_not_condemn_super_role_user() {
         unsat_of(body),
         Vec::<String>::new(),
         "FP guard: ∃r.⊤ ⊑ ⊥ on sub-role :r must NOT condemn super-role :s user (C must stay sat)"
+    );
+}
+
+// ── Finding 1: FP guard — consistent KB where every user class happens to be empty ──
+
+/// FP GUARD: "all user classes unsatisfiable" does NOT imply KB inconsistency.
+///
+/// `{SubClassOf(:A owl:Nothing), SubClassOf(:B owl:Nothing)}` — both named classes
+/// are individually empty (no instance satisfies them), but the KB is consistent:
+/// the domain `{d}` where `d` belongs to no named class is a valid model.
+///
+/// This test guards against the naive `n > 0 && |unsat| == n ⟹ inconsistent`
+/// heuristic that was reverted.  The correct check uses `Subsumers::top_is_unsat()`:
+/// no `⊤ ⊑ …` axiom was asserted here, so `top_subsumers` is empty and the flag
+/// stays false → KB correctly reported consistent.
+#[test]
+fn all_user_classes_unsat_does_not_flag_inconsistent() {
+    let onto = parse(
+        "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    SubClassOf(:A owl:Nothing)
+    SubClassOf(:B owl:Nothing)",
+    );
+    let c = owl_dl_reasoner::classify(&onto).expect("classify");
+    assert!(
+        !c.stats().inconsistent,
+        "SOUNDNESS: A⊑⊥ + B⊑⊥ is consistent (no ⊤⊑… axiom), so ClassificationStats::inconsistent must be false"
+    );
+    // Both classes must still appear as unsatisfiable.
+    let unsat = unsat_of(
+        "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    SubClassOf(:A owl:Nothing)
+    SubClassOf(:B owl:Nothing)",
+    );
+    assert!(
+        unsat.contains(&"http://t/A".to_string()),
+        ":A must still be listed as unsatisfiable"
+    );
+    assert!(
+        unsat.contains(&"http://t/B".to_string()),
+        ":B must still be listed as unsatisfiable"
     );
 }

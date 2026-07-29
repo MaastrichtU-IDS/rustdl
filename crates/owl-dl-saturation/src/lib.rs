@@ -895,6 +895,20 @@ impl WorklistEngine {
         // fourth (`build_run_engine_with_reserved`) forgot to, so its `Subsumers`
         // reported `globally_inconsistent == false` on a `⊤ ⊑ ⊥` KB (FINDING 2).
         self.subsumers.globally_inconsistent = self.rules.global_unsat;
+        // Detect derived global inconsistency: if any `⊤`-subsumer class (a named
+        // `C` with `SubClassOf(owl:Thing, C)`) ended up unsatisfiable, then ⊤ is
+        // itself unsat → the KB is inconsistent even without a syntactic `⊤ ⊑ ⊥`.
+        // Example: `{⊤ ⊑ E, E ⊑ ⊥}` — `E` is in `top_subsumers` and gets marked
+        // unsat by `process_unsat`; this flag lets callers report inconsistency
+        // without running the tableau.
+        // **Soundness**: only fires when a `⊤`-forced class is provably empty —
+        // an empty `top_subsumers` (e.g. `{A ⊑ ⊥, B ⊑ ⊥}`, no `⊤ ⊑ …` axiom)
+        // never sets this, so a consistent-but-all-classes-empty KB stays consistent.
+        self.subsumers.top_is_unsat = self
+            .rules
+            .top_subsumers
+            .iter()
+            .any(|&c| self.subsumers.is_unsatisfiable(c));
     }
 
     // -----------------------------------------------------------------------
@@ -2220,6 +2234,17 @@ pub struct Subsumers {
     /// a separate axiom scan.  Private: written once, inside this module, by `run()`;
     /// read via the [`Subsumers::globally_inconsistent`] accessor.
     globally_inconsistent: bool,
+    /// Set when at least one `top_subsumers` class (i.e. a named `C` such that
+    /// `⊤ ⊑ C` was asserted) ended up unsatisfiable after saturation.  This
+    /// means owl:Thing itself is unsat → the KB is globally inconsistent, even
+    /// though no *syntactic* `⊤ ⊑ ⊥` axiom was present.  Example:
+    /// `SubClassOf(owl:Thing :E)` + `SubClassOf(:E owl:Nothing)` — `E` is in
+    /// `top_subsumers`, saturation marks `E` unsat, so `top_is_unsat` is set.
+    /// Contrast with `{SubClassOf(:A owl:Nothing), SubClassOf(:B owl:Nothing)}`
+    /// (no `⊤ ⊑ …` axiom) — `top_subsumers` is empty, this flag stays false,
+    /// and the KB is correctly reported consistent.  Private, set once by
+    /// `WorklistEngine::run()`; read via [`Subsumers::top_is_unsat`].
+    top_is_unsat: bool,
 }
 
 impl Default for Subsumers {
@@ -2234,6 +2259,7 @@ impl Subsumers {
             subsumers: IdMatrix::with_capacity(n),
             unsatisfiable: FixedBitSet::with_capacity(n),
             globally_inconsistent: false,
+            top_is_unsat: false,
         }
     }
 
@@ -2294,6 +2320,24 @@ impl Subsumers {
     #[must_use]
     pub fn globally_inconsistent(&self) -> bool {
         self.globally_inconsistent
+    }
+
+    /// True iff at least one `⊤`-subsumer (a named class `C` such that
+    /// `SubClassOf(owl:Thing, C)` was asserted) ended up unsatisfiable after
+    /// saturation.  When this holds, owl:Thing is itself unsat → the KB is
+    /// globally inconsistent even without a syntactic `⊤ ⊑ ⊥` axiom.
+    ///
+    /// **Contrast with `globally_inconsistent()`**: that flag requires the
+    /// literal `⊤ ⊑ ⊥` axiom; this flag catches the derived case such as
+    /// `{⊤ ⊑ E, E ⊑ ⊥}`.
+    ///
+    /// **Contrast with "all user classes unsat"**: the absence of a `⊤ ⊑ …`
+    /// axiom means no class was forced onto `⊤`, so `{A ⊑ ⊥, B ⊑ ⊥}` (every
+    /// user class empty, but ⊤ itself satisfiable) leaves this flag false —
+    /// correctly reporting the KB as consistent.
+    #[must_use]
+    pub fn top_is_unsat(&self) -> bool {
+        self.top_is_unsat
     }
 }
 

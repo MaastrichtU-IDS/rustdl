@@ -960,11 +960,20 @@ fn classify_pure_el(
         ..ClassificationStats::default()
     };
 
-    // If the KB contained `⊤ ⊑ ⊥` (globally inconsistent), flag it on the
-    // stats so that `classify --json` emits `"consistent": false` and
-    // consumers agree with `rustdl consistent` and `rustdl diagnose`.
-    // This mirrors the convention in `classify_inconsistent`.
-    if closure.globally_inconsistent() {
+    // Flag KB-level inconsistency so that `classify --json` emits
+    // `"consistent": false` and consumers agree with `rustdl consistent` and
+    // `rustdl diagnose`.  Two complementary signals from the saturator:
+    //
+    // 1. `globally_inconsistent()` — set when the KB contains a syntactic
+    //    `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`) axiom.
+    //
+    // 2. `top_is_unsat()` — set when a named class `C` declared as a
+    //    `⊤`-subsumer (i.e. `SubClassOf(owl:Thing, C)`) ended up unsatisfiable
+    //    after saturation.  Covers the derived case such as `{⊤ ⊑ E, E ⊑ ⊥}`.
+    //    Crucially it does NOT fire for `{A ⊑ ⊥, B ⊑ ⊥}` (consistent KB with
+    //    every user class empty but no `⊤ ⊑ …` axiom), avoiding a false positive.
+    //    See `Subsumers::top_is_unsat` for the full soundness argument.
+    if closure.globally_inconsistent() || closure.top_is_unsat() {
         stats.inconsistent = true;
     }
 
@@ -978,18 +987,6 @@ fn classify_pure_el(
             unsatisfiable_idxs.insert(i);
             stats.saturation_unsat_hits += 1;
         }
-    }
-
-    // Derived-inconsistency guard: if every declared user class turned out
-    // unsatisfiable (e.g. `⊤ ⊑ E` + `E ⊑ ⊥` derives unsat on every class
-    // via transitive closure, without a syntactic `⊤ ⊑ ⊥`), the ontology
-    // is effectively globally inconsistent.  The non-empty guard is load-bearing:
-    // an ontology with ZERO declared classes would trivially have
-    // `unsatisfiable_idxs.len() == n == 0`, but that is NOT an inconsistency —
-    // vacuous universal quantification must not be misread as "all classes unsat".
-    // Mirrors the `diagnose.rs:107` predicate (same shape: n > 0 && len == n).
-    if n > 0 && unsatisfiable_idxs.len() == n {
-        stats.inconsistent = true;
     }
 
     // Pass 2 — build the entailed rows in one pass over the closure.

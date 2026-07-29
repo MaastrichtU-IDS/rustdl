@@ -1,185 +1,182 @@
-# Fragment-blocker diagnostic
+# Fragment-blocker diagnostic — NO-GO; and the gate/engine consistency fixes it turned up
 
 **Date:** 2026-07-29
-**Status:** Design — approved for implementation planning
-**Motivation:** `docs/2026-07-29-fragment-lever-selection-findings.md`
+**Status:** **NO-GO on the diagnostic** (death certificate). Approved for implementation:
+the gate/engine consistency fixes in Part 2.
+**Motivation record:** `docs/2026-07-29-fragment-lever-selection-findings.md`
 
-## Why this exists
+---
 
-Four "widen the fragment gate" levers have been measured. Payoff is decided by one
-property: **is this construct the last thing keeping the ontology off the saturation fast
-path?** Nothing else predicts it — not how often the construct appears, not how expensive
-it is. Lever 1 (~40 recoveries), Lever 1b (fast-path-eligible 46 → 100) and the
-2026-07-29 atomic-negation lever (13 ontologies, 5 from DNF) all paid because the
-construct they lifted was the last blocker. The Domain/Range-negation sibling paid **zero**
-because it never is — even though it is mechanically free.
+# Part 1 — Why the blocker diagnostic is a NO-GO
 
-We currently cannot see that property. The gates compute it and throw it away:
-`is_pure_el_impl` and `saturator_complete_fragment_impl` are both
-`internal.axioms.iter().all(|ax| is_*_axiom(ax, …))`. The only blocker histogram in the
-repo is regex-over-source-text, and its buckets do not map to gate decisions — it counts
-role chains and transitivity as blockers although `saturator_complete_fragment` already
-admits them. That is the **grep ≠ gate** trap, which has now over-estimated two levers
-(a 67-ontology estimate whose real gate-eligible count was ~40; 80 complement-bearing
-ontologies for 13 actual flips).
+The proposal was: make `is_pure_el` / `saturator_complete_fragment` report *which* axiom and
+construct disqualified an ontology, so the next gate lever could be chosen from a measured
+histogram. Two independent reviews killed it. Recording the reasoning, because the idea is
+attractive and will otherwise be re-proposed.
 
-This diagnostic makes lever selection a query. It would have answered
-"Domain/Range negation: 0 ontologies" in seconds instead of a probe.
+## 1.1 The premise was incomplete
 
-Secondary benefit, worth having on its own: a user whose EL-looking ontology classifies
-slowly currently gets `# fragment: out-of-EL` and no way to learn why. That is a real
-usability gap.
+The findings doc claimed lever payoff is decided by "is this construct the **last**
+blocker". That is **necessary but not sufficient**. The real condition is
+**liftable AND last AND the fast path is tractable for that ontology** — and a
+construct-keyed histogram measures only the middle term.
 
-## Scope
+**Liftability is a per-ontology *usage* property, not a construct property.** Proof from
+our own data: `SubClassOf(X, ¬Y)` is liftable (13 flips, shipped); `EquivalentClasses(A, ¬B)`
+appears in **114** ORE ontologies and is correctly *unliftable* (its covering half is real
+DL expressivity). Same construct, opposite verdict. The next case is worse:
+`InverseObjectProperties(p,q)` is inert-and-liftable when one side is never used in a
+concept, and genuinely inverse-semantic when both are — **same axiom form, same construct,
+same histogram bucket, opposite verdict.** The histogram would report "inverse role ×210"
+and you would still have to read the axioms.
 
-**In scope.** A per-axiom blocker reporter that the existing bool gates derive from; an
-aggregate `fragment_blockers` API; a CLI banner line and a `classify --json` field; tests.
+## 1.2 The unit overstates payoff ~2.6×
 
-**Out of scope.** Fixing any blocker. Ranking levers inside the tool. The ORE sweep itself
-(a follow-on measurement, run once the tool exists). Any change to routing or verdicts.
+Levers have been reported in two different units. The negation lever supplies the
+conversion: **13 fragment-eligibility flips → 5 user-visible DNF recoveries (38%)**.
+Eligibility flips are exactly what a blocker histogram counts.
 
-## Architecture
+**Rule going forward: report gate levers in DNF recoveries, never in eligibility flips.**
 
-### The single-source-of-truth requirement
+## 1.3 The reachable population is ~11 ontologies, and it is memory-blocked
 
-The reporter must not be a parallel reimplementation of the gate predicates. If it is, the
-two drift, and a drifted diagnostic is worse than none — it would send lever work at
-constructs that are not actually blocking.
+From `ore-run/work/fragments.tsv` (869 ontologies, gate-exact verdicts — not the regex
+histogram):
 
-So: the **per-axiom predicate becomes the reporter**, and the bool is derived.
+| population | count | reachable by a gate lever? |
+|---|---|---|
+| out-of-fragment **and** slow (>10 s) | **28**, all 11.7k–186k classes | No — the fast path is the D4 dense-matrix problem (`ore_ont_3914`: 166 GB at 12.4k named classes) |
+| `TIMEOUT` (no verdict) | **13**, of which `6212` and `15703` were already taken by the negation lever | ~11 — this is where the mechanism genuinely works |
+| `ERROR(137)` (OOM-killed) | **11** | No — memory-bound before any verdict |
 
-```rust
-/// Which gate a blocker was observed against.
-pub enum FragmentGate { PureEl, SaturatorComplete }
+Ceiling: **low single digits of DNF recoveries**, contingent on the memory work landing
+first. **Sequencing inversion: the dense-timeout memory work is a *precondition* for gate
+levers paying on this tail, not an alternative to them.** Building a lever-ranking tool
+first ranks levers whose destination is an OOM.
 
-/// One reason an axiom is outside a fragment. `Copy`, no allocation.
-pub struct FragmentBlocker {
-    /// The axiom form, e.g. "SubClassOf", "ObjectPropertyDomain", "DisjointUnion".
-    pub axiom: &'static str,
-    /// The disqualifying construct, e.g. "Or", "All", "Not", "Max", "Min",
-    /// "Nominal", "inverse role", "DisjointUnion", "role characteristic".
-    pub construct: &'static str,
-}
+## 1.4 Inverse is closed by calculus, not by preference
+
+210 of 289 DNF-tail ontologies fall in buckets containing inverse/symmetric. Admitting
+inverse *use* into either gate would certify the saturator complete on a fragment where it
+is provably incomplete — the 4-axiom counterexample
+`X ⊑ ∃R.C; ∃R.X ⊑ D; ∃R.D ⊑ E; Symmetric(R) ⟹ X ⊑ E`. That is the D10 unsound-completeness
+class, not a lever. It is unavailable until backward propagation exists, which carries its
+own NO-GO. No histogram changes this.
+
+## 1.5 The design was also wrong on its own terms
+
+Recorded so a future attempt doesn't repeat them:
+
+- **Outermost-first was the wrong per-axiom answer.** `SubClassOf(A, Or(B, Not(C)))` would
+  report `{Or}`; lifting `Or` does not flip it because `Not` is behind it. That is the
+  grep≠gate trap reproduced *inside* the gate-based tool, and worse for carrying gate
+  authority. A correct version needs the full per-axiom blocker **set**, collected by
+  descending past rejections.
+- **Per-axiom maps cannot express whole-ontology conditions.** `disjoint_ok` is
+  `!has_cardinality_role` — `DisjointClasses` is blocked by a `FunctionalRole` axiom
+  *elsewhere*, which is itself accepted. A reader would "lift DisjointClasses" and
+  reintroduce the D10 bug class. Same for `ontology_uses_nominals` gating Lever 1.
+- **The surface could not observe its own target population.** The banner prints from
+  `write_classification`, i.e. *after* classification returns; the DNF tail by definition
+  never returns.
+- **The `skip_abox` view would mislead on the largest off-EL fast-path population.** Lever 1
+  ontologies would report `ClassAssertion ×90000` while actually being on the fast path.
+- **The safety argument was wrong.** The spec claimed the bool must be *derived* from the
+  reporter or the two drift. The actual guard is the agreement test, which works equally for
+  a parallel reporter. Derivation buys tidiness, not safety — while putting a measurement
+  tool's requirements into the gate predicates, whose bug class (D10) has a live open
+  instance (role-chain-induced poison).
+
+## 1.6 The one piece worth salvaging (not built here)
+
+A `rustdl fragment <file>` subcommand that converts and prints the three gate verdicts
+(`is_pure_el`, `saturator_complete_fragment`, `tbox_only_saturator_eligible`) **before**
+classification, alongside the existing `tbox-stats` / `clause-stats` diagnostics. It fills
+the one genuine hole — the 24 `TIMEOUT`/`OOM` rows have no verdict because `# fragment:` is
+printed post-classification — and makes construct **ablation** gate-exact on the DNF tail,
+so future lever questions are answerable with a shell loop and no Rust. `fragment` is also
+absent from the Python surface entirely, a larger usability gap than the missing blocker
+detail. Deliberately **without** the per-axiom blocker refactor.
+
+Caveat measured while reviewing: a convert-only probe is not uniformly cheap on tail
+members — `tbox-stats` on `ore_ont_9347` takes **118 s / 14.2 GB RSS** with no reasoning at
+all. That is independently interesting for the memory work: it implicates a
+**pre-classification** allocation site distinct from the saturator's dense matrices, which
+the existing D4 root-cause note does not cover.
+
+---
+
+# Part 2 — Gate/engine consistency fixes (approved for implementation)
+
+Both reviews independently found live instances of the branch's own bug class, by *reading*
+the gate rather than instrumenting it. Verified on a fresh release build (2026-07-29).
+
+## 2.1 Bug A — `DisjointClasses` members unchecked
+
+`is_saturator_axiom`'s arm is `Axiom::DisjointClasses(_) => disjoint_ok` — members are never
+inspected, in contrast to `is_el_axiom`, which does check them. The saturator filters
+members to atomics and silently discards the rest.
+
 ```
-
-`axiom_blocker(ax, pool, gate, ctx) -> Option<FragmentBlocker>` returns the first
-disqualifying construct in that one axiom (per-axiom "first" is sufficient — the aggregate
-is taken across axioms).
-
-**"First" means outermost-first**: the construct at which the recursive concept descent
-first rejects, matching how `is_el_concept` / `is_saturator_concept` already recurse. For
-`SubClassOf(A, Or(B, Not(C)))` the reported blocker is `Or`, not `Not`. This is the
-decision-relevant choice: `Or` is what you would have to lift *first* for that axiom to
-have any chance of entering the fragment, so the histogram counts the actual frontier
-rather than a construct buried behind another blocker.
-
-Then:
-
-- `is_el_axiom(ax, pool)` becomes `axiom_blocker(ax, pool, PureEl, ctx).is_none()`
-- `is_saturator_axiom(ax, pool, functional_roles, disjoint_ok)` likewise with
-  `SaturatorComplete`
-
-The top-level gates keep their `.all(…)` form, so **the routing path short-circuits exactly
-as today and allocates nothing** — `FragmentBlocker` is two `&'static str`.
-
-`ctx` carries what the saturator gate already needs and the EL gate does not:
-`functional_roles: &HashSet<Role>` and `disjoint_ok: bool`. The `PureEl` arm **ignores both
-fields** — `is_el_axiom` takes no such parameters today and must not start depending on
-them — so callers of the EL arm may pass a default context. Threading one struct rather
-than two loose parameters keeps the two gate arms symmetric at the call sites.
-
-### Report both gates, because they are not nested
-
-```rust
-pub struct FragmentBlockerReport {
-    pub pure_el: BTreeMap<FragmentBlocker, usize>,
-    pub saturator_complete: BTreeMap<FragmentBlocker, usize>,
-}
-pub fn fragment_blockers(internal: &InternalOntology) -> FragmentBlockerReport
+DisjointClasses(:A ObjectUnionOf(:B :C))
+SubClassOf(:X ObjectIntersectionOf(:A :B))
 ```
+`X` is unsatisfiable (`A ⊓ B ⊑ A ⊓ (B ⊔ C) ⊑ ⊥`). Observed: `direct X A`, `direct X B`, no
+`unsat`, under `# fragment: Horn (… hyper Horn fixpoint is complete)`. With
+`RUSTDL_HORN_SHORTCIRCUIT=0` the hybrid path correctly reports `unsat X`.
 
-Both maps are always populated. This is not redundancy: the final review of the
-conjunctive-unsat branch established that these gates are **not nested** —
-`is_el_concept` accepts `ConceptExpr::Bot`, and `is_saturator_concept` has no `Bot` arm. An
-ontology can therefore pass one and fail the other, and a lever widening one may not widen
-the other. A single merged report would hide the very distinction that governs whether a
-lever pays.
+Footprint: 7 ORE ontologies carry a non-atomic `DisjointClasses` member.
 
-Counts rather than a set, so a single-ontology query reads "3 axioms blocked by `Or`", and
-a bulk sweep can weight by axiom count as well as by ontology count.
+## 2.2 Bug B — non-atomic `Domain`/`Range` accepted by both gates
 
-The aggregate walk is a full scan (no early exit — the whole point is the complete set),
-run once per `classify`, `O(#axioms)`. The conversion pipeline already makes several such
-passes; this is not a hot path.
+Both gates accept any `is_*_concept` domain/range filler, including `And` and `Some`.
+`role_domains` / `role_ranges` are atomic-only.
 
-**Two traversals, one predicate — intentionally.** The bool gates walk with `.all(…)` and
-short-circuit; `fragment_blockers` walks exhaustively. That is not the drift this design
-exists to prevent: both call the *same* `axiom_blocker`, and only the traversal differs.
-Drift would mean two copies of the per-axiom logic, which is exactly what deriving the
-bool from the reporter rules out.
+```
+ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))
+SubClassOf(:X ObjectSomeValuesFrom(:r owl:Thing))
+```
+Entails `X ⊑ P` and `X ⊑ Q`. Observed: **zero subsumptions**, under
+`# fragment: pure-EL (… saturator alone is complete)`. Control with two *atomic* domain
+axioms — semantically identical — correctly emits both. This one sits in `is_pure_el`, so
+`RUSTDL_HORN_SHORTCIRCUIT=0` does not rescue it.
 
-**`skip_abox` (Lever 1).** `tbox_only_saturator_eligible` runs the gates with ABox axioms
-filtered out. `fragment_blockers` reports the **un-filtered** view and labels ABox-derived
-blockers by their axiom form (`ClassAssertion` etc.), so a reader can see both that the
-ABox blocks the strict gate and that Lever 1 may bypass it. Splitting the report by
-`skip_abox` as well would give four maps for no decision-relevant gain.
+Footprint: 2 ORE ontologies with an `And`-of-atomics filler, 2 with a `Some` filler.
+`ro`/`ro-stripped` carry `Some`-filler domains but take the **hybrid** path, so the curated
+corpus is unaffected — it is rescued by being off the fast path, not by the gate being
+right.
 
-## Surface
+## 2.3 The fix: tighten the gate, do not extend the engine
 
-- **CLI banner**: `# fragment-blocker: <gate> <axiom> <construct> ×<n>`, one line per
-  distinct blocker, emitted after the existing `# fragment:` line
-  (`crates/owl-dl-cli/src/main.rs:706`). Greppable, which is what a bulk sweep needs.
-- **`classify --json`**: a `blockers` field alongside the existing `incomplete` field
-  (`crates/owl-dl-cli/src/json_out.rs`).
-- **Library**: `fragment_blockers`, `FragmentBlocker`, `FragmentBlockerReport`,
-  `FragmentGate` re-exported from the crate root beside `analyze_fragment`
-  (`crates/owl-dl-reasoner/src/lib.rs:64`).
+Make the gates reject exactly what the engine drops:
+- `is_saturator_axiom`'s `DisjointClasses` arm must require every member to satisfy
+  `is_saturator_concept` **and** be atomic (matching what `disjoint_pairs` keeps).
+- Both gates' `Domain`/`Range` arms must require an **atomic** filler.
 
-**Emitted only when the ontology misses the fast path.** A fast-path ontology has no
-blockers, prints no extra lines, and gets an empty `blockers` map — so no existing output
-changes and no corpus baseline moves.
+**Tightening is FP-safe by direction**: it can only route *more* ontologies to the
+sound-and-complete hybrid path. It cannot introduce a false positive or a new miss. The
+cost is that 2–7 ontologies get slower and correct.
 
-## Testing
+Gate: the two repro ontologies above become correct; curated-corpus closure byte-identical
+(no curated fixture is on the affected path); `cargo test --workspace` green.
 
-The load-bearing test is an **agreement property**, because "derived from one predicate" is
-the design's central claim and must be checkable rather than asserted in a comment:
+## 2.4 Two candidate levers — each blocked on engine verification
 
-> For every curated fixture and every synthetic in the existing fragment-gate tests:
-> `report.pure_el.is_empty() == is_pure_el(o)` and
-> `report.saturator_complete.is_empty() == saturator_complete_fragment(o)`.
+Both widen a gate, and **widening a gate without verifying engine support is the bug class
+in 2.1/2.2.** Neither may ship on the argument "the construct looks EL".
 
-Then:
-- One canary per construct (`Or`, `All`, `Not`, `Max`, `Min`, nominal, inverse role,
-  `DisjointUnion`) asserting the blocker names that construct and the expected axiom form.
-- A canary for the **non-nesting** case: an ontology using only `Bot` in an EL position
-  must report **no** `pure_el` blocker and **a** `saturator_complete` blocker. This pins
-  the asymmetry that justifies two maps; if a future change nests the gates, this test
-  says so.
-- A negative: a pure-EL ontology reports no blockers and emits no `# fragment-blocker`
-  line.
-- Corpus non-regression: `classify` output on the curated fixtures is byte-identical to
-  before for fast-path ontologies, and differs only by added `# fragment-blocker` lines
-  for the rest.
+- **`Bot` arm in `is_saturator_concept`.** `is_el_concept` accepts `ConceptExpr::Bot`;
+  `is_saturator_concept` does not, so `saturator_complete_fragment` still rejects
+  `∃r.⊤ ⊑ ⊥`, `Domain(r,⊥)`, `Range(r,⊥)` — shapes Part A of the just-merged branch taught
+  the engine to handle via `poisoned_roles`. **But a blanket `Bot` arm also admits
+  `SubClassOf(A, ∃r.⊥)`, and there is no evidence the engine derives `A ⊑ ⊥` from that.**
+  Required before widening: enumerate every position `Bot` can occupy under
+  `is_saturator_concept`'s recursion and verify engine support for each, admitting only the
+  verified positions. An unverified blanket arm would create a fresh D10 instance.
+- **`Min(1,r,C) ≡ ∃r.C`.** `is_saturator_concept` excludes all `Min` conservatively, citing
+  a `Min(≥2)`+functional interaction that does not apply at `n=1`. Required before widening:
+  confirm the engine actually lowers `Min(1,r,C)` to an existential fact rather than
+  dropping it.
 
-## Soundness
-
-Read-only reporting. No routing decision, verdict, or entailment changes — the FP surface
-is untouched by construction. The one behavioural risk is the refactor itself: if
-`axiom_blocker` disagrees with the predicate it replaces, a gate verdict could move. The
-agreement property plus the corpus byte-identity check are the guards, and any fragment
-verdict change on the curated corpus is a stop-and-diagnose, not a tuning matter.
-
-## What this does not claim
-
-It does not close any completeness gap or speed anything up. Its value is that the next
-lever gets chosen from measurement instead of from a guess — and that it can return a
-negative cheaply, which is what the Domain/Range probe showed is the common case.
-
-**Expected outcome worth stating up front:** the regex histogram suggests inverse/symmetric
-dominates the DNF tail. That construct carries two recorded NO-GOs in this repo —
-inverse-aware classification (refuted on perf: the saturator answers 100% of positives, the
-residual cost is refutation) and backward propagation (NO-GO on payoff-vs-cost, no FP net
-at giant scale). So the honest expected result is that this tool concludes **the DNF tail is
-out of reach of gate levers**, redirecting to the dense-timeout working-set memory (10 of 12
-measured timeouts exceed 8 GB resident; `ore_ont_9347` at 35.7 GB). That is a useful
-answer, and cheaper to learn from a histogram than from another engine build.
+Each is a few lines *if* verification passes, and a documented non-lever if it does not.
+Verification is the work; the edit is not.

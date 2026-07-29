@@ -805,3 +805,178 @@ fn conjunctive_bot_ternary_requires_all_bodies() {
         "only the class carrying all three conjuncts is unsatisfiable"
     );
 }
+
+// ─── Bug A: non-atomic DisjointClasses member silently dropped ────────────────
+//
+// `DisjointClasses(:A ObjectUnionOf(:B :C))` contains a non-atomic member.
+// The engine's `disjoint_pairs` collector filters to atomics only (line 3148),
+// so `ObjectUnionOf(:B :C)` is dropped and `(:A)` appears as a singleton —
+// no pair is emitted.  The old gate (`is_el_axiom` checked `is_el_concept` which
+// admits `Or`; `is_saturator_axiom` used `_ => disjoint_ok` with NO member
+// inspection) admitted the axiom to the fast path where it silently dropped the
+// non-atomic member, reporting "complete" while missing the entailment.
+//
+// The reproducer forces the subsumption via the *atomic* member only:
+//   DisjointClasses(:A ObjectUnionOf(:B :C))
+//   SubClassOf(:X ObjectIntersectionOf(:A :B))
+// `X ⊑ A` and `X ⊑ B`, and since `B ⊆ (B ⊔ C)`, `A ⊓ (B ⊔ C) ⊑ ⊥` → X ⊑ ⊥.
+// The hybrid path correctly finds this; the fast path silently missed it.
+
+/// BUG A REPRODUCER. Non-atomic `DisjointClasses` member silently dropped.
+/// `DisjointClasses(:A ObjectUnionOf(:B :C))` + `SubClassOf(:X ObjectIntersectionOf(:A :B))`
+/// entails X ⊑ ⊥.  With the old gate, X stays satisfiable under the "complete" banner.
+#[test]
+fn disjoint_nonatomic_member_forces_unsat() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:X))
+    DisjointClasses(:A ObjectUnionOf(:B :C))
+    SubClassOf(:X ObjectIntersectionOf(:A :B))";
+    // X ⊑ A, X ⊑ B; B ⊆ B⊔C; A ⊓ (B⊔C) ⊑ ⊥ (from DisjointClasses) → X ⊑ ⊥.
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/X".to_string()],
+        "Bug A: X ⊑ A ⊓ B and DisjointClasses(A, B⊔C) entails X ⊑ ⊥"
+    );
+}
+
+/// ATOMIC CONTROL for Bug A. All-atomic `DisjointClasses` must still classify correctly
+/// on the FAST PATH (gate must not kick atomic-only `DisjointClasses` to hybrid).
+#[test]
+fn disjoint_all_atomic_members_stays_on_fast_path() {
+    // Same topology but all members atomic: DisjointClasses(:A :B)
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:X))
+    DisjointClasses(:A :B)
+    SubClassOf(:X :A)
+    SubClassOf(:X :B)";
+    // X must be unsatisfiable (A ⊓ B ⊑ ⊥ directly).
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/X".to_string()],
+        "atomic DisjointClasses control: X ⊑ A ⊓ B with DisjointClasses(A,B) entails X ⊑ ⊥"
+    );
+}
+
+// ─── Bug B: non-atomic ObjectPropertyDomain silently dropped ─────────────────
+//
+// `ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))` has a conjunctive filler.
+// The engine's `role_domains` collector accepts ONLY `ConceptExpr::Atomic` fillers
+// (lines 3167-3172); `ObjectIntersectionOf` is silently dropped, so neither `:P`
+// nor `:Q` end up in `role_domains[:r]`.  The old gate (`is_el_concept` / `is_saturator_concept`
+// both admit `And`) passed this axiom to the fast path where it became a no-op,
+// reporting "complete" while missing `X ⊑ P` and `X ⊑ Q`.
+
+/// BUG B REPRODUCER. Non-atomic `ObjectPropertyDomain` silently dropped.
+/// `ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))` + `SubClassOf(:X ObjectSomeValuesFrom(:r owl:Thing))`
+/// entails `X ⊑ P` and `X ⊑ Q`.  With the old gate, zero subsumptions appear
+/// under the "complete" banner.
+///
+/// # Why `classify_n2` here, not `classify`
+///
+/// P, Q, and X all have saturation-subsumer-count 0 (the conjunctive domain filler
+/// is invisible to the EL saturator), so the default top-down `classify()` places
+/// all three in a single flat tier — it never generates the pair (X, P) to test.
+/// The N² path (`classify_n2`) tests ALL pairs and correctly finds the subsumptions
+/// via the tableau.  The gate fix is what makes the N² path's verdict trustworthy:
+/// before the fix the ontology was certified "pure-EL complete" and the fast-path
+/// saturator returned 0; after the fix it falls through to the N² hybrid tableau,
+/// which finds X ⊑ P and X ⊑ Q.
+///
+/// `is_subclass_of` (one-shot satisfiability probe) would find X ⊑ P BEFORE the
+/// fix too — it never touches the classify gate — so it cannot serve as a
+/// fail-then-pass test.
+#[test]
+fn domain_conjunctive_filler_derives_subsumptions() {
+    let body = "    Declaration(Class(:P))
+    Declaration(Class(:Q))
+    Declaration(Class(:X))
+    Declaration(ObjectProperty(:r))
+    ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))
+    SubClassOf(:X ObjectSomeValuesFrom(:r owl:Thing))";
+    let onto = parse(body);
+    // Use classify_n2 (the N² pairwise path) which tests ALL pairs regardless of
+    // saturation-derived tier ordering.  See the doc comment above.
+    let c = owl_dl_reasoner::classify_n2(&onto).expect("classify_n2");
+    // Both entailments must be present.
+    assert!(
+        c.is_subclass("http://t/X", "http://t/P"),
+        "Bug B: X ⊑ ∃r.⊤ + Domain(r)=P⊓Q entails X ⊑ P"
+    );
+    assert!(
+        c.is_subclass("http://t/X", "http://t/Q"),
+        "Bug B: X ⊑ ∃r.⊤ + Domain(r)=P⊓Q entails X ⊑ Q"
+    );
+    // Verify the gate fix is WHY it passes, not some incidental reason.
+    //
+    // `pure_el_mode` is the DIRECT signal: the bug was that this ontology was
+    // admitted to the saturation-only fast path, whose engine drops a
+    // conjunctive domain filler, while the closure was reported complete. The
+    // fix rejects that filler at the gate, so the ontology must NOT be in
+    // `pure_el_mode`. Asserting only "some subsumption query ran" is weaker —
+    // it would still hold if a later edit to this fixture (say adding a
+    // `FunctionalRole`) forced the hybrid path for an unrelated reason, leaving
+    // the gate fix untested.
+    let stats = c.stats();
+    assert!(
+        !stats.pure_el_mode,
+        "Bug B: the conjunctive domain filler must keep this ontology OFF the \
+         saturation-only fast path (that path drops the filler while reporting a \
+         complete closure — the bug)"
+    );
+    assert!(
+        stats.saturation_subsumption_hits + stats.tableau_subsumption_calls > 0,
+        "Bug B: the hybrid engine must have issued subsumption queries \
+         (saturation_hits={}, tableau_calls={})",
+        stats.saturation_subsumption_hits,
+        stats.tableau_subsumption_calls
+    );
+}
+
+/// FP GUARD for Bug B. A class with NO r-existential must NOT gain P or Q.
+#[test]
+fn domain_conjunctive_filler_no_fp() {
+    let body = "    Declaration(Class(:P))
+    Declaration(Class(:Q))
+    Declaration(Class(:Y))
+    Declaration(ObjectProperty(:r))
+    ObjectPropertyDomain(:r ObjectIntersectionOf(:P :Q))";
+    // Y has no r-existential, so it must not gain P or Q.
+    let onto = parse(body);
+    let c = owl_dl_reasoner::classify(&onto).expect("classify");
+    assert!(
+        !c.is_subclass("http://t/Y", "http://t/P"),
+        "FP guard: Y has no ∃r, must not gain P"
+    );
+    assert!(
+        !c.is_subclass("http://t/Y", "http://t/Q"),
+        "FP guard: Y has no ∃r, must not gain Q"
+    );
+}
+
+/// ATOMIC CONTROLS for Bug B. Two separate atomic-filler domains must still
+/// classify correctly on the FAST PATH (gate must not kick them to hybrid).
+#[test]
+fn domain_two_atomic_fillers_stays_on_fast_path() {
+    // Semantically equivalent to the conjunctive-filler case: two atomic domains.
+    let body = "    Declaration(Class(:P))
+    Declaration(Class(:Q))
+    Declaration(Class(:X))
+    Declaration(ObjectProperty(:r))
+    ObjectPropertyDomain(:r :P)
+    ObjectPropertyDomain(:r :Q)
+    SubClassOf(:X ObjectSomeValuesFrom(:r owl:Thing))";
+    let onto = parse(body);
+    let c = owl_dl_reasoner::classify(&onto).expect("classify");
+    // Both atomic-domain entailments must be present.
+    assert!(
+        c.is_subclass("http://t/X", "http://t/P"),
+        "atomic domain control: X ⊑ ∃r.⊤ + Domain(r)=P (atomic) entails X ⊑ P"
+    );
+    assert!(
+        c.is_subclass("http://t/X", "http://t/Q"),
+        "atomic domain control: X ⊑ ∃r.⊤ + Domain(r)=Q (atomic) entails X ⊑ Q"
+    );
+}

@@ -80,6 +80,39 @@ the v0.3.11 release wheel build.
 > `family-stripped` — promote them to REQUIRED in `konclude_closure_diff.rs` once
 > the fixtures are obtainable.
 
+> **BRANCHES ARE NOT BACKED UP (2026-07-29). Do not delete a branch or prune refs
+> without reading this.** `origin` has **5** branches (`main` +
+> `feat/complex-class-expression-queries-48`, `feat/explanation-surface`,
+> `feat/pseudo-model-realize`, `feat/surface-dropped-axioms-43`). The **~38 unmerged
+> local branches exist ONLY on this disk** — years of measured spikes and NO-GO
+> evidence (`spike/combo-rewrite-gate` 14 commits,
+> `exp/wine-disjunction-ordering` 13, `feat/stage4-engine-characterization` 12).
+> Deleting one is permanent; `git branch -d` will not protect you, because these are
+> unmerged *and* unpushed. `git push --all` would fix the exposure.
+>
+> Several are **deliberately parked, not stale** — check the memory/handoff record
+> before pruning: `feat/cb-alch-taming` (CB arc, park record in its own tree),
+> `feat/cb-b1-integration` (the retired CB engine the above resurrected from, 17
+> commits), `feat/model-derived-realize` ("dormant-safe" NO-GO),
+> `feat/abox-sat-A-gated` (kept for a future bake-off).
+>
+> **`git fetch --prune` / `git remote prune origin` is dangerous here.** Many
+> remote-tracking refs are stale (branch deleted on the server) while still holding
+> commits that are in no local branch; pruning them makes those commits unreachable.
+> Six such sets were found and anchored as `archive/*` tags (21 commits:
+> `feat-corpus-wine-datatype` 9, `docs-sub-tableau-caching-scoping` 3,
+> `feat-sio-disjunction-common-subsumer` 3, `feat-wedge-semantic-branching` 3,
+> `feat-phase2e-functional-superrole-merge` 2, `chore-blocking-observability` 1).
+> **Those tags are local-only** — `git push origin 'refs/tags/archive/*'` to make them
+> disk-failure-proof. Before any future prune, re-check for new stale-ref/unique-commit
+> pairs.
+>
+> Six worktrees remain under `.claude/worktrees/`; four hold unique CB-engine commits,
+> one (`agent-ab06fe71b6797f234`) has **uncommitted** changes to `justify.rs` /
+> `data_axioms.rs` and two test files, and one is `feat/cb-b1-integration`.
+> `git worktree remove` on the dirty one destroys work git cannot recover.
+> Full inventory: `docs/handoff-2026-07-29.md` §4a.
+
 Run the reasoner / benchmarks:
 ```sh
 ./target/release/rustdl classify path/to/ontology.ofn          # see README for all subcommands

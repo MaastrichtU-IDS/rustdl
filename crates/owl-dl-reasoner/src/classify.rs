@@ -960,6 +960,14 @@ fn classify_pure_el(
         ..ClassificationStats::default()
     };
 
+    // If the KB contained `⊤ ⊑ ⊥` (globally inconsistent), flag it on the
+    // stats so that `classify --json` emits `"consistent": false` and
+    // consumers agree with `rustdl consistent` and `rustdl diagnose`.
+    // This mirrors the convention in `classify_inconsistent`.
+    if closure.globally_inconsistent() {
+        stats.inconsistent = true;
+    }
+
     // Pass 1 — identify unsatisfiable classes (O(n) via the closure bitset).
     // Build the unsatisfiable bitset directly for O(1) per-bit membership test
     // in the subsumption read-off below.

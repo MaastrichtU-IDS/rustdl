@@ -325,3 +325,63 @@ fn range_bot_does_not_over_fire() {
         "D (∃s.B) and A and B must stay satisfiable; only C is unsat"
     );
 }
+
+// ── Finding 1: `classify --json` self-contradiction fix ─────────────────────
+
+/// Pins Finding 1: a `⊤ ⊑ ⊥` KB must produce `ClassificationStats::inconsistent == true`.
+/// Before the fix, `classify_pure_el` left `inconsistent = false` while the
+/// `unsatisfiable` list was non-empty, causing `classify --json` to emit
+/// `"consistent": true` alongside a non-empty `"unsatisfiable"` list.
+#[test]
+fn top_bot_classify_stats_inconsistent() {
+    let onto = parse(
+        "    Declaration(Class(:A))
+    Declaration(Class(:C))
+    SubClassOf(owl:Thing owl:Nothing)
+    SubClassOf(:C :A)",
+    );
+    let c = owl_dl_reasoner::classify(&onto).expect("classify");
+    assert!(
+        c.stats().inconsistent,
+        "⊤ ⊑ ⊥ KB must have ClassificationStats::inconsistent == true"
+    );
+    // The unsatisfiable list must still be populated (not suppressed).
+    let unsat = c.unsatisfiable_classes();
+    assert!(
+        !unsat.is_empty(),
+        "unsatisfiable list must be populated even when inconsistent is set"
+    );
+}
+
+// ── Finding 3: stronger FP guards for the `⊤ ⊑ ⊥` fix ──────────────────────
+
+/// FP GUARD: `SubClassOf(owl:Thing :A)` takes the `top_subsumers` path and
+/// must NOT trigger `global_unsat`. Zero unsatisfiable classes expected.
+#[test]
+fn subclass_of_thing_a_stays_sat() {
+    // owl:Thing ⊑ :A means every class is a sub-class of A (A is top-equivalent).
+    // It does NOT make the domain empty; no class should become unsatisfiable.
+    let body = "    Declaration(Class(:A)) Declaration(Class(:B)) SubClassOf(owl:Thing :A)";
+    assert_eq!(
+        unsat_of(body),
+        Vec::<String>::new(),
+        "SubClassOf(owl:Thing, :A) must not globalise — zero unsatisfiable classes expected"
+    );
+}
+
+/// FP GUARD: `SubClassOf(:A owl:Nothing)` makes only `:A` (and its subclasses)
+/// unsatisfiable. An unrelated declared class `:B` must stay satisfiable.
+#[test]
+fn scoped_bot_does_not_globalise() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    SubClassOf(:A owl:Nothing)
+    SubClassOf(:C :A)";
+    // A and C are unsat (C ⊑ A ⊑ ⊥); B is unrelated and must stay satisfiable.
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/A".to_string(), "http://t/C".to_string()],
+        "SubClassOf(:A, ⊥) must not globalise — only A and C are unsat, B stays satisfiable"
+    );
+}

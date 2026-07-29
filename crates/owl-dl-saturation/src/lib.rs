@@ -145,6 +145,7 @@ pub fn saturate_with_exists_facts(
     let mut facts: Vec<(ClassId, RoleId, ClassId)> = engine.seen_facts.iter().copied().collect();
     facts.sort_unstable_by_key(|&(s, r, t)| (s.index(), r.index(), t.index()));
     let nom = engine.rules.nominal_to_ind.clone();
+    engine.subsumers.globally_inconsistent = engine.rules.global_unsat;
     (engine.subsumers, facts, nom)
 }
 
@@ -254,6 +255,7 @@ pub fn saturate_for_realize(
     );
     engine.seed(internal);
     engine.run();
+    engine.subsumers.globally_inconsistent = engine.rules.global_unsat;
     (engine.subsumers, nominal_by_ind)
 }
 
@@ -287,6 +289,7 @@ pub fn saturate_with_config(
     engine.seed(internal);
     engine.run();
     let trace = engine.proof_trace;
+    engine.subsumers.globally_inconsistent = engine.rules.global_unsat;
     (engine.subsumers, trace)
 }
 
@@ -2200,6 +2203,7 @@ impl IdMatrix {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_field_names)] // `subsumers: IdMatrix` inside `Subsumers` is the clearest name
 pub struct Subsumers {
     /// Size-adaptive `subsumers[i] ∋ j` iff `class_i ⊑ class_j`. Dense for the
     /// small (EL/Horn) common case; sparse for giant SROIQ `TBox`es where a dense
@@ -2207,6 +2211,12 @@ pub struct Subsumers {
     subsumers: IdMatrix,
     /// Bit i set iff `class_i ⊑ ⊥`.
     unsatisfiable: FixedBitSet,
+    /// Set when the KB contains `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`) —
+    /// the domain is empty and every named class is unsatisfiable. Propagated
+    /// from [`ElRules::global_unsat`] after the engine runs so callers (e.g.
+    /// `classify_pure_el`) can set `ClassificationStats::inconsistent` without a
+    /// separate axiom scan.
+    pub globally_inconsistent: bool,
 }
 
 impl Default for Subsumers {
@@ -2220,6 +2230,7 @@ impl Subsumers {
         Self {
             subsumers: IdMatrix::with_capacity(n),
             unsatisfiable: FixedBitSet::with_capacity(n),
+            globally_inconsistent: false,
         }
     }
 
@@ -2271,6 +2282,15 @@ impl Subsumers {
             .ones()
             .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
             .collect()
+    }
+
+    /// True iff the KB contained `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`),
+    /// meaning the entire domain is empty and every named class is unsatisfiable.
+    /// Callers should set `ClassificationStats::inconsistent` when this returns
+    /// `true` (matching the convention in `classify_inconsistent`).
+    #[must_use]
+    pub fn globally_inconsistent(&self) -> bool {
+        self.globally_inconsistent
     }
 }
 
@@ -3746,7 +3766,7 @@ fn lower_sub_class_of(
             // `directly_unsat`. At seed time M is enqueued as unsat; later, whenever a
             // class C gains M as a subsumer (because C derives ∃r.A), `process_subsumer`
             // fires `enqueue_unsat(C)` — the existing "unsat subsumer ⟹ unsat class"
-            // propagation at line `if self.subsumers.is_unsatisfiable(d) { ... }`. Sound:
+            // propagation in `process_subsumer`. Sound:
             // only C's that genuinely derive `∃r.A` (entailed by the KB) gain M and are
             // marked unsat; A itself and classes with unrelated existentials are unaffected.
             if matches!(pool.get(sup), ConceptExpr::Bot) {

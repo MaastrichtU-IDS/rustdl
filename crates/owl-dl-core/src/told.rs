@@ -127,6 +127,12 @@ pub fn build_told_tables(ontology: &InternalOntology) -> ToldTables {
                     add_edge(&mut direct_super, a, b);
                 } else if let (Some(a), Some(b)) = (sub_atom, as_not_atomic(*sup, pool)) {
                     add_disjoint_pair(&mut disjoint, a, b);
+                } else if let Some((a, b)) = as_atomic_pair_to_bot(*sub, *sup, pool) {
+                    // `A ⊓ B ⊑ ⊥` — the form the negation-GCI rewrite produces,
+                    // and the form users write directly. Without this arm,
+                    // rewriting `A ⊑ ¬B` would silently shrink told-disjoint
+                    // coverage (the tier walk and the tableau read these tables).
+                    add_disjoint_pair(&mut disjoint, a, b);
                 }
             }
             Axiom::EquivalentClasses(ids) => {
@@ -234,6 +240,28 @@ fn as_not_atomic(cid: ConceptId, pool: &ConceptPool) -> Option<ClassId> {
         return Some(*c);
     }
     None
+}
+
+/// `And(Atomic(a), Atomic(b)) ⊑ Bot` ⟹ `Some((a, b))`. Exactly two atomic
+/// operands: an n-ary conjunction asserts only that the whole conjunction is
+/// unsatisfiable, which does NOT make any particular pair disjoint.
+fn as_atomic_pair_to_bot(
+    sub: ConceptId,
+    sup: ConceptId,
+    pool: &ConceptPool,
+) -> Option<(ClassId, ClassId)> {
+    if !matches!(pool.get(sup), ConceptExpr::Bot) {
+        return None;
+    }
+    let ConceptExpr::And(ops) = pool.get(sub) else {
+        return None;
+    };
+    if ops.len() != 2 {
+        return None;
+    }
+    let a = as_atomic(ops[0], pool)?;
+    let b = as_atomic(ops[1], pool)?;
+    Some((a, b))
 }
 
 fn add_edge(direct_super: &mut [SmallVec<[ClassId; 4]>], sub: ClassId, sup: ClassId) {
@@ -455,5 +483,30 @@ mod tests {
         let a = c(&o, "A");
         let b = c(&o, "B");
         assert_eq!(t.super_classes(a), [a, b].as_slice());
+    }
+
+    /// All three spellings of "A and B are disjoint" must yield the same told
+    /// pair: `DisjointClasses(A B)`, `A ⊑ ¬B`, and `A ⊓ B ⊑ ⊥`. The third is
+    /// what the negation-GCI rewrite produces, and it is also how users write
+    /// disjointness directly.
+    #[test]
+    fn and_bot_gci_records_told_disjoint_pair() {
+        let mut o = InternalOntology::new();
+        let a = o.vocabulary.intern_class("http://t/A");
+        let b = o.vocabulary.intern_class("http://t/B");
+        let a_c = o.concepts.atomic(a);
+        let b_c = o.concepts.atomic(b);
+        let and_ab = o.concepts.and(vec![a_c, b_c]);
+        let bot = o.concepts.bot();
+        o.axioms.push(Axiom::SubClassOf {
+            sub: and_ab,
+            sup: bot,
+        });
+
+        let told = build_told_tables(&o);
+        assert!(
+            told.are_told_disjoint(a, b),
+            "A ⊓ B ⊑ ⊥ must record A and B as told-disjoint"
+        );
     }
 }

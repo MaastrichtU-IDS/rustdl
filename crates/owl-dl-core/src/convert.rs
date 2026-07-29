@@ -2243,6 +2243,14 @@ pub fn convert_ontology<A: ForIRI>(
     // derive_disjunction_existentials so it sees the common-subsumer axioms that
     // pass adds (richer told tables ⟹ more forcings). Sound; atomic-only.
     crate::approx_saturation::derive_forced_disjuncts(&mut out);
+    // Canonicalize `X ⊑ ¬Y` into `X ⊓ Y ⊑ ⊥` (a logical equivalence). The gates
+    // reject `ConceptExpr::Not` outright, so one negated GCI routes an
+    // otherwise-EL ontology onto the O(n²) hybrid path; the lowered-⊥ form is
+    // in-fragment (Lever 1b) and completely reasoned over by the saturator's
+    // ConjunctiveUnsat rule. Runs on the fully populated IR, and BEFORE any NNF
+    // view is taken — `nnf_axioms` would already have turned `¬(A ⊓ B)` into an
+    // `Or`. Gated RUSTDL_NEG_TO_BOT_GCI (default ON).
+    let _ = crate::negation_gci::rewrite_negated_supers(&mut out);
     // HF3: decompose role chains longer than 2 legs into a cascade of
     // 2-leg chains using fresh auxiliary roles, so both the wedge
     // clausifier (which only encodes 2-leg chains) and the main tableau

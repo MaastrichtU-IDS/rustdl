@@ -1509,7 +1509,14 @@ cheap to fix. Each is independent — commit separately if a reviewer objects to
 **Files:**
 - Modify: `CLAUDE.md`
 - Modify: `crates/owl-dl-reasoner/src/classify.rs` (prose near `:1149-1155`)
-- Modify: `crates/owl-dl-cb/tests/cb_blowup.rs` (doc comment near `:20-66`)
+
+> **Scope decision (2026-07-29).** A third stale claim was found — the debug-build
+> wall sweep in `crates/owl-dl-cb/tests/cb_blowup.rs` — but that file exists only
+> on `feat/cb-alch-taming`, not on `main`, and this branch is cut from `main`. That
+> correction is **out of scope here**; it is already recorded in the park record
+> appended to `docs/superpowers/specs/2026-07-28-cb-lazy-successor-design-seed.md`
+> on the CB branch, which is where a reader of that branch will look. Steps below
+> cover only the two claims that live on `main`.
 
 - [ ] **Step 1: Fix the `DisjointClasses` claim in CLAUDE.md**
 

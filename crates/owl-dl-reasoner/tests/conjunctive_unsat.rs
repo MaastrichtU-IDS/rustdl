@@ -708,3 +708,43 @@ fn conjunctive_bot_unsat_is_justifiable() {
         "justification must contain at least one axiom"
     );
 }
+
+/// PROVENANCE WIRING GUARD for `ConjunctiveUnsat`.
+///
+/// Directly inspects `ProofTrace::steps` to verify that:
+/// (a) a step with `rule == ElRule::ConjunctiveUnsat` was recorded, and
+/// (b) that step's `axiom_refs` is non-empty (which breaks if the
+///     `conjunctive_unsat_axiom` provenance lookup is missing or always yields `None`).
+///
+/// The existing `conjunctive_bot_unsat_is_justifiable` test CANNOT guard this:
+/// `QuickXplain` re-runs the full reasoner on axiom subsets and never reads
+/// `ProofTrace` directly — it would pass even if provenance recording were deleted.
+#[test]
+fn conjunctive_unsat_provenance_wired() {
+    let body = format!(
+        "{DECLS}    SubClassOf(ObjectIntersectionOf(:A :B) owl:Nothing)
+    SubClassOf(:C :A)
+    SubClassOf(:C :B)"
+    );
+    let onto = parse(&body);
+    let internal = owl_dl_core::convert_ontology(&onto).expect("convert_ontology");
+    let cfg = owl_dl_reasoner::SaturateConfig {
+        record_proofs: true,
+    };
+    let (_subs, maybe_trace) = owl_dl_reasoner::saturate_with_config(&internal, &cfg);
+    let trace = maybe_trace.expect("ProofTrace must be produced when record_proofs=true");
+    let cu_step = trace
+        .steps
+        .values()
+        .find(|inf| inf.rule == owl_dl_reasoner::ElRule::ConjunctiveUnsat);
+    assert!(
+        cu_step.is_some(),
+        "ProofTrace must contain a ConjunctiveUnsat step; \
+         wiring is broken if no step was recorded"
+    );
+    assert!(
+        !cu_step.unwrap().axiom_refs.is_empty(),
+        "ConjunctiveUnsat step must have non-empty axiom_refs; \
+         broken if conjunctive_unsat_axiom provenance lookup always yields None"
+    );
+}

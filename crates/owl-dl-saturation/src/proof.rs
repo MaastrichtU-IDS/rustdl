@@ -720,6 +720,32 @@ pub fn check_proof(node: &ProofNode, num_axioms: usize) -> Result<(), CheckError
                 });
             }
         }
+        ElRule::ConjunctiveUnsat => {
+            // Sub(C,b₁) … Sub(C,bₙ) + And(b₁…bₙ) ⊑ ⊥ ⟹ Unsat(C)
+            let DerivedFact::Unsat(c) = &node.conclusion else {
+                return Err(CheckError {
+                    fact: node.conclusion.clone(),
+                    message: "ConjunctiveUnsat: conclusion is not Unsat".to_string(),
+                });
+            };
+            if node.premises.is_empty() {
+                return Err(CheckError {
+                    fact: node.conclusion.clone(),
+                    message: "ConjunctiveUnsat: expected ≥1 Sub premise, got 0".to_string(),
+                });
+            }
+            for p in &node.premises {
+                if !matches!(&p.conclusion, DerivedFact::Sub(s, _) if s == c) {
+                    return Err(CheckError {
+                        fact: node.conclusion.clone(),
+                        message: format!(
+                            "ConjunctiveUnsat: premise {:?} is not Sub({c:?},_)",
+                            p.conclusion
+                        ),
+                    });
+                }
+            }
+        }
         // DomainSub / DomainFact must conclude Sub.
         // Guard form: error on non-Sub conclusions; fall through for Sub.
         #[allow(clippy::collapsible_match)]

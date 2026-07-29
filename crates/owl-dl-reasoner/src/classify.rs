@@ -1097,11 +1097,49 @@ fn is_abox_axiom(ax: &Axiom) -> bool {
     )
 }
 
+/// True if `c` is `Atomic` in the concept pool.
+///
+/// This is the predicate that matches what the engine's `disjoint_pairs`
+/// collector keeps: members are filtered to `ConceptExpr::Atomic` only
+/// (`collect_el_rules`, the `DisjointClasses` arm). Used by the `DisjointClasses`
+/// gate arms so the fragment check never admits a member the engine will drop.
+fn is_atomic_concept(c: ConceptId, pool: &ConceptPool) -> bool {
+    matches!(pool.get(c), ConceptExpr::Atomic(_))
+}
+
+/// True if `c` is a concept that the engine handles completely for
+/// `ObjectPropertyDomain` / `ObjectPropertyRange` filler positions:
+/// - `Atomic` — stored in `role_domains` / `role_ranges` and propagated.
+/// - `Bot`    — stored in `poisoned_roles`; any `∃r.*` class becomes unsat.
+/// - `Top`    — dropped by the engine, but semantically trivial: `Domain(r, ⊤)`
+///   adds no subsumptions, so dropping it is sound (no missed entailment).
+///
+/// Everything else (`And`, `Some`, `Or`, …) is silently dropped by the engine
+/// while potentially entailing real subsumptions — those MUST fall to the hybrid
+/// path.  See `collect_el_rules`, the `ObjectPropertyDomain` arm.
+fn is_atomic_or_trivial_concept(c: ConceptId, pool: &ConceptPool) -> bool {
+    matches!(
+        pool.get(c),
+        ConceptExpr::Atomic(_) | ConceptExpr::Bot | ConceptExpr::Top
+    )
+}
+
 fn is_el_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
     match ax {
         Axiom::SubClassOf { sub, sup } => is_el_concept(*sub, pool) && is_el_concept(*sup, pool),
         Axiom::EquivalentClasses(members) => members.iter().all(|c| is_el_concept(*c, pool)),
-        Axiom::DisjointClasses(members) => members.iter().all(|c| is_el_concept(*c, pool)),
+        // D10 gate tightening (Bug A): `DisjointClasses` members are filtered to
+        // `Atomic` by the engine's `disjoint_pairs` collector (see
+        // `collect_el_rules`, lines that do `filter_map(|c| match … Atomic(id) =>
+        // Some(*id), _ => None)`). A non-atomic member (e.g. `ObjectUnionOf`) is
+        // silently dropped, so the engine sees a singleton or empty member list and
+        // emits no pairs — a sound-completeness hole when the full disjoint
+        // semantics would entail a real unsatisfiability. Require every member
+        // to be `Atomic` so the gate matches exactly what the engine keeps.
+        // `Bot` and `Top` members are also dropped by the engine; `Bot` is trivial
+        // (A ⊓ ⊥ ⊑ ⊥ always); `Top` is non-trivial (`DisjointClasses(A, ⊤)` entails
+        // `A ⊑ ⊥`) but the engine drops it too — reject both so the gate stays safe.
+        Axiom::DisjointClasses(members) => members.iter().all(|c| is_atomic_concept(*c, pool)),
         Axiom::SubObjectPropertyOf { sub, sup } => {
             if sup.is_inverse() {
                 return false;
@@ -1115,11 +1153,17 @@ fn is_el_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
         }
         Axiom::EquivalentObjectProperties(roles) => roles.iter().all(|r| !r.is_inverse()),
         Axiom::TransitiveRole(role) => !role.is_inverse(),
+        // D10 gate tightening (Bug B): `role_domains` / `role_ranges` in the engine
+        // accept ONLY `Atomic` fillers (or `Bot` via `poisoned_roles`). A conjunctive
+        // filler `And(:P :Q)` is silently dropped, so `X ⊑ ∃r.⊤` + `Domain(r)=P⊓Q`
+        // misses `X ⊑ P` and `X ⊑ Q` while the gate claims "complete". Restrict to
+        // `Atomic`, `Bot` (handled by `poisoned_roles`), and `Top` (trivially `⊤`
+        // — `Domain(r, ⊤)` adds no subsumptions, so dropping it is sound).
         Axiom::ObjectPropertyDomain { role, domain } => {
-            !role.is_inverse() && is_el_concept(*domain, pool)
+            !role.is_inverse() && is_atomic_or_trivial_concept(*domain, pool)
         }
         Axiom::ObjectPropertyRange { role, range } => {
-            !role.is_inverse() && is_el_concept(*range, pool)
+            !role.is_inverse() && is_atomic_or_trivial_concept(*range, pool)
         }
         Axiom::DeclareClass(_)
         | Axiom::DeclareObjectProperty(_)
@@ -1318,11 +1362,14 @@ fn is_saturator_axiom(
         Axiom::TransitiveRole(role)
         | Axiom::FunctionalRole(role)
         | Axiom::InverseFunctionalRole(role) => !role.is_inverse(),
+        // D10 gate tightening (Bug B): same restriction as `is_el_axiom` — only
+        // `Atomic`, `Bot`, and `Top` fillers are handled by the engine; see the
+        // comment on `is_el_axiom`'s Domain/Range arms above.
         Axiom::ObjectPropertyDomain { role, domain } => {
-            !role.is_inverse() && is_saturator_concept(*domain, pool)
+            !role.is_inverse() && is_atomic_or_trivial_concept(*domain, pool)
         }
         Axiom::ObjectPropertyRange { role, range } => {
-            !role.is_inverse() && is_saturator_concept(*range, pool)
+            !role.is_inverse() && is_atomic_or_trivial_concept(*range, pool)
         }
         Axiom::DeclareClass(_)
         | Axiom::DeclareObjectProperty(_)
@@ -1331,6 +1378,11 @@ fn is_saturator_axiom(
         // process_unsat back-prop) on the EL+disjoint-no-functional Horn
         // fragment by construction. Admitted only when no functional /
         // inverse-functional role is present (see saturator_complete_fragment).
+        //
+        // D10 gate tightening (Bug A): the engine's `disjoint_pairs` collector
+        // filters members to `Atomic` only; a non-atomic member is silently dropped,
+        // causing missed entailments under the "complete" banner. Require every
+        // member to be `Atomic` so the gate matches what the engine actually keeps.
         //
         // DisjointUnion is deliberately EXCLUDED (stays on the hybrid path):
         // (1) DisjointUnion{class, members} entails a disjunctive covering
@@ -1341,7 +1393,9 @@ fn is_saturator_axiom(
         //     DisjointUnion would silently drop both the disjointness AND
         //     the covering, causing missed entailments reported as complete
         //     (the D10 unsound-completeness bug class).
-        Axiom::DisjointClasses(_) => disjoint_ok,
+        Axiom::DisjointClasses(members) => {
+            disjoint_ok && members.iter().all(|c| is_atomic_concept(*c, pool))
+        }
         // EXCLUDED ⟹ fall back to the hybrid path. All ABox assertions;
         // InverseObjectProperties decls; Symmetric / Asymmetric / Reflexive /
         // Irreflexive; DisjointObjectProperties; SameIndividual /

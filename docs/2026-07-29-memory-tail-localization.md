@@ -118,12 +118,45 @@ by wording that does not carry its scope. **The memory tail is not one phenomeno
 per ontology before building, and read the existing notes as ontology-specific evidence rather
 than general diagnoses.
 
+## 7. RSS-over-time: a staircase, so BOTH remaining candidates are dead
+
+Sampled `VmRSS` every 2 s during a single-threaded `classify` (raw data:
+`docs/benchmarks/2026-07-29-ore9347-rss-curve.tsv`, 203 samples). Interpretation rules were
+**written down before looking** (single step ⟹ `PreparedOntology`; smooth ramp ⟹ per-pair
+retention; growth before ~123 s ⟹ stage attribution wrong; staircase ⟹ neither, re-scope).
+
+| t | 40 s | 90 s | 130 s | 160 s | 210 s | 270 s | 360 s | 420 s |
+|---|---|---|---|---|---|---|---|---|
+| RSS | 3.8 GB | 28.6 GB | **44.6 GB** | 47.9 GB | 62.3 GB | 60.2 GB ↓ | 66.8 GB | 57.3 GB ↓ |
+
+**Two rules fired.**
+
+*Growth starts far earlier than the stage split implied.* By t=130 s classify holds **44.6 GB**,
+while `tbox-stats` (convert+absorb alone) peaked at 14.2 GB and `--saturation-only` peaked at
+19.1 GB for its whole run. So classify holds ~2.4× saturation-only's peak at equal wall-clock:
+**`tbox-stats` is not a faithful proxy for classify's early phase**, and the §"Stage split"
+attribution above must be redone with in-process markers rather than subcommand proxies.
+
+*It is a staircase, and memory is released.* The largest jumps are all ≈3.5 GB and they recur
+(t=210, 212, 233, 254, 274, 295, 337), and RSS repeatedly FALLS (62.3→60.2, 66.8→57.3). So:
+- **not** a one-time `PreparedOntology::from_internal` allocation — there is no single step;
+- **not** per-pair retention — the memory is freed, so nothing is being held.
+
+The consistent reading is a **large shared baseline (~45–50 GB, formed early) plus a recurring
+~3.5 GB transient per unit of work.** That also reconciles the thread scaling that previously
+made no sense: 1 thread ≈ baseline + 1 transient ≈ 70 GB; 32 threads ≈ baseline + 32 transients
+≈ 238 GB, giving the observed 3.4× rather than fan-out's predicted 32×.
+
+Per the pre-registered rule, **no mechanism is named here.** Six hypotheses have now been
+refuted on this one ontology; the next step is instrumentation, not another inference.
+
 ## What to do next
 
-1. **Settle the per-pair question with an experiment that can.** Instrument RSS at classify
-   phase boundaries (after `PreparedOntology::from_internal`, after the label-cache build,
-   every N pairs), or use a budget long enough that a small `--pair-timeout-ms` genuinely
-   bounds total pair work.
+1. **In-process instrumentation is now unavoidable** (§7 killed the last black-box hypothesis).
+   Two questions, in order: (a) what forms the ~45–50 GB baseline before t≈130 s — note it is
+   NOT convert+absorb, since that peaks at 14.2 GB alone; (b) what allocates and frees the
+   recurring ~3.5 GB transient. Emit RSS at real phase boundaries rather than inferring from
+   subcommand proxies, which §7 shows are not faithful.
 2. **Confirm on `ore_ont_11085` (33.7 GB) and `ore_ont_5368` (26.3 GB)** before generalising.
    This document exists because that step was skipped for D4.
 3. **Re-run the memory benchmark with a budget exceeding conversion time**, recording

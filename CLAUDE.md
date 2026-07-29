@@ -893,8 +893,13 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   `∃` forward) + role hierarchy / length-≤2 chains / transitivity /
   functional + inverse-functional witness-merge / domain / range.
   Everything else (`∀`, `≤n`, `⊔`, nominals, inverse-role *use*,
-  `DisjointClasses` [excluded conservatively — disjoint×functional-merge
-  unproven], ABox, …) ⟹ fall back to the sound+complete hybrid path.
+  `DisjointClasses`+lowered-`⊥` (`A⊓B⊑⊥`) [admitted when no functional /
+  inverse-functional role present; `disjoint_ok` gate], ABox, …) ⟹ fall
+  back to the sound+complete hybrid path when outside that allowlist.
+  `DisjointUnion` remains deliberately excluded (its disjunctive covering
+  is out-of-fragment). This branch (`feat/conjunctive-unsat-negation-gci`,
+  2026-07-29) closed the `A⊓B⊑⊥` silent-incompleteness the gate was
+  already permitting: see the entry below.
   Real impact: alehif (ALC = has `∀`) + sulo now route to hybrid
   (alehif 0.09 s → ~6.6 s wall) — the old fast path was a *lucky*
   MISSED=0 on the ∀-incomplete saturator; GALEN/notgalen (EL +
@@ -908,6 +913,81 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   disjoint_classes}`. See
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §5
   + `docs/phase2a-recon.md`.
+
+  **`⊑ ⊥` completeness + RHS-negation canonicalization (2026-07-29,
+  branch `feat/conjunctive-unsat-negation-gci`).** Closes two related
+  gaps with one design: the `is_pure_el` gate (since Lever 1b, commit
+  `3e3a731`) already admitted `A⊓B⊑⊥` and `X⊑⊥`; `saturator_complete_fragment`
+  also admitted them (via its `disjoint_ok` arm). Both gates also admitted
+  `∃r.⊤⊑⊥` / `ObjectPropertyDomain(r,⊥)` / `ObjectPropertyRange(r,⊥)` through
+  `is_pure_el` (which uses `is_el_concept` — has a `Bot` arm) — but NOT
+  through `saturator_complete_fragment` (which uses `is_saturator_concept` —
+  no `Bot` arm). All of these were silently dropped by the EL saturator (the
+  D10 unsound-completeness class: gate certifies complete, engine drops axiom).
+  **Part A (correctness fix, unflagged):** five axiom shapes now handled by the
+  saturator — `And(b₁…bₙ)⊑⊥` → new `ConjunctiveUnsat{bodies}` rule feeding
+  `enqueue_unsat`; `⊤⊑⊥` → `ElRules::global_unsat` marks every user
+  class unsat at seed time; `∃r.A⊑⊥` → marker pushed onto
+  `directly_unsat`; `∃r.⊤⊑⊥` / `ObjectPropertyDomain(r,⊥)` /
+  `ObjectPropertyRange(r,⊥)` → unified `ElRules::poisoned_roles` (role
+  provably having no edges in any model), plus a post-collection pass
+  marking nested existential markers on poisoned roles unsat
+  (order-independent). Inconsistency reporting: `Subsumers::top_is_unsat`
+  (some `C` with `⊤⊑C` is unsat ⟹ `⊤⊑⊥` ⟹ inconsistent); on the
+  **pure-EL path** `classify --json` no longer reports `"consistent": true`
+  alongside a non-empty `unsatisfiable` list. **Hybrid-path residue
+  (known follow-up):** the fix lives in `classify_pure_el`; the hybrid
+  path does not carry the same `inconsistent` flag, so a KB that forces
+  the hybrid path (e.g. a `∀`-axiom alongside `⊤⊑⊥`) still reports
+  `"consistent": true` with a non-empty `unsatisfiable` list in
+  `classify --json` output. Soundness note: *all-named-classes-unsat is
+  NOT an inconsistency signal* — `{A⊑⊥, B⊑⊥}` empties every named
+  class yet has a non-empty domain; `⊤` being unsat is the correct test.
+  **Part A is corpus-inert on all measured data** (bibtex/pizza/ro/
+  ro-stripped/sio/sulo/sulo-stripped/go-basic closure-diff 57 803 rows
+  byte-identical vs `main`) — a correctness fix, no measured completeness
+  or performance delta on this corpus. **Known remaining gap (honest — a residual D10 instance):**
+  role-chain-induced poison — `SubObjectPropertyOf(Chain(t,u),r)` +
+  `ObjectPropertyDomain(r,⊥)` + `C⊑∃t.∃u.A` is still MISSED. Crucially,
+  2-leg role chains ARE admitted by `is_el_axiom` (the `SubRolePath::Chain`
+  arm, line ~1111), so `is_pure_el` certifies completeness on such an
+  ontology while the engine still drops the chain-induced poison — the same
+  D10 unsound-completeness class (gate says complete; engine misses). Marking
+  `u` poisoned would be unsound for a standalone `∃u.A`, so closing this
+  needs a chain-aware rule that Part A does not supply. This is a strict
+  improvement over `main` (where `ObjectPropertyDomain(r,⊥)` was silently
+  dropped entirely); on the current corpus the chain pattern does not appear.
+  Test exists and is `#[ignore]`d with rationale. **Part B (`RUSTDL_NEG_TO_BOT_GCI`,
+  default ON, `=0` reverts):** `X⊑¬Y` → `X⊓Y⊑⊥`, run PRE-NNF over
+  `InternalOntology.axioms` in `convert_ontology` (pre-NNF is
+  load-bearing: post-NNF `¬∃R.C` and `¬(A⊓B)` have already become
+  `∀R.¬C` and `¬A⊔¬B`, both out-of-fragment). One `⊥`-GCI per negated
+  conjunct (`X⊑¬A⊓¬B` yields two; folding would be strictly weaker).
+  `told.rs` extended to recognize `And([A,B])⊑⊥` as a told-disjoint
+  pair (also picks up natively-written `A⊓B⊑⊥`). Logical equivalence ⟹
+  FP-safe by construction. Measured (ON vs OFF, `--pair-timeout-ms 50`,
+  60 s cap): **60 complement-bearing ORE ontologies** swept flag-ON vs
+  flag-OFF — 58 byte-identical, 0 diffs; the other 2 DNF on both sides
+  with no asymmetry; 0 mode changes. **`ore_ont_9318`** (39 433 classes,
+  four genuine top-level `SubClassOf(X, ObjectComplementOf(Y))` axioms —
+  the pass fires): ON **0.97 s pure-EL** vs OFF **23.93 s hybrid**,
+  closures **byte-identical, 19 470 rows**. **`ore_ont_2397`** and
+  **`ore_ont_10032`**: both **DNF at 150 s** flag-OFF; **1.12 s** and
+  **2.36 s** flag-ON. **Recovery set, enumerated by GATE PROBE** (comparing
+  the `# fragment:` verdict ON vs OFF over every ORE ont carrying a
+  one-line `SubClassOf(X ObjectComplementOf(…))`, 60 s/side — grep ≠ gate,
+  per the Lever 1 precedent): **13 ontologies flip to `pure-EL`**, of which
+  **5 were DNF at 60 s** (`2397`, `6212`, `10016`, `10032`, `15703`) and 8
+  moved `Horn` → `pure-EL` (`33`, `6870`, `7275`, `7726`, `9318`, `11906`,
+  `14574`, `16299`). Qualification: in the curated 8-fixture closure-diff
+  set the pass almost never fires — every `ObjectComplementOf` there sits
+  inside `EquivalentClasses` (pizza, wine, family) or
+  `ObjectPropertyDomain`/`Range` (ro), shapes the pass does not handle;
+  the only firing site is `sulo.ofn`. So "ON-vs-OFF byte-identical across
+  the curated corpus" mostly demonstrates inertness, not correctness —
+  the 60-ontology ORE sweep and the `9318` identity are what carry it. Spec
+  `docs/superpowers/specs/2026-07-29-negation-to-bot-gci-and-conjunctive-unsat-design.md`,
+  plan `docs/superpowers/plans/2026-07-29-conjunctive-unsat-and-negation-gci.md`.
 
 - **New as of 2026-06-06**: `RUSTDL_PRECISE_CARD_DEPS` defaults ON.
   At the wedge's `≤n` cardinality-clash pre-check, reports a sound

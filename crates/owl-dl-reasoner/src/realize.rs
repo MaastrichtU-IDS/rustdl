@@ -822,6 +822,20 @@ pub(crate) fn realize_via_saturation_internal(
     })
 }
 
+/// True iff the internal ontology contains the axiom `SubClassOf(owl:Thing,
+/// owl:Nothing)` (`⊤ ⊑ ⊥`), which makes the entire domain empty and every
+/// named class unsatisfiable. O(n) axiom scan; cheap in practice.
+fn has_top_subclass_bot(internal: &InternalOntology) -> bool {
+    let pool = &internal.concepts;
+    internal.axioms.iter().any(|ax| {
+        if let Axiom::SubClassOf { sub, sup } = ax {
+            matches!(pool.get(*sub), ConceptExpr::Top) && matches!(pool.get(*sup), ConceptExpr::Bot)
+        } else {
+            false
+        }
+    })
+}
+
 /// Internal entry point.
 ///
 /// # Errors
@@ -842,6 +856,14 @@ pub fn realize_internal(internal: &InternalOntology) -> Result<Realization, Reas
     // genuinely inconsistent — so a consistent ontology falls straight through
     // to the unchanged realization paths below.
     if crate::abox_saturation::saturate_abox_consistency(internal).clash {
+        return Err(ReasonError::Inconsistent);
+    }
+    // TBox-level global inconsistency (`⊤ ⊑ ⊥`): the ABox-saturation check
+    // above handles ABox-sourced clashes; this cheap O(n) scan catches the
+    // pure-TBox empty-domain axiom that `abox_saturation` misses (it only
+    // processes atomic-LHS SubClassOf). Without this, realize silently returns
+    // an empty realization instead of the `Err(Inconsistent)` convention.
+    if has_top_subclass_bot(internal) {
         return Err(ReasonError::Inconsistent);
     }
     // Fast path: on the saturator-complete fragment (EL/Horn TBox + simple

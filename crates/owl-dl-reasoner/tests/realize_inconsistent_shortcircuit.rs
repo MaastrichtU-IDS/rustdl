@@ -24,6 +24,16 @@ use std::fs;
 use std::io::Cursor;
 use std::path::Path;
 
+fn parse_ofn(body: &str) -> SetOntology<RcStr> {
+    let src = format!(
+        "Prefix(:=<http://t/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\nOntology(<http://t/x>\n{body}\n)\n"
+    );
+    let mut reader = Cursor::new(src);
+    let (onto, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+    onto
+}
+
 fn load(name: &str) -> SetOntology<RcStr> {
     let path = Path::new("tests/fixtures/regression").join(name);
     let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
@@ -55,4 +65,47 @@ fn realize_still_succeeds_on_consistent_ontology() {
             "consistent realize regressed: {ind} got a defined type"
         );
     }
+}
+
+// ── Finding 4 (minor): `realize` on a `⊤ ⊑ ⊥` KB must error ────────────────
+//
+// Before the fix, `realize` on a `⊤ ⊑ ⊥` ontology silently returned an
+// empty realization: `abox_saturation` misses the pure-TBox axiom (it only
+// handles atomic-LHS SubClassOf), so the ABox pre-check was a no-op.
+// With the new `has_top_subclass_bot` scan, `realize_internal` now returns
+// `Err(ReasonError::Inconsistent)`, matching the convention of every other
+// `materialize_*` entry point.
+
+/// `realize` must return `Err(Inconsistent)` on a `⊤ ⊑ ⊥` KB.
+#[test]
+fn realize_errors_on_top_subclass_bot() {
+    // SubClassOf(owl:Thing, owl:Nothing) — empty-domain, globally inconsistent.
+    let onto = parse_ofn(
+        "    Declaration(Class(:A))
+    Declaration(NamedIndividual(:i))
+    SubClassOf(owl:Thing owl:Nothing)",
+    );
+    match realize(&onto) {
+        Err(ReasonError::Inconsistent) => {}
+        other => panic!("expected Err(Inconsistent) on ⊤ ⊑ ⊥ ontology, got {other:?}"),
+    }
+}
+
+/// Guard: `realize` must NOT error on a consistent ontology with an
+/// individual — the `has_top_subclass_bot` scan must not over-fire.
+#[test]
+fn realize_consistent_with_individual_succeeds() {
+    let onto = parse_ofn(
+        "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(NamedIndividual(:i))
+    SubClassOf(:A :B)
+    ClassAssertion(:A :i)",
+    );
+    let r = realize(&onto).expect("consistent ontology with individual must realize, not error");
+    let types = r.entailed_types("http://t/i");
+    assert!(
+        types.contains(&"http://t/A".to_string()),
+        "individual i must be typed A"
+    );
 }

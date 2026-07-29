@@ -387,6 +387,8 @@ struct WorklistEngine {
     role_super_bitset: Vec<FixedBitSet>,
     /// Dense per-class indices into `rules.conjunctive_triggers`.
     conjunctive_by_body: Vec<Vec<usize>>,
+    /// Dense per-class indices into `rules.conjunctive_unsat`.
+    conjunctive_unsat_by_body: Vec<Vec<usize>>,
     /// Dense per-class indices into `rules.existential_triggers`.
     existential_triggers_by_body: Vec<Vec<usize>>,
     /// Dense per-class list of classes disjoint from each class.
@@ -481,6 +483,12 @@ impl WorklistEngine {
                 conjunctive_by_body[body.index() as usize].push(idx);
             }
         }
+        let mut conjunctive_unsat_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
+        for (idx, rule) in rules.conjunctive_unsat.iter().enumerate() {
+            for &body in &rule.bodies {
+                conjunctive_unsat_by_body[body.index() as usize].push(idx);
+            }
+        }
         let mut existential_triggers_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
         for (idx, trigger) in rules.existential_triggers.iter().enumerate() {
             existential_triggers_by_body[trigger.body.index() as usize].push(idx);
@@ -531,6 +539,7 @@ impl WorklistEngine {
             role_super,
             role_super_bitset,
             conjunctive_by_body,
+            conjunctive_unsat_by_body,
             existential_triggers_by_body,
             disjoints_by_class,
             num_user_classes,
@@ -618,6 +627,7 @@ impl WorklistEngine {
     fn introduce_runtime_synthetic(&mut self, body: Vec<ClassId>) -> ClassId {
         let before_atomic = self.rules.atomic_subsumptions.len();
         let before_conjunctive = self.rules.conjunctive_triggers.len();
+        let before_conjunctive_unsat = self.rules.conjunctive_unsat.len();
         // Capture a clone of the body before `introduce` consumes it (sorts
         // and stores it) so we can compute atomic_content_of for the new
         // synthetic. On the dedup path we skip this.
@@ -654,6 +664,9 @@ impl WorklistEngine {
             while self.conjunctive_by_body.len() < needed {
                 self.conjunctive_by_body.push(Vec::new());
             }
+            while self.conjunctive_unsat_by_body.len() < needed {
+                self.conjunctive_unsat_by_body.push(Vec::new());
+            }
             while self.existential_triggers_by_body.len() < needed {
                 self.existential_triggers_by_body.push(Vec::new());
             }
@@ -669,6 +682,15 @@ impl WorklistEngine {
                 self.conjunctive_by_body[b.index() as usize].push(added_idx);
             }
         }
+        // Tripwire: `introduce` must never append a ConjunctiveUnsat rule at runtime.
+        // If it ever does, the rule would be silently un-indexed and silently dropped —
+        // the exact bug class this work exists to prevent.  The debug_assert fires in
+        // `cargo test` (debug profile) but compiles out in release.
+        debug_assert_eq!(
+            before_conjunctive_unsat,
+            self.rules.conjunctive_unsat.len(),
+            "runtime rule addition must re-index conjunctive_unsat_by_body",
+        );
         // Enqueue the F ⊑ Bi atomic subsumptions so existing rules fire on them.
         for added_idx in before_atomic..self.rules.atomic_subsumptions.len() {
             let sub_ax = self.rules.atomic_subsumptions[added_idx];
@@ -792,6 +814,16 @@ impl WorklistEngine {
                 self.enqueue_unsat(c);
             }
         }
+        // Task 2b Bug 1: `⊤ ⊑ ⊥` — globally inconsistent KB. Mark every user
+        // class unsatisfiable (mirrors the `classify_inconsistent` convention).
+        // Done here (after `directly_unsat`) so `process_unsat` propagation can
+        // still derive via subclass/fact chains even for classes seeded both ways.
+        if self.rules.global_unsat {
+            for i in 0..self.num_user_classes {
+                let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+                self.enqueue_unsat(id);
+            }
+        }
         // Reflexivity proof records: record Sub(C,C) for every user class
         // (the told-subsumer loop will override if there's also an axiom, but
         // first-writer-wins so reflexivity lands unless we record told first).
@@ -858,6 +890,25 @@ impl WorklistEngine {
                 break;
             }
         }
+        // Propagate the syntactic `⊤ ⊑ ⊥` certificate once, here, instead of
+        // at each call site.  Previously three callers did this by hand; the
+        // fourth (`build_run_engine_with_reserved`) forgot to, so its `Subsumers`
+        // reported `globally_inconsistent == false` on a `⊤ ⊑ ⊥` KB (FINDING 2).
+        self.subsumers.globally_inconsistent = self.rules.global_unsat;
+        // Detect derived global inconsistency: if any `⊤`-subsumer class (a named
+        // `C` with `SubClassOf(owl:Thing, C)`) ended up unsatisfiable, then ⊤ is
+        // itself unsat → the KB is inconsistent even without a syntactic `⊤ ⊑ ⊥`.
+        // Example: `{⊤ ⊑ E, E ⊑ ⊥}` — `E` is in `top_subsumers` and gets marked
+        // unsat by `process_unsat`; this flag lets callers report inconsistency
+        // without running the tableau.
+        // **Soundness**: only fires when a `⊤`-forced class is provably empty —
+        // an empty `top_subsumers` (e.g. `{A ⊑ ⊥, B ⊑ ⊥}`, no `⊤ ⊑ …` axiom)
+        // never sets this, so a consistent-but-all-classes-empty KB stays consistent.
+        self.subsumers.top_is_unsat = self
+            .rules
+            .top_subsumers
+            .iter()
+            .any(|&c| self.subsumers.is_unsatisfiable(c));
     }
 
     // -----------------------------------------------------------------------
@@ -1128,6 +1179,39 @@ impl WorklistEngine {
                     }
                     self.enqueue_subsumer(c, head);
                 }
+            }
+        }
+        // Conjunctive unsat (`And(b₁…bₙ) ⊑ ⊥`): every rule with D in its body
+        // list may now fire on C if C has all the other bodies too.
+        for ridx in self.conjunctive_unsat_by_body[d.index() as usize].clone() {
+            if self.rules.conjunctive_unsat[ridx]
+                .bodies
+                .iter()
+                .all(|b| self.subsumers.contains(c, *b))
+            {
+                if self.record_proofs && !self.subsumers.unsatisfiable.contains(c.index() as usize)
+                {
+                    let premises: Vec<DerivedFact> = self.rules.conjunctive_unsat[ridx]
+                        .bodies
+                        .iter()
+                        .map(|&b| DerivedFact::Sub(c, b))
+                        .collect();
+                    let ax_ref = self
+                        .proof_trace
+                        .as_ref()
+                        .and_then(|t| t.conjunctive_unsat_axiom.get(ridx).copied().flatten())
+                        .map(AxiomRef);
+                    let inf = Inference {
+                        rule: ElRule::ConjunctiveUnsat,
+                        premise_facts: premises,
+                        axiom_refs: ax_ref.into_iter().collect(),
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(DerivedFact::Unsat(c), inf);
+                    }
+                }
+                self.enqueue_unsat(c);
+                break; // enqueue_unsat is idempotent; remaining rules for c are pointless
             }
         }
         // Disjointness: if any class disjoint from D is already a
@@ -1590,6 +1674,26 @@ impl WorklistEngine {
                         self.enqueue_subsumer(*y, dom);
                     }
                 }
+            }
+            // Poisoned-role check: if this super-role is poisoned (Domain=⊥,
+            // Range=⊥, or `∃r.⊤ ⊑ ⊥`), any class that derives an existential
+            // fact over it is unsatisfiable — role r cannot have any edges in
+            // any model. Mark fact.sub and every subclass of fact.sub as unsat.
+            //
+            // Sound: `poisoned_roles` is only populated from the three forms
+            // above, all of which entail "role r is vacuously empty." A class
+            // that genuinely derives `∃r.X` (i.e. `fact.sub` with role `r`)
+            // is therefore unsatisfiable. The filler class and classes with
+            // existentials on unrelated roles are unaffected.
+            if self.rules.poisoned_roles.contains(super_role) {
+                self.enqueue_unsat(fact.sub);
+                // Also propagate to every subclass of fact.sub (they inherit
+                // the existential fact by Phase-2d, so they too are unsat).
+                for y in self.subs_of_class(fact.sub) {
+                    self.enqueue_unsat(y);
+                }
+                // Once poisoned, all super-role checks are redundant.
+                break;
             }
         }
         // Unsat propagation: if the target is unsat, the source is
@@ -2136,6 +2240,7 @@ impl IdMatrix {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_field_names)] // `subsumers: IdMatrix` inside `Subsumers` is the clearest name
 pub struct Subsumers {
     /// Size-adaptive `subsumers[i] ∋ j` iff `class_i ⊑ class_j`. Dense for the
     /// small (EL/Horn) common case; sparse for giant SROIQ `TBox`es where a dense
@@ -2143,6 +2248,24 @@ pub struct Subsumers {
     subsumers: IdMatrix,
     /// Bit i set iff `class_i ⊑ ⊥`.
     unsatisfiable: FixedBitSet,
+    /// Set when the KB contains `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`) —
+    /// the domain is empty and every named class is unsatisfiable. Propagated
+    /// from [`ElRules::global_unsat`] inside [`WorklistEngine::run`] so callers
+    /// (e.g. `classify_pure_el`) can set `ClassificationStats::inconsistent` without
+    /// a separate axiom scan.  Private: written once, inside this module, by `run()`;
+    /// read via the [`Subsumers::globally_inconsistent`] accessor.
+    globally_inconsistent: bool,
+    /// Set when at least one `top_subsumers` class (i.e. a named `C` such that
+    /// `⊤ ⊑ C` was asserted) ended up unsatisfiable after saturation.  This
+    /// means owl:Thing itself is unsat → the KB is globally inconsistent, even
+    /// though no *syntactic* `⊤ ⊑ ⊥` axiom was present.  Example:
+    /// `SubClassOf(owl:Thing :E)` + `SubClassOf(:E owl:Nothing)` — `E` is in
+    /// `top_subsumers`, saturation marks `E` unsat, so `top_is_unsat` is set.
+    /// Contrast with `{SubClassOf(:A owl:Nothing), SubClassOf(:B owl:Nothing)}`
+    /// (no `⊤ ⊑ …` axiom) — `top_subsumers` is empty, this flag stays false,
+    /// and the KB is correctly reported consistent.  Private, set once by
+    /// `WorklistEngine::run()`; read via [`Subsumers::top_is_unsat`].
+    top_is_unsat: bool,
 }
 
 impl Default for Subsumers {
@@ -2156,6 +2279,8 @@ impl Subsumers {
         Self {
             subsumers: IdMatrix::with_capacity(n),
             unsatisfiable: FixedBitSet::with_capacity(n),
+            globally_inconsistent: false,
+            top_is_unsat: false,
         }
     }
 
@@ -2208,6 +2333,33 @@ impl Subsumers {
             .map(|i| ClassId::new(u32::try_from(i).expect("class id fits in u32")))
             .collect()
     }
+
+    /// True iff the KB contained `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`),
+    /// meaning the entire domain is empty and every named class is unsatisfiable.
+    /// Callers should set `ClassificationStats::inconsistent` when this returns
+    /// `true` (matching the convention in `classify_inconsistent`).
+    #[must_use]
+    pub fn globally_inconsistent(&self) -> bool {
+        self.globally_inconsistent
+    }
+
+    /// True iff at least one `⊤`-subsumer (a named class `C` such that
+    /// `SubClassOf(owl:Thing, C)` was asserted) ended up unsatisfiable after
+    /// saturation.  When this holds, owl:Thing is itself unsat → the KB is
+    /// globally inconsistent even without a syntactic `⊤ ⊑ ⊥` axiom.
+    ///
+    /// **Contrast with `globally_inconsistent()`**: that flag requires the
+    /// literal `⊤ ⊑ ⊥` axiom; this flag catches the derived case such as
+    /// `{⊤ ⊑ E, E ⊑ ⊥}`.
+    ///
+    /// **Contrast with "all user classes unsat"**: the absence of a `⊤ ⊑ …`
+    /// axiom means no class was forced onto `⊤`, so `{A ⊑ ⊥, B ⊑ ⊥}` (every
+    /// user class empty, but ⊤ itself satisfiable) leaves this flag false —
+    /// correctly reporting the KB as consistent.
+    #[must_use]
+    pub fn top_is_unsat(&self) -> bool {
+        self.top_is_unsat
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -2221,6 +2373,9 @@ struct ElRules {
     /// Conjunctive triggers: when a class accumulates every `body`
     /// among its subsumers, it gains `head`.
     conjunctive_triggers: Vec<ConjunctiveTrigger>,
+    /// Conjunctive unsat rules from `And(b₁ … bₙ) ⊑ ⊥`: when a class
+    /// accumulates every `body` among its subsumers, it is unsatisfiable.
+    conjunctive_unsat: Vec<ConjunctiveUnsat>,
     /// Existential facts from `SubClassOf(sub, ∃role.target)` over
     /// atomic-named-atomic shapes. Read as "every `sub`-instance has
     /// some `role`-successor whose subsumers include `target`."
@@ -2271,6 +2426,12 @@ struct ElRules {
     /// preprocessing pass's emitted `C ⊑ Bot` axioms (Functional + ≥n
     /// clash; `DataMin` > `DataMax` clash).
     directly_unsat: Vec<ClassId>,
+    /// Set by `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`): the entire
+    /// domain is empty, so every class is unsatisfiable. Seeded in `seed`
+    /// by enqueuing every user class as unsat (mirrors the
+    /// `classify_inconsistent` convention: every named class ⊑ ⊥).
+    /// Task 2b Bug 1 fix.
+    global_unsat: bool,
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
     /// from `ObjectPropertyDomain(r, C)` with named `r` and atomic
@@ -2306,6 +2467,24 @@ struct ElRules {
     /// survivor ⟹ force it, none ⟹ unsat. Sound by construction; atomic-only
     /// (nominal `⊔` deferred to B3). Empty ⇒ the rule is a no-op (EL/Horn corpus).
     disjunctions_by_class: HashMap<ClassId, Vec<Box<[ClassId]>>>,
+    /// Roles `r` for which NO r-edge may exist in any model — i.e. the role is
+    /// "poisoned". Arises from three equivalent-by-semantics axiom forms:
+    ///
+    /// 1. `SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)` (`∃r.⊤ ⊑ ⊥`)
+    /// 2. `ObjectPropertyDomain(:r owl:Nothing)` (`Domain(r)=⊥`)
+    /// 3. `ObjectPropertyRange(:r owl:Nothing)`  (`Range(r)=⊥`)
+    ///
+    /// All three mean the r-role is vacuously impossible: any class that entails
+    /// `∃r.X` for ANY filler X is therefore unsatisfiable.
+    ///
+    /// Used in `process_fact`: whenever a new existential fact `(C, role, _)` is
+    /// inserted, if `role` (or any of its super-roles in the hierarchy) is in
+    /// `poisoned_roles`, then `C` and every subclass of `C` is enqueued as unsat.
+    ///
+    /// Sound: only classes with a genuinely-entailed `∃r.X` are affected; the filler
+    /// class X itself and classes with existentials on unrelated roles are unaffected.
+    /// Inert on ontologies with no poisoned roles (the common case).
+    poisoned_roles: HashSet<RoleId>,
 }
 
 impl ElRules {
@@ -2337,6 +2516,20 @@ struct AtomicSubsumption {
 struct ConjunctiveTrigger {
     bodies: Vec<ClassId>,
     head: ClassId,
+}
+
+/// Conjunctive unsatisfiability: when a class accumulates every `body` among
+/// its subsumers, it is unsatisfiable. Lowered from `And(b₁ … bₙ) ⊑ ⊥` — the
+/// n-ary generalisation of a `disjoint_pairs` entry.
+///
+/// Exists because the `And`-LHS arm of rule collection derives heads from
+/// `atomic_operands_on_right(sup, _)` plus an existential-RHS scan, and with
+/// `sup = Bot` both are empty — so before this rule the axiom was silently
+/// dropped while the fragment gate (Lever 1b) certified the closure complete.
+/// `directly_unsat` covers only a NON-conjunctive LHS.
+#[derive(Debug, Clone)]
+struct ConjunctiveUnsat {
+    bodies: Vec<ClassId>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -2653,6 +2846,7 @@ fn collect_el_rules_with_provenance(
 
     let num_atomic = rules.atomic_subsumptions.len();
     let num_conj = rules.conjunctive_triggers.len();
+    let num_conj_unsat = rules.conjunctive_unsat.len();
     let num_facts = rules.existential_facts.len();
     let num_trigs = rules.existential_triggers.len();
     let num_disjt = rules.disjoint_pairs.len();
@@ -2661,6 +2855,7 @@ fn collect_el_rules_with_provenance(
 
     let mut atomic_sub_axiom: Vec<Option<usize>> = vec![None; num_atomic];
     let mut conjunctive_trigger_axiom: Vec<Option<usize>> = vec![None; num_conj];
+    let mut conjunctive_unsat_axiom: Vec<Option<usize>> = vec![None; num_conj_unsat];
     let mut existential_fact_axiom: Vec<Option<usize>> = vec![None; num_facts];
     let mut existential_trigger_axiom: Vec<Option<usize>> = vec![None; num_trigs];
     let mut disjoint_pair_axiom: Vec<Option<usize>> = vec![None; num_disjt];
@@ -2738,6 +2933,7 @@ fn collect_el_rules_with_provenance(
     // `tseitin.next_id` is used only to verify total_classes; no action needed here.
     let mut atomic_cur = 0usize;
     let mut conj_cur = 0usize;
+    let mut conj_unsat_cur = 0usize;
     let mut facts_cur = 0usize;
     let mut trigs_cur = 0usize;
     let mut unsat_cur = 0usize;
@@ -2783,6 +2979,7 @@ fn collect_el_rules_with_provenance(
                 Axiom::SubClassOf { sub, sup } => {
                     let b_a = mini_rules.atomic_subsumptions.len();
                     let b_c = mini_rules.conjunctive_triggers.len();
+                    let b_cu = mini_rules.conjunctive_unsat.len();
                     let b_f = mini_rules.existential_facts.len();
                     let b_t = mini_rules.existential_triggers.len();
                     let b_u = mini_rules.directly_unsat.len();
@@ -2796,6 +2993,7 @@ fn collect_el_rules_with_provenance(
                     );
                     let a_a = mini_rules.atomic_subsumptions.len();
                     let a_c = mini_rules.conjunctive_triggers.len();
+                    let a_cu = mini_rules.conjunctive_unsat.len();
                     let a_f = mini_rules.existential_facts.len();
                     let a_t = mini_rules.existential_triggers.len();
                     let a_u = mini_rules.directly_unsat.len();
@@ -2803,6 +3001,9 @@ fn collect_el_rules_with_provenance(
                     atomic_cur += a_a - b_a;
                     conjunctive_trigger_axiom[conj_cur..conj_cur + (a_c - b_c)].fill(Some(ax_idx));
                     conj_cur += a_c - b_c;
+                    conjunctive_unsat_axiom[conj_unsat_cur..conj_unsat_cur + (a_cu - b_cu)]
+                        .fill(Some(ax_idx));
+                    conj_unsat_cur += a_cu - b_cu;
                     existential_fact_axiom[facts_cur..facts_cur + (a_f - b_f)].fill(Some(ax_idx));
                     facts_cur += a_f - b_f;
                     existential_trigger_axiom[trigs_cur..trigs_cur + (a_t - b_t)]
@@ -2817,6 +3018,7 @@ fn collect_el_rules_with_provenance(
                             if i != j {
                                 let b_a = mini_rules.atomic_subsumptions.len();
                                 let b_c = mini_rules.conjunctive_triggers.len();
+                                let b_cu = mini_rules.conjunctive_unsat.len();
                                 let b_f = mini_rules.existential_facts.len();
                                 let b_t = mini_rules.existential_triggers.len();
                                 let b_u = mini_rules.directly_unsat.len();
@@ -2830,6 +3032,7 @@ fn collect_el_rules_with_provenance(
                                 );
                                 let a_a = mini_rules.atomic_subsumptions.len();
                                 let a_c = mini_rules.conjunctive_triggers.len();
+                                let a_cu = mini_rules.conjunctive_unsat.len();
                                 let a_f = mini_rules.existential_facts.len();
                                 let a_t = mini_rules.existential_triggers.len();
                                 let a_u = mini_rules.directly_unsat.len();
@@ -2839,6 +3042,10 @@ fn collect_el_rules_with_provenance(
                                 conjunctive_trigger_axiom[conj_cur..conj_cur + (a_c - b_c)]
                                     .fill(Some(ax_idx));
                                 conj_cur += a_c - b_c;
+                                conjunctive_unsat_axiom
+                                    [conj_unsat_cur..conj_unsat_cur + (a_cu - b_cu)]
+                                    .fill(Some(ax_idx));
+                                conj_unsat_cur += a_cu - b_cu;
                                 existential_fact_axiom[facts_cur..facts_cur + (a_f - b_f)]
                                     .fill(Some(ax_idx));
                                 facts_cur += a_f - b_f;
@@ -2910,6 +3117,7 @@ fn collect_el_rules_with_provenance(
         atomic_sub_axiom,
         existential_fact_axiom,
         conjunctive_trigger_axiom,
+        conjunctive_unsat_axiom,
         existential_trigger_axiom,
         disjoint_pair_axiom,
         chain_axiom_axiom,
@@ -2949,9 +3157,14 @@ fn collect_el_rules(
                 }
             }
             Axiom::ObjectPropertyDomain { role, domain } => {
-                if !role.is_inverse()
-                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
-                {
+                if role.is_inverse() {
+                    // inverse-role domain = forward range; handled by the tableau
+                } else if matches!(internal.concepts.get(*domain), ConceptExpr::Bot) {
+                    // `ObjectPropertyDomain(r, ⊥)`: semantically `∃r.⊤ ⊑ ⊥` —
+                    // no individual may be an r-source. Poison the role so that
+                    // any class deriving `∃r.X` is marked unsatisfiable.
+                    rules.poisoned_roles.insert(role.role_id());
+                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*domain) {
                     rules
                         .role_domains
                         .entry(role.role_id())
@@ -2960,9 +3173,14 @@ fn collect_el_rules(
                 }
             }
             Axiom::ObjectPropertyRange { role, range } => {
-                if !role.is_inverse()
-                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*range)
-                {
+                if role.is_inverse() {
+                    // inverse-role range = forward domain; handled by the tableau
+                } else if matches!(internal.concepts.get(*range), ConceptExpr::Bot) {
+                    // `ObjectPropertyRange(r, ⊥)`: the r-range is empty ⟹ no
+                    // r-edge can exist in any model. Poison the role so that any
+                    // class deriving `∃r.X` is marked unsatisfiable.
+                    rules.poisoned_roles.insert(role.role_id());
+                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
                     rules
                         .role_ranges
                         .entry(role.role_id())
@@ -3263,6 +3481,33 @@ fn collect_el_rules(
         }
     }
 
+    // Post-collection pass: any Tseitin existential marker whose role (or a
+    // super-role of its role) is poisoned (`Domain=⊥`, `Range=⊥`, or `∃r.⊤⊑⊥`)
+    // must itself be unsatisfiable.  A nested existential like `∃t.(∃r.A)` produces
+    // a marker `M` for `∃r.A` (keyed on `(r, A)` in `by_existential`); the outer
+    // class `C ⊑ ∃t.M` then discovers `M ⊑ ⊥` via `UnsatTarget` propagation.
+    //
+    // This pass is order-independent: it runs after ALL axioms have been processed
+    // (Pass 1 fills `poisoned_roles`; Pass 2 fills `by_existential`), so it does
+    // not depend on declaration order in the ontology.
+    //
+    // Sound: we check the marker's OWN role and its super-roles only (mirroring the
+    // `process_fact` super-role loop).  We never poison based on the filler class or
+    // on roles unrelated to the existential — that would be unsound.
+    // NOTE: `by_union_existential` (disjunctive-body markers) is intentionally not
+    // walked here — `Or` is out-of-fragment on both `is_pure_el` and
+    // `saturator_complete_fragment`, so no poisoned disjunctive marker is reachable
+    // on any ontology where this pass runs.
+    for (&(role, _body), &marker) in &tseitin.by_existential {
+        let poisoned = rules.poisoned_roles.contains(&role)
+            || role_super
+                .get(&role)
+                .is_some_and(|supers| supers.iter().any(|sr| rules.poisoned_roles.contains(sr)));
+        if poisoned {
+            rules.directly_unsat.push(marker);
+        }
+    }
+
     (rules, tseitin, total_classes)
 }
 
@@ -3507,6 +3752,25 @@ fn lower_sub_class_of(
             if !salvageable {
                 return;
             }
+            // `And(b₁…bₙ) ⊑ ⊥` is a disjointness assertion. Without this arm
+            // `atomic_operands_on_right(Bot, _)` and the existential-RHS scan
+            // below both return empty, so the axiom is silently DROPPED while
+            // the fragment gate (Lever 1b) certifies the closure complete —
+            // the D10 unsound-completeness class. `directly_unsat` covers only
+            // a non-conjunctive LHS.
+            //
+            // An EMPTY body list would mean `⊤ ⊑ ⊥`, and a rule with no bodies
+            // fires on EVERY class (`all()` over an empty iterator is `true`),
+            // marking the whole vocabulary unsatisfiable. `ConceptPool` is not
+            // expected to produce `And([])`, so rather than trust that we skip
+            // it and leave the (global-inconsistency) case to the hybrid path —
+            // a sound MISS instead of a catastrophic FP.
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                if !bodies.is_empty() {
+                    rules.conjunctive_unsat.push(ConjunctiveUnsat { bodies });
+                }
+                return;
+            }
             // The existing atomic-operand loop: any atomic class on
             // the right (or atomic operand of an `And` on the right)
             // becomes a head of the conjunctive trigger.
@@ -3583,12 +3847,47 @@ fn lower_sub_class_of(
             // ore_ont_13621/14450). Sound EL completeness fix: the domain rule is
             // already complete (cf. the `ObjectPropertyDomain` arm).
             if matches!(pool.get(*body), ConceptExpr::Top) {
+                // Bug 2b-3: `∃r.⊤ ⊑ ⊥`. This is semantically identical to
+                // `ObjectPropertyDomain(r, ⊥)`: role r is completely empty.
+                // The `atomic_operands_on_right(Bot, _)` loop below returns []
+                // and falls through to the domain push, which also records nothing
+                // — the axiom was silently DROPPED while the fragment gate certified
+                // the closure complete. Fix: poison role r directly, matching the
+                // `ObjectPropertyDomain(..., Bot)` path in Pass 1.
+                if matches!(pool.get(sup), ConceptExpr::Bot) {
+                    rules.poisoned_roles.insert(role.role_id());
+                    return;
+                }
                 for head in atomic_operands_on_right(sup, pool) {
                     rules
                         .role_domains
                         .entry(role.role_id())
                         .or_default()
                         .push(head);
+                }
+                return;
+            }
+            // Task 2b Bug 2: `∃r.A ⊑ ⊥`. `atomic_operands_on_right(Bot, _)` returns
+            // empty, so without this guard the axiom was silently DROPPED while the
+            // fragment gate certified the closure complete.
+            //
+            // Fix: introduce the one-way existential marker M with `∃r.A ⊑ M` (via the
+            // standard `introduce_existential_marker` machinery), then push M to
+            // `directly_unsat`. At seed time M is enqueued as unsat; later, whenever a
+            // class C gains M as a subsumer (because C derives ∃r.A), `process_subsumer`
+            // fires `enqueue_unsat(C)` — the existing "unsat subsumer ⟹ unsat class"
+            // propagation in `process_subsumer`. Sound:
+            // only C's that genuinely derive `∃r.A` (entailed by the KB) gain M and are
+            // marked unsat; A itself and classes with unrelated existentials are unaffected.
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin)
+                else {
+                    return;
+                };
+                for body_id in body_ids {
+                    let marker =
+                        tseitin.introduce_existential_marker(role.role_id(), body_id, rules);
+                    rules.directly_unsat.push(marker);
                 }
                 return;
             }
@@ -3652,7 +3951,17 @@ fn lower_sub_class_of(
         // `seed` broadcasts these to all classes and the fixpoint closes them
         // transitively. Without this the axiom was silently dropped here — a real
         // EL-incompleteness (ORE ore_ont_11522: 522 vs whelk's complete 1490).
+        //
+        // Task 2b Bug 1: `⊤ ⊑ ⊥` — the `Bot` case. `atomic_operands_on_right(Bot, _)`
+        // returns empty, so without this guard the axiom was silently DROPPED while the
+        // fragment gate certified the closure complete. Setting `global_unsat` causes
+        // `seed` to enqueue every user class as unsatisfiable, matching the
+        // `classify_inconsistent` convention (every class ⊑ ⊥ on an inconsistent KB).
         ConceptExpr::Top => {
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                rules.global_unsat = true;
+                return;
+            }
             for c in atomic_operands_on_right(sup, pool) {
                 rules.top_subsumers.push(c);
             }

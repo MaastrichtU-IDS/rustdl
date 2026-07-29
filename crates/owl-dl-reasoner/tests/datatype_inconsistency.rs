@@ -20,7 +20,7 @@ use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::is_consistent;
+use owl_dl_reasoner::{classify, is_consistent};
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -999,4 +999,57 @@ fn disjoint_dp_different_f32_values_consistent() {
     DataPropertyAssertion(:p :a "1.0"^^xsd:float)
     DataPropertyAssertion(:q :a "2.0"^^xsd:float)"#
     ));
+}
+
+// ─── Finding 2: data-clash path marks classes unsatisfiable ───────────────
+//
+// `data_axioms.rs` emits `SubClassOf(owl:Thing, owl:Nothing)` for ABox
+// data-range violations. Before the `⊤ ⊑ ⊥` fix the saturator silently
+// dropped that axiom while certifying the closure complete; after the fix
+// every user class is reported unsatisfiable.
+//
+// Pattern: `DataPropertyRange(:p xsd:integer)` + an `xsd:string` assertion
+// → string and integer families are disjoint → `Top ⊑ Bot` is emitted →
+// every declared class must appear in `unsatisfiable_classes()`.
+
+/// POSITIVE (Finding 2 canary): a data-range violation emits `⊤ ⊑ ⊥`
+/// which now propagates through the saturator so that ALL named classes
+/// are reported unsatisfiable — not just `is_consistent` returning false.
+/// Before the `global_unsat` fix: `classify` reported `SubClassOf(:A :B)` as
+/// a direct subsumption and the unsat list was empty (silent inconsistency).
+/// After the fix: A and B are both in `unsatisfiable_classes()`.
+#[test]
+fn data_range_violation_marks_classes_unsat() {
+    let src = format!(
+        r#"{PFX}Ontology(<http://t/x>
+    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(DataProperty(:p))
+    Declaration(NamedIndividual(:i))
+    DataPropertyRange(:p xsd:integer)
+    DataPropertyAssertion(:p :i "foo")
+    SubClassOf(:A :B)
+)"#
+    );
+    let mut reader = std::io::Cursor::new(src);
+    let (onto, _): (
+        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+        _,
+    ) = horned_owl::io::ofn::reader::read(
+        &mut reader,
+        horned_owl::io::ParserConfiguration::default(),
+    )
+    .expect("parse");
+    let c = classify(&onto).expect("classify");
+    let mut unsat: Vec<String> = c
+        .unsatisfiable_classes()
+        .into_iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    unsat.sort();
+    assert_eq!(
+        unsat,
+        vec!["http://t/A".to_string(), "http://t/B".to_string()],
+        "data-range violation (⊤ ⊑ ⊥) must mark all named classes unsatisfiable"
+    );
 }

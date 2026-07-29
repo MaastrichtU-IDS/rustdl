@@ -18,6 +18,23 @@
 //! the previous session used when chasing the SIO unsoundness — and
 //! validate that the sound range encoding (Tseitin-folded existential
 //! body) doesn't regress FP=0 on any corpus.
+//!
+//! ## Coverage tiers
+//!
+//! **REQUIRED** fixtures must be present; the test FAILS with an actionable
+//! message if they are absent. These are the fixtures confirmed present in
+//! this development environment:
+//! `galen`, `galen-5s`, `notgalen`, `alehif-test`, `sio`, `wine`, `pizza`,
+//! `ro`, `sulo`, `bibtex`, `ore-10908-sroiq`, `ore-15672-shoin`.
+//!
+//! **OPTIONAL** fixtures report `NOT VERIFIED` in the coverage summary when
+//! absent but do not fail the test. They are marked OPTIONAL only because the
+//! fixture is absent in the current environment — once the fixture is
+//! available they should be promoted to REQUIRED (remove the `optional()`
+//! call and replace with `require()`).
+//!
+//! Coverage summary lines are prefixed with `[fp0]` so a full run can be
+//! grepped: `grep '^\[fp0\]'`.
 
 #![allow(clippy::doc_markdown)]
 
@@ -35,6 +52,58 @@ use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+// ── fixture helpers ─────────────────────────────────────────────────────────
+
+/// Assert that both `input` and `truth` exist, panicking with an actionable
+/// message naming every missing path and directing the user to the fetch
+/// script.  Call this for every REQUIRED fixture.
+fn require(label: &str, input: &Path, truth: &Path) {
+    let mut missing: Vec<String> = Vec::new();
+    if !input.exists() {
+        missing.push(format!("  input : {}", input.display()));
+    }
+    if !truth.exists() {
+        missing.push(format!("  oracle: {}", truth.display()));
+    }
+    if !missing.is_empty() {
+        eprintln!("[fp0] {label}: NOT VERIFIED (fixture absent — see error below)");
+        panic!(
+            "[fp0] REQUIRED fixture `{label}` is missing:\n{}\n\
+             Fetch it with: ./scripts/fetch-real-ontologies.sh",
+            missing.join("\n")
+        );
+    }
+}
+
+/// Check whether `input` and `truth` both exist for an OPTIONAL fixture.
+/// Prints a `[fp0] … NOT VERIFIED` line when absent and returns `false`.
+/// Returns `true` when both are present.
+///
+/// NOTE: these fixtures are OPTIONAL only because they are absent in the
+/// current development environment.  Once the fixture is available, replace
+/// `optional(label, input, truth)` with `require(label, input, truth)` and
+/// the `!optional(…) { return; }` pattern with a plain `require(…)` call to
+/// promote it to REQUIRED.
+fn optional(label: &str, input: &Path, truth: &Path) -> bool {
+    if !input.exists() || !truth.exists() {
+        let mut missing: Vec<String> = Vec::new();
+        if !input.exists() {
+            missing.push(input.display().to_string());
+        }
+        if !truth.exists() {
+            missing.push(truth.display().to_string());
+        }
+        eprintln!(
+            "[fp0] {label}: NOT VERIFIED (fixture absent: {})",
+            missing.join(", ")
+        );
+        return false;
+    }
+    true
+}
+
+// ── core diff helper ─────────────────────────────────────────────────────────
 
 /// Per-pair tableau/wedge budget for corpus closure-diffs. Override with
 /// `RUSTDL_TEST_PAIR_MS` to sweep the timeout (e.g. measuring whether a low
@@ -56,7 +125,8 @@ fn load_ofn_fixture(input: &Path) -> SetOntology<RcStr> {
     onto
 }
 
-/// Print and return (rustdl_closure, konclude_closure, fp, missed).
+/// Print per-fixture diff stats, emit a `[fp0]` coverage line, and return
+/// `(rustdl_closure, konclude_closure, fp, missed)`.
 fn diff_corpus_ontology(
     label: &str,
     input: &Path,
@@ -81,7 +151,9 @@ fn diff_corpus_ontology(
     let fp: BTreeSet<_> = rustdl.difference(&konclude).cloned().collect();
     let missed: BTreeSet<_> = konclude.difference(&rustdl).cloned().collect();
     eprintln!(
-        "--- {label} ({:.2} s) ---\nrustdl_closure={} konclude_closure={} FP={} MISSED={} (unsat: rustdl={} konclude={} thing-equiv: {})",
+        "--- {label} ({:.2} s) ---\n\
+         rustdl_closure={} konclude_closure={} FP={} MISSED={} \
+         (unsat: rustdl={} konclude={} thing-equiv: {})",
         wall.as_secs_f64(),
         rustdl.len(),
         konclude.len(),
@@ -99,18 +171,25 @@ fn diff_corpus_ontology(
     for (s, t) in missed.iter().take(missed_limit) {
         eprintln!(" MISSED: {s} ⊑ {t}");
     }
+    // Coverage summary line — grep '^\[fp0\]' to extract the whole run's report.
+    eprintln!(
+        "[fp0] {label}: VERIFIED (closure rustdl={} oracle={} FP={} MISSED={})",
+        rustdl.len(),
+        konclude.len(),
+        fp.len(),
+        missed.len(),
+    );
     (rustdl.len(), konclude.len(), fp.len(), missed.len())
 }
+
+// ── per-fixture tests ────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "GALEN with 5 s per-pair timeout — measures how many MISSED are calculus-bound vs timeout-bound"]
 fn galen_closure_long_timeout() {
     let input = Path::new("../../ontologies/external/galen.ofn");
     let truth = Path::new("../../ontologies/external/galen-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing GALEN fixture");
-        return;
-    }
+    require("galen-5s", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("galen-5s", input, truth, 5000);
     assert_eq!(fp, 0, "GALEN has FPs under 5s timeout");
 }
@@ -120,10 +199,7 @@ fn galen_closure_long_timeout() {
 fn galen_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/galen.ofn");
     let truth = Path::new("../../ontologies/external/galen-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing GALEN fixture");
-        return;
-    }
+    require("galen", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("galen", input, truth, 200);
     assert_eq!(fp, 0, "GALEN has FPs — soundness regression");
 }
@@ -133,10 +209,7 @@ fn galen_closure_matches_konclude() {
 fn alehif_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/alehif-test.ofn");
     let truth = Path::new("../../ontologies/external/alehif-test-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing alehif fixture");
-        return;
-    }
+    require("alehif-test", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("alehif-test", input, truth, 200);
     assert_eq!(fp, 0, "alehif has FPs — soundness regression");
 }
@@ -146,10 +219,7 @@ fn alehif_closure_matches_konclude() {
 fn notgalen_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/notgalen.ofn");
     let truth = Path::new("../../ontologies/external/notgalen-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing notgalen fixture");
-        return;
-    }
+    require("notgalen", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("notgalen", input, truth, 200);
     assert_eq!(fp, 0, "notgalen has FPs — soundness regression");
 }
@@ -165,10 +235,7 @@ fn notgalen_closure_matches_konclude() {
 fn ore_10908_sroiq_closure_matches_hermit() {
     let input = Path::new("../../ontologies/external/ore-10908-sroiq.ofn");
     let truth = Path::new("../../ontologies/external/ore-10908-sroiq-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing ore-10908-sroiq fixture");
-        return;
-    }
+    require("ore-10908-sroiq", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("ore-10908-sroiq", input, truth, test_pair_ms());
     assert_eq!(fp, 0, "ore-10908-sroiq has FPs — soundness regression");
 }
@@ -178,21 +245,21 @@ fn ore_10908_sroiq_closure_matches_hermit() {
 fn ore_15672_shoin_closure_matches_hermit() {
     let input = Path::new("../../ontologies/external/ore-15672-shoin.ofn");
     let truth = Path::new("../../ontologies/external/ore-15672-shoin-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing ore-15672-shoin fixture");
-        return;
-    }
+    require("ore-15672-shoin", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("ore-15672-shoin", input, truth, 200);
     assert_eq!(fp, 0, "ore-15672-shoin has FPs — soundness regression");
 }
 
+// OPTIONAL: shoiq-knowledge is absent in the current development environment.
+// Once ontologies/external/shoiq-knowledge.ofn + shoiq-knowledge-classified.owx
+// are available, replace `optional(…)` with `require(…)` and promote this to
+// REQUIRED so a missing fixture fails loudly rather than silently.
 #[test]
 #[ignore = "needs ontologies/external/shoiq-knowledge.ofn + shoiq-knowledge-classified.owx; Phase D1 fixture (was UnsupportedAxiom-erroring pre-D1; now parses via silent-drop of data axioms)"]
 fn shoiq_knowledge_closure_matches_konclude() {
     let input = Path::new("../../ontologies/external/shoiq-knowledge.ofn");
     let truth = Path::new("../../ontologies/external/shoiq-knowledge-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing shoiq-knowledge fixture");
+    if !optional("shoiq-knowledge", input, truth) {
         return;
     }
     let (_r, _k, fp, _m) = diff_corpus_ontology("shoiq-knowledge", input, truth, 200);
@@ -207,10 +274,7 @@ fn shoiq_knowledge_closure_matches_konclude() {
 fn sio_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/sio.ofn");
     let truth = Path::new("../../ontologies/real/konclude-input/sio-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing sio fixture");
-        return;
-    }
+    require("sio", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("sio", input, truth, test_pair_ms());
     assert_eq!(fp, 0, "sio has FPs — D1 sound-under-approximation broken");
 }
@@ -223,10 +287,7 @@ fn sio_closure_matches_konclude() {
 fn wine_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/wine.ofn");
     let truth = Path::new("../../ontologies/real/konclude-input/wine-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing wine fixture");
-        return;
-    }
+    require("wine", input, truth);
     let budget = std::env::var("RUSTDL_TEST_PAIR_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -248,10 +309,7 @@ fn wine_closure_matches_konclude() {
 fn bibtex_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/bibtex.ofn");
     let truth = Path::new("../../ontologies/real/konclude-input/bibtex-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing bibtex fixture");
-        return;
-    }
+    require("bibtex", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("bibtex", input, truth, 200);
     assert_eq!(
         fp, 0,
@@ -264,10 +322,7 @@ fn bibtex_closure_matches_konclude() {
 fn ro_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/ro.ofn");
     let truth = Path::new("../../ontologies/real/konclude-input/ro-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing ro fixture");
-        return;
-    }
+    require("ro", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("ro", input, truth, 200);
     assert_eq!(fp, 0, "ro has FPs — D1 sound-under-approximation broken");
 }
@@ -277,49 +332,79 @@ fn ro_closure_matches_konclude() {
 fn sulo_closure_matches_konclude() {
     let input = Path::new("../../ontologies/real/sulo.ofn");
     let truth = Path::new("../../ontologies/real/konclude-input/sulo-classified.owx");
-    if !input.exists() || !truth.exists() {
-        eprintln!("SKIP: missing sulo fixture");
-        return;
-    }
+    require("sulo", input, truth);
     let (_r, _k, fp, _m) = diff_corpus_ontology("sulo", input, truth, 200);
     assert_eq!(fp, 0, "sulo has FPs — D1 sound-under-approximation broken");
+}
+
+// ── corpus loop tests (mixed required/optional cases) ────────────────────────
+
+/// Per-case tier table for both corpus loops.
+/// Returns `(is_required, input_path, truth_path)`.
+fn corpus_cases(base: &Path) -> Vec<(&'static str, bool, std::path::PathBuf, std::path::PathBuf)> {
+    vec![
+        // REQUIRED: pizza is present and its oracle is committed.
+        (
+            "pizza",
+            true,
+            base.join("pizza.ofn"),
+            base.join("konclude-input/pizza-classified.owx"),
+        ),
+        // OPTIONAL: ro-stripped oracle absent in current environment.
+        // Promote to REQUIRED once konclude-input/ro-stripped-classified.owx exists.
+        (
+            "ro-stripped",
+            false,
+            base.join("ro-stripped.ofn"),
+            base.join("konclude-input/ro-stripped-classified.owx"),
+        ),
+        // OPTIONAL: sulo-stripped oracle absent in current environment.
+        // Promote to REQUIRED once konclude-input/sulo-stripped-classified.owx exists.
+        (
+            "sulo-stripped",
+            false,
+            base.join("sulo-stripped.ofn"),
+            base.join("konclude-input/sulo-stripped-classified.owx"),
+        ),
+        // OPTIONAL: sio-stripped input absent in current environment.
+        // Promote to REQUIRED once real/sio-stripped.ofn + sio-classified.owx exist.
+        (
+            "sio-stripped",
+            false,
+            base.join("sio-stripped.ofn"),
+            base.join("konclude-input/sio-classified.owx"),
+        ),
+    ]
 }
 
 #[test]
 #[ignore = "long-timeout corpus run (5 s per-pair) — measures the engine's actual completeness ceiling, independent of the standard 200 ms harness budget"]
 fn corpus_closure_long_timeout() {
     let base = Path::new("../../ontologies/real");
-    let cases = [
-        ("pizza", "pizza.ofn", "konclude-input/pizza-classified.owx"),
-        (
-            "ro-stripped",
-            "ro-stripped.ofn",
-            "konclude-input/ro-stripped-classified.owx",
-        ),
-        (
-            "sulo-stripped",
-            "sulo-stripped.ofn",
-            "konclude-input/sulo-stripped-classified.owx",
-        ),
-        (
-            "sio-stripped",
-            "sio-stripped.ofn",
-            "konclude-input/sio-classified.owx",
-        ),
-    ];
+    let cases = corpus_cases(base);
     let mut any_fp = false;
-    for (label, input, truth) in cases {
-        let input_path = base.join(input);
-        let truth_path = base.join(truth);
-        if !input_path.exists() || !truth_path.exists() {
-            eprintln!("--- {label} --- SKIP: missing fixture");
+    let mut verified: Vec<&str> = Vec::new();
+    let mut not_verified: Vec<&str> = Vec::new();
+    for (label, required, input_path, truth_path) in &cases {
+        if *required {
+            require(label, input_path, truth_path);
+        } else if !optional(label, input_path, truth_path) {
+            not_verified.push(label);
             continue;
         }
-        let (_r, _k, fp, _m) = diff_corpus_ontology(label, &input_path, &truth_path, 5000);
+        let (_r, _k, fp, _m) = diff_corpus_ontology(label, input_path, truth_path, 5000);
+        verified.push(label);
         if fp > 0 {
             any_fp = true;
         }
     }
+    eprintln!(
+        "[fp0] corpus (long-timeout): {} verified ({}), {} not verified ({})",
+        verified.len(),
+        verified.join(", "),
+        not_verified.len(),
+        not_verified.join(", "),
+    );
     assert!(
         !any_fp,
         "corpus has FPs under 5s timeout — soundness regression"
@@ -330,47 +415,44 @@ fn corpus_closure_long_timeout() {
 #[ignore = "needs ontologies/real/{pizza,ro-stripped,sulo-stripped,sio-stripped}.ofn and konclude-input/*-classified.owx"]
 fn corpus_closure_matches_konclude() {
     let base = Path::new("../../ontologies/real");
-    let cases = [
-        ("pizza", "pizza.ofn", "konclude-input/pizza-classified.owx"),
-        (
-            "ro-stripped",
-            "ro-stripped.ofn",
-            "konclude-input/ro-stripped-classified.owx",
-        ),
-        (
-            "sulo-stripped",
-            "sulo-stripped.ofn",
-            "konclude-input/sulo-stripped-classified.owx",
-        ),
-        (
-            "sio-stripped",
-            "sio-stripped.ofn",
-            "konclude-input/sio-classified.owx",
-        ),
-    ];
+    let cases = corpus_cases(base);
     let mut any_fp = false;
-    for (label, input, truth) in cases {
-        let input_path = base.join(input);
-        let truth_path = base.join(truth);
-        if !input_path.exists() || !truth_path.exists() {
-            eprintln!("--- {label} --- SKIP: missing fixture");
+    let mut verified: Vec<&str> = Vec::new();
+    let mut not_verified: Vec<&str> = Vec::new();
+    for (label, required, input_path, truth_path) in &cases {
+        if *required {
+            require(label, input_path, truth_path);
+        } else if !optional(label, input_path, truth_path) {
+            not_verified.push(label);
             continue;
         }
-        let (_r, _k, fp, _m) =
-            diff_corpus_ontology(label, &input_path, &truth_path, test_pair_ms());
+        let (_r, _k, fp, _m) = diff_corpus_ontology(label, input_path, truth_path, test_pair_ms());
+        verified.push(label);
         if fp > 0 {
             any_fp = true;
         }
     }
+    eprintln!(
+        "[fp0] corpus: {} verified ({}), {} not verified ({})",
+        verified.len(),
+        verified.join(", "),
+        not_verified.len(),
+        not_verified.join(", "),
+    );
     assert!(!any_fp, "corpus has FPs — soundness regression");
 }
+
+// ── consistency checks ────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "Phase A1 corpus regression — family is HermiT/Konclude-inconsistent; checks rustdl's abox_check detects it (stretch: may not close without functional-merge work). Needs family.ofn."]
 fn family_inconsistency_detected() {
     let path = Path::new("../../ontologies/real/family.ofn");
     if !path.exists() {
-        eprintln!("SKIP: missing family.ofn");
+        eprintln!(
+            "[fp0] family (inconsistency): NOT VERIFIED (fixture absent: {})",
+            path.display()
+        );
         return;
     }
     let src = std::fs::read_to_string(path).expect("read family.ofn");
@@ -378,6 +460,7 @@ fn family_inconsistency_detected() {
     let (onto, _): (SetOntology<RcStr>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse");
     let consistent = owl_dl_reasoner::is_consistent(&onto).expect("is_consistent");
+    eprintln!("[fp0] family (inconsistency): VERIFIED (is_consistent={consistent}, oracle: false)");
     eprintln!("family is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)");
     assert!(
         !consistent,
@@ -390,7 +473,10 @@ fn family_inconsistency_detected() {
 fn family_stripped_inconsistency_detected() {
     let path = Path::new("../../ontologies/real/family-stripped.ofn");
     if !path.exists() {
-        eprintln!("SKIP: missing family-stripped.ofn");
+        eprintln!(
+            "[fp0] family-stripped (inconsistency): NOT VERIFIED (fixture absent: {})",
+            path.display()
+        );
         return;
     }
     let src = std::fs::read_to_string(path).expect("read family-stripped.ofn");
@@ -399,6 +485,10 @@ fn family_stripped_inconsistency_detected() {
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse");
     let consistent = owl_dl_reasoner::is_consistent(&onto).expect("is_consistent");
     eprintln!(
+        "[fp0] family-stripped (inconsistency): VERIFIED \
+         (is_consistent={consistent}, oracle: false)"
+    );
+    eprintln!(
         "family-stripped is_consistent = {consistent} (oracle: HermiT/Konclude inconsistent)"
     );
     assert!(
@@ -406,6 +496,8 @@ fn family_stripped_inconsistency_detected() {
         "family-stripped should be detected as inconsistent (stretch goal)"
     );
 }
+
+// ── fixture key helper ────────────────────────────────────────────────────────
 
 /// Map a fixture name string to `(input .ofn path, truth .owx path)`.
 ///
@@ -442,6 +534,8 @@ fn fixture_paths(fx: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     }
 }
 
+// ── sweep / differential tests ────────────────────────────────────────────────
+
 /// Differential gate: at a generous global deadline, the global-deadline
 /// classifier must produce the SAME hierarchy as the untimed classifier —
 /// the deadline mechanism must not spuriously drop confirmable subsumptions.
@@ -457,7 +551,10 @@ fn global_deadline_differential() {
     for fx in ["galen", "alehif"] {
         let (ofn, _owx) = fixture_paths(fx);
         if !ofn.exists() {
-            eprintln!("SKIP {fx}: fixture missing ({})", ofn.display());
+            eprintln!(
+                "[fp0] {fx} (global-deadline-diff): NOT VERIFIED (fixture absent: {})",
+                ofn.display()
+            );
             continue;
         }
         let onto = load_ofn_fixture(&ofn);
@@ -470,6 +567,11 @@ fn global_deadline_differential() {
         let exclude = std::collections::BTreeSet::new();
         let u = closure_from_classification(&untimed, &exclude);
         let t = closure_from_classification(&timed, &exclude);
+        eprintln!(
+            "[fp0] {fx} (global-deadline-diff): VERIFIED (untimed_closure={} timed_closure={})",
+            u.len(),
+            t.len()
+        );
         eprintln!(
             "{fx}: untimed_closure={} timed_closure={}",
             u.len(),
@@ -546,7 +648,8 @@ fn anytime_per_pair_sweep() {
         let (input_path, truth_path) = fixture_paths(fx);
         if !input_path.exists() || !truth_path.exists() {
             eprintln!(
-                "SKIP {fx}: fixture missing ({} or {})",
+                "[fp0] {fx} (anytime-per-pair): NOT VERIFIED \
+                 (fixture absent: {} or {})",
                 input_path.display(),
                 truth_path.display()
             );
@@ -680,7 +783,8 @@ fn anytime_global_sweep() {
         let (input_path, truth_path) = fixture_paths(fx);
         if !input_path.exists() || !truth_path.exists() {
             eprintln!(
-                "SKIP {fx}: fixture missing ({} or {})",
+                "[fp0] {fx} (anytime-global): NOT VERIFIED \
+                 (fixture absent: {} or {})",
                 input_path.display(),
                 truth_path.display()
             );
@@ -763,7 +867,7 @@ fn anytime_global_sweep() {
 #[ignore = "single-ontology ORE diff; needs ORE_ONE_INPUT + ORE_ONE_ORACLE"]
 fn ore_one_closure_matches_oracle() {
     let Ok(input) = std::env::var("ORE_ONE_INPUT") else {
-        eprintln!("SKIP: ORE_ONE_INPUT not set");
+        eprintln!("[fp0] ore-one: NOT VERIFIED (ORE_ONE_INPUT not set)");
         return;
     };
     let oracle = std::env::var("ORE_ONE_ORACLE").expect("ORE_ONE_ORACLE");
@@ -809,13 +913,16 @@ fn ore_one_closure_matches_oracle() {
 #[ignore = "needs ~/data/ore-run/{input,oracle}/ore_ont_10080*; the real deadline-honoring repro (was >40 min DNF, now bounded by an explicit global deadline)"]
 fn ore_10080_bounded_by_explicit_deadline() {
     let Some(home) = std::env::var_os("HOME") else {
-        eprintln!("SKIP: HOME not set");
+        eprintln!("[fp0] ore-10080-deadline: NOT VERIFIED (HOME not set)");
         return;
     };
     let input = Path::new(&home).join("data/ore-run/input/ore_ont_10080.ofn");
     let oracle_path = Path::new(&home).join("data/ore-run/oracle/ore_ont_10080-classified.owx");
     if !input.exists() || !oracle_path.exists() {
-        eprintln!("SKIP: missing ore_ont_10080 fixture (gitignored corpus, not present locally)");
+        eprintln!(
+            "[fp0] ore-10080-deadline: NOT VERIFIED \
+             (fixture absent: gitignored corpus, not present locally)"
+        );
         return;
     }
 
@@ -843,6 +950,12 @@ fn ore_10080_bounded_by_explicit_deadline() {
         konclude.len(),
         wall.as_secs_f64(),
         c.stats().timed_out_pairs,
+    );
+    eprintln!(
+        "[fp0] ore-10080-deadline: VERIFIED \
+         (closure rustdl={} oracle={} FP={fp} MISSED={missed})",
+        rustdl.len(),
+        konclude.len(),
     );
 
     // Bounded: must return well within a small multiple of the 5 s budget
@@ -875,7 +988,7 @@ fn ore_10080_bounded_by_explicit_deadline() {
 #[ignore = "at-scale ORE sweep; needs ORE_INPUT_DIR + ORE_ORACLE_DIR"]
 fn ore_dir_closure_matches_oracle() {
     let Ok(input_dir) = std::env::var("ORE_INPUT_DIR") else {
-        eprintln!("SKIP: ORE_INPUT_DIR not set");
+        eprintln!("[fp0] ore-dir: NOT VERIFIED (ORE_INPUT_DIR not set)");
         return;
     };
     let oracle_dir = std::env::var("ORE_ORACLE_DIR").unwrap_or_else(|_| input_dir.clone());
@@ -936,6 +1049,7 @@ fn ore_dir_closure_matches_oracle() {
     }
 
     eprintln!("### ORE sweep complete: {done} ontologies, total FP={total_fp} ###");
+    eprintln!("[fp0] ore-dir: {done} verified, FP={total_fp}");
     if !fp_onts.is_empty() {
         eprintln!("FP ontologies: {}", fp_onts.join(", "));
     }

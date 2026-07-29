@@ -893,8 +893,13 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   `∃` forward) + role hierarchy / length-≤2 chains / transitivity /
   functional + inverse-functional witness-merge / domain / range.
   Everything else (`∀`, `≤n`, `⊔`, nominals, inverse-role *use*,
-  `DisjointClasses` [excluded conservatively — disjoint×functional-merge
-  unproven], ABox, …) ⟹ fall back to the sound+complete hybrid path.
+  `DisjointClasses`+lowered-`⊥` (`A⊓B⊑⊥`) [admitted when no functional /
+  inverse-functional role present; `disjoint_ok` gate], ABox, …) ⟹ fall
+  back to the sound+complete hybrid path when outside that allowlist.
+  `DisjointUnion` remains deliberately excluded (its disjunctive covering
+  is out-of-fragment). This branch (`feat/conjunctive-unsat-negation-gci`,
+  2026-07-29) closed the `A⊓B⊑⊥` silent-incompleteness the gate was
+  already permitting: see the entry below.
   Real impact: alehif (ALC = has `∀`) + sulo now route to hybrid
   (alehif 0.09 s → ~6.6 s wall) — the old fast path was a *lucky*
   MISSED=0 on the ∀-incomplete saturator; GALEN/notgalen (EL +
@@ -908,6 +913,51 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   disjoint_classes}`. See
   `docs/superpowers/specs/2026-06-03-konclude-style-global-classification-design.md` §5
   + `docs/phase2a-recon.md`.
+
+  **`⊑ ⊥` completeness + RHS-negation canonicalization (2026-07-29,
+  branch `feat/conjunctive-unsat-negation-gci`).** Closes two related
+  gaps with one design: the fragment gate (since Lever 1b, commit
+  `3e3a731`) already admitted `A⊓B⊑⊥` and `X⊑⊥`, but the EL saturator
+  silently dropped them (the D10 unsound-completeness class: gate
+  certifies complete, engine drops axiom). **Part A (correctness fix,
+  unflagged):** five axiom shapes now handled by the saturator —
+  `And(b₁…bₙ)⊑⊥` → new `ConjunctiveUnsat{bodies}` rule feeding
+  `enqueue_unsat`; `⊤⊑⊥` → `ElRules::global_unsat` marks every user
+  class unsat at seed time; `∃r.A⊑⊥` → marker pushed onto
+  `directly_unsat`; `∃r.⊤⊑⊥` / `ObjectPropertyDomain(r,⊥)` /
+  `ObjectPropertyRange(r,⊥)` → unified `ElRules::poisoned_roles` (role
+  provably having no edges in any model), plus a post-collection pass
+  marking nested existential markers on poisoned roles unsat
+  (order-independent). Inconsistency reporting: `Subsumers::top_is_unsat`
+  (some `C` with `⊤⊑C` is unsat ⟹ `⊤⊑⊥` ⟹ inconsistent); `classify
+  --json` no longer reports `"consistent": true` alongside a non-empty
+  `unsatisfiable` list. Soundness note: *all-named-classes-unsat is NOT
+  an inconsistency signal* — `{A⊑⊥, B⊑⊥}` empties every named class
+  yet has a non-empty domain; `⊤` being unsat is the correct test.
+  **Part A is corpus-inert on all measured data** (bibtex/pizza/ro/
+  ro-stripped/sio/sulo/sulo-stripped/go-basic closure-diff 57 803 rows
+  byte-identical vs `main`) — a correctness fix, no measured completeness
+  or performance delta on this corpus. **Known remaining gap (honest):**
+  role-chain-induced poison — `SubObjectPropertyOf(Chain(t,u),r)` +
+  `ObjectPropertyDomain(r,⊥)` + `C⊑∃t.∃u.A` is still MISSED; marking
+  `u` poisoned would be unsound for a standalone `∃u.A`, so closing
+  this needs a chain-aware rule, not a quick fix. Test exists and is
+  `#[ignore]`d with rationale. **Part B (`RUSTDL_NEG_TO_BOT_GCI`,
+  default ON, `=0` reverts):** `X⊑¬Y` → `X⊓Y⊑⊥`, run PRE-NNF over
+  `InternalOntology.axioms` in `convert_ontology` (pre-NNF is
+  load-bearing: post-NNF `¬∃R.C` and `¬(A⊓B)` have already become
+  `∀R.¬C` and `¬A⊔¬B`, both out-of-fragment). One `⊥`-GCI per negated
+  conjunct (`X⊑¬A⊓¬B` yields two; folding would be strictly weaker).
+  `told.rs` extended to recognize `And([A,B])⊑⊥` as a told-disjoint
+  pair (also picks up natively-written `A⊓B⊑⊥`). Logical equivalence ⟹
+  FP-safe by construction. Measured: `ore_ont_9318` (39k classes, 4
+  negation axioms) 21.8 s hybrid → 0.93 s pure-EL, closure byte-identical;
+  `ore_ont_2397` DNF >200 s → 1.03 s; `ore_ont_10032` DNF → 2.41 s. FP=0
+  confirmed vs KM reasoner on 2397 and 10032 (183 414 / 78 974 rustdl
+  direct subsumptions contained in KM closures; unsat sets agree).
+  ON-vs-OFF byte-identical across curated corpus. Spec
+  `docs/superpowers/specs/2026-07-29-negation-to-bot-gci-and-conjunctive-unsat-design.md`,
+  plan `docs/superpowers/plans/2026-07-29-conjunctive-unsat-and-negation-gci.md`.
 
 - **New as of 2026-06-06**: `RUSTDL_PRECISE_CARD_DEPS` defaults ON.
   At the wedge's `≤n` cardinality-clash pre-check, reports a sound

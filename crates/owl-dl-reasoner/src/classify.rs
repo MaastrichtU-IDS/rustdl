@@ -1162,13 +1162,15 @@ fn is_el_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 /// This is a STRICT allowlist anchored to the constructs the saturator's
 /// rules genuinely process (the D9 fragment map: COMPLETE = Atomic / ⊓ / ∃ /
 /// the listed role axioms); anything outside ⟹ `false` ⟹ the caller falls
-/// back to the sound+complete hybrid path. Deliberately conservative:
-/// `DisjointClasses` is EXCLUDED here even though [`is_pure_el`] permits it,
-/// because disjointness combined with the functional witness-merge is an
-/// unproven interaction — functional+disjoint ontologies fall back rather
-/// than risk a silent miss; pure-EL+disjoint still takes the separate
-/// `is_pure_el` arm. GALEN/notgalen (functional, no disjoint, no ∀, no
-/// chains>2, no inverse) stay on the fast path — verified by
+/// back to the sound+complete hybrid path. `DisjointClasses` (and the
+/// lowered-`⊥` form `A ⊓ B ⊑ ⊥`) IS admitted when no functional or
+/// inverse-functional role is present (`disjoint_ok = true`) — the
+/// disjoint×functional-merge interaction is unproven, so when a cardinality
+/// role exists both forms fall back to the hybrid path. `DisjointUnion`
+/// remains deliberately EXCLUDED (its disjunctive covering `C ≡ ⊔Di` is
+/// out-of-fragment). Pure-EL+disjoint takes the separate [`is_pure_el`] arm
+/// regardless. GALEN/notgalen (functional, no disjoint, no ∀, no chains>2,
+/// no inverse) stay on the fast path — verified by
 /// `galen_notgalen_in_saturator_fragment` + the corpus FP/MISSED gate.
 pub(crate) fn saturator_complete_fragment(internal: &InternalOntology) -> bool {
     saturator_complete_fragment_impl(internal, false)

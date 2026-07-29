@@ -233,3 +233,44 @@ but correct answer into a fast wrong one. **Do not land Part B before Part A is 
   ontologies slower (more derived unsats) while making them right.
 - It says nothing about the consequence-based engine pursuit, which is parked with its
   own findings recorded on `feat/cb-alch-taming`.
+
+## Measured results (2026-07-29)
+
+**Part A — corpus-inert, a correctness fix.**
+
+The five new axiom shapes (`And⊑⊥`, `⊤⊑⊥`, `∃r.A⊑⊥`, `∃r.⊤⊑⊥` /
+`ObjectPropertyDomain(r,⊥)` / `ObjectPropertyRange(r,⊥)`) do not occur in any
+ontology under `ontologies/real` or in the test suite fixtures. The curated-corpus
+closure diff (bibtex / pizza / ro / ro-stripped / sio / sulo / sulo-stripped /
+go-basic — 57 803 rows total) is **byte-identical between this branch and `main`**.
+Part A carries zero measured completeness delta and zero measured performance delta
+on the current corpus. Its value is correctness: after this fix, the fragment gate
+and the engine agree — every axiom shape the gate admits is a shape the engine
+reasons over completely.
+
+The one **known remaining gap** — role-chain-induced poison
+(`SubObjectPropertyOf(Chain(t,u),r)` + `ObjectPropertyDomain(r,⊥)` + `C⊑∃t.∃u.A` ⟹
+`C` unsat, still MISSED) — is tested and `#[ignore]`d with a rationale: marking
+`u` poisoned would be unsound for a standalone `∃u.A`, so closing this needs a
+chain-aware rule that Part A does not supply.
+
+**Part B — measurable ORE wins.**
+
+Three representative ontologies, measured on release binary:
+
+| ontology | before | after | mode |
+|---|---|---|---|
+| `ore_ont_9318` (39 433 classes, 4 negation axioms) | 21.8 s hybrid | 0.93 s pure-EL | fast path gained |
+| `ore_ont_2397` | DNF >200 s | 1.03 s | fast path gained |
+| `ore_ont_10032` | DNF | 2.41 s | fast path gained |
+
+Closure identity: `ore_ont_9318` closure byte-identical flag-ON vs flag-OFF. FP=0
+confirmed against the independent KM reasoner on `ore_ont_2397` and `ore_ont_10032`:
+183 414 and 78 974 rustdl direct subsumptions respectively are all contained in KM's
+closures; unsat sets agree. Flag ON-vs-OFF byte-identical across the curated corpus
+(bibtex / pizza / ro / sio / sulo / go-basic).
+
+The measured win is entirely **Part B**. Part A enables Part B to be correct (without
+the `ConjunctiveUnsat` rule, Part B would route `A⊑¬B` to a fast path that drops the
+axiom — trading a slow correct answer for a fast wrong one), but Part A itself produces
+no observable change on the current corpus.

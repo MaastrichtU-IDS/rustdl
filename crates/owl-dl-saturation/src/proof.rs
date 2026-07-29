@@ -61,6 +61,8 @@ pub enum ElRule {
     UnsatSubsumer,
     /// Conjunctive trigger: all `Bᵢ ∈ supers(C)` ⟹ `C ⊑ head`.
     ConjunctiveTrigger,
+    /// Conjunctive unsat: all `Bᵢ ∈ supers(C)` and `And(B₁…Bₙ) ⊑ ⊥` ⟹ `C ⊑ ⊥`.
+    ConjunctiveUnsat,
     /// Disjointness → unsat: `C ⊑ A`, `C ⊑ B`, `Disjoint(A,B)` ⟹ `C ⊑ ⊥`.
     DisjointnessClash,
     /// CR5 existential trigger (target-side): new subsumer on the target fires triggers.
@@ -149,6 +151,8 @@ pub struct ProofTrace {
     pub(crate) existential_fact_axiom: Vec<Option<usize>>,
     /// Axiom provenance for conjunctive triggers.
     pub(crate) conjunctive_trigger_axiom: Vec<Option<usize>>,
+    /// Axiom provenance for conjunctive-unsat rules.
+    pub(crate) conjunctive_unsat_axiom: Vec<Option<usize>>,
     /// Axiom provenance for existential triggers.
     pub(crate) existential_trigger_axiom: Vec<Option<usize>>,
     /// Axiom provenance for disjoint pairs.
@@ -971,6 +975,7 @@ impl std::fmt::Display for ElRule {
             ElRule::SubsumerTransitivityBwd => "SubsumerTransitivity(bwd)",
             ElRule::UnsatSubsumer => "UnsatSubsumer",
             ElRule::ConjunctiveTrigger => "ConjunctiveTrigger",
+            ElRule::ConjunctiveUnsat => "ConjunctiveUnsat",
             ElRule::DisjointnessClash => "DisjointnessClash",
             ElRule::ExistentialTriggerTarget => "ExistentialTrigger(target)",
             ElRule::ExistentialTriggerSub => "ExistentialTrigger(sub)",

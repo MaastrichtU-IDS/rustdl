@@ -1189,6 +1189,27 @@ impl WorklistEngine {
                 .iter()
                 .all(|b| self.subsumers.contains(c, *b))
             {
+                if self.record_proofs && !self.subsumers.unsatisfiable.contains(c.index() as usize)
+                {
+                    let premises: Vec<DerivedFact> = self.rules.conjunctive_unsat[ridx]
+                        .bodies
+                        .iter()
+                        .map(|&b| DerivedFact::Sub(c, b))
+                        .collect();
+                    let ax_ref = self
+                        .proof_trace
+                        .as_ref()
+                        .and_then(|t| t.conjunctive_unsat_axiom.get(ridx).copied().flatten())
+                        .map(AxiomRef);
+                    let inf = Inference {
+                        rule: ElRule::ConjunctiveUnsat,
+                        premise_facts: premises,
+                        axiom_refs: ax_ref.into_iter().collect(),
+                    };
+                    if let Some(t) = self.proof_trace.as_mut() {
+                        t.record(DerivedFact::Unsat(c), inf);
+                    }
+                }
                 self.enqueue_unsat(c);
                 break; // enqueue_unsat is idempotent; remaining rules for c are pointless
             }
@@ -2825,6 +2846,7 @@ fn collect_el_rules_with_provenance(
 
     let num_atomic = rules.atomic_subsumptions.len();
     let num_conj = rules.conjunctive_triggers.len();
+    let num_conj_unsat = rules.conjunctive_unsat.len();
     let num_facts = rules.existential_facts.len();
     let num_trigs = rules.existential_triggers.len();
     let num_disjt = rules.disjoint_pairs.len();
@@ -2833,6 +2855,7 @@ fn collect_el_rules_with_provenance(
 
     let mut atomic_sub_axiom: Vec<Option<usize>> = vec![None; num_atomic];
     let mut conjunctive_trigger_axiom: Vec<Option<usize>> = vec![None; num_conj];
+    let mut conjunctive_unsat_axiom: Vec<Option<usize>> = vec![None; num_conj_unsat];
     let mut existential_fact_axiom: Vec<Option<usize>> = vec![None; num_facts];
     let mut existential_trigger_axiom: Vec<Option<usize>> = vec![None; num_trigs];
     let mut disjoint_pair_axiom: Vec<Option<usize>> = vec![None; num_disjt];
@@ -2910,6 +2933,7 @@ fn collect_el_rules_with_provenance(
     // `tseitin.next_id` is used only to verify total_classes; no action needed here.
     let mut atomic_cur = 0usize;
     let mut conj_cur = 0usize;
+    let mut conj_unsat_cur = 0usize;
     let mut facts_cur = 0usize;
     let mut trigs_cur = 0usize;
     let mut unsat_cur = 0usize;
@@ -2955,6 +2979,7 @@ fn collect_el_rules_with_provenance(
                 Axiom::SubClassOf { sub, sup } => {
                     let b_a = mini_rules.atomic_subsumptions.len();
                     let b_c = mini_rules.conjunctive_triggers.len();
+                    let b_cu = mini_rules.conjunctive_unsat.len();
                     let b_f = mini_rules.existential_facts.len();
                     let b_t = mini_rules.existential_triggers.len();
                     let b_u = mini_rules.directly_unsat.len();
@@ -2968,6 +2993,7 @@ fn collect_el_rules_with_provenance(
                     );
                     let a_a = mini_rules.atomic_subsumptions.len();
                     let a_c = mini_rules.conjunctive_triggers.len();
+                    let a_cu = mini_rules.conjunctive_unsat.len();
                     let a_f = mini_rules.existential_facts.len();
                     let a_t = mini_rules.existential_triggers.len();
                     let a_u = mini_rules.directly_unsat.len();
@@ -2975,6 +3001,9 @@ fn collect_el_rules_with_provenance(
                     atomic_cur += a_a - b_a;
                     conjunctive_trigger_axiom[conj_cur..conj_cur + (a_c - b_c)].fill(Some(ax_idx));
                     conj_cur += a_c - b_c;
+                    conjunctive_unsat_axiom[conj_unsat_cur..conj_unsat_cur + (a_cu - b_cu)]
+                        .fill(Some(ax_idx));
+                    conj_unsat_cur += a_cu - b_cu;
                     existential_fact_axiom[facts_cur..facts_cur + (a_f - b_f)].fill(Some(ax_idx));
                     facts_cur += a_f - b_f;
                     existential_trigger_axiom[trigs_cur..trigs_cur + (a_t - b_t)]
@@ -2989,6 +3018,7 @@ fn collect_el_rules_with_provenance(
                             if i != j {
                                 let b_a = mini_rules.atomic_subsumptions.len();
                                 let b_c = mini_rules.conjunctive_triggers.len();
+                                let b_cu = mini_rules.conjunctive_unsat.len();
                                 let b_f = mini_rules.existential_facts.len();
                                 let b_t = mini_rules.existential_triggers.len();
                                 let b_u = mini_rules.directly_unsat.len();
@@ -3002,6 +3032,7 @@ fn collect_el_rules_with_provenance(
                                 );
                                 let a_a = mini_rules.atomic_subsumptions.len();
                                 let a_c = mini_rules.conjunctive_triggers.len();
+                                let a_cu = mini_rules.conjunctive_unsat.len();
                                 let a_f = mini_rules.existential_facts.len();
                                 let a_t = mini_rules.existential_triggers.len();
                                 let a_u = mini_rules.directly_unsat.len();
@@ -3011,6 +3042,10 @@ fn collect_el_rules_with_provenance(
                                 conjunctive_trigger_axiom[conj_cur..conj_cur + (a_c - b_c)]
                                     .fill(Some(ax_idx));
                                 conj_cur += a_c - b_c;
+                                conjunctive_unsat_axiom
+                                    [conj_unsat_cur..conj_unsat_cur + (a_cu - b_cu)]
+                                    .fill(Some(ax_idx));
+                                conj_unsat_cur += a_cu - b_cu;
                                 existential_fact_axiom[facts_cur..facts_cur + (a_f - b_f)]
                                     .fill(Some(ax_idx));
                                 facts_cur += a_f - b_f;
@@ -3082,6 +3117,7 @@ fn collect_el_rules_with_provenance(
         atomic_sub_axiom,
         existential_fact_axiom,
         conjunctive_trigger_axiom,
+        conjunctive_unsat_axiom,
         existential_trigger_axiom,
         disjoint_pair_axiom,
         chain_axiom_axiom,

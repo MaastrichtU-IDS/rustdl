@@ -686,3 +686,25 @@ fn all_user_classes_unsat_does_not_flag_inconsistent() {
         ":B must still be listed as unsatisfiable"
     );
 }
+
+/// PROVENANCE. An unsatisfiability derived from `And(A,B) ⊑ ⊥` must be
+/// explainable — `find_one_justification` has to return a non-empty
+/// justification rather than `None`.
+#[test]
+fn conjunctive_bot_unsat_is_justifiable() {
+    let body = format!(
+        "{DECLS}    SubClassOf(ObjectIntersectionOf(:A :B) owl:Nothing)
+    SubClassOf(:C :A)
+    SubClassOf(:C :B)"
+    );
+    let onto = parse(&body);
+    let q = owl_dl_reasoner::justify::parse_query(&["unsat".to_string(), "http://t/C".to_string()])
+        .expect("parse query");
+    let js = owl_dl_reasoner::justify::find_one_justification(&onto, &q).expect("justify error");
+    assert!(js.is_some(), "unsat C must have a justification");
+    let j = js.unwrap();
+    assert!(
+        !j.axioms.is_empty(),
+        "justification must contain at least one axiom"
+    );
+}

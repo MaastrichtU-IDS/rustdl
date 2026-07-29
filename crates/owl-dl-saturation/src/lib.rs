@@ -814,6 +814,16 @@ impl WorklistEngine {
                 self.enqueue_unsat(c);
             }
         }
+        // Task 2b Bug 1: `⊤ ⊑ ⊥` — globally inconsistent KB. Mark every user
+        // class unsatisfiable (mirrors the `classify_inconsistent` convention).
+        // Done here (after `directly_unsat`) so `process_unsat` propagation can
+        // still derive via subclass/fact chains even for classes seeded both ways.
+        if self.rules.global_unsat {
+            for i in 0..self.num_user_classes {
+                let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+                self.enqueue_unsat(id);
+            }
+        }
         // Reflexivity proof records: record Sub(C,C) for every user class
         // (the told-subsumer loop will override if there's also an axiom, but
         // first-writer-wins so reflexivity lands unless we record told first).
@@ -2308,6 +2318,12 @@ struct ElRules {
     /// preprocessing pass's emitted `C ⊑ Bot` axioms (Functional + ≥n
     /// clash; `DataMin` > `DataMax` clash).
     directly_unsat: Vec<ClassId>,
+    /// Set by `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`): the entire
+    /// domain is empty, so every class is unsatisfiable. Seeded in `seed`
+    /// by enqueuing every user class as unsat (mirrors the
+    /// `classify_inconsistent` convention: every named class ⊑ ⊥).
+    /// Task 2b Bug 1 fix.
+    global_unsat: bool,
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
     /// from `ObjectPropertyDomain(r, C)` with named `r` and atomic
@@ -3662,6 +3678,30 @@ fn lower_sub_class_of(
                 }
                 return;
             }
+            // Task 2b Bug 2: `∃r.A ⊑ ⊥`. `atomic_operands_on_right(Bot, _)` returns
+            // empty, so without this guard the axiom was silently DROPPED while the
+            // fragment gate certified the closure complete.
+            //
+            // Fix: introduce the one-way existential marker M with `∃r.A ⊑ M` (via the
+            // standard `introduce_existential_marker` machinery), then push M to
+            // `directly_unsat`. At seed time M is enqueued as unsat; later, whenever a
+            // class C gains M as a subsumer (because C derives ∃r.A), `process_subsumer`
+            // fires `enqueue_unsat(C)` — the existing "unsat subsumer ⟹ unsat class"
+            // propagation at line `if self.subsumers.is_unsatisfiable(d) { ... }`. Sound:
+            // only C's that genuinely derive `∃r.A` (entailed by the KB) gain M and are
+            // marked unsat; A itself and classes with unrelated existentials are unaffected.
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin)
+                else {
+                    return;
+                };
+                for body_id in body_ids {
+                    let marker =
+                        tseitin.introduce_existential_marker(role.role_id(), body_id, rules);
+                    rules.directly_unsat.push(marker);
+                }
+                return;
+            }
             let Some(body_ids) = existential_body_alternatives(*body, pool, rules, tseitin) else {
                 return;
             };
@@ -3722,7 +3762,17 @@ fn lower_sub_class_of(
         // `seed` broadcasts these to all classes and the fixpoint closes them
         // transitively. Without this the axiom was silently dropped here — a real
         // EL-incompleteness (ORE ore_ont_11522: 522 vs whelk's complete 1490).
+        //
+        // Task 2b Bug 1: `⊤ ⊑ ⊥` — the `Bot` case. `atomic_operands_on_right(Bot, _)`
+        // returns empty, so without this guard the axiom was silently DROPPED while the
+        // fragment gate certified the closure complete. Setting `global_unsat` causes
+        // `seed` to enqueue every user class as unsatisfiable, matching the
+        // `classify_inconsistent` convention (every class ⊑ ⊥ on an inconsistent KB).
         ConceptExpr::Top => {
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                rules.global_unsat = true;
+                return;
+            }
             for c in atomic_operands_on_right(sup, pool) {
                 rules.top_subsumers.push(c);
             }

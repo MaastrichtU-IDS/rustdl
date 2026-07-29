@@ -19,6 +19,7 @@ pub mod disjunctive_antecedent;
 pub mod dropped;
 pub mod ir;
 pub mod locality;
+pub mod negation_gci;
 pub mod normalize;
 pub mod ontology;
 pub mod residual_trigger;

@@ -495,3 +495,150 @@ fn nested_existential_filler_stays_sat() {
         "filler :A must NOT be marked unsat (FP guard)"
     );
 }
+
+// ── Finding 1: derived-inconsistency (not just syntactic `⊤ ⊑ ⊥`) ────────────
+
+/// FINDING 1 BUG REPRODUCER.
+/// `SubClassOf(owl:Thing :E)` + `SubClassOf(:E owl:Nothing)` makes every class
+/// unsatisfiable via transitive closure WITHOUT setting the syntactic `global_unsat`
+/// flag (because `sub = owl:Thing` takes the `top_subsumers` path, not the
+/// `⊤ ⊑ ⊥` guard).  Before the fix `classify_pure_el` left `stats.inconsistent =
+/// false` while listing both classes in the unsatisfiable set — a self-contradiction
+/// in the JSON output (`"consistent": true` + non-empty `"unsatisfiable"`).
+///
+/// The fix: after Pass 1 (unsat set built), if `n > 0 && |unsat| == n` then set
+/// `stats.inconsistent = true`.
+#[test]
+fn derived_all_unsat_flags_inconsistent() {
+    let onto = parse(
+        "    Declaration(Class(:A))
+    Declaration(Class(:E))
+    SubClassOf(owl:Thing :E)
+    SubClassOf(:E owl:Nothing)",
+    );
+    let c = owl_dl_reasoner::classify(&onto).expect("classify");
+    assert!(
+        c.stats().inconsistent,
+        "⊤ ⊑ E, E ⊑ ⊥ makes every class unsat: ClassificationStats::inconsistent must be true"
+    );
+    // The unsatisfiable list must still be populated (not suppressed by the flag).
+    let unsat = c.unsatisfiable_classes();
+    assert!(
+        !unsat.is_empty(),
+        "unsatisfiable list must still be populated when derived-inconsistency fires"
+    );
+}
+
+/// FP GUARD for derived-inconsistency: an ontology with a single unsat class but
+/// other satisfiable classes must NOT report inconsistent (partial, not total,
+/// unsat is a consistent ontology in OWL 2 DL).
+#[test]
+fn partial_unsat_does_not_flag_inconsistent() {
+    let onto = parse(
+        "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    SubClassOf(:A owl:Nothing)",
+    );
+    let c = owl_dl_reasoner::classify(&onto).expect("classify");
+    assert!(
+        !c.stats().inconsistent,
+        "only :A is unsat, :B is satisfiable — KB must still report consistent"
+    );
+}
+
+// ── Finding 3: sub-role vs super-role FP guards for poisoned-role ────────────
+
+/// FINDING 3 NEGATIVE: a poisoned SUB-role must NOT condemn a super-role user.
+///
+/// `ObjectPropertyDomain(:r owl:Nothing)` poisons role `:r`.
+/// `SubObjectPropertyOf(:r :s)` means every `:r`-edge is also an `:s`-edge,
+/// but NOT vice versa — an `:s`-edge need not be an `:r`-edge.
+/// So `C ⊑ ∃s.A` is satisfiable: `C` need only have an `:s`-successor
+/// that is not also an `:r`-successor. The poisoning of `:r` must NOT
+/// propagate upward to `:s`.
+#[test]
+fn poisoned_sub_role_does_not_condemn_super_role_user_domain() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    SubObjectPropertyOf(:r :s)
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:s :A))";
+    assert_eq!(
+        unsat_of(body),
+        Vec::<String>::new(),
+        "FP guard: poisoned sub-role :r must NOT condemn super-role :s user (C must stay sat)"
+    );
+}
+
+/// FINDING 3 POSITIVE: a poisoned SUPER-role DOES condemn a sub-role user.
+///
+/// `ObjectPropertyDomain(:s owl:Nothing)` poisons role `:s`.
+/// `SubObjectPropertyOf(:r :s)` means every `:r`-edge is also an `:s`-edge.
+/// So `C ⊑ ∃r.A` forces an `:r`-successor, which is also an `:s`-successor,
+/// which is in `Domain(s) = ⊥` — impossible. Hence `C` is unsatisfiable.
+#[test]
+fn poisoned_super_role_condemns_sub_role_user_domain() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    SubObjectPropertyOf(:r :s)
+    ObjectPropertyDomain(:s owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "poisoned super-role :s must condemn sub-role :r user C"
+    );
+}
+
+/// FINDING 3 NEGATIVE for `ObjectPropertyRange`: a poisoned SUB-role must NOT
+/// condemn a super-role user via `Range`.
+///
+/// `ObjectPropertyRange(:r owl:Nothing)` poisons `:r` (no `:r`-target).
+/// `SubObjectPropertyOf(:r :s)` — `:s`-edges need not be `:r`-edges.
+/// `C ⊑ ∃s.A` is satisfiable: `C` can have an `:s`-successor that is not
+/// an `:r`-target. Poisoning must NOT propagate upward.
+#[test]
+fn poisoned_sub_role_does_not_condemn_super_role_user_range() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    SubObjectPropertyOf(:r :s)
+    ObjectPropertyRange(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:s :A))";
+    assert_eq!(
+        unsat_of(body),
+        Vec::<String>::new(),
+        "FP guard: poisoned sub-role :r Range must NOT condemn super-role :s user (C must stay sat)"
+    );
+}
+
+/// FINDING 3 NEGATIVE for `∃r.⊤ ⊑ ⊥`: a poisoned SUB-role must NOT condemn
+/// a super-role user.
+///
+/// `SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)` poisons `:r`.
+/// `SubObjectPropertyOf(:r :s)` — `:s`-edges need not be `:r`-edges.
+/// `C ⊑ ∃s.A` is satisfiable: `C` need not have any `:r`-successor.
+#[test]
+fn poisoned_sub_role_some_top_bot_does_not_condemn_super_role_user() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    SubObjectPropertyOf(:r :s)
+    SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:s :A))";
+    assert_eq!(
+        unsat_of(body),
+        Vec::<String>::new(),
+        "FP guard: ∃r.⊤ ⊑ ⊥ on sub-role :r must NOT condemn super-role :s user (C must stay sat)"
+    );
+}

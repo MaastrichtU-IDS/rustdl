@@ -980,6 +980,18 @@ fn classify_pure_el(
         }
     }
 
+    // Derived-inconsistency guard: if every declared user class turned out
+    // unsatisfiable (e.g. `⊤ ⊑ E` + `E ⊑ ⊥` derives unsat on every class
+    // via transitive closure, without a syntactic `⊤ ⊑ ⊥`), the ontology
+    // is effectively globally inconsistent.  The non-empty guard is load-bearing:
+    // an ontology with ZERO declared classes would trivially have
+    // `unsatisfiable_idxs.len() == n == 0`, but that is NOT an inconsistency —
+    // vacuous universal quantification must not be misread as "all classes unsat".
+    // Mirrors the `diagnose.rs:107` predicate (same shape: n > 0 && len == n).
+    if n > 0 && unsatisfiable_idxs.len() == n {
+        stats.inconsistent = true;
+    }
+
     // Pass 2 — build the entailed rows in one pass over the closure.
     // For an unsat class i: row ELIDED (`Classification::entails`
     //   supplies ⊥ ⊑ * — no per-row O(n) fill; on the ORE giants a

@@ -145,7 +145,6 @@ pub fn saturate_with_exists_facts(
     let mut facts: Vec<(ClassId, RoleId, ClassId)> = engine.seen_facts.iter().copied().collect();
     facts.sort_unstable_by_key(|&(s, r, t)| (s.index(), r.index(), t.index()));
     let nom = engine.rules.nominal_to_ind.clone();
-    engine.subsumers.globally_inconsistent = engine.rules.global_unsat;
     (engine.subsumers, facts, nom)
 }
 
@@ -255,7 +254,6 @@ pub fn saturate_for_realize(
     );
     engine.seed(internal);
     engine.run();
-    engine.subsumers.globally_inconsistent = engine.rules.global_unsat;
     (engine.subsumers, nominal_by_ind)
 }
 
@@ -289,7 +287,6 @@ pub fn saturate_with_config(
     engine.seed(internal);
     engine.run();
     let trace = engine.proof_trace;
-    engine.subsumers.globally_inconsistent = engine.rules.global_unsat;
     (engine.subsumers, trace)
 }
 
@@ -893,6 +890,11 @@ impl WorklistEngine {
                 break;
             }
         }
+        // Propagate the syntactic `⊤ ⊑ ⊥` certificate once, here, instead of
+        // at each call site.  Previously three callers did this by hand; the
+        // fourth (`build_run_engine_with_reserved`) forgot to, so its `Subsumers`
+        // reported `globally_inconsistent == false` on a `⊤ ⊑ ⊥` KB (FINDING 2).
+        self.subsumers.globally_inconsistent = self.rules.global_unsat;
     }
 
     // -----------------------------------------------------------------------
@@ -2213,10 +2215,11 @@ pub struct Subsumers {
     unsatisfiable: FixedBitSet,
     /// Set when the KB contains `SubClassOf(owl:Thing, owl:Nothing)` (`⊤ ⊑ ⊥`) —
     /// the domain is empty and every named class is unsatisfiable. Propagated
-    /// from [`ElRules::global_unsat`] after the engine runs so callers (e.g.
-    /// `classify_pure_el`) can set `ClassificationStats::inconsistent` without a
-    /// separate axiom scan.
-    pub globally_inconsistent: bool,
+    /// from [`ElRules::global_unsat`] inside [`WorklistEngine::run`] so callers
+    /// (e.g. `classify_pure_el`) can set `ClassificationStats::inconsistent` without
+    /// a separate axiom scan.  Private: written once, inside this module, by `run()`;
+    /// read via the [`Subsumers::globally_inconsistent`] accessor.
+    globally_inconsistent: bool,
 }
 
 impl Default for Subsumers {

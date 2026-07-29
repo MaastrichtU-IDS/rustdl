@@ -103,9 +103,11 @@ the v0.3.11 release wheel build.
 > `feat-corpus-wine-datatype` 9, `docs-sub-tableau-caching-scoping` 3,
 > `feat-sio-disjunction-common-subsumer` 3, `feat-wedge-semantic-branching` 3,
 > `feat-phase2e-functional-superrole-merge` 2, `chore-blocking-observability` 1).
-> **Those tags are local-only** — `git push origin 'refs/tags/archive/*'` to make them
-> disk-failure-proof. Before any future prune, re-check for new stale-ref/unique-commit
-> pairs.
+> Those tags **are pushed to `origin`** (2026-07-29), so those 21 commits are safe from
+> both a local prune and a disk failure. Before any future prune, re-check for NEW
+> stale-ref/unique-commit pairs — the check is not once-and-done:
+> `for r in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin); do … done`
+> comparing against `git ls-remote --heads origin`.
 >
 > Six worktrees remain under `.claude/worktrees/`; four hold unique CB-engine commits,
 > one (`agent-ab06fe71b6797f234`) has **uncommitted** changes to `justify.rs` /

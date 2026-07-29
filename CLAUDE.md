@@ -58,6 +58,28 @@ warn-level. Push (to `main`), PRs, and `workflow_dispatch` all trigger CI
 re-enabled after a `test_stubs` regression reached `main` and surfaced only in
 the v0.3.11 release wheel build.
 
+> **CI GREEN DOES NOT IMPLY FP=0 (2026-07-29).** The `closure-diff soundness net`
+> job in `ci.yml` is `workflow_dispatch`-only *and* its fixtures are never
+> provisioned (its own comment: "provisioning is out of Phase 0 scope"), so
+> **rustdl's FP=0 corpus gate has never run in CI** — it is a documented stub.
+> Green CI means fmt + clippy + unit tests on three platforms; it says nothing
+> about soundness. **Run `./scripts/run-soundness-diff.sh` locally before merging
+> any change to the fragment gates (`is_pure_el` / `saturator_complete_fragment`),
+> to unsat derivation in `owl-dl-saturation`, or to conversion/normalization in
+> `owl-dl-core`.** It takes ~4 min, needs ~12 MB of gitignored fixtures
+> (`./scripts/fetch-real-ontologies.sh`), and diffs each closure against a
+> committed Konclude/HermiT oracle. Grep the run for `^\[fp0\]` to get a
+> VERIFIED / NOT VERIFIED manifest. A missing REQUIRED fixture now FAILS with the
+> path plus the fetch hint; it used to pass silently — of 22 fixture blocks, 9
+> could skip while the suite still reported `ok`, and
+> `shoiq_knowledge_closure_matches_konclude` verified nothing at all. Reference
+> values on the fixtures present as of 2026-07-29, all FP=0/MISSED=0: galen 27997,
+> notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499, alehif 247,
+> ro 158, ore-15672 142, sulo 51, bibtex 16. Still NOT VERIFIED for want of
+> fixtures: `shoiq-knowledge`, `ro-stripped`, `sulo-stripped`, `sio-stripped`,
+> `family-stripped` — promote them to REQUIRED in `konclude_closure_diff.rs` once
+> the fixtures are obtainable.
+
 Run the reasoner / benchmarks:
 ```sh
 ./target/release/rustdl classify path/to/ontology.ofn          # see README for all subcommands

@@ -385,3 +385,113 @@ fn scoped_bot_does_not_globalise() {
         "SubClassOf(:A, ⊥) must not globalise — only A and C are unsat, B stays satisfiable"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Nested-existential + poisoned-role tests (task-2e)
+// ---------------------------------------------------------------------------
+
+/// `Domain(r)=⊥` before `C ⊑ ∃t.(∃r.A)` — nested existential via a poisoned role.
+/// The inner `∃r.A` produces a Tseitin marker `M`; `r`'s domain is `⊥`, so `M` (and
+/// therefore `C`) is unsatisfiable.
+#[test]
+fn nested_existential_poisoned_role_derives_unsat() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:t))
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:r :A)))";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "C ⊑ ∃t.(∃r.A) with Domain(r)=⊥ must make C unsatisfiable"
+    );
+}
+
+/// Same as above but with axiom order reversed: `ObjectPropertyDomain` comes AFTER
+/// the nested-existential `SubClassOf`. The fix must be order-independent because it
+/// operates in a post-collection pass over `tseitin.by_existential`.
+#[test]
+fn nested_existential_poisoned_role_order_independent() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:t))
+    SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:r :A)))
+    ObjectPropertyDomain(:r owl:Nothing)";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "C ⊑ ∃t.(∃r.A) with Domain(r)=⊥ (declared after SubClassOf) must still make C unsat"
+    );
+}
+
+/// Role chain `chain(t,u)⊑r` + `Domain(r)=⊥` + `C ⊑ ∃t.(∃u.A)`.
+///
+/// `C` IS semantically unsatisfiable: every model with a `t`-successor of a `t,u`-chain
+/// is an `r`-successor, but `r` has domain `⊥`.  However, the post-collection marker
+/// pass cannot handle this case: the `∃u.A` Tseitin marker is keyed on role `u`, and
+/// `u ⊑ r` does NOT follow from a chain axiom (chains are not simple sub-role axioms),
+/// so neither `u` nor any super-role of `u` is in `poisoned_roles`.  Marking `u` as
+/// poisoned would be UNSOUND for a standalone `∃u.A` that is genuinely satisfiable.
+/// This is a genuine EL-completeness gap, deferred to a future chain-aware pass.
+#[test]
+#[ignore = "known EL completeness gap: chain-induced domain-poison not handled by the marker pass"]
+fn nested_existential_poisoned_role_via_chain() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:t))
+    Declaration(ObjectProperty(:u))
+    SubObjectPropertyOf(SubObjectPropertyChain(:t :u) :r)
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "C ⊑ ∃t.(∃u.A) with chain(t,u)⊑r and Domain(r)=⊥ must make C unsatisfiable"
+    );
+}
+
+/// FP guard: a nested existential on an UNPOISONED role must stay satisfiable.
+/// `Domain(r)=⊥` but `D ⊑ ∃t.(∃s.A)` uses unrelated role `:s` — `D` is satisfiable.
+#[test]
+fn nested_existential_unpoisoned_role_stays_sat() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:D))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    Declaration(ObjectProperty(:t))
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:D ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:s :A)))";
+    assert_eq!(
+        unsat_of(body),
+        vec![] as Vec<String>,
+        "D ⊑ ∃t.(∃s.A) with `:s` unpoisoned must remain satisfiable (FP guard)"
+    );
+}
+
+/// FP guard: the filler class `:A` in `C ⊑ ∃t.(∃r.A)` must stay satisfiable.
+/// The one-way Tseitin marker `M` for `∃r.A` does NOT subsume `:A`; only classes
+/// that gain `M` in their subsumer set are affected.
+#[test]
+fn nested_existential_filler_stays_sat() {
+    let body = "
+    Declaration(Class(:A))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:t))
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:r :A)))";
+    // C is unsat; A must remain satisfiable.
+    let unsat = unsat_of(body);
+    assert!(unsat.contains(&"http://t/C".to_string()), "C must be unsat");
+    assert!(
+        !unsat.contains(&"http://t/A".to_string()),
+        "filler :A must NOT be marked unsat (FP guard)"
+    );
+}

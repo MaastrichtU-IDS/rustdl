@@ -3398,6 +3398,29 @@ fn collect_el_rules(
         }
     }
 
+    // Post-collection pass: any Tseitin existential marker whose role (or a
+    // super-role of its role) is poisoned (`Domain=⊥`, `Range=⊥`, or `∃r.⊤⊑⊥`)
+    // must itself be unsatisfiable.  A nested existential like `∃t.(∃r.A)` produces
+    // a marker `M` for `∃r.A` (keyed on `(r, A)` in `by_existential`); the outer
+    // class `C ⊑ ∃t.M` then discovers `M ⊑ ⊥` via `UnsatTarget` propagation.
+    //
+    // This pass is order-independent: it runs after ALL axioms have been processed
+    // (Pass 1 fills `poisoned_roles`; Pass 2 fills `by_existential`), so it does
+    // not depend on declaration order in the ontology.
+    //
+    // Sound: we check the marker's OWN role and its super-roles only (mirroring the
+    // `process_fact` super-role loop).  We never poison based on the filler class or
+    // on roles unrelated to the existential — that would be unsound.
+    for (&(role, _body), &marker) in &tseitin.by_existential {
+        let poisoned = rules.poisoned_roles.contains(&role)
+            || role_super
+                .get(&role)
+                .is_some_and(|supers| supers.iter().any(|sr| rules.poisoned_roles.contains(sr)));
+        if poisoned {
+            rules.directly_unsat.push(marker);
+        }
+    }
+
     (rules, tseitin, total_classes)
 }
 

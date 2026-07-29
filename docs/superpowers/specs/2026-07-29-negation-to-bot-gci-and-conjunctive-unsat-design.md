@@ -65,9 +65,15 @@ actually reasons over, and if the negation spelling is canonicalized into it.
 rewrite of `X ⊑ ¬Y` into `X ⊓ Y ⊑ ⊥` in `owl-dl-core`, plus preserving told-disjoint
 coverage across the new form.
 
-**Out of scope.** `EquivalentClasses(A, ¬B)` — it carries a covering half
-(`⊤ ⊑ A ⊔ B`) as well as a disjointness half; rewriting only the disjointness would
-lose the covering and re-create a completeness gap. It stays on the hybrid path.
+**Out of scope.** `EquivalentClasses(A, ¬B)` as a whole axiom — it carries a covering half
+(`⊤ ⊑ A ⊔ B`) as well as a disjointness half, so *replacing* it with a disjointness
+assertion would lose the covering and re-create a completeness gap. Note the rewrite is
+defined on `Axiom::SubClassOf` only, so this is a statement about coverage, not a
+soundness carve-out: if the pipeline has already decomposed the equivalence into two GCIs
+by the insertion point, rewriting the `A ⊑ ¬B` direction is sound and loses nothing (the
+`¬B ⊑ A` direction is retained separately, and that direction's `Not` is on the *left*,
+which this rewrite does not touch). Either way the covering survives. The ontology as a
+whole stays on the hybrid path because the un-rewritten direction still carries a `Not`.
 `DisjointUnion` stays excluded from the gate for the reasons already recorded at
 `classify.rs` (it entails a disjunctive covering the saturator has no rule for).
 Widening `disjoint_ok` — the disjoint×functional-merge interaction remains unproven and
@@ -88,9 +94,10 @@ Semantics: when every `b ∈ bodies` is a subsumer of `c`, call the existing
 subclasses and back through `∃`-facts exactly as it does for `DisjointnessClash` and
 `directly_unsat` today — no new propagation machinery.
 
-`DisjointnessClash` becomes the two-atom special case of this rule. It is **kept as-is**
-(it is indexed and tuned for the pairwise case); Part A adds the general arm rather than
-re-routing the existing one, so no currently-working path changes shape.
+Conceptually `DisjointnessClash` is the two-atom instance of this rule, but it is
+**left untouched** — it is indexed and tuned for the pairwise case. Part A *adds* the
+general arm rather than re-routing the existing one, so no currently-working path
+changes shape.
 
 Sites to touch, following `ConjunctiveTrigger`'s existing wiring:
 - rule collection: the `And`-LHS arm — emit `ConjunctiveUnsat { bodies }` when
@@ -112,6 +119,13 @@ operand is lowered to a marker class by the existing arm), so
 
 Rewrite every `Axiom::SubClassOf { sub, sup }` whose `sup` is `ConceptExpr::Not(y)` into
 `Axiom::SubClassOf { sub: And([sub, y]), sup: Bot }`.
+
+**Conjunctive right-hand sides recurse.** `X ⊑ A ⊓ ¬B` must yield `X ⊑ A` plus
+`X ⊓ B ⊑ ⊥`; otherwise the negation survives inside the `And` and the axiom stays
+out-of-fragment. So the rewrite either runs after RHS-conjunction splitting or descends
+into a top-level `And` on the right itself. Which of the two depends on whether the
+pipeline already splits RHS conjunctions at the chosen insertion point; the
+implementation must check and pick, and a canary pins the outcome either way.
 
 `X ⊑ ¬Y ≡ X ⊓ Y ⊑ ⊥` is an unconditional logical equivalence, so **no atomicity
 restriction is needed**: the rewrite always applies, and the existing fragment gate
@@ -165,10 +179,16 @@ previous rustdl output is invalid here: the previous output is the bug.
   derived `unsat` must be confirmed, FP=0.
 - Curated-corpus closure diff: FP=0, and any new MISS is a stop-and-diagnose.
 
-**Part B — routing only ⇒ byte-identity.**
+**Part B — routing only ⇒ byte-identity.** All Part B comparisons are run **with Part A
+already landed**, so that Part A's new entailments are present on both sides and the only
+variable is the rewrite.
 - `RUSTDL_NEG_TO_BOT_GCI=0` vs `=1` byte-identical closures across the curated corpus
   and the ORE set. Any diff is a bug, not a tuning matter.
-- `ore_ont_9318`: 21.5 s → ~0.9 s with the closure unchanged from the *as-is* run.
+- `ore_ont_9318`: wall drops from ~21.5 s to ~0.9 s, closure identical between flag-OFF
+  and flag-ON. (The 19 479-line figure measured on 2026-07-29 predates Part A and is
+  recorded as provenance for the *speedup*, not as an expected line count to assert
+  against — Part A may legitimately change the closure of any ontology that also carries
+  a dropped `⊓ ⊑ ⊥` axiom.)
 - Re-measure the ~13 ontologies the strategy review identified, and report how many
   ontologies newly reach the fast path (the Lever 1b commit's `is_pure_el` /
   `tbox_elig` counts are the precedent for how to report this).

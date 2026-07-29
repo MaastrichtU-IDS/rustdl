@@ -387,6 +387,8 @@ struct WorklistEngine {
     role_super_bitset: Vec<FixedBitSet>,
     /// Dense per-class indices into `rules.conjunctive_triggers`.
     conjunctive_by_body: Vec<Vec<usize>>,
+    /// Dense per-class indices into `rules.conjunctive_unsat`.
+    conjunctive_unsat_by_body: Vec<Vec<usize>>,
     /// Dense per-class indices into `rules.existential_triggers`.
     existential_triggers_by_body: Vec<Vec<usize>>,
     /// Dense per-class list of classes disjoint from each class.
@@ -481,6 +483,12 @@ impl WorklistEngine {
                 conjunctive_by_body[body.index() as usize].push(idx);
             }
         }
+        let mut conjunctive_unsat_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
+        for (idx, rule) in rules.conjunctive_unsat.iter().enumerate() {
+            for &body in &rule.bodies {
+                conjunctive_unsat_by_body[body.index() as usize].push(idx);
+            }
+        }
         let mut existential_triggers_by_body: Vec<Vec<usize>> = vec![Vec::new(); num_total_classes];
         for (idx, trigger) in rules.existential_triggers.iter().enumerate() {
             existential_triggers_by_body[trigger.body.index() as usize].push(idx);
@@ -531,6 +539,7 @@ impl WorklistEngine {
             role_super,
             role_super_bitset,
             conjunctive_by_body,
+            conjunctive_unsat_by_body,
             existential_triggers_by_body,
             disjoints_by_class,
             num_user_classes,
@@ -653,6 +662,9 @@ impl WorklistEngine {
             }
             while self.conjunctive_by_body.len() < needed {
                 self.conjunctive_by_body.push(Vec::new());
+            }
+            while self.conjunctive_unsat_by_body.len() < needed {
+                self.conjunctive_unsat_by_body.push(Vec::new());
             }
             while self.existential_triggers_by_body.len() < needed {
                 self.existential_triggers_by_body.push(Vec::new());
@@ -1128,6 +1140,14 @@ impl WorklistEngine {
                     }
                     self.enqueue_subsumer(c, head);
                 }
+            }
+        }
+        // Conjunctive unsat (`And(b₁…bₙ) ⊑ ⊥`): every rule with D in its body
+        // list may now fire on C if C has all the other bodies too.
+        for ridx in self.conjunctive_unsat_by_body[d.index() as usize].clone() {
+            let bodies = self.rules.conjunctive_unsat[ridx].bodies.clone();
+            if bodies.iter().all(|b| self.subsumers.contains(c, *b)) {
+                self.enqueue_unsat(c);
             }
         }
         // Disjointness: if any class disjoint from D is already a
@@ -2221,6 +2241,9 @@ struct ElRules {
     /// Conjunctive triggers: when a class accumulates every `body`
     /// among its subsumers, it gains `head`.
     conjunctive_triggers: Vec<ConjunctiveTrigger>,
+    /// Conjunctive unsat rules from `And(b₁ … bₙ) ⊑ ⊥`: when a class
+    /// accumulates every `body` among its subsumers, it is unsatisfiable.
+    conjunctive_unsat: Vec<ConjunctiveUnsat>,
     /// Existential facts from `SubClassOf(sub, ∃role.target)` over
     /// atomic-named-atomic shapes. Read as "every `sub`-instance has
     /// some `role`-successor whose subsumers include `target`."
@@ -2337,6 +2360,20 @@ struct AtomicSubsumption {
 struct ConjunctiveTrigger {
     bodies: Vec<ClassId>,
     head: ClassId,
+}
+
+/// Conjunctive unsatisfiability: when a class accumulates every `body` among
+/// its subsumers, it is unsatisfiable. Lowered from `And(b₁ … bₙ) ⊑ ⊥` — the
+/// n-ary generalisation of a `disjoint_pairs` entry.
+///
+/// Exists because the `And`-LHS arm of rule collection derives heads from
+/// `atomic_operands_on_right(sup, _)` plus an existential-RHS scan, and with
+/// `sup = Bot` both are empty — so before this rule the axiom was silently
+/// dropped while the fragment gate (Lever 1b) certified the closure complete.
+/// `directly_unsat` covers only a NON-conjunctive LHS.
+#[derive(Debug, Clone)]
+struct ConjunctiveUnsat {
+    bodies: Vec<ClassId>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -3505,6 +3542,25 @@ fn lower_sub_class_of(
                 }
             }
             if !salvageable {
+                return;
+            }
+            // `And(b₁…bₙ) ⊑ ⊥` is a disjointness assertion. Without this arm
+            // `atomic_operands_on_right(Bot, _)` and the existential-RHS scan
+            // below both return empty, so the axiom is silently DROPPED while
+            // the fragment gate (Lever 1b) certifies the closure complete —
+            // the D10 unsound-completeness class. `directly_unsat` covers only
+            // a non-conjunctive LHS.
+            //
+            // An EMPTY body list would mean `⊤ ⊑ ⊥`, and a rule with no bodies
+            // fires on EVERY class (`all()` over an empty iterator is `true`),
+            // marking the whole vocabulary unsatisfiable. `ConceptPool` is not
+            // expected to produce `And([])`, so rather than trust that we skip
+            // it and leave the (global-inconsistency) case to the hybrid path —
+            // a sound MISS instead of a catastrophic FP.
+            if matches!(pool.get(sup), ConceptExpr::Bot) {
+                if !bodies.is_empty() {
+                    rules.conjunctive_unsat.push(ConjunctiveUnsat { bodies });
+                }
                 return;
             }
             // The existing atomic-operand loop: any atomic class on

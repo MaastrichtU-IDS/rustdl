@@ -1,10 +1,11 @@
-# Memory-tail localization on `ore_ont_9347`: four proposed mechanisms, all four refuted
+# Memory-tail localization on `ore_ont_9347`: six proposed mechanisms, all six refuted
 
 **Date:** 2026-07-29
-**Status:** Findings from a measurement-only localization pass. **Read before starting the
-sparse-subsumer rewrite** — on the worst-measured ontology that fix would address ~2% of peak
-RSS. The site is narrowed but not yet identified; the discriminating experiment is named in
-"What to do next".
+**Status:** Findings from a measurement-only localization pass — no fix built, deliberately.
+**Read before starting the sparse-subsumer rewrite**: on the worst-measured ontology that fix
+would address ~2% of peak RSS. Every black-box hypothesis is now exhausted (§7); the site is
+characterised (a large early baseline + a recurring transient) but the responsible code is not
+identified, and further progress needs in-process instrumentation.
 
 ## Why this pass was run
 
@@ -99,26 +100,7 @@ per-ontology amount. The table cannot rank memory work; "10 ontologies above 8 G
 `2026-07-29-fragment-lever-selection-findings.md`, whose ceiling analysis assumed the tail was
 reasoning-bound.
 
-## What is established, and what is not
-
-**Established:** 14.2 GB before any reasoning; 19.1 GB through saturation, which completes;
-~6.6 GB is the wedge; growth is steady at ~40 MB/s (36.5 GB @ 132 s → 70.7 GB @ 904 s), not
-explosive. Not the D4 matrices, not fan-out, not the main tableau graph, not the label cache.
-
-**Not established:** where the remaining ~30 GB (and counting) lives. Steady linear
-accumulation that survives bounding the *search* suggests something retained per unit of work
-rather than one runaway structure. Remaining candidates: the once-per-classify
-`PreparedOntology::from_internal` snapshot, and per-pair retention.
-
-## The lesson worth keeping
-
-Four mechanisms were proposed and all four died to measurement. Two of them came from existing
-repo root-cause notes, **each correctly measured on a different ontology** and then generalised
-by wording that does not carry its scope. **The memory tail is not one phenomenon.** Localize
-per ontology before building, and read the existing notes as ontology-specific evidence rather
-than general diagnoses.
-
-## 7. RSS-over-time: a staircase, so BOTH remaining candidates are dead
+### 7. RSS-over-time: a staircase, so BOTH remaining candidates are dead
 
 Sampled `VmRSS` every 2 s during a single-threaded `classify` (raw data:
 `docs/benchmarks/2026-07-29-ore9347-rss-curve.tsv`, 203 samples). Interpretation rules were
@@ -149,6 +131,28 @@ made no sense: 1 thread ≈ baseline + 1 transient ≈ 70 GB; 32 threads ≈ bas
 
 Per the pre-registered rule, **no mechanism is named here.** Six hypotheses have now been
 refuted on this one ontology; the next step is instrumentation, not another inference.
+
+## What is established, and what is not
+
+**Established:** `tbox-stats` (convert+absorb) peaks at 14.2 GB and `--saturation-only` at
+19.1 GB, and saturation *completes*; the wedge accounts for ~6.6 GB; peak RSS is not governed by
+the D4 matrices, parallel fan-out, the main tableau graph, or the label cache. Per §7 the shape
+is a **~45–50 GB baseline formed early plus a recurring ~3.5 GB transient**, with memory being
+released between transients.
+
+**Not established:** which code allocates either part. §7 rules out both candidates that
+survived to that point — it is not a one-time `PreparedOntology::from_internal` allocation (no
+single step) and not per-pair retention (memory is freed). Note also that the stage split above
+is *not* a faithful decomposition of classify: classify holds 44.6 GB by t=130 s, far more than
+either subcommand proxy at the same wall-clock.
+
+## The lesson worth keeping
+
+Six mechanisms were proposed and all six died to measurement. Two of them came from existing
+repo root-cause notes, **each correctly measured on a different ontology** and then generalised
+by wording that does not carry its scope. **The memory tail is not one phenomenon.** Localize
+per ontology before building, and read the existing notes as ontology-specific evidence rather
+than general diagnoses.
 
 ## What to do next
 

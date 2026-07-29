@@ -93,6 +93,7 @@ pub fn derive_data_axioms<A: ForIRI>(
     emit_data_range_value_violations(src, top_id, bot_id, &mut out);
     emit_functional_dp_cardinality_violations(src, top_id, bot_id, &mut out);
     emit_data_cardinality_violations_typed(src, top_id, bot_id, &mut out);
+    emit_disjoint_dp_same_value_clash(&facts, top_id, bot_id, &mut out);
     out
 }
 
@@ -1338,6 +1339,18 @@ struct Facts {
     /// be unsound (false `Inconsistent`). Separate from `class_max` (which is
     /// qualifier-agnostic and feeds the D4 single-class clash patterns).
     class_max_string: BTreeMap<(String, String), u32>,
+    /// DP-DJ: `DisjointDataProperties(dp1, dp2, …)` — recorded as all
+    /// pairwise unordered pairs `(a, b)` with `a < b` (lexicographic).
+    /// Used by `emit_disjoint_dp_same_value_clash` to detect same-value
+    /// violations: `DisjointDataProperties(dp,dq)` + `DataPropertyAssertion(dp,a,v)` +
+    /// `DataPropertyAssertion(dq,a,v)` (same individual `a`, same canonical value `v`)
+    /// ⇒ global inconsistency ⇒ emit `Top ⊑ Bot`.
+    disjoint_dp_pairs: Vec<(String, String)>,
+    /// DP-DJ: per-`(individual_iri, dp_iri)` → set of canonical [`DjLiteralKey`]
+    /// values. Populated in parallel with `ind_string_values` but handles a
+    /// broader set of datatypes (integer, decimal, double, float via f32, date,
+    /// dateTime, string). Used by `emit_disjoint_dp_same_value_clash`.
+    ind_dj_values: BTreeMap<(String, String), BTreeSet<DjLiteralKey>>,
 }
 
 fn extract_facts<A: ForIRI>(src: &SetOntology<A>) -> Facts {
@@ -1419,6 +1432,13 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
                         .insert(v);
                 }
             }
+            // DP-DJ: record per-individual canonical value for same-value clash.
+            if let (Some(ind), Some(key)) = (individual_iri(&ax.from), literal_to_dj_key(&ax.to)) {
+                f.ind_dj_values
+                    .entry((ind, dpe_iri(&ax.dp)))
+                    .or_default()
+                    .insert(key);
+            }
         }
         C::ClassAssertion(ax) => {
             // DP-2: atomic class membership for the type-resolution closure.
@@ -1440,6 +1460,21 @@ fn scan_component<A: ForIRI>(c: &Component<A>, f: &mut Facts) {
                 for other in &ax.0 {
                     scan_class_for_bounds(c, other, f);
                     scan_class_for_existentials(c, other, f);
+                }
+            }
+        }
+        C::DisjointDataProperties(ax) => {
+            // DP-DJ: record all pairwise unordered pairs (a < b) for the
+            // same-value clash check in `emit_disjoint_dp_same_value_clash`.
+            let iris: Vec<String> = ax.0.iter().map(dp_iri).collect();
+            for i in 0..iris.len() {
+                for j in (i + 1)..iris.len() {
+                    let (a, b) = if iris[i] <= iris[j] {
+                        (iris[i].clone(), iris[j].clone())
+                    } else {
+                        (iris[j].clone(), iris[i].clone())
+                    };
+                    f.disjoint_dp_pairs.push((a, b));
                 }
             }
         }
@@ -2391,6 +2426,96 @@ fn literal_to_distinct_val<A: ForIRI>(l: &Literal<A>) -> Option<DistinctVal> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// DP-DJ canonical value key
+// ─────────────────────────────────────────────────────────────────────
+
+/// Canonical value key for disjoint-data-property same-value clash detection
+/// (DP-DJ). Like [`DistinctVal`] but adds `Float(OrdF64)` for `xsd:float` at
+/// **f32 precision** (parse as `f32`, widen via `f64::from`). This means two
+/// lexicals that round to the same `f32` (e.g., `"0.1000000014"` and
+/// `"0.1000000015"`) map to the same key — consistent with how DKey lowering
+/// in `convert.rs` treats `xsd:float` values, so the same-value equality here
+/// agrees with the DKey-level equality check. `Num` covers both `xsd:integer`
+/// and `xsd:decimal` (integer ⊆ decimal value space → sound merged bucket).
+///
+/// `OrdF64::new` normalises `−0.0 → +0.0` (the only finite value where
+/// `total_cmp` disagrees with IEEE equality), so signed-zero FP is impossible.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum DjLiteralKey {
+    Num(Decimal),
+    Float(OrdF64),
+    Double(OrdF64),
+    Date(DateKey),
+    DateTime(DateTimeKey),
+    Str(String),
+}
+
+/// Parse a literal to its canonical [`DjLiteralKey`], or `None` if the
+/// datatype is unrecognised or should be dropped (timezone-bearing
+/// date/dateTime, NaN/±∞ float/double). `None` is a sound under-count —
+/// it never causes a false `Inconsistent`.
+fn literal_to_dj_key<A: ForIRI>(l: &Literal<A>) -> Option<DjLiteralKey> {
+    match l {
+        // ── Num bucket: xsd:integer and xsd:decimal both via parse_decimal.
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#integer" => {
+            parse_decimal(literal).map(DjLiteralKey::Num)
+        }
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#decimal" => {
+            parse_decimal(literal).map(DjLiteralKey::Num)
+        }
+        // ── Float bucket: xsd:float at f32 precision (parse as f32, widen).
+        // This matches the DKey lowering precision so same-value equality
+        // is consistent end-to-end. Reject NaN and ±∞ (no finite model).
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float" => {
+            let v: f32 = literal.parse().ok().filter(|v: &f32| v.is_finite())?;
+            Some(DjLiteralKey::Float(OrdF64::new(f64::from(v))))
+        }
+        // ── Double bucket: xsd:double at f64 precision. Reject NaN and ±∞.
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" => {
+            let v: f64 = literal.parse().ok().filter(|v: &f64| v.is_finite())?;
+            Some(DjLiteralKey::Double(OrdF64::new(v)))
+        }
+        // ── Date bucket (timezone-bearing dropped at parse — see parse_date).
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#date" => {
+            parse_date(literal).map(DjLiteralKey::Date)
+        }
+        // ── DateTime bucket (timezone / fractional-second dropped at parse).
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#dateTime" => {
+            parse_datetime(literal).map(DjLiteralKey::DateTime)
+        }
+        // ── String bucket: bare (xsd:string) or typed xsd:string.
+        // Language-tagged (rdf:langString) excluded — different datatype.
+        Literal::Simple { literal } => Some(DjLiteralKey::Str(literal.clone())),
+        Literal::Datatype {
+            literal,
+            datatype_iri,
+        } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#string" => {
+            Some(DjLiteralKey::Str(literal.clone()))
+        }
+        // ── Everything else: excluded (sound under-count, never FP).
+        _ => None,
+    }
+}
+
 /// A [`Decimal`] as an `i64`, or `None` when it is not a representable integer:
 /// a non-empty fraction (`1.5` is not an `xsd:integer` value) or a magnitude
 /// outside `i64`. `None` => the value is not counted against an integer range
@@ -2704,6 +2829,69 @@ fn emit_data_cardinality_violations_typed<A: ForIRI>(
                     sup: bot_id,
                 });
                 return;
+            }
+        }
+    }
+}
+
+/// DP-DJ: Disjoint-data-properties same-value clash ⇒ global inconsistency.
+///
+/// `DisjointDataProperties(dp, dq)` + `DataPropertyAssertion(dp, a, v)` +
+/// `DataPropertyAssertion(dq, a, v)` (same individual `a`, same canonical
+/// value `v`) ⇒ no model ⇒ emit `Top ⊑ Bot`.
+///
+/// **Sound by construction:**
+/// - Equality is checked via [`DjLiteralKey`], which normalises numeric
+///   representations consistently with how DKey lowering handles them.
+/// - `xsd:float` uses f32 precision so two lexicals that round to the same
+///   f32 (and would be the same DKey) correctly match here too.
+/// - `OrdF64::new` normalises `−0.0 → +0.0` so signed-zero ≠ is impossible.
+/// - Timezone-bearing date/dateTime are dropped at parse (sound under-count).
+/// - Unrecognised datatypes return `None` from `literal_to_dj_key` → skipped
+///   (sound under-count, never FP).
+/// - Gate: entire function is a no-op when `RUSTDL_DATA_PROPERTIES=0`.
+fn emit_disjoint_dp_same_value_clash(
+    facts: &Facts,
+    top_id: ConceptId,
+    bot_id: ConceptId,
+    out: &mut Vec<Axiom>,
+) {
+    if !std::env::var("RUSTDL_DATA_PROPERTIES").map_or(true, |v| v != "0") {
+        return;
+    }
+    if facts.disjoint_dp_pairs.is_empty() {
+        return;
+    }
+
+    // For each disjoint pair (dp, dq) check every individual `a`:
+    // if `ind_dj_values[(a, dp)]` ∩ `ind_dj_values[(a, dq)]` is non-empty ⇒ clash.
+    //
+    // Collect the set of individuals that have values for any property in a pair.
+    // We iterate over disjoint pairs and look up both sides in ind_dj_values.
+    for (dp, dq) in &facts.disjoint_dp_pairs {
+        // Collect all individuals that have at least one value for `dp`.
+        // We'll iterate over `ind_dj_values` keys with prefix `dp`.
+        // BTreeMap range query: all keys `(ind, dp)` for any `ind`.
+        // Use the BTreeMap ordering: (ind, dp) sorted lexicographically.
+        // Gather (ind → values_for_dp) for this dp.
+        let dp_inds: Vec<(&str, &BTreeSet<DjLiteralKey>)> = facts
+            .ind_dj_values
+            .iter()
+            .filter(|((_, p), _)| p == dp)
+            .map(|((ind, _), vals)| (ind.as_str(), vals))
+            .collect();
+
+        for (ind, dp_vals) in dp_inds {
+            // Look up dq values for the same individual.
+            if let Some(dq_vals) = facts.ind_dj_values.get(&(ind.to_owned(), dq.clone())) {
+                // If any value appears in both sets → clash.
+                if dp_vals.iter().any(|v| dq_vals.contains(v)) {
+                    out.push(Axiom::SubClassOf {
+                        sub: top_id,
+                        sup: bot_id,
+                    });
+                    return; // One clash is enough to mark global inconsistency.
+                }
             }
         }
     }

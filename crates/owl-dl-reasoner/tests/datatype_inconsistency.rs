@@ -22,6 +22,7 @@ use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::is_consistent;
 use std::io::Cursor;
+use std::sync::Mutex;
 
 const PFX: &str = r"Prefix(:=<http://t/>)
 Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
@@ -878,5 +879,143 @@ fn float_value_vs_double_range_no_cross_bucket_clash() {
         r#"    Declaration(DataProperty(:p)) Declaration(NamedIndividual(:a))
     DataPropertyRange(:p DatatypeRestriction(xsd:double xsd:minInclusive "0.0"^^xsd:double xsd:maxInclusive "1.0"^^xsd:double))
     DataPropertyAssertion(:p :a "2.0"^^xsd:float)"#
+    ));
+}
+
+// ─── DP-DJ: DisjointDataProperties same-value clash canaries ─────────
+//
+// NEGATIVES-FIRST: a spurious `Inconsistent` marks EVERY class as
+// unsatisfiable — the catastrophic FP. The "stays consistent" tests guard
+// that. Gate-off test serialises via ENV_MUTEX to avoid races.
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+struct DataGateGuard {
+    prior: Option<std::ffi::OsString>,
+}
+impl DataGateGuard {
+    #[allow(unsafe_code)]
+    fn on() -> Self {
+        let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
+        // SAFETY: serialised via ENV_MUTEX; restored on Drop.
+        unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "1") };
+        Self { prior }
+    }
+    #[allow(unsafe_code)]
+    fn off() -> Self {
+        let prior = std::env::var_os("RUSTDL_DATA_PROPERTIES");
+        // SAFETY: serialised via ENV_MUTEX; restored on Drop.
+        unsafe { std::env::set_var("RUSTDL_DATA_PROPERTIES", "0") };
+        Self { prior }
+    }
+}
+impl Drop for DataGateGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var("RUSTDL_DATA_PROPERTIES", v),
+                None => std::env::remove_var("RUSTDL_DATA_PROPERTIES"),
+            }
+        }
+    }
+}
+
+/// NEGATIVE: same integer value on two disjoint data properties ⇒ INCONSISTENT.
+#[test]
+fn disjoint_dp_same_integer_value_inconsistent() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DisjointDataProperties(:p :q)
+    DataPropertyAssertion(:p :a "42"^^xsd:integer)
+    DataPropertyAssertion(:q :a "42"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: different integer values on disjoint data properties ⇒ CONSISTENT
+/// (the values are distinct — no same-value clash).
+#[test]
+fn disjoint_dp_different_integer_values_consistent() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DisjointDataProperties(:p :q)
+    DataPropertyAssertion(:p :a "1"^^xsd:integer)
+    DataPropertyAssertion(:q :a "2"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: no DisjointDataProperties axiom ⇒ CONSISTENT even with same value.
+#[test]
+fn disjoint_dp_no_axiom_consistent() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DataPropertyAssertion(:p :a "5"^^xsd:integer)
+    DataPropertyAssertion(:q :a "5"^^xsd:integer)"#
+    ));
+}
+
+/// NEGATIVE: same xsd:float value (f32 precision) on two disjoint data
+/// properties ⇒ INCONSISTENT. Uses a value that is representable as an
+/// exact f32 (1.0 = exact in IEEE 754 binary32).
+#[test]
+fn disjoint_dp_same_f32_value_inconsistent() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    assert!(!consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DisjointDataProperties(:p :q)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:float)
+    DataPropertyAssertion(:q :a "1.0"^^xsd:float)"#
+    ));
+}
+
+/// NEGATIVE: different xsd:float values on disjoint data properties ⇒ CONSISTENT.
+#[test]
+fn disjoint_dp_different_f32_values_consistent() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DisjointDataProperties(:p :q)
+    DataPropertyAssertion(:p :a "1.0"^^xsd:float)
+    DataPropertyAssertion(:q :a "2.0"^^xsd:float)"#
+    ));
+}
+
+/// NEGATIVE (gate-off): same integer value on disjoint props but
+/// RUSTDL_DATA_PROPERTIES=0 disables DP-DJ ⇒ CONSISTENT (gate guard off).
+#[test]
+fn disjoint_dp_gate_off_consistent() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::off();
+    assert!(consistent(
+        r#"    Declaration(DataProperty(:p)) Declaration(DataProperty(:q))
+    Declaration(NamedIndividual(:a))
+    DisjointDataProperties(:p :q)
+    DataPropertyAssertion(:p :a "99"^^xsd:integer)
+    DataPropertyAssertion(:q :a "99"^^xsd:integer)"#
     ));
 }

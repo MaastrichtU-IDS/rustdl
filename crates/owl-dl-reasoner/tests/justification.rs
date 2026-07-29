@@ -807,3 +807,80 @@ fn justify_probe_symbols_never_in_output() {
         );
     }
 }
+
+#[test]
+fn justify_disjoint_data_properties_entailed() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    // DisjointDataProperties(:p :q) is directly asserted ⇒ the justification
+    // set must contain that axiom.
+    let src = "Prefix(:=<http://t/>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+               Ontology(<http://t/o>\n\
+               Declaration(DataProperty(:p)) Declaration(DataProperty(:q))\n\
+               DisjointDataProperties(:p :q)\n\
+               )";
+    let (o, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+    let q = Entailment::DisjointDataProperties {
+        a: "http://t/p".into(),
+        b: "http://t/q".into(),
+    };
+    let j = find_one_justification(&o, &q)
+        .unwrap()
+        .expect("p,q disjoint told");
+    assert_eq!(j.axioms.len(), 1, "got {:?}", j.axioms);
+}
+
+#[test]
+fn justify_disjoint_data_properties_not_entailed() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    // No DisjointDataProperties axiom ⇒ the query is NOT entailed.
+    let src = "Prefix(:=<http://t/>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+               Ontology(<http://t/o>\n\
+               Declaration(DataProperty(:p)) Declaration(DataProperty(:q))\n\
+               )";
+    let (o, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+    let q = Entailment::DisjointDataProperties {
+        a: "http://t/p".into(),
+        b: "http://t/q".into(),
+    };
+    assert!(
+        find_one_justification(&o, &q).unwrap().is_none(),
+        "p,q NOT disjoint (no FP)"
+    );
+}
+
+#[test]
+fn justify_disjoint_data_properties_range_excludes_probe_not_entailed() {
+    let _lock = JUSTIFY_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = DataGateGuard::on();
+    // DataPropertyRange(:p, xsd:string) is asserted.  The reduction probe uses
+    // 0^^xsd:integer; asserting p(probe,0^^integer) alone violates the string
+    // range → inconsistent on its own → the c1 guard fires → NOT entailed,
+    // even though there is no DisjointDataProperties axiom.
+    // Without the c1 guard this would incorrectly return Some(...).
+    let src = "Prefix(:=<http://t/>) \
+               Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+               Ontology(<http://t/o>\n\
+               Declaration(DataProperty(:p)) Declaration(DataProperty(:q))\n\
+               DataPropertyRange(:p xsd:string)\n\
+               )";
+    let (o, _): (SetOntology<RcStr>, _) =
+        read_ofn(&mut Cursor::new(src), ParserConfiguration::default()).expect("parse");
+    let q = Entailment::DisjointDataProperties {
+        a: "http://t/p".into(),
+        b: "http://t/q".into(),
+    };
+    assert!(
+        find_one_justification(&o, &q).unwrap().is_none(),
+        "range clash on probe must not be mistaken for disjointness entailment"
+    );
+}

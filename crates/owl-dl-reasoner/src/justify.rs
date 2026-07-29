@@ -71,6 +71,10 @@ pub enum Entailment {
         a: String,
         b: String,
     },
+    DisjointDataProperties {
+        a: String,
+        b: String,
+    },
     DataPropertyValue {
         source: String,
         prop: String,
@@ -254,6 +258,61 @@ pub fn entails<A: ForIRI>(onto: &SetOntology<A>, q: &Entailment) -> Result<bool,
                 sup: a.clone(),
             },
         )?),
+        Entailment::DisjointDataProperties { a, b } => {
+            // Reduce to inconsistency: assert dp_a(_probe, 0^^xsd:integer) and
+            // dp_b(_probe, 0^^xsd:integer) — if `DisjointDataProperties(a,b)` holds
+            // the ABox is inconsistent (same value on disjoint properties).
+            //
+            // Guard (c1/c2): first verify that asserting each property alone is
+            // consistent — if a property has a range restriction excluding
+            // xsd:integer, the single assertion would already be inconsistent
+            // (a DataPropertyRange clash, not a disjointness entailment).
+            // Mirror the SubDataProperty c1 guard.
+            let bld: Build<A> = Build::new();
+            let make_lit = || Literal::Datatype {
+                literal: "0".to_string(),
+                datatype_iri: bld.iri(PROBE_INT),
+            };
+            // c1a: assert a(probe, 0) alone — must be consistent.
+            if inconsistent_with(
+                onto,
+                vec![Component::DataPropertyAssertion(DataPropertyAssertion {
+                    dp: bld.data_property(a.as_str()),
+                    from: named(&bld, PROBE_A),
+                    to: make_lit(),
+                })],
+            )? {
+                return Ok(false);
+            }
+            // c1b: assert b(probe, 0) alone — must be consistent.
+            if inconsistent_with(
+                onto,
+                vec![Component::DataPropertyAssertion(DataPropertyAssertion {
+                    dp: bld.data_property(b.as_str()),
+                    from: named(&bld, PROBE_A),
+                    to: make_lit(),
+                })],
+            )? {
+                return Ok(false);
+            }
+            // c2: asserting both a(probe,0) and b(probe,0) ⟹ inconsistent iff
+            // DisjointDataProperties(a,b) is entailed.
+            inconsistent_with(
+                onto,
+                vec![
+                    Component::DataPropertyAssertion(DataPropertyAssertion {
+                        dp: bld.data_property(a.as_str()),
+                        from: named(&bld, PROBE_A),
+                        to: make_lit(),
+                    }),
+                    Component::DataPropertyAssertion(DataPropertyAssertion {
+                        dp: bld.data_property(b.as_str()),
+                        from: named(&bld, PROBE_A),
+                        to: make_lit(),
+                    }),
+                ],
+            )
+        }
         Entailment::DataPropertyValue {
             source,
             prop,
@@ -711,7 +770,8 @@ fn query_seed_signature(q: &Entailment) -> Option<HashSet<String>> {
         | Entailment::DisjointObjectProperties { a, b }
         | Entailment::SameIndividual { a, b }
         | Entailment::DifferentIndividuals { a, b }
-        | Entailment::EquivalentDataProperties { a, b } => {
+        | Entailment::EquivalentDataProperties { a, b }
+        | Entailment::DisjointDataProperties { a, b } => {
             s.insert(a.clone());
             s.insert(b.clone());
         }

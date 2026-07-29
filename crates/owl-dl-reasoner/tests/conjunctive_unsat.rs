@@ -909,14 +909,27 @@ fn domain_conjunctive_filler_derives_subsumptions() {
         c.is_subclass("http://t/X", "http://t/Q"),
         "Bug B: X ⊑ ∃r.⊤ + Domain(r)=P⊓Q entails X ⊑ Q"
     );
-    // Verify the gate fix is WHY it passes: the hybrid tableau must have run
-    // at least one subsumption query.  If this was 0 it would mean the fast
-    // path fired (gate not fixed) and found 0 via the saturator — the bug.
+    // Verify the gate fix is WHY it passes, not some incidental reason.
+    //
+    // `pure_el_mode` is the DIRECT signal: the bug was that this ontology was
+    // admitted to the saturation-only fast path, whose engine drops a
+    // conjunctive domain filler, while the closure was reported complete. The
+    // fix rejects that filler at the gate, so the ontology must NOT be in
+    // `pure_el_mode`. Asserting only "some subsumption query ran" is weaker —
+    // it would still hold if a later edit to this fixture (say adding a
+    // `FunctionalRole`) forced the hybrid path for an unrelated reason, leaving
+    // the gate fix untested.
     let stats = c.stats();
     assert!(
+        !stats.pure_el_mode,
+        "Bug B: the conjunctive domain filler must keep this ontology OFF the \
+         saturation-only fast path (that path drops the filler while reporting a \
+         complete closure — the bug)"
+    );
+    assert!(
         stats.saturation_subsumption_hits + stats.tableau_subsumption_calls > 0,
-        "Bug B: gate fix must route to the hybrid engine — tableau must have issued \
-         subsumption queries (saturation_hits={}, tableau_calls={})",
+        "Bug B: the hybrid engine must have issued subsumption queries \
+         (saturation_hits={}, tableau_calls={})",
         stats.saturation_subsumption_hits,
         stats.tableau_subsumption_calls
     );

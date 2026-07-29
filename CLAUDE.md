@@ -80,17 +80,27 @@ the v0.3.11 release wheel build.
 > `family-stripped` — promote them to REQUIRED in `konclude_closure_diff.rs` once
 > the fixtures are obtainable.
 
-> **BRANCHES ARE NOT BACKED UP (2026-07-29). Do not delete a branch or prune refs
-> without reading this.** `origin` has **5** branches (`main` +
-> `feat/complex-class-expression-queries-48`, `feat/explanation-surface`,
-> `feat/pseudo-model-realize`, `feat/surface-dropped-axioms-43`). The **~38 unmerged
-> local branches exist ONLY on this disk** — years of measured spikes and NO-GO
-> evidence (`spike/combo-rewrite-gate` 14 commits,
-> `exp/wine-disjunction-ordering` 13, `feat/stage4-engine-characterization` 12).
-> Deleting one is permanent; `git branch -d` will not protect you, because these are
-> unmerged *and* unpushed. `git push --all` would fix the exposure.
+> **BRANCH BACKUP LIVES IN A NON-BRANCH REF NAMESPACE (2026-07-29).** `origin` has
+> deliberately only **5** branches (`main` + `feat/complex-class-expression-queries-48`,
+> `feat/explanation-surface`, `feat/pseudo-model-realize`,
+> `feat/surface-dropped-axioms-43`) — the shared repo's branch list is kept clean on
+> purpose. All **45** local branches are nonetheless backed up server-side under
+> `refs/archive/heads/*`, which does **not** appear in GitHub's branch list, the PR base
+> picker, or `git branch -r`.
 >
-> Several are **deliberately parked, not stale** — check the memory/handoff record
+> ```sh
+> git push origin 'refs/heads/*:refs/archive/heads/*'          # re-sync the backup
+> git ls-remote origin 'refs/archive/heads/*'                  # list what is backed up
+> git fetch origin 'refs/archive/heads/X:refs/heads/X'         # restore ONE branch
+> git fetch origin 'refs/archive/heads/*:refs/heads/*'         # restore ALL
+> ```
+>
+> **The backup is a snapshot, not a mirror** — it does not update itself. Re-run the push
+> after creating or advancing any branch you care about. `git branch -d` still will not
+> protect an unmerged branch locally, so consult `git ls-remote origin
+> 'refs/archive/heads/*'` before deleting one.
+>
+> Several branches are **deliberately parked, not stale** — check the memory/handoff record
 > before pruning: `feat/cb-alch-taming` (CB arc, park record in its own tree),
 > `feat/cb-b1-integration` (the retired CB engine the above resurrected from, 17
 > commits), `feat/model-derived-realize` ("dormant-safe" NO-GO),

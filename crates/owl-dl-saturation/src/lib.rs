@@ -627,6 +627,7 @@ impl WorklistEngine {
     fn introduce_runtime_synthetic(&mut self, body: Vec<ClassId>) -> ClassId {
         let before_atomic = self.rules.atomic_subsumptions.len();
         let before_conjunctive = self.rules.conjunctive_triggers.len();
+        let before_conjunctive_unsat = self.rules.conjunctive_unsat.len();
         // Capture a clone of the body before `introduce` consumes it (sorts
         // and stores it) so we can compute atomic_content_of for the new
         // synthetic. On the dedup path we skip this.
@@ -681,6 +682,15 @@ impl WorklistEngine {
                 self.conjunctive_by_body[b.index() as usize].push(added_idx);
             }
         }
+        // Tripwire: `introduce` must never append a ConjunctiveUnsat rule at runtime.
+        // If it ever does, the rule would be silently un-indexed and silently dropped —
+        // the exact bug class this work exists to prevent.  The debug_assert fires in
+        // `cargo test` (debug profile) but compiles out in release.
+        debug_assert_eq!(
+            before_conjunctive_unsat,
+            self.rules.conjunctive_unsat.len(),
+            "runtime rule addition must re-index conjunctive_unsat_by_body",
+        );
         // Enqueue the F ⊑ Bi atomic subsumptions so existing rules fire on them.
         for added_idx in before_atomic..self.rules.atomic_subsumptions.len() {
             let sub_ax = self.rules.atomic_subsumptions[added_idx];
@@ -1145,9 +1155,13 @@ impl WorklistEngine {
         // Conjunctive unsat (`And(b₁…bₙ) ⊑ ⊥`): every rule with D in its body
         // list may now fire on C if C has all the other bodies too.
         for ridx in self.conjunctive_unsat_by_body[d.index() as usize].clone() {
-            let bodies = self.rules.conjunctive_unsat[ridx].bodies.clone();
-            if bodies.iter().all(|b| self.subsumers.contains(c, *b)) {
+            if self.rules.conjunctive_unsat[ridx]
+                .bodies
+                .iter()
+                .all(|b| self.subsumers.contains(c, *b))
+            {
                 self.enqueue_unsat(c);
+                break; // enqueue_unsat is idempotent; remaining rules for c are pointless
             }
         }
         // Disjointness: if any class disjoint from D is already a

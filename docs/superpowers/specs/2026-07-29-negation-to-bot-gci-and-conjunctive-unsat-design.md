@@ -256,19 +256,25 @@ chain-aware rule that Part A does not supply.
 
 **Part B — measurable ORE wins.**
 
-Three representative ontologies, measured on release binary:
+Measured (ON vs OFF, `--pair-timeout-ms 50`, 60 s cap): **60 complement-bearing ORE
+ontologies** swept flag-ON vs flag-OFF — 58 byte-identical, 0 diffs; the other 2 DNF
+on both sides with no asymmetry; 0 mode changes.
 
 | ontology | before | after | mode |
 |---|---|---|---|
-| `ore_ont_9318` (39 433 classes, 4 negation axioms) | 21.8 s hybrid | 0.93 s pure-EL | fast path gained |
-| `ore_ont_2397` | DNF >200 s | 1.03 s | fast path gained |
-| `ore_ont_10032` | DNF | 2.41 s | fast path gained |
+| `ore_ont_9318` (39 433 classes, 4 negation axioms) | 23.93 s hybrid | 0.97 s pure-EL | fast path gained |
+| `ore_ont_2397` | DNF at 150 s | 1.12 s | fast path gained |
+| `ore_ont_10032` | DNF at 150 s | 2.36 s | fast path gained |
 
-Closure identity: `ore_ont_9318` closure byte-identical flag-ON vs flag-OFF. FP=0
-confirmed against the independent KM reasoner on `ore_ont_2397` and `ore_ont_10032`:
-183 414 and 78 974 rustdl direct subsumptions respectively are all contained in KM's
-closures; unsat sets agree. Flag ON-vs-OFF byte-identical across the curated corpus
-(bibtex / pizza / ro / sio / sulo / go-basic).
+Closure identity: `ore_ont_9318` closure **byte-identical, 19 470 rows** flag-ON
+vs flag-OFF. FP=0 established by the ON-vs-OFF closure identity on `ore_ont_9318`
+(logical equivalence ⟹ the rewrite cannot introduce FP) and the full 60-ontology
+sweep (0 output diffs). Note on the curated corpus: the pass almost never fires
+there — every `ObjectComplementOf` in curated fixtures sits inside
+`EquivalentClasses` (pizza, wine, family) or `ObjectPropertyDomain`/`Range` (ro),
+shapes the pass does not handle; the only firing site is `sulo.ofn`. So
+"byte-identical across the curated corpus" mostly demonstrates inertness —
+the 60-ontology ORE sweep and the `9318` identity are what carry the FP=0 evidence.
 
 The measured win is entirely **Part B**. Part A enables Part B to be correct (without
 the `ConjunctiveUnsat` rule, Part B would route `A⊑¬B` to a fast path that drops the

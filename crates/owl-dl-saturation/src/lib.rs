@@ -3494,6 +3494,10 @@ fn collect_el_rules(
     // Sound: we check the marker's OWN role and its super-roles only (mirroring the
     // `process_fact` super-role loop).  We never poison based on the filler class or
     // on roles unrelated to the existential — that would be unsound.
+    // NOTE: `by_union_existential` (disjunctive-body markers) is intentionally not
+    // walked here — `Or` is out-of-fragment on both `is_pure_el` and
+    // `saturator_complete_fragment`, so no poisoned disjunctive marker is reachable
+    // on any ontology where this pass runs.
     for (&(role, _body), &marker) in &tseitin.by_existential {
         let poisoned = rules.poisoned_roles.contains(&role)
             || role_super

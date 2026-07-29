@@ -266,6 +266,23 @@ on both sides with no asymmetry; 0 mode changes.
 | `ore_ont_2397` | DNF at 150 s | 1.12 s | fast path gained |
 | `ore_ont_10032` | DNF at 150 s | 2.36 s | fast path gained |
 
+**Recovery set, enumerated by gate probe** (the `# fragment:` verdict compared ON vs
+OFF over every ORE ontology carrying a one-line
+`SubClassOf(X ObjectComplementOf(…))`, 60 s per side). This is a *gate* probe, not a
+grep count — the plan's Task 8 requires it that way because grep ≠ gate (the Lever 1
+precedent, where a grep estimate was ~4× the real gate-eligible count).
+
+**13 ontologies flip to `pure-EL`:**
+
+| transition | count | ontologies |
+|---|---|---|
+| DNF at 60 s → `pure-EL` | 5 | `2397`, `6212`, `10016`, `10032`, `15703` |
+| `Horn` → `pure-EL` | 8 | `33`, `6870`, `7275`, `7726`, `9318`, `11906`, `14574`, `16299` |
+
+The 5 DNF recoveries are the payoff; the 8 `Horn` → `pure-EL` moves were already
+completing and gain the fast path. This is the honest addressable set for the lever —
+close to the ~13 the scoping review predicted.
+
 Closure identity: `ore_ont_9318` closure **byte-identical, 19 470 rows** flag-ON
 vs flag-OFF. FP=0 established by the ON-vs-OFF closure identity on `ore_ont_9318`
 (logical equivalence ⟹ the rewrite cannot introduce FP) and the full 60-ontology

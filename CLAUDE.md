@@ -973,7 +973,13 @@ ontology (FP=0 vs Konclude). Completeness is the subtle part:
   the pass fires): ON **0.97 s pure-EL** vs OFF **23.93 s hybrid**,
   closures **byte-identical, 19 470 rows**. **`ore_ont_2397`** and
   **`ore_ont_10032`**: both **DNF at 150 s** flag-OFF; **1.12 s** and
-  **2.36 s** flag-ON. Qualification: in the curated 8-fixture closure-diff
+  **2.36 s** flag-ON. **Recovery set, enumerated by GATE PROBE** (comparing
+  the `# fragment:` verdict ON vs OFF over every ORE ont carrying a
+  one-line `SubClassOf(X ObjectComplementOf(…))`, 60 s/side — grep ≠ gate,
+  per the Lever 1 precedent): **13 ontologies flip to `pure-EL`**, of which
+  **5 were DNF at 60 s** (`2397`, `6212`, `10016`, `10032`, `15703`) and 8
+  moved `Horn` → `pure-EL` (`33`, `6870`, `7275`, `7726`, `9318`, `11906`,
+  `14574`, `16299`). Qualification: in the curated 8-fixture closure-diff
   set the pass almost never fires — every `ObjectComplementOf` there sits
   inside `EquivalentClasses` (pizza, wine, family) or
   `ObjectPropertyDomain`/`Range` (ro), shapes the pass does not handle;

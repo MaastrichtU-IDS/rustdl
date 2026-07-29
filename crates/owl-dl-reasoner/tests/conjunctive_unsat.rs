@@ -184,3 +184,144 @@ fn some_bot_does_not_over_fire() {
         "D (∃r.B) and A must stay satisfiable; only C (∃r.A) is unsat"
     );
 }
+
+// ── Bug 2b-3: `∃r.⊤ ⊑ ⊥` (Some LHS with Top body, sup = Bot) ───────────────
+
+/// BUG REPRODUCER for `∃r.⊤ ⊑ ⊥`.
+/// `SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)` means nothing may
+/// have ANY r-successor (role r is completely empty).  Combined with
+/// `SubClassOf(:C ObjectSomeValuesFrom(:r :A))` this forces C to be unsatisfiable.
+/// Before the fix the `Some` LHS `Top`-body arm returns early before the `sup=Bot`
+/// check ⟹ axiom silently DROPPED while the gate certifies the closure complete.
+#[test]
+fn some_top_bot_derives_unsat() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "C ⊑ ∃r.A and ∃r.⊤ ⊑ ⊥ entails C ⊑ ⊥"
+    );
+}
+
+/// FP GUARD for `∃r.⊤ ⊑ ⊥`: a class with an existential on an UNRELATED role
+/// must stay satisfiable, and the filler class A must stay satisfiable.
+#[test]
+fn some_top_bot_does_not_over_fire() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))
+    SubClassOf(:D ObjectSomeValuesFrom(:s :B))";
+    let mut got = unsat_of(body);
+    got.sort();
+    // D has ∃s.B (unrelated role), A and B are just classes — all must stay sat.
+    assert_eq!(
+        got,
+        vec!["http://t/C".to_string()],
+        "D (∃s.B, unrelated role) and A and B must stay satisfiable; only C is unsat"
+    );
+}
+
+// ── Bug 2b-4: `ObjectPropertyDomain(:r owl:Nothing)` ────────────────────────
+
+/// BUG REPRODUCER for `ObjectPropertyDomain(:r owl:Nothing)`.
+/// `ObjectPropertyDomain(:r owl:Nothing)` means no individual may be an r-source
+/// (identical semantics to `∃r.⊤ ⊑ ⊥`).  Combined with
+/// `SubClassOf(:C ObjectSomeValuesFrom(:r :A))` this forces C to be unsatisfiable.
+/// Before the fix the domain-collection pass only handles atomic domains, so a
+/// `Bot` domain is silently DROPPED while the gate certifies the closure complete.
+#[test]
+fn domain_bot_derives_unsat() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "Domain(r)=⊥ and C ⊑ ∃r.A entails C ⊑ ⊥"
+    );
+}
+
+/// FP GUARD for `ObjectPropertyDomain(:r owl:Nothing)`: a class with NO
+/// r-existential must stay satisfiable; the filler class A must stay satisfiable.
+#[test]
+fn domain_bot_does_not_over_fire() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    ObjectPropertyDomain(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))
+    SubClassOf(:D ObjectSomeValuesFrom(:s :B))";
+    let mut got = unsat_of(body);
+    got.sort();
+    // D has ∃s.B (role s is not poisoned), A and B are just classes — all sat.
+    assert_eq!(
+        got,
+        vec!["http://t/C".to_string()],
+        "D (∃s.B) and A and B must stay satisfiable; only C is unsat"
+    );
+}
+
+// ── Bug 2b-5: `ObjectPropertyRange(:r owl:Nothing)` ─────────────────────────
+
+/// BUG REPRODUCER for `ObjectPropertyRange(:r owl:Nothing)`.
+/// `ObjectPropertyRange(:r owl:Nothing)` means no individual may be an r-target
+/// (the r-range is empty ⟹ no r-edge can exist).  Combined with
+/// `SubClassOf(:C ObjectSomeValuesFrom(:r :A))` this forces C to be unsatisfiable.
+/// Before the fix the range-collection pass only handles atomic ranges, so a
+/// `Bot` range is silently DROPPED while the gate certifies the closure complete.
+#[test]
+fn range_bot_derives_unsat() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    ObjectPropertyRange(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))";
+    assert_eq!(
+        unsat_of(body),
+        vec!["http://t/C".to_string()],
+        "Range(r)=⊥ and C ⊑ ∃r.A entails C ⊑ ⊥"
+    );
+}
+
+/// FP GUARD for `ObjectPropertyRange(:r owl:Nothing)`: a class with NO
+/// r-existential must stay satisfiable; the filler class A must stay satisfiable.
+#[test]
+fn range_bot_does_not_over_fire() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(ObjectProperty(:r))
+    Declaration(ObjectProperty(:s))
+    ObjectPropertyRange(:r owl:Nothing)
+    SubClassOf(:C ObjectSomeValuesFrom(:r :A))
+    SubClassOf(:D ObjectSomeValuesFrom(:s :B))";
+    let mut got = unsat_of(body);
+    got.sort();
+    // D has ∃s.B (role s is not poisoned), A and B are just classes — all sat.
+    assert_eq!(
+        got,
+        vec!["http://t/C".to_string()],
+        "D (∃s.B) and A and B must stay satisfiable; only C is unsat"
+    );
+}

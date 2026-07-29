@@ -1635,6 +1635,26 @@ impl WorklistEngine {
                     }
                 }
             }
+            // Poisoned-role check: if this super-role is poisoned (Domain=⊥,
+            // Range=⊥, or `∃r.⊤ ⊑ ⊥`), any class that derives an existential
+            // fact over it is unsatisfiable — role r cannot have any edges in
+            // any model. Mark fact.sub and every subclass of fact.sub as unsat.
+            //
+            // Sound: `poisoned_roles` is only populated from the three forms
+            // above, all of which entail "role r is vacuously empty." A class
+            // that genuinely derives `∃r.X` (i.e. `fact.sub` with role `r`)
+            // is therefore unsatisfiable. The filler class and classes with
+            // existentials on unrelated roles are unaffected.
+            if self.rules.poisoned_roles.contains(super_role) {
+                self.enqueue_unsat(fact.sub);
+                // Also propagate to every subclass of fact.sub (they inherit
+                // the existential fact by Phase-2d, so they too are unsat).
+                for y in self.subs_of_class(fact.sub) {
+                    self.enqueue_unsat(y);
+                }
+                // Once poisoned, all super-role checks are redundant.
+                break;
+            }
         }
         // Unsat propagation: if the target is unsat, the source is
         // unsat (an A-instance would need an r-successor in an
@@ -2359,6 +2379,24 @@ struct ElRules {
     /// survivor ⟹ force it, none ⟹ unsat. Sound by construction; atomic-only
     /// (nominal `⊔` deferred to B3). Empty ⇒ the rule is a no-op (EL/Horn corpus).
     disjunctions_by_class: HashMap<ClassId, Vec<Box<[ClassId]>>>,
+    /// Roles `r` for which NO r-edge may exist in any model — i.e. the role is
+    /// "poisoned". Arises from three equivalent-by-semantics axiom forms:
+    ///
+    /// 1. `SubClassOf(ObjectSomeValuesFrom(:r owl:Thing) owl:Nothing)` (`∃r.⊤ ⊑ ⊥`)
+    /// 2. `ObjectPropertyDomain(:r owl:Nothing)` (`Domain(r)=⊥`)
+    /// 3. `ObjectPropertyRange(:r owl:Nothing)`  (`Range(r)=⊥`)
+    ///
+    /// All three mean the r-role is vacuously impossible: any class that entails
+    /// `∃r.X` for ANY filler X is therefore unsatisfiable.
+    ///
+    /// Used in `process_fact`: whenever a new existential fact `(C, role, _)` is
+    /// inserted, if `role` (or any of its super-roles in the hierarchy) is in
+    /// `poisoned_roles`, then `C` and every subclass of `C` is enqueued as unsat.
+    ///
+    /// Sound: only classes with a genuinely-entailed `∃r.X` are affected; the filler
+    /// class X itself and classes with existentials on unrelated roles are unaffected.
+    /// Inert on ontologies with no poisoned roles (the common case).
+    poisoned_roles: HashSet<RoleId>,
 }
 
 impl ElRules {
@@ -3016,9 +3054,14 @@ fn collect_el_rules(
                 }
             }
             Axiom::ObjectPropertyDomain { role, domain } => {
-                if !role.is_inverse()
-                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*domain)
-                {
+                if role.is_inverse() {
+                    // inverse-role domain = forward range; handled by the tableau
+                } else if matches!(internal.concepts.get(*domain), ConceptExpr::Bot) {
+                    // `ObjectPropertyDomain(r, ⊥)`: semantically `∃r.⊤ ⊑ ⊥` —
+                    // no individual may be an r-source. Poison the role so that
+                    // any class deriving `∃r.X` is marked unsatisfiable.
+                    rules.poisoned_roles.insert(role.role_id());
+                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*domain) {
                     rules
                         .role_domains
                         .entry(role.role_id())
@@ -3027,9 +3070,14 @@ fn collect_el_rules(
                 }
             }
             Axiom::ObjectPropertyRange { role, range } => {
-                if !role.is_inverse()
-                    && let ConceptExpr::Atomic(id) = internal.concepts.get(*range)
-                {
+                if role.is_inverse() {
+                    // inverse-role range = forward domain; handled by the tableau
+                } else if matches!(internal.concepts.get(*range), ConceptExpr::Bot) {
+                    // `ObjectPropertyRange(r, ⊥)`: the r-range is empty ⟹ no
+                    // r-edge can exist in any model. Poison the role so that any
+                    // class deriving `∃r.X` is marked unsatisfiable.
+                    rules.poisoned_roles.insert(role.role_id());
+                } else if let ConceptExpr::Atomic(id) = internal.concepts.get(*range) {
                     rules
                         .role_ranges
                         .entry(role.role_id())
@@ -3669,6 +3717,17 @@ fn lower_sub_class_of(
             // ore_ont_13621/14450). Sound EL completeness fix: the domain rule is
             // already complete (cf. the `ObjectPropertyDomain` arm).
             if matches!(pool.get(*body), ConceptExpr::Top) {
+                // Bug 2b-3: `∃r.⊤ ⊑ ⊥`. This is semantically identical to
+                // `ObjectPropertyDomain(r, ⊥)`: role r is completely empty.
+                // The `atomic_operands_on_right(Bot, _)` loop below returns []
+                // and falls through to the domain push, which also records nothing
+                // — the axiom was silently DROPPED while the fragment gate certified
+                // the closure complete. Fix: poison role r directly, matching the
+                // `ObjectPropertyDomain(..., Bot)` path in Pass 1.
+                if matches!(pool.get(sup), ConceptExpr::Bot) {
+                    rules.poisoned_roles.insert(role.role_id());
+                    return;
+                }
                 for head in atomic_operands_on_right(sup, pool) {
                     rules
                         .role_domains

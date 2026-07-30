@@ -1536,6 +1536,8 @@ pub(crate) fn classify_top_down_internal(
     // Phase 2a recon: top-level classify wall, used to derive
     // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
     let classify_start = std::time::Instant::now();
+    // RSS probe: entry — post-convert_ontology baseline.
+    crate::rss_probe::probe("entry");
     let classes: Vec<String> = reportable_class_iris(internal);
     let n = classes.len();
     let index: HashMap<String, usize> = classes
@@ -1579,6 +1581,8 @@ pub(crate) fn classify_top_down_internal(
     };
 
     let closure = saturate(internal);
+    // RSS probe: after EL closure / saturation.
+    crate::rss_probe::probe("after_saturate");
 
     // Pure-EL path: the closure is complete; reuse the naive
     // classifier's fast path. Top-down only earns its complexity on
@@ -1616,7 +1620,11 @@ pub(crate) fn classify_top_down_internal(
         return Ok(classify_pure_el(internal, &classes, &index, &closure));
     }
 
+    // RSS probes: bracket PreparedOntology::from_internal — before/after delta
+    // directly answers whether the snapshot is a large allocation.
+    crate::rss_probe::probe("before_prepared");
     let prepared = PreparedOntology::from_internal(internal.clone())?;
+    crate::rss_probe::probe("after_prepared");
 
     // Sound ABox-driven inconsistency pre-check. If it fires, return
     // an every-class-unsatisfiable Classification (mirroring Konclude).
@@ -1696,6 +1704,8 @@ pub(crate) fn classify_top_down_internal(
     };
     stats.label_cache_build_wall_ms =
         u64::try_from(label_cache_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // RSS probe: after label-cache build.
+    crate::rss_probe::probe("after_label_cache");
 
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
@@ -1854,6 +1864,13 @@ pub(crate) fn classify_top_down_internal(
                 .collect()
         };
 
+    // RSS probe: pair counter for the tier walk.  Incremented in the serial
+    // merge loop (post-rayon collect) to avoid interleaved output from rayon
+    // worker threads.  We chose the serial-merge site rather than the rayon
+    // closure because: (a) output ordering is deterministic, (b) we want a
+    // coarse sawtooth that reflects allocated-then-freed per unit of work, and
+    // (c) the atomic overhead per class in rayon workers would be visible noise.
+    let mut rss_pair_counter: u64 = 0;
     for tier in &tiers {
         // Each tier member walks the snapshot of `direct_children`
         // + `top_level` as of tier entry and returns its
@@ -1921,6 +1938,11 @@ pub(crate) fn classify_top_down_internal(
                 top_level.push(c);
             }
             direct_supers[c] = parents;
+            // RSS pair probe: emit every RUSTDL_TRACE_RSS_EVERY classes (default
+            // 100).  Placed at the end of the serial-merge body so the counter
+            // tracks completed classes, not started ones.
+            rss_pair_counter += 1;
+            crate::rss_probe::probe_pair(rss_pair_counter);
         }
     }
 

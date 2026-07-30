@@ -1,11 +1,12 @@
-# Memory-tail localization on `ore_ont_9347`: six proposed mechanisms, all six refuted
+# Memory-tail localization on `ore_ont_9347`: ANSWERED — `from_internal` processes an irrelevant ABox
 
 **Date:** 2026-07-29
-**Status:** Findings from a measurement-only localization pass — no fix built, deliberately.
-**Read before starting the sparse-subsumer rewrite**: on the worst-measured ontology that fix
-would address ~2% of peak RSS. Every black-box hypothesis is now exhausted (§7); the site is
-characterised (a large early baseline + a recurring transient) but the responsible code is not
-identified, and further progress needs in-process instrumentation.
+**Status:** **SITE IDENTIFIED (§8).** `PreparedOntology::from_internal` allocates 42 GB
+processing ~55k ABox axioms that are irrelevant to class classification. Stripping the ABox
+takes it from **46.26 GB to 0.01 GB (4600×)** and turns a 238 GB OOM-kill into a completed
+classification. The fix is a routing change on existing machinery (extend Lever A's
+`abox_irrelevant_to_classify` from the per-pair-seed consumption sites to the construction
+sites), **not** the sparse-subsumer rewrite — which on this ontology would address ~2% of peak.
 
 ## Why this pass was run
 
@@ -168,3 +169,64 @@ than general diagnoses.
    ontologies are separated from reasoning-bound ones.
 4. **Do not start the sparse-subsumer rewrite** on the strength of the D4 note. It targets a
    real site — just not the one that dominates here.
+
+### 8. ANSWER: `from_internal` builds 42 GB from an ABox that class classification ignores
+
+In-process probes (`RUSTDL_TRACE_RSS=1`, added on `diag/rss-phase-trace`), single-threaded:
+
+| probe | hyper ON | hyper OFF | ABox stripped |
+|---|---|---|---|
+| `entry` (post-convert) | 3.94 GB | 3.53 GB | 0.01 GB |
+| `after_saturate` | 3.95 GB | 3.92 GB | 0.01 GB |
+| `before_prepared` | 3.95 GB | 3.92 GB | 0.01 GB |
+| **`after_prepared`** | **46.26 GB** | **28.41 GB** | **0.01 GB** |
+| `after_label_cache` | (never reached) | 32.84 GB | 0.01 GB |
+| outcome | 238 GB, OOM-killed | timeout | **completes, exit 0** |
+
+**`PreparedOntology::from_internal` is the baseline**: +42.3 GB in one call. It splits into
+~17.9 GB `HyperCache::build` and ~24.5 GB absorb — `tbox-stats` reports
+**`concept_rules: 49,571,087`** for this 8.6 MB, **114-class** ontology.
+
+**The driver is the ABox, and it is irrelevant to the query.** `9347` carries ~55k ABox axioms
+(13,356 `ClassAssertion`, 22,931 `ObjectPropertyAssertion`, 19,160 `DataPropertyAssertion`) and is
+**completely nominal-free** (`ObjectOneOf`/`ObjectHasValue`/`SameIndividual`/
+`DifferentIndividuals`/`NegativeObjectPropertyAssertion` all 0). Removing exactly those 55,446
+assertions drops `after_prepared` to **0.01 GB** and the run completes.
+
+**Lever A already knows this and doesn't act on it.** `abox_irrelevant_to_classify`
+(`lib.rs:4558`) is computed correctly — `classify_tbox_only_enabled() && has ABox && !nominals` —
+but it is read at only two sites (`lib.rs:4865`, `:4992`), both building **per-pair tableau
+seeds**. Everything above them in `from_internal` (`saturate`, `build_told_tables`,
+`axioms.clone()`, `HyperCache::build`, `ConsistencyCache::build`, `expand_role_characteristics`,
+`nnf_axioms`/absorb) runs on the FULL `internal`. The lever drops the ABox at consumption and
+pays for it at construction.
+
+**Corroborated across the tail** — all three worst ontologies bottleneck in `from_internal`:
+`9347` 3.95 → 46.26 GB; `ore_ont_5368` 1.49 → **17.73 GB**; `ore_ont_11085` timed out *inside*
+`from_internal` (300 s) without reaching `after_prepared`.
+
+**Also corrected here:** conversion is **3.94 GB**, not the 14.2 GB the `tbox-stats` proxy
+suggested — so the "Stage split" table above over-attributes ~10 GB to conversion.
+
+### Retraction: the knob sweep measured nothing
+
+The knob sweep used a 130 s budget, and `from_internal` alone spans roughly t=40→130 s. So all
+six configurations terminated *during or just after* `from_internal`, before anywhere-blocking,
+the node cap, the label heuristic, or per-pair work could execute — which is why they agreed to
+within 200 KB. **"Not the main tableau graph, not the label cache" is UNPROVEN, not refuted.**
+(With the wedge off the run got further and the label-cache build measured 4.4 GB — modest, but
+that number was invisible to the sweep.) The §"Findings" 1–3 conclusions that rest on the sweep
+must be re-derived if anyone needs them; the D4 and fan-out refutations do **not** rest on it
+(they come from the stage split and the 900 s thread-scaling runs).
+
+### Next
+
+1. **Extend Lever A's ABox drop to `from_internal`'s construction sites.** Sound on the argument
+   Lever A already ships (dropping axioms weakens the KB ⟹ misses, never FPs; nominal-free class
+   subsumption cannot depend on the ABox), and its existing validation was 271 ontologies with 0
+   answer changes. Gate on the same `abox_irrelevant_to_classify`.
+2. **Estimate the payoff by gate probe, not grep**: how many of the 289 `TIMEOUT120` ontologies
+   are ABox-bearing AND nominal-free? That is the addressable set.
+3. `HyperCache::build`'s ~17.9 GB and absorb's 49.6M concept rules are both ABox-driven here, so
+   (1) should collapse both. If a nominal-BEARING ontology shows the same shape, they need
+   separate attention.

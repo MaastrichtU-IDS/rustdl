@@ -55,6 +55,7 @@ mod property_classify;
 mod property_values;
 mod realize;
 pub mod repair;
+mod rss_probe;
 mod union_find;
 
 pub use class_expr_query::{

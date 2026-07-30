@@ -272,3 +272,37 @@ DNF recovery.
 rather than for it being the BINDING CONSTRAINT. Same shape as grep-vs-gate, and as the
 atomic-negation lever paying (13 onts where negation was the last blocker) while its Domain/Range
 sibling paid zero (5 onts where it never was).
+
+### 10. The addressable set is FIVE ontologies, and `concept_rules` is the selector
+
+§9 showed ABox size does not predict the blowup. `tbox-stats`' `concept_rules` does — it
+separates the two known points by 346× (`9347` 49.6M @ 46 GB vs `10125` 143k @ 1.7 GB).
+Screening the memory-bound DNF ontologies by it:
+
+| ontology | `concept_rules` | `resid_or` | ABox | nominals | addressable by the §8 fix? |
+|---|---|---|---|---|---|
+| `ore_ont_9347` | 49,571,087 | 159 | 55,446 | 0 | **yes** |
+| `ore_ont_5368` | 18,620,251 | 34 | 18,301 | 0 | **yes** (corroborated: `after_prepared` 17.73 GB) |
+| `ore_ont_1833` | 14,030,936 | 271 | 42,429 | 0 | **yes** |
+| `ore_ont_7607` | 11,640,553 | 40 | 85,639 | 0 | **yes** |
+| `ore_ont_1685` | 11,506,431 | 40 | 51,637 | 0 | **yes** |
+| `ore_ont_9694` / `16542` | 9,958,9xx | 29 | 37,582 | **199** | no — nominals block Lever A |
+| `ore_ont_11085` | **20,758** | 1341 | 9,486 | 0 | no — different mechanism |
+| `ore_ont_11270` / `10621` | 116,933 | 265 | 85 | 6481 | no — nominals |
+
+**Payoff: 5 ontologies** (not 83, not 1). `9347` is a class, and `5368` was independently
+confirmed to be a `from_internal` case before this screen was run.
+
+**My multiplicative hypothesis from §9 is REFUTED.** I proposed ABox × disjunctive absorb.
+But `5368` reaches 18.6M rules with `resid_or:` **34**, while `11085` has only 20,758 rules
+with `resid_or:` **1341** — here the two are inversely related. **What produces tens of
+millions of concept rules is still unexplained**; only the predictor is established. Do not
+cite ABox × disjunctive as the mechanism.
+
+**`ore_ont_11085` is a second, distinct memory mechanism.** 33.7 GB peak with 20,758 concept
+rules, and it timed out *inside* `from_internal` — so its cost is elsewhere in that function
+(`HyperCache::build` is the obvious candidate given `resid_or: 1341`). The §8 fix will not
+address it. The memory tail contains at least two causes even after this localization.
+
+**Pool caveat:** `ore_ont_11270` and `ore_ont_10621` are byte-identical on every measured
+statistic — duplicates in the ORE sample. Any count drawn from that pool is mildly inflated.

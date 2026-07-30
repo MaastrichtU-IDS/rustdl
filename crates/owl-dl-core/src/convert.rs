@@ -2535,6 +2535,13 @@ fn bounded_dkey_disjoint_enabled() -> bool {
 /// A component with no merge-inducing role can never force two `DKey`s into one
 /// node label, so its pairwise disjointness is unusable — see
 /// `docs/superpowers/specs/2026-07-30-dkey-nonmerging-component-gate-design.md`.
+/// MEASUREMENT gate for the collapse/broadcast split study. Report-only: when set,
+/// conversion counts how many `DKey` disjointness pairs the split WOULD drop, without
+/// changing which axioms are emitted.
+fn dkey_split_stats_enabled() -> bool {
+    std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0")
+}
+
 fn dkey_merging_gate_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
 }
@@ -2550,7 +2557,41 @@ fn dkey_merging_gate_enabled() -> bool {
 struct DkeyComponents {
     components: std::collections::HashMap<ClassId, Vec<usize>>,
     unanchored: std::collections::HashSet<ClassId>,
+    /// MEASUREMENT: component ids containing a COLLAPSE role (spec R4-closed).
+    collapse_comps: std::collections::HashSet<usize>,
+    /// MEASUREMENT: per key, the component ids where it occurs in a BROADCAST
+    /// position (a range or `∀` filler). A key may be both value and broadcast
+    /// in one component; if broadcast here, it is not "value-only" here (spec R2).
+    broadcast_in: std::collections::HashMap<ClassId, Vec<usize>>,
 }
+
+/// MEASUREMENT (2026-07-30, report-only): is `cid` provably incapable of collapsing
+/// two successors onto one node? True only when the filler consists EXCLUSIVELY of
+/// `DKey` atomics under `And`/`Or`/`Not`. Anything else may be, or be subsumed by, a
+/// nominal and therefore collapse via the o-rule (spec R5) — so it must be treated as
+/// a COLLAPSE source. Note the polarity: this asks ALL, whereas the deleted
+/// `filler_mentions_dkey` asked ANY.
+fn filler_is_pure_dkey(
+    pool: &ConceptPool,
+    cid: ConceptId,
+    dkeys: &std::collections::HashSet<ClassId>,
+) -> bool {
+    match pool.get(cid) {
+        ConceptExpr::Atomic(c) => dkeys.contains(c),
+        ConceptExpr::Not(inner) => filler_is_pure_dkey(pool, *inner, dkeys),
+        ConceptExpr::And(items) | ConceptExpr::Or(items) => {
+            !items.is_empty() && items.iter().all(|&i| filler_is_pure_dkey(pool, i, dkeys))
+        }
+        _ => false,
+    }
+}
+
+/// MEASUREMENT counters for the collapse/broadcast split (`RUSTDL_DKEY_SPLIT_STATS=1`).
+/// Report-only: nothing here changes which axioms are emitted.
+pub static DKEY_SPLIT_TOTAL: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+pub static DKEY_SPLIT_WOULD_DROP: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 // REMOVED 2026-07-30: `filler_mentions_dkey`. It gated whether an
 // `ObjectPropertyRange` / `∀` marked its role merge-inducing, on the theory that
@@ -2623,6 +2664,8 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
         return DkeyComponents {
             components: HashMap::new(),
             unanchored: HashSet::new(),
+            collapse_comps: HashSet::new(),
+            broadcast_in: HashMap::new(),
         };
     }
 
@@ -2718,6 +2761,47 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
         }
     }
 
+    // MEASUREMENT (report-only): the COLLAPSE subset — sources that force two
+    // DISTINCT successors onto ONE node, as opposed to BROADCAST sources which put
+    // one key on EVERY successor. Per spec R5 a range/`∀` counts as COLLAPSE unless
+    // its filler is provably pure-`DKey`, because a nominal-forcing filler collapses
+    // via the o-rule and that is not syntactically detectable. Closed DOWNWARD
+    // through the role hierarchy exactly as `m_star` is (spec R4).
+    let mut collapse = vec![false; num_roles];
+    for axiom in &out.axioms {
+        match axiom {
+            Axiom::FunctionalRole(r) | Axiom::InverseFunctionalRole(r) => {
+                collapse[r.role_id().index() as usize] = true;
+            }
+            Axiom::ObjectPropertyRange { role, range }
+                if !filler_is_pure_dkey(&out.concepts, *range, &dkeys) =>
+            {
+                collapse[role.role_id().index() as usize] = true;
+            }
+            _ => {}
+        }
+    }
+    for expr in out.concepts.iter_exprs() {
+        match expr {
+            ConceptExpr::Max(_, r, _) => {
+                collapse[r.role_id().index() as usize] = true;
+            }
+            ConceptExpr::All(r, f) if !filler_is_pure_dkey(&out.concepts, *f, &dkeys) => {
+                collapse[r.role_id().index() as usize] = true;
+            }
+            _ => {}
+        }
+    }
+    let mut cqueue: Vec<usize> = (0..num_roles).filter(|&r| collapse[r]).collect();
+    while let Some(sup) = cqueue.pop() {
+        for &sub in &subs_of[sup] {
+            if !collapse[sub] {
+                collapse[sub] = true;
+                cqueue.push(sub);
+            }
+        }
+    }
+
     // (d) union roles connected via an M*-super ONLY (dead-end #3).
     let mut uf = UnionFind::new(num_roles);
     for &(sub, sup) in &edges {
@@ -2744,9 +2828,23 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
 
     // (e) DKey → component set, from every role-restriction pool expr plus
     // DKey-bearing `ObjectPropertyRange` axioms (range key rides the role).
+    // MEASUREMENT: components holding a COLLAPSE role, computed AFTER the union so
+    // it reflects merged components.
+    let collapse_comps: HashSet<usize> = {
+        let mut set = HashSet::new();
+        for (r, &is_collapse) in collapse.iter().enumerate() {
+            if is_collapse {
+                set.insert(uf.find(r));
+            }
+        }
+        set
+    };
+    let mut broadcast_in: HashMap<ClassId, Vec<usize>> = HashMap::new();
     let mut components: HashMap<ClassId, Vec<usize>> = HashMap::new();
     let anchor = |uf: &mut UnionFind,
                   components: &mut HashMap<ClassId, Vec<usize>>,
+                  broadcast_in: &mut HashMap<ClassId, Vec<usize>>,
+                  is_broadcast: bool,
                   role: Role,
                   filler: ConceptId| {
         let comp = uf.find(role.role_id().index() as usize);
@@ -2763,20 +2861,39 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
             if !v.contains(&comp) {
                 v.push(comp);
             }
+            if is_broadcast {
+                let b = broadcast_in.entry(c).or_default();
+                if !b.contains(&comp) {
+                    b.push(comp);
+                }
+            }
         });
     };
     for expr in out.concepts.iter_exprs() {
         match expr {
-            ConceptExpr::Some(r, f)
-            | ConceptExpr::All(r, f)
-            | ConceptExpr::Min(_, r, f)
-            | ConceptExpr::Max(_, r, f) => anchor(&mut uf, &mut components, *r, *f),
+            // `Some`/`Min`/`Max` fillers are VALUE positions: the key lands on the
+            // generated successor, not on every successor.
+            ConceptExpr::Some(r, f) | ConceptExpr::Min(_, r, f) | ConceptExpr::Max(_, r, f) => {
+                anchor(&mut uf, &mut components, &mut broadcast_in, false, *r, *f);
+            }
+            // `∀` is a BROADCAST position: its filler's keys land on EVERY successor.
+            ConceptExpr::All(r, f) => {
+                anchor(&mut uf, &mut components, &mut broadcast_in, true, *r, *f);
+            }
             _ => {}
         }
     }
     for axiom in &out.axioms {
+        // A range is a BROADCAST position, same shape as `∀`.
         if let Axiom::ObjectPropertyRange { role, range } = axiom {
-            anchor(&mut uf, &mut components, *role, *range);
+            anchor(
+                &mut uf,
+                &mut components,
+                &mut broadcast_in,
+                true,
+                *role,
+                *range,
+            );
         }
     }
 
@@ -2814,6 +2931,8 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
     DkeyComponents {
         components,
         unanchored,
+        collapse_comps,
+        broadcast_in,
     }
 }
 
@@ -2877,7 +2996,11 @@ fn seed_disjoint_bucket<R>(
     let InternalOntology {
         concepts, axioms, ..
     } = out;
-    let mut try_emit = |a_idx: usize, b_idx: usize| {
+    // MEASUREMENT (report-only, `RUSTDL_DKEY_SPLIT_STATS=1`): `in_comp` is `Some(c)`
+    // for a same-component pair and `None` for the unanchored (`global`) pairings,
+    // which are unconditional (spec R6) and therefore never scored as droppable.
+    let stats = dkey_split_stats_enabled();
+    let mut try_emit = |a_idx: usize, b_idx: usize, in_comp: Option<usize>| {
         let (a_cid, a_r) = &keys[a_idx];
         let (b_cid, b_r) = &keys[b_idx];
         if !disjoint(a_r, b_r) {
@@ -2891,23 +3014,35 @@ fn seed_disjoint_bucket<R>(
         if !emitted.insert(pair) {
             return;
         }
+        if stats {
+            use std::sync::atomic::Ordering;
+            DKEY_SPLIT_TOTAL.fetch_add(1, Ordering::Relaxed);
+            // Would the collapse/broadcast split drop this pair? Only when the
+            // component has NO collapse role AND BOTH keys are value-only there.
+            if let Some(c) = in_comp {
+                let bc = |cid: &ClassId| comp.broadcast_in.get(cid).is_some_and(|v| v.contains(&c));
+                if !comp.collapse_comps.contains(&c) && !bc(a_cid) && !bc(b_cid) {
+                    DKEY_SPLIT_WOULD_DROP.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
         let a = concepts.atomic(*a_cid);
         let b = concepts.atomic(*b_cid);
         axioms.push(Axiom::DisjointClasses(vec![a, b]));
     };
-    for group in groups.values() {
+    for (&c, group) in &groups {
         for (i, &a_idx) in group.iter().enumerate() {
             for &b_idx in &group[i + 1..] {
-                try_emit(a_idx, b_idx);
+                try_emit(a_idx, b_idx, Some(c));
             }
         }
     }
     for (i, &a_idx) in global.iter().enumerate() {
         for &b_idx in &global[i + 1..] {
-            try_emit(a_idx, b_idx);
+            try_emit(a_idx, b_idx, None);
         }
         for &b_idx in &anchored {
-            try_emit(a_idx, b_idx);
+            try_emit(a_idx, b_idx, None);
         }
     }
 }

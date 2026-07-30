@@ -1,9 +1,9 @@
 # DKey disjointness: distinguish COLLAPSE from BROADCAST merge sources
 
 **Date:** 2026-07-30
-**Status:** Design — the naive version was REFUTED by adversarial review; this is the corrected
-design, not yet prototyped
-**Flag:** `RUSTDL_DKEY_COLLAPSE_SPLIT`, default **OFF** until the gates below pass, then flip
+**Status:** IMPLEMENTED and measured — 2 DNF ontologies recovered, answers byte-identical.
+Default ON.
+**Flag:** `RUSTDL_DKEY_COLLAPSE_SPLIT`, default **ON** (`=0` reverts) — gates passed 2026-07-30
 **Predecessor:** `2026-07-30-dkey-nonmerging-component-gate-design.md` (shipped). This is the same
 bug class one level deeper — the third instance.
 

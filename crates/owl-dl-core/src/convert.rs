@@ -2542,16 +2542,17 @@ fn dkey_split_stats_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0")
 }
 
-/// Collapse/broadcast split (2026-07-30). **Default OFF** until the gates in
-/// `docs/superpowers/specs/2026-07-30-dkey-collapse-vs-broadcast-design.md` pass; set
-/// `RUSTDL_DKEY_COLLAPSE_SPLIT=1` to enable.
+/// Collapse/broadcast split (2026-07-30). **Default ON** since the gates in
+/// `docs/superpowers/specs/2026-07-30-dkey-collapse-vs-broadcast-design.md` passed; set
+/// `RUSTDL_DKEY_COLLAPSE_SPLIT=0` to revert. Recovered `ore_ont_7607` and `ore_ont_1685`
+/// from DNF; answers byte-identical wherever both settings complete.
 ///
 /// Omits a `DKey`-disjointness pair when its component has no COLLAPSE role and BOTH
 /// keys are value-only there: a BROADCAST source puts one key on EVERY successor, so a
 /// value meets the broadcast key but never another value. Subtractive only — it can
 /// never create a false positive; the exposure is a lost clash.
 fn dkey_collapse_split_enabled() -> bool {
-    std::env::var("RUSTDL_DKEY_COLLAPSE_SPLIT").is_ok_and(|v| v != "0")
+    std::env::var("RUSTDL_DKEY_COLLAPSE_SPLIT").map_or(true, |v| v != "0")
 }
 
 fn dkey_merging_gate_enabled() -> bool {

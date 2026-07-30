@@ -4,7 +4,17 @@
 
 **Goal:** Stop the classify fast path from building a full `PreparedOntology` — `HyperCache`, NNF, absorb, `ConsistencyCache` — solely to read `abox_verdict()` and then discard it.
 
-**Architecture:** Extract the eight fields `abox_check::check` actually reads into an owned `AboxCheckInputs` struct built by a new function, and have `from_internal` use that same function so the two can never diverge. Then change the fast-path call site only. The top-down path is untouched: it needs the full object anyway, and `abox_verdict()` is already lazy, so there is nothing to save there.
+**Architecture:** Extract the eight fields `abox_check::check` actually reads into an owned `AboxCheckInputs` struct built by a new function, and have `from_internal` use that same function so the two can never diverge. Then change the fast-path call sites only. The genuine classify builds are untouched: they need the full object anyway, and `abox_verdict()` is already lazy, so there is nothing to save there.
+
+> **CORRECTION, applied during execution (2026-07-30).** Wherever this plan says "the fast-path
+> call site" singular, or cites `classify.rs:785-798` as the only one, read **two sites**. There is
+> a second, structurally identical fast-path block inside `classify_top_down_internal` that also
+> ends in `return Ok(classify_pure_el(...))` and was wasting the same build. I mistook it for the
+> top-down path because it sits directly above it. Task 3's implementer found and converted both,
+> correctly. The two *genuine* `from_internal` calls (one per function, used to classify) remain
+> untouched. Identify these sites **by function**, not by line number — the line numbers drifted
+> under this branch's own edits, which is exactly how the mis-attribution happened. The
+> authoritative map is in the spec's "§ The waste".
 
 **Tech Stack:** Rust (edition 2024), `cargo test` / `clippy` / `fmt`.
 

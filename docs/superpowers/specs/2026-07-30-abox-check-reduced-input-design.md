@@ -8,16 +8,32 @@ zero payoff; this one replaced it and is better evidenced)
 
 ## The waste
 
-**The waste is on the FAST PATH ONLY** (corrected 2026-07-30 — the first draft of this spec
-claimed both entry points):
+**The waste is on the FAST PATHS ONLY — and there are TWO of them** (corrected twice: the first
+draft claimed both entry points wasted a build; the second correction said "fast path" singular and
+mis-attributed the second fast-path block as the top-down site):
 
-- **fast path (`classify.rs:785-787`) — pure waste.** A **full** `PreparedOntology` is built
-  (EL saturation, told tables, `HyperCache::build`, NNF + absorb, complements) *solely* to read
-  `abox_verdict()`, and then `return classify_pure_el(...)` **discards it** — `prepared` is never
-  used again.
-- **top-down path (`classify.rs:1626`, verdict at `:1631`) — no waste.** The same object is
-  needed for classification anyway, and `abox_verdict()` is a **lazily-initialised** field
-  (`lib.rs:4692`, `get_or_init`), so the check adds no construction there.
+- **fast path in `classify_internal_with_timeout` — pure waste.** A **full** `PreparedOntology` is
+  built (EL saturation, told tables, `HyperCache::build`, NNF + absorb, complements) *solely* to
+  read `abox_verdict()`, and then `return classify_pure_el(...)` **discards it**.
+- **fast path in `classify_top_down_internal` — pure waste, same shape.** This function has its
+  own fast-path early-exit block that also ends in `return Ok(classify_pure_el(...))`. It was
+  wasting the same build. **This is the block the second correction mistook for the top-down path**,
+  because it sits just above it.
+- **genuine top-down / hybrid path — no waste.** Below that block, `classify_top_down_internal`
+  builds the `PreparedOntology` it actually classifies with and reads `prepared.abox_verdict()` off
+  it. Since `abox_verdict()` is a **lazily-initialised** field (`get_or_init`), the check adds no
+  construction there. Same for the corresponding build in `classify_internal_with_timeout`.
+
+So: **two** sites converted, **two** legitimate builds untouched. Verify by function, not by line
+number — the line numbers in this spec's earlier drafts drifted under later edits and that is
+precisely how the mis-attribution happened. Current map:
+
+| site | function | disposition |
+|---|---|---|
+| `check` call, `classify.rs:792` → `classify_pure_el` `:804` | `classify_internal_with_timeout` | converted |
+| `from_internal` `:810` | `classify_internal_with_timeout` | untouched (used to classify) |
+| `check` call, `classify.rs:1618` → `classify_pure_el` `:1630` | `classify_top_down_internal` | converted |
+| `from_internal` `:1636`, `abox_verdict()` `:1641` | `classify_top_down_internal` | untouched (used to classify) |
 
 This is confirmed by mode, 8 of 8: every ontology that saved takes the fast path, and both that
 saved nothing take the hybrid path (see § Measured breadth). It is a mechanism, not a correlation.
@@ -148,12 +164,36 @@ pub(crate) struct AboxCheckInput<'a> {
 }
 ```
 
-`abox_check::check` takes that instead of `&PreparedOntology`. **Only the fast-path site
-(`classify.rs:785-787`) changes**: it builds the eight values directly and calls
-`abox_check::check` on them, skipping `HyperCache::build`, `ConsistencyCache::build`,
-`snapshot_cache`, and absorb entirely. The top-down site keeps `prepared.abox_verdict()`
-unchanged — it needs the full object regardless, so there is nothing to save and no reason to
-touch it.
+`abox_check::check` takes that instead of `&PreparedOntology`. **Only the two fast-path sites
+change**: each builds the eight values directly and calls `abox_check::check` on them, skipping
+`HyperCache::build`, `ConsistencyCache::build`, `snapshot_cache`, NNF and absorb entirely. The two
+genuine classify builds keep `prepared.abox_verdict()` unchanged — they need the full object
+regardless, so there is nothing to save and no reason to touch them.
+
+**Why the eight values are equivalent, not merely similar** (this is what byte-identity on five
+fixtures cannot establish, since the fixtures might not exercise a divergence):
+
+- `told` and `axioms` are captured BEFORE `expand_role_characteristics` in both constructions —
+  load-bearing, because that pass APPENDS lowered axioms, so cloning after it would differ.
+- `hierarchy`, `inverse_pairs`, `disjoint_role_pairs` are built after it in both.
+- `abox` is the subtle one: `from_internal` runs `collect_abox` AFTER `nnf_axioms`/`absorb`, the
+  reduced builder runs it without them. Equivalent because `collect_abox` reads only
+  `internal.axioms`, `nnf_axioms` **returns** its rewritten axioms as a separate `Vec` rather than
+  writing them back, and `absorb` takes those by reference and never sees `internal.axioms` at all.
+  The repo already pins this with `normalize::tests::nnf_axioms_leaves_original_axioms_unchanged`
+  (verified passing). Consequence: the interned *individual* concept ids differ numerically between
+  the two constructions, because the pool has had fewer passes; `check` only ever compares ids
+  within one input set, so the verdict does not depend on their absolute values.
+- `closure` is reused rather than recomputed, and is the SAME VALUE, not an equivalent one:
+  `from_internal`'s closure is `saturate` over the **un-mutated** input, and the caller's
+  `let closure = saturate(internal)` is over that same pre-mutation ontology with no intervening
+  mutation.
+
+**The new builder is infallible, and that loses nothing.** `from_internal`'s only fallible
+construct is `collect_chain_axioms(&internal)?`, and that function returns `Ok(chains)`
+unconditionally — length-N>2 chains are *dropped* via `continue`, never errored. So no reachable
+`Err` is being swallowed. (`abox_check` never reads chain axioms in any case, and both genuine
+classify builds still run the call.)
 
 **Why a struct rather than a reduced constructor.** A second `PreparedOntology` constructor would
 leave two objects of the same type with different completeness, and the id-space hazard the

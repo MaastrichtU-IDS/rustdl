@@ -4586,6 +4586,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _g = DpGuard::on();
         let mut o = SetOntology::<RcStr>::new();
+        // Both properties are FUNCTIONAL, so each is merge-inducing and its own
+        // same-role pair is genuinely consumable. Without this the whole fixture
+        // is non-merging and the correct answer is 0 — which is what
+        // `non_merging_data_property_seeds_no_dkey_disjointness` covers. Making
+        // them functional is what keeps THIS test about the property it was
+        // written for: unrelated roles do not cross-seed.
+        ins(&mut o, functional_dp("http://t/dp1"));
+        ins(&mut o, functional_dp("http://t/dp2"));
         ins(
             &mut o,
             int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
@@ -4605,6 +4613,7 @@ mod tests {
         let out = convert_ontology(&o).unwrap();
         // dp1/dp2 are unconnected: only the same-role pairs (1,2) and (3,4)
         // are seeded; the four cross-role pairs are provably unconsumable.
+        // 2, not 6 — that gap IS the bounded-seeding property under test.
         assert_eq!(dkey_disjoint_count(&out), 2);
     }
 

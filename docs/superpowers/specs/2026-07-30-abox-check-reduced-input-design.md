@@ -266,3 +266,86 @@ runtime variant.
 - It does not recover any DNF ontology. Every ontology measured here already completes; `11311`
   DNFs both with and without the check. **This is a wall/RSS lever, not a completeness lever.**
 - It does not change any verdict, by design. If it does, that is a bug, not a trade-off.
+
+---
+
+## Measured results (2026-07-30) — SHIPPED
+
+Branch `perf/abox-check-reduced-input`. Implemented in three commits: `454778d`+`5d8df0f`
+(invariant canaries), `d8726d1` (`AboxCheckInputs` extraction), `1af1dd8` (both fast-path sites).
+
+### Correctness
+
+**Gate 1 — verdict identity: PASS.** Three canaries in
+`crates/owl-dl-reasoner/tests/abox_check_reduced_input.rs`, all green. Proven **non-vacuous**: with
+`RUSTDL_ABOX_CHECK=0` the clash canary's unsat count drops 3 → 0, so it genuinely exercises the
+verdict rather than passing for unrelated reasons. Full `-p owl-dl-reasoner` suite green; `cargo
+fmt --check` and `cargo clippy --all-targets -- -D warnings` both exit 0.
+
+**Gate 2 — FP=0 net: PASS.** `./scripts/run-soundness-diff.sh` → **22 passed, 0 failed** (177 s).
+Every closure exact: galen 27997, notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499,
+alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16 — all FP=0 / MISSED=0. The 3 NOT VERIFIED
+(`ro-stripped`, `sulo-stripped`, `sio-stripped`) are the fixtures already documented as
+unobtainable, not a regression.
+
+**Gate 3 — byte-identity: PASS, 13/13.** Built pre-change `main` (`d20fd67`) and this branch and
+diffed real output: `classify` and `consistent` on wine (201 subs) / family (121, `inconsistent`) /
+pizza (314) / ro (49) / alehif-test (51) — **10/10 identical**; `realize --json` on family / pizza /
+ro — **3/3 identical**. Task 2 alone was also verified 10/10 identical, which isolates any future
+diff to Task 3 rather than to the extraction.
+
+**Beyond the fixtures.** Byte-identity on five fixtures cannot prove the eight values match — the
+fixtures might not exercise a divergence. The structural argument in § Design is what carries it,
+and its load-bearing premise is pinned by a pre-existing repo test,
+`normalize::tests::nnf_axioms_leaves_original_axioms_unchanged` (run, passes).
+
+### Recovery — measured pre/post on one machine, single-threaded, min-of-3
+
+| ontology | mode | pre wall | post wall | Δ wall | pre RSS | post RSS | Δ RSS |
+|---|---|---|---|---|---|---|---|
+| `ore_ont_10073` | fast | 9.74 s | 6.28 s | **−35.5%** | 865.5 MB | 865.6 MB | 0% |
+| `ore_ont_10068` | fast | 3.65 s | 2.42 s | **−33.7%** | 363.9 MB | 343.3 MB | −5.7% |
+| `ore_ont_1043` | fast | 2.38 s | 1.77 s | **−25.6%** | 513.9 MB | 333.2 MB | **−35.2%** |
+| `ore_ont_1115` | fast | 0.85 s | 0.69 s | −18.8% | 151.7 MB | 147.4 MB | −2.8% |
+| `ore_ont_11110` | fast | 4.49 s | 3.65 s | −18.7% | 263.7 MB | 228.3 MB | −13.4% |
+| `ore_ont_10965` | fast | 1.26 s | 1.05 s | −16.7% | 225.0 MB | 225.0 MB | 0% |
+| `ore_ont_10127` | hybrid | 19.13 s | 19.10 s | 0.2% | 283.8 MB | 287.1 MB | −1.1% |
+| `ore_ont_10838` | hybrid | 4.70 s | 4.65 s | 1.1% | 377.5 MB | 377.4 MB | 0% |
+
+**Gate 5 — the hybrid control holds.** Both hybrid ontologies are flat (0.2%, 1.1%), confirming the
+change touches only the fast paths. A movement here would have meant the fast-path branch was being
+entered when it should not be.
+
+**Measurement is stable, so the deltas are not noise.** The min-of-3 `pre` walls reproduce two
+earlier independent single-run baselines closely (`1043` 2.38 / 2.37 / 2.36; `10073` 9.74 / 9.70;
+`10127` 19.13 / 19.06).
+
+### What fraction of the ceiling this captures — state this, not the bound
+
+`RUSTDL_ABOX_CHECK=0` skips the check entirely and is therefore an **upper bound**, not this
+lever's value; the reduced build still constructs the eight fields. Achieved fraction of that
+ceiling:
+
+| ontology | ceiling (check OFF) | achieved | fraction of ceiling |
+|---|---|---|---|
+| `ore_ont_11110` | 20% | 18.7% | **94%** |
+| `ore_ont_10068` | 38% | 33.7% | **89%** |
+| `ore_ont_10073` | 40% | 35.5% | **89%** |
+| `ore_ont_1043` | 31% | 25.6% | 83% |
+| `ore_ont_1115` | 23% | 18.8% | 82% |
+| `ore_ont_10965` | 22% | 16.7% | 76% |
+
+So the change recovers **76–94% of the theoretical maximum** on fast-path ABox ontologies.
+
+**The RSS win is NOT broad — correcting this spec's own earlier implication.** § The waste said the
+recoverable RSS share was "a majority of the 185 MB". True on `ore_ont_1043` (180.7 MB observed
+against 185 MB predicted — a close match) and partly on `11110`, but **4 of 6 winners show ~0% RSS
+change** despite 17–36% wall wins. So the saving is predominantly **skipped compute** (the second
+EL saturation plus `HyperCache::build`), and RSS drops only where the discarded structures happened
+to determine peak. Do not cite this as a memory lever.
+
+### Scope correction found during execution
+
+Both this spec and the plan said "the fast-path call site" singular. There are **two**
+structurally identical fast-path blocks and both were wasting the build — see § The waste for the
+authoritative by-function map. The implementer converted both.

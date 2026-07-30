@@ -2527,6 +2527,18 @@ fn bounded_dkey_disjoint_enabled() -> bool {
     std::env::var("RUSTDL_BOUNDED_DKEY_DISJOINT").map_or(true, |v| v != "0")
 }
 
+/// Non-merging-component gate (2026-07-30). **Default ON** — set
+/// `RUSTDL_DKEY_MERGING_GATE=0` to seed disjointness for every role component,
+/// including those that contain no merge-inducing role (the pre-2026-07-30
+/// behaviour). Read per call so tests can toggle it.
+///
+/// A component with no merge-inducing role can never force two `DKey`s into one
+/// node label, so its pairwise disjointness is unusable — see
+/// `docs/superpowers/specs/2026-07-30-dkey-nonmerging-component-gate-design.md`.
+fn dkey_merging_gate_enabled() -> bool {
+    std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
+}
+
 /// Merge-aware role-component map for bounded DKey-disjointness seeding.
 ///
 /// `components[dkey_class]` = the set of role-component roots the `DKey` is
@@ -2711,13 +2723,21 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
         }
     }
 
-    // PROTOTYPE Lever 1: components that contain NO merge-inducing role can
-    // never force two DKeys into ONE node label (`exists p.A & exists p.B` has two
-    // distinct successors), so their disjointness is dead weight.
-    let merging_comps: HashSet<usize> = (0..num_roles)
-        .filter(|&r| m_star[r])
-        .map(|r| uf.find(r))
-        .collect();
+    // Components containing at least one merge-inducing role. A component with
+    // none can never force two `DKey`s into ONE node label (`∃p.A ⊓ ∃p.B` has two
+    // distinct successors), so seeding its pairs is dead weight. `None` ⟹ gate
+    // off ⟹ every component is treated as merging (pre-2026-07-30 behaviour).
+    let merging_comps: Option<HashSet<usize>> = if dkey_merging_gate_enabled() {
+        let mut s = HashSet::new();
+        for (r, &is_merging) in m_star.iter().enumerate().take(num_roles) {
+            if is_merging {
+                s.insert(uf.find(r));
+            }
+        }
+        Some(s)
+    } else {
+        None
+    };
 
     // (e) DKey → component set, from every role-restriction pool expr plus
     // DKey-bearing `ObjectPropertyRange` axioms (range key rides the role).
@@ -2727,7 +2747,12 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
                   role: Role,
                   filler: ConceptId| {
         let comp = uf.find(role.role_id().index() as usize);
-        if !merging_comps.contains(&comp) {
+        if merging_comps.as_ref().is_some_and(|m| !m.contains(&comp)) {
+            // Gate ON and this component has no merge-inducing role: the keys
+            // under it can never be co-labelled, so leave them unanchored-and-
+            // uncomponented. `seed_disjoint_bucket` already skips such keys
+            // ("can never reach a node label"); this extends that skip to
+            // "can never be CO-labelled".
             return;
         }
         collect_direct_dkeys(&out.concepts, filler, &dkeys, &mut |c| {

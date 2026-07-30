@@ -4252,6 +4252,72 @@ where
     prepared.decide(build_test_concept)
 }
 
+/// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
+/// only the inconsistency verdict and not a full [`PreparedOntology`]. Built by
+/// [`build_abox_check_inputs`]; borrow with [`Self::as_inputs`].
+///
+/// This exists so the classify fast path stops building [`HyperCache`], `NNF`,
+/// absorb and [`ConsistencyCache`] solely to read `abox_verdict()` and then discard
+/// them — measured at 0.62 s / 185 MB on `ore_ont_1043`.
+pub(crate) struct OwnedAboxCheckInputs {
+    pool: ConceptPool,
+    abox: Abox,
+    axioms: Vec<Axiom>,
+    told: owl_dl_core::told::ToldTables,
+    hierarchy: RoleHierarchy,
+    inverse_pairs: Vec<(RoleId, RoleId)>,
+    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+}
+
+impl OwnedAboxCheckInputs {
+    pub(crate) fn as_inputs<'a>(
+        &'a self,
+        closure: &'a owl_dl_saturation::Subsumers,
+    ) -> abox_check::AboxCheckInputs<'a> {
+        abox_check::AboxCheckInputs {
+            abox: &self.abox,
+            axioms: &self.axioms,
+            told: &self.told,
+            pool: &self.pool,
+            inverse_pairs: &self.inverse_pairs,
+            hierarchy: &self.hierarchy,
+            disjoint_role_pairs: &self.disjoint_role_pairs,
+            closure,
+        }
+    }
+}
+
+/// Build only what [`abox_check::check`] reads. Mirrors the corresponding prefix
+/// of [`PreparedOntology::from_internal`] — `expand_role_characteristics`, the
+/// role-side collectors, `build_told_tables`, `collect_abox` — and deliberately
+/// omits `nnf_axioms`, `absorb`, `precompute_max_complements`, [`HyperCache::build`],
+/// [`ConsistencyCache::build`] and `snapshot_cache`, none of which `check` reads.
+///
+/// `collect_abox` only reads `internal.axioms` and interns one nominal concept per
+/// individual, so running it before `absorb` yields different *individual* concept
+/// ids but identical *class* ids — and `check` compares ids only within one input
+/// set, so the verdict is unchanged. The canaries in
+/// `tests/abox_check_reduced_input.rs` pin this.
+pub(crate) fn build_abox_check_inputs(internal: &InternalOntology) -> OwnedAboxCheckInputs {
+    let mut internal = internal.clone();
+    let told = owl_dl_core::told::build_told_tables(&internal);
+    let axioms = internal.axioms.clone();
+    expand_role_characteristics(&mut internal);
+    let hierarchy = build_role_hierarchy(&internal);
+    let inverse_pairs = collect_inverse_pairs(&internal);
+    let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
+    let abox = collect_abox(&mut internal);
+    OwnedAboxCheckInputs {
+        pool: internal.concepts,
+        abox,
+        axioms,
+        told,
+        hierarchy,
+        inverse_pairs,
+        disjoint_role_pairs,
+    }
+}
+
 /// Snapshot of an ontology after every pre-tableau pass has run.
 /// Holds the absorbed `TBox`, role-side metadata, `ABox` seed data and
 /// the (now-frozen) concept pool, so each tableau query reuses one

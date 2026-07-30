@@ -783,9 +783,14 @@ pub(crate) fn classify_internal_with_timeout(
         // inconsistent ABox still makes every class unsatisfiable). ABox-free
         // inputs skip it (has_abox_axioms is a microsecond O(n) scan).
         if crate::abox_check_enabled() && has_abox_axioms(internal) {
-            let prepared = PreparedOntology::from_internal(internal.clone())?;
-            if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict()
-            {
+            // Build ONLY what abox_check reads, reusing the closure the caller
+            // already computed — the full `PreparedOntology` built here previously
+            // was discarded immediately (this branch either returns
+            // `classify_inconsistent` or falls through to `classify_pure_el`, and
+            // neither uses it). Measured 0.62 s / 185 MB on `ore_ont_1043`.
+            let owned = crate::build_abox_check_inputs(internal);
+            let verdict = crate::abox_check::check(&owned.as_inputs(&closure));
+            if let crate::abox_check::AboxVerdict::Inconsistent { reason } = &verdict {
                 if std::env::var_os("RUSTDL_TRACE").is_some() {
                     eprintln!("abox_check: inconsistent — {reason:?}");
                 }
@@ -1604,9 +1609,14 @@ pub(crate) fn classify_top_down_internal(
         // inline scan below is an O(n) walk over the axiom list,
         // microseconds even on GALEN.
         if crate::abox_check_enabled() && has_abox_axioms(internal) {
-            let prepared = PreparedOntology::from_internal(internal.clone())?;
-            if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict()
-            {
+            // Build ONLY what abox_check reads, reusing the closure the caller
+            // already computed — the full `PreparedOntology` built here previously
+            // was discarded immediately (this branch either returns
+            // `classify_inconsistent` or falls through to `classify_pure_el`, and
+            // neither uses it). Measured 0.62 s / 185 MB on `ore_ont_1043`.
+            let owned = crate::build_abox_check_inputs(internal);
+            let verdict = crate::abox_check::check(&owned.as_inputs(&closure));
+            if let crate::abox_check::AboxVerdict::Inconsistent { reason } = &verdict {
                 if std::env::var_os("RUSTDL_TRACE").is_some() {
                     eprintln!("abox_check: inconsistent — {reason:?}");
                 }

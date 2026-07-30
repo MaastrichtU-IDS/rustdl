@@ -4692,7 +4692,16 @@ impl PreparedOntology {
     pub(crate) fn abox_verdict(&self) -> &abox_check::AboxVerdict {
         self.abox_verdict.get_or_init(|| {
             if crate::abox_check_enabled() {
-                abox_check::check(self)
+                abox_check::check(&abox_check::AboxCheckInputs {
+                    abox: &self.abox,
+                    axioms: &self.axioms,
+                    told: &self.told,
+                    pool: &self.pool,
+                    inverse_pairs: &self.inverse_pairs,
+                    hierarchy: &self.hierarchy,
+                    disjoint_role_pairs: &self.disjoint_role_pairs,
+                    closure: &self.closure,
+                })
             } else {
                 abox_check::AboxVerdict::Unknown
             }

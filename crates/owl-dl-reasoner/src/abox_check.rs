@@ -132,18 +132,34 @@ fn existential_funcs_in(
     }
 }
 
+/// Exactly the values [`check`] reads. Extracted so the dependency set is
+/// compiler-checked: `abox_check` must never grow a dependency on the expensive
+/// parts of `PreparedOntology` (`hyper`, `tbox`) without this struct changing,
+/// which is what lets the classify fast path skip building them. See
+/// `docs/superpowers/specs/2026-07-30-abox-check-reduced-input-design.md`.
+pub(crate) struct AboxCheckInputs<'a> {
+    pub(crate) abox: &'a crate::Abox,
+    pub(crate) axioms: &'a [owl_dl_core::ontology::Axiom],
+    pub(crate) told: &'a owl_dl_core::told::ToldTables,
+    pub(crate) pool: &'a owl_dl_core::ir::ConceptPool,
+    pub(crate) inverse_pairs: &'a [(RoleId, RoleId)],
+    pub(crate) hierarchy: &'a crate::RoleHierarchy,
+    pub(crate) disjoint_role_pairs: &'a [(RoleId, RoleId)],
+    pub(crate) closure: &'a owl_dl_saturation::Subsumers,
+}
+
 /// Entry point. Runs all implemented clash patterns and returns the first
 /// detected clash, or [`AboxVerdict::Unknown`] if none fire.
-pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
+pub(crate) fn check(inputs: &AboxCheckInputs<'_>) -> AboxVerdict {
     // Early return: no individuals → no ABox → no clash possible.
-    if prepared.abox.individuals.is_empty() {
+    if inputs.abox.individuals.is_empty() {
         return AboxVerdict::Unknown;
     }
-    let closure = &prepared.closure;
-    let pool = &prepared.pool;
+    let closure = inputs.closure;
+    let pool = inputs.pool;
 
     // P1: direct-⊥ assertion.
-    for &(individual, class_concept) in &prepared.abox.class_assertions {
+    for &(individual, class_concept) in &inputs.abox.class_assertions {
         if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept)
             && closure.is_unsatisfiable(*c)
         {
@@ -159,8 +175,8 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // Per-individual atomic-type set: index → HashSet<ClassId>.
     // For each ClassAssertion(C, a) with C atomic, insert c and
     // every subsumer of c from the EL closure.
-    let n = prepared.abox.individuals.len();
-    let ind_index: std::collections::HashMap<owl_dl_core::ir::IndividualId, usize> = prepared
+    let n = inputs.abox.individuals.len();
+    let ind_index: std::collections::HashMap<owl_dl_core::ir::IndividualId, usize> = inputs
         .abox
         .individuals
         .iter()
@@ -169,7 +185,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         .collect();
     let mut types: Vec<std::collections::HashSet<owl_dl_core::ir::ClassId>> =
         vec![std::collections::HashSet::new(); n];
-    for &(individual, class_concept) in &prepared.abox.class_assertions {
+    for &(individual, class_concept) in &inputs.abox.class_assertions {
         if let Some(&i) = ind_index.get(&individual)
             && let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(class_concept)
         {
@@ -183,10 +199,10 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // P2: pairwise told-disjoint over types[i].
     // Filter to class ids within ToldTables bounds: subsumers_of can
     // return Tseitin-fresh ids beyond vocabulary.num_classes().
-    let told = &prepared.told;
+    let told = inputs.told;
     let told_n = told.num_classes();
     for (i, type_set) in types.iter().enumerate() {
-        let (individual, _) = prepared.abox.individuals[i];
+        let (individual, _) = inputs.abox.individuals[i];
         let cs: Vec<_> = type_set
             .iter()
             .copied()
@@ -214,8 +230,8 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         owl_dl_core::ir::IndividualId,
         owl_dl_core::ir::RoleId,
         owl_dl_core::ir::IndividualId,
-    )> = prepared.abox.property_assertions.iter().copied().collect();
-    for &(from, role, to) in &prepared.abox.negative_property_triples {
+    )> = inputs.abox.property_assertions.iter().copied().collect();
+    for &(from, role, to) in &inputs.abox.negative_property_triples {
         // Role-hierarchy downward propagation: a positive assertion on
         // any sub-role S of `role` (S ⊑ R) implies `R(a, b)` and so
         // clashes with NegOPA(R, a, b). A super-role assertion does
@@ -224,7 +240,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         // `sub_roles(role)` returns the reflexive-transitive closure
         // (including `role` itself), so the direct-match case is
         // covered.
-        for &sub_role in prepared.hierarchy.sub_roles(role) {
+        for &sub_role in inputs.hierarchy.sub_roles(role) {
             if pos.contains(&(from, sub_role, to)) {
                 return AboxVerdict::Inconsistent {
                     reason: ClashReason::NegOpaConflict { from, role, to },
@@ -235,9 +251,9 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
 
     // P4: SameAs ∩ DifferentFrom. Build union-find over individual
     // indices via same_pairs; check each different_pair against it.
-    let n_ind = prepared.abox.individuals.len();
+    let n_ind = inputs.abox.individuals.len();
     let mut uf = UnionFind::new(n_ind);
-    for &(a, b) in &prepared.abox.same_pairs {
+    for &(a, b) in &inputs.abox.same_pairs {
         if let (Some(&i), Some(&j)) = (ind_index.get(&a), ind_index.get(&b)) {
             uf.union(
                 u32::try_from(i).expect("ind index fits in u32"),
@@ -245,7 +261,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             );
         }
     }
-    for &(a, b) in &prepared.abox.different_pairs {
+    for &(a, b) in &inputs.abox.different_pairs {
         if let (Some(&i), Some(&j)) = (ind_index.get(&a), ind_index.get(&b))
             && uf.same(
                 u32::try_from(i).expect("ind index fits in u32"),
@@ -267,7 +283,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     let mut functional_roles: std::collections::HashSet<RoleId> = std::collections::HashSet::new();
     let mut inverse_functional_roles: std::collections::HashSet<RoleId> =
         std::collections::HashSet::new();
-    for ax in &prepared.axioms {
+    for ax in inputs.axioms {
         match ax {
             owl_dl_core::ontology::Axiom::FunctionalRole(r) => {
                 functional_roles.insert(r.role_id());
@@ -281,7 +297,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
 
     // Group (from, role) → Vec<to>.
     let mut by_from_role: Map<(IndividualId, RoleId), Vec<IndividualId>> = Map::new();
-    for &(from, role, to) in &prepared.abox.property_assertions {
+    for &(from, role, to) in &inputs.abox.property_assertions {
         if functional_roles.contains(&role) {
             by_from_role.entry((from, role)).or_default().push(to);
         }
@@ -302,7 +318,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                 )
             {
                 // New merge — re-check all different_pairs.
-                for &(da, db) in &prepared.abox.different_pairs {
+                for &(da, db) in &inputs.abox.different_pairs {
                     if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db))
                         && uf.same(
                             u32::try_from(ip).expect("fits"),
@@ -325,7 +341,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
 
     // Inverse-functional: group (role, to) → Vec<from>, merge as above.
     let mut by_role_to: Map<(RoleId, IndividualId), Vec<IndividualId>> = Map::new();
-    for &(from, role, to) in &prepared.abox.property_assertions {
+    for &(from, role, to) in &inputs.abox.property_assertions {
         if inverse_functional_roles.contains(&role) {
             by_role_to.entry((role, to)).or_default().push(from);
         }
@@ -345,7 +361,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
                     u32::try_from(j).expect("fits"),
                 )
             {
-                for &(da, db) in &prepared.abox.different_pairs {
+                for &(da, db) in &inputs.abox.different_pairs {
                     if let (Some(&ip), Some(&jp)) = (ind_index.get(&da), ind_index.get(&db))
                         && uf.same(
                             u32::try_from(ip).expect("fits"),
@@ -371,7 +387,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         std::collections::HashSet::new();
     let mut irreflexive_roles: std::collections::HashSet<owl_dl_core::ir::RoleId> =
         std::collections::HashSet::new();
-    for ax in &prepared.axioms {
+    for ax in inputs.axioms {
         match ax {
             owl_dl_core::ontology::Axiom::AsymmetricRole(r) => {
                 asymmetric_roles.insert(r.role_id());
@@ -383,7 +399,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
         }
     }
     // Asymmetric: scan for (a, R, b) and (b, R, a) both present.
-    for &(from, role, to) in &prepared.abox.property_assertions {
+    for &(from, role, to) in &inputs.abox.property_assertions {
         if asymmetric_roles.contains(&role) && pos.contains(&(to, role, from)) {
             return AboxVerdict::Inconsistent {
                 reason: ClashReason::AsymmetricViolation {
@@ -396,7 +412,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     }
     // Irreflexive: any (a, R, a). Also fires when SameAs merges
     // collapsed from == to: scan property_assertions and test via uf.
-    for &(from, role, to) in &prepared.abox.property_assertions {
+    for &(from, role, to) in &inputs.abox.property_assertions {
         if !irreflexive_roles.contains(&role) {
             continue;
         }
@@ -423,7 +439,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // range applied to the object. Then re-run the P2 scan.
     let mut domains: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ConceptId)> = Vec::new();
     let mut ranges: Vec<(owl_dl_core::ir::RoleId, owl_dl_core::ir::ConceptId)> = Vec::new();
-    for ax in &prepared.axioms {
+    for ax in inputs.axioms {
         match ax {
             owl_dl_core::ontology::Axiom::ObjectPropertyDomain { role, domain } => {
                 domains.push((role.role_id(), *domain));
@@ -441,7 +457,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // `isFatherOf` has no domain of its own. Without it the functional
     // collapse below (P8) can't see the two sexes on one individual.
     let inv_of = |r: RoleId| -> Option<RoleId> {
-        prepared.inverse_pairs.iter().find_map(|&(a, b)| {
+        inputs.inverse_pairs.iter().find_map(|&(a, b)| {
             if a == r {
                 Some(b)
             } else if b == r {
@@ -463,7 +479,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     }
 
     let mut augmented = false;
-    for &(from, role, to) in &prepared.abox.property_assertions {
+    for &(from, role, to) in &inputs.abox.property_assertions {
         for &(d_role, d_concept) in &domains {
             if d_role != role {
                 continue;
@@ -494,7 +510,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
 
     if augmented {
         for (i, type_set) in types.iter().enumerate() {
-            let (individual, _) = prepared.abox.individuals[i];
+            let (individual, _) = inputs.abox.individuals[i];
             let cs: Vec<_> = type_set
                 .iter()
                 .copied()
@@ -527,7 +543,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     if !functional_roles.is_empty() {
         let mut existentials: std::collections::HashMap<ClassId, Vec<(RoleId, ClassId)>> =
             std::collections::HashMap::new();
-        for ax in &prepared.axioms {
+        for ax in inputs.axioms {
             match ax {
                 owl_dl_core::ontology::Axiom::SubClassOf { sub, sup } => {
                     if let owl_dl_core::ir::ConceptExpr::Atomic(c) = pool.get(*sub) {
@@ -553,7 +569,7 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
             }
         }
         for (i, type_set) in types.iter().enumerate() {
-            let (individual, _) = prepared.abox.individuals[i];
+            let (individual, _) = inputs.abox.individuals[i];
             let mut by_role: std::collections::HashMap<RoleId, Vec<ClassId>> =
                 std::collections::HashMap::new();
             for &t in type_set {
@@ -595,8 +611,8 @@ pub(crate) fn check(prepared: &crate::PreparedOntology) -> AboxVerdict {
     // no role-hierarchy expansion (a sub-role assertion implies a
     // super-role, but that direction never CREATES a new disjoint
     // violation; the violation is on the asserted roles themselves).
-    for &(r, s) in &prepared.disjoint_role_pairs {
-        for &(from, role, to) in &prepared.abox.property_assertions {
+    for &(r, s) in inputs.disjoint_role_pairs {
+        for &(from, role, to) in &inputs.abox.property_assertions {
             if role == r && pos.contains(&(from, s, to)) {
                 return AboxVerdict::Inconsistent {
                     reason: ClashReason::DisjointRolePairViolation { r, s, from, to },
@@ -629,7 +645,19 @@ mod tests {
         };
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");
-        assert!(matches!(check(&prepared), AboxVerdict::Unknown));
+        assert!(matches!(
+            check(&AboxCheckInputs {
+                abox: &prepared.abox,
+                axioms: &prepared.axioms,
+                told: &prepared.told,
+                pool: &prepared.pool,
+                inverse_pairs: &prepared.inverse_pairs,
+                hierarchy: &prepared.hierarchy,
+                disjoint_role_pairs: &prepared.disjoint_role_pairs,
+                closure: &prepared.closure,
+            }),
+            AboxVerdict::Unknown
+        ));
     }
 
     /// Parse an OFN string, lower it, and run the `ABox` pre-check.
@@ -644,7 +672,16 @@ mod tests {
             read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
         let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
         let prepared = crate::PreparedOntology::from_internal(internal).expect("prepare");
-        check(&prepared)
+        check(&AboxCheckInputs {
+            abox: &prepared.abox,
+            axioms: &prepared.axioms,
+            told: &prepared.told,
+            pool: &prepared.pool,
+            inverse_pairs: &prepared.inverse_pairs,
+            hierarchy: &prepared.hierarchy,
+            disjoint_role_pairs: &prepared.disjoint_role_pairs,
+            closure: &prepared.closure,
+        })
     }
 
     /// P8 positive: `isFatherOf(a,_)` (inverse of `hasFather`, range

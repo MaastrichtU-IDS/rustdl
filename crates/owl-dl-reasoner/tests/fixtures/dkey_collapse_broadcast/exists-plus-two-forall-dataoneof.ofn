@@ -1,0 +1,8 @@
+Prefix(:=<http://ex.org/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(
+ Declaration(DataProperty(:p)) Declaration(Class(:A))
+ SubClassOf(:A DataSomeValuesFrom(:p xsd:string))
+ SubClassOf(:A DataAllValuesFrom(:p DataOneOf("a")))
+ SubClassOf(:A DataAllValuesFrom(:p DataOneOf("b")))
+)

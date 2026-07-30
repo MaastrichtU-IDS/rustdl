@@ -1,0 +1,10 @@
+Prefix(:=<http://ex#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex>
+Declaration(Class(:C))
+Declaration(DataProperty(:f)) Declaration(DataProperty(:r)) Declaration(DataProperty(:q)) Declaration(DataProperty(:s))
+FunctionalDataProperty(:f)
+SubDataPropertyOf(:r :f) SubDataPropertyOf(:q :r) SubDataPropertyOf(:s :r)
+SubClassOf(:C DataHasValue(:q "5"^^xsd:integer))
+SubClassOf(:C DataHasValue(:s "7"^^xsd:integer))
+)

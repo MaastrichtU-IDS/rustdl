@@ -1,0 +1,8 @@
+Prefix(:=<http://ex.org/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(
+ Declaration(DataProperty(:p)) Declaration(DataProperty(:f)) Declaration(NamedIndividual(:i))
+ SubDataPropertyOf(:p :f)
+ DataPropertyRange(:f DataOneOf("a"))
+ DataPropertyAssertion(:p :i "b")
+)

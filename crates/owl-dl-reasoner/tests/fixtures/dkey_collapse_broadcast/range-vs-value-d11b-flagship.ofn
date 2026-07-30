@@ -1,0 +1,7 @@
+Prefix(:=<http://ex#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://ex>
+Declaration(Class(:C)) Declaration(DataProperty(:p))
+SubClassOf(:C DataHasValue(:p "5"^^xsd:integer))
+SubClassOf(:C DataAllValuesFrom(:p DatatypeRestriction(xsd:integer xsd:maxInclusive "3"^^xsd:integer)))
+)

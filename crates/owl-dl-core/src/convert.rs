@@ -2711,6 +2711,14 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
         }
     }
 
+    // PROTOTYPE Lever 1: components that contain NO merge-inducing role can
+    // never force two DKeys into ONE node label (`exists p.A & exists p.B` has two
+    // distinct successors), so their disjointness is dead weight.
+    let merging_comps: HashSet<usize> = (0..num_roles)
+        .filter(|&r| m_star[r])
+        .map(|r| uf.find(r))
+        .collect();
+
     // (e) DKey → component set, from every role-restriction pool expr plus
     // DKey-bearing `ObjectPropertyRange` axioms (range key rides the role).
     let mut components: HashMap<ClassId, Vec<usize>> = HashMap::new();
@@ -2719,6 +2727,9 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
                   role: Role,
                   filler: ConceptId| {
         let comp = uf.find(role.role_id().index() as usize);
+        if !merging_comps.contains(&comp) {
+            return;
+        }
         collect_direct_dkeys(&out.concepts, filler, &dkeys, &mut |c| {
             let v = components.entry(c).or_default();
             if !v.contains(&comp) {

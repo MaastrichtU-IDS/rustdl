@@ -47,6 +47,14 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > SROIQ pairs each stalling the full budget (the per-pair wedge search), not a
 > stale-binary artifact — so use `wine --pair-timeout-ms 25` as the freshness
 > canary, and do not treat a >10 s `wine` as necessarily stale.
+> **AMENDED 2026-07-30 — "DNFs unbounded" is too strong on this host.** Unbounded
+> `classify ontologies/real/wine.ofn` **completed** in ~5 min with **201 subsumptions**
+> (the same count the `--pair-timeout-ms 25` row reports), observed twice on
+> independently built binaries (pre-change `main` and a feature branch) during a
+> byte-identity run on the 32-core/251 GB host. So unbounded wine is *slow*
+> (~300 s), not non-terminating — consistent with "wall ~linear in the budget"
+> extrapolated to no cap. Treat the DNF wording as host-dependent; the freshness-canary
+> advice above is unaffected.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`), build+test on
 linux/macos/windows, and `cargo-deny`. `RUSTFLAGS: -D warnings` is set in CI, so
@@ -500,6 +508,43 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `realize::tests::fast_path_matches_tableau_on_terminating_fixture` (byte-
   identity) + conjunctive/existential/domain-range/termination unit tests. See
   `docs/2026-07-21-realize-saturation-fast-path.md`.
+  **Reduced-input `abox_check` (2026-07-30, no flag — verdict-identical by
+  construction).** Both classify **fast paths** — the block in
+  `classify_internal_with_timeout` and the structurally identical one in
+  `classify_top_down_internal`, each ending in `return Ok(classify_pure_el(…))` —
+  built a **full** `PreparedOntology` (a *second* full EL saturation +
+  `HyperCache::build` + `ConsistencyCache::build` + NNF + absorb) *solely* to read
+  `abox_verdict()`, then **discarded it**. `abox_check::check` reads only 8 fields
+  (`abox`, `axioms`, `told`, `pool`, `inverse_pairs`, `hierarchy`,
+  `disjoint_role_pairs`, `closure`) and **never `hyper`/`tbox`** — the expensive ones.
+  Those 8 are now extracted into `AboxCheckInputs<'a>` (so the dependency *set* is
+  compiler-checked) and built by `build_abox_check_inputs`, reusing the closure
+  already in scope. NOTE `abox_verdict()` is **lazily initialised** (`get_or_init`),
+  so the two *genuine* `from_internal` builds (whose object is used to classify) had
+  nothing to save and are untouched. **Measured** (single-thread, min-of-3, vs
+  pre-change `main`): ore_ont_10073 9.74→6.28 s (−35.5%), 10068 3.65→2.42 s (−33.7%),
+  1043 2.38→1.77 s (−25.6%, RSS −35.2%), 1115 −18.8%, 11110 −18.7%, 10965 −16.7%;
+  **hybrid controls flat** (10127 0.2%, 10838 1.1%). That is **76–94% of the
+  `RUSTDL_ABOX_CHECK=0` ceiling** — that flag skips the check entirely and is an upper
+  bound, NOT this lever's value; quote the fraction, never the bound. Addressable set,
+  counted on the **binding** predicate (the classify path) rather than an
+  assertion-count proxy: **25/120** sampled completing ORE onts are fast-path AND
+  ABox-bearing, **8/120** fast-path AND ≥50k assertions (~400 / ~107 extrapolated).
+  **NOT a memory lever** — 4 of 6 winners show ~0% RSS change, so the saving is
+  skipped *compute*; `ore_ont_9347`'s 42 GB is still DKey disjointness at conversion.
+  Gates: FP=0 net 22/0 all closures exact; byte-identity 13/13 vs pre-change `main`
+  (classify+consistent ×5 fixtures, `realize --json` ×3); a 23-shape differential over
+  P1–P9 + 6 negative controls agreeing on verdict *and* clash pattern 23/23.
+  **KNOWN LIMITATION (verified, not assumed):** `build_abox_check_inputs` is a
+  hand-copied prefix of `from_internal`, not shared code, and the in-tree differential
+  test does **NOT** guard that drift — deleting `expand_role_characteristics`, or
+  moving `build_told_tables` / the `axioms` clone after it, each still passed 6/6.
+  Those are inert for *today's* `check`, so the hazard is **latent, not absent**: it
+  goes live the moment `check` reads something an omitted pass affects. **If you extend
+  `abox_check` to read a new field or a lowered axiom form, re-run that sabotage** — if
+  it still passes, the differential test is not protecting your new dependency. See the
+  doc comment on `build_abox_check_inputs` and
+  `docs/superpowers/specs/2026-07-30-abox-check-reduced-input-design.md`.
   **Inconsistency short-circuit (2026-07-23, v0.3.36).** Off the saturation
   fast-path fragment, `realize_internal` now runs the `saturate_abox_consistency`
   pre-check first and returns `Err(Inconsistent)` on a clash — matching the

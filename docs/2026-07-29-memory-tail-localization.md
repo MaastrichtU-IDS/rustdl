@@ -230,3 +230,45 @@ must be re-derived if anyone needs them; the D4 and fan-out refutations do **not
 3. `HyperCache::build`'s ~17.9 GB and absorb's 49.6M concept rules are both ABox-driven here, so
    (1) should collapse both. If a nominal-BEARING ontology shows the same shape, they need
    separate attention.
+
+### 9. PAYOFF ESTIMATE COLLAPSED: ABox size does not predict the blowup
+
+The §8 fix looked like it addressed 29% of the DNF tail. It does not. Sampling matters.
+
+Grep found **83 of 289** DNF ontologies "ABox-bearing AND nominal-free". Testing the four
+with the LARGEST ABox by stripping their assertions (the same ceiling test that gave 4600× on
+`9347`):
+
+| ontology | ABox axioms | FULL | ABox-STRIPPED |
+|---|---|---|---|
+| `ore_ont_10125` | 747,998 | 150 s, **1.7 GB**, timeout | 150 s, 0.3 GB, still timeout |
+| `ore_ont_2111` | 356,154 | 150 s, **2.1 GB**, timeout | 150 s, 1.9 GB, still timeout |
+| `ore_ont_11899` | 325,293 | 150 s, **1.1 GB**, timeout | 150 s, 0.5 GB, still timeout |
+| `ore_ont_5857` | 723,816 | — | 150 s, 2.7 GB, still timeout (TBox is 66k classes / 132k GCIs) |
+
+**0 of 4 rescued**, and none is memory-bound — 1.1–2.7 GB, not 46 GB. They are wall-bound, and
+`5857` is a TBox-scale DNF where the ABox is incidental.
+
+**The selector was wrong, and so was the implied mechanism.** `9347` has **55k** ABox axioms and
+reaches **46 GB**; `10125` has **748k** and uses **1.7 GB** — 13× the ABox, 27× *less* memory.
+ABox size does not predict the `from_internal` blowup.
+
+The plausible predictor is **structural and multiplicative**: `9347` combines its ABox with
+`residual_or: 159` disjunctive residuals, and ABox × disjunctive absorb is what yields 49.6M
+concept rules. Untested — state it as a hypothesis, and select candidates by measuring
+`concept_rules` (via `tbox-stats`) or peak RSS, **not** by ABox size.
+
+**Revised payoff.** The addressable set is DNFs that are *memory*-bound. The whole benchmark had
+only ~10 ontologies above 14 GB RSS (and per §5 that column is timeout-truncated, so the true
+count is uncertain in both directions). So the DNF-recovery headline for the §8 fix is **≤10,
+probably fewer — not 83.**
+
+The fix remains defensible on a different argument: building 49.6M concept rules and an ~18 GB
+clause set from axioms the query provably ignores is wasted work on *every* ABox-bearing
+nominal-free classify, including the ones that currently succeed. That is the case to make — not
+DNF recovery.
+
+**Fifth instance of one error this session:** a filter that selects for a feature being PRESENT
+rather than for it being the BINDING CONSTRAINT. Same shape as grep-vs-gate, and as the
+atomic-negation lever paying (13 onts where negation was the last blocker) while its Domain/Range
+sibling paid zero (5 onts where it never was).

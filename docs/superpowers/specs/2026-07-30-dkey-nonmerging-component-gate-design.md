@@ -173,6 +173,39 @@ fallback.
    property is made `Functional`. That pair pins the gate's boundary directly rather than through a
    reasoning outcome.
 
+## Retracted measurement — a sabotaged binary was mistaken for the gate (2026-07-30)
+
+**A population scan reporting "443 of 1,893 ontologies reduced, 0 residual ≥1M" is INVALID and must
+not be cited.** Its "after" binary was the **sabotage** build, not the gate.
+
+How it happened: to prove the canaries non-vacuous, the `anchor` gate was temporarily forced to
+`if true { … return; }` (skip *every* component ⇒ zero DKey pairs ever), rebuilt, the 3 expected
+canary failures observed, and then **the source was reverted without rebuilding**. A later
+`cp target/release/rustdl …/rustdl-after` copied that stale sabotaged binary.
+
+Why the sanity check missed it: the check used `ore_ont_9347`, which reads **113 under both** the
+real gate and the sabotage — all its pairs are dead weight either way. `ore_ont_5368` is the case
+that discriminates, and it read **12,201** (the zero-pairs value) instead of 18,620,251.
+
+**The shipped code is unaffected and correct.** Verified on a freshly built binary from branch HEAD:
+`ore_ont_9347` → 113, `ore_ont_5368` → **18,620,251** — i.e. exactly the claim in § Evidence, that
+`5368` is untouched because it is genuinely merge-inducing. Only the *measurement* was wrong.
+
+**Discriminating check for any future measurement of this gate** — `9347` alone cannot tell the gate
+from a no-pairs build:
+
+| binary | `9347` | `5368` |
+|---|---|---|
+| pre-change `main` | 49,571,087 | 18,620,251 |
+| **gate ON (correct)** | **113** | **18,620,251** |
+| sabotage / zero-pairs | 113 | 12,201 |
+
+**Process rule, learned twice in one session.** Both measurement failures here had the same cause:
+reusing `target/release/rustdl` across configurations. Pin a binary to a uniquely named path
+*immediately after the build that produced it*, name the path after the configuration, and verify
+the pin against a case that discriminates the configurations before trusting a scan built on it.
+(The first instance was rebuilding `target/release` while a scan was reading it.)
+
 ## What this does not claim
 
 - It does not help `ore_ont_5368` or any ontology whose data properties are genuinely

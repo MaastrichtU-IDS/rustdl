@@ -2542,6 +2542,18 @@ fn dkey_split_stats_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0")
 }
 
+/// Collapse/broadcast split (2026-07-30). **Default OFF** until the gates in
+/// `docs/superpowers/specs/2026-07-30-dkey-collapse-vs-broadcast-design.md` pass; set
+/// `RUSTDL_DKEY_COLLAPSE_SPLIT=1` to enable.
+///
+/// Omits a `DKey`-disjointness pair when its component has no COLLAPSE role and BOTH
+/// keys are value-only there: a BROADCAST source puts one key on EVERY successor, so a
+/// value meets the broadcast key but never another value. Subtractive only — it can
+/// never create a false positive; the exposure is a lost clash.
+fn dkey_collapse_split_enabled() -> bool {
+    std::env::var("RUSTDL_DKEY_COLLAPSE_SPLIT").is_ok_and(|v| v != "0")
+}
+
 fn dkey_merging_gate_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
 }
@@ -3000,6 +3012,7 @@ fn seed_disjoint_bucket<R>(
     // for a same-component pair and `None` for the unanchored (`global`) pairings,
     // which are unconditional (spec R6) and therefore never scored as droppable.
     let stats = dkey_split_stats_enabled();
+    let split = dkey_collapse_split_enabled();
     let mut try_emit = |a_idx: usize, b_idx: usize, in_comp: Option<usize>| {
         let (a_cid, a_r) = &keys[a_idx];
         let (b_cid, b_r) = &keys[b_idx];
@@ -3014,17 +3027,24 @@ fn seed_disjoint_bucket<R>(
         if !emitted.insert(pair) {
             return;
         }
+        // Would the collapse/broadcast split drop this pair? Only when the component
+        // has NO collapse role AND BOTH keys are value-only there. `in_comp` is
+        // `None` for the unanchored `global` pairings, which are unconditional
+        // (spec R6) and therefore never droppable.
+        let droppable = in_comp.is_some_and(|c| {
+            let value_only =
+                |cid: &ClassId| !comp.broadcast_in.get(cid).is_some_and(|v| v.contains(&c));
+            !comp.collapse_comps.contains(&c) && value_only(a_cid) && value_only(b_cid)
+        });
         if stats {
             use std::sync::atomic::Ordering;
             DKEY_SPLIT_TOTAL.fetch_add(1, Ordering::Relaxed);
-            // Would the collapse/broadcast split drop this pair? Only when the
-            // component has NO collapse role AND BOTH keys are value-only there.
-            if let Some(c) = in_comp {
-                let bc = |cid: &ClassId| comp.broadcast_in.get(cid).is_some_and(|v| v.contains(&c));
-                if !comp.collapse_comps.contains(&c) && !bc(a_cid) && !bc(b_cid) {
-                    DKEY_SPLIT_WOULD_DROP.fetch_add(1, Ordering::Relaxed);
-                }
+            if droppable {
+                DKEY_SPLIT_WOULD_DROP.fetch_add(1, Ordering::Relaxed);
             }
+        }
+        if split && droppable {
+            return;
         }
         let a = concepts.atomic(*a_cid);
         let b = concepts.atomic(*b_cid);

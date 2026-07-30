@@ -8,11 +8,19 @@ zero payoff; this one replaced it and is better evidenced)
 
 ## The waste
 
-Both classify entry points construct a **full** `PreparedOntology` — EL saturation, told tables,
-`HyperCache::build`, NNF + absorb, complements — solely to read `abox_verdict()`, then proceed:
+**The waste is on the FAST PATH ONLY** (corrected 2026-07-30 — the first draft of this spec
+claimed both entry points):
 
-- fast path: `classify.rs:785-787`, then `return classify_pure_el(...)`
-- top-down path: `classify.rs:1626`, verdict read at `:1631`
+- **fast path (`classify.rs:785-787`) — pure waste.** A **full** `PreparedOntology` is built
+  (EL saturation, told tables, `HyperCache::build`, NNF + absorb, complements) *solely* to read
+  `abox_verdict()`, and then `return classify_pure_el(...)` **discards it** — `prepared` is never
+  used again.
+- **top-down path (`classify.rs:1626`, verdict at `:1631`) — no waste.** The same object is
+  needed for classification anyway, and `abox_verdict()` is a **lazily-initialised** field
+  (`lib.rs:4692`, `get_or_init`), so the check adds no construction there.
+
+This is confirmed by mode, 8 of 8: every ontology that saved takes the fast path, and both that
+saved nothing take the hybrid path (see § Measured breadth). It is a mechanism, not a correlation.
 
 But `abox_check::check` reads only eight fields: `abox`, `axioms`, `told`, `pool`,
 `inverse_pairs`, `hierarchy`, `disjoint_role_pairs`, `closure`. It **never touches `hyper` or
@@ -76,10 +84,21 @@ Unlike the three estimates that collapsed this month, this is a **measured in-ba
 (78%)**, not a feature-presence count — the distinction that killed the others. It is still a
 sample: 9 of 192 measured above the threshold.
 
-**The predictor is ABox size AND prepare cost, not ABox size alone.** The two non-winners show
-why: `10127`'s 19 s wall makes a 0.6 s prepare ~3%, and `10838`'s TBox is small enough that
-`HyperCache`+absorb are cheap to begin with. So expect the saving where a large ABox coincides
-with a non-trivial TBox, and do not promise it per-ontology without measuring.
+**The predictor is the PATH, not the size — and this fully explains the two non-winners.**
+Modes measured:
+
+| ontology | mode | saving |
+|---|---|---|
+| `1043`, `1115`, `10965`, `11110`, `10068`, `10073` | **pure EL (fast path)** | 20–40% |
+| `10127`, `10838` | **hybrid** | 0% |
+
+All six winners are fast-path; both non-winners are hybrid. So the saving requires **fast path +
+an ABox large enough that the discarded build is expensive**. ABox size only sets the magnitude;
+the path decides whether there is anything to save at all. Nothing is left unexplained.
+
+Consequence for the population: it is not "192 ontologies with ≥50k assertions" but "ABox-bearing
+ontologies that reach the fast path" — i.e. `is_pure_el` / `saturator_complete_fragment` /
+`tbox_only_saturator_eligible` **and** ABox-bearing. Count that set before quoting a number.
 
 ## Why this is a better lever than the one it replaced
 
@@ -112,9 +131,12 @@ pub(crate) struct AboxCheckInput<'a> {
 }
 ```
 
-`abox_check::check` takes that instead of `&PreparedOntology`. Both classify sites build the eight
-values directly and pass them, skipping `HyperCache::build`, `ConsistencyCache::build`,
-`snapshot_cache`, and absorb entirely for the check.
+`abox_check::check` takes that instead of `&PreparedOntology`. **Only the fast-path site
+(`classify.rs:785-787`) changes**: it builds the eight values directly and calls
+`abox_check::check` on them, skipping `HyperCache::build`, `ConsistencyCache::build`,
+`snapshot_cache`, and absorb entirely. The top-down site keeps `prepared.abox_verdict()`
+unchanged — it needs the full object regardless, so there is nothing to save and no reason to
+touch it.
 
 **Why a struct rather than a reduced constructor.** A second `PreparedOntology` constructor would
 leave two objects of the same type with different completeness, and the id-space hazard the
@@ -123,14 +145,15 @@ unrelated edge satisfy a super-role atom = false clash") becomes reachable by ac
 explicit input type makes the dependency set checked by the compiler and cannot drift — if someone
 later makes `abox_check` read `hyper`, it will not compile.
 
-**Fold in the duplicated saturation.** `from_internal` calls
-`owl_dl_saturation::saturate(&internal)` at `lib.rs:4567`, but both callers already hold a
-closure — `classify_pure_el` is passed one, and `classify_top_down_internal` computes one before
-the prepare. `AboxCheckInput` should borrow the caller's closure, removing a second full EL
-saturation per classify. This is a separate waste from the `hyper`/`tbox` one and is measured
-inside the same 0.62 s.
+**Fold in the duplicated saturation.** On the fast path the caller already holds a closure (it
+is computed before the gate and passed to `classify_pure_el`), yet `from_internal` calls
+`owl_dl_saturation::saturate(&internal)` again at `lib.rs:4567`. `AboxCheckInput` borrows the
+caller's closure, removing a second full EL saturation. Separate waste from the `hyper`/`tbox`
+one, measured inside the same 0.62 s.
 
-**Also remove `ConsistencyCache` from the classify path.** `prepared.consistency` is read only at
+**`ConsistencyCache` disappears from the fast path for free** under this change (it is only ever
+built inside `from_internal`, which the fast path stops calling). Recorded because it is a second
+independent waste and confirms the direction: `prepared.consistency` is read only at
 `lib.rs:4002/4046/4668/4684` — 4002 inside `is_consistent_internal_full`, the rest on the same
 consistency path. **`classify.rs` never reads the field** (its 11 textual hits on "consistency"
 are comments about the *ABox pre-check*, a different mechanism — verified, not assumed). Yet it is
@@ -140,8 +163,8 @@ surface.
 
 ## Scope
 
-**In scope.** `AboxCheckInput`, both classify call sites, closure reuse, skipping
-`ConsistencyCache` on the classify path, and the gates below.
+**In scope.** `AboxCheckInput`, the **fast-path** call site only, closure reuse there, and the
+gates below.
 
 **Out of scope.** Any change to what `abox_check` *decides* (P1–P9 are untouched). `realize`,
 `materialize_*`, `is_consistent`, `disjointness`, `individuals`, `property_values` — they keep

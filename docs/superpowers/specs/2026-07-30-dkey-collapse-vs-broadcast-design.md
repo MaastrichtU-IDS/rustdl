@@ -244,6 +244,90 @@ value on `p` is MISSED at *both* gate settings, while the `ObjectPropertyRange` 
 asymmetric `∀`-propagation down the data-property hierarchy. Found incidentally by review; not
 attributable to any gate; deserves its own ticket.
 
+## MEASURED POPULATION (2026-07-30) — supersedes the "3 ontologies" estimate
+
+**The earlier "addressable set is 3 ontologies" figure was wrong by ~95×.** It selected on
+*residual ≥1M concept_rules*, which is a threshold, not the binding predicate — an ontology dropping
+200k pairs benefits identically and could never appear in such a list. Measured properly with
+report-only instrumentation (`RUSTDL_DKEY_SPLIT_STATS=1`, commit `c1f915f`, which counts what the
+split *would* drop and is verified byte-identical in emission):
+
+| | count |
+|---|---|
+| scanned | **1,915** of 1,920 (5 exceed even a 300 s budget) |
+| seed any `DKey` disjointness pairs | 356 |
+| **would benefit (drop > 0)** | **286** |
+| …of those, 100% droppable | 230 |
+| seed pairs but drop NONE (correct — they have collapse sources) | 70 |
+| corpus-wide pairs | 197,832,545 total → **18,854,659 droppable (9.53%)** |
+
+> **CORRECTED — an earlier figure of "67,122,352 total → 28.1% droppable" was a SELECTION
+> ARTIFACT and is retracted.** It came from the 30 s first pass, which timed out on the 17
+> largest ontologies and therefore excluded them. The two biggest `DKey` populations in the
+> entire corpus turn out to be almost entirely NON-droppable — `ore_ont_2504` 68,672,720 pairs
+> → **98** dropped (0.0001%), `ore_ont_4141` 42,723,215 → **6** — because they have genuine
+> collapse sources. Including them nearly triples the denominator and cuts the corpus-wide
+> share from 28.1% to **9.53%**. The lesson is the standard one in the wrong direction: a
+> per-item timeout is not a neutral sampler, it selects *against* exactly the largest items,
+> and here the largest items were the ones that would have deflated the headline. Any future
+> corpus-share claim in this area must state its timeout and its exclusions.
+
+**Benefit is heavily skewed, and this is the number that should drive the decision:**
+
+| magnitude | ontologies |
+|---|---|
+| drop ≥ 1M | 4 |
+| drop 100k–1M | 11 |
+| drop 10k–100k | 24 |
+| drop < 10k | 245 |
+
+So 286 benefit *at all*, but 86% of those drop under 10k pairs, which will not change whether they
+complete. The decision-relevant sets are **39** (≥10k) and **15** (≥100k) — still 5–13× the retired
+3-ontology estimate, and 282 of the 286 lie below the ≥1M line that estimate could not see.
+
+**The per-ontology counts are robust to the correction above; only the corpus-share is not.** The two
+giants move from "unmeasured" into "seed pairs, drop none", which is where they belong — they are
+evidence the classification's negative side works at extreme scale (68.7M pairs, 98 droppable), not
+evidence against the lever.
+
+Top beneficiaries: `7607` 5,410,094 (100%), `1685` 5,409,365 (100%), `12182` 2,051,471 (100%),
+`4410` 1,081,138 of 1,266,274 (85%), `7345` 714,740 (100%), `8989` 525,099 of 1,088,126,
+`15288` 373,565, `13052` 361,896, `9899`/`6132` 318,001 each, `5548` 291,029, `443` 281,919.
+
+### It touches the DNF tail — including Bucket B
+
+Cross-referenced against the 14 known DNFs:
+
+| DNF | droppable | note |
+|---|---|---|
+| `7607`, `1685` | 100% | volume-bound, the original targets |
+| `4410` | 85% | volume-bound |
+| **`5548`** | **55%** (291,029 / 530,605) | **Bucket B — label-cache-build-bound** |
+| 9 other search-bound DNFs | `total = 0` | no `DKey` pairs at all; this lever provably cannot touch them |
+
+`5548` is the material surprise. Bucket B was characterised as cost *outside* the per-pair loop and
+recovered 0 of 5 across five weeks of matcher/search work — and it was the alternative recommended
+*over* this lever. If its label-cache build is slow partly because it carries 530k disjointness
+axioms, this is the first mechanism-level lead on that bucket. **Not** a promise: 55% of its pairs
+going away may still leave it DNF. But it is testable, and cheaply, once the lever exists.
+
+That the 9 remaining search-bound DNFs show `total = 0` is itself a useful negative: it confirms they
+are not data-driven, so no amount of DKey work will help them.
+
+### Second pass on the 17 timeouts (partial)
+
+`11287` 198,313 total → **0** droppable, `14351` 495,077 → **0** — both have genuine collapse
+sources, confirming the classification's negative side at scale. `10689`, `14459` seed no pairs.
+**Completed.** The decisive rows: `2504` 68,672,720 → 98, `4141` 42,723,215 → 6, `5368`
+18,608,050 → 0, `14351` 495,077 → 0, `11287` 198,313 → 0, `20` 12,791 → 0, `5753` 27 → 0; `10689`,
+`14459`, `8486`, `868`, `9674` seed none. Five (`10860`, `10929`, `15635`, `4572`, `8445`) exceed
+300 s and remain unmeasured — 0.26% of the pool, and they cannot change the ontology counts by more
+than 5.
+
+This pass did change one headline (the corpus share, see the correction box) and it strengthened the
+classification: at 68.7M and 42.7M pairs, the two largest cases in the corpus are correctly identified
+as non-droppable.
+
 ## Cost/benefit — read before building
 
 The addressable set is **3 ontologies** (`7607`, `1685`, `4410`), all currently DNF. `5368` is
@@ -258,14 +342,24 @@ Two honest alternatives to weigh first:
   population than this lever's 3.
 - **Do nothing.** These 3 stay DNF. They are ORE corpus entries, not user-facing workloads.
 
-Recommendation: build it **only** if the three residuals matter for a real workload, or as a
-deliberate correctness exercise. If the goal is DNF-tail progress per unit risk, Bucket B is the
-better target — and unlike this lever, its blocker is not yet even diagnosed.
+**RECOMMENDATION REVERSED by the measurement above (2026-07-30).** The earlier text read: "build it
+only if the three residuals matter for a real workload … Bucket B is the better target." That rested
+on the retired 3-ontology figure. With 284 beneficiaries (39 at ≥10k, 15 at ≥100k), 28.1% of all
+corpus `DKey` pairs droppable, and 4 of 14 known DNFs affected **including a Bucket B case**, the
+recommendation is now: **build it.** The side conditions are unchanged and still the hard part — but
+the payoff is an order of magnitude larger than when they were judged not worth paying.
+
+Note the two alternatives are no longer exclusive: `5548` means this lever *is* partly a Bucket B
+probe. Cheapest sequencing is therefore to build the lever and use `5548` to test whether Bucket B's
+label-cache cost is partly axiom-volume, which is information no amount of further profiling has
+produced.
 
 ## What this does not claim
 
 - It does not help `ore_ont_5368` (genuine collapse via 15 functional properties) — that was Lever 2's
   only remaining justification, and Lever 2 stays parked.
+- It does not help the 9 search-bound DNFs that seed no `DKey` pairs at all (`total = 0` measured):
+  `5964 6485 8273 8666 13545 5438 7499 7712 10080`. They are not data-driven.
 - It is not validated by the curated corpus; the canaries and the R1–R4 fixtures are the net.
 - It does not change `definitely_disjoint`, so D11b's FP surface is untouched.
 - It is not proven, only un-refuted by two independent adversarial attempts.

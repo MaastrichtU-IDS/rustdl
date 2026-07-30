@@ -1660,6 +1660,15 @@ fn main() -> Result<()> {
             let onto = parse_ofn(&file)?;
             let stats = owl_dl_reasoner::tbox_stats(&onto).context("tbox_stats")?;
             println!("# concept_rules:        {}", stats.concept_rules);
+            // MEASUREMENT (RUSTDL_DKEY_SPLIT_STATS=1): how many DKey-disjointness
+            // pairs the proposed collapse/broadcast split would drop. Report-only.
+            if std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0") {
+                use std::sync::atomic::Ordering;
+                let total = owl_dl_core::convert::DKEY_SPLIT_TOTAL.load(Ordering::Relaxed);
+                let drop = owl_dl_core::convert::DKEY_SPLIT_WOULD_DROP.load(Ordering::Relaxed);
+                println!("# dkey_pairs_total:     {total}");
+                println!("# dkey_pairs_would_drop:{drop}");
+            }
             println!("# nominal_rules:        {}", stats.nominal_rules);
             println!("# role_rules_guarded:   {}", stats.role_rules_guarded);
             println!("# role_rules_unguarded: {}", stats.role_rules_unguarded);

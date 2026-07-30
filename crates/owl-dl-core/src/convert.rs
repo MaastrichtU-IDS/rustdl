@@ -2552,23 +2552,15 @@ struct DkeyComponents {
     unanchored: std::collections::HashSet<ClassId>,
 }
 
-/// Does `cid`'s expression mention a `DKey` atomic WITHOUT crossing a role
-/// restriction? (Nested `Some`/`All`/`Min`/`Max` fillers are anchored by
-/// their own pool entry, which `dkey_components` visits separately.)
-fn filler_mentions_dkey(
-    pool: &ConceptPool,
-    cid: ConceptId,
-    dkeys: &std::collections::HashSet<ClassId>,
-) -> bool {
-    match pool.get(cid) {
-        ConceptExpr::Atomic(c) => dkeys.contains(c),
-        ConceptExpr::Not(inner) => filler_mentions_dkey(pool, *inner, dkeys),
-        ConceptExpr::And(items) | ConceptExpr::Or(items) => {
-            items.iter().any(|&i| filler_mentions_dkey(pool, i, dkeys))
-        }
-        _ => false,
-    }
-}
+// REMOVED 2026-07-30: `filler_mentions_dkey`. It gated whether an
+// `ObjectPropertyRange` / `∀` marked its role merge-inducing, on the theory that
+// only a `DKey`-bearing filler can put a key into every successor label. Adversarial
+// review found the counterexample: a filler that forces successors to be the SAME
+// individual (`ObjectOneOf(o)`, or any class subsumed by one) collapses them via the
+// o-rule, so two distinct VALUE keys share a label without the filler mentioning a
+// `DKey` at all. That is not syntactically detectable, so the test was replaced by
+// treating ANY range / `∀` as merge-inducing. Regression:
+// `crates/owl-dl-reasoner/tests/dkey_nominal_range_merge.rs`.
 
 /// Invoke `f` on every `DKey` atomic reachable from `cid` through
 /// `Not`/`And`/`Or` only (stopping at nested role restrictions — those are
@@ -2642,11 +2634,19 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
             Axiom::FunctionalRole(r) | Axiom::InverseFunctionalRole(r) => {
                 merge_inducing[r.role_id().index() as usize] = true;
             }
-            // A DKey range puts the range key into EVERY successor label of
-            // the role — the same consumption shape as `∀role.DKey`.
-            Axiom::ObjectPropertyRange { role, range }
-                if filler_mentions_dkey(&out.concepts, *range, &dkeys) =>
-            {
+            // ANY range makes the role merge-inducing — deliberately NOT gated on
+            // `filler_mentions_dkey`. Two reasons, the second discovered by
+            // adversarial review on 2026-07-30:
+            //  1. a `DKey` range puts the range key into EVERY successor label of
+            //     the role — the same consumption shape as `∀role.DKey`;
+            //  2. a range whose filler forces successors to be the SAME individual
+            //     collapses them via the o-rule, so two distinct value keys share
+            //     one label. `ObjectPropertyRange(p, ObjectOneOf(o))` does this, and
+            //     so does `ObjectPropertyRange(p, C)` with `C ⊑ ObjectOneOf(o)` —
+            //     which is NOT syntactically local, so no filler test can catch it.
+            //     Gating on `filler_mentions_dkey` here made
+            //     `tests/dkey_nominal_range_merge.rs`'s fixture a MISS.
+            Axiom::ObjectPropertyRange { role, .. } => {
                 merge_inducing[role.role_id().index() as usize] = true;
             }
             _ => {}
@@ -2654,10 +2654,13 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
     }
     for expr in out.concepts.iter_exprs() {
         match expr {
-            ConceptExpr::Max(_, r, _) => {
-                merge_inducing[r.role_id().index() as usize] = true;
-            }
-            ConceptExpr::All(r, f) if filler_mentions_dkey(&out.concepts, *f, &dkeys) => {
+            // `Max` collapses two successors onto one node. `All` is merge-inducing
+            // for the same two reasons as `ObjectPropertyRange` above, and is NOT
+            // gated on the filler mentioning a `DKey`: a filler that forces
+            // successors to coincide (a nominal, or any class subsumed by one)
+            // collapses them via the o-rule, and that is not syntactically
+            // detectable. Same body, so one arm.
+            ConceptExpr::Max(_, r, _) | ConceptExpr::All(r, _) => {
                 merge_inducing[r.role_id().index() as usize] = true;
             }
             _ => {}

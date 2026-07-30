@@ -254,12 +254,23 @@ split *would* drop and is verified byte-identical in emission):
 
 | | count |
 |---|---|
-| scanned | **1,903** (17 timed out at 30 s; second pass below) |
-| seed any `DKey` disjointness pairs | 349 |
-| **would benefit (drop > 0)** | **284** |
+| scanned | **1,915** of 1,920 (5 exceed even a 300 s budget) |
+| seed any `DKey` disjointness pairs | 356 |
+| **would benefit (drop > 0)** | **286** |
 | …of those, 100% droppable | 230 |
-| seed pairs but drop NONE (correct — they have collapse sources) | 65 |
-| corpus-wide pairs | 67,122,352 total → **18,854,555 droppable (28.1%)** |
+| seed pairs but drop NONE (correct — they have collapse sources) | 70 |
+| corpus-wide pairs | 197,832,545 total → **18,854,659 droppable (9.53%)** |
+
+> **CORRECTED — an earlier figure of "67,122,352 total → 28.1% droppable" was a SELECTION
+> ARTIFACT and is retracted.** It came from the 30 s first pass, which timed out on the 17
+> largest ontologies and therefore excluded them. The two biggest `DKey` populations in the
+> entire corpus turn out to be almost entirely NON-droppable — `ore_ont_2504` 68,672,720 pairs
+> → **98** dropped (0.0001%), `ore_ont_4141` 42,723,215 → **6** — because they have genuine
+> collapse sources. Including them nearly triples the denominator and cuts the corpus-wide
+> share from 28.1% to **9.53%**. The lesson is the standard one in the wrong direction: a
+> per-item timeout is not a neutral sampler, it selects *against* exactly the largest items,
+> and here the largest items were the ones that would have deflated the headline. Any future
+> corpus-share claim in this area must state its timeout and its exclusions.
 
 **Benefit is heavily skewed, and this is the number that should drive the decision:**
 
@@ -270,9 +281,14 @@ split *would* drop and is verified byte-identical in emission):
 | drop 10k–100k | 24 |
 | drop < 10k | 245 |
 
-So 284 benefit *at all*, but 86% of those drop under 10k pairs, which will not change whether they
+So 286 benefit *at all*, but 86% of those drop under 10k pairs, which will not change whether they
 complete. The decision-relevant sets are **39** (≥10k) and **15** (≥100k) — still 5–13× the retired
-estimate, and 280 of the 284 lie below the ≥1M line the old estimate could not see.
+3-ontology estimate, and 282 of the 286 lie below the ≥1M line that estimate could not see.
+
+**The per-ontology counts are robust to the correction above; only the corpus-share is not.** The two
+giants move from "unmeasured" into "seed pairs, drop none", which is where they belong — they are
+evidence the classification's negative side works at extreme scale (68.7M pairs, 98 droppable), not
+evidence against the lever.
 
 Top beneficiaries: `7607` 5,410,094 (100%), `1685` 5,409,365 (100%), `12182` 2,051,471 (100%),
 `4410` 1,081,138 of 1,266,274 (85%), `7345` 714,740 (100%), `8989` 525,099 of 1,088,126,
@@ -302,7 +318,15 @@ are not data-driven, so no amount of DKey work will help them.
 
 `11287` 198,313 total → **0** droppable, `14351` 495,077 → **0** — both have genuine collapse
 sources, confirming the classification's negative side at scale. `10689`, `14459` seed no pairs.
-`10860`, `10929` still time out at 300 s. Remainder pending; none of it can change the headline.
+**Completed.** The decisive rows: `2504` 68,672,720 → 98, `4141` 42,723,215 → 6, `5368`
+18,608,050 → 0, `14351` 495,077 → 0, `11287` 198,313 → 0, `20` 12,791 → 0, `5753` 27 → 0; `10689`,
+`14459`, `8486`, `868`, `9674` seed none. Five (`10860`, `10929`, `15635`, `4572`, `8445`) exceed
+300 s and remain unmeasured — 0.26% of the pool, and they cannot change the ontology counts by more
+than 5.
+
+This pass did change one headline (the corpus share, see the correction box) and it strengthened the
+classification: at 68.7M and 42.7M pairs, the two largest cases in the corpus are correctly identified
+as non-droppable.
 
 ## Cost/benefit — read before building
 

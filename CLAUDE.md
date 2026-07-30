@@ -532,6 +532,9 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   ABox-bearing, **8/120** fast-path AND ≥50k assertions (~400 / ~107 extrapolated).
   **NOT a memory lever** — 4 of 6 winners show ~0% RSS change, so the saving is
   skipped *compute*; `ore_ont_9347`'s 42 GB is still DKey disjointness at conversion.
+  (**Since fixed** — see the non-merging-component gate under `owl-dl-datatypes`:
+  `9347` now classifies in 10.72 s / 227 MB. Its true full-classify peak was 70.7 GB,
+  the 42 GB figure having measured `from_internal` alone.)
   Gates: FP=0 net 22/0 all closures exact; byte-identity 13/13 vs pre-change `main`
   (classify+consistent ×5 fixtures, `realize --json` ×3); a 23-shape differential over
   P1–P9 + 6 negative controls agreeing on verdict *and* clash pattern 23/23.
@@ -901,6 +904,60 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     corpus-wide. Canaries: 10 new in `datatype_value_membership.rs`
     (3 ∀-monotonicity + 7 membership-clash incl. inclusive-boundary,
     float/string buckets, cross-datatype no-clash) + 6 `disjoint` unit tests.
+
+  **Non-merging-component gate (2026-07-30, `RUSTDL_DKEY_MERGING_GATE`, default
+  ON, `=0` reverts).** `seed_disjoint_bucket`'s bounded seeding (v0.3.29,
+  `RUSTDL_BOUNDED_DKEY_DISJOINT`) gates the **union** of role components on
+  merge-inducing roles (`m_star` = functional / inverse-functional / `≤n` /
+  `∀role.DKey` / DKey-range, closed downward through sub-roles) — but step (e)
+  anchored a DKey to its role's component for **every** `Some`/`All`/`Min`/`Max`
+  occurrence regardless. Since `DataPropertyAssertion(p,a,v)` lowers to
+  `ClassAssertion(a, ∃p.DKey(v))`, all k values on one data property landed in one
+  component and were seeded **all-pairs, C(k,2)**. But `∃p.DKey_a ⊓ ∃p.DKey_b` is
+  satisfiable with two **distinct** `p`-successors — the axiom is consumable only if
+  a merge forces both keys onto ONE node, i.e. only if the component contains an
+  `m_star` role. The gate skips anchoring into non-`m_star` components, so those keys
+  fall into the skip `seed_disjoint_bucket` **already** performs ("neither anchored
+  nor unanchored … can never reach a node label") — extended from *can't be labelled*
+  to *can't be **co**-labelled*. **`ore_ont_9347`** (19,160 `DataPropertyAssertion`
+  and **zero** `DataSomeValuesFrom`/`DataAllValuesFrom`/`DataHasValue`/
+  `FunctionalDataProperty`/`DataPropertyRange`, so nothing can consume any pair):
+  concept_rules **49,571,087 → 113**, classify **DNF @703 s / 70.7 GB → 10.72 s /
+  227 MB** (311× RSS, DNF → completes). **`ore_ont_5368` is the negative control and
+  is flat to within noise** (701.31→701.22 s, 26,956,136→26,955,920 kB): 15
+  `FunctionalDataProperty` + 14 `DataPropertyRange` make its component genuinely
+  merge-inducing, so its pairs ARE consumable and the gate correctly declines — which
+  is why an on-demand disjointness **oracle** (Lever 2) still has a live
+  justification, `5368` being a 27 GB DNF only it can address (four consumer hooks
+  needed, three of which do not exist; no consumer iterates the full pair set, so it
+  stays feasible). **Sound structurally** — the change only REMOVES axioms ⇒ fewer
+  clashes ⇒ never an FP; the exposure is completeness, bounded by `m_star` being the
+  complete set of merge sources.
+  > **MEASURING THIS GATE: `ore_ont_9347` ALONE CANNOT VALIDATE IT.** `9347` reads
+  > **113 under both** the real gate and a build that emits **no** DKey disjointness
+  > at all, because all its pairs are dead weight either way. `ore_ont_5368` is the
+  > discriminator. A population scan was **retracted** on 2026-07-30 for exactly this
+  > (its "after" binary was a canary-sabotage build whose source had been reverted
+  > without rebuilding, then copied out of `target/release`).
+  >
+  > | binary | `9347` | `5368` |
+  > |---|---|---|
+  > | pre-gate | 49,571,087 | 18,620,251 |
+  > | **gate ON (correct)** | **113** | **18,620,251** |
+  > | zero-pairs / sabotage | 113 | 12,201 |
+  >
+  > Pin a binary to a uniquely named path **immediately after the build that produced
+  > it**, name the path after the configuration, and verify the pin against the
+  > discriminating case before trusting any scan built on it.
+  Evidence note: the curated corpus **cannot** validate this area —
+  `datatype_value_membership.rs` says so itself ("the corpus has NO such clash, so
+  these canaries are the ENTIRE safety net"). FP=0 net (22/0, closures exact) shows
+  **inertness**; the real gate is that an unconditional version of this change FAILS
+  exactly three canaries (`forall_value_outside_range_clashes`,
+  `forall_float_value_outside_clashes`, `forall_string_value_outside_enum_clashes`)
+  and that the new conversion-level negative test FAILS under
+  `RUSTDL_DKEY_MERGING_GATE=0` — both verified by deliberately breaking them. Spec
+  `docs/superpowers/specs/2026-07-30-dkey-nonmerging-component-gate-design.md`.
 
   **Remaining datatype under-approximation (sound, all still DROP):**
   - **data cardinality** — D4 already catches the unsat-clash patterns;

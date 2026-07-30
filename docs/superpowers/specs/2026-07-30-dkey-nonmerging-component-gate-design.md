@@ -173,6 +173,49 @@ fallback.
    property is made `Functional`. That pair pins the gate's boundary directly rather than through a
    reasoning outcome.
 
+## Measured results (2026-07-30) — implemented
+
+Branch `perf/dkey-nonmerging-component-gate`: `e1506af` (flag), `8ba71d4` (boundary tests),
+`69c2762` (test adjudication). All numbers below come from binaries verified against the
+discriminating check in § Retracted measurement.
+
+### Correctness
+
+| gate | result |
+|---|---|
+| flag actually switches | `ore_ont_9347` concept_rules **113** (ON, default) vs **49,571,087** (`RUSTDL_DKEY_MERGING_GATE=0`) |
+| three reasoning canaries | pass (`forall_value_outside_range_clashes`, `forall_float_value_outside_clashes`, `forall_string_value_outside_enum_clashes`); `datatype_value_membership` 66/66 |
+| new boundary tests | `non_merging_data_property_seeds_no_dkey_disjointness` → 0 pairs; `functional_data_property_still_seeds_dkey_disjointness` → 3 pairs |
+| boundary-test non-vacuity | the negative test **FAILS** under `RUSTDL_DKEY_MERGING_GATE=0` (3 pairs seeded, not 0) |
+| `owl-dl-core` lib suite | **248 passed / 0 failed** |
+| FP=0 net | **22 passed / 0 failed**; galen 27997, notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499, alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16 — all FP=0/MISSED=0 |
+| byte-identity, gate **OFF** vs pre-change `main` | **5/5 IDENTICAL** (wine, family, pizza, ro, alehif-test) — the gate is the only behavioural delta |
+| byte-identity, gate **ON** | **5/5 IDENTICAL** — the curated fixtures contain no large non-merging component |
+
+### Recovery (pinned binaries, single-thread)
+
+| ontology | concept_rules | wall | RSS |
+|---|---|---|---|
+| `ore_ont_9347` before | 49,571,087 | DNF @703 s | **70.7 GB** |
+| `ore_ont_9347` after | **113** | **10.72 s** | **227 MB** |
+| `ore_ont_5368` before | 18,620,251 | DNF @701 s | 27.0 GB |
+| `ore_ont_5368` after | 18,620,251 | DNF @701 s | 27.0 GB |
+
+`ore_ont_9347`: **DNF → completes**, 311× less RSS. This is a DNF-recovery lever, not only a perf one.
+
+**`ore_ont_5368` is flat to within noise** (701.31 → 701.22 s; 26,956,136 → 26,955,920 kB) — the
+intended negative control. It has 15 `FunctionalDataProperty` and 14 `DataPropertyRange`, so its
+component genuinely IS merge-inducing and its pairs are genuinely consumable. The gate correctly
+declines to touch it, which also means **Lever 2 (the on-demand oracle) has a live justification**:
+`5368` remains a 27 GB DNF that only Lever 2 can address.
+
+### Population
+
+**Pending** — the first scan was retracted (see below) and the re-scan against the verified binary is
+still running. Do not quote a population figure until it lands. What is already established is the
+*shape*: the gate helps ontologies whose data properties carry no merge-inducing characteristic
+(`9347`) and is provably inert on those that do (`5368`).
+
 ## Retracted measurement — a sabotaged binary was mistaken for the gate (2026-07-30)
 
 **A population scan reporting "443 of 1,893 ontologies reduced, 0 residual ≥1M" is INVALID and must

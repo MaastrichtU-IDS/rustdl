@@ -5280,8 +5280,10 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
 ///    set faster than the back-jump can prune (Phase 4 attempt 1
 ///    regressed corpus 2× this way).
 ///
-/// This is the last stage that mutates the pool; after this call
-/// the pool is frozen for the tableau run.
+/// This is the last stage before `absorb` that mutates the pool for the
+/// tableau's complement-precomputation; `collect_abox` runs afterwards and
+/// also mutates the pool (interning one nominal concept per individual), so
+/// the pool is not fully frozen until after `collect_abox` returns.
 fn precompute_max_complements(pool: &mut ConceptPool) -> Vec<(ConceptId, ConceptId)> {
     let mut targets: Vec<ConceptId> = pool
         .iter_with_ids()
@@ -8340,6 +8342,170 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .iter()
                 .any(|&(rr, t)| rr == want_role && t == wedge_nominal),
             "C seeds ∃r.{{a}} translated to wedge nominal id {wedge_nominal:?}"
+        );
+    }
+}
+
+/// Differential test: verify that `build_abox_check_inputs` (the reduced fast-path
+/// builder) and `PreparedOntology::from_internal` (the full builder) produce the same
+/// `AboxVerdict` discriminant.
+///
+/// This lives in a unit-test module rather than `tests/` because both builders are
+/// `pub(crate)`. Integration tests cannot reach them.
+///
+/// What is compared: `Inconsistent`-vs-`Unknown` only. The payload ids inside
+/// `ClashReason` (e.g. `IndividualId`, `ClassId`) come from `HashSet` iteration
+/// order and are nondeterministic across runs even for the same binary and input —
+/// comparing them would be flaky. The `Inconsistent`-vs-`Unknown` discriminant is
+/// the FP-relevant invariant: a spurious `Inconsistent` from the fast path marks
+/// every class unsatisfiable.
+///
+/// Each fixture parses a fresh `InternalOntology` independently for each path so
+/// that neither path sees the other's pool mutations.
+#[cfg(test)]
+mod abox_check_differential_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const PFX: &str = "Prefix(:=<http://t/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(body: &str) -> SetOntology<RcStr> {
+        let src = format!("{PFX}Ontology(<http://t/x>\n{body}\n)\n");
+        let mut reader = Cursor::new(src);
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+        onto
+    }
+
+    /// Convert to `InternalOntology` and panic on conversion error.
+    fn to_internal(body: &str) -> InternalOntology {
+        let onto = parse(body);
+        owl_dl_core::convert::convert_ontology(&onto).expect("convert ofn")
+    }
+
+    /// Returns `true` iff the verdict is `Inconsistent`.
+    fn is_inconsistent_fast(internal: &InternalOntology) -> bool {
+        let closure = owl_dl_saturation::saturate(internal);
+        let owned = build_abox_check_inputs(internal);
+        let verdict = abox_check::check(&owned.as_inputs(&closure));
+        matches!(verdict, abox_check::AboxVerdict::Inconsistent { .. })
+    }
+
+    /// Returns `true` iff the full `PreparedOntology` verdict is `Inconsistent`.
+    /// Uses `abox_verdict()` which internally calls `abox_check::check` with
+    /// the same eight fields but built via the full pipeline.
+    fn is_inconsistent_full(internal: InternalOntology) -> bool {
+        let prepared = PreparedOntology::from_internal(internal).expect("prepare");
+        matches!(
+            prepared.abox_verdict(),
+            abox_check::AboxVerdict::Inconsistent { .. }
+        )
+    }
+
+    /// Assert that fast-path and full-path agree on verdict, and also check the
+    /// expected outcome so the test cannot pass by both paths being uniformly wrong.
+    fn assert_both_paths(body: &str, expect_inconsistent: bool, label: &str) {
+        let internal_a = to_internal(body);
+        let internal_b = to_internal(body); // fresh parse — independent pool
+        let fast = is_inconsistent_fast(&internal_a);
+        let full = is_inconsistent_full(internal_b);
+        assert_eq!(
+            fast, full,
+            "{label}: fast path and full path disagree (fast={fast}, full={full})"
+        );
+        assert_eq!(
+            fast, expect_inconsistent,
+            "{label}: expected inconsistent={expect_inconsistent} but got {fast}"
+        );
+    }
+
+    /// P2: individual typed into two disjoint classes — must be `Inconsistent`.
+    #[test]
+    fn differential_p2_disjoint_types_inconsistent() {
+        assert_both_paths(
+            "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+             Declaration(NamedIndividual(:i))
+             DisjointClasses(:A :B)
+             ClassAssertion(:A :i)
+             ClassAssertion(:B :i)
+             SubClassOf(:C :A)",
+            true,
+            "P2 disjoint types",
+        );
+    }
+
+    /// P5: `Functional(R)` + two distinct witnesses + `DifferentIndividuals` —
+    /// must be `Inconsistent`. The merge forced by `Functional(R)` causes
+    /// the two witnesses to unify, violating the `DifferentIndividuals` pair.
+    /// Uses `InverseFunctionalObjectProperty` (which `expand_role_characteristics`
+    /// lowers to `FunctionalObjectProperty` on the inverse) so the ordering
+    /// of `expand_role_characteristics` relative to `build_told_tables` is exercised.
+    #[test]
+    fn differential_p5_functional_two_witnesses_inconsistent() {
+        assert_both_paths(
+            "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+             Declaration(NamedIndividual(:c))
+             Declaration(ObjectProperty(:r))
+             FunctionalObjectProperty(:r)
+             ObjectPropertyAssertion(:r :a :b)
+             ObjectPropertyAssertion(:r :a :c)
+             DifferentIndividuals(:b :c)",
+            true,
+            "P5 functional + two witnesses + DifferentIndividuals",
+        );
+    }
+
+    /// P4: `SameIndividual` + `DifferentIndividuals` on the same pair — must be
+    /// `Inconsistent`.
+    #[test]
+    fn differential_p4_same_and_different_inconsistent() {
+        assert_both_paths(
+            "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+             SameIndividual(:a :b)
+             DifferentIndividuals(:a :b)",
+            true,
+            "P4 same+different",
+        );
+    }
+
+    /// P3: matching positive and negative property assertion — must be `Inconsistent`.
+    #[test]
+    fn differential_p3_negopa_vs_opa_inconsistent() {
+        assert_both_paths(
+            "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+             Declaration(ObjectProperty(:r))
+             ObjectPropertyAssertion(:r :a :b)
+             NegativeObjectPropertyAssertion(:r :a :b)",
+            true,
+            "P3 NegOPA vs OPA",
+        );
+    }
+
+    /// Negative control 1: consistent `ABox` — must NOT be `Inconsistent`.
+    #[test]
+    fn differential_consistent_abox_not_inconsistent() {
+        assert_both_paths(
+            "Declaration(Class(:A)) Declaration(Class(:B))
+             Declaration(NamedIndividual(:i))
+             SubClassOf(:A :B)
+             ClassAssertion(:A :i)",
+            false,
+            "consistent ABox",
+        );
+    }
+
+    /// Negative control 2: `ABox`-free ontology — must NOT be `Inconsistent`.
+    #[test]
+    fn differential_abox_free_not_inconsistent() {
+        assert_both_paths(
+            "Declaration(Class(:A)) Declaration(Class(:B))
+             SubClassOf(:A :B)",
+            false,
+            "ABox-free",
         );
     }
 }

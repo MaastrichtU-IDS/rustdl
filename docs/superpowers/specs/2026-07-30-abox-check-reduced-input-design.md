@@ -232,8 +232,13 @@ salvaged finding, and where `ore_ont_9347`'s 42 GB actually lives).
 
 1. **Verdict identity — the load-bearing gate.** For every ABox-bearing fixture and every
    synthetic in `abox_check`'s existing 16 unit tests, the verdict before and after must be
-   identical, including the `reason`. This is the whole correctness claim; it should be checkable
-   by construction and also tested.
+   identical: `Unknown` vs `Inconsistent` must agree, and the clash *pattern* (which of the
+   P1–P9 `ClashReason` variants) must agree. The payload *ids* inside each `ClashReason`
+   variant (e.g. the `IndividualId`/`ClassId` fields of `DisjointTypes`) are **not
+   deterministic across runs** — they come from `HashSet` iteration order and can flip
+   run-to-run even on the same binary and input. Do NOT compare the `Debug` string or
+   any field containing an id; compare only the `Inconsistent`-vs-`Unknown` outcome.
+   This is the whole correctness claim; it should be checkable by construction and also tested.
 2. **FP=0 / MISSED=0.** `./scripts/run-soundness-diff.sh` — reference closures galen 27997,
    notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499, alehif 247, ro 158,
    ore-15672 142, sulo 51, bibtex 16. **Mandatory locally**: the CI job is a `workflow_dispatch`

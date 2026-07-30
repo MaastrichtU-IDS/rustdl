@@ -1602,11 +1602,10 @@ pub(crate) fn classify_top_down_internal(
         || (crate::horn_shortcircuit_enabled() && saturator_complete_fragment(internal))
         || (crate::classify_tbox_fragment_enabled() && tbox_only_saturator_eligible(internal))
     {
-        // Skip the ABox check entirely on ABox-free inputs — building
-        // PreparedOntology costs ~1.5 s on GALEN-sized TBoxes (NNF +
-        // absorb + role-hierarchy + closure), and abox_check itself
-        // would early-return `Unknown` on empty `individuals`. The
-        // inline scan below is an O(n) walk over the axiom list,
+        // Skip the `ABox` check entirely on `ABox`-free inputs — `abox_check`
+        // itself would early-return `Unknown` on empty `individuals` (no
+        // clash is possible without individuals, by construction). The
+        // `has_abox_axioms` scan below is an O(n) walk over the axiom list,
         // microseconds even on GALEN.
         if crate::abox_check_enabled() && has_abox_axioms(internal) {
             // Build ONLY what abox_check reads, reusing the closure the caller

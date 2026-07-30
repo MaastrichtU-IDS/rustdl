@@ -91,3 +91,28 @@ fn fastpath_no_abox_is_inert() {
         "an ABox-free ontology must not report any class unsatisfiable"
     );
 }
+
+/// Canary for the `classify_n2` entry point, which routes through
+/// `classify_internal_with_timeout` (site 1 in the reduced-input change).
+///
+/// Uses the same P2-clash fixture as
+/// `fastpath_abox_clash_still_marks_all_classes_unsat` so the expected count
+/// is pinned on both sides: 3 named classes, all unsatisfiable on a clash,
+/// none unsatisfiable on a consistent `ABox`.
+#[test]
+fn classify_n2_abox_clash_marks_all_classes_unsat() {
+    let body = "    Declaration(Class(:A))
+    Declaration(Class(:B))
+    Declaration(Class(:C))
+    Declaration(NamedIndividual(:i))
+    DisjointClasses(:A :B)
+    ClassAssertion(:A :i)
+    ClassAssertion(:B :i)
+    SubClassOf(:C :A)";
+    let c = owl_dl_reasoner::classify_n2(&parse(body)).expect("classify_n2");
+    assert_eq!(
+        c.unsatisfiable_classes().len(),
+        3,
+        "classify_n2: an ABox clash must make every class unsatisfiable (site 1)"
+    );
+}

@@ -926,11 +926,19 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   227 MB** (311× RSS, DNF → completes). **`ore_ont_5368` is the negative control and
   is flat to within noise** (701.31→701.22 s, 26,956,136→26,955,920 kB): 15
   `FunctionalDataProperty` + 14 `DataPropertyRange` make its component genuinely
-  merge-inducing, so its pairs ARE consumable and the gate correctly declines — which
-  is why an on-demand disjointness **oracle** (Lever 2) still has a live
-  justification, `5368` being a 27 GB DNF only it can address (four consumer hooks
-  needed, three of which do not exist; no consumer iterates the full pair set, so it
-  stays feasible). **Sound structurally** — the change only REMOVES axioms ⇒ fewer
+  merge-inducing, so its pairs ARE consumable and the gate correctly declines.
+  **Validated breadth** (1,913 ORE onts, pinned binaries both sides): **325 reduced
+  (17%)**; of **41** at ≥1M `concept_rules` before, **38 drop below 1M** and only **3**
+  remain (`7607` 11.6M→5.42M, `1685` 11.5M→5.42M, `4410` 2.82M→1.27M, all ~2×); **2**
+  recovered from a conversion timeout (`9347`→113, `11287`→199,841). `5368` is
+  correctly ABSENT from the reduced list — that absence is the cheapest tell that a
+  scan used the real gate. **Lever 2 (an on-demand disjointness oracle) is therefore
+  PARKED, not queued**: its addressable set is ~4 ontologies (those 3 plus `5368`)
+  against new side-table hooks in four consumers, three of which have none — a poor
+  work-to-reward ratio here. Revisit only if a user-facing ontology lands in that
+  residual class, or if one of the four is independently needed (`5368`, a 27 GB DNF,
+  is the strongest candidate). Encouraging if it is ever built: no consumer iterates
+  the full pair set, so an oracle stays architecturally feasible. **Sound structurally** — the change only REMOVES axioms ⇒ fewer
   clashes ⇒ never an FP; the exposure is completeness, bounded by `m_star` being the
   complete set of merge sources.
   > **MEASURING THIS GATE: `ore_ont_9347` ALONE CANNOT VALIDATE IT.** `9347` reads

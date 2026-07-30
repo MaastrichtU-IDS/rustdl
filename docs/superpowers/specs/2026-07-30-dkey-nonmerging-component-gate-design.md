@@ -216,6 +216,43 @@ still running. Do not quote a population figure until it lands. What is already 
 *shape*: the gate helps ontologies whose data properties carry no merge-inducing characteristic
 (`9347`) and is provably inert on those that do (`5368`).
 
+**RESOLVED — re-scan on the verified binary (this is the figure to quote):**
+
+| | count |
+|---|---|
+| scanned (both sides produced a number, or before-timeout/after-ok) | **1,913** |
+| `concept_rules` ≥ 1M **before** | **41** |
+| ontologies the gate **reduces** | **325** (17%) |
+| …still ≥ 1M **after** (the Lever-2 residual) | **3** |
+| recovered from a conversion **timeout** (45 s/side) | **2** — `ore_ont_9347` (→113), `ore_ont_11287` (→199,841) |
+
+**Internal validity check passed:** `ore_ont_5368` is **absent** from the reduced list, exactly as the
+design requires. Its presence or absence is the cheapest tell for whether a scan used the real gate —
+the retracted scan had wrongly listed it as a recovery.
+
+**How wrong the retracted scan was:** it claimed **443** reduced and **0** residual ≥1M. True figures
+are **325** and **3** — it overstated breadth by ~36% and, more seriously, erased the entire residual
+that justifies Lever 2.
+
+**The residual, in full** (the only ontologies left above 1M):
+
+| ontology | before | after | factor |
+|---|---|---|---|
+| `ore_ont_7607` | 11,640,553 | 5,419,609 | 2.1× |
+| `ore_ont_1685` | 11,506,431 | 5,418,126 | 2.1× |
+| `ore_ont_4410` | 2,817,234 | 1,270,101 | 2.2× |
+
+38 of the 41 ≥1M ontologies drop below 1M; the three that do not get only ~2×, having genuinely
+merge-inducing components — like `5368`, which the gate leaves at 18,620,251 (1.0×).
+
+**This materially weakens the case for Lever 2; read § Scope with it.** The oracle's addressable set
+is about **four** ontologies (the three above plus `5368`) against a change needing new side-table
+hooks in four consumers, three of which have none — a poor work-to-reward ratio on this corpus. Treat
+Lever 2 as **parked pending a workload that makes it matter**, not queued. Revisit only if (a) a
+user-facing ontology lands in this residual class, or (b) one of the four is independently needed
+(`5368`, a 27 GB DNF, is the strongest single candidate). Do not build it on the strength of "the gate
+did not fix everything".
+
 ## Retracted measurement — a sabotaged binary was mistaken for the gate (2026-07-30)
 
 **A population scan reporting "443 of 1,893 ontologies reduced, 0 residual ≥1M" is INVALID and must

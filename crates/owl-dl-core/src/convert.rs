@@ -2527,6 +2527,18 @@ fn bounded_dkey_disjoint_enabled() -> bool {
     std::env::var("RUSTDL_BOUNDED_DKEY_DISJOINT").map_or(true, |v| v != "0")
 }
 
+/// Non-merging-component gate (2026-07-30). **Default ON** — set
+/// `RUSTDL_DKEY_MERGING_GATE=0` to seed disjointness for every role component,
+/// including those that contain no merge-inducing role (the pre-2026-07-30
+/// behaviour). Read per call so tests can toggle it.
+///
+/// A component with no merge-inducing role can never force two `DKey`s into one
+/// node label, so its pairwise disjointness is unusable — see
+/// `docs/superpowers/specs/2026-07-30-dkey-nonmerging-component-gate-design.md`.
+fn dkey_merging_gate_enabled() -> bool {
+    std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
+}
+
 /// Merge-aware role-component map for bounded DKey-disjointness seeding.
 ///
 /// `components[dkey_class]` = the set of role-component roots the `DKey` is
@@ -2711,6 +2723,22 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
         }
     }
 
+    // Components containing at least one merge-inducing role. A component with
+    // none can never force two `DKey`s into ONE node label (`∃p.A ⊓ ∃p.B` has two
+    // distinct successors), so seeding its pairs is dead weight. `None` ⟹ gate
+    // off ⟹ every component is treated as merging (pre-2026-07-30 behaviour).
+    let merging_comps: Option<HashSet<usize>> = if dkey_merging_gate_enabled() {
+        let mut s = HashSet::new();
+        for (r, &is_merging) in m_star.iter().enumerate().take(num_roles) {
+            if is_merging {
+                s.insert(uf.find(r));
+            }
+        }
+        Some(s)
+    } else {
+        None
+    };
+
     // (e) DKey → component set, from every role-restriction pool expr plus
     // DKey-bearing `ObjectPropertyRange` axioms (range key rides the role).
     let mut components: HashMap<ClassId, Vec<usize>> = HashMap::new();
@@ -2719,6 +2747,14 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
                   role: Role,
                   filler: ConceptId| {
         let comp = uf.find(role.role_id().index() as usize);
+        if merging_comps.as_ref().is_some_and(|m| !m.contains(&comp)) {
+            // Gate ON and this component has no merge-inducing role: the keys
+            // under it can never be co-labelled, so leave them unanchored-and-
+            // uncomponented. `seed_disjoint_bucket` already skips such keys
+            // ("can never reach a node label"); this extends that skip to
+            // "can never be CO-labelled".
+            return;
+        }
         collect_direct_dkeys(&out.concepts, filler, &dkeys, &mut |c| {
             let v = components.entry(c).or_default();
             if !v.contains(&comp) {
@@ -4550,6 +4586,14 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _g = DpGuard::on();
         let mut o = SetOntology::<RcStr>::new();
+        // Both properties are FUNCTIONAL, so each is merge-inducing and its own
+        // same-role pair is genuinely consumable. Without this the whole fixture
+        // is non-merging and the correct answer is 0 — which is what
+        // `non_merging_data_property_seeds_no_dkey_disjointness` covers. Making
+        // them functional is what keeps THIS test about the property it was
+        // written for: unrelated roles do not cross-seed.
+        ins(&mut o, functional_dp("http://t/dp1"));
+        ins(&mut o, functional_dp("http://t/dp2"));
         ins(
             &mut o,
             int_dp_assertion("http://t/dp1", "http://t/a", "1", XSD_INT),
@@ -4569,6 +4613,7 @@ mod tests {
         let out = convert_ontology(&o).unwrap();
         // dp1/dp2 are unconnected: only the same-role pairs (1,2) and (3,4)
         // are seeded; the four cross-role pairs are provably unconsumable.
+        // 2, not 6 — that gap IS the bounded-seeding property under test.
         assert_eq!(dkey_disjoint_count(&out), 2);
     }
 
@@ -4709,5 +4754,67 @@ mod tests {
         // `RUSTDL_BOUNDED_DKEY_DISJOINT=0`: unconditional all-pairs — all
         // C(4,2)=6 pairwise-disjoint point pairs.
         assert_eq!(dkey_disjoint_count(&out), 6);
+    }
+
+    // ── Merging-gate boundary tests (RUSTDL_DKEY_MERGING_GATE) ────────────
+    // These two fixtures differ in EXACTLY ONE axiom — `FunctionalDataProperty`
+    // — isolating the gate from every other property of the input.
+
+    /// GATE BOUNDARY, negative side: three integer data values on data property
+    /// `:p` with NO merge-inducing characteristic. Nothing can put two `DKey`s
+    /// in one node label, so ZERO disjointness pairs must be seeded.
+    ///
+    /// Non-vacuity: this test FAILS under `RUSTDL_DKEY_MERGING_GATE=0`
+    /// (3 pairs get seeded without the gate).
+    #[test]
+    fn non_merging_data_property_seeds_no_dkey_disjointness() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let src = r#"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(DataProperty(:p))
+            Declaration(NamedIndividual(:a))
+            Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            DataPropertyAssertion(:p :a "1"^^xsd:integer)
+            DataPropertyAssertion(:p :b "2"^^xsd:integer)
+            DataPropertyAssertion(:p :c "3"^^xsd:integer))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("test fixture converts");
+        assert_eq!(
+            dkey_disjoint_count(&internal),
+            0,
+            "a non-merge-inducing data property must seed no `DKey` disjointness"
+        );
+    }
+
+    /// GATE BOUNDARY, positive side: the same fixture plus one
+    /// `FunctionalDataProperty` axiom. `:p` is now merge-inducing, so the three
+    /// values CAN be forced onto one node and all 3 pairs must be seeded.
+    #[test]
+    fn functional_data_property_still_seeds_dkey_disjointness() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let src = r#"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(DataProperty(:p))
+            FunctionalDataProperty(:p)
+            Declaration(NamedIndividual(:a))
+            Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            DataPropertyAssertion(:p :a "1"^^xsd:integer)
+            DataPropertyAssertion(:p :b "2"^^xsd:integer)
+            DataPropertyAssertion(:p :c "3"^^xsd:integer))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("test fixture converts");
+        assert_eq!(
+            dkey_disjoint_count(&internal),
+            3,
+            "a functional data property is merge-inducing: all 3 pairs must be seeded"
+        );
     }
 }

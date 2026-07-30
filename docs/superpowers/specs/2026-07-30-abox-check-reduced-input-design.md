@@ -50,18 +50,36 @@ Eight ABox-bearing ontologies that currently complete, `check ON` vs `check OFF`
 | `ore_ont_10173` | 2,004 | 3.91 s | 3.91 s | 0% |
 | `ore_ont_10230` | 586 | 0.12 s | 0.10 s | 17% (0.02 s absolute — noise) |
 
-**3 of 8 show 20–40%, all above 180k assertions.** Small-ABox ontologies are inert.
+**Second sample — the 50k–180k band (spec gate 6, now run):**
 
-Population, for scale only: of 1,920 pool ontologies, 1,146 have an ABox, 654 have ≥1k
-assertions, 192 have ≥50k, **84 have ≥180k**.
+| ontology | assertions | ON | OFF | saving |
+|---|---|---|---|---|
+| `ore_ont_1043` | 137,569 | 2.36 s | 1.63 s | **31%** |
+| `ore_ont_1115` | 74,124 | 0.83 s | 0.64 s | **23%** |
+| `ore_ont_10965` | 108,314 | 1.24 s | 0.97 s | **22%** |
+| `ore_ont_11110` | 81,052 | 4.45 s | 3.54 s | **20%** |
+| `ore_ont_10127` | 105,548 | 19.06 s | 19.04 s | 0% |
+| `ore_ont_10838` | 135,472 | 4.64 s | 4.67 s | −1% |
 
-**Do not read 84 as 84 wins.** That is a feature-presence count, and `ore_ont_10127` already
-falsifies a naive threshold — 105k assertions, 0% saving, because its 19 s wall is dominated by
-something that makes a 0.6 s prepare invisible. Three prior estimates this month died exactly
-this way (83 ABox-bearing "addressable" → 0/4 rescued; a 5-ontology ABox-filter payoff → 0;
-a multiplicative mechanism → refuted). The honest claim is: **3 of 3 sampled above 180k
-assertions saved 20–40%; the 50k–180k band is untested; validate the population before quoting
-it.**
+**Combined, 14 ontologies sampled:**
+
+| band | wins | savings |
+|---|---|---|
+| ≥180k assertions | **3 / 3** | 40%, 38%, 20% |
+| 50k–180k | **4 / 6** | 31%, 23%, 22%, 20% |
+| <50k | **0 / 4** | inert |
+
+**7 of 9 above 50k assertions save 20–40%; everything below 50k is inert.** Population with
+≥50k assertions: **192** of 1,920.
+
+Unlike the three estimates that collapsed this month, this is a **measured in-band hit rate
+(78%)**, not a feature-presence count — the distinction that killed the others. It is still a
+sample: 9 of 192 measured above the threshold.
+
+**The predictor is ABox size AND prepare cost, not ABox size alone.** The two non-winners show
+why: `10127`'s 19 s wall makes a 0.6 s prepare ~3%, and `10838`'s TBox is small enough that
+`HyperCache`+absorb are cheap to begin with. So expect the saving where a large ABox coincides
+with a non-trivial TBox, and do not promise it per-ontology without measuring.
 
 ## Why this is a better lever than the one it replaced
 
@@ -71,7 +89,7 @@ it.**
 | verdict change | possible if the contract is broken | **verdict-identical by construction** |
 | premise | ABox irrelevant to class subsumption | none — same inputs, same answer |
 | applies to nominal-bearing ontologies | no | **yes** |
-| measured payoff | 0 | 20–40% on 3/3 sampled >180k |
+| measured payoff | 0 | 20–40% on 7/9 sampled >50k assertions |
 
 `abox_check` receives exactly the same eight values, so it computes exactly the same verdict. The
 change is which *other* fields get built alongside — a pure waste removal.

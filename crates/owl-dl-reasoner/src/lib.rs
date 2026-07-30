@@ -4252,6 +4252,102 @@ where
     prepared.decide(build_test_concept)
 }
 
+/// Owned backing store for [`abox_check::AboxCheckInputs`], for callers that need
+/// only the inconsistency verdict and not a full [`PreparedOntology`]. Built by
+/// [`build_abox_check_inputs`]; borrow with [`Self::as_inputs`].
+///
+/// This exists so the classify fast path stops building [`HyperCache`], `NNF`,
+/// absorb and [`ConsistencyCache`] solely to read `abox_verdict()` and then discard
+/// them — measured at 0.62 s / 185 MB on `ore_ont_1043`.
+pub(crate) struct OwnedAboxCheckInputs {
+    pool: ConceptPool,
+    abox: Abox,
+    axioms: Vec<Axiom>,
+    told: owl_dl_core::told::ToldTables,
+    hierarchy: RoleHierarchy,
+    inverse_pairs: Vec<(RoleId, RoleId)>,
+    disjoint_role_pairs: Vec<(RoleId, RoleId)>,
+}
+
+impl OwnedAboxCheckInputs {
+    pub(crate) fn as_inputs<'a>(
+        &'a self,
+        closure: &'a owl_dl_saturation::Subsumers,
+    ) -> abox_check::AboxCheckInputs<'a> {
+        abox_check::AboxCheckInputs {
+            abox: &self.abox,
+            axioms: &self.axioms,
+            told: &self.told,
+            pool: &self.pool,
+            inverse_pairs: &self.inverse_pairs,
+            hierarchy: &self.hierarchy,
+            disjoint_role_pairs: &self.disjoint_role_pairs,
+            closure,
+        }
+    }
+}
+
+/// Build only what [`abox_check::check`] reads. Mirrors the corresponding prefix
+/// of [`PreparedOntology::from_internal`] — `expand_role_characteristics`, the
+/// role-side collectors, `build_told_tables`, `collect_abox` — and deliberately
+/// omits `nnf_axioms`, `absorb`, `precompute_max_complements`, [`HyperCache::build`],
+/// [`ConsistencyCache::build`] and `snapshot_cache`, none of which `check` reads.
+///
+/// `collect_abox` only reads `internal.axioms` and interns one nominal concept per
+/// individual, so running it before `absorb` yields different *individual* concept
+/// ids but identical *class* ids — and `check` compares ids only within one input
+/// set, so the verdict is unchanged. The canaries in
+/// `tests/abox_check_reduced_input.rs` pin this.
+///
+/// # This is a HAND-COPIED prefix, and the differential test does not fully guard it
+///
+/// This function and `from_internal` are two parallel sequences, not shared code. A
+/// future edit to `from_internal` can silently desynchronise them.
+/// `abox_check_differential_tests` compares the two paths' verdicts, but its coverage
+/// of THIS risk was measured and is **partial**: with the tests in place, all three of
+/// these sabotages of this function still passed —
+///
+/// 1. deleting the `expand_role_characteristics` call outright,
+/// 2. moving `build_told_tables` to after it,
+/// 3. moving the `axioms` clone to after it.
+///
+/// The reason is that those three are, for *today's* `check`, semantically inert:
+/// `expand_role_characteristics` appends `⊤ ⊑ ≤1 r.⊤` and self-inverse
+/// `InverseObjectProperties` pairs; told tables index atomic subsumption/disjointness
+/// (a `Max` is not atomic, so no new told edge), and `check` scans `axioms` only for
+/// `ABox`/role forms it recognises, which those additions are not. `hierarchy` /
+/// `inverse_pairs` / `disjoint_role_pairs` are collected after the call on **both**
+/// paths, so they cannot diverge from its placement either.
+///
+/// So the desync hazard is real but currently **latent**: it becomes live the moment
+/// `check` starts reading something an omitted pass affects. If you extend
+/// `abox_check` to read a new field, or to consume a lowered axiom form, re-run the
+/// sabotage above — if it still passes, the differential test is not protecting your
+/// new dependency. The durable fix is to have `from_internal` call this function
+/// rather than restate it; that was not done here because the values are not a
+/// contiguous prefix of `from_internal` (the `dkey`/`hyper`/`consistency` builds are
+/// interleaved), so unifying them is a restructure of `from_internal`, not an
+/// extraction.
+pub(crate) fn build_abox_check_inputs(internal: &InternalOntology) -> OwnedAboxCheckInputs {
+    let mut internal = internal.clone();
+    let told = owl_dl_core::told::build_told_tables(&internal);
+    let axioms = internal.axioms.clone();
+    expand_role_characteristics(&mut internal);
+    let hierarchy = build_role_hierarchy(&internal);
+    let inverse_pairs = collect_inverse_pairs(&internal);
+    let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
+    let abox = collect_abox(&mut internal);
+    OwnedAboxCheckInputs {
+        pool: internal.concepts,
+        abox,
+        axioms,
+        told,
+        hierarchy,
+        inverse_pairs,
+        disjoint_role_pairs,
+    }
+}
+
 /// Snapshot of an ontology after every pre-tableau pass has run.
 /// Holds the absorbed `TBox`, role-side metadata, `ABox` seed data and
 /// the (now-frozen) concept pool, so each tableau query reuses one
@@ -4692,7 +4788,16 @@ impl PreparedOntology {
     pub(crate) fn abox_verdict(&self) -> &abox_check::AboxVerdict {
         self.abox_verdict.get_or_init(|| {
             if crate::abox_check_enabled() {
-                abox_check::check(self)
+                abox_check::check(&abox_check::AboxCheckInputs {
+                    abox: &self.abox,
+                    axioms: &self.axioms,
+                    told: &self.told,
+                    pool: &self.pool,
+                    inverse_pairs: &self.inverse_pairs,
+                    hierarchy: &self.hierarchy,
+                    disjoint_role_pairs: &self.disjoint_role_pairs,
+                    closure: &self.closure,
+                })
             } else {
                 abox_check::AboxVerdict::Unknown
             }
@@ -5205,8 +5310,10 @@ fn collect_abox(internal: &mut InternalOntology) -> Abox {
 ///    set faster than the back-jump can prune (Phase 4 attempt 1
 ///    regressed corpus 2× this way).
 ///
-/// This is the last stage that mutates the pool; after this call
-/// the pool is frozen for the tableau run.
+/// This is the last stage before `absorb` that mutates the pool for the
+/// tableau's complement-precomputation; `collect_abox` runs afterwards and
+/// also mutates the pool (interning one nominal concept per individual), so
+/// the pool is not fully frozen until after `collect_abox` returns.
 fn precompute_max_complements(pool: &mut ConceptPool) -> Vec<(ConceptId, ConceptId)> {
     let mut targets: Vec<ConceptId> = pool
         .iter_with_ids()
@@ -8265,6 +8372,170 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
                 .iter()
                 .any(|&(rr, t)| rr == want_role && t == wedge_nominal),
             "C seeds ∃r.{{a}} translated to wedge nominal id {wedge_nominal:?}"
+        );
+    }
+}
+
+/// Differential test: verify that `build_abox_check_inputs` (the reduced fast-path
+/// builder) and `PreparedOntology::from_internal` (the full builder) produce the same
+/// `AboxVerdict` discriminant.
+///
+/// This lives in a unit-test module rather than `tests/` because both builders are
+/// `pub(crate)`. Integration tests cannot reach them.
+///
+/// What is compared: `Inconsistent`-vs-`Unknown` only. The payload ids inside
+/// `ClashReason` (e.g. `IndividualId`, `ClassId`) come from `HashSet` iteration
+/// order and are nondeterministic across runs even for the same binary and input —
+/// comparing them would be flaky. The `Inconsistent`-vs-`Unknown` discriminant is
+/// the FP-relevant invariant: a spurious `Inconsistent` from the fast path marks
+/// every class unsatisfiable.
+///
+/// Each fixture parses a fresh `InternalOntology` independently for each path so
+/// that neither path sees the other's pool mutations.
+#[cfg(test)]
+mod abox_check_differential_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const PFX: &str = "Prefix(:=<http://t/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(body: &str) -> SetOntology<RcStr> {
+        let src = format!("{PFX}Ontology(<http://t/x>\n{body}\n)\n");
+        let mut reader = Cursor::new(src);
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+        onto
+    }
+
+    /// Convert to `InternalOntology` and panic on conversion error.
+    fn to_internal(body: &str) -> InternalOntology {
+        let onto = parse(body);
+        owl_dl_core::convert::convert_ontology(&onto).expect("convert ofn")
+    }
+
+    /// Returns `true` iff the verdict is `Inconsistent`.
+    fn is_inconsistent_fast(internal: &InternalOntology) -> bool {
+        let closure = owl_dl_saturation::saturate(internal);
+        let owned = build_abox_check_inputs(internal);
+        let verdict = abox_check::check(&owned.as_inputs(&closure));
+        matches!(verdict, abox_check::AboxVerdict::Inconsistent { .. })
+    }
+
+    /// Returns `true` iff the full `PreparedOntology` verdict is `Inconsistent`.
+    /// Uses `abox_verdict()` which internally calls `abox_check::check` with
+    /// the same eight fields but built via the full pipeline.
+    fn is_inconsistent_full(internal: InternalOntology) -> bool {
+        let prepared = PreparedOntology::from_internal(internal).expect("prepare");
+        matches!(
+            prepared.abox_verdict(),
+            abox_check::AboxVerdict::Inconsistent { .. }
+        )
+    }
+
+    /// Assert that fast-path and full-path agree on verdict, and also check the
+    /// expected outcome so the test cannot pass by both paths being uniformly wrong.
+    fn assert_both_paths(body: &str, expect_inconsistent: bool, label: &str) {
+        let internal_a = to_internal(body);
+        let internal_b = to_internal(body); // fresh parse — independent pool
+        let fast = is_inconsistent_fast(&internal_a);
+        let full = is_inconsistent_full(internal_b);
+        assert_eq!(
+            fast, full,
+            "{label}: fast path and full path disagree (fast={fast}, full={full})"
+        );
+        assert_eq!(
+            fast, expect_inconsistent,
+            "{label}: expected inconsistent={expect_inconsistent} but got {fast}"
+        );
+    }
+
+    /// P2: individual typed into two disjoint classes — must be `Inconsistent`.
+    #[test]
+    fn differential_p2_disjoint_types_inconsistent() {
+        assert_both_paths(
+            "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))
+             Declaration(NamedIndividual(:i))
+             DisjointClasses(:A :B)
+             ClassAssertion(:A :i)
+             ClassAssertion(:B :i)
+             SubClassOf(:C :A)",
+            true,
+            "P2 disjoint types",
+        );
+    }
+
+    /// P5: `Functional(R)` + two distinct witnesses + `DifferentIndividuals` —
+    /// must be `Inconsistent`. The merge forced by `Functional(R)` causes
+    /// the two witnesses to unify, violating the `DifferentIndividuals` pair.
+    /// Uses `InverseFunctionalObjectProperty` (which `expand_role_characteristics`
+    /// lowers to `FunctionalObjectProperty` on the inverse) so the ordering
+    /// of `expand_role_characteristics` relative to `build_told_tables` is exercised.
+    #[test]
+    fn differential_p5_functional_two_witnesses_inconsistent() {
+        assert_both_paths(
+            "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+             Declaration(NamedIndividual(:c))
+             Declaration(ObjectProperty(:r))
+             FunctionalObjectProperty(:r)
+             ObjectPropertyAssertion(:r :a :b)
+             ObjectPropertyAssertion(:r :a :c)
+             DifferentIndividuals(:b :c)",
+            true,
+            "P5 functional + two witnesses + DifferentIndividuals",
+        );
+    }
+
+    /// P4: `SameIndividual` + `DifferentIndividuals` on the same pair — must be
+    /// `Inconsistent`.
+    #[test]
+    fn differential_p4_same_and_different_inconsistent() {
+        assert_both_paths(
+            "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+             SameIndividual(:a :b)
+             DifferentIndividuals(:a :b)",
+            true,
+            "P4 same+different",
+        );
+    }
+
+    /// P3: matching positive and negative property assertion — must be `Inconsistent`.
+    #[test]
+    fn differential_p3_negopa_vs_opa_inconsistent() {
+        assert_both_paths(
+            "Declaration(NamedIndividual(:a)) Declaration(NamedIndividual(:b))
+             Declaration(ObjectProperty(:r))
+             ObjectPropertyAssertion(:r :a :b)
+             NegativeObjectPropertyAssertion(:r :a :b)",
+            true,
+            "P3 NegOPA vs OPA",
+        );
+    }
+
+    /// Negative control 1: consistent `ABox` — must NOT be `Inconsistent`.
+    #[test]
+    fn differential_consistent_abox_not_inconsistent() {
+        assert_both_paths(
+            "Declaration(Class(:A)) Declaration(Class(:B))
+             Declaration(NamedIndividual(:i))
+             SubClassOf(:A :B)
+             ClassAssertion(:A :i)",
+            false,
+            "consistent ABox",
+        );
+    }
+
+    /// Negative control 2: `ABox`-free ontology — must NOT be `Inconsistent`.
+    #[test]
+    fn differential_abox_free_not_inconsistent() {
+        assert_both_paths(
+            "Declaration(Class(:A)) Declaration(Class(:B))
+             SubClassOf(:A :B)",
+            false,
+            "ABox-free",
         );
     }
 }

@@ -8,16 +8,32 @@ zero payoff; this one replaced it and is better evidenced)
 
 ## The waste
 
-**The waste is on the FAST PATH ONLY** (corrected 2026-07-30 — the first draft of this spec
-claimed both entry points):
+**The waste is on the FAST PATHS ONLY — and there are TWO of them** (corrected twice: the first
+draft claimed both entry points wasted a build; the second correction said "fast path" singular and
+mis-attributed the second fast-path block as the top-down site):
 
-- **fast path (`classify.rs:785-787`) — pure waste.** A **full** `PreparedOntology` is built
-  (EL saturation, told tables, `HyperCache::build`, NNF + absorb, complements) *solely* to read
-  `abox_verdict()`, and then `return classify_pure_el(...)` **discards it** — `prepared` is never
-  used again.
-- **top-down path (`classify.rs:1626`, verdict at `:1631`) — no waste.** The same object is
-  needed for classification anyway, and `abox_verdict()` is a **lazily-initialised** field
-  (`lib.rs:4692`, `get_or_init`), so the check adds no construction there.
+- **fast path in `classify_internal_with_timeout` — pure waste.** A **full** `PreparedOntology` is
+  built (EL saturation, told tables, `HyperCache::build`, NNF + absorb, complements) *solely* to
+  read `abox_verdict()`, and then `return classify_pure_el(...)` **discards it**.
+- **fast path in `classify_top_down_internal` — pure waste, same shape.** This function has its
+  own fast-path early-exit block that also ends in `return Ok(classify_pure_el(...))`. It was
+  wasting the same build. **This is the block the second correction mistook for the top-down path**,
+  because it sits just above it.
+- **genuine top-down / hybrid path — no waste.** Below that block, `classify_top_down_internal`
+  builds the `PreparedOntology` it actually classifies with and reads `prepared.abox_verdict()` off
+  it. Since `abox_verdict()` is a **lazily-initialised** field (`get_or_init`), the check adds no
+  construction there. Same for the corresponding build in `classify_internal_with_timeout`.
+
+So: **two** sites converted, **two** legitimate builds untouched. Verify by function, not by line
+number — the line numbers in this spec's earlier drafts drifted under later edits and that is
+precisely how the mis-attribution happened. Current map:
+
+| site | function | disposition |
+|---|---|---|
+| `check` call, `classify.rs:792` → `classify_pure_el` `:804` | `classify_internal_with_timeout` | converted |
+| `from_internal` `:810` | `classify_internal_with_timeout` | untouched (used to classify) |
+| `check` call, `classify.rs:1618` → `classify_pure_el` `:1630` | `classify_top_down_internal` | converted |
+| `from_internal` `:1636`, `abox_verdict()` `:1641` | `classify_top_down_internal` | untouched (used to classify) |
 
 This is confirmed by mode, 8 of 8: every ontology that saved takes the fast path, and both that
 saved nothing take the hybrid path (see § Measured breadth). It is a mechanism, not a correlation.
@@ -77,8 +93,25 @@ Eight ABox-bearing ontologies that currently complete, `check ON` vs `check OFF`
 | 50k–180k | **4 / 6** | 31%, 23%, 22%, 20% |
 | <50k | **0 / 4** | inert |
 
-**7 of 9 above 50k assertions save 20–40%; everything below 50k is inert.** Population with
-≥50k assertions: **192** of 1,920.
+**7 of 9 above 50k assertions save 20–40%; everything below 50k is inert.**
+
+**Population — measured on the correct predictor, not the proxy (2026-07-30).** The "192 with
+≥50k assertions" figure below was an assertion-count proxy written before the fast-path mechanism
+was found. Counted directly over 120 sampled completing ORE ontologies:
+
+| set | count | share |
+|---|---|---|
+| completing (sampled) | 120 | — |
+| take the fast path | 68 | 57% |
+| fast path **and** any ABox | **25** | **21%** |
+| fast path **and** ≥50k ABox assertions | **8** | **6.7%** |
+
+So the addressable set is ~21% of completing ontologies for *some* saving and **~6.7% for the
+20–40% band** — extrapolating to ORE's 1,920, roughly **400** and **107** respectively. That is
+materially smaller than the retired 192-with-≥50k-assertions estimate, and it is the number to
+quote: it selects on the predictor that was shown to be *binding* (the path) rather than merely
+present (assertion count). The recurring error this repo has made six times this month is exactly
+that substitution.
 
 Unlike the three estimates that collapsed this month, this is a **measured in-band hit rate
 (78%)**, not a feature-presence count — the distinction that killed the others. It is still a
@@ -131,18 +164,43 @@ pub(crate) struct AboxCheckInput<'a> {
 }
 ```
 
-`abox_check::check` takes that instead of `&PreparedOntology`. **Only the fast-path site
-(`classify.rs:785-787`) changes**: it builds the eight values directly and calls
-`abox_check::check` on them, skipping `HyperCache::build`, `ConsistencyCache::build`,
-`snapshot_cache`, and absorb entirely. The top-down site keeps `prepared.abox_verdict()`
-unchanged — it needs the full object regardless, so there is nothing to save and no reason to
-touch it.
+`abox_check::check` takes that instead of `&PreparedOntology`. **Only the two fast-path sites
+change**: each builds the eight values directly and calls `abox_check::check` on them, skipping
+`HyperCache::build`, `ConsistencyCache::build`, `snapshot_cache`, NNF and absorb entirely. The two
+genuine classify builds keep `prepared.abox_verdict()` unchanged — they need the full object
+regardless, so there is nothing to save and no reason to touch them.
+
+**Why the eight values are equivalent, not merely similar** (this is what byte-identity on five
+fixtures cannot establish, since the fixtures might not exercise a divergence):
+
+- `told` and `axioms` are captured BEFORE `expand_role_characteristics` in both constructions —
+  load-bearing, because that pass APPENDS lowered axioms, so cloning after it would differ.
+- `hierarchy`, `inverse_pairs`, `disjoint_role_pairs` are built after it in both.
+- `abox` is the subtle one: `from_internal` runs `collect_abox` AFTER `nnf_axioms`/`absorb`, the
+  reduced builder runs it without them. Equivalent because `collect_abox` reads only
+  `internal.axioms`, `nnf_axioms` **returns** its rewritten axioms as a separate `Vec` rather than
+  writing them back, and `absorb` takes those by reference and never sees `internal.axioms` at all.
+  The repo already pins this with `normalize::tests::nnf_axioms_leaves_original_axioms_unchanged`
+  (verified passing). Consequence: the interned *individual* concept ids differ numerically between
+  the two constructions, because the pool has had fewer passes; `check` only ever compares ids
+  within one input set, so the verdict does not depend on their absolute values.
+- `closure` is reused rather than recomputed, and is the SAME VALUE, not an equivalent one:
+  `from_internal`'s closure is `saturate` over the **un-mutated** input, and the caller's
+  `let closure = saturate(internal)` is over that same pre-mutation ontology with no intervening
+  mutation.
+
+**The new builder is infallible, and that loses nothing.** `from_internal`'s only fallible
+construct is `collect_chain_axioms(&internal)?`, and that function returns `Ok(chains)`
+unconditionally — length-N>2 chains are *dropped* via `continue`, never errored. So no reachable
+`Err` is being swallowed. (`abox_check` never reads chain axioms in any case, and both genuine
+classify builds still run the call.)
 
 **Why a struct rather than a reduced constructor.** A second `PreparedOntology` constructor would
 leave two objects of the same type with different completeness, and the id-space hazard the
 `ConsistencyCache` doc already records (`lib.rs:3159`: "a mismatched hierarchy would let an
 unrelated edge satisfy a super-role atom = false clash") becomes reachable by accident. An
-explicit input type makes the dependency set checked by the compiler and cannot drift — if someone
+explicit input type makes the **dependency set** checked by the compiler and unable to drift (note:
+the dependency *set*, not the construction *sequence* — see § Known limitation) — if someone
 later makes `abox_check` read `hyper`, it will not compile.
 
 **Fold in the duplicated saturation.** On the fast path the caller already holds a closure (it
@@ -175,8 +233,13 @@ salvaged finding, and where `ore_ont_9347`'s 42 GB actually lives).
 
 1. **Verdict identity — the load-bearing gate.** For every ABox-bearing fixture and every
    synthetic in `abox_check`'s existing 16 unit tests, the verdict before and after must be
-   identical, including the `reason`. This is the whole correctness claim; it should be checkable
-   by construction and also tested.
+   identical: `Unknown` vs `Inconsistent` must agree, and the clash *pattern* (which of the
+   P1–P9 `ClashReason` variants) must agree. The payload *ids* inside each `ClashReason`
+   variant (e.g. the `IndividualId`/`ClassId` fields of `DisjointTypes`) are **not
+   deterministic across runs** — they come from `HashSet` iteration order and can flip
+   run-to-run even on the same binary and input. Do NOT compare the `Debug` string or
+   any field containing an id; compare only the `Inconsistent`-vs-`Unknown` outcome.
+   This is the whole correctness claim; it should be checkable by construction and also tested.
 2. **FP=0 / MISSED=0.** `./scripts/run-soundness-diff.sh` — reference closures galen 27997,
    notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499, alehif 247, ro 158,
    ore-15672 142, sulo 51, bibtex 16. **Mandatory locally**: the CI job is a `workflow_dispatch`
@@ -209,3 +272,122 @@ runtime variant.
 - It does not recover any DNF ontology. Every ontology measured here already completes; `11311`
   DNFs both with and without the check. **This is a wall/RSS lever, not a completeness lever.**
 - It does not change any verdict, by design. If it does, that is a bug, not a trade-off.
+
+---
+
+## Measured results (2026-07-30) — SHIPPED
+
+Branch `perf/abox-check-reduced-input`. Implemented in three commits: `454778d`+`5d8df0f`
+(invariant canaries), `d8726d1` (`AboxCheckInputs` extraction), `1af1dd8` (both fast-path sites).
+
+### Correctness
+
+**Gate 1 — verdict identity: PASS.** Three canaries in
+`crates/owl-dl-reasoner/tests/abox_check_reduced_input.rs`, all green. Proven **non-vacuous**: with
+`RUSTDL_ABOX_CHECK=0` the clash canary's unsat count drops 3 → 0, so it genuinely exercises the
+verdict rather than passing for unrelated reasons. Full `-p owl-dl-reasoner` suite green; `cargo
+fmt --check` and `cargo clippy --all-targets -- -D warnings` both exit 0.
+
+**Gate 2 — FP=0 net: PASS.** `./scripts/run-soundness-diff.sh` → **22 passed, 0 failed** (177 s).
+Every closure exact: galen 27997, notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499,
+alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16 — all FP=0 / MISSED=0. The 3 NOT VERIFIED
+(`ro-stripped`, `sulo-stripped`, `sio-stripped`) are the fixtures already documented as
+unobtainable, not a regression.
+
+**Gate 3 — byte-identity: PASS, 13/13.** Built pre-change `main` (`d20fd67`) and this branch and
+diffed real output: `classify` and `consistent` on wine (201 subs) / family (121, `inconsistent`) /
+pizza (314) / ro (49) / alehif-test (51) — **10/10 identical**; `realize --json` on family / pizza /
+ro — **3/3 identical**. Task 2 alone was also verified 10/10 identical, which isolates any future
+diff to Task 3 rather than to the extraction.
+
+**Beyond the fixtures.** Byte-identity on five fixtures cannot prove the eight values match — the
+fixtures might not exercise a divergence. The structural argument in § Design is what carries it,
+and its load-bearing premise is pinned by a pre-existing repo test,
+`normalize::tests::nnf_axioms_leaves_original_axioms_unchanged` (run, passes).
+
+### Recovery — measured pre/post on one machine, single-threaded, min-of-3
+
+| ontology | mode | pre wall | post wall | Δ wall | pre RSS | post RSS | Δ RSS |
+|---|---|---|---|---|---|---|---|
+| `ore_ont_10073` | fast | 9.74 s | 6.28 s | **−35.5%** | 865.5 MB | 865.6 MB | 0% |
+| `ore_ont_10068` | fast | 3.65 s | 2.42 s | **−33.7%** | 363.9 MB | 343.3 MB | −5.7% |
+| `ore_ont_1043` | fast | 2.38 s | 1.77 s | **−25.6%** | 513.9 MB | 333.2 MB | **−35.2%** |
+| `ore_ont_1115` | fast | 0.85 s | 0.69 s | −18.8% | 151.7 MB | 147.4 MB | −2.8% |
+| `ore_ont_11110` | fast | 4.49 s | 3.65 s | −18.7% | 263.7 MB | 228.3 MB | −13.4% |
+| `ore_ont_10965` | fast | 1.26 s | 1.05 s | −16.7% | 225.0 MB | 225.0 MB | 0% |
+| `ore_ont_10127` | hybrid | 19.13 s | 19.10 s | 0.2% | 283.8 MB | 287.1 MB | −1.1% |
+| `ore_ont_10838` | hybrid | 4.70 s | 4.65 s | 1.1% | 377.5 MB | 377.4 MB | 0% |
+
+**Gate 5 — the hybrid control holds.** Both hybrid ontologies are flat (0.2%, 1.1%), confirming the
+change touches only the fast paths. A movement here would have meant the fast-path branch was being
+entered when it should not be.
+
+**Measurement is stable, so the deltas are not noise.** The min-of-3 `pre` walls reproduce two
+earlier independent single-run baselines closely (`1043` 2.38 / 2.37 / 2.36; `10073` 9.74 / 9.70;
+`10127` 19.13 / 19.06).
+
+### What fraction of the ceiling this captures — state this, not the bound
+
+`RUSTDL_ABOX_CHECK=0` skips the check entirely and is therefore an **upper bound**, not this
+lever's value; the reduced build still constructs the eight fields. Achieved fraction of that
+ceiling:
+
+| ontology | ceiling (check OFF) | achieved | fraction of ceiling |
+|---|---|---|---|
+| `ore_ont_11110` | 20% | 18.7% | **94%** |
+| `ore_ont_10068` | 38% | 33.7% | **89%** |
+| `ore_ont_10073` | 40% | 35.5% | **89%** |
+| `ore_ont_1043` | 31% | 25.6% | 83% |
+| `ore_ont_1115` | 23% | 18.8% | 82% |
+| `ore_ont_10965` | 22% | 16.7% | 76% |
+
+So the change recovers **76–94% of the theoretical maximum** on fast-path ABox ontologies.
+
+**The RSS win is NOT broad — correcting this spec's own earlier implication.** § The waste said the
+recoverable RSS share was "a majority of the 185 MB". True on `ore_ont_1043` (180.7 MB observed
+against 185 MB predicted — a close match) and partly on `11110`, but **4 of 6 winners show ~0% RSS
+change** despite 17–36% wall wins. So the saving is predominantly **skipped compute** (the second
+EL saturation plus `HyperCache::build`), and RSS drops only where the discarded structures happened
+to determine peak. Do not cite this as a memory lever.
+
+### Known limitation — the differential test does NOT fully guard construction drift
+
+The final review raised this as its top finding: `build_abox_check_inputs` is a **hand-copied
+prefix** of `from_internal`, not shared code, so a future edit to `from_internal` can silently
+desynchronise the fast path from the hybrid path. A differential test was added
+(`abox_check_differential_tests` in `lib.rs`, 6 shapes covering P2/P3/P4/P5 plus 2 negative
+controls) comparing the two paths' verdicts.
+
+**I then tried to break it, and it did not catch any of the three most likely desyncs.** With the
+tests in place, all three of these sabotages of `build_abox_check_inputs` still passed 6/6:
+
+1. deleting the `expand_role_characteristics` call outright;
+2. moving `build_told_tables` to after it;
+3. moving the `axioms` clone to after it.
+
+So **the differential test does not close this finding**, and any claim that it does is wrong. What
+it does establish is verdict agreement on 6 shapes — useful, and the harness a future engineer
+extends, but not a drift guard.
+
+**Why it cannot catch them, which is the reassuring part:** those three reorderings are
+semantically inert for *today's* `check`. `expand_role_characteristics` appends `⊤ ⊑ ≤1 r.⊤` and
+self-inverse `InverseObjectProperties` pairs; told tables index atomic subsumption/disjointness and
+a `Max` is not atomic, so no new told edge appears; `check` scans `axioms` only for the `ABox`/role
+forms it recognises, which those additions are not; and `hierarchy` / `inverse_pairs` /
+`disjoint_role_pairs` are collected after the call on **both** paths. So the FP channel the review
+described is **real but latent** — it goes live the moment `check` reads something an omitted pass
+affects.
+
+**Obligation on whoever extends `abox_check`:** if you make it read a new field or a lowered axiom
+form, re-run the sabotage above. If it still passes, the differential test is not protecting your
+new dependency. The durable fix is to have `from_internal` call `build_abox_check_inputs` instead of
+restating it; that was not done here because the eight values are not a contiguous prefix of
+`from_internal` (the `dkey` / `hyper` / `consistency` builds are interleaved), so unifying them is a
+restructure of `from_internal` rather than an extraction — more risk than this branch should carry.
+Recorded in the function's own doc comment so it is found at the point of change.
+
+### Scope correction found during execution
+
+Both this spec and the plan said "the fast-path call site" singular. There are **two**
+structurally identical fast-path blocks and both were wasting the build — see § The waste for the
+authoritative by-function map. The implementer converted both.

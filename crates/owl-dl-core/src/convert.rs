@@ -4746,4 +4746,66 @@ mod tests {
         // C(4,2)=6 pairwise-disjoint point pairs.
         assert_eq!(dkey_disjoint_count(&out), 6);
     }
+
+    // ── Merging-gate boundary tests (RUSTDL_DKEY_MERGING_GATE) ────────────
+    // These two fixtures differ in EXACTLY ONE axiom — `FunctionalDataProperty`
+    // — isolating the gate from every other property of the input.
+
+    /// GATE BOUNDARY, negative side: three integer data values on data property
+    /// `:p` with NO merge-inducing characteristic. Nothing can put two `DKey`s
+    /// in one node label, so ZERO disjointness pairs must be seeded.
+    ///
+    /// Non-vacuity: this test FAILS under `RUSTDL_DKEY_MERGING_GATE=0`
+    /// (3 pairs get seeded without the gate).
+    #[test]
+    fn non_merging_data_property_seeds_no_dkey_disjointness() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let src = r#"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(DataProperty(:p))
+            Declaration(NamedIndividual(:a))
+            Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            DataPropertyAssertion(:p :a "1"^^xsd:integer)
+            DataPropertyAssertion(:p :b "2"^^xsd:integer)
+            DataPropertyAssertion(:p :c "3"^^xsd:integer))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("test fixture converts");
+        assert_eq!(
+            dkey_disjoint_count(&internal),
+            0,
+            "a non-merge-inducing data property must seed no `DKey` disjointness"
+        );
+    }
+
+    /// GATE BOUNDARY, positive side: the same fixture plus one
+    /// `FunctionalDataProperty` axiom. `:p` is now merge-inducing, so the three
+    /// values CAN be forced onto one node and all 3 pairs must be seeded.
+    #[test]
+    fn functional_data_property_still_seeds_dkey_disjointness() {
+        let _lock = DP_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DpGuard::on();
+        let src = r#"Prefix(:=<http://ex/#>) Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+          Ontology(<http://ex/>
+            Declaration(DataProperty(:p))
+            FunctionalDataProperty(:p)
+            Declaration(NamedIndividual(:a))
+            Declaration(NamedIndividual(:b))
+            Declaration(NamedIndividual(:c))
+            DataPropertyAssertion(:p :a "1"^^xsd:integer)
+            DataPropertyAssertion(:p :b "2"^^xsd:integer)
+            DataPropertyAssertion(:p :c "3"^^xsd:integer))"#;
+        let onto = read_ofn_str(src);
+        let internal = convert_ontology(&onto).expect("test fixture converts");
+        assert_eq!(
+            dkey_disjoint_count(&internal),
+            3,
+            "a functional data property is merge-inducing: all 3 pairs must be seeded"
+        );
+    }
 }

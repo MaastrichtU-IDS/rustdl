@@ -77,8 +77,25 @@ Eight ABox-bearing ontologies that currently complete, `check ON` vs `check OFF`
 | 50k–180k | **4 / 6** | 31%, 23%, 22%, 20% |
 | <50k | **0 / 4** | inert |
 
-**7 of 9 above 50k assertions save 20–40%; everything below 50k is inert.** Population with
-≥50k assertions: **192** of 1,920.
+**7 of 9 above 50k assertions save 20–40%; everything below 50k is inert.**
+
+**Population — measured on the correct predictor, not the proxy (2026-07-30).** The "192 with
+≥50k assertions" figure below was an assertion-count proxy written before the fast-path mechanism
+was found. Counted directly over 120 sampled completing ORE ontologies:
+
+| set | count | share |
+|---|---|---|
+| completing (sampled) | 120 | — |
+| take the fast path | 68 | 57% |
+| fast path **and** any ABox | **25** | **21%** |
+| fast path **and** ≥50k ABox assertions | **8** | **6.7%** |
+
+So the addressable set is ~21% of completing ontologies for *some* saving and **~6.7% for the
+20–40% band** — extrapolating to ORE's 1,920, roughly **400** and **107** respectively. That is
+materially smaller than the retired 192-with-≥50k-assertions estimate, and it is the number to
+quote: it selects on the predictor that was shown to be *binding* (the path) rather than merely
+present (assertion count). The recurring error this repo has made six times this month is exactly
+that substitution.
 
 Unlike the three estimates that collapsed this month, this is a **measured in-band hit rate
 (78%)**, not a feature-presence count — the distinction that killed the others. It is still a

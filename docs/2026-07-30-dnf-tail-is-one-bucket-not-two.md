@@ -93,3 +93,72 @@ DNFs. So the cost is not axiom volume.
   through `tail` lost everything when the outer timeout killed the loop (`tail` buffers to EOF), and
   a 4-ontology × 120 s loop under a 10-minute cap silently truncated. Write per-ontology output to
   files and read the files.
+
+---
+
+## Follow-up (2026-07-31): where the label-cache build's time actually goes
+
+Two hypotheses were tested against the four build-stalling ontologies. **The first was refuted by its
+own prototype; the second is an unmeasured lead with a fix pattern already in-tree.**
+
+### REFUTED — "the wall-clock deadline is not enforced inside `horn_fixpoint`"
+
+The structural claim is true: `solve()` checks `self.deadline` once on entry (`hyper.rs:2826`) and then
+calls `horn_fixpoint(FIXPOINT_ITERS)` with `FIXPOINT_ITERS = 100_000`, whose drain loop has no clock
+check. But adding a sampled in-loop check **changed nothing** — patched and unpatched both DNF at
+200 s, like-for-like.
+
+Why it cannot be the explanation, from a throwaway diagnostic: every `horn_fixpoint` entry reports
+`deadline_set=true incremental=true`. In incremental mode each call drains only the delta its own
+decision pushed, so a single drain is small — `steps` rarely reaches the 1024-event sampling interval,
+and `solve` already checks the deadline per entry. The deadline IS propagated and IS consulted. The
+time is spent **before** any check.
+
+Two of my own errors are worth recording, because both produced uninterpretable data that looked like
+evidence:
+1. the first "verification" run dropped `RUSTDL_LABEL_CACHE_TIMEOUT_MS`, changing two variables at
+   once — without it the adaptive per-class budget scales to `n × per_pair` clamped to [1 s, 30 s],
+   which over thousands of classes exceeds 200 s *by design*;
+2. the prototype sampled every 1024 events, which in incremental mode is almost never reached — a fix
+   that could not fire, then measured.
+
+Also confirmed while chasing this: `RUSTDL_LABEL_CACHE_TIMEOUT_MS` is **not** clamped
+(`adaptive_label_cache_ms` returns the override verbatim, `lib.rs:1918`), so a small value really is
+honoured. That eliminated the other mundane explanation.
+
+### LEAD (unmeasured) — the per-class clause-`Vec` clone
+
+`PreparedOntology::classify_labels` begins (`lib.rs:2894`):
+
+```rust
+let mut clauses = self.clauses.clone();
+clauses.push(DlClause { body: vec![Atom::Class(self.fresh_q, X)], head: vec![Atom::Class(c, X)] });
+```
+
+That deep-clones the whole clause vector — every `DlClause`'s `body`/`head` `Vec` — **once per class**,
+and it happens before any deadline is consulted. Scale on the stalling four:
+
+| ontology | concept_rules |
+|---|---|
+| `ore_ont_5548` | **541,575** |
+| `ore_ont_10080` | 28,407 |
+| `ore_ont_5438` | 26,529 |
+| `ore_ont_7712` | 20,421 |
+
+Multiplied by thousands of classes this is a very large amount of pre-deadline allocation, which would
+explain: the budget not binding, the stall localising inside the build, small/transient RSS, and the
+cost reappearing in the tier walk when the build is disabled.
+
+**This is the unfixed sibling of a documented fix.** CLAUDE.md's v0.3.39 entry describes amortizing
+exactly this cost for the *per-pair* oracle (`decide_with_stats` "cloned the full clause vector +
+rebuilt the whole index on every decided pair", 13,772 × ~34.6k clauses on `ore_ont_1508`). That work
+amortized the `ClauseIndexes` **rebuild** via a shared `Arc` + per-pair delta — but the clause-`Vec`
+clone itself survives at `lib.rs:1217`, `:1327` and `:2894`. Crucially the engine **already**
+branch-routes `clause(ci)`/`match_plan(ci)` between a base slice and per-pair extras, so the mechanism
+needed to avoid the clone exists; `classify_labels` simply does not use it.
+
+**Status: LEAD, NOT RESULT.** What is established by reading source: the clone exists, runs per class,
+precedes every deadline check, and duplicates a cost already fixed elsewhere. What is **not**
+established: that it dominates. Next step is to apply the v0.3.39 routing to `classify_labels` and
+measure — cheap, because the machinery is already there, and verdict-safe because passing the same
+clauses by a different route cannot change what is derived.

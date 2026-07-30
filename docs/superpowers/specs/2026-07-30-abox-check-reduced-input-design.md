@@ -199,7 +199,8 @@ classify builds still run the call.)
 leave two objects of the same type with different completeness, and the id-space hazard the
 `ConsistencyCache` doc already records (`lib.rs:3159`: "a mismatched hierarchy would let an
 unrelated edge satisfy a super-role atom = false clash") becomes reachable by accident. An
-explicit input type makes the dependency set checked by the compiler and cannot drift — if someone
+explicit input type makes the **dependency set** checked by the compiler and unable to drift (note:
+the dependency *set*, not the construction *sequence* — see § Known limitation) — if someone
 later makes `abox_check` read `hyper`, it will not compile.
 
 **Fold in the duplicated saturation.** On the fast path the caller already holds a closure (it
@@ -348,6 +349,42 @@ against 185 MB predicted — a close match) and partly on `11110`, but **4 of 6 
 change** despite 17–36% wall wins. So the saving is predominantly **skipped compute** (the second
 EL saturation plus `HyperCache::build`), and RSS drops only where the discarded structures happened
 to determine peak. Do not cite this as a memory lever.
+
+### Known limitation — the differential test does NOT fully guard construction drift
+
+The final review raised this as its top finding: `build_abox_check_inputs` is a **hand-copied
+prefix** of `from_internal`, not shared code, so a future edit to `from_internal` can silently
+desynchronise the fast path from the hybrid path. A differential test was added
+(`abox_check_differential_tests` in `lib.rs`, 6 shapes covering P2/P3/P4/P5 plus 2 negative
+controls) comparing the two paths' verdicts.
+
+**I then tried to break it, and it did not catch any of the three most likely desyncs.** With the
+tests in place, all three of these sabotages of `build_abox_check_inputs` still passed 6/6:
+
+1. deleting the `expand_role_characteristics` call outright;
+2. moving `build_told_tables` to after it;
+3. moving the `axioms` clone to after it.
+
+So **the differential test does not close this finding**, and any claim that it does is wrong. What
+it does establish is verdict agreement on 6 shapes — useful, and the harness a future engineer
+extends, but not a drift guard.
+
+**Why it cannot catch them, which is the reassuring part:** those three reorderings are
+semantically inert for *today's* `check`. `expand_role_characteristics` appends `⊤ ⊑ ≤1 r.⊤` and
+self-inverse `InverseObjectProperties` pairs; told tables index atomic subsumption/disjointness and
+a `Max` is not atomic, so no new told edge appears; `check` scans `axioms` only for the `ABox`/role
+forms it recognises, which those additions are not; and `hierarchy` / `inverse_pairs` /
+`disjoint_role_pairs` are collected after the call on **both** paths. So the FP channel the review
+described is **real but latent** — it goes live the moment `check` reads something an omitted pass
+affects.
+
+**Obligation on whoever extends `abox_check`:** if you make it read a new field or a lowered axiom
+form, re-run the sabotage above. If it still passes, the differential test is not protecting your
+new dependency. The durable fix is to have `from_internal` call `build_abox_check_inputs` instead of
+restating it; that was not done here because the eight values are not a contiguous prefix of
+`from_internal` (the `dkey` / `hyper` / `consistency` builds are interleaved), so unifying them is a
+restructure of `from_internal` rather than an extraction — more risk than this branch should carry.
+Recorded in the function's own doc comment so it is found at the point of change.
 
 ### Scope correction found during execution
 

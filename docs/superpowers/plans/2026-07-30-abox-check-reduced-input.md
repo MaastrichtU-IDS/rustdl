@@ -4,7 +4,9 @@
 
 **Goal:** Stop the classify fast path from building a full `PreparedOntology` — `HyperCache`, NNF, absorb, `ConsistencyCache` — solely to read `abox_verdict()` and then discard it.
 
-**Architecture:** Extract the eight fields `abox_check::check` actually reads into an owned `AboxCheckInputs` struct built by a new function, and have `from_internal` use that same function so the two can never diverge. Then change the fast-path call sites only. The genuine classify builds are untouched: they need the full object anyway, and `abox_verdict()` is already lazy, so there is nothing to save there.
+**Architecture:** Extract the eight fields `abox_check::check` actually reads into an owned `AboxCheckInputs` struct built by a new function, and change the fast-path call sites to use it.
+
+> **CORRECTION 2 (2026-07-30).** This line originally said "and have `from_internal` use that same function so the two can never diverge." **That was not achieved, and it is not true of the shipped code.** The two constructions are parallel sequences, not shared code, because the eight values are not a contiguous prefix of `from_internal` (the `dkey`/`hyper`/`consistency` builds are interleaved). A differential test was added instead — and I verified by deliberate sabotage that it does **not** catch dropping `expand_role_characteristics`, nor moving `build_told_tables` or the `axioms` clone after it. The hazard is real but latent (those reorderings are inert for today's `check`). Full analysis and the obligation on future extenders: spec § Known limitation, and the doc comment on `build_abox_check_inputs` itself. The genuine classify builds are untouched: they need the full object anyway, and `abox_verdict()` is already lazy, so there is nothing to save there.
 
 > **CORRECTION, applied during execution (2026-07-30).** Wherever this plan says "the fast-path
 > call site" singular, or cites `classify.rs:785-798` as the only one, read **two sites**. There is

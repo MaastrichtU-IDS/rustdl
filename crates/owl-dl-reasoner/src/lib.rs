@@ -4298,6 +4298,36 @@ impl OwnedAboxCheckInputs {
 /// ids but identical *class* ids — and `check` compares ids only within one input
 /// set, so the verdict is unchanged. The canaries in
 /// `tests/abox_check_reduced_input.rs` pin this.
+///
+/// # This is a HAND-COPIED prefix, and the differential test does not fully guard it
+///
+/// This function and `from_internal` are two parallel sequences, not shared code. A
+/// future edit to `from_internal` can silently desynchronise them.
+/// `abox_check_differential_tests` compares the two paths' verdicts, but its coverage
+/// of THIS risk was measured and is **partial**: with the tests in place, all three of
+/// these sabotages of this function still passed —
+///
+/// 1. deleting the `expand_role_characteristics` call outright,
+/// 2. moving `build_told_tables` to after it,
+/// 3. moving the `axioms` clone to after it.
+///
+/// The reason is that those three are, for *today's* `check`, semantically inert:
+/// `expand_role_characteristics` appends `⊤ ⊑ ≤1 r.⊤` and self-inverse
+/// `InverseObjectProperties` pairs; told tables index atomic subsumption/disjointness
+/// (a `Max` is not atomic, so no new told edge), and `check` scans `axioms` only for
+/// `ABox`/role forms it recognises, which those additions are not. `hierarchy` /
+/// `inverse_pairs` / `disjoint_role_pairs` are collected after the call on **both**
+/// paths, so they cannot diverge from its placement either.
+///
+/// So the desync hazard is real but currently **latent**: it becomes live the moment
+/// `check` starts reading something an omitted pass affects. If you extend
+/// `abox_check` to read a new field, or to consume a lowered axiom form, re-run the
+/// sabotage above — if it still passes, the differential test is not protecting your
+/// new dependency. The durable fix is to have `from_internal` call this function
+/// rather than restate it; that was not done here because the values are not a
+/// contiguous prefix of `from_internal` (the `dkey`/`hyper`/`consistency` builds are
+/// interleaved), so unifying them is a restructure of `from_internal`, not an
+/// extraction.
 pub(crate) fn build_abox_check_inputs(internal: &InternalOntology) -> OwnedAboxCheckInputs {
     let mut internal = internal.clone();
     let told = owl_dl_core::told::build_told_tables(&internal);

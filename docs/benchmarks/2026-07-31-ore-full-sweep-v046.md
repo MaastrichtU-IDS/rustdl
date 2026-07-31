@@ -15,9 +15,17 @@ are separate.
 > **CORRECTION 2026-07-31 — "DNF" HERE MEANS "EXCEEDED THE 30 s CAP", NOT "DOES NOT TERMINATE".**
 > Verified on three of the ontologies this document lists as DNF candidates: `ore_ont_16632`
 > **33.45 s exit=0**, `ore_ont_11126` **32.63 s exit=0**, `ore_ont_10425` **49.58 s exit=0** — all
-> complete, just past the cap. An independent 24-ontology sample of the **under-1 GB** DNF group at
-> a 120 s cap saw **5 complete (~21%)**, implying roughly **52 of the 312 are cap artifacts**
-> rather than genuine non-termination.
+> complete, just past the cap.
+>
+> **RESOLVED by a full 120 s re-run of all 312** (harness, 4-way concurrent, single-thread each):
+> **55 complete (18%), 257 still exceed 120 s, 0 errors.** So 55 were budget artifacts and **257 are
+> genuine non-termination at 4x the budget.** This replaces an earlier 24-ontology extrapolation
+> (~52) with a measurement. Two caveats both bias the same way, making 55 a **lower** bound: 4-way
+> concurrency can push a borderline case over, and an uncapped KM run held 237 GB for ~15 min
+> mid-sweep. The slowest completers sit at the boundary (`1422`@119 s, then four at 116 s), so a
+> larger cap adds a modest tail rather than changing the picture.
+>
+> **Corrected headline: rustdl fails to classify ~257 of 1,920 (13.4%), not 312 (16.2%).**
 >
 > So read every "DNF" below as **cap-exceeded**. The 312 figure is still the right answer to *"how
 > many miss a 30 s budget"* — which is the production question this document set out to answer —

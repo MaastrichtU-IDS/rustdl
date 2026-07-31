@@ -12,6 +12,23 @@ build, not an instrumented one).
 is the locally provisioned pool, not ORE 2015 entire; `pilot/` (234) and `work/` (38)
 are separate.
 
+> **CORRECTION 2026-07-31 — "DNF" HERE MEANS "EXCEEDED THE 30 s CAP", NOT "DOES NOT TERMINATE".**
+> Verified on three of the ontologies this document lists as DNF candidates: `ore_ont_16632`
+> **33.45 s exit=0**, `ore_ont_11126` **32.63 s exit=0**, `ore_ont_10425` **49.58 s exit=0** — all
+> complete, just past the cap. An independent 24-ontology sample of the **under-1 GB** DNF group at
+> a 120 s cap saw **5 complete (~21%)**, implying roughly **52 of the 312 are cap artifacts**
+> rather than genuine non-termination.
+>
+> So read every "DNF" below as **cap-exceeded**. The 312 figure is still the right answer to *"how
+> many miss a 30 s budget"* — which is the production question this document set out to answer —
+> but it is **not** a count of ontologies rustdl cannot classify. Two things follow: a plan built on
+> the latter reading was written and rejected the same day
+> (`docs/superpowers/specs/2026-07-31-data-cardinality-counting-design.md`), and the residual
+> "unfinished" column in the derived-threshold table below is an over-estimate by roughly that ~52.
+>
+> The fix for the harness is to separate *cap-exceeded* from *unfinished-at-any-budget*, which needs
+> a second pass at a larger cap over the DNF set — cheap, and not yet run.
+
 ## Headline
 
 | outcome | count | share |
@@ -62,6 +79,12 @@ floors for a real deployment, not ceilings.
 14 of the top 15 by RSS are DNF, so memory and non-termination coincide.
 
 ### Unfinished with a SMALL input — the tractable candidates
+
+**NOTE (2026-07-31):** three of the rows below (`16632`, `11126`, `10425`) were subsequently
+measured to **complete** in 33–50 s, and their large disjointness axiom sets were shown to be
+**inert** — `10425`'s classify output is byte-identical with the data channel disabled. So a large
+RSS-to-input ratio is a real *memory* signal but NOT evidence of non-termination, and not by itself
+evidence that the memory is load-bearing for the answer. Check both before acting on a row.
 
 A large RSS-to-input ratio implies a **local** cause (something quadratic in a
 conversion-time construct) rather than a search blowup. This is exactly the signature

@@ -1,3 +1,15 @@
+> **REJECTED 2026-07-31 — do not execute.** Its spec was rejected by two independent reviews; see
+> `docs/superpowers/specs/2026-07-31-data-cardinality-counting-design.md` § Rejection. In short: the
+> premise (three ontologies DNF) is false — they complete in 33–50 s; Half A already exists as
+> `data_axioms.rs:119`; the route enumeration missed two routes, each with a counterexample; and the
+> targeted axioms are provably inert on all three targets.
+>
+> **The stopping rule failed exactly as its own Self-Review feared.** Task 1 Step 4 said "if they
+> still DNF with the data channel disabled, stop" — they don't DNF *with it enabled*, so the rule
+> passed while the design was aimed at inert axioms. A stopping rule must bind to an outcome
+> ("suppression changes ≥1 answer"), not to the absence of a failure. Retained as an example of a
+> plan whose gate was decoration.
+
 # Data-Cardinality Counting Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

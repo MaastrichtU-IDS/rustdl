@@ -1,7 +1,57 @@
+> **REJECTED — read this before anything below.** Two independent reviewers (design lens,
+> payoff lens) converged on the same finding, and I verified it myself:
+>
+> 1. **THE PREMISE IS FALSE. The three ontologies do not DNF.** Measured, single-thread, 200 s cap:
+>    `16632` **33.45 s / 7.94 GB exit=0**, `11126` **32.63 s / 7.69 GB exit=0**,
+>    `10425` **49.58 s / 6.19 GB exit=0**. "DNF" was an artifact of the sweep's **30 s cap**.
+>    This is a wall/RSS matter on *completing* ontologies, not a DNF recovery.
+> 2. **HALF A ALREADY EXISTS — three times.** `data_axioms.rs:119`
+>    `emit_data_cardinality_violations` (DP-2) is literally the proposed P10: distinct asserted
+>    values, sub-property routing, told class closure, named individuals, `Top ⊑ Bot`. Plus
+>    `:2946` (functional `≤1`) and `:3057` (typed, all datatypes). DP-2 already covers the whole
+>    motivating set. Open question 5 answered YES; Task 3 was redundant work.
+> 3. **THE ROUTE ENUMERATION IS INCOMPLETE — two more routes, each with a runnable
+>    counterexample.** *Route 6:* `DataPropertyDomain`-derived typing — the four conditions
+>    constrain where *values* come from and say nothing about where the *bound* comes from, so a
+>    domain-induced type yields a suppressed pair and a silent MISS. Worse, the plan's own
+>    constraint ("do not widen `AboxCheckInputs`") makes Half A **structurally unable** to cover
+>    it. *Route 7:* `EquivalentClasses` typing — `data_axioms.rs:1545-1557` never pushes `≡` into
+>    `subclass_atomic`, so it is recoverable only by typing via `Subsumers` rather than the told
+>    atomic closure.
+> 4. **THE TARGETED AXIOMS ARE PROVABLY INERT ON ALL THREE TARGETS.** `10425`'s classify output is
+>    **byte-identical** with the data channel disabled; `16632`/`11126` report
+>    `abox_check: inconsistent` in ~3 s with **zero** data axioms. So the 6.6 M pairs contribute
+>    nothing to the answer on the entire addressable set. My justification — "74
+>    `DataMaxCardinality` ⇒ the pairs are consumable" — confused *existence of a collapse source*
+>    with *actual consumption*; `would_drop = 0` only showed the judge could not prove
+>    droppability.
+> 5. **A better fix needs neither half.** `are_told_disjoint(a,b)` (`told.rs:91`) is an O(1)
+>    predicate, and for two `DKey`s in one datatype bucket the answer is recomputable on demand
+>    from the ranges. **Virtualize** the value×value quadrant instead of materialising it:
+>    completeness-preserving *by construction* rather than completeness-risking, no new algorithm,
+>    no side conditions. Residual work is the two *enumerating* consumers (wedge
+>    `build_disjoint_pairs`, EL `disjoint_pairs`). Must keep the datatype-bucket separation or it
+>    cross-seeds (the FP surface D8 pinned with `parser_matrix_mutual_exclusivity`).
+> 6. **Opportunity cost.** Of the 312 over-cap ontologies, **247 (79%) peak under 1 GB** and are
+>    wall/search-bound; only 15 exceed 4 GB. A 24-ontology sample of the low-RSS group at a 120 s
+>    cap saw **5 complete (~21%)**, implying ~52 corpus-wide are cap artifacts. Also: **9** DNF
+>    ontologies have `DataMaxCardinality > 0` *and* >1000 `DataPropertyAssertion`, so the
+>    addressable set is plausibly 9, not 3 — and I never checked.
+>
+> **What I got wrong, mechanically:** I inherited "DNF" from my own sweep's 30 s cap and never
+> tested termination at a larger budget, then built a spec, a plan and a soundness argument on top
+> of it. The skill I wrote this morning says *"rosters go stale — re-measure before building on
+> them."* I applied that to a five-week-old roster and not to my own six-hour-old one.
+>
+> **Superseding actions:** (a) re-label the sweep (cap-exceeded ≠ unfinished) — free, and it
+> corrects a headline now steering planning; (b) if the ~10× wall / ~130× RSS is still wanted,
+> scope the *virtualize* option from (5).
+
 # Data-cardinality counting instead of O(k²) DKey disjointness
 
 **Date:** 2026-07-31
-**Status:** Design — for adversarial review before any implementation
+**Status:** **REJECTED 2026-07-31 by two independent adversarial reviews.** Do not implement.
+Retained as a record of how the design failed. Read § Rejection first.
 **Flag:** `RUSTDL_DATA_CARD_COUNTING`, default **OFF** until gates pass
 **Evidence:** `docs/2026-07-31-small-dnf-highmem-rootcause.md` (Group B)
 **Predecessors:** the bounded DKey seeding (v0.3.29), the non-merging-component gate and the

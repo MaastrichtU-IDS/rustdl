@@ -1,5 +1,16 @@
 # The small-input / high-RSS / DNF cluster: two mechanisms, not one
 
+> **CORRECTION 2026-07-31 (same day).** Group B does **not** DNF. Measured at a 200 s cap:
+> `16632` 33.45 s, `11126` 32.63 s, `10425` 49.58 s — all `exit=0`. Everything below that says
+> "DNF" for Group B means "exceeded the sweep's 30 s cap". Two further findings from adversarial
+> review: (a) Group B's 4.2–6.6 M disjointness axioms are **inert** — `10425`'s classify output is
+> byte-identical with the data channel off, and `16632`/`11126` are found inconsistent in ~3 s with
+> zero data axioms; (b) the counting rule this document recommends **already exists** at
+> `data_axioms.rs:119` (`emit_data_cardinality_violations`) and already covers the motivating set.
+> The § Status recommendation is therefore wrong as written; see
+> `docs/superpowers/specs/2026-07-31-data-cardinality-counting-design.md` § Rejection. The Phase-1
+> component isolation and the three refutations below stand — only the Group B conclusion changes.
+
 **Date:** 2026-07-31 (rustdl v0.4.6)
 **Method:** `superpowers:systematic-debugging`, Phase 1–3. No fix proposed until root cause.
 **Source data:** `owl-reasoner-harness` baseline

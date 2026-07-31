@@ -162,3 +162,44 @@ precedes every deadline check, and duplicates a cost already fixed elsewhere. Wh
 established: that it dominates. Next step is to apply the v0.3.39 routing to `classify_labels` and
 measure — cheap, because the machinery is already there, and verdict-safe because passing the same
 clauses by a different route cannot change what is derived.
+
+### LEAD REFUTED (2026-07-31) — the per-class clause clone is 0.55–6.3%, not dominant
+
+Measured with a throwaway timer around the clone in `HyperCache::classify_labels`, **after**
+verifying the marker was actually in the binary (`strings target/release/rustdl | grep`). 60 s window,
+32 cores, `RUSTDL_LABEL_CACHE_TIMEOUT_MS=20 --pair-timeout-ms 5`:
+
+| ontology | clones/60 s | clone CPU | nclauses | share of 1.92M CPU-ms | ms/clone |
+|---|---|---|---|---|---|
+| `ore_ont_5548` | 4,650 | 120,762 ms | 252,249 | **6.29%** | 25.97 |
+| `ore_ont_5438` | 9,700 | 25,251 ms | 31,139 | 1.32% | 2.60 |
+| `ore_ont_7712` | 4,200 | 12,172 ms | 24,918 | 0.63% | 2.90 |
+| `ore_ont_10080` | 3,500 | 10,541 ms | 31,232 | **0.55%** | 3.01 |
+
+**So the clone is not why these DNF.** It remains a genuine, avoidable waste (and still the unfixed
+sibling of v0.3.39) but fixing it would buy at most ~6% on the worst case and under 1.5% on three of
+four. Not a DNF lever.
+
+**Two claims made earlier from a DEAD instrument are withdrawn.** The previous attempt instrumented
+`sat_only_with_stats` — one of NINE `clauses.clone()` sites — by pattern-matching; that function is
+unused, so the compiler removed the diagnostic and every run printed nothing. Reading that silence as
+data produced "fewer than 250 classes in 60 s" and "~400× budget overrun". Both false: 3,500–9,700
+classes are processed per 60 s.
+
+**What IS confirmed: a ~10–27× per-class budget overrun.** At 1.92M CPU-ms per 60 s window,
+`5548` spends ~413 CPU-ms/class, `10080` ~549, `7712` ~457, `5438` ~198 — all against a 20 ms
+deadline. Only ~6% of that is the clone, so ~94% is per-class `HyperEngine` construction, seeding and
+solve: work that is either pre-deadline or not deadline-checked. (Treat as upper bounds — the wall
+includes prepare and not all 32 cores are necessarily on the build.)
+
+**Net: the original 2026-06-22 conclusion stands** — this is per-class wedge *work volume*, not a
+single hotspot. Three candidate hotspots have now been eliminated by measurement rather than
+argument: axiom volume (the collapse/broadcast split halved 5548's axioms, still DNF), deadline
+enforcement inside `horn_fixpoint` (in-loop check changed nothing), and the clause clone (≤6.3%).
+Anyone attacking this next should assume the cost is distributed across per-class setup+solve and
+target the *number* of per-class wedge calls or their shared structure — not another hotspot hunt.
+
+**Instrumentation rule this cost three rounds to learn:** anchor a diagnostic on text unique to the
+target function (verify with a count), and **confirm the marker is in the built binary before
+interpreting any measurement**. Silence from an absent instrument is indistinguishable from silence
+from a slow program.

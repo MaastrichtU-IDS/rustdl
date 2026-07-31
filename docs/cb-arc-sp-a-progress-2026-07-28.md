@@ -70,3 +70,70 @@ previously DNF).
 `2650001` (KM vs rustdl classify decision-procedure analysis + runtime profile), and start at
 Candidate 2 (KM cap + splitting). Do **not** re-attempt Candidate-1 second-maximal eligibility — it
 was measured at ~3× worse and the negative result is the reason Candidate 2 was chosen.
+
+---
+
+## CLOSED ON EVIDENCE — 2026-07-31 (v0.4.6)
+
+**The arc's own GO criterion now has zero candidates.** The park record specified the resumption
+test as: run the existing B1/S1 over the in-fragment slow/DNF ORE set, requiring *"completes at least
+one ontology the shipped path DNFs"*. That set was
+`12012, 10016, 10032, 2397, 9318, 15703, 6212, 3524`.
+
+Re-measured on v0.4.6 — **all eight complete on the shipped hybrid:**
+
+| ontology | v0.4.6 | mode | note |
+|---|---|---|---|
+| `ore_ont_9318` | 0.89 s | pure EL | |
+| `ore_ont_2397` | 1.18 s | pure EL | was DNF at 150 s pre-`NEG_TO_BOT_GCI` |
+| `ore_ont_10032` | 2.19 s | pure EL | was DNF |
+| `ore_ont_10016` | 3.83 s | pure EL | was DNF |
+| `ore_ont_6212` | 17.65 s | pure EL | was DNF |
+| **`ore_ont_12012`** | **60.45 s** | hybrid | **the only member with genuine ALC content** (48,103 rows) |
+| `ore_ont_15703` | >120 s, <400 s | pure EL | exit 0, 266,832 rows |
+| `ore_ont_3524` | >120 s, <400 s | pure EL | exit 0, 266,832 rows |
+
+(`15703`/`3524` were initially misread as complete-at-120 s from truncated streamed output; exit codes
+at a 400 s budget settle it. They are slow, not DNF — and both are pure-EL, so an ALCH CB engine is
+not the relevant tool for them regardless.)
+
+The park record's slow set went the same way: `33, 6870, 7275, 7726, 11906, 16299` all flipped to
+pure-EL in v0.4.6.
+
+**The mechanism is ironic and worth stating plainly:** most of these were recovered by
+`RUSTDL_NEG_TO_BOT_GCI` — the atomic-negation lever that exists *because* the CB arc was parked in
+favour of it. The redirect that paused this arc is what removed its market.
+
+**Market summary.** The park record measured 8 of 289 ORE DNF ontologies (2.8%) as in-fragment, with
+only `12012` carrying genuine ALC content. That is now **0 of 289**. The two ontologies where KM beats
+rustdl 70–310× (`ore_ont_9053`, `ore_ont_10197`) remain rejected by `normalize.rs` on three counts
+each (ABox, datatypes, transitive/inverse), so the engine still cannot load the cases that motivate
+it. Nothing was found that a CB engine would win.
+
+**Status: CLOSED, on payoff-vs-cost, with numbers** — the stop the park record explicitly admitted
+("payoff-vs-cost must remain an admissible stop; 'only a demonstrated genuine impossibility counts' is
+an unfalsifiability clause"). Not closed on fatigue, and not blocked on any unresolved technical
+question.
+
+**What to keep regardless — the durable technical findings:**
+
+1. **The 2ⁿ is in the CONTEXT space, not the clause space.** `RUSTDL_CB_DEBUG=1` context counts:
+   n=9 → 531, n=10 → 1045, n=11 → 2071, n=12 → 4121, at ~25 clauses per context throughout.
+2. **Why the engine has no choice.** `DerivedClause.premise` is *always empty* (`model.rs:86-91`,
+   "core held implicitly") and `intern_context` seeds every core atom as an unconditional unit
+   (`engine.rs:91-114`). The core *is* the hypothesis set, so a hypothesis can only be recorded in
+   the context key — and hypotheses in the key make the key space the powerset of the definers.
+3. **The reviewed formulation, if it ever matters: "Stage 1′"** — batch *all* ∀s (conditional
+   included) into one successor core and add a `used`-provenance field that **only back-prop may
+   read**. Hypotheses stay in the core, so the `⊓core` invariant stays correct by construction: one
+   FP surface instead of thirteen, and a provenance bug degrades to a MISS rather than an FP. Pair
+   with a provenance-size cap degrading to an `ALL` sentinel (the `RUSTDL_PRECISE_CARD_DEPS`
+   discipline). Note `seq_model.rs::SeqClause` has no premise field, so this is **B1-only** as
+   designed.
+4. Measured negatives not to repeat: Candidate-1 second-maximal eligibility (~3× *worse*); the
+   seed's "backward propagation over a generic successor variable" mechanism claim (**unconfirmed**
+   against KM's source); "B1 and S1 both hang >30 s" (a debug-build artefact — in release S1 n=13 is
+   6.4 s and B1 is the worse engine).
+
+**To reopen, the burden is now:** exhibit an ontology inside `owl-dl-cb`'s fragment that the shipped
+hybrid does not solve. As of v0.4.6 no such ontology is known in the ORE corpus.

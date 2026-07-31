@@ -4,6 +4,83 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] — 2026-07-31
+
+Completeness and conversion-scale release. Four ORE ontologies go from
+did-not-finish to classifying, and five axiom shapes the EL saturator silently
+dropped are now handled. FP=0 verified on the release candidate (soundness net
+22/22, closures exact).
+
+### Fixed
+
+- **`⊑ ⊥` completeness — five silently-dropped axiom shapes.** The EL saturator
+  admitted these through its fragment gate and then discarded them, so a closure
+  could be reported complete while the axiom was ignored: `A ⊓ B ⊑ ⊥` (new
+  `ConjunctiveUnsat` rule), `⊤ ⊑ ⊥` (marks every user class unsat at seed time),
+  `∃r.A ⊑ ⊥`, and the "poisoned role" family `∃r.⊤ ⊑ ⊥` /
+  `ObjectPropertyDomain(r, ⊥)` / `ObjectPropertyRange(r, ⊥)`. Inconsistency is now
+  reported from `⊤` being unsatisfiable, **not** from all named classes being
+  unsatisfiable — `{A ⊑ ⊥, B ⊑ ⊥}` empties every named class yet has a non-empty
+  domain, so the old signal was wrong. Known remaining gap: role-chain-induced
+  poison (`SubObjectPropertyOf(Chain(t,u), r)` + `Domain(r) = ⊥`) is still missed.
+- **Nominal-forcing range is a `DKey` merge source.** A range filler that forces
+  every successor to be the *same* individual collapses them via the o-rule, so two
+  distinct data values share one node label. Detected by adversarial review; the
+  filler test was replaced by treating any range / `∀` as merge-inducing, because
+  `ObjectPropertyRange(p, C)` with `C ⊑ ObjectOneOf(o)` is not syntactically
+  detectable. Regression: `tests/dkey_nominal_range_merge.rs`.
+- **`realize` no longer hangs on an unbounded internal classify**, and a per-pair
+  `NoVerdict` degrades to a sound MISS instead of erroring the whole call.
+- **Soundness net fails loudly on missing fixtures.** Absent REQUIRED fixtures used
+  to skip while the suite still reported `ok` — of 22 fixture blocks, 9 could skip
+  silently. They now fail with the path and the fetch hint.
+
+### Added
+
+- **`RUSTDL_NEG_TO_BOT_GCI`** (default ON, `=0` reverts) — canonicalizes
+  `X ⊑ ¬Y` to `X ⊓ Y ⊑ ⊥` pre-NNF, so the EL fast path can take ontologies that
+  previously fell to the hybrid path. Logically equivalent, hence FP-safe by
+  construction. Measured over ORE: **13 ontologies flip to pure-EL, 5 of which were
+  DNF at 60 s**; `ore_ont_9318` 23.93 s hybrid → 0.90 s pure-EL with a
+  byte-identical 19,470-row closure.
+- **`RUSTDL_DKEY_MERGING_GATE`** (default ON) — skips `DisjointClasses(DKey, DKey)`
+  seeding for role components containing no merge-inducing role, where the pairs can
+  never be consumed. `ore_ont_9347`: 49,571,087 axioms → 113; classify
+  **DNF @703 s / 70.7 GB → 10.72 s / 227 MB**. `ore_ont_11287` also recovered.
+- **`RUSTDL_DKEY_COLLAPSE_SPLIT`** (default ON) — distinguishes COLLAPSE merge
+  sources (functional / inverse-functional / `≤n`, which force two successors onto
+  one node) from BROADCAST sources (a `DKey`-bearing range or `∀`, which put one key
+  on every successor), and omits value×value pairs where only broadcast applies.
+  **`ore_ont_7607` and `ore_ont_1685`: DNF → complete** (5.4M axioms → ~9k, 7.9 GB →
+  0.26 GB); `ore_ont_12182` 46.7 s → 2.4 s with byte-identical answers. Verified
+  answer-identical across all **286** affected ontologies.
+- **Pseudo-model realize shortcut** (`RUSTDL_PSEUDO_MODEL`, default ON, #57) — prunes
+  per-(individual, class) probes against one witness model. Subtractive only, so
+  completeness-preserving and FP-safe.
+- **Diagnostics.** `RUSTDL_TRACE_RSS` emits per-phase RSS markers (the right tool for
+  localising a stall, since the wall-breakdown banner only prints on completion), and
+  `RUSTDL_DKEY_SPLIT_STATS` reports how many `DKey` pairs the collapse/broadcast split
+  would drop, without changing emission.
+
+### Changed
+
+- **Classify fast paths no longer build a full `PreparedOntology` to read one
+  verdict.** Both fast-path sites previously constructed the whole object —
+  second EL saturation, `HyperCache`, `ConsistencyCache`, NNF, absorb — solely to
+  consult the ABox inconsistency check, then discarded it. They now build only the
+  eight fields that check reads. **16.7–35.5% wall** on fast-path ABox ontologies
+  (`ore_ont_10073` 9.74 s → 6.28 s), with the hybrid path untouched.
+
+### Notes
+
+- The `Bucket A / Bucket B` characterisation of the did-not-finish tail is
+  **falsified** — it was an artefact of which budget each phase honours, not two
+  mechanisms. The tail is 12 ontologies and one mechanism. Three candidate causes are
+  now eliminated by measurement (axiom volume, deadline enforcement inside the Horn
+  fixpoint, and the per-class clause clone at ≤6.3%). See
+  `docs/2026-07-30-dnf-tail-is-one-bucket-not-two.md` and
+  `docs/handoff-2026-07-31.md`.
+
 ## [0.4.5] — 2026-07-26
 
 ### Added

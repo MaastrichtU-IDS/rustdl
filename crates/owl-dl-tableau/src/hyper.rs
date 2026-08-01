@@ -4737,6 +4737,158 @@ mod tests {
 
     /// §5.3 equivalence gate: for each of the six per-pair clause shapes the
     /// classify subsumption oracle appends (plan §4 delta table), the sparse
+    /// The BASE-LENGTH BOUNDARY of the shipped per-pair delta path
+    /// (`HyperCache::decide_with_stats`, v0.3.39).
+    ///
+    /// **Why this exists.** `clause(ci)` / `match_plan(ci)` branch-route on
+    /// `ci < self.clauses.len()` and index `extra_*[ci - base]`. The only thing
+    /// tying the routing base to the `base_len` the delta was BUILT at is a pair
+    /// of `debug_assert_eq!`s in [`HyperEngine::new_with_prebuilt_extras`] — and
+    /// `debug_assert` is compiled OUT of release, which is where classify runs.
+    /// A misdirected edit to that arithmetic PANICKED on `ore_ont_10019` in a
+    /// release build with **no in-tree test catching it**: the sibling
+    /// `classify_extra_clause_delta_matches_full_index_build` compares the delta
+    /// to a full rebuild but never drives the engine's boundary routing, and
+    /// every clause-id it checks is computed from the same `base.len()` an
+    /// off-by-one would corrupt on both sides.
+    ///
+    /// So this walks the engine over EVERY logical clause id — the last base id,
+    /// the first extra id, and the last extra id are the three that an
+    /// off-by-one moves — and demands the routed clause and match plan equal a
+    /// full `base ++ extras` build. Non-vacuity was verified by INTRODUCING the
+    /// **Non-vacuity, measured — 4 off-by-one variants introduced, all 4 now
+    /// FAIL this test:** `ci - base + 1` in `clause`, `ci - base + 1` in
+    /// `match_plan`, `build_clause_index_delta(base.len() - 1, ..)` at the
+    /// caller, and `index_one_clause(.., base_len + i + 1, ..)` inside the delta
+    /// builder. All four were also run in RELEASE, where the `debug_assert_eq!`s
+    /// are compiled out — that is the profile the `ore_ont_10019` panic occurred
+    /// in. The third and fourth SURVIVED the first version of this test (which
+    /// only checked `clause`/`match_plan` routing, both positional and hence
+    /// blind to a wrong `base_len`); the trigger-clause-id block below was added
+    /// to catch them.
+    #[test]
+    fn engine_routes_every_clause_id_across_the_base_extra_boundary() {
+        let q = cls(100);
+        let r = Role::Named(RoleId::new(0));
+        // Base spans several index families so a family mix-up cannot cancel out.
+        let base: Vec<DlClause> = vec![
+            DlClause {
+                body: vec![Atom::Class(cls(0), X)],
+                head: vec![Atom::Class(cls(1), X)],
+            },
+            DlClause {
+                body: vec![Atom::Role(r, X, 1), Atom::Class(cls(2), 1)],
+                head: vec![Atom::Class(cls(3), X)],
+            },
+            DlClause {
+                body: vec![],
+                head: vec![Atom::Class(cls(7), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(cls(8), X), Atom::Class(cls(9), X)],
+                head: vec![],
+            },
+        ];
+        // Exactly the per-pair shapes `decide_with_stats` appends: a Q seed, a
+        // Q→sub implication, a disjunctive one, and a ⊥-headed ¬sup clash.
+        let extras: Vec<DlClause> = vec![
+            DlClause {
+                body: vec![],
+                head: vec![Atom::Class(q, X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(cls(0), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(q, X)],
+                head: vec![Atom::Class(cls(5), X), Atom::Class(cls(6), X)],
+            },
+            DlClause {
+                body: vec![Atom::Class(q, X), Atom::Class(cls(1), X)],
+                head: vec![],
+            },
+        ];
+        assert!(
+            base.len() > 1 && extras.len() > 1,
+            "the boundary is only observable with >1 clause on each side"
+        );
+
+        let mut all: Vec<DlClause> = base.clone();
+        all.extend(extras.iter().cloned());
+        let full_indexes = build_clause_indexes(&all, None);
+
+        let delta = build_clause_index_delta(base.len(), &extras, None);
+        let base_indexes = std::sync::Arc::new(build_clause_indexes(&base, None));
+        let engine = HyperEngine::new_with_prebuilt_extras(
+            &base,
+            &extras,
+            q,
+            std::sync::Arc::clone(&base_indexes),
+            std::sync::Arc::new(build_disjoint_pairs(&base)),
+            delta,
+        );
+
+        assert_eq!(
+            engine.num_clauses(),
+            all.len(),
+            "logical clause count must be base + extras"
+        );
+        // The whole range, so the three boundary ids are covered by construction
+        // rather than by a hand-picked index that an off-by-one would also move.
+        for (ci, expected) in all.iter().enumerate() {
+            assert_eq!(
+                engine.clause(ci),
+                expected,
+                "clause({ci}) routed to the wrong clause (base_len={}, extras={})",
+                base.len(),
+                extras.len()
+            );
+            assert_eq!(
+                engine.match_plan(ci),
+                full_indexes.match_plans[ci].as_ref(),
+                "match_plan({ci}) disagrees with a full base++extras build"
+            );
+        }
+        // TRIGGER CLAUSE IDS. `clause`/`match_plan` route POSITIONALLY
+        // (`ci - base`), so they are blind to the delta having been built at the
+        // WRONG `base_len` — verified by sabotage: `base.len() - 1` left the loop
+        // above entirely green. What a wrong `base_len` corrupts is the clause
+        // IDS recorded in the trigger buckets (`index_one_clause` stores
+        // `base_len + i`), i.e. the engine looks up a valid-but-wrong clause. So
+        // compare the base ∪ delta trigger ids against the full build, key by key.
+        for (key, full_bucket) in full_indexes.x_trigger.iter().enumerate() {
+            let mut got: Vec<usize> = base_indexes.x_trigger.get(key).cloned().unwrap_or_default();
+            if let Some(pos) = ClauseIndexDelta::trigger_pos(&engine.extra_indexes.x_trigger, key) {
+                got.extend(engine.extra_indexes.x_trigger[pos].1.iter().copied());
+            }
+            got.sort_unstable();
+            let mut expect = full_bucket.clone();
+            expect.sort_unstable();
+            assert_eq!(
+                expect, got,
+                "x_trigger[{key}] clause ids differ from a full base++extras build \
+                 — the delta was built at the wrong base length"
+            );
+        }
+        // The ⊥-headed extra contributes a disjointness pair; it must be visible
+        // through the base+delta overlay, at the delta end of the boundary.
+        let (lo, hi) = if q.index() < cls(1).index() {
+            (q.index(), cls(1).index())
+        } else {
+            (cls(1).index(), q.index())
+        };
+        assert!(
+            engine.pair_disjoint(lo, hi),
+            "the per-pair ⊥-headed clause's disjointness pair must be visible \
+             through the overlay"
+        );
+        assert!(
+            engine.pair_disjoint(cls(8).index(), cls(9).index()),
+            "the BASE disjointness pair must still be visible"
+        );
+    }
+
     /// delta must index the clause exactly as a full rebuild would. The base
     /// includes one clause of every indexed kind so a family mix-up (e.g.
     /// x-vs-succ trigger) cannot cancel out.

@@ -2559,6 +2559,125 @@ fn dkey_merging_gate_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
 }
 
+/// See a role restriction that only exists **after NNF** when classifying roles for
+/// the bounded `DKey`-disjointness seeding. Default **OFF**; `RUSTDL_DKEY_POST_NNF=1`
+/// opts in.
+///
+/// # The D10 bug this closes
+///
+/// [`seed_dkey_subsumptions`] — hence [`dkey_components`] — runs inside
+/// `convert_ontology`, i.e. **before NNF**, and its three role classifications
+/// (`merge_inducing`, `collapse`, `broadcast_in`) match only syntactic `All` / `Max`
+/// pool entries. A universal restriction that comes into existence *only* through
+/// NNF is therefore invisible. The reachable OWL 2 DL shape is the double negation
+///
+/// ```text
+/// ObjectComplementOf(DataSomeValuesFrom(q, DataComplementOf(r)))   -- NNF -->   ∀q.DKey(r)
+/// ```
+///
+/// Pre-NNF the pool holds `Not(Some(q, Not(DKey)))`, so `q` is marked neither
+/// merge-inducing nor collapse/broadcast, its component is gated out, and the
+/// disjointness pair `DKey(9) ⟂ DKey([0,5])` is never emitted — after which the
+/// post-NNF `∀q.DKey([0,5])` has nothing to clash against. rustdl reports the class
+/// satisfiable under **every** engine flag while the banner certifies
+/// `Horn (hyper Horn fixpoint is complete)`; Konclude and `HermiT` both report it
+/// `≡ owl:Nothing`. The directly-written control `∀p.[0,5] ⊓ ∃p.{9}` is caught at
+/// every setting, so this is the gate's role classification failing, not the calculus.
+///
+/// This is a completeness **REGRESSION** introduced by the two `DKey` gates:
+/// `RUSTDL_BOUNDED_DKEY_DISJOINT=0` (pre-v0.3.29 behaviour) still catches it, and
+/// **either gate alone is enough to lose it** — so it is not attributable to one of
+/// the 2026-07-20 / 2026-07-30 changes.
+///
+/// # Why NOT simply run the pass post-NNF
+///
+/// The sibling `RUSTDL_NEG_TO_BOT_GCI` pass runs pre-NNF *deliberately*, because it
+/// needs to see `¬Y` before NNF turns `¬∃R.C` into `∀R.¬C`. This pass wants the
+/// opposite, and the two must coexist in one `convert_ontology`. Moving
+/// `seed_dkey_subsumptions` after NNF would also mean its emitted `DisjointClasses`
+/// axioms bypass normalization, and NNF lives in a later pass in a different module.
+/// So instead the SCAN is made NNF-aware: `Not(…)` pool entries are walked at
+/// negative polarity and each `∃`/`≥n` found there is recorded as the `∀`/`≤n` it
+/// will become. The dual direction needs nothing — a negative-polarity `All`/`Max`
+/// weakens to `Some`/`Min`, and the existing positive scan already treats every
+/// `All`/`Max` pool entry as merge-inducing regardless of polarity.
+///
+/// **Purely additive, so it can never lose a pair that is emitted today**: it only
+/// ever sets more `merge_inducing` / `collapse` / `broadcast_in` bits, which only
+/// ever admits more components and drops fewer pairs. FP-safety is untouched — the
+/// per-pair `disjoint()` value-space check is the entire FP surface and is unchanged.
+fn dkey_post_nnf_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_POST_NNF").is_some_and(|v| v == "1")
+}
+
+/// A role restriction that will exist after NNF but does not exist in the pool yet.
+#[derive(Clone, Copy)]
+enum NnfDual {
+    /// A negative-polarity `∃r.f`, which NNF turns into `∀r.¬f` — a BROADCAST
+    /// position, merge-inducing, and COLLAPSE unless the filler is pure-`DKey`.
+    Forall,
+    /// A negative-polarity `≥n r.f`, which NNF turns into `≤(n-1) r.¬f` — a VALUE
+    /// position, merge-inducing, and unconditionally COLLAPSE (like any `Max`).
+    Max,
+}
+
+/// Collect the [`NnfDual`] occurrences: every `∃`/`≥n` reachable at NEGATIVE
+/// polarity from a `Not(…)` pool entry.
+///
+/// Enumerating `Not` entries via `iter_exprs` (rather than walking axiom roots)
+/// means no axiom kind can be forgotten — interning guarantees every `Not` node in
+/// the ontology is its own pool entry. A nested `Not` flips polarity back to
+/// positive, and that region is already covered by the caller's plain positive
+/// scans, so the walk stops there.
+///
+/// `filler` is returned UN-negated. Both consumers see through `Not`
+/// ([`filler_is_pure_dkey`] and [`collect_direct_dkeys`] both recurse into it), so
+/// `¬f` and `f` yield the same `DKey` set and the same purity verdict.
+fn collect_nnf_duals(pool: &ConceptPool) -> Vec<(NnfDual, Role, ConceptId)> {
+    fn walk(
+        pool: &ConceptPool,
+        cid: ConceptId,
+        seen: &mut std::collections::HashSet<ConceptId>,
+        out: &mut Vec<(NnfDual, Role, ConceptId)>,
+    ) {
+        if !seen.insert(cid) {
+            return;
+        }
+        match pool.get(cid) {
+            ConceptExpr::Some(r, f) => {
+                out.push((NnfDual::Forall, *r, *f));
+                walk(pool, *f, seen, out);
+            }
+            ConceptExpr::Min(_, r, f) => {
+                out.push((NnfDual::Max, *r, *f));
+                walk(pool, *f, seen, out);
+            }
+            // Dual is `∃`/`≥n`, strictly weaker than what the positive scan
+            // already asserts for these entries. Only recurse.
+            ConceptExpr::All(_, f) | ConceptExpr::Max(_, _, f) => walk(pool, *f, seen, out),
+            // De Morgan: polarity carries through both, and `⊓`/`⊔` swap.
+            ConceptExpr::And(items) | ConceptExpr::Or(items) => {
+                for &i in items {
+                    walk(pool, i, seen, out);
+                }
+            }
+            // Back to positive polarity — the plain scans cover it.
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if !dkey_post_nnf_enabled() {
+        return out;
+    }
+    let mut seen = std::collections::HashSet::new();
+    for expr in pool.iter_exprs() {
+        if let ConceptExpr::Not(inner) = expr {
+            walk(pool, *inner, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
 /// Merge-aware role-component map for bounded DKey-disjointness seeding.
 ///
 /// `components[dkey_class]` = the set of role-component roots the `DKey` is
@@ -2722,6 +2841,13 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
             _ => {}
         }
     }
+    // `RUSTDL_DKEY_POST_NNF` (default OFF): the `∀`/`≤n` restrictions that only
+    // come into existence at NNF. Both duals are merge-inducing for exactly the
+    // reasons the syntactic arm above lists. See [`dkey_post_nnf_enabled`].
+    let nnf_duals = collect_nnf_duals(&out.concepts);
+    for &(_, r, _) in &nnf_duals {
+        merge_inducing[r.role_id().index() as usize] = true;
+    }
 
     // (b) role-hierarchy edges (sub ⊑ sup), incl. chain parts and
     // equivalence / declared-inverse pairs (both directions).
@@ -2803,6 +2929,17 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
                 collapse[r.role_id().index() as usize] = true;
             }
             _ => {}
+        }
+    }
+    // NNF duals, matching the arms just above: a `∀` counts as COLLAPSE unless its
+    // filler is provably pure-`DKey`; a `≤n` always does.
+    for &(kind, r, f) in &nnf_duals {
+        let is_collapse = match kind {
+            NnfDual::Forall => !filler_is_pure_dkey(&out.concepts, f, &dkeys),
+            NnfDual::Max => true,
+        };
+        if is_collapse {
+            collapse[r.role_id().index() as usize] = true;
         }
     }
     let mut cqueue: Vec<usize> = (0..num_roles).filter(|&r| collapse[r]).collect();
@@ -2895,6 +3032,19 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
             }
             _ => {}
         }
+    }
+    // NNF duals: `∀` is a BROADCAST position, `≤n` a VALUE one — same split as the
+    // syntactic arms above.
+    for &(kind, r, f) in &nnf_duals {
+        let is_broadcast = matches!(kind, NnfDual::Forall);
+        anchor(
+            &mut uf,
+            &mut components,
+            &mut broadcast_in,
+            is_broadcast,
+            r,
+            f,
+        );
     }
     for axiom in &out.axioms {
         // A range is a BROADCAST position, same shape as `∀`.

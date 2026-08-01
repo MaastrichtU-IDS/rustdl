@@ -296,6 +296,30 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   NOTE: the residual wedge-classify cost is `enumerate_matches`/`match_body` (the
   non-Horn fire loop, ~25% self-time) — separate in-flight work, not this.
   Plan: `docs/superpowers/plans/2026-07-23-classify-clauseindex-amortization-plan.md`.
+  **Per-CLASS sibling (2026-08-01, `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, default OFF,
+  `=1` opts in).** That v0.3.39 amortization reached only the per-**pair** oracle.
+  `HyperCache::classify_labels` appends the SP2.1/SP3 seed clauses, which are absent
+  from `base_indexes`, so it fell back to `HyperEngine::new` — **a full O(#clauses)
+  index rebuild per class**, and since `RUSTDL_SAT_SEED` defaults ON that was the
+  always-taken branch (the amortized branch was dead code). The flag routes it through
+  the same `build_clause_index_delta` + `new_with_prebuilt_extras`, keeping the seed
+  clauses. **This settled an explicit R3-vs-R4 reviewer dispute** (both had measured
+  with `RUSTDL_SAT_SEED=0`, which removes the rebuild *and* the clauses): min-of-3
+  interleaved, pinned binaries, `ore_ont_1508` **197.83 → 94.89 s (−52.0%)** and
+  `ore_ont_12698` **98.78 → 5.33 s (−94.6%)**, with `label_cache_build` 163.3 → 59.9 s
+  and 95.7 → 2.05 s. **Arm C beats the `SAT_SEED=0` arm on both** (114.12 s / 49.80 s),
+  so the cost was the rebuild, not the clause volume. Verdict-preserving: FP=0 net
+  flag-ON manifest **identical** to flag-OFF (11 VERIFIED, closures exact).
+  **MEASUREMENT WARNING:** under a *truncating* `--pair-timeout-ms` the hierarchy is
+  **not run-to-run deterministic** on hard ontologies — `ore_ont_1508` at 20 ms varied
+  57–68 timed-out pairs over five runs of ONE binary, and two runs of the SAME binary
+  differed by 4 `direct` rows. Compare only at a non-truncating budget (the in-tree
+  gate pins `--pair-timeout-ms 1000`); at 1000 ms A vs C is byte-identical, 13 950 rows.
+  Still default OFF pending a broader ORE bake-off — the candidate population is the
+  123-of-199 DNF cluster that stalls at `after_prepared` (the label-cache build).
+  Spec `docs/superpowers/specs/2026-08-01-clauseindex-per-class-adjudication.md`
+  (§ OUTCOME), canaries `classify_labels_amortize_tests` in `reasoner/src/lib.rs` +
+  `crates/owl-dl-cli/tests/classify_labels_amortize_identity.rs`.
   Phase 3 (commit 64bee92) added a bloom prefilter to `needs_deferred_or`
   extending the existing 64-bit `label_sig` (was used only for ancestor
   pair-blocking). GALEN classify wall: 24.7 min → 21.1 min (−14.6%);

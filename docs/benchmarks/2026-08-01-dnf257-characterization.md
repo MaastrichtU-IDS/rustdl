@@ -3,10 +3,9 @@
 **Date:** 2026-08-01 · **Binary:** rustdl v0.4.6 · **Host:** 32-core / 251 GB, single-thread, 120 s cap
 **Raw data:** `owl-reasoner-harness` repo, `baselines/2026-08-01-*` (measurement lives there; interpretation lives here)
 
-> **STATUS: IN PROGRESS.** The Konclude leg is complete and the four subsystem code reviews
-> have reported. HermiT and KM legs are still running, so the A/B partition below is a
-> **bound, not a final count**. One validation is outstanding and is called out in
-> § Threats — do not treat the partition as settled until it passes.
+> **STATUS: triage COMPLETE (all three peers), fixes in progress.** The A/B/C partition below
+> is final. One validation of the *rustdl* half is still running and is called out in
+> § Threats.
 
 ---
 
@@ -42,10 +41,39 @@ Konclude's walls on those 242: **median 3.57 s**, p90 18.79 s, max 88.93 s, and 
 finish in under 10 seconds**. Their closures are substantial — median 162,152 pairs, max
 2,432,194 — so this is real classification work, not empty output.
 
-Because HermiT and KM can only move ontologies *from* B *to* A, this already bounds the
-partition:
+**All three peers, final:**
 
-> **Set A ≥ 242. Set B ≤ 15. At most 6% of the tail is plausibly intrinsic.**
+| peer | CLASSIFIED | DNF | NO_OUTPUT | EMPTY |
+|---|---|---|---|---|
+| Konclude (native) | **242** | 14 | 0 | 1 |
+| HermiT (1.4.3, ~0.56 s docker+JVM floor) | 146 | 99 | 8 | 4 |
+| KM (`c6ced84`, 20 GB cap) | 105 | 148 | 4 | 0 |
+
+> **Set A = 242 (94%). Set B = 15 (6%). Set C = 25 (orthogonal, lower bound).**
+> Median fastest-peer wall on Set A: **3.47 s**.
+
+**HermiT and KM each rescue ZERO of Konclude's 15.** Three independent reasoners failing
+exactly the same 15 is the strongest evidence available at this scale that Set B is genuinely
+hard — and that the other 242 are not.
+
+### Set C is a peer-soundness signal, and it indicts KM
+
+Of the 25 size-disagreements, **KM is the sole outlier in nearly all**, deviating in *both*
+directions:
+
+| ontology | Konclude | HermiT | KM |
+|---|---|---|---|
+| `ore_ont_10407` | 8 | 8 | **510** |
+| `ore_ont_15703` | 1,604,386 | 1,604,386 | **71,410** |
+| `ore_ont_10006` | 204,418 | 204,418 | 201,129 |
+
+That independently replicates KM's documented concrete-domain unsoundness, and is the
+concrete reason FP adjudication is against **Konclude ∪ HermiT**, never one oracle.
+
+**The only Konclude-vs-HermiT disagreement in all 257 is `ore_ont_9540` (66 vs 71)**, with
+Konclude under-reporting — the same direction as the previously recorded `10407` case.
+Conversely, the two agreeing *exactly* on **121 of 122** shared closures, across two unrelated
+output formats, is a far stronger validation of the normaliser than its 11-fixture gate.
 
 ### This contradicts the standing account
 
@@ -167,6 +195,31 @@ Two by-products worth keeping:
 - Scope correction: `1833`/`15655`/`3080`/`3914`/`9347` have **zero** `⊤⊑C` axioms, and
   `1833`'s saturation completes at ~130 MB. Its 7.94 GB is **not** this mechanism and must
   not be attributed to it.
+
+---
+
+## 5b. Fixes landed so far (all flagged default OFF, none merged)
+
+| fix | flag | effect | gate |
+|---|---|---|---|
+| **Bare-declaration fragment gate** — `is_el_axiom`/`is_saturator_axiom` fell through to `_ => false` on bare `SymmetricObjectProperty` / `InverseObjectProperties` **declarations**, refusing the fast path to ontologies that merely *name* such a property | `RUSTDL_FRAGMENT_BARE_DECL` | **44 of 257 now classify** (`# mode: pure EL`, walls 0.52–38.92 s, median 1.87 s). `8470` 132.76 s → 0.53 s | `8470` fast path vs **unbounded** hybrid: 19,578 rows, **0 diffs**; 3 bounded ORE identities 0 diffs; curated 8/8 byte-identical; **6 sabotages, each individually load-bearing** |
+| **`direct_subsumers` O(k²) per class** — in the **output** loop | `RUSTDL_FAST_DIRECT_SUBSUMERS` | **`ore_ont_10125`: DNF@900 s → 14.70 s COMPLETE (>61×)** | curated 10/10 + ORE 2/2 byte-identical incl. ordering; `9498` (305 k classes) 12.81→12.85 s, no off-path regression; **4 sabotages caught, incl. an ordering sabotage** |
+| **Saturator enqueue-dedup** — worklist recorded at pop, so a deep backlog had no in-queue membership test | `RUSTDL_SAT_ENQUEUE_DEDUP` | `11085`: **OOM-abort 16.96 GB → 491 MB (35×)**, but at **687 s** — still DNF at any production budget | ON vs OFF byte-identical 8/8, 60,603 rows; 3 sabotages caught |
+| **Lazy ABox saturation** — the `lib.rs:4662` saturation is provably dead on ABox-free input | `RUSTDL_LAZY_ABOX_SATURATION` | **PREMISE REFUTED as a perf lever: 0.02–0.14 s, 0.2–0.3%, RSS flat** | 15/15 byte-identical incl. `consistent` and `realize --json`; 2 sabotages caught |
+
+**`ore_ont_10125` is the most instructive result here.** It finishes *classifying* in ~15 s
+and then spends **≥385 s emitting output** — it was never failing to reason. A quadratic
+transitive reduction in the print loop was presenting as a reasoning DNF.
+
+**Two prior estimates were refuted by these measurements, and both were mine to pass on:**
+- The lazy-saturation lever was projected at "~2.30 s/saturation, ~62% of prep removable".
+  Measured: **noise**. Selection effect — every *large* ABox-free ontology takes the pure-EL
+  fast path, which since 2026-07-30 uses `build_abox_check_inputs` and never reaches that
+  call site. **Do not quote the 62% figure.**
+- I briefed the bare-declaration fix as affecting 71 ontologies. The implementer
+  **re-measured the denominator**: the truly blocked set is **76**, of which a *provably
+  sound* predicate admits **44 (58%)**. The other 32 have a genuinely **read** role —
+  admitting them would have been a D10 bug. Partial-and-sound beat full-and-risky.
 
 ---
 

@@ -1741,6 +1741,62 @@ pub(crate) fn classify_amortize_idx_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_AMORTIZE_IDX").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Per-CLASS clause-index amortization for the label cache
+/// (`RUSTDL_CLASSIFY_LABELS_AMORTIZE`, **DEFAULT OFF**).
+///
+/// `HyperCache::classify_labels` appends the SP2.1 `sat_seed` / SP3
+/// `exists_seed` clauses to the per-class clause vector. Those are absent from
+/// the shared `base_indexes` (built before the seed), so the pre-2026-08-01 code
+/// fell back to `HyperEngine::new` — a full O(#clauses) `ClauseIndexes` rebuild
+/// **once per class**. Because `RUSTDL_SAT_SEED` defaults ON, that was the
+/// always-taken branch. With this flag on, the seed clauses stay in their own
+/// small `extras` slice and only the O(#extras) sparse
+/// `build_clause_index_delta` is built — exactly what the per-PAIR sibling
+/// `decide_with_stats` has done by default since v0.3.39.
+///
+/// Verdict-preserving by construction: the delta routes through the same
+/// `index_one_clause` as the base build, the extras keep the same logical
+/// clause ids they had at the tail of the cloned vector, and `disjoint_pair_of`
+/// extraction is shared. `=1` opts in; unset/`0` keeps the clone + full rebuild.
+/// See `docs/superpowers/specs/2026-08-01-clauseindex-per-class-adjudication.md`.
+#[must_use]
+pub(crate) fn classify_labels_amortize_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_LABELS_AMORTIZE").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// One-shot stderr provenance marker for which engine-construction path
+/// `HyperCache::classify_labels` took, printed only when
+/// `RUSTDL_LABEL_AMORTIZE_MARK` is set to a non-empty, non-`"0"` value.
+///
+/// Exists because an arm of a measurement must be *provable*, not assumed: each
+/// of the two branches prints at most once per process, so the presence of
+/// `engaged` proves the amortized path ran and the ABSENCE of `full-rebuild`
+/// over a whole classify proves **every** class took it. Off by default and
+/// entirely off the timed path (one relaxed atomic load per class).
+fn mark_label_engine_path(amortized: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static AMORTIZED_SEEN: AtomicBool = AtomicBool::new(false);
+    static FULL_REBUILD_SEEN: AtomicBool = AtomicBool::new(false);
+    if !std::env::var_os("RUSTDL_LABEL_AMORTIZE_MARK").is_some_and(|v| v != "0" && !v.is_empty()) {
+        return;
+    }
+    let seen = if amortized {
+        &AMORTIZED_SEEN
+    } else {
+        &FULL_REBUILD_SEEN
+    };
+    if seen
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        if amortized {
+            eprintln!("# label-amortize: engaged (per-class ClauseIndexes delta)");
+        } else {
+            eprintln!("# label-amortize: full-rebuild (per-class HyperEngine::new)");
+        }
+    }
+}
+
 /// Fix#2 Layer A in-search boolean constraint propagation at the `⊔` decision
 /// point (`RUSTDL_SEMANTIC_BRANCHING`). **DEFAULT OFF**: opt-in only. Returns
 /// `true` only when `RUSTDL_SEMANTIC_BRANCHING` is set to a non-empty, non-`"0"`
@@ -2987,11 +3043,16 @@ impl HyperCache {
         // O(1) ref-count bump) instead of rebuilding them O(#clauses).
         // The Q-clause delta (x_trigger[fresh_q] += [clauses.len()]) was
         // pre-applied to base_indexes in HyperCache::build.
-        let mut clauses = self.clauses.clone();
-        clauses.push(DlClause {
+        //
+        // The per-class clauses appended after the shared base slice, in the
+        // SAME order the pre-`RUSTDL_CLASSIFY_LABELS_AMORTIZE` code pushed them
+        // onto the clone (Q-clause, SP2.1 sat-seed, SP3 ∃-seed, value-disjoint),
+        // so the flag-OFF path below produces a byte-identical clause vector —
+        // identical logical clause ids ⇒ identical search.
+        let mut extras: Vec<DlClause> = vec![DlClause {
             body: vec![Atom::Class(self.fresh_q, X)],
             head: vec![Atom::Class(c, X)],
-        });
+        }];
         // SP2.1: seed the label-cache build with `c`'s named saturated subsumers
         // (the same monotone, sound seed as `decide_with_stats`). This is where the
         // seed's per-class collapse pays off: `classify_labels(c)` is the per-class
@@ -3002,7 +3063,7 @@ impl HyperCache {
             && let Some(seeds) = tbl.get(c.index() as usize)
         {
             for &d in seeds {
-                clauses.push(DlClause {
+                extras.push(DlClause {
                     body: vec![Atom::Class(self.fresh_q, X)],
                     head: vec![Atom::Class(d, X)],
                 });
@@ -3015,7 +3076,7 @@ impl HyperCache {
             && let Some(seeds) = tbl.get(c.index() as usize)
         {
             for &(role, target) in seeds {
-                clauses.push(DlClause {
+                extras.push(DlClause {
                     body: vec![Atom::Class(self.fresh_q, X)],
                     head: vec![Atom::Exists(role, target, X)],
                 });
@@ -3024,7 +3085,7 @@ impl HyperCache {
         // VALUE-DERIVED TYPE DISJOINTNESS (experiment): empty-head clashes.
         if let Some(pairs) = &self.value_disjoint {
             for &(a, b) in pairs {
-                clauses.push(DlClause {
+                extras.push(DlClause {
                     body: vec![Atom::Class(a, X), Atom::Class(b, X)],
                     head: vec![],
                 });
@@ -3051,26 +3112,75 @@ impl HyperCache {
         // into the base clause vector + `base_indexes` at build time
         // (`value_disjoint` is `None` here), so they are correctly indexed on
         // BOTH branches below.
-        let mut engine = if self.sat_seed.is_some()
-            || self.exists_seed.is_some()
-            || self.value_disjoint.is_some()
-        {
-            let mut e = HyperEngine::new(&clauses, self.fresh_q);
-            if crate::classify_same_tier_enabled() {
-                e = e.with_sub_roles(self.sub_roles.clone());
-            }
-            e
-        } else {
-            let mut e = HyperEngine::new_with_prebuilt(
-                &clauses,
+        //
+        // `RUSTDL_CLASSIFY_LABELS_AMORTIZE` (default OFF) removes exactly the
+        // rebuild the two paragraphs above describe: instead of rebuilding the
+        // whole `ClauseIndexes` because the per-class seed clauses are absent
+        // from `base_indexes`, build the O(#extras) sparse
+        // [`build_clause_index_delta`] over them — the same amortization the
+        // per-PAIR sibling `decide_with_stats` has used by default since
+        // v0.3.39. The seed clauses are KEPT (that is the whole point: this is
+        // arm C of the R3/R4 adjudication, isolating the rebuild from the
+        // clause volume that `RUSTDL_SAT_SEED=0` also removes). See
+        // `docs/superpowers/specs/2026-08-01-clauseindex-per-class-adjudication.md`.
+        //
+        // Old-path storage (flag OFF): the full clone + append lives here so it
+        // outlives the engine borrow.
+        let full_clauses: Vec<DlClause>;
+        let mut engine = if crate::classify_labels_amortize_enabled() {
+            mark_label_engine_path(true);
+            // The extras all have class-only bodies (Q → D, Q → ∃R.D, and the
+            // ⊥-headed value-disjoint clashes), so the hierarchy argument is
+            // irrelevant to them; pass the same gate as the base build for
+            // consistency with `decide_with_stats`.
+            let idx_hier = if crate::classify_same_tier_enabled() {
+                Some(&self.sub_roles)
+            } else {
+                None
+            };
+            let delta = owl_dl_tableau::hyper::build_clause_index_delta(
+                self.clauses.len(),
+                &extras,
+                idx_hier,
+            );
+            let mut e = HyperEngine::new_with_prebuilt_extras(
+                &self.clauses,
+                &extras,
                 self.fresh_q,
                 std::sync::Arc::clone(&self.base_indexes),
                 std::sync::Arc::clone(&self.base_disjoint_pairs),
+                delta,
             );
             if crate::classify_same_tier_enabled() {
                 e = e.with_sub_roles_keep_index(self.sub_roles.clone());
             }
             e
+        } else {
+            mark_label_engine_path(false);
+            let mut owned = self.clauses.clone();
+            owned.extend(extras.iter().cloned());
+            full_clauses = owned;
+            if self.sat_seed.is_some()
+                || self.exists_seed.is_some()
+                || self.value_disjoint.is_some()
+            {
+                let mut e = HyperEngine::new(&full_clauses, self.fresh_q);
+                if crate::classify_same_tier_enabled() {
+                    e = e.with_sub_roles(self.sub_roles.clone());
+                }
+                e
+            } else {
+                let mut e = HyperEngine::new_with_prebuilt(
+                    &full_clauses,
+                    self.fresh_q,
+                    std::sync::Arc::clone(&self.base_indexes),
+                    std::sync::Arc::clone(&self.base_disjoint_pairs),
+                );
+                if crate::classify_same_tier_enabled() {
+                    e = e.with_sub_roles_keep_index(self.sub_roles.clone());
+                }
+                e
+            }
         };
         if crate::incremental_fixpoint_enabled() {
             engine = engine.with_incremental_fixpoint();
@@ -8166,6 +8276,280 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         assert!(
             !seeded.contains(&a),
             "A's table must NOT contain A itself (d != c filter)"
+        );
+    }
+}
+
+/// `RUSTDL_CLASSIFY_LABELS_AMORTIZE` canaries — the per-CLASS clause-index
+/// amortization in [`HyperCache::classify_labels`].
+///
+/// Inline (not in `tests/`) because `HyperCache`, `LabelOracle` and
+/// `classify_labels` are all `pub(crate)`: an integration-test crate cannot
+/// reach them, and the *only* meaningful equivalence statement is at the
+/// `classify_labels` → `LabelOracle` boundary. A whole-classify byte-identity
+/// check (the CLI-level sibling in
+/// `crates/owl-dl-cli/tests/classify_labels_amortize_identity.rs`) is much
+/// weaker here, because the label oracle feeds a *pruning* heuristic: an
+/// amortization bug that silently dropped the seed clauses would shrink
+/// `labels` — which only ever costs extra per-pair probes and would leave the
+/// final hierarchy unchanged on any fixture the per-pair path can still
+/// decide. These tests compare the oracle itself, so a dropped seed clause is
+/// visible directly.
+///
+/// NEGATIVES FIRST: the flag must default OFF, and the amortized path must
+/// agree with the full-rebuild path on a fixture where the seed table is
+/// genuinely non-empty (asserted, so the comparison cannot pass vacuously).
+#[cfg(test)]
+mod classify_labels_amortize_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    fn convert(src: &str) -> InternalOntology {
+        owl_dl_core::convert::convert_ontology(&parse(src)).expect("fixture converts")
+    }
+
+    /// A⊑B⊑C plus a `∃r.`-bearing defined class and a disjoint pair, so that
+    /// (a) `sat_seed` is non-empty, (b) `exists_seed` has something to carry,
+    /// and (c) the delta's `disjoint_pair_of` extraction is exercised.
+    fn build_fixture() -> InternalOntology {
+        convert(&format!(
+            "{HEADER}Ontology(\n\
+             Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+             Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:F))\n\
+             Declaration(ObjectProperty(:r))\n\
+             SubClassOf(:A :B)\n\
+             SubClassOf(:B :C)\n\
+             EquivalentClasses(:D ObjectIntersectionOf(:A ObjectSomeValuesFrom(:r :C)))\n\
+             SubClassOf(:E ObjectSomeValuesFrom(:r :C))\n\
+             DisjointClasses(:B :F)\n\
+             SubClassOf(:F :A)\n\
+             )\n"
+        ))
+    }
+
+    /// Structural equality for [`LabelOracle`] (it deliberately does not derive
+    /// `PartialEq` — `labels` is a `HashSet` and `derived_sups` a `Vec` whose
+    /// order is an implementation detail, so both are normalised here).
+    fn oracle_eq(a: &LabelOracle, b: &LabelOracle) -> bool {
+        let norm = |o: &LabelOracle| -> Option<(Vec<u32>, Vec<u32>)> {
+            match o {
+                LabelOracle::Sat {
+                    labels,
+                    derived_sups,
+                } => {
+                    let mut l: Vec<u32> = labels.iter().map(|c| c.index()).collect();
+                    let mut d: Vec<u32> = derived_sups.iter().map(|c| c.index()).collect();
+                    l.sort_unstable();
+                    d.sort_unstable();
+                    Some((l, d))
+                }
+                _ => None,
+            }
+        };
+        match (a, b) {
+            (LabelOracle::Unsat, LabelOracle::Unsat)
+            | (LabelOracle::NoVerdict, LabelOracle::NoVerdict) => true,
+            (LabelOracle::Sat { .. }, LabelOracle::Sat { .. }) => norm(a) == norm(b),
+            _ => false,
+        }
+    }
+
+    fn describe(o: &LabelOracle) -> String {
+        match o {
+            LabelOracle::Sat {
+                labels,
+                derived_sups,
+            } => format!(
+                "Sat(|labels|={}, |derived|={})",
+                labels.len(),
+                derived_sups.len()
+            ),
+            LabelOracle::Unsat => "Unsat".to_owned(),
+            LabelOracle::NoVerdict => "NoVerdict".to_owned(),
+        }
+    }
+
+    /// Run `classify_labels` for every named class with the amortize flag set
+    /// to `enable`, restoring the prior env value. Serialised by
+    /// `test_env_lock`, matching the sibling `sat_seed` helper.
+    #[allow(unsafe_code)]
+    fn labels_with_flag(
+        cache: &HyperCache,
+        internal: &InternalOntology,
+        enable: bool,
+    ) -> Vec<LabelOracle> {
+        let _lock = test_env_lock();
+        let prior = std::env::var_os("RUSTDL_CLASSIFY_LABELS_AMORTIZE");
+        // SAFETY: serialized by `test_env_lock` (one test at a time); restored
+        // before the guard is dropped.
+        if enable {
+            unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "1") };
+        } else {
+            unsafe { std::env::remove_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE") };
+        }
+        let out = internal
+            .vocabulary
+            .classes()
+            .map(|(id, _)| cache.classify_labels(id, None))
+            .collect();
+        match prior {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE") },
+        }
+        out
+    }
+
+    /// The flag is OPT-IN: unset ⇒ off. Guards against an accidental
+    /// default flip (`is_none_or` instead of `is_some_and`).
+    #[test]
+    #[allow(unsafe_code)]
+    fn flag_defaults_off() {
+        let _lock = test_env_lock();
+        let prior = std::env::var_os("RUSTDL_CLASSIFY_LABELS_AMORTIZE");
+        // SAFETY: serialized by `test_env_lock`; restored below.
+        unsafe { std::env::remove_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE") };
+        assert!(
+            !classify_labels_amortize_enabled(),
+            "RUSTDL_CLASSIFY_LABELS_AMORTIZE must default OFF"
+        );
+        unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "1") };
+        assert!(classify_labels_amortize_enabled(), "=1 must enable");
+        unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "0") };
+        assert!(!classify_labels_amortize_enabled(), "=0 must disable");
+        unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "") };
+        assert!(!classify_labels_amortize_enabled(), "empty must disable");
+        match prior {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE") },
+        }
+    }
+
+    /// NON-VACUITY GUARD for the equivalence test below: the fixture must
+    /// actually populate the per-class seed tables, because those seed clauses
+    /// are precisely what the amortized path has to index in its delta rather
+    /// than via a full rebuild. If this ever goes empty, the equivalence test
+    /// stops exercising the delta on anything but the Q-clause.
+    ///
+    /// It does NOT follow that the equivalence test would *detect* the seed
+    /// clauses going missing — VERIFIED BY SABOTAGE, it does not: truncating
+    /// `extras` to the Q-clause on the amortized path leaves all four canaries
+    /// green. The reason is structural, and worth stating so nobody re-derives
+    /// it the hard way: these probes pass `deadline: None`, and the SP2.1/SP3
+    /// seed is a CONVERGENCE aid (it pre-loads entailed subsumers so `sat(c)`
+    /// finishes inside the label-cache deadline), not a source of new
+    /// entailments. With no deadline the probe always converges, so on a
+    /// fixture this small the seed is redundant with the base clauses and
+    /// dropping it changes no verdict. A test that pinned seed *presence*
+    /// would have to race a deadline, i.e. be timing-dependent — deliberately
+    /// not done here. What protects the seed instead is that BOTH paths now
+    /// consume the SAME `extras` vector built once above; only an edit that
+    /// touches `extras` between construction and use can desynchronise them.
+    #[test]
+    fn fixture_actually_carries_seed_clauses() {
+        let internal = build_fixture();
+        let cache = HyperCache::build(&internal);
+        let sat = cache
+            .sat_seed_for_test()
+            .expect("RUSTDL_SAT_SEED defaults ON ⇒ sat_seed table must be built");
+        assert!(
+            sat.iter().any(|v| !v.is_empty()),
+            "fixture must seed at least one class (else the amortize canary is vacuous)"
+        );
+        let ex = cache
+            .exists_seed_for_test()
+            .expect("RUSTDL_SAT_SEED defaults ON ⇒ exists_seed table must be built");
+        assert!(
+            ex.iter().any(|v| !v.is_empty()),
+            "fixture must carry at least one ∃-seed (else the delta's Exists-head \
+             indexing is never exercised)"
+        );
+    }
+
+    /// THE equivalence gate: the amortized per-class index delta must yield the
+    /// SAME `LabelOracle` as the full `ClauseIndexes` rebuild, for every class.
+    ///
+    /// A delta built at the wrong base length, or one that failed to index the
+    /// appended seed clauses, changes `labels` here (or turns an `Unsat` into a
+    /// `Sat`) and fails this test.
+    #[test]
+    fn label_oracle_identical_off_vs_on() {
+        let internal = build_fixture();
+        let cache = HyperCache::build(&internal);
+        let off = labels_with_flag(&cache, &internal, false);
+        let on = labels_with_flag(&cache, &internal, true);
+        assert_eq!(off.len(), on.len(), "same number of classes probed");
+        assert!(!off.is_empty(), "fixture must have named classes");
+        for (i, (o, n)) in off.iter().zip(on.iter()).enumerate() {
+            assert!(
+                oracle_eq(o, n),
+                "class #{i}: full-rebuild gave {} but amortized gave {}",
+                describe(o),
+                describe(n)
+            );
+        }
+    }
+
+    /// `F ⊑ A ⊑ B` with `DisjointClasses(B, F)` makes `F` unsatisfiable, so BOTH
+    /// paths must report `Unsat`. Asserting the *value* (not just OFF == ON) is
+    /// what keeps this from being a tautology over two equally-broken paths: it
+    /// pins that the amortized engine still reaches a clash it must reach.
+    ///
+    /// SCOPE, corrected by sabotage: this does NOT guard the `disjoint_pairs`
+    /// overlay. Handing the amortized path an EMPTY disjointness set leaves all
+    /// four canaries green, because `F`'s clash is derived by firing the
+    /// ⊥-headed clause `B(X) ⊓ F(X) → ⊥` from the shared base clause set, not by
+    /// consulting the overlay (which is a merge-time/`≤n` shortcut). Losing the
+    /// overlay here would therefore cost a pruning shortcut, not a verdict —
+    /// which is why the survival is benign, but it does mean this test says
+    /// nothing about overlay plumbing.
+    #[test]
+    fn unsat_class_reported_unsat_on_both_paths() {
+        let internal = build_fixture();
+        let cache = HyperCache::build(&internal);
+        let f = internal
+            .vocabulary
+            .classes()
+            .find(|(_, i)| *i == "http://rustdl.test/F")
+            .map_or_else(|| panic!("class F not in vocabulary"), |(id, _)| id);
+        let off = {
+            let _l = test_env_lock();
+            cache.classify_labels(f, None)
+        };
+        let on = {
+            let all = labels_with_flag(&cache, &internal, true);
+            let idx = internal
+                .vocabulary
+                .classes()
+                .position(|(id, _)| id == f)
+                .expect("F is enumerated");
+            all[idx].clone()
+        };
+        assert!(
+            matches!(off, LabelOracle::Unsat),
+            "F ⊑ A ⊑ B with DisjointClasses(B,F) must be Unsat on the full-rebuild \
+             path, got {}",
+            describe(&off)
+        );
+        assert!(
+            matches!(on, LabelOracle::Unsat),
+            "F must be Unsat on the AMORTIZED path too, got {} — the per-class delta \
+             lost the disjointness overlay",
+            describe(&on)
         );
     }
 }

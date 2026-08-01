@@ -22,6 +22,7 @@ pub mod locality;
 pub mod negation_gci;
 pub mod normalize;
 pub mod ontology;
+pub mod residual_absorbability;
 pub mod residual_trigger;
 pub mod role_hierarchy;
 pub mod told;

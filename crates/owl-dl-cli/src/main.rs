@@ -318,6 +318,20 @@ enum Command {
         /// Path to an OWL functional-syntax (.ofn) ontology.
         file: PathBuf,
     },
+    /// Classify each residual GCI by **which absorption technique would
+    /// remove it** (`domain_absorbable` / `binary_absorbable` /
+    /// `nominal_absorbable` / `card_antecedent_n_gt_1` /
+    /// `qualified_exists_antecedent` / `genuinely_disjunctive`) and print the
+    /// histogram. Report-only — changes no reasoning behaviour. See
+    /// `docs/2026-08-01-absorption-is-the-bottleneck.md`.
+    ResidualAbsorbability {
+        /// Path to an OWL ontology (.ofn/.owl/.owx/.omn — format sniffed).
+        file: PathBuf,
+        /// Emit one machine-readable `tsv:` line instead of the histogram
+        /// (for the population census).
+        #[arg(long)]
+        tsv: bool,
+    },
     /// Print DL-clause shape statistics (hypertableau Phase H0):
     /// total clauses, Horn vs disjunctive, ⊥-headed, ∃-headed,
     /// and deferred (constructs the H0 clausifier doesn't yet
@@ -1699,6 +1713,62 @@ fn main() -> Result<()> {
                 stats.deferred() as f64 / stats.total as f64
             };
             println!("# deferred_fraction:  {:.1}%", frac * 100.0);
+        }
+        Command::ResidualAbsorbability { file, tsv } => {
+            let onto = parse_ofn(&file)?;
+            let s = owl_dl_reasoner::residual_absorbability_stats(&onto)
+                .context("residual_absorbability_stats")?;
+            if tsv {
+                // name residual_gcis domain binary nominal card_n_gt_1
+                // qualified genuinely concept_rules concept_rule_or
+                // concept_rule_or_with_extra_not_atomic
+                println!(
+                    "tsv:\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    file.file_stem().unwrap_or_default().to_string_lossy(),
+                    s.residual_gcis,
+                    s.domain_absorbable,
+                    s.binary_absorbable,
+                    s.nominal_absorbable,
+                    s.card_antecedent_n_gt_1,
+                    s.qualified_exists_antecedent,
+                    s.genuinely_disjunctive,
+                    s.concept_rules,
+                    s.concept_rule_or,
+                    s.concept_rule_or_with_extra_not_atomic,
+                );
+            } else {
+                println!("# residual_gcis:                {}", s.residual_gcis);
+                println!("#   domain_absorbable:          {}", s.domain_absorbable);
+                println!("#   binary_absorbable:          {}", s.binary_absorbable);
+                println!("#   nominal_absorbable:         {}", s.nominal_absorbable);
+                println!(
+                    "#   card_antecedent_n_gt_1:     {}  (UNSOUND to absorb as domain)",
+                    s.card_antecedent_n_gt_1
+                );
+                println!(
+                    "#   qualified_exists_antecedent:{}  (needs a filler check)",
+                    s.qualified_exists_antecedent
+                );
+                println!(
+                    "#   genuinely_disjunctive:      {}",
+                    s.genuinely_disjunctive
+                );
+                println!("# removed_by_domain:            {}", s.removed_by_domain());
+                println!(
+                    "# removed_by_domain_and_binary: {}",
+                    s.removed_by_domain_and_binary()
+                );
+                println!(
+                    "# zero_residuals_under_domain:  {}",
+                    s.zero_residuals_under_domain()
+                );
+                println!("# concept_rules:                {}", s.concept_rules);
+                println!("#   conclusion_is_or:           {}", s.concept_rule_or);
+                println!(
+                    "#   ..with extra ¬Atomic:       {}  (binary-absorption candidates)",
+                    s.concept_rule_or_with_extra_not_atomic
+                );
+            }
         }
         Command::ClauseStats { file } => {
             let onto = parse_ofn(&file)?;

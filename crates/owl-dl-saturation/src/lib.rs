@@ -99,6 +99,54 @@ fn enqueue_dedup_enabled() -> bool {
     std::env::var_os("RUSTDL_SAT_ENQUEUE_DEDUP").is_some_and(|v| v == "1")
 }
 
+/// Lower a **provably-empty existential filler** (`⊥` under an `∃`/`≥n`) instead of
+/// dropping the axiom. Default **OFF**; `RUSTDL_EL_BOT_FILLER=1` opts in.
+///
+/// # The D10 bug this closes
+///
+/// `is_el_concept` (`owl-dl-reasoner/src/classify.rs`) has a `Bot` arm and recurses
+/// through `Some(role, body)` without restriction, so `X ⊑ ∃r.⊥` is certified
+/// **pure-EL — saturator alone is complete**. But the engine's existential-body
+/// lowering ([`atomic_or_tseitin_body_with_extras`]) has no `Bot` arm: it falls to
+/// `_ => return None` and the caller drops the whole axiom. rustdl then reports `X`
+/// satisfiable with `incomplete: false`, where Konclude and `HermiT` both report
+/// `X ≡ owl:Nothing`. That is the D10 class — the gate certifies a closure complete
+/// while the engine silently drops the axiom — and it is the *third* instance of it
+/// in this codebase.
+///
+/// Note the hole is specifically the **syntactic** `⊥` under an `∃`. Every dynamic
+/// equivalent already works: `X ⊑ ∃r.C` + `C ⊑ ⊥`, `X ⊑ ∃r.C` + told-disjoint types
+/// on `C`, and `X ⊑ ∃r.C` + `Domain(r, ⊥)` all correctly yield `X` unsat, as do
+/// `A ⊑ B ⊓ ⊥` and `A ≡ ⊥`.
+///
+/// # The fix, and why it is total rather than per-shape
+///
+/// `∃r.⊥ ≡ ⊥` and `⊓` with a `⊥` conjunct is `⊥`, so "the filler denotes the empty
+/// class" is decidable syntactically by [`concept_is_provably_bot`]. Every existential
+/// body in the engine funnels through the single chokepoint
+/// [`atomic_or_tseitin_body_with_extras`] (`atomic_or_tseitin_body` and
+/// `existential_body_alternatives` both delegate to it), so ONE test at the top of
+/// that function covers every occurrence — RHS `∃`, `≥n`, conjunctive fillers,
+/// arbitrary nesting (`∃r.∃s.⊥`), the `EquivalentClasses` sufficient direction and
+/// the LHS trigger sites. Handling only some of these is how D10 bugs are born, so
+/// the test is deliberately recursive rather than a `Bot` match arm.
+///
+/// The lowered value is an opaque synthetic ("the bot key") registered once in
+/// [`ElRules::directly_unsat`]. It needs no new inference rule: at seed time the key
+/// is enqueued unsat, and the two existing propagations in `process_unsat` finish
+/// the job — R24 (a fact whose *target* is unsat makes its source unsat) handles
+/// `X ⊑ ∃r.⊥`, and R23 (a subclass of an unsat class is unsat) handles the
+/// conjunctive filler via the Tseitin `F ⊑ botkey` edge.
+///
+/// **Sound.** The key is only ever produced for a filler that denotes `⊥` in every
+/// model, so every class it marks unsat is genuinely unsatisfiable — the direction
+/// is MISS-closing, never FP-creating. Reaching an LHS trigger through it is
+/// likewise sound: a class holding an `∃r.botkey` fact is already unsat, and an
+/// unsat class is subsumed by everything.
+fn el_bot_filler_enabled() -> bool {
+    std::env::var_os("RUSTDL_EL_BOT_FILLER").is_some_and(|v| v == "1")
+}
+
 /// Configuration for [`saturate_with_config`].
 #[derive(Debug, Clone)]
 pub struct SaturateConfig {
@@ -2707,6 +2755,12 @@ struct TseitinAllocator {
     /// ⊤-equivalent), so it only ever triggers domain(R); sound. Keyed per role so
     /// all `∃R.⊤` facts share one witness (they mean the same thing).
     top_witness_by_role: HashMap<RoleId, ClassId>,
+    /// Stable opaque synthetic standing in for a **provably-empty** existential
+    /// filler (`∃r.⊥`, `∃r.(A ⊓ ⊥)`, `∃r.∃s.⊥`, …). Allocated lazily by
+    /// [`TseitinAllocator::introduce_bot_key`], which also registers it once in
+    /// [`ElRules::directly_unsat`]; the existing unsat propagation then marks
+    /// every class that reaches it. See [`el_bot_filler_enabled`].
+    bot_key: Option<ClassId>,
 }
 
 impl TseitinAllocator {
@@ -2721,7 +2775,22 @@ impl TseitinAllocator {
             forall_key_by_role: HashMap::new(),
             forall_atomic_key_by_role: HashMap::new(),
             top_witness_by_role: HashMap::new(),
+            bot_key: None,
         }
+    }
+
+    /// Get-or-allocate the opaque synthetic for a provably-empty existential
+    /// filler, registering it in `rules.directly_unsat` on first allocation.
+    /// See [`el_bot_filler_enabled`] for the soundness argument.
+    fn introduce_bot_key(&mut self, rules: &mut ElRules) -> ClassId {
+        if let Some(existing) = self.bot_key {
+            return existing;
+        }
+        let synthetic = ClassId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
+        self.bot_key = Some(synthetic);
+        rules.directly_unsat.push(synthetic);
+        synthetic
     }
 
     /// Get-or-allocate the opaque ⊤-witness synthetic for `∃R.⊤`. See
@@ -4240,6 +4309,31 @@ fn existential_body_alternatives(
     }
 }
 
+/// Does `c` denote the empty class in **every** model, by syntax alone?
+///
+/// The arms are exactly the ones that preserve emptiness upwards:
+/// - `⊥` itself;
+/// - `∃r.C` / `≥n r.C` with `n ≥ 1` and `C` empty — no witness can exist
+///   (`n == 0` is deliberately excluded: `≥0 r.C` is `⊤`, not `⊥`);
+/// - `⊓` with any empty conjunct.
+///
+/// Deliberately NOT included: `⊔` (empty only if *every* disjunct is, and the EL
+/// lowering splits unions elsewhere), `∀`/`≤n` (both are satisfied by having no
+/// successor, so an empty filler makes them `⊤`, not `⊥`), and `¬`/nominals
+/// (out of the saturator's fragment). Every omission is a MISS at worst.
+///
+/// Role polarity is irrelevant here — an inverse role has no witness either — but
+/// the callers that use this result still guard their own inverse handling.
+fn concept_is_provably_bot(c: ConceptId, pool: &ConceptPool) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Bot => true,
+        ConceptExpr::Some(_, body) => concept_is_provably_bot(*body, pool),
+        ConceptExpr::Min(n, _, body) => *n >= 1 && concept_is_provably_bot(*body, pool),
+        ConceptExpr::And(operands) => operands.iter().any(|&op| concept_is_provably_bot(op, pool)),
+        _ => false,
+    }
+}
+
 /// Like `atomic_or_tseitin_body`, but additionally folds `extras`
 /// (atomic class ids) into the synthetic body. When `extras` is
 /// non-empty, always allocates a Tseitin synthetic `F ≡ body ⊓
@@ -4253,6 +4347,16 @@ fn atomic_or_tseitin_body_with_extras(
     rules: &mut ElRules,
     tseitin: &mut TseitinAllocator,
 ) -> Option<ClassId> {
+    // `RUSTDL_EL_BOT_FILLER` (default OFF): a filler that provably denotes `⊥`
+    // lowers to the opaque, seeded-unsat bot key instead of returning `None` and
+    // dropping the axiom. Checked FIRST so it also pre-empts the `And` / `Some` /
+    // `Min` arms below, which would otherwise build a marker or synthetic that
+    // does not carry the emptiness (a one-way `∃s.·` marker in particular is NOT
+    // equivalent to the existential, so `∃r.∃s.⊥` would still leak). See
+    // [`el_bot_filler_enabled`].
+    if el_bot_filler_enabled() && concept_is_provably_bot(body, pool) {
+        return Some(tseitin.introduce_bot_key(rules));
+    }
     let body_atomics: Vec<ClassId> = match pool.get(body) {
         ConceptExpr::Atomic(id) => vec![*id],
         // Nominal `{a}` body (`∃R.{a}`, i.e. ObjectHasValue): use an
@@ -4645,6 +4749,78 @@ mod tests {
         }
         // row_ascending is ascending.
         assert_eq!(dense.row_ascending(1), vec![3, 7]);
+    }
+
+    /// Direct boundary pins for [`concept_is_provably_bot`] — the FP surface of
+    /// `RUSTDL_EL_BOT_FILLER`. Written as unit tests because two of the arms are
+    /// unreachable from the parser (`ConceptPool::and` short-circuits on the `⊥`
+    /// annihilator, and `ConceptPool::min` folds `≥0 r.C` to `⊤`), so an
+    /// integration canary CANNOT exercise them — verified by sabotage: breaking
+    /// the `n >= 1` guard and breaking `any`→`all` both left the ontology-level
+    /// canaries green.
+    ///
+    /// A wrong `true` in any of the `false` cases marks a satisfiable class unsat,
+    /// which is a FALSE POSITIVE.
+    ///
+    /// HONEST LIMIT (measured, not assumed). Deleting the `*n >= 1` guard alone
+    /// fails NOTHING — not this test, not the integration canaries — because
+    /// `ConceptPool::min` already makes `Min(0, ..)` unconstructible. That guard is
+    /// dead defense against a *pool invariant*, so the invariant is what is pinned
+    /// here (`min0_bot == top`): deleting the fold in `ConceptPool::min` DOES fail
+    /// this test. If `ConceptPool` ever stops folding `≥0`, the guard goes live and
+    /// this assertion is what will tell you.
+    #[test]
+    fn concept_is_provably_bot_boundaries() {
+        use owl_dl_core::ir::{ConceptPool, Role, RoleId};
+        let mut pool = ConceptPool::default();
+        let bot = pool.bot();
+        let top = pool.top();
+        let a = pool.atomic(owl_dl_core::ClassId::new(0));
+        let r = Role::named(RoleId::new(0));
+        let s = Role::named(RoleId::new(1));
+
+        // --- must be TRUE (genuinely empty) ---
+        assert!(concept_is_provably_bot(bot, &pool), "⊥");
+        let some_bot = pool.some(r, bot);
+        assert!(concept_is_provably_bot(some_bot, &pool), "∃r.⊥");
+        let nested = pool.some(s, some_bot);
+        assert!(concept_is_provably_bot(nested, &pool), "∃s.∃r.⊥");
+        let min2_bot = pool.min(2, r, bot);
+        assert!(concept_is_provably_bot(min2_bot, &pool), "≥2 r.⊥");
+        // `And` keeps a non-literal empty operand (`∃r.⊥` is not `⊥` at intern
+        // time), so this is the reachable form of the `And` arm.
+        let and_with_empty = pool.and([a, some_bot]);
+        assert!(
+            concept_is_provably_bot(and_with_empty, &pool),
+            "A ⊓ ∃r.⊥ — the `any` (not `all`) semantics of the And arm"
+        );
+
+        // --- must be FALSE (satisfiable; a `true` here is an FP) ---
+        assert!(!concept_is_provably_bot(top, &pool), "⊤");
+        assert!(!concept_is_provably_bot(a, &pool), "an atomic class");
+        assert!(
+            !concept_is_provably_bot(pool.and([a, top]), &pool),
+            "A ⊓ ⊤ — `all`-semantics would wrongly need every operand empty, \
+             but `any`-semantics must not fire on a NON-empty operand set"
+        );
+        assert!(
+            !concept_is_provably_bot(pool.all(r, bot), &pool),
+            "∀r.⊥ is satisfied by having no r-successor"
+        );
+        assert!(
+            !concept_is_provably_bot(pool.max(2, r, bot), &pool),
+            "≤2 r.⊥ is satisfied by having no r-successor"
+        );
+        assert!(
+            !concept_is_provably_bot(pool.or([a, some_bot]), &pool),
+            "A ⊔ ∃r.⊥ is A, not ⊥"
+        );
+        // `≥0 r.⊥` — the `n >= 1` guard. `ConceptPool::min` folds it to `⊤`
+        // before the predicate ever sees it, which is exactly why this must be
+        // asserted here and cannot be asserted through the parser.
+        let min0_bot = pool.min(0, r, bot);
+        assert_eq!(min0_bot, top, "≥0 r.C folds to ⊤ at intern time");
+        assert!(!concept_is_provably_bot(min0_bot, &pool), "≥0 r.⊥ is ⊤");
     }
 
     #[test]

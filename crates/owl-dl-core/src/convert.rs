@@ -2607,7 +2607,9 @@ fn dkey_merging_gate_enabled() -> bool {
 /// ever admits more components and drops fewer pairs. FP-safety is untouched — the
 /// per-pair `disjoint()` value-space check is the entire FP surface and is unchanged.
 fn dkey_post_nnf_enabled() -> bool {
-    std::env::var_os("RUSTDL_DKEY_POST_NNF").is_some_and(|v| v == "1")
+    // DEFAULT ON since 0.4.8 (`=0` reverts). Closes a completeness REGRESSION from the
+    // 07-20/07-30 DKey gates: a `∀p.DKey` that only exists post-NNF was invisible here.
+    std::env::var_os("RUSTDL_DKEY_POST_NNF").is_none_or(|v| v != "0")
 }
 
 /// A role restriction that will exist after NNF but does not exist in the pool yet.

@@ -144,7 +144,9 @@ fn enqueue_dedup_enabled() -> bool {
 /// likewise sound: a class holding an `∃r.botkey` fact is already unsat, and an
 /// unsat class is subsumed by everything.
 fn el_bot_filler_enabled() -> bool {
-    std::env::var_os("RUSTDL_EL_BOT_FILLER").is_some_and(|v| v == "1")
+    // DEFAULT ON since 0.4.8 (`=0` reverts). Closes a D10 bug: `X ⊑ ∃r.⊥` was certified
+    // pure-EL-complete while the lowering dropped it, so `X` read as satisfiable.
+    std::env::var_os("RUSTDL_EL_BOT_FILLER").is_none_or(|v| v != "0")
 }
 
 /// Configuration for [`saturate_with_config`].

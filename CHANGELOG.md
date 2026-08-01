@@ -4,6 +4,75 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] — 2026-08-01
+
+Correctness release. Three wrong answers fixed, all flipped **default ON** (`=0` reverts
+each). FP=0 soundness net **11/11 VERIFIED, closures exact**; workspace tests 1396 passed,
+0 failed.
+
+### Fixed — `classify` and `consistent` no longer contradict each other
+
+`RUSTDL_CLASSIFY_INCONSISTENCY`. On `family.ofn` — which HermiT and Konclude both call
+inconsistent in under a second — `classify --json` reported `"consistent": true` with
+`"unsatisfiable": []`, while `rustdl consistent` on the **same file** reported
+`inconsistent`. Two CLI surfaces disagreeing, and the classify answer was simply wrong.
+
+The `top_is_unsat` test existed only in `classify_pure_el`, and `abox_saturation` was absent
+from `classify.rs` entirely. The fix extracts `abox_saturation_inconsistent` so
+`is_consistent` and `classify` share **one** function, and routes a positive verdict through
+the existing A1 `classify_inconsistent` rather than adding a second mechanism.
+Now: `consistent=false`, 58 unsatisfiable, agreeing with `rustdl consistent`.
+
+**The soundness subtlety is respected and tested:** all-named-classes-unsatisfiable is *not*
+inconsistency — `{A⊑⊥, B⊑⊥}` empties every named class yet has a non-empty domain and is
+consistent. The test is that **⊤** is unsatisfiable. Verified: that ontology still reports
+`consistent=true` with 2 unsatisfiable classes, and sabotaging the inference fails the test.
+
+**Cost measured before flipping**, because the flag adds an ABox pass to the classify path:
+over 12 ABox-bearing ORE ontologies, **−1.5% aggregate** (a wash). Six initially appeared to
+change output; an **OFF-vs-OFF control reproduced the same diffs**, and with banner lines
+stripped all six bodies were byte-identical — nondeterministic timing banners, not answers.
+
+### Fixed — two D10-class bugs (gate certifies complete, engine drops the axiom)
+
+Both were found independently by two reviewers. This is the shape that has shipped three
+times here: the reasoner returns a wrong answer *and* reports `incomplete: false`, so the
+user gets no signal.
+
+- **`RUSTDL_EL_BOT_FILLER`** — `is_el_concept` admitted `Bot` as an ∃-filler while the
+  lowering dropped the axiom, so `X ⊑ ∃r.⊥` was certified pure-EL-complete and reported
+  satisfiable. Konclude and HermiT both say `X ≡ Nothing`. Fixed in the **saturator**, not by
+  tightening the gate — tightening only relocates the MISS to the hybrid path, whereas the
+  existing `directly_unsat` / `process_unsat` machinery derives it for free. Made **total**
+  (a recursive predicate) rather than a `Bot` match arm, which would still have missed
+  `∃r.∃s.⊥`.
+- **`RUSTDL_DKEY_POST_NNF`** — `dkey_components` ran **pre-NNF**, so a `∀p.DKey` that only
+  exists *after* NNF (from `¬∃q.¬DKey`, legal OWL 2 DL) marked neither `merge_inducing` nor
+  collapse/broadcast and its disjointness pair was dropped. Konclude says `Negated ≡ Nothing`;
+  rustdl said satisfiable under every flag. This was a **completeness regression** introduced
+  by the 07-20/07-30 DKey gates, which *either gate alone* loses. Fixed by an NNF-aware scan
+  rather than by moving the pass, because `NEG_TO_BOT_GCI` needs pre-NNF in the same function.
+
+**Evidence discipline:** the curated corpus is inert for the DKey area by its own admission,
+so the FP=0 net shows *non-regression* only — the canaries and Konclude ∪ HermiT adjudication
+are what carry the DKey fix. Sabotage results are reported as run, not as hoped: 8 of 9 caught
+for the Bot fix and 4 of 6 for the DKey fix, with the survivors explained in-code rather than
+the tests overclaiming.
+
+### Explained
+
+The previously unexplained anomaly where `RUSTDL_DKEY_MERGING_GATE=0` found *fewer*
+entailments than the default — "adding sound disjointness loses entailments" — is now
+understood: `seed_disjoint_bucket::try_emit` runs `emitted.insert(pair)` **before** the
+droppable test, so when a pair spans two components whichever the `BTreeMap` reaches first
+consumes it permanently. The merging gate was accidentally masking this.
+
+### Known, not fixed
+
+That `emitted`-before-`droppable` ordering is a **third latent completeness defect** with a
+one-line fix. Deliberately left out of this release to keep it a separate, separately-gated
+change rather than muddying two correctness commits.
+
 ## [0.4.7] — 2026-08-01
 
 Classification-throughput release, driven by the first peer-triaged

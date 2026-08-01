@@ -1909,7 +1909,11 @@ pub fn abox_saturation_enabled() -> bool {
 /// See [`classify_inconsistency_precheck`] for the (sound) signals consulted.
 #[must_use]
 pub fn classify_inconsistency_enabled() -> bool {
-    std::env::var_os("RUSTDL_CLASSIFY_INCONSISTENCY").is_some_and(|v| v != "0" && !v.is_empty())
+    // DEFAULT ON since 0.4.8 (`=0` reverts). Without it `classify --json` and the
+    // `consistent` subcommand contradict each other on an inconsistent KB. Measured
+    // verdict-inert on consistent input and cost-free (-1.5% over 12 ABox-bearing ORE
+    // ontologies; the apparent output diffs reproduce under an OFF-vs-OFF control).
+    std::env::var_os("RUSTDL_CLASSIFY_INCONSISTENCY").is_none_or(|v| v != "0")
 }
 
 /// The `ABox`-saturation half of the KB-level inconsistency pre-check, factored

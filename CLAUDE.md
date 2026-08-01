@@ -1335,11 +1335,45 @@ inputs, not wall time.
 > as dispatch rather than regression). Those canaries pin the flag off. **Do not write
 > a new test that relies on a bare declaration to leave the fragment.**
 >
+> **v0.4.8 CLOSED all three correctness items, each DEFAULT ON (`=0` reverts):**
+>
+> - **`RUSTDL_CLASSIFY_INCONSISTENCY`** — `classify --json` reported `"consistent": true`
+>   with `"unsatisfiable": []` on `family.ofn` while `rustdl consistent` on the SAME FILE
+>   reported `inconsistent`; classify was simply wrong (HermiT and Konclude both call it
+>   inconsistent in under a second). Now `consistent=false`, 58 unsat, and the two agree.
+>   `abox_saturation_inconsistent` is extracted so both surfaces share ONE function and
+>   cannot drift again. **The soundness subtlety is TESTED, not assumed:**
+>   all-named-classes-unsat is NOT inconsistency — `{A⊑⊥, B⊑⊥}` still reports
+>   `consistent=true` with 2 unsat, because the correct test is that **`⊤`** is unsat.
+>   Cost measured *before* flipping (it adds an ABox pass to classify): **−1.5%** over 12
+>   ABox-bearing ORE ontologies. Six ontologies *appeared* to change output — an
+>   **OFF-vs-OFF control reproduced the identical diffs**, and banner-stripped bodies
+>   matched 6/6, so those were nondeterministic timing banners, not answers.
+> - **`RUSTDL_EL_BOT_FILLER`** — `X ⊑ ∃r.⊥` was certified pure-EL-complete while the
+>   lowering dropped it. Fixed in the **saturator**, not by tightening the gate (which
+>   would only relocate the MISS to the hybrid path), and made **total** via a recursive
+>   predicate — a `Bot` match arm would still have missed `∃r.∃s.⊥`.
+> - **`RUSTDL_DKEY_POST_NNF`** — `dkey_components` ran **pre-NNF**, so a `∀p.DKey` arising
+>   only after NNF (`¬∃q.¬DKey`, legal OWL 2 DL) was invisible to the role gates. A
+>   completeness **regression** from the 07-20/07-30 DKey gates that *either gate alone*
+>   loses.
+>
+> **EXPLAINED (was an open anomaly):** why `RUSTDL_DKEY_MERGING_GATE=0` found *fewer*
+> entailments than the default. `seed_disjoint_bucket::try_emit` runs
+> `emitted.insert(pair)` **BEFORE** the droppable test, so a pair spanning two components
+> is permanently consumed by whichever the `BTreeMap` reaches first; the merging gate was
+> masking it. **That ordering is a THIRD latent completeness defect with a one-line fix,
+> deliberately NOT in 0.4.8** — kept separately gated rather than muddying two correctness
+> commits. It is the next correctness item.
+>
+> **Evidence caveat to carry:** the curated corpus is inert for the DKey area by
+> `datatype_value_membership.rs`'s own admission, so an all-green FP=0 net shows
+> **non-regression only** for `RUSTDL_DKEY_POST_NNF` — its canaries and the
+> Konclude ∪ HermiT adjudication are the actual evidence.
+>
 > See `docs/benchmarks/2026-08-01-dnf257-characterization.md` (results, threats to
 > validity, and eight confirmed defects with predicted effects) and
-> `docs/reviews-2026-08-01/`. Still open there: two new D10-class correctness bugs.
-> The `family.ofn` classify/consistent contradiction is ADDRESSED — see the next
-> entry.
+> `docs/reviews-2026-08-01/`.
 
 > **`classify` vs `consistent` contradiction on `family.ofn` — FIXED behind
 > `RUSTDL_CLASSIFY_INCONSISTENCY` (2026-08-01, default OFF, `=1` enables).**

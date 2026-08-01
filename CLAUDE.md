@@ -1313,11 +1313,33 @@ inputs, not wall time.
 > `hyper::solve`, so the standing attribution of the hard tail to wedge disjunctive
 > branching does not hold on the named cases either.
 >
+> The contention caveat is CLOSED: a seeded 20-of-257 sample re-run strictly
+> sequentially on an idle host, with the byte-identical binary, gave
+> **completed = 0** — so 242 is measured, not inferred.
+>
+> **Two fixes from this work are DEFAULT ON as of 0.4.7** (`=0` reverts each):
+> `RUSTDL_FAST_DIRECT_SUBSUMERS` (an O(k²)-per-class Hasse reduction sat in the
+> **output** loop — `ore_ont_10125` finished classifying in ~15 s then spent ≥385 s
+> emitting; DNF@900 s → 14.70 s) and `RUSTDL_FRAGMENT_BARE_DECL` (bare
+> `SymmetricObjectProperty` / `InverseObjectProperties` **declarations** fell through
+> to `_ => false` on the fragment gates; **44 of the 257 now classify**, admitted only
+> when the role is provably *unread*). Two more ship default OFF:
+> `RUSTDL_SAT_ENQUEUE_DEDUP` (`11085` OOM 16.96 GB → 491 MB, but 687 s — still DNF at
+> a production budget) and `RUSTDL_LAZY_ABOX_SATURATION` (correct, but its perf
+> premise measured as noise — do NOT quote the "~62% of prep" estimate).
+>
+> **TEST-IDIOM CHANGE:** a bare `InverseObjectProperties` declaration was a common
+> in-tree device for forcing an ontology *out* of the EL fragment. `RUSTDL_FRAGMENT_BARE_DECL`
+> dissolves it — three canaries used it that way and now take the fast path (their
+> VERDICT assertions still passed; only telemetry failed, which is what identified it
+> as dispatch rather than regression). Those canaries pin the flag off. **Do not write
+> a new test that relies on a bare declaration to leave the fragment.**
+>
 > See `docs/benchmarks/2026-08-01-dnf257-characterization.md` (results, threats to
 > validity, and eight confirmed defects with predicted effects) and
-> `docs/reviews-2026-08-01/`. Caveat still open at time of writing: the rustdl half of
-> that comparison is inherited from a 4-way concurrent re-run and awaits an
-> uncontended re-measurement (`owl-reasoner-harness/scripts/validate-dnf.sh`).
+> `docs/reviews-2026-08-01/`. Still open there: two new D10-class correctness bugs and
+> `classify --json` reporting `"consistent": true` on `family.ofn` where `rustdl
+> consistent` reports `inconsistent`.
 
 Performance claims in docs are backed by the corpus harness
 — re-measure with `scripts/bench-rustdl-modes.sh` (on a **freshly built** binary,

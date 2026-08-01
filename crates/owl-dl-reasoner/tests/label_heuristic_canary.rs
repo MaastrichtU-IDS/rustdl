@@ -28,6 +28,17 @@ fn pin_label_cache_path() {
     unsafe {
         std::env::set_var("RUSTDL_SNAPSHOT_CAPTURE", "0");
         std::env::set_var("RUSTDL_HORN_SHORTCIRCUIT", "0");
+        // `RUSTDL_FRAGMENT_BARE_DECL` (default ON since 0.4.7) is the third such
+        // flag, and it dissolves this file's out-of-fragment DEVICE rather than
+        // its subject. Both fixtures below add a bare `InverseObjectProperties`
+        // purely to force the top-down path; neither uses the role in any
+        // concept, so the 0.4.7 gate correctly classifies it as UNREAD, admits
+        // the ontology to the saturation fast path, and the label cache never
+        // runs (`pruned = pass_through = misses = 0`). The verdict assertions
+        // still passed when this first surfaced -- only the "heuristic fired"
+        // assertion failed -- so this is the canary's premise being invalidated,
+        // not a regression. Pin it off to keep testing the heuristic.
+        std::env::set_var("RUSTDL_FRAGMENT_BARE_DECL", "0");
     }
 }
 

@@ -4,6 +4,94 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] — 2026-08-01
+
+Classification-throughput release, driven by the first peer-triaged
+characterization of rustdl's did-not-finish tail. Two levers flip default ON;
+two more ship default OFF. FP=0 soundness net **11/11 VERIFIED, closures exact**
+(galen 27997, notgalen 32739, sio 8904, ore-10908 6001, wine 653, pizza 499,
+alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16).
+
+### Why this release exists
+
+Of 1,920 ORE ontologies, rustdl fails to classify 257 within 120 s single-thread.
+Given the same ontologies at the same cap, **Konclude classifies 242 of them (94%)
+at a median wall of 3.47 s**; HermiT and KM each rescue none of the remaining 15.
+Three independent reasoners failing exactly the same 15 is the strongest available
+evidence that only ~6% of the tail is intrinsically hard — **the rest is rustdl's
+gap.** That reverses the account carried in `CLAUDE.md`, which described this tail
+as intrinsic SROIQ hardness with "no cheap entry"; the defensible version of that
+claim is narrower — the mechanisms previously *investigated* were measured out, and
+no peer had ever been asked. The rustdl side was re-validated uncontended (0 of a
+seeded 20 complete sequentially), so 242 is measured, not inferred.
+See `docs/benchmarks/2026-08-01-dnf257-characterization.md`.
+
+### Added — default ON (`=0` reverts)
+
+- **`RUSTDL_FAST_DIRECT_SUBSUMERS`** — `direct_subsumers` recomputed an O(k²)
+  transitive reduction **per class, inside the output loop**. `ore_ont_10125`
+  finished *classifying* in ~15 s and then spent **≥385 s emitting**:
+  **DNF at 900 s → 14.70 s complete (>61×)**. Output is byte-identical including
+  ascending order; an ordering sabotage is one of four canaries. No regression off
+  the hot path (`ore_ont_9498`, 305 k classes: 12.81 → 12.85 s).
+- **`RUSTDL_FRAGMENT_BARE_DECL`** — `is_el_axiom` / `is_saturator_axiom` fell
+  through to `_ => false` for bare `SymmetricObjectProperty` and
+  `InverseObjectProperties` **declarations**, so merely *naming* such a property
+  refused the ontology the saturation fast path. **44 of the 257 now classify**
+  (`# mode: pure EL`, median 1.87 s; `ore_ont_8470` 132.76 s → 0.53 s).
+  A declaration is admitted **only when the role's edge set is provably unread** —
+  no concept occurrence, no domain/range, not a chain part, no characteristic, no
+  ABox assertion, and not below an observable role (closed to a fixpoint).
+  Admitting them unconditionally would be a D10 bug; the blocked set is 76 and this
+  admits 44, because the other 32 have a genuinely *read* role.
+
+### Added — default OFF (opt-in)
+
+- **`RUSTDL_SAT_ENQUEUE_DEDUP`** — records a derived subsumer pair at *enqueue*
+  rather than *pop*, giving the worklist an in-queue membership test. On
+  `ore_ont_11085` the queue reached 1.07 G entries (8 GB), with ≥414 M of 927 M
+  pushes provably duplicates. **OOM-abort at 16.96 GB → completes at 491 MB (35×).**
+  Default OFF because it does **not** recover the ontology at a production budget —
+  687 s, still DNF at 120 s. It removes the memory wall, not the compute cost.
+- **`RUSTDL_LAZY_ABOX_SATURATION`** — elides an EL saturation that is provably dead
+  on ABox-free input. Correct, but its **premise was refuted as a performance
+  lever**: measured 0.02–0.14 s (0.2–0.3%), RSS flat, because every large ABox-free
+  ontology takes the pure-EL fast path and never reaches that call site. The
+  "~62% of prep" estimate should not be quoted.
+
+### Behaviour change worth knowing
+
+A bare `InverseObjectProperties` declaration was a common in-tree idiom for forcing
+an ontology *out* of the EL fragment in tests. `RUSTDL_FRAGMENT_BARE_DECL` dissolves
+that idiom: three canaries used it as a device and now take the fast path. In every
+case the **verdict** assertions still passed and only the telemetry assertions
+failed, confirming a dispatch change rather than a regression; those canaries now
+pin the flag off. New tests should not rely on a bare declaration to leave the
+fragment.
+
+### Root causes established
+
+- **`ore_ont_11085`'s ≥21.7 GB is the subsumer worklist**, not the D4 dense
+  matrices (re-refuted: both `IdMatrix`es stay at 62 MB) and not Tseitin minting
+  (`next_id` never moves). Counterfactual: deleting only its 732
+  `SubClassOf(owl:Thing, C)` axioms gives 0.72 s / 166 MB.
+- **The hard tail is not the wedge.** `ore_ont_10019` profiles **84.6% main
+  tableau** vs 15.3% `hyper::solve`; `ore_ont_1508` is 22,454/22,456 `match_body`
+  samples under the *Horn* path. `ore_ont_10019` is a **47-class** ontology using
+  0.01 GB that Konclude does in 0.06 s.
+- **The "94% unattributed" budget overrun** is `saturate()` and `from_internal()`
+  running *before* any deadline check (so `--global-timeout-ms` bounds only the
+  search) plus `tier_walk_wall_ms` being a residual subtraction that mis-attributes
+  the unbudgeted prep. Not yet fixed.
+
+### Known, not fixed
+
+Two new D10-class correctness bugs (`is_el_concept` admits `Bot` as an ∃-filler
+while the lowering drops the axiom; `dkey_components` runs pre-NNF so a post-NNF
+`∀p.DKey` is missed — a completeness regression from the 07-20/07-30 DKey gates),
+and `classify --json` reporting `"consistent": true` on `family.ofn` where
+`rustdl consistent` reports `inconsistent`. See `docs/reviews-2026-08-01/`.
+
 ## [0.4.6] — 2026-07-31
 
 Completeness and conversion-scale release. Four ORE ontologies go from

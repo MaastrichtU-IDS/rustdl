@@ -109,7 +109,10 @@ fn dense_max() -> usize {
 /// of once per unsatisfiable class). Output — membership AND ascending order — is
 /// unchanged; see `direct_subsumers` for the equivalence argument.
 fn fast_direct_subsumers_enabled() -> bool {
-    std::env::var_os("RUSTDL_FAST_DIRECT_SUBSUMERS").is_some_and(|v| v != "0" && !v.is_empty())
+    // DEFAULT ON since 0.4.7 (`=0` reverts). Verdict-preserving: output membership AND
+    // ascending order are unchanged (an ordering sabotage is one of the four canaries),
+    // and it takes `ore_ont_10125` from DNF at 900 s to 14.70 s complete.
+    std::env::var_os("RUSTDL_FAST_DIRECT_SUBSUMERS").is_none_or(|v| v != "0")
 }
 
 /// Hoisted state behind [`fast_direct_subsumers_enabled`]. Built once per
@@ -1222,7 +1225,7 @@ fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
 
 /// Which `SymmetricObjectProperty` / `InverseObjectProperties` declarations the
 /// fragment gates may admit without breaking the "gate ⟹ saturator complete"
-/// contract (`RUSTDL_FRAGMENT_BARE_DECL`, **default OFF**).
+/// contract (`RUSTDL_FRAGMENT_BARE_DECL`, **default ON** since 0.4.7; `=0` reverts).
 ///
 /// # The problem
 ///
@@ -1458,7 +1461,7 @@ fn is_atomic_or_trivial_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 fn is_el_axiom(ax: &Axiom, pool: &ConceptPool, bare: &BareRoleDecls) -> bool {
     match ax {
         // Bare (semantically inert) symmetry / inverse declaration — see
-        // `BareRoleDecls`. Gated by `RUSTDL_FRAGMENT_BARE_DECL` (default OFF);
+        // `BareRoleDecls`. Gated by `RUSTDL_FRAGMENT_BARE_DECL` (default ON since 0.4.7);
         // flag-off `unread` is constant-`false`, so this arm falls through to
         // the pre-flag `_ => false`.
         Axiom::SymmetricRole(_) | Axiom::InverseObjectProperties(_, _)
@@ -1662,7 +1665,7 @@ fn is_saturator_axiom(
 ) -> bool {
     match ax {
         // Bare (semantically inert) symmetry / inverse declaration — see
-        // `BareRoleDecls`. Gated by `RUSTDL_FRAGMENT_BARE_DECL` (default OFF);
+        // `BareRoleDecls`. Gated by `RUSTDL_FRAGMENT_BARE_DECL` (default ON since 0.4.7);
         // flag-off `unread` is constant-`false`, so this arm falls through to
         // the pre-flag `_ => false`.
         Axiom::SymmetricRole(_) | Axiom::InverseObjectProperties(_, _)
@@ -3393,15 +3396,45 @@ Ontology(<http://rustdl.test/test>\n\
     /// pins the default itself.)
     #[test]
     #[allow(unsafe_code)]
-    fn bare_decl_flag_defaults_off() {
+    fn fast_direct_subsumers_flag_defaults_on() {
+        let _lock = crate::test_env_lock();
+        let prev = std::env::var_os("RUSTDL_FAST_DIRECT_SUBSUMERS");
+        unsafe { std::env::remove_var("RUSTDL_FAST_DIRECT_SUBSUMERS") };
+        let unset = fast_direct_subsumers_enabled();
+        unsafe { std::env::set_var("RUSTDL_FAST_DIRECT_SUBSUMERS", "0") };
+        let off = fast_direct_subsumers_enabled();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_FAST_DIRECT_SUBSUMERS", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_FAST_DIRECT_SUBSUMERS") },
+        }
+        assert!(
+            unset,
+            "RUSTDL_FAST_DIRECT_SUBSUMERS must default ON since 0.4.7"
+        );
+        assert!(!off, "RUSTDL_FAST_DIRECT_SUBSUMERS=0 must still revert");
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn bare_decl_flag_defaults_on() {
         let _lock = crate::test_env_lock();
         let prev = std::env::var_os("RUSTDL_FRAGMENT_BARE_DECL");
         unsafe { std::env::remove_var("RUSTDL_FRAGMENT_BARE_DECL") };
-        let enabled = crate::fragment_bare_decl_enabled();
-        if let Some(v) = prev {
-            unsafe { std::env::set_var("RUSTDL_FRAGMENT_BARE_DECL", v) };
+        let unset = crate::fragment_bare_decl_enabled();
+        unsafe { std::env::set_var("RUSTDL_FRAGMENT_BARE_DECL", "0") };
+        let off = crate::fragment_bare_decl_enabled();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_FRAGMENT_BARE_DECL", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_FRAGMENT_BARE_DECL") },
         }
-        assert!(!enabled, "RUSTDL_FRAGMENT_BARE_DECL must default OFF");
+        // Default flipped ON in 0.4.7. Both halves matter: an UNSET variable must
+        // enable, and `=0` must still revert -- a flag whose opt-out silently stopped
+        // working would leave no way back to the prior behaviour.
+        assert!(
+            unset,
+            "RUSTDL_FRAGMENT_BARE_DECL must default ON since 0.4.7"
+        );
+        assert!(!off, "RUSTDL_FRAGMENT_BARE_DECL=0 must still revert");
     }
 
     /// FLAG-OFF CONTROL: even a provably unread declaration keeps the ontology
@@ -4524,7 +4557,7 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn analyze_fragment_returns_out_of_fragment_on_inverse_role() {
-        // Pin `RUSTDL_FRAGMENT_BARE_DECL` OFF (the default): this fixture is a
+        // Pin `RUSTDL_FRAGMENT_BARE_DECL` OFF (no longer the default since 0.4.7): this fixture is a
         // bare inverse-pair declaration over two roles nothing reads, which the
         // flag deliberately admits to the EL fragment. Taking the shared env
         // lock also stops a concurrently-running bare-decl canary from leaking

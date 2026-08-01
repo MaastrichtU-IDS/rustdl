@@ -162,6 +162,14 @@ fn replay_no_op_on_unsafe_ontology_with_flag_on() {
     // still classify as Horn at the clausifier level; disable to
     // ensure the snapshot path runs and the Unsafe gate fires.
     let _horn_guard = SetEnvGuard::set("RUSTDL_HORN_SHORTCIRCUIT", "0");
+    // `RUSTDL_FRAGMENT_BARE_DECL` (default ON since 0.4.7) admits a bare
+    // `InverseObjectProperties` whose roles are never READ, and the fixture below
+    // never uses `:r`/`:rinv` in any concept -- so the gate correctly routes it to
+    // the saturation fast path, the snapshot path never runs, and
+    // `snapshot_cache_falls_through` stays 0. The VERDICT assertions still passed
+    // when this surfaced; only the telemetry one failed. Pin it off: this canary is
+    // about the Unsafe gate, not about fragment dispatch.
+    let _bare_decl_guard = SetEnvGuard::set("RUSTDL_FRAGMENT_BARE_DECL", "0");
     assert!(
         snapshot_capture_enabled(),
         "flag-ON: snapshot_capture_enabled() must report true"

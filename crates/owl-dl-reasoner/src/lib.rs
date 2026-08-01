@@ -3111,7 +3111,7 @@ pub fn classify_tbox_fragment_enabled() -> bool {
 }
 
 /// Bare symmetry / inverse **declarations** in the fragment gates
-/// (`RUSTDL_FRAGMENT_BARE_DECL`, **default OFF**; `=1` enables).
+/// (`RUSTDL_FRAGMENT_BARE_DECL`, **default ON** since 0.4.7; `=0` reverts).
 ///
 /// `SymmetricObjectProperty(r)` and `InverseObjectProperties(p, q)` fell through
 /// to `_ => false` in both `is_el_axiom` and `is_saturator_axiom`, so merely
@@ -3127,7 +3127,9 @@ pub fn classify_tbox_fragment_enabled() -> bool {
 /// is what is being extended.
 #[must_use]
 pub(crate) fn fragment_bare_decl_enabled() -> bool {
-    std::env::var_os("RUSTDL_FRAGMENT_BARE_DECL").is_some_and(|v| v != "0" && !v.is_empty())
+    // DEFAULT ON since 0.4.7 (`=0` reverts). Admits ONLY provably-unread symmetric /
+    // inverse declarations; the "unread" predicate is what keeps this from being a D10 bug.
+    std::env::var_os("RUSTDL_FRAGMENT_BARE_DECL").is_none_or(|v| v != "0")
 }
 
 /// True iff any axiom's class expression references a nominal (`ObjectOneOf` /

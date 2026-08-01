@@ -1337,9 +1337,57 @@ inputs, not wall time.
 >
 > See `docs/benchmarks/2026-08-01-dnf257-characterization.md` (results, threats to
 > validity, and eight confirmed defects with predicted effects) and
-> `docs/reviews-2026-08-01/`. Still open there: two new D10-class correctness bugs and
-> `classify --json` reporting `"consistent": true` on `family.ofn` where `rustdl
-> consistent` reports `inconsistent`.
+> `docs/reviews-2026-08-01/`. Still open there: two new D10-class correctness bugs.
+> The `family.ofn` classify/consistent contradiction is ADDRESSED — see the next
+> entry.
+
+> **`classify` vs `consistent` contradiction on `family.ofn` — FIXED behind
+> `RUSTDL_CLASSIFY_INCONSISTENCY` (2026-08-01, default OFF, `=1` enables).**
+> `rustdl classify --json ontologies/real/family.ofn` reported
+> `"consistent": true, "incomplete": false, "unsatisfiable": []` while
+> `rustdl consistent` on the same file reported `inconsistent` — two wrong answers
+> from one binary (`family.ofn` *is* inconsistent; HermiT, Konclude and rustdl's own
+> `abox_saturation` pre-check all agree in under a second).
+>
+> Root cause, as diagnosed: the `top_is_unsat` inconsistency test lived **only** in
+> `classify_pure_el`, and `abox_saturation` — which `is_consistent` has run by default
+> since 2026-06-20, and which `realize_internal` gained in v0.3.36 — was **absent from
+> `classify.rs` entirely**. The hybrid path therefore had no inconsistency signal at all.
+>
+> Fix (reuse, not parallel-invent): `classify_inconsistency_precheck` in `lib.rs`
+> combines the two signals already shipped elsewhere — the saturator's
+> `globally_inconsistent() || top_is_unsat()` (verbatim `classify_pure_el`'s test) and
+> `abox_saturation_inconsistent` (newly factored out so `is_consistent` and `classify`
+> call **literally the same function** and cannot drift). Both classify drivers call it
+> once, before the fast-path branch, and a positive verdict returns the existing Phase-A1
+> `classify_inconsistent` — every class unsatisfiable, mirroring Konclude and rustdl's own
+> ABox-pre-check handling. `family.ofn`: `consistent: false`, 58/58 classes unsatisfiable.
+>
+> **SOUNDNESS SUBTLETY, load-bearing:** *all-named-classes-unsat is NOT an inconsistency
+> signal.* `{A ⊑ ⊥, B ⊑ ⊥}` empties every named class yet has a non-empty model. The test
+> is that **`⊤`** is unsatisfiable; nothing in the pre-check inspects the unsatisfiable-class
+> list. Pinned by `all_classes_unsat_is_still_consistent`.
+>
+> Gates: flag-OFF byte-identical to pre-change `main` on 9/9 curated fixtures
+> (bibtex/pizza/ro/ro-stripped/sulo/sulo-stripped/sio/go-basic/family) plus `wine`;
+> flag-ON byte-identical to flag-OFF on all of them **except `family.ofn`**, the one
+> ontology that is genuinely inconsistent; FP=0 net with the flag ON, 11 VERIFIED,
+> all closures exact (galen 27997, notgalen 32739, sio 8904, ore-10908 6001, wine 653,
+> pizza 499, alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16). Canaries in
+> `crates/owl-dl-reasoner/tests/classify_inconsistency.rs`; **both were sabotaged and
+> both failed** (dropping the ABox-saturation signal fails the family canary; inferring
+> inconsistency from all-classes-unsat fails the negative control).
+>
+> **KNOWN RESIDUAL (recorded, not hidden):** classify's inconsistency detection stays a
+> sound UNDER-approximation. `docs/family-mech4-ddmin-core.ofn` is inconsistent via the
+> **wedge consistency route** (`consistency: wedge Unsat`), which neither pre-check
+> reaches, and a bounded global `decide(Top)` probe on the classify path is a measured
+> dead-end (hangs on consistent `alehif`/`pizza`). So classify can still MISS a
+> tableau-only inconsistency and report `consistent: true`. What the change guarantees is
+> that the two surfaces cannot disagree at the *pre-check* tier, because that tier is now
+> shared code. `#[ignore]`d test `ddmin_core_residual_divergence` documents it.
+> Unrelated pre-existing note: `rustdl consistent ontologies/real/sio.ofn` DNFs at 600 s
+> on both the pre-change and post-change binaries — a stall, not a verdict disagreement.
 
 Performance claims in docs are backed by the corpus harness
 — re-measure with `scripts/bench-rustdl-modes.sh` (on a **freshly built** binary,

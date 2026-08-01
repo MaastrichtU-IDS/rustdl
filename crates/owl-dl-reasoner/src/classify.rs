@@ -22,7 +22,7 @@ use rayon::prelude::*;
 
 use owl_dl_core::convert::convert_ontology;
 use owl_dl_core::{
-    Axiom, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, SubRolePath,
+    Axiom, ConceptExpr, ConceptId, ConceptPool, InternalOntology, Role, RoleId, SubRolePath,
 };
 use owl_dl_saturation::saturate;
 
@@ -1081,11 +1081,206 @@ pub(crate) fn is_pure_el(internal: &InternalOntology) -> bool {
 /// so an EL `TBox` carrying a big `ABox` is still classified completely by the
 /// saturation fast path.
 fn is_pure_el_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
+    let bare = BareRoleDecls::analyze(internal);
     internal
         .axioms
         .iter()
         .filter(|ax| !(skip_abox && is_abox_axiom(ax)))
-        .all(|ax| is_el_axiom(ax, &internal.concepts))
+        .all(|ax| is_el_axiom(ax, &internal.concepts, &bare))
+}
+
+/// Which `SymmetricObjectProperty` / `InverseObjectProperties` declarations the
+/// fragment gates may admit without breaking the "gate ⟹ saturator complete"
+/// contract (`RUSTDL_FRAGMENT_BARE_DECL`, **default OFF**).
+///
+/// # The problem
+///
+/// The EL saturator has **no symmetry and no inverse rule at all** — grep
+/// `owl-dl-saturation` for `SymmetricRole` / `InverseObjectProperties`: neither
+/// variant is matched anywhere, so both are silently dropped. Admitting them to
+/// a fragment gate unconditionally would therefore be a textbook D10 bug (gate
+/// certifies the closure complete while the engine drops the axiom): with
+/// `Symmetric(r)`, `A ⊑ ∃r.B` and `Range(r, E)` the backward edge `r(y, x)`
+/// forces `A ⊑ E`, which the saturator never derives.
+///
+/// # What is admitted, and why it is sound-complete
+///
+/// A role id is **observable** when some axiom or concept can *read* its edge
+/// set. The saturator's — and OWL's — only edge readers are: an occurrence in
+/// any concept (`∃q.C`, `∀q.C`, `≥/≤n q.C`, `Self(q)`), `ObjectPropertyDomain`
+/// / `ObjectPropertyRange`, being a *part* of a role chain,
+/// `Functional` / `InverseFunctional` / `Reflexive` / `Irreflexive` /
+/// `Asymmetric` / `DisjointObjectProperties`, an `ABox` (negative) property
+/// assertion, or being **below** an observable role in the property hierarchy
+/// (`q ⊑ s`, `s` observable ⟹ `q` observable, closed to a fixpoint; the
+/// `EquivalentObjectProperties` members are mutually `⊑`-related).
+///
+/// `TransitiveRole(q)` is deliberately **not** a read: transitivity only
+/// enlarges `q`'s own edge set, which is unobservable unless some genuine
+/// reader above also mentions `q`. Neither are the symmetry / inverse
+/// declarations under test, nor a role in the *super* position of a chain or of
+/// `SubObjectPropertyOf` (that position only *receives* edges).
+///
+/// **Claim.** If `r` is non-observable, dropping `SymmetricRole(r)` changes no
+/// class subsumption. *Proof.* Dropping an axiom only weakens the theory, so no
+/// new entailment appears (FP-safe unconditionally). For completeness, take any
+/// model `M` of the ontology minus the dropped declarations with `x ∈ C \ D`.
+/// Non-observability is closed upward through `⊑` (contrapositive of the
+/// hierarchy rule: every super-role of a non-observable role is itself
+/// non-observable), so let `M'` extend `M` by closing the edge sets of the
+/// non-observable roles under symmetry, under transitivity where declared, and
+/// under the `⊑` edges among themselves — this only *adds* edges, and only to
+/// non-observable roles. No concept mentions a non-observable role, so every
+/// concept extension (hence `x ∈ C \ D`) is unchanged. No axiom is broken
+/// either: the axiom shapes that adding `q`-edges could violate — `∀q.C`,
+/// `≤n q`, `Functional`, domain/range, `Asymmetric`, `Irreflexive`, disjoint
+/// properties, a negative assertion, a chain in which `q` is a part — all make
+/// `q` observable by definition, and `SubObjectPropertyOf(t, q)` for an
+/// observable `t` stays satisfied because `q` only grew. So `M' ⊨` the full
+/// ontology *including* the symmetry declarations, and `C ⊑ D` is not entailed
+/// there either. ∎ `InverseObjectProperties(p, q)` is the same argument with
+/// `p^{M'}` and `q^{M'}` set to a common edge set and its converse; it requires
+/// **both** roles to be non-observable.
+///
+/// Polarity is ignored throughout (everything is keyed on `RoleId`): symmetry
+/// of `r⁻` is symmetry of `r`, and treating `r⁻`'s occurrences as `r`'s can
+/// only over-approximate observability, i.e. admit fewer declarations.
+#[derive(Debug, Default)]
+struct BareRoleDecls {
+    /// `false` ⟹ every query answers "not inert", i.e. the exact pre-flag
+    /// behaviour (the declarations keep kicking the ontology off the fast path).
+    enabled: bool,
+    /// Role ids whose edge set some axiom or concept CAN read.
+    observable: HashSet<RoleId>,
+}
+
+impl BareRoleDecls {
+    fn analyze(internal: &InternalOntology) -> Self {
+        if !crate::fragment_bare_decl_enabled() {
+            return Self::default();
+        }
+        let mut observable: HashSet<RoleId> = HashSet::new();
+        // (1) Every role mentioned by ANY interned concept expression. Scanning
+        // the whole pool (rather than only axiom-reachable concepts) is the
+        // conservative direction: a stale interning can only mark MORE roles
+        // observable, never fewer.
+        for (_, expr) in internal.concepts.iter_with_ids() {
+            match expr {
+                ConceptExpr::Some(r, _)
+                | ConceptExpr::All(r, _)
+                | ConceptExpr::Min(_, r, _)
+                | ConceptExpr::Max(_, r, _)
+                | ConceptExpr::SelfRestriction(r) => {
+                    observable.insert(r.role_id());
+                }
+                ConceptExpr::Top
+                | ConceptExpr::Bot
+                | ConceptExpr::Atomic(_)
+                | ConceptExpr::Nominal(_)
+                | ConceptExpr::Not(_)
+                | ConceptExpr::And(_)
+                | ConceptExpr::Or(_) => {}
+            }
+        }
+        // (2) Axiom positions that READ a role's edges, plus the `sub ⊑ sup`
+        // pairs the fixpoint in (3) propagates observability along.
+        //
+        // The match is deliberately EXHAUSTIVE (no `_` arm): a new `Axiom`
+        // variant must be classified as reader / non-reader by hand rather than
+        // silently defaulting to "harmless".
+        let mut sub_sup: Vec<(RoleId, RoleId)> = Vec::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubObjectPropertyOf { sub, sup } => match sub {
+                    SubRolePath::Role(r) => sub_sup.push((r.role_id(), sup.role_id())),
+                    SubRolePath::Chain(parts) => {
+                        // A chain PART is matched against existing edges — a
+                        // read. The chain's `sup` only receives edges.
+                        for p in parts {
+                            observable.insert(p.role_id());
+                        }
+                    }
+                },
+                Axiom::EquivalentObjectProperties(roles) => {
+                    for a in roles {
+                        for b in roles {
+                            if a.role_id() != b.role_id() {
+                                sub_sup.push((a.role_id(), b.role_id()));
+                            }
+                        }
+                    }
+                }
+                Axiom::ObjectPropertyDomain { role, .. }
+                | Axiom::ObjectPropertyRange { role, .. }
+                | Axiom::FunctionalRole(role)
+                | Axiom::InverseFunctionalRole(role)
+                | Axiom::AsymmetricRole(role)
+                | Axiom::ReflexiveRole(role)
+                | Axiom::IrreflexiveRole(role)
+                | Axiom::ObjectPropertyAssertion { role, .. }
+                | Axiom::NegativeObjectPropertyAssertion { role, .. } => {
+                    observable.insert(role.role_id());
+                }
+                Axiom::DisjointObjectProperties(roles) => {
+                    for r in roles {
+                        observable.insert(r.role_id());
+                    }
+                }
+                // NOT readers. `TransitiveRole` only enlarges the role's own
+                // edge set; the symmetry/inverse declarations are the axioms
+                // under test; the class axioms carry roles only inside concepts,
+                // already covered by the pool scan in (1).
+                Axiom::TransitiveRole(_)
+                | Axiom::SymmetricRole(_)
+                | Axiom::InverseObjectProperties(_, _)
+                | Axiom::SubClassOf { .. }
+                | Axiom::EquivalentClasses(_)
+                | Axiom::DisjointClasses(_)
+                | Axiom::DisjointUnion { .. }
+                | Axiom::ClassAssertion { .. }
+                | Axiom::SameIndividual(_)
+                | Axiom::DifferentIndividuals(_)
+                | Axiom::DeclareClass(_)
+                | Axiom::DeclareObjectProperty(_)
+                | Axiom::DeclareNamedIndividual(_) => {}
+            }
+        }
+        // (3) Downward closure: `sub ⊑ sup` with an observable `sup` makes
+        // `sub` observable too (edges pushed up are then read above).
+        loop {
+            let mut grew = false;
+            for (sub, sup) in &sub_sup {
+                if observable.contains(sup) && observable.insert(*sub) {
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        Self {
+            enabled: true,
+            observable,
+        }
+    }
+
+    /// True iff `role`'s edge set is provably unread, so a symmetry / inverse
+    /// declaration over it is semantically inert for class subsumption.
+    fn unread(&self, role: Role) -> bool {
+        self.enabled && !self.observable.contains(&role.role_id())
+    }
+}
+
+/// Shared `SymmetricRole` / `InverseObjectProperties` arm for both fragment
+/// gates. See [`BareRoleDecls`] for the soundness argument. Returns `false`
+/// (i.e. "kick the ontology off the fast path") whenever the flag is off,
+/// preserving the pre-flag verdict exactly.
+fn is_inert_bare_role_decl(ax: &Axiom, bare: &BareRoleDecls) -> bool {
+    match ax {
+        Axiom::SymmetricRole(r) => bare.unread(*r),
+        Axiom::InverseObjectProperties(p, q) => bare.unread(*p) && bare.unread(*q),
+        _ => false,
+    }
 }
 
 /// True for the five `ABox` assertion axiom forms (individual-level). Used by
@@ -1129,8 +1324,17 @@ fn is_atomic_or_trivial_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     )
 }
 
-fn is_el_axiom(ax: &Axiom, pool: &ConceptPool) -> bool {
+fn is_el_axiom(ax: &Axiom, pool: &ConceptPool, bare: &BareRoleDecls) -> bool {
     match ax {
+        // Bare (semantically inert) symmetry / inverse declaration — see
+        // `BareRoleDecls`. Gated by `RUSTDL_FRAGMENT_BARE_DECL` (default OFF);
+        // flag-off `unread` is constant-`false`, so this arm falls through to
+        // the pre-flag `_ => false`.
+        Axiom::SymmetricRole(_) | Axiom::InverseObjectProperties(_, _)
+            if is_inert_bare_role_decl(ax, bare) =>
+        {
+            true
+        }
         Axiom::SubClassOf { sub, sup } => is_el_concept(*sub, pool) && is_el_concept(*sup, pool),
         Axiom::EquivalentClasses(members) => members.iter().all(|c| is_el_concept(*c, pool)),
         // D10 gate tightening (Bug A): `DisjointClasses` members are filtered to
@@ -1268,11 +1472,20 @@ fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool
             .iter()
             .any(|ax| matches!(ax, Axiom::InverseFunctionalRole(_)));
     let disjoint_ok = !has_cardinality_role;
+    let bare = BareRoleDecls::analyze(internal);
     internal
         .axioms
         .iter()
         .filter(|ax| !(skip_abox && is_abox_axiom(ax)))
-        .all(|ax| is_saturator_axiom(ax, &internal.concepts, &functional_roles, disjoint_ok))
+        .all(|ax| {
+            is_saturator_axiom(
+                ax,
+                &internal.concepts,
+                &functional_roles,
+                disjoint_ok,
+                &bare,
+            )
+        })
 }
 
 /// Lever 1 eligibility: the ontology has an `ABox`, uses NO nominals, and its
@@ -1314,8 +1527,18 @@ fn is_saturator_axiom(
     pool: &ConceptPool,
     functional_roles: &HashSet<Role>,
     disjoint_ok: bool,
+    bare: &BareRoleDecls,
 ) -> bool {
     match ax {
+        // Bare (semantically inert) symmetry / inverse declaration — see
+        // `BareRoleDecls`. Gated by `RUSTDL_FRAGMENT_BARE_DECL` (default OFF);
+        // flag-off `unread` is constant-`false`, so this arm falls through to
+        // the pre-flag `_ => false`.
+        Axiom::SymmetricRole(_) | Axiom::InverseObjectProperties(_, _)
+            if is_inert_bare_role_decl(ax, bare) =>
+        {
+            true
+        }
         // Recognize the derived functional-enforcement GCI
         // `∃role.⊤ ⊑ ≤1 role` (role backed by a matching functional axiom) so
         // it does NOT kick the ontology off the fast path. Exact shape only.
@@ -2869,6 +3092,327 @@ mod tests {
         ontology
     }
 
+    // ───────────────────────────────────────────────────────────────────────
+    // `RUSTDL_FRAGMENT_BARE_DECL` — bare symmetry / inverse declarations.
+    //
+    // NEGATIVES FIRST. Admitting a declaration whose role IS read anywhere is
+    // the D10 unsound-completeness bug (gate certifies the closure complete
+    // while the saturator silently drops the axiom), so most of these tests
+    // assert REFUSAL. `saturator_drops_symmetry_so_the_gate_must_refuse` is the
+    // "why": it exhibits an entailment the saturator provably misses.
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// The saturation fast path is taken iff any of the three gates admits.
+    fn gate_admits(src: &str) -> bool {
+        let onto = parse(src);
+        let internal = convert_ontology(&onto).expect("fixture converts");
+        is_pure_el(&internal)
+            || saturator_complete_fragment(&internal)
+            || tbox_only_saturator_eligible(&internal)
+    }
+
+    /// WHY the gate must refuse an *observable* symmetric role: the EL
+    /// saturator has no symmetry rule, so on `Symmetric(r)` + `Range(r, E)` +
+    /// `A ⊑ ∃r.B` + `Disjoint(A, E)` — where the backward edge `r(y, x)` puts
+    /// `x` in `E`, making `A` unsatisfiable — the saturation closure reports
+    /// nothing while the tableau correctly reports `A` unsat. Admitting such an
+    /// ontology to the fast path would publish the saturator's miss as a
+    /// complete answer.
+    #[test]
+    fn saturator_drops_symmetry_so_the_gate_must_refuse() {
+        let src = format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(Class(:E))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SymmetricObjectProperty(:r)\n\
+    ObjectPropertyRange(:r :E)\n\
+    DisjointClasses(:A :E)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+)\n"
+        );
+        let onto = parse(&src);
+        // Ground truth from the complete engine.
+        assert!(
+            !crate::is_class_satisfiable(&onto, "http://rustdl.test/A")
+                .expect("satisfiability check"),
+            "fixture is wrong: :A must be unsatisfiable via the symmetric back-edge"
+        );
+        // The saturator misses it — hence the gate must never certify it.
+        let sat_only = classify_saturation_only(&onto).expect("saturation-only");
+        assert!(
+            sat_only.unsatisfiable_classes().is_empty(),
+            "saturator unexpectedly derived the symmetry-driven unsat; \
+             if it grew a symmetry rule, revisit BareRoleDecls"
+        );
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(
+            !gate_admits(&src),
+            "D10 BUG: gate admitted an ontology whose symmetric role is read by \
+             ObjectPropertyRange and an existential"
+        );
+    }
+
+    /// Role read by an existential concept ⟹ observable ⟹ refuse.
+    #[test]
+    fn bare_decl_gate_rejects_symmetric_role_used_in_a_concept() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SymmetricObjectProperty(:r)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+)\n"
+        )));
+    }
+
+    /// Role read by `ObjectPropertyDomain` ⟹ observable ⟹ refuse (the backward
+    /// edge would type the successor into the domain class).
+    #[test]
+    fn bare_decl_gate_rejects_symmetric_role_with_domain() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:D))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SymmetricObjectProperty(:r)\n\
+    ObjectPropertyDomain(:r :D)\n\
+)\n"
+        )));
+    }
+
+    /// Observability propagates DOWN the property hierarchy: `r ⊑ s` with `s`
+    /// read (here by a concept) makes `r`'s edges readable through `s`.
+    #[test]
+    fn bare_decl_gate_rejects_symmetric_role_below_an_observable_superrole() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    SymmetricObjectProperty(:r)\n\
+    SubObjectPropertyOf(:r :s)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:s :B))\n\
+)\n"
+        )));
+    }
+
+    /// A chain PART matches existing edges ⟹ observable ⟹ refuse.
+    #[test]
+    fn bare_decl_gate_rejects_symmetric_role_used_as_a_chain_part() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:t))\n\
+    Declaration(ObjectProperty(:u))\n\
+    SymmetricObjectProperty(:r)\n\
+    SubObjectPropertyOf(ObjectPropertyChain(:r :t) :u)\n\
+)\n"
+        )));
+    }
+
+    /// An `ABox` edge is read by the `ABox` machinery ⟹ observable ⟹ refuse.
+    #[test]
+    fn bare_decl_gate_rejects_symmetric_role_with_an_abox_assertion() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(NamedIndividual(:a))\n\
+    Declaration(NamedIndividual(:b))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SymmetricObjectProperty(:r)\n\
+    ObjectPropertyAssertion(:r :a :b)\n\
+)\n"
+        )));
+    }
+
+    /// `InverseObjectProperties(p, q)` needs BOTH sides unread — one used side
+    /// makes the equality observable.
+    #[test]
+    fn bare_decl_gate_rejects_inverse_pair_when_one_side_is_used() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:p))\n\
+    Declaration(ObjectProperty(:q))\n\
+    InverseObjectProperties(:p :q)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:q :B))\n\
+)\n"
+        )));
+    }
+
+    /// DEFAULT-OFF CONTROL: with the variable UNSET the feature is inert. (The
+    /// `=0` control below cannot see a flipped default, so this test is what
+    /// pins the default itself.)
+    #[test]
+    #[allow(unsafe_code)]
+    fn bare_decl_flag_defaults_off() {
+        let _lock = crate::test_env_lock();
+        let prev = std::env::var_os("RUSTDL_FRAGMENT_BARE_DECL");
+        unsafe { std::env::remove_var("RUSTDL_FRAGMENT_BARE_DECL") };
+        let enabled = crate::fragment_bare_decl_enabled();
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("RUSTDL_FRAGMENT_BARE_DECL", v) };
+        }
+        assert!(!enabled, "RUSTDL_FRAGMENT_BARE_DECL must default OFF");
+    }
+
+    /// FLAG-OFF CONTROL: even a provably unread declaration keeps the ontology
+    /// off the fast path, i.e. the default path is byte-identical to pre-change.
+    #[test]
+    fn bare_decl_gate_flag_off_rejects_even_an_unread_symmetric_role() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "0")]);
+        assert!(!gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SymmetricObjectProperty(:r)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        )));
+    }
+
+    /// POSITIVE: an EL ontology that merely NAMES a symmetric property.
+    #[test]
+    fn bare_decl_gate_admits_an_unread_symmetric_role() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SymmetricObjectProperty(:r)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        )));
+    }
+
+    /// POSITIVE: both sides of the inverse pair unread.
+    #[test]
+    fn bare_decl_gate_admits_an_unread_inverse_pair() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:p))\n\
+    Declaration(ObjectProperty(:q))\n\
+    InverseObjectProperties(:p :q)\n\
+    SubClassOf(:A :B)\n\
+)\n"
+        )));
+    }
+
+    /// POSITIVE: the shape that actually occurs in the ORE corpus
+    /// (`ore_ont_8470`): the symmetric role is transitive and sits under a
+    /// super-role, but nothing in the whole ontology ever reads either role's
+    /// edges. `TransitiveRole` is not a read — it only enlarges `r`'s own edge
+    /// set — so the whole unread component stays admissible.
+    #[test]
+    fn bare_decl_gate_admits_unread_symmetric_transitive_under_unread_superrole() {
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "1")]);
+        assert!(gate_admits(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/test>\n\
+    Declaration(Class(:A))\n\
+    Declaration(Class(:B))\n\
+    Declaration(ObjectProperty(:r))\n\
+    Declaration(ObjectProperty(:s))\n\
+    Declaration(ObjectProperty(:used))\n\
+    SymmetricObjectProperty(:r)\n\
+    TransitiveObjectProperty(:r)\n\
+    SubObjectPropertyOf(:r :s)\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:used :B))\n\
+)\n"
+        )));
+    }
+
+    /// GATE PROBE for `RUSTDL_FRAGMENT_BARE_DECL` — reports, per ontology, the
+    /// saturation-fast-path gate verdict with the flag OFF and ON.
+    ///
+    /// Exists because *grep is not the gate*: 205 of the 257 known-DNF ORE
+    /// ontologies textually contain a `SymmetricObjectProperty` /
+    /// `InverseObjectProperties` line, but only a fraction are blocked by
+    /// **only** that. Running `classify` to read the `# mode:` banner costs a
+    /// full DNF timeout per refused ontology; this probe costs one conversion.
+    ///
+    /// ```sh
+    /// RUSTDL_GATE_PROBE_LIST=/path/to/paths.txt \
+    ///   cargo test -p owl-dl-reasoner --release fragment_bare_decl_gate_probe \
+    ///   -- --ignored --nocapture
+    /// ```
+    ///
+    /// Prints `<stem> off=<yes|no> on=<yes|no>`; the recovered set is the rows
+    /// with `off=no on=yes`.
+    #[test]
+    #[ignore = "measurement tool; needs RUSTDL_GATE_PROBE_LIST=<file of ontology paths>"]
+    fn fragment_bare_decl_gate_probe() {
+        let Some(list) = std::env::var_os("RUSTDL_GATE_PROBE_LIST") else {
+            eprintln!("SKIP: set RUSTDL_GATE_PROBE_LIST to a file of ontology paths");
+            return;
+        };
+        let listing = std::fs::read_to_string(&list).expect("probe list is readable");
+        for line in listing.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let path = std::path::Path::new(line);
+            let Ok(src) = std::fs::read_to_string(path) else {
+                println!("{line} READ_ERROR");
+                continue;
+            };
+            let mut reader = Cursor::new(src);
+            let Ok((onto, _)) =
+                read::<RcStr, SetOntology<RcStr>, _>(&mut reader, ParserConfiguration::default())
+            else {
+                println!("{line} PARSE_ERROR");
+                continue;
+            };
+            let Ok(internal) = convert_ontology(&onto) else {
+                println!("{line} CONVERT_ERROR");
+                continue;
+            };
+            #[allow(unsafe_code)]
+            let verdict = |on: bool| {
+                // SAFETY: this probe is `#[ignore]`d and run single-threaded on
+                // demand; no other thread reads the environment concurrently.
+                unsafe {
+                    if on {
+                        std::env::set_var("RUSTDL_FRAGMENT_BARE_DECL", "1");
+                    } else {
+                        std::env::remove_var("RUSTDL_FRAGMENT_BARE_DECL");
+                    }
+                }
+                is_pure_el(&internal)
+                    || saturator_complete_fragment(&internal)
+                    || tbox_only_saturator_eligible(&internal)
+            };
+            let off = verdict(false);
+            let on = verdict(true);
+            println!(
+                "{line} off={} on={}",
+                if off { "yes" } else { "no" },
+                if on { "yes" } else { "no" }
+            );
+        }
+    }
+
     /// Diagnostic probe (wine residual-31, cluster A): why does classify miss
     /// `food#Fruit ⊑ food#EdibleThing` when `is_subclass_of` proves it in 0.01s?
     /// Compares the fresh tableau (`is_subclass_of_internal`) against the
@@ -3848,6 +4392,12 @@ Ontology(<http://rustdl.test/test>\n\
 
     #[test]
     fn analyze_fragment_returns_out_of_fragment_on_inverse_role() {
+        // Pin `RUSTDL_FRAGMENT_BARE_DECL` OFF (the default): this fixture is a
+        // bare inverse-pair declaration over two roles nothing reads, which the
+        // flag deliberately admits to the EL fragment. Taking the shared env
+        // lock also stops a concurrently-running bare-decl canary from leaking
+        // its `=1` into this test.
+        let _env = EnvGuard::set(&[("RUSTDL_FRAGMENT_BARE_DECL", "0")]);
         // InverseObjectProperties — clearly outside EL+. Phase 4b
         // shipped before Horn detection landed; the test name carries
         // that history. Phase 4c re-targets the assertion to accept

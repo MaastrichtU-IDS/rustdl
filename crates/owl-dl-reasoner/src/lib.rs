@@ -3085,6 +3085,26 @@ pub fn classify_tbox_fragment_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_TBOX_FRAGMENT").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Bare symmetry / inverse **declarations** in the fragment gates
+/// (`RUSTDL_FRAGMENT_BARE_DECL`, **default OFF**; `=1` enables).
+///
+/// `SymmetricObjectProperty(r)` and `InverseObjectProperties(p, q)` fell through
+/// to `_ => false` in both `is_el_axiom` and `is_saturator_axiom`, so merely
+/// *naming* such a property refused the ontology the saturation fast path and
+/// dropped it onto the O(n²) hybrid loop — 71 of the 257 ORE ontologies rustdl
+/// cannot classify at 120 s carry one. With the flag on, such a declaration is
+/// admitted **only when the declared role's edge set is provably unread by every
+/// axiom and concept in the ontology**, which makes the declaration
+/// semantically inert for class subsumption. See `classify::BareRoleDecls` for
+/// the exact "observable role" definition and the model-construction
+/// completeness proof. FP-safe unconditionally (dropping axioms only weakens the
+/// theory); the flag exists because the *completeness* side of the gate contract
+/// is what is being extended.
+#[must_use]
+pub(crate) fn fragment_bare_decl_enabled() -> bool {
+    std::env::var_os("RUSTDL_FRAGMENT_BARE_DECL").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
 /// True iff any axiom's class expression references a nominal (`ObjectOneOf` /
 /// `ObjectHasValue`, both lowered to `ConceptExpr::Nominal`). When false, the
 /// `ABox` is provably irrelevant to class subsumption, enabling Lever A. Scanned

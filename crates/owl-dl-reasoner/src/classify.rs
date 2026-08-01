@@ -92,6 +92,40 @@ fn dense_max() -> usize {
         .unwrap_or(60_000)
 }
 
+/// Hoisted Hasse (direct-subsumer) reduction (`RUSTDL_FAST_DIRECT_SUBSUMERS`).
+/// **Default OFF** (set `=1` to opt in).
+///
+/// [`Classification::direct_subsumers`] re-derives the transitive reduction from
+/// scratch on every call: `O(k²)` [`Classification::entails`] probes for a class
+/// with `k` strict supers, and — because an unsatisfiable subject's row is elided —
+/// a full `O(n²)` scan for *each* unsatisfiable class. On `ore_ont_10125`
+/// (73 449 classes, 1 111 855 subsumptions, 6 unsatisfiable) reasoning finishes in
+/// ~15 s and the CLI then spends >385 s in the `direct` emission loop.
+///
+/// With the flag on, the shared work is hoisted into a `OnceLock` index built on
+/// the first call: each class's strict supers once, plus the set of *maximal*
+/// satisfiable classes (which is, by the elided-row semantics, the answer for
+/// EVERY unsatisfiable subject — so the `O(n²)` scan happens at most once instead
+/// of once per unsatisfiable class). Output — membership AND ascending order — is
+/// unchanged; see `direct_subsumers` for the equivalence argument.
+fn fast_direct_subsumers_enabled() -> bool {
+    std::env::var_os("RUSTDL_FAST_DIRECT_SUBSUMERS").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Hoisted state behind [`fast_direct_subsumers_enabled`]. Built once per
+/// [`Classification`], lazily, from the already-materialized entailment matrix.
+#[derive(Debug, Clone)]
+struct DirectSubsumerIndex {
+    /// `strict[i]` = the STRICT supers of `i` (`i ⊑ j`, `j ≠ i`, `j ⋢ i`), ascending.
+    /// Empty for unsatisfiable `i` — their rows are elided, so their strict-super
+    /// set is not row-derivable and is handled by `minimal_sat` instead.
+    strict: Vec<Vec<u32>>,
+    /// The satisfiable classes that have no strict satisfiable *sub*class — i.e. the
+    /// MINIMAL ones. `⊥` sits at the bottom of the hierarchy, so these are exactly
+    /// the Hasse-direct supers of any UNSATISFIABLE subject. Ascending.
+    minimal_sat: Vec<u32>,
+}
+
 impl EntailmentMatrix {
     /// `Dense` iff `n <= dense_max()`, else `Sparse`. Chosen once per
     /// classification build.
@@ -164,6 +198,10 @@ pub struct Classification {
     entailed: EntailmentMatrix,
     unsatisfiable_idxs: HashSet<usize>,
     stats: ClassificationStats,
+    /// Memoized transitive reduction, built on first use iff
+    /// [`fast_direct_subsumers_enabled`]. Derived purely from the three fields
+    /// above, so cloning an empty cell (or a filled one) is always consistent.
+    direct_index: std::sync::OnceLock<DirectSubsumerIndex>,
 }
 
 /// The expressivity fragment of an ontology, used to surface
@@ -470,6 +508,9 @@ impl Classification {
         let Some(&i) = self.index.get(c) else {
             return Vec::new();
         };
+        if fast_direct_subsumers_enabled() {
+            return self.direct_subsumers_fast(i);
+        }
         // First: every strict super (i ⊑ j, not j ⊑ i), ascending.
         let strict_supers: Vec<usize> = if self.unsatisfiable_idxs.contains(&i) {
             // Degenerate case: an unsatisfiable subject subsumes
@@ -498,6 +539,93 @@ impl Classification {
             })
             .map(|j| self.classes[j].as_str())
             .collect()
+    }
+
+    /// Hoisted equivalent of [`Self::direct_subsumers`]'s body, behind
+    /// [`fast_direct_subsumers_enabled`]. Returns the SAME classes in the SAME
+    /// (ascending) order — this is a re-association of the same predicate, not an
+    /// approximation.
+    ///
+    /// Write `S(i)` for `i`'s strict supers and `strict(k)` for `k`'s. The slow
+    /// path keeps `j ∈ S(i)` iff no `k ∈ S(i)` has `k ≠ j ∧ k ⊑ j ∧ j ⋢ k`. Every
+    /// `k ∈ S(i)` is satisfiable (an unsatisfiable `k` has `entails(k, i)` true, so
+    /// the `!entails(j, i)` filter already dropped it), hence `entails(k, j)` is
+    /// exactly `j ∈ row(k)` — so that condition is precisely `j ∈ strict(k)`.
+    /// The predicate is therefore `j ∈ S(i) \ ⋃_{k ∈ S(i)} strict(k)`, and the
+    /// `strict(·)` sets are subject-independent: computed once, reused for all `n`
+    /// subjects.
+    ///
+    /// The unsatisfiable subject is the same identity taken to its limit. Its row
+    /// is elided, so `entails(i, ·)` is unconditionally true and `entails(j, i)` is
+    /// true exactly for the other unsatisfiable `j` — giving `S(i) = ` *all*
+    /// satisfiable classes, the same set for every unsatisfiable `i`. Applying the
+    /// same `S(i) \ ⋃ strict(k)` predicate leaves the classes that are nobody's
+    /// strict super, i.e. the MINIMAL satisfiable ones (`⊥` sits at the bottom).
+    /// Computed once as `minimal_sat` rather than by an `O(n²)` rescan per
+    /// unsatisfiable class.
+    fn direct_subsumers_fast(&self, i: usize) -> Vec<&str> {
+        let idx = self.direct_index.get_or_init(|| self.build_direct_index());
+        if self.unsatisfiable_idxs.contains(&i) {
+            return idx
+                .minimal_sat
+                .iter()
+                .map(|&j| self.classes[j as usize].as_str())
+                .collect();
+        }
+        let supers = &idx.strict[i];
+        // `marked` = ⋃ strict(k) over k ∈ S(i). Sorted + deduped rather than a
+        // per-call n-bit set: |marked| is bounded by Σ|strict(k)|, which on real
+        // hierarchies is tiny next to n.
+        let mut marked: Vec<u32> = Vec::new();
+        for &k in supers {
+            marked.extend_from_slice(&idx.strict[k as usize]);
+        }
+        marked.sort_unstable();
+        marked.dedup();
+        supers
+            .iter()
+            .filter(|j| marked.binary_search(j).is_err())
+            .map(|&j| self.classes[j as usize].as_str())
+            .collect()
+    }
+
+    /// Build [`DirectSubsumerIndex`]. `O(Σ|row|)` plus one `O(n)` maximality scan.
+    /// Uses [`Self::entails`] for every membership question, so it cannot diverge
+    /// from the slow path's notion of "strict super".
+    fn build_direct_index(&self) -> DirectSubsumerIndex {
+        let n = self.classes.len();
+        let mut strict: Vec<Vec<u32>> = vec![Vec::new(); n];
+        // Unsatisfiable rows are elided, so `strict` is left empty for them; their
+        // answer comes from `minimal_sat` instead.
+        for (i, row) in strict.iter_mut().enumerate() {
+            if self.unsatisfiable_idxs.contains(&i) {
+                continue;
+            }
+            *row = self
+                .entailed
+                .row_ascending(i)
+                .into_iter()
+                .filter(|&j| j != i && !self.entails(j, i))
+                .map(|j| u32::try_from(j).expect("class index fits in u32"))
+                .collect();
+        }
+        // A satisfiable class is MINIMAL iff it is no satisfiable class's strict
+        // super. (Only computed once — it is the answer for every unsatisfiable
+        // subject, and there may be thousands of those.)
+        let mut has_strict_subclass = FixedBitSet::with_capacity(n);
+        for row in &strict {
+            for &j in row {
+                has_strict_subclass.insert(j as usize);
+            }
+        }
+        let minimal_sat: Vec<u32> = (0..n)
+            .filter(|i| !self.unsatisfiable_idxs.contains(i) && !has_strict_subclass.contains(*i))
+            .map(|i| u32::try_from(i).expect("class index fits in u32"))
+            .collect();
+        DirectSubsumerIndex {
+            strict,
+            minimal_sat,
+        }
     }
 
     /// Per-call instrumentation for this classification: how many
@@ -945,6 +1073,7 @@ pub(crate) fn classify_internal_with_timeout(
         entailed,
         unsatisfiable_idxs,
         stats,
+        direct_index: std::sync::OnceLock::new(),
     })
 }
 
@@ -1032,6 +1161,7 @@ fn classify_pure_el(
         entailed,
         unsatisfiable_idxs,
         stats,
+        direct_index: std::sync::OnceLock::new(),
     }
 }
 
@@ -1063,6 +1193,7 @@ fn classify_inconsistent(
         entailed,
         unsatisfiable_idxs,
         stats,
+        direct_index: std::sync::OnceLock::new(),
     }
 }
 
@@ -2388,6 +2519,7 @@ pub(crate) fn classify_top_down_internal(
         entailed,
         unsatisfiable_idxs,
         stats,
+        direct_index: std::sync::OnceLock::new(),
     })
 }
 

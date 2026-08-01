@@ -645,19 +645,27 @@ mod tests {
         };
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");
-        assert!(matches!(
-            check(&AboxCheckInputs {
-                abox: &prepared.abox,
-                axioms: &prepared.axioms,
-                told: &prepared.told,
-                pool: &prepared.pool,
-                inverse_pairs: &prepared.inverse_pairs,
-                hierarchy: &prepared.hierarchy,
-                disjoint_role_pairs: &prepared.disjoint_role_pairs,
-                closure: &prepared.closure,
-            }),
-            AboxVerdict::Unknown
-        ));
+        assert!(matches!(check_prepared(&prepared), AboxVerdict::Unknown));
+    }
+
+    /// Run [`check`] over a [`crate::PreparedOntology`]'s fields. Mirrors
+    /// `PreparedOntology::abox_verdict`, including its `None`-closure arm
+    /// (`RUSTDL_LAZY_ABOX_SATURATION` elided the saturation ⟹ provably
+    /// `ABox`-free ⟹ `Unknown`).
+    fn check_prepared(prepared: &crate::PreparedOntology) -> AboxVerdict {
+        let Some(closure) = prepared.closure.as_ref() else {
+            return AboxVerdict::Unknown;
+        };
+        check(&AboxCheckInputs {
+            abox: &prepared.abox,
+            axioms: &prepared.axioms,
+            told: &prepared.told,
+            pool: &prepared.pool,
+            inverse_pairs: &prepared.inverse_pairs,
+            hierarchy: &prepared.hierarchy,
+            disjoint_role_pairs: &prepared.disjoint_role_pairs,
+            closure,
+        })
     }
 
     /// Parse an OFN string, lower it, and run the `ABox` pre-check.
@@ -672,16 +680,7 @@ mod tests {
             read_ofn(&mut r, ParserConfiguration::default()).expect("parse ofn");
         let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
         let prepared = crate::PreparedOntology::from_internal(internal).expect("prepare");
-        check(&AboxCheckInputs {
-            abox: &prepared.abox,
-            axioms: &prepared.axioms,
-            told: &prepared.told,
-            pool: &prepared.pool,
-            inverse_pairs: &prepared.inverse_pairs,
-            hierarchy: &prepared.hierarchy,
-            disjoint_role_pairs: &prepared.disjoint_role_pairs,
-            closure: &prepared.closure,
-        })
+        check_prepared(&prepared)
     }
 
     /// P8 positive: `isFatherOf(a,_)` (inverse of `hasFather`, range

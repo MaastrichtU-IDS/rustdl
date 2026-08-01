@@ -188,7 +188,7 @@ pub fn absorb(axioms_nnf: &[Axiom], pool: &mut ConceptPool) -> AbsorbedTBox {
 /// shape `∀R.D` as [`RoleRule`]s. Conceptually a separate stage from
 /// binary/nominal absorption, exposed publicly so consumers can run it
 /// against an externally-built tbox.
-pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
+pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
     // Concept rules with conclusion All(R, D) become guarded role rules.
     let mut kept = Vec::with_capacity(tbox.concept_rules.len());
     for rule in std::mem::take(&mut tbox.concept_rules) {
@@ -238,6 +238,14 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
     }
     tbox.nominal_rules = kept;
 
+    // Domain absorption (`RUSTDL_DOMAIN_ABSORPTION`, default OFF).
+    // Runs *after* the two rewrites above so their priority is
+    // unchanged: a singleton `∀R.D` residual is still consumed as a
+    // range-style `RoleRule`, and only what survives is offered here.
+    if domain_absorption_enabled() {
+        absorb_domain_residuals(tbox, pool);
+    }
+
     // Lazy-unfolding split: precompute the `Or(_)`-shaped residual
     // GCIs so the tableau can defer their materialisation to
     // saturate stable-state instead of asserting them on every
@@ -261,6 +269,104 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &ConceptPool) {
 
     // Rebuild the dispatch indices now that every mutator has run.
     tbox.finalize();
+}
+
+/// `RUSTDL_DOMAIN_ABSORPTION` — opt in to domain absorption
+/// ([`absorb_domain_residuals`]). **Default OFF**; `=1` enables.
+#[must_use]
+pub fn domain_absorption_enabled() -> bool {
+    std::env::var_os("RUSTDL_DOMAIN_ABSORPTION").is_some_and(|v| v == "1")
+}
+
+/// Recognise a **domain-absorbable** disjunct and return its role.
+///
+/// A residual body `d₁ ⊔ … ⊔ dₙ` stands for `⊤ ⊑ d₁ ⊔ … ⊔ dₙ`, so a
+/// disjunct `dᵢ` contributes the *antecedent* `¬dᵢ`. Exactly two NNF
+/// shapes give the unqualified existential antecedent `∃R.⊤`:
+///
+/// | disjunct | antecedent | reading |
+/// |---|---|---|
+/// | `Max(0, R, ⊤)` | `≥1 R` | `(≥1 R) ⊑ rest` |
+/// | `All(R, ⊥)`    | `∃R.⊤` | `∃R.⊤ ⊑ rest`   |
+///
+/// Both are **logically identical to `ObjectPropertyDomain(R, rest)`**,
+/// hence sound *and* completeness-preserving to absorb.
+///
+/// # Soundness boundaries — the whole risk lives here
+///
+/// - **`Max(k, R, _)` with `k ≥ 1` is rejected.** Its antecedent is
+///   `≥ k+1 R`, needing at least two successors; a domain rule fires at
+///   the *first* edge, so absorbing it would be **strictly too strong —
+///   UNSOUND**.
+/// - **`All(R, D)` with `D ≠ ⊥` is rejected**, as is `Max(0, R, C)` with
+///   `C ≠ ⊤`. Those are the *qualified* antecedents `∃R.¬D` / `∃R.C`,
+///   which need a filler check and do not reduce to a domain axiom.
+///
+/// Mirrors [`crate::residual_absorbability::Bucket::DomainAbsorbable`],
+/// which measured the population these two shapes cover.
+fn as_domain_trigger(cid: ConceptId, pool: &ConceptPool) -> Option<Role> {
+    match pool.get(cid) {
+        // `≤0 R.⊤` = `¬∃R.⊤`. Qualified (`filler ≠ ⊤`) must NOT match.
+        ConceptExpr::Max(0, role, filler) => {
+            matches!(pool.get(*filler), ConceptExpr::Top).then_some(*role)
+        }
+        // `∀R.⊥` = `¬∃R.⊤`. `∀R.D` with `D ≠ ⊥` must NOT match.
+        ConceptExpr::All(role, inner) => {
+            matches!(pool.get(*inner), ConceptExpr::Bot).then_some(*role)
+        }
+        _ => None,
+    }
+}
+
+/// Domain absorption: rewrite every residual GCI carrying a
+/// domain-absorbable disjunct as an **unguarded [`RoleRule`]**, so it
+/// fires on edge creation instead of being re-applied at every node.
+///
+/// `⊤ ⊑ ¬∃R.⊤ ⊔ rest` ≡ `∃R.⊤ ⊑ rest` ≡ `⊤ ⊑ ∀R⁻.rest`, and
+/// `⊤ ⊑ ∀S.ψ` is exactly `RoleRule { role: S, guard: None, target_label: ψ }`
+/// — the tableau adds `target_label` to the *neighbour* across a matching
+/// edge, and the neighbour across an `R⁻` edge is the R-**predecessor**,
+/// i.e. the node the domain axiom constrains. Hence `role.flip()`.
+/// (When `R` is itself `Role::Inverse(r)` the flip yields `Role::Named(r)`
+/// and the rule degenerates to the range-style form, which is correct:
+/// `∃r⁻.⊤ ⊑ rest` constrains r-edge *targets*.)
+///
+/// Sub-role propagation is handled by the tableau's `edge_satisfies`, so
+/// an `s`-edge with `s ⊑ r` fires an `r`-domain rule as it should.
+///
+/// An empty `rest` (`⊤ ⊑ ¬∃R.⊤`, i.e. `R` has no edges in any model)
+/// normalises to `⊥` via [`ConceptPool::or`], giving a rule that clashes
+/// any node with an `R`-successor — the intended reading.
+fn absorb_domain_residuals(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
+    let mut kept = Vec::with_capacity(tbox.residual_gcis.len());
+    for gci in std::mem::take(&mut tbox.residual_gcis) {
+        // A non-`Or` body is its own singleton disjunct set — the same
+        // convention `absorb_gci` and the census classifier use.
+        let disjuncts: Vec<ConceptId> = match pool.get(gci) {
+            ConceptExpr::Or(args) => args.to_vec(),
+            _ => vec![gci],
+        };
+        let found = disjuncts
+            .iter()
+            .enumerate()
+            .find_map(|(i, &d)| as_domain_trigger(d, pool).map(|r| (i, r)));
+        let Some((pos, role)) = found else {
+            kept.push(gci);
+            continue;
+        };
+        let rest: Vec<ConceptId> = disjuncts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| (i != pos).then_some(c))
+            .collect();
+        let target_label = pool.or(rest);
+        tbox.role_rules.push(RoleRule {
+            role: role.flip(),
+            guard: None,
+            target_label,
+        });
+    }
+    tbox.residual_gcis = kept;
 }
 
 fn absorb_one(ax: &Axiom, pool: &mut ConceptPool, tbox: &mut AbsorbedTBox) {
@@ -662,6 +768,323 @@ mod tests {
         assert_eq!(rr.role, crate::Role::Named(r.role_id()));
         assert_eq!(rr.guard, Some(cid(&o, "A")));
         assert_eq!(rr.target_label, b);
+    }
+
+    // ─────────────────── domain absorption ───────────────────
+    //
+    // NEGATIVES FIRST. The two shapes that must NOT be absorbed carry the
+    // whole risk of this feature:
+    //
+    //   * `Max(k, R, _)` with `k ≥ 1` — antecedent `≥ k+1 R`, needs two or
+    //     more successors. A domain rule fires at the FIRST edge, so
+    //     absorbing it is strictly too strong ⇒ **UNSOUND** (false positives).
+    //   * `All(R, D)` with `D ≠ ⊥` (and its `Max(0, R, C≠⊤)` twin) — the
+    //     *qualified* antecedent `∃R.¬D` / `∃R.C`, which needs a filler check
+    //     and does not reduce to a domain axiom.
+    //
+    // Each is asserted to stay a residual under the flag, i.e. the feature
+    // declines it. Both are also guarded end-to-end (verdict level) in
+    // `crates/owl-dl-reasoner/tests/domain_absorption.rs`.
+
+    /// All tests that flip `RUSTDL_DOMAIN_ABSORPTION` hold this lock.
+    static DOMAIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard: set `RUSTDL_DOMAIN_ABSORPTION`, restore prior on drop.
+    ///
+    /// SAFETY: `set_var`/`remove_var` is `unsafe` under edition 2024;
+    /// serialised by `DOMAIN_ENV_LOCK` within this module.
+    struct DomainGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl DomainGuard {
+        #[allow(unsafe_code)]
+        fn set(value: &str) -> Self {
+            let prior = std::env::var_os("RUSTDL_DOMAIN_ABSORPTION");
+            // SAFETY: serialised by DOMAIN_ENV_LOCK; restored on Drop.
+            unsafe { std::env::set_var("RUSTDL_DOMAIN_ABSORPTION", value) };
+            Self { prior }
+        }
+    }
+    impl Drop for DomainGuard {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: see DomainGuard::set.
+            unsafe {
+                match &self.prior {
+                    Some(v) => std::env::set_var("RUSTDL_DOMAIN_ABSORPTION", v),
+                    None => std::env::remove_var("RUSTDL_DOMAIN_ABSORPTION"),
+                }
+            }
+        }
+    }
+
+    /// `(≥2 R) ⊑ A` — NNF disjunct `Max(1, R, ⊤)`. Antecedent needs TWO
+    /// successors; a domain rule fires at the first. **Must stay residual.**
+    #[test]
+    fn max_k_ge_1_is_not_domain_absorbed() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["A"]);
+        let a = atom(&mut o, "A");
+        let r = Role::named(RoleId::new(0));
+        let top = o.concepts.top();
+        let min2 = o.concepts.min(2, r, top);
+        o.axioms.push(Axiom::SubClassOf { sub: min2, sup: a });
+        let t = run(&mut o);
+        assert_eq!(
+            t.residual_gcis.len(),
+            1,
+            "≥2 R antecedent must NOT be domain-absorbed (unsound); tbox={t:?}"
+        );
+        assert!(t.role_rules.is_empty(), "no role rule may be emitted");
+    }
+
+    /// `∃R.E ⊑ A` — NNF disjunct `All(R, ¬E)`, a *qualified* antecedent.
+    /// **Must stay residual** (needs a filler check).
+    #[test]
+    fn all_non_bot_filler_is_not_domain_absorbed() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["A", "E"]);
+        let a = atom(&mut o, "A");
+        let e = atom(&mut o, "E");
+        let r = Role::named(RoleId::new(0));
+        let some_r_e = o.concepts.some(r, e);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: some_r_e,
+            sup: a,
+        });
+        let t = run(&mut o);
+        assert_eq!(
+            t.residual_gcis.len(),
+            1,
+            "qualified ∃R.E antecedent must NOT be domain-absorbed; tbox={t:?}"
+        );
+        assert!(t.role_rules.is_empty());
+    }
+
+    /// `Max(0, R, C)` with `C ≠ ⊤` is `¬∃R.C` — the same qualified case
+    /// written as a `≤0` cardinality. **Must stay residual.**
+    #[test]
+    fn max_zero_qualified_is_not_domain_absorbed() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["A", "C"]);
+        let a = atom(&mut o, "A");
+        let c = atom(&mut o, "C");
+        let r = Role::named(RoleId::new(0));
+        let max0_qual = o.concepts.max(0, r, c);
+        let body = o.concepts.or([max0_qual, a]);
+        let top = o.concepts.top();
+        o.axioms.push(Axiom::SubClassOf {
+            sub: top,
+            sup: body,
+        });
+        let t = run(&mut o);
+        assert_eq!(
+            t.residual_gcis.len(),
+            1,
+            "≤0 R.C with C ≠ ⊤ must NOT be domain-absorbed; tbox={t:?}"
+        );
+        assert!(t.role_rules.is_empty());
+    }
+
+    /// POSITIVE: `ObjectPropertyDomain(R, D)` becomes an **unguarded**
+    /// `RoleRule` on `R⁻` — the tableau labels the neighbour across an
+    /// `R⁻` edge, which is the R-*predecessor*, i.e. the constrained node.
+    #[test]
+    fn object_property_domain_becomes_inverse_role_rule() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["D"]);
+        let d = atom(&mut o, "D");
+        let r = Role::named(RoleId::new(0));
+        o.axioms
+            .push(Axiom::ObjectPropertyDomain { role: r, domain: d });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty(), "tbox={t:?}");
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(t.role_rules[0].role, Role::Inverse(RoleId::new(0)));
+        assert_eq!(t.role_rules[0].guard, None);
+        assert_eq!(t.role_rules[0].target_label, d);
+        assert_eq!(t.unguarded_role_rules.len(), 1, "finalize() must re-run");
+    }
+
+    /// POSITIVE: `(≥1 R) ⊑ D` — the `ore_ont_3281` shape — is the same
+    /// axiom and must absorb identically.
+    #[test]
+    fn min_one_antecedent_becomes_inverse_role_rule() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["D"]);
+        let d = atom(&mut o, "D");
+        let r = Role::named(RoleId::new(0));
+        let top = o.concepts.top();
+        let min1 = o.concepts.min(1, r, top);
+        o.axioms.push(Axiom::SubClassOf { sub: min1, sup: d });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty(), "tbox={t:?}");
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(t.role_rules[0].role, Role::Inverse(RoleId::new(0)));
+        assert_eq!(t.role_rules[0].target_label, d);
+    }
+
+    /// CONTROL: with the flag OFF (the default) the very same axiom stays a
+    /// residual GCI. Pins that the feature is genuinely opt-in.
+    #[test]
+    fn flag_off_leaves_domain_axiom_as_residual() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("0");
+        let mut o = fresh(&["D"]);
+        let d = atom(&mut o, "D");
+        let r = Role::named(RoleId::new(0));
+        o.axioms
+            .push(Axiom::ObjectPropertyDomain { role: r, domain: d });
+        let t = run(&mut o);
+        assert_eq!(t.residual_gcis.len(), 1, "flag OFF ⇒ unchanged; tbox={t:?}");
+        assert!(t.role_rules.is_empty());
+    }
+
+    /// `∃R⁻.⊤ ⊑ D` — an inverse-role domain. `flip` sends `R⁻` to `R`, so
+    /// the rule labels R-edge *targets*, which is exactly the set of nodes
+    /// having an R-predecessor.
+    #[test]
+    fn inverse_role_domain_flips_to_named() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["D"]);
+        let d = atom(&mut o, "D");
+        let r_inv = Role::inverse(RoleId::new(0));
+        o.axioms.push(Axiom::ObjectPropertyDomain {
+            role: r_inv,
+            domain: d,
+        });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty(), "tbox={t:?}");
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(t.role_rules[0].role, Role::Named(RoleId::new(0)));
+    }
+
+    /// `⊤ ⊑ ≤0 R.⊤` (no `R`-edge in any model): the "rest" is empty and
+    /// `ConceptPool::or([])` normalises to `⊥`, so any R-predecessor
+    /// clashes. Guards the empty-`rest` corner.
+    ///
+    /// Written as a `Max` rather than `Domain(R, ⊥)` deliberately: the
+    /// latter NNFs to a singleton `∀R.⊥`, which `absorb_roles`' pre-existing
+    /// rewrite consumes first (see
+    /// `domain_to_bot_is_consumed_by_the_prior_forall_rewrite`).
+    #[test]
+    fn empty_rest_yields_bot_target_label() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&[]);
+        let r = Role::named(RoleId::new(0));
+        let top = o.concepts.top();
+        let max0 = o.concepts.max(0, r, top);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: top,
+            sup: max0,
+        });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty(), "tbox={t:?}");
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(t.role_rules[0].role, Role::Inverse(RoleId::new(0)));
+        assert_eq!(t.role_rules[0].target_label, o.concepts.bot());
+    }
+
+    /// PRIORITY (the other half): `Domain(R, ⊥)` NNFs to the singleton
+    /// `∀R.⊥`, which the pre-existing rewrite in `absorb_roles` turns into a
+    /// FORWARD rule labelling R-successors `⊥`. Domain absorption never sees
+    /// it. Both encodings make an R-edge impossible, so this is a priority
+    /// fact, not a semantic difference — pinned so a reordering is noticed.
+    #[test]
+    fn domain_to_bot_is_consumed_by_the_prior_forall_rewrite() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&[]);
+        let r = Role::named(RoleId::new(0));
+        let bot = o.concepts.bot();
+        o.axioms.push(Axiom::ObjectPropertyDomain {
+            role: r,
+            domain: bot,
+        });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty(), "tbox={t:?}");
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(t.role_rules[0].role, Role::Named(RoleId::new(0)));
+        assert_eq!(t.role_rules[0].target_label, o.concepts.bot());
+    }
+
+    /// PRIORITY: `absorb_roles`' pre-existing singleton-`∀` rewrite still
+    /// runs first, so `ObjectPropertyRange(R, A)` keeps producing the
+    /// forward `RoleRule { role: R }` and is NOT re-read as a domain
+    /// trigger. (`∀R.A` with `A ≠ ⊥` is not a domain trigger anyway; this
+    /// pins the ordering so a future edit cannot silently flip it.)
+    #[test]
+    fn range_singleton_all_keeps_forward_role_rule_under_flag() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        let mut o = fresh(&["A"]);
+        let a = atom(&mut o, "A");
+        let r = Role::named(RoleId::new(0));
+        o.axioms
+            .push(Axiom::ObjectPropertyRange { role: r, range: a });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty());
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(
+            t.role_rules[0].role,
+            Role::Named(RoleId::new(0)),
+            "range must stay a FORWARD role rule, not be flipped"
+        );
+        assert_eq!(t.role_rules[0].target_label, a);
+    }
+
+    /// A multi-disjunct residual keeps its remaining disjuncts: the rule's
+    /// `target_label` is the `Or` of everything except the consumed one.
+    #[test]
+    fn multi_disjunct_residual_keeps_rest_as_target_label() {
+        let _l = DOMAIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = DomainGuard::set("1");
+        // (≥1 R) ⊑ A ⊔ B  ⇒  ⊤ ⊑ ≤0 R.⊤ ⊔ A ⊔ B
+        let mut o = fresh(&["A", "B"]);
+        let a = atom(&mut o, "A");
+        let b = atom(&mut o, "B");
+        let r = Role::named(RoleId::new(0));
+        let top = o.concepts.top();
+        let min1 = o.concepts.min(1, r, top);
+        let a_or_b = o.concepts.or([a, b]);
+        o.axioms.push(Axiom::SubClassOf {
+            sub: min1,
+            sup: a_or_b,
+        });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty(), "tbox={t:?}");
+        assert_eq!(t.role_rules.len(), 1);
+        let expected = o.concepts.or([a, b]);
+        assert_eq!(t.role_rules[0].target_label, expected);
     }
 
     #[test]

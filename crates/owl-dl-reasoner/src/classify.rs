@@ -438,6 +438,14 @@ pub struct ClassificationStats {
     /// a wedge `NotSubsumed` that the main-tableau `concrete_domain_clash`
     /// flipped to `Subsumed` because the pair was data-counting-relevant.
     pub counting_verified_pairs: usize,
+    /// `RUSTDL_PREP_DEADLINE` fired: the global wall-clock budget expired during
+    /// a PREPARATION phase (EL saturation or
+    /// `PreparedOntology::from_internal`), so the reported hierarchy is the EL
+    /// closure read-off — **sound, and a deliberate under-approximation**.
+    /// Always accompanied by a `timed_out_pairs` bump, so
+    /// `completeness_guaranteed()` is false and `classify --json` reports
+    /// `"incomplete": true`. See [`crate::prep_deadline_enabled`].
+    pub prep_timed_out: bool,
 }
 
 impl Classification {
@@ -751,9 +759,26 @@ pub fn classify_with_global_deadline<A: ForIRI>(
     ontology: &SetOntology<A>,
     budget: std::time::Duration,
 ) -> Result<Classification, ReasonError> {
+    let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    let deadline = Instant::now() + budget;
-    classify_top_down_internal(&internal, None, Some(deadline))
+    classify_top_down_internal(&internal, None, Some(budget_origin(t0) + budget))
+}
+
+/// Where a global budget's clock starts.
+///
+/// Historically it started AFTER `convert_ontology`, so a caller's "1 ms" was
+/// really "conversion + 1 ms" — and conversion is itself a multi-second DNF on
+/// some ORE inputs (`ore_ont_10926`: 23.8 s). Under
+/// [`crate::prep_deadline_enabled`] the clock starts at the call instead, which
+/// is what the caller asked for; conversion is still not INTERRUPTIBLE (a known
+/// residual), but it no longer silently extends the promise. Flag off ⇒ the
+/// pre-existing origin, exactly.
+fn budget_origin(call_instant: Instant) -> Instant {
+    if crate::prep_deadline_enabled() {
+        call_instant
+    } else {
+        Instant::now()
+    }
 }
 
 /// Classify with BOTH a per-pair tableau deadline and a global wall-clock
@@ -775,8 +800,9 @@ pub fn classify_with_budget<A: ForIRI>(
     per_pair_timeout: Option<std::time::Duration>,
     global_budget: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
+    let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    let global_deadline = global_budget.map(|b| Instant::now() + b);
+    let global_deadline = global_budget.map(|b| budget_origin(t0) + b);
     classify_top_down_internal(&internal, per_pair_timeout, global_deadline)
 }
 
@@ -852,7 +878,13 @@ pub(crate) fn classify_saturation_only_internal(
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
     let closure = saturate(internal);
-    Ok(classify_pure_el(internal, &classes, &index, &closure))
+    Ok(classify_pure_el(
+        internal,
+        &classes,
+        &index,
+        &closure,
+        analyze_fragment(internal),
+    ))
 }
 
 /// Internal entry point. Useful for tests that hand-build an
@@ -953,7 +985,13 @@ pub(crate) fn classify_internal_with_timeout(
                 ));
             }
         }
-        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+        return Ok(classify_pure_el(
+            internal,
+            &classes,
+            &index,
+            &closure,
+            analyze_fragment(internal),
+        ));
     }
 
     // Prepare the tableau-side pipeline once. Every subsequent
@@ -1101,20 +1139,72 @@ pub(crate) fn classify_internal_with_timeout(
     })
 }
 
+/// Degrade to the EL closure read-off because the global wall-clock budget
+/// expired during a PREPARATION phase (`RUSTDL_PREP_DEADLINE`; `phase` names
+/// which one, for `RUSTDL_TRACE`).
+///
+/// **Sound under-approximation, explicitly flagged incomplete.** The partial
+/// closure holds only entailed subsumptions, so the hierarchy can MISS but never
+/// gain an edge — the `RUSTDL_MAX_NODES` → `NodeCap` → `Ok(None)` precedent
+/// applied to the build instead of the search. Three signals fire so no caller
+/// can mistake this for a complete answer:
+///
+/// * `stats.prep_timed_out = true` (programmatic, unambiguous);
+/// * `timed_out_pairs` is bumped, which is what `classify --json` maps to
+///   `"incomplete": true` and what `completeness_guaranteed()` reads;
+/// * `fragment` is forced to `OutOfFragment` — the conservative value. It is NOT
+///   `analyze_fragment(internal)`: that clausifies the entire ontology, which is
+///   exactly the sort of unbudgeted work this path exists to avoid, and a
+///   `PureEl`/`Horn` verdict here would claim a completeness we just abandoned.
+fn classify_prep_timeout(
+    internal: &InternalOntology,
+    classes: &[String],
+    index: &HashMap<String, usize>,
+    closure: &owl_dl_saturation::Subsumers,
+    phase: &str,
+) -> Classification {
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!("classify: prep deadline expired in {phase} — partial EL closure returned");
+    }
+    let mut h = classify_pure_el(
+        internal,
+        classes,
+        index,
+        closure,
+        FragmentClassification::OutOfFragment,
+    );
+    h.stats.prep_timed_out = true;
+    // Invariant kept by every other timeout site: +1 count, +1 id (so
+    // `undecided_pairs()` stays index-safe). With no classes there is no id to
+    // record; the count alone still drives the `incomplete` signal.
+    h.stats.timed_out_pairs += 1;
+    if !classes.is_empty() {
+        h.stats.timed_out_pair_ids.push((0, 0));
+    }
+    h
+}
+
 /// Fast-path classifier for ontologies that lie entirely inside our
 /// EL saturation fragment. The closure is then *complete* — both
 /// subsumption and unsatisfiability decisions reduce to closure
 /// lookups, with no tableau calls. Sets `stats.pure_el_mode = true`.
+///
+/// `fragment` is passed in rather than computed here: [`analyze_fragment`]
+/// clausifies the whole ontology, and the `RUSTDL_PREP_DEADLINE` degradation
+/// path (which reuses this read-off for a PARTIAL closure) must not pay that
+/// cost after its budget has already expired — it supplies the conservative
+/// [`FragmentClassification::OutOfFragment`] instead.
 fn classify_pure_el(
     internal: &InternalOntology,
     classes: &[String],
     index: &HashMap<String, usize>,
     closure: &owl_dl_saturation::Subsumers,
+    fragment: FragmentClassification,
 ) -> Classification {
     let n = classes.len();
     let mut stats = ClassificationStats {
         pure_el_mode: true,
-        fragment: analyze_fragment(internal),
+        fragment,
         ..ClassificationStats::default()
     };
 
@@ -1963,9 +2053,31 @@ pub(crate) fn classify_top_down_internal(
         (_, gd) => gd,
     };
 
-    let closure = saturate(internal);
+    // Deadline-bounded PREP (`RUSTDL_PREP_DEADLINE`, default OFF). Without the
+    // flag this is verbatim `saturate(internal)`; with it, and only when a
+    // global deadline is actually active, the fixpoint is abandoned at the
+    // deadline and the PARTIAL closure is read off as a sound, explicitly
+    // INCOMPLETE hierarchy. See `crate::prep_deadline_enabled` for the measured
+    // motivation (77 of 252 DNF ontologies burned ≥ 10 s against a 1 ms budget).
+    let prep_deadline = if crate::prep_deadline_enabled() {
+        global_deadline
+    } else {
+        None
+    };
+    let (closure, sat_aborted) = match prep_deadline {
+        None => (saturate(internal), false),
+        Some(_) => owl_dl_saturation::saturate_with_deadline(internal, prep_deadline),
+    };
     // RSS probe: after EL closure / saturation.
     crate::rss_probe::probe("after_saturate");
+
+    if sat_aborted {
+        // The fixpoint was abandoned. Every derived edge is still entailed, so
+        // read the partial closure off as the answer and flag it incomplete.
+        return Ok(classify_prep_timeout(
+            internal, &classes, &index, &closure, "saturate",
+        ));
+    }
 
     // Sound KB-level inconsistency pre-check (`RUSTDL_CLASSIFY_INCONSISTENCY`,
     // default OFF). Placed BEFORE the fast-path branch so both dispatch arms —
@@ -2025,13 +2137,32 @@ pub(crate) fn classify_top_down_internal(
                 ));
             }
         }
-        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+        return Ok(classify_pure_el(
+            internal,
+            &classes,
+            &index,
+            &closure,
+            analyze_fragment(internal),
+        ));
     }
 
     // RSS probes: bracket PreparedOntology::from_internal — before/after delta
     // directly answers whether the snapshot is a large allocation.
     crate::rss_probe::probe("before_prepared");
-    let prepared = PreparedOntology::from_internal(internal.clone())?;
+    // Second half of the prep-deadline fix: `from_internal` was the single
+    // largest unbudgeted phase (26 of the 252 DNF ontologies never finished it
+    // at all). `from_internal_with_deadline(.., None)` is the pre-change call.
+    let Some(prepared) =
+        PreparedOntology::from_internal_with_deadline(internal.clone(), prep_deadline)?
+    else {
+        return Ok(classify_prep_timeout(
+            internal,
+            &classes,
+            &index,
+            &closure,
+            "from_internal",
+        ));
+    };
     crate::rss_probe::probe("after_prepared");
 
     // Sound ABox-driven inconsistency pre-check. If it fires, return

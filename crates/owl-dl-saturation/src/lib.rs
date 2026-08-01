@@ -180,6 +180,48 @@ pub fn saturate(internal: &InternalOntology) -> Subsumers {
     saturate_with_config(internal, &SaturateConfig::default()).0
 }
 
+/// How many worklist pops happen between two `Instant::now()` reads in
+/// [`WorklistEngine::run_until`]. Coarse on purpose: a per-pop clock read is a
+/// measured cost in this codebase (11.28% self-time on one ontology), while a
+/// 4096-pop stride overshoots a deadline by microseconds on any real workload.
+const DEADLINE_CHECK_STRIDE: u32 = 4096;
+
+/// Like [`saturate`] but ABANDONS the fixpoint once `deadline` passes.
+///
+/// Returns `(closure, aborted)`. `aborted == true` means the returned closure is
+/// a **partial** fixpoint: every subsumption / unsat flag in it is genuinely
+/// entailed (sound), but entailments are missing. Callers MUST report the result
+/// as incomplete — see `owl_dl_reasoner::classify`'s prep-deadline path.
+///
+/// `deadline == None` is exactly [`saturate`] (same code path, no clock reads),
+/// so passing `None` cannot perturb the default classify wall.
+#[must_use]
+pub fn saturate_with_deadline(
+    internal: &InternalOntology,
+    deadline: Option<std::time::Instant>,
+) -> (Subsumers, bool) {
+    let Some(deadline) = deadline else {
+        return (saturate(internal), false);
+    };
+    let n = internal.vocabulary.num_classes();
+    let role_super_map = build_role_super(internal);
+    let (rules, tseitin, num_total_classes, maybe_trace) =
+        collect_el_rules_with_provenance(internal, &role_super_map, false);
+    let role_super = freeze_role_super(&role_super_map);
+    let mut engine = WorklistEngine::new(
+        n,
+        num_total_classes,
+        rules,
+        tseitin,
+        role_super,
+        false,
+        maybe_trace,
+    );
+    engine.seed(internal);
+    let aborted = engine.run_until(deadline);
+    (engine.subsumers, aborted)
+}
+
 /// Like [`saturate`] but also returns every derived existential fact
 /// `(sub, role, target)` and the `NomKey → individual` reverse map, so a
 /// caller can seed a tableau with the saturation's deterministic ∃-structure.
@@ -980,6 +1022,53 @@ impl WorklistEngine {
                 break;
             }
         }
+        self.finish();
+    }
+
+    /// Deadline-bounded sibling of [`Self::run`]: drain the queues until they
+    /// are empty **or** `deadline` passes, whichever comes first. Returns
+    /// `true` iff the fixpoint was ABANDONED (deadline hit with work left).
+    ///
+    /// **Sound on abort.** Every fact the engine has derived so far is
+    /// entailed, so an abandoned fixpoint is a strict UNDER-approximation of
+    /// the closure: it can only MISS subsumptions / unsat flags, never invent
+    /// one. Callers MUST surface the `true` return as incomplete.
+    ///
+    /// The clock is read once every [`DEADLINE_CHECK_STRIDE`] pops rather than
+    /// per pop — `Instant::now()` in a saturation-hot loop has been measured at
+    /// over 10% of self-time in this codebase. The loop is written out separately
+    /// from [`Self::run`] so the DEFAULT (unbounded) path keeps exactly its
+    /// pre-existing instruction stream — not even a per-pop `Option` test.
+    fn run_until(&mut self, deadline: std::time::Instant) -> bool {
+        let mut aborted = false;
+        let mut ticks: u32 = 0;
+        loop {
+            ticks += 1;
+            if ticks >= DEADLINE_CHECK_STRIDE {
+                ticks = 0;
+                if std::time::Instant::now() >= deadline {
+                    aborted = true;
+                    break;
+                }
+            }
+            if let Some((c, d)) = self.todo_subsumer.pop_front() {
+                self.process_subsumer(c, d);
+            } else if let Some(idx) = self.todo_fact.pop_front() {
+                self.process_fact(idx);
+            } else if let Some(c) = self.todo_unsat.pop_front() {
+                self.process_unsat(c);
+            } else {
+                break;
+            }
+        }
+        self.finish();
+        aborted
+    }
+
+    /// Post-fixpoint bookkeeping shared by [`Self::run`] and [`Self::run_until`].
+    /// Safe to run on a PARTIAL fixpoint: both flags are derived from facts
+    /// already recorded, so an abandoned run reports them under-approximately.
+    fn finish(&mut self) {
         // Propagate the syntactic `⊤ ⊑ ⊥` certificate once, here, instead of
         // at each call site.  Previously three callers did this by hand; the
         // fourth (`build_run_engine_with_reserved`) forgot to, so its `Subsumers`
@@ -4860,6 +4949,93 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .vocabulary
             .class_id(&format!("http://rustdl.test/{local}"))
             .expect("class declared")
+    }
+
+    // -----------------------------------------------------------------------
+    // `saturate_with_deadline` canaries (the `RUSTDL_PREP_DEADLINE` half that
+    // lives in this crate).
+    // -----------------------------------------------------------------------
+
+    /// The engine's class-universe size (named classes + Tseitin synthetics),
+    /// computed the same way the engine computes it. Guessing it from
+    /// `num_classes()` would silently truncate every closure comparison below.
+    fn universe(internal: &InternalOntology) -> usize {
+        let role_super_map = build_role_super(internal);
+        let (_rules, _tseitin, num_total, _trace) =
+            collect_el_rules_with_provenance(internal, &role_super_map, false);
+        num_total
+    }
+
+    /// `deadline: None` must be EXACTLY [`saturate`] — same closure, and (by
+    /// construction, since it delegates) not one extra clock read. The default
+    /// classify path calls it this way, so a divergence here is a silent
+    /// regression on every ontology.
+    #[test]
+    fn saturate_with_deadline_none_matches_saturate() {
+        let internal = parse_internal(&top_broadcast_chain(40, 10));
+        let base = saturate(&internal);
+        let (bounded, aborted) = saturate_with_deadline(&internal, None);
+        assert!(!aborted, "`None` can never abort");
+        let n = universe(&internal);
+        assert_eq!(
+            closure_rows(&base, n),
+            closure_rows(&bounded, n),
+            "deadline-None closure must be byte-identical to `saturate`"
+        );
+    }
+
+    /// An ALREADY-EXPIRED deadline on a fixpoint big enough to exceed the
+    /// [`DEADLINE_CHECK_STRIDE`] must abort, and the partial closure must be a
+    /// strict SUBSET of the complete one — never a superset. That subset
+    /// direction is the soundness property the classify degradation path rests
+    /// on: an abandoned fixpoint may MISS entailments, never invent one.
+    #[test]
+    fn expired_deadline_aborts_with_a_sound_subset_closure() {
+        // 120 × 60 gives ~O(10^5) pops — comfortably past the 4096 stride.
+        let internal = parse_internal(&top_broadcast_chain(120, 60));
+        let full = saturate(&internal);
+        // `checked_sub` rather than `-`: clippy forbids unchecked `Duration`
+        // subtraction (the monotonic clock can sit below 1 s after boot).
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("monotonic clock is at least 1 s past its origin");
+        let (partial, aborted) = saturate_with_deadline(&internal, Some(past));
+        assert!(
+            aborted,
+            "an expired deadline must abandon a fixpoint this large"
+        );
+        let n = universe(&internal);
+        let full_rows: std::collections::HashSet<(usize, u32)> =
+            closure_rows(&full, n).into_iter().collect();
+        let partial_rows: std::collections::HashSet<(usize, u32)> =
+            closure_rows(&partial, n).into_iter().collect();
+        let extra: Vec<_> = partial_rows.difference(&full_rows).take(5).collect();
+        assert!(
+            extra.is_empty(),
+            "partial closure contains {} row(s) absent from the complete closure \
+             — an unsound over-derivation: {extra:?}",
+            partial_rows.difference(&full_rows).count()
+        );
+        assert!(
+            partial_rows.len() < full_rows.len(),
+            "the abort must actually truncate ({} vs {} rows) — otherwise this \
+             test proves nothing about bounding",
+            partial_rows.len(),
+            full_rows.len()
+        );
+    }
+
+    /// A GENEROUS deadline must reach the same fixpoint as the unbounded run:
+    /// bounding is not allowed to lose entailments when the budget suffices.
+    #[test]
+    fn generous_deadline_reaches_the_complete_fixpoint() {
+        let internal = parse_internal(&top_broadcast_chain(40, 10));
+        let full = saturate(&internal);
+        let far = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        let (bounded, aborted) = saturate_with_deadline(&internal, Some(far));
+        assert!(!aborted, "a 600 s deadline must not abort this fixture");
+        let n = universe(&internal);
+        assert_eq!(closure_rows(&full, n), closure_rows(&bounded, n));
     }
 
     // -----------------------------------------------------------------------

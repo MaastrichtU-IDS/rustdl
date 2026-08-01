@@ -1292,3 +1292,260 @@ fn complement_cardinality_dropped() {
         "DataMinCardinality over DataComplementOf must drop: C must be satisfiable"
     );
 }
+
+// ── 2026-08-01: numeric `DataOneOf` DKey seeding (`RUSTDL_DKEY_ONEOF_SEED`) ──
+//
+// The six numeric enumeration buckets (`io:` / `fo:` / `dbo:` / `deo:` / `dao:` /
+// `dto:`) were minted by `data_range_dkey` but never collected into
+// `seed_dkey_subsumptions`, so they got neither told `DKey ⊑ DKey` edges nor
+// `DisjointClasses(DKey, DKey)` entries — while `is_pure_el` still reported
+// `incomplete: false`. (The `str:` enumeration bucket WAS always seeded; that
+// asymmetry is the bug.) Konclude AND HermiT both derive the positives below.
+//
+// NEGATIVES-FIRST, and doubly so here: the disjointness half ADDS clashes, so a
+// wrong "disjoint" is a false UNSAT, not a miss. The curated corpus contains no
+// numeric `DataOneOf` at all, so THESE CANARIES ARE THE ENTIRE SAFETY NET.
+
+/// Serializes the `RUSTDL_DKEY_ONEOF_SEED` flips: `cargo test` runs the tests in
+/// this binary on several threads and the env is process-wide.
+static ONEOF_FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct OneofSeedOn {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl OneofSeedOn {
+    #[allow(unsafe_code)]
+    fn on() -> Self {
+        let lock = ONEOF_FLAG_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: `set_var` is unsafe under edition 2024. The mutex held in
+        // `_lock` makes this the only thread mutating the variable for the
+        // duration of the guard, and every reader in the conversion path reads
+        // it per call. Removed on Drop.
+        unsafe { std::env::set_var("RUSTDL_DKEY_ONEOF_SEED", "1") };
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for OneofSeedOn {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: see `OneofSeedOn::on`.
+        unsafe { std::env::remove_var("RUSTDL_DKEY_ONEOF_SEED") };
+    }
+}
+
+const E: &str = "http://t/E";
+const F: &str = "http://t/F";
+
+/// `C ≡ ∃h.{1}`, `F ≡ ∃h.{1}`, `D ≡ ∃h.{1,2}`, `E ≡ ∃h.{1,2,3}`.
+/// Oracle (`Konclude` AND `HermiT`, independently): `C ≡ F`, `F ⊑ D`, `D ⊑ E`.
+fn oneof_ladder() -> owl_dl_reasoner::Classification {
+    classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(Class(:E))
+    Declaration(Class(:F))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer)))
+    EquivalentClasses(:F DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer)))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer "2"^^xsd:integer)))
+    EquivalentClasses(:E DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer "2"^^xsd:integer "3"^^xsd:integer)))
+"#,
+    )
+}
+
+/// POSITIVE (recovered #1): `{1} ⊆ {1,2}` ⟹ `F ⊑ D`.
+#[test]
+fn int_oneof_subset_subsumes() {
+    let _g = OneofSeedOn::on();
+    let c = oneof_ladder();
+    assert!(c.is_subclass(F, D), "{{1}} ⊆ {{1,2}}: F ⊑ D must hold");
+}
+
+/// POSITIVE (recovered #2): `{1,2} ⊆ {1,2,3}` ⟹ `D ⊑ E`.
+#[test]
+fn int_oneof_chain_subsumes() {
+    let _g = OneofSeedOn::on();
+    let c = oneof_ladder();
+    assert!(c.is_subclass(D, E), "{{1,2}} ⊆ {{1,2,3}}: D ⊑ E must hold");
+}
+
+/// POSITIVE (recovered #3): transitively, `C ⊑ E` (`{1} ⊆ {1,2} ⊆ {1,2,3}`).
+#[test]
+fn int_oneof_transitive_subsumes() {
+    let _g = OneofSeedOn::on();
+    let c = oneof_ladder();
+    assert!(c.is_subclass(C, E), "{{1}} ⊆ {{1,2,3}}: C ⊑ E must hold");
+}
+
+/// POSITIVE (recovered #4) — the `∀`/`∃` membership clash, the analogue of the
+/// interval-bucket `forall_value_outside_range_clashes` that already passes:
+/// `∃h.{3} ⊓ ∀h.{1,2}` is unsatisfiable because `{3} ∩ {1,2} = ∅`.
+/// Oracle: `Konclude` AND `HermiT` both report `U ≡ owl:Nothing`.
+#[test]
+fn forall_int_oneof_value_outside_enum_clashes() {
+    let _g = OneofSeedOn::on();
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C ObjectIntersectionOf(DataSomeValuesFrom(:h DataOneOf("3"^^xsd:integer)) DataAllValuesFrom(:h DataOneOf("1"^^xsd:integer "2"^^xsd:integer))))
+"#,
+    );
+    assert!(
+        c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "3 ∉ {{1,2}} under ∀: C must be unsatisfiable"
+    );
+}
+
+/// POSITIVE (recovered #5) — a SECOND bucket, so the fix is not integer-only:
+/// `xsd:decimal` `{1.5} ⊆ {1.5, 2.5}`. Decimals are compared by the EXACT
+/// normalized-lexical `Decimal` type, never `f64` (rounding two distinct
+/// decimals to one `f64` would be a spurious equality = FP).
+#[test]
+fn decimal_oneof_subset_subsumes() {
+    let _g = OneofSeedOn::on();
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataSomeValuesFrom(:h DataOneOf("1.5"^^xsd:decimal)))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("1.5"^^xsd:decimal "2.5"^^xsd:decimal)))
+"#,
+    );
+    assert!(
+        c.is_subclass(C, D),
+        "{{1.5}} ⊆ {{1.5,2.5}} (decimal): C ⊑ D must hold"
+    );
+}
+
+/// NEGATIVE — superset is not a subset: `{1,2} ⊄ {1}`, so `D ⊄ F`.
+#[test]
+fn int_oneof_superset_not_subsumed() {
+    let _g = OneofSeedOn::on();
+    let c = oneof_ladder();
+    assert!(!c.is_subclass(D, F), "{{1,2}} ⊄ {{1}}: D ⊑ F must NOT hold");
+    assert!(
+        !c.is_subclass(E, D),
+        "{{1,2,3}} ⊄ {{1,2}}: E ⊑ D must NOT hold"
+    );
+}
+
+/// NEGATIVE — NOT-A-MEMBER: `5 ∉ {1,2}`, so `∃h.{5} ⊄ ∃h.{1,2}` in EITHER
+/// direction, and neither class is unsatisfiable (two distinct values are
+/// perfectly satisfiable on separate `h`-successors — disjointness of the two
+/// `DKey`s must not by itself make anything ⊥).
+#[test]
+fn int_oneof_value_not_a_member_not_subsumed() {
+    let _g = OneofSeedOn::on();
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataSomeValuesFrom(:h DataOneOf("5"^^xsd:integer)))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer "2"^^xsd:integer)))
+"#,
+    );
+    assert!(!c.is_subclass(C, D), "5 ∉ {{1,2}}: C ⊑ D must NOT hold");
+    assert!(!c.is_subclass(D, C), "{{1,2}} ⊄ {{5}}: D ⊑ C must NOT hold");
+    assert!(
+        c.unsatisfiable_classes().is_empty(),
+        "disjoint enumerations alone must not make any class ⊥, got {:?}",
+        c.unsatisfiable_classes()
+    );
+}
+
+/// NEGATIVE — CROSS-DATATYPE: an `xsd:integer` enumeration and an
+/// `xsd:float` enumeration live in DIFFERENT buckets (`io:` vs `fo:`) and must
+/// never interact, even though `1` and `1.0` look numerically equal. A single
+/// cross-bucket edge here would be a false positive.
+#[test]
+fn cross_datatype_int_vs_float_oneof_no_interaction() {
+    let _g = OneofSeedOn::on();
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer)))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("1.0"^^xsd:float "2.0"^^xsd:float)))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "integer {{1}} ⊄ float {{1.0,2.0}}: cross-datatype must NOT subsume"
+    );
+    assert!(
+        !c.is_subclass(D, C),
+        "float {{1.0,2.0}} ⊄ integer {{1}}: cross-datatype must NOT subsume"
+    );
+}
+
+/// NEGATIVE — CROSS-DATATYPE, the `xsd:float` / `xsd:double` pair specifically.
+/// OWL 2 gives them DISJOINT value spaces, so a float `1.0` and a double `1.0`
+/// are different data values and the two classes are NOT equivalent (Konclude
+/// and `HermiT` both leave them incomparable). `rustdl` <= v0.4.8 folded both into
+/// one f64-keyed `fo:` bucket and reported them EQUIVALENT — a false positive
+/// present with no seeding at all; the `dbo:` bucket split fixes it, so this
+/// canary must hold with the seeding flag BOTH on and off.
+#[test]
+fn float_and_double_oneof_not_equivalent() {
+    let body = r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataSomeValuesFrom(:h DataOneOf("1.0"^^xsd:float)))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("1.0"^^xsd:double)))
+"#;
+    {
+        let _g = OneofSeedOn::on();
+        let c = classify(body);
+        assert!(
+            !c.is_subclass(C, D) && !c.is_subclass(D, C),
+            "xsd:float 1.0 and xsd:double 1.0 are different values (seed ON)"
+        );
+    }
+    let c = classify(body);
+    assert!(
+        !c.is_subclass(C, D) && !c.is_subclass(D, C),
+        "xsd:float 1.0 and xsd:double 1.0 are different values (seed OFF)"
+    );
+}
+
+/// NEGATIVE — the `∀` clash's FP guard: the value IS in the enumeration, so
+/// `∃h.{2} ⊓ ∀h.{1,2}` must stay SATISFIABLE. This is the shared-member trap
+/// that the disjointness predicate has to get right.
+#[test]
+fn forall_int_oneof_value_inside_enum_satisfiable() {
+    let _g = OneofSeedOn::on();
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C ObjectIntersectionOf(DataSomeValuesFrom(:h DataOneOf("2"^^xsd:integer)) DataAllValuesFrom(:h DataOneOf("1"^^xsd:integer "2"^^xsd:integer))))
+"#,
+    );
+    assert!(
+        !c.unsatisfiable_classes().iter().any(|u| u.ends_with("/C")),
+        "2 ∈ {{1,2}}: C must be satisfiable (no spurious clash)"
+    );
+}
+
+/// NEGATIVE — WRONG PROPERTY: `{1} ⊆ {1,2}` but on different data properties,
+/// so no subsumption (CR5 role match).
+#[test]
+fn int_oneof_wrong_property_not_subsumed() {
+    let _g = OneofSeedOn::on();
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataSomeValuesFrom(:g DataOneOf("1"^^xsd:integer)))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("1"^^xsd:integer "2"^^xsd:integer)))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "∃g.{{1}} ⊄ ∃h.{{1,2}}: wrong property must NOT subsume"
+    );
+}

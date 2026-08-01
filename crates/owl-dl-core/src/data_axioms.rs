@@ -1248,11 +1248,16 @@ impl Ord for OrdF64 {
     }
 }
 
-/// Parse a `DataOneOf` whose members are ALL `xsd:float`/`xsd:double`-typed
-/// literals into a `BTreeSet<OrdF64>` (capacity = |distinct values|).
-/// NaN / ±∞ → `None` (sound under-approx). Signed-zero dedup via
-/// `OrdF64::new` is FP-critical (see type doc above).
-pub(crate) fn parse_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<OrdF64>> {
+/// Shared core of the two f64-keyed `DataOneOf` parsers: accept a `DataOneOf`
+/// whose members are ALL literals typed EXACTLY `want_dt`, mapping each lexical
+/// through `to_value`. A single member of another datatype (or a bare/
+/// language-tagged literal) drops the WHOLE enumeration — never a partial set,
+/// which would be unsound on a sufficient-direction RHS.
+fn parse_typed_float_oneof<A: ForIRI>(
+    dr: &DataRange<A>,
+    want_dt: &str,
+    to_value: impl Fn(&str) -> Option<f64>,
+) -> Option<BTreeSet<OrdF64>> {
     match dr {
         DataRange::DataOneOf(lits) if !lits.is_empty() => {
             let mut set = BTreeSet::new();
@@ -1261,20 +1266,51 @@ pub(crate) fn parse_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet
                     Literal::Datatype {
                         literal,
                         datatype_iri,
-                    } if datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#float"
-                        || datatype_iri.as_ref() == "http://www.w3.org/2001/XMLSchema#double" =>
-                    {
-                        let fv: f64 = literal.parse().ok().filter(|v: &f64| v.is_finite())?;
-                        OrdF64::new(fv)
-                    }
+                    } if datatype_iri.as_ref() == want_dt => to_value(literal)?,
                     _ => return None,
                 };
-                set.insert(v);
+                set.insert(OrdF64::new(v));
             }
             Some(set)
         }
         _ => None,
     }
+}
+
+/// Parse a `DataOneOf` whose members are ALL **`xsd:float`**-typed literals into
+/// a `BTreeSet<OrdF64>` (capacity = |distinct values|), at **f32 precision**
+/// (parse as `f32`, widen via `f64::from`). NaN / ±∞ → `None` (sound
+/// under-approx). Signed-zero dedup via `OrdF64::new` is FP-critical (see type
+/// doc above).
+///
+/// **FP-CRITICAL — f32 precision, and a separate bucket from `xsd:double`.**
+/// Two lexicals that round to the same `f32` (`"0.1"` and
+/// `"0.100000001490116119384765625"`) denote the SAME `xsd:float` value; parsing
+/// them as `f64` would give two distinct keys, which the `DataOneOf`
+/// disjointness seeding (`RUSTDL_DKEY_ONEOF_SEED`) would then declare DISJOINT —
+/// a false unsat. Same lesson as `parse_float32_facets` on the interval side.
+pub(crate) fn parse_xsd_float_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<OrdF64>> {
+    parse_typed_float_oneof(dr, "http://www.w3.org/2001/XMLSchema#float", |lex| {
+        let v: f32 = lex.parse().ok().filter(|v: &f32| v.is_finite())?;
+        Some(f64::from(v))
+    })
+}
+
+/// Parse a `DataOneOf` whose members are ALL **`xsd:double`**-typed literals
+/// (f64 precision — `xsd:double`'s value space IS f64, exact round-trip).
+///
+/// **FP-CRITICAL — a SEPARATE bucket from `xsd:float`.** OWL 2 gives
+/// `xsd:float` and `xsd:double` DISJOINT value spaces, so a float `1.0` and a
+/// double `1.0` are different data values. Folding both into one f64 key (the
+/// pre-2026-08-01 behaviour) made `∃p.DataOneOf("1.0"^^xsd:float)` and
+/// `∃p.DataOneOf("1.0"^^xsd:double)` the SAME `DKey` class and hence
+/// EQUIVALENT — a false positive against Konclude ∪ HermiT, present with no
+/// seeding at all. A `DataOneOf` mixing float and double members is rejected by
+/// both parsers and drops (sound under-approx).
+pub(crate) fn parse_xsd_double_oneof<A: ForIRI>(dr: &DataRange<A>) -> Option<BTreeSet<OrdF64>> {
+    parse_typed_float_oneof(dr, "http://www.w3.org/2001/XMLSchema#double", |lex| {
+        lex.parse::<f64>().ok().filter(|v: &f64| v.is_finite())
+    })
 }
 
 /// Parse a `DataOneOf` whose members are ALL `xsd:decimal`-typed literals

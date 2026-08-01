@@ -4660,6 +4660,16 @@ fn build_dkey_range_map(
                 class_id,
                 owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),
             );
+        } else if let Some(set) = owl_dl_core::decode_double_oneof_dkey(iri) {
+            // Double-oneof (`dbo:`): a SEPARATE DKey bucket from `fo:` (disjoint
+            // OWL value spaces), but the same `FiniteSet<OrdF64>` counting
+            // representation here — cardinality counting only ever MERGES
+            // representatives, which under-counts distinct values and so can
+            // only MISS a counting clash, never invent one.
+            map.insert(
+                class_id,
+                owl_dl_datatypes::CardRange::FloatSet(owl_dl_datatypes::FiniteSet::Set(set)),
+            );
         } else if let Some(set) = owl_dl_core::decode_decimal_oneof_dkey(iri) {
             map.insert(
                 class_id,

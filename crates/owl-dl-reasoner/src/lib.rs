@@ -1976,6 +1976,45 @@ pub fn classify_inconsistency_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_INCONSISTENCY").is_none_or(|v| v != "0")
 }
 
+/// Let a classify GLOBAL wall-clock budget bound the **preparation** phases —
+/// the EL saturation and [`PreparedOntology::from_internal`] —
+/// not just the search (`RUSTDL_PREP_DEADLINE`). **Default OFF** (set `=1` to
+/// opt in; anything else is the pre-2026-08-01 behaviour).
+///
+/// The defect: `classify_top_down_internal` consulted `global_deadline` for the
+/// first time inside the label-cache loop, so `saturate()` and
+/// `from_internal()` ran to completion no matter how small the budget. Measured
+/// over the 252-ontology DNF population under a **1 ms** budget: 77 still burned
+/// ≥ 10 s and 26 never finished `from_internal` at all (`ore_ont_10926`: 84.9 s
+/// against a 1 ms promise). A caller asking for a bounded classify got an
+/// unbounded one.
+///
+/// With the flag on, three things change, all **only when a global deadline is
+/// active** (an untimed classify is byte-identical, and pays not one extra
+/// clock read):
+///
+/// 1. the saturation fixpoint is drained via
+///    [`owl_dl_saturation::saturate_with_deadline`];
+/// 2. `from_internal` checks the deadline at coarse pass boundaries
+///    ([`PreparedOntology::from_internal_with_deadline`]);
+/// 3. either abort returns the **EL closure read-off** as the answer.
+///
+/// **Sound under-approximation**, following the `RUSTDL_MAX_NODES` precedent
+/// (`NodeCap` → `Ok(None)` → sound MISS): the partial closure contains only
+/// entailed subsumptions, so the hierarchy can MISS but never gain an edge. The
+/// result is flagged INCOMPLETE — `ClassificationStats::prep_timed_out`, plus a
+/// `timed_out_pairs` bump so `completeness_guaranteed()` is false and
+/// `classify --json` reports `"incomplete": true`.
+///
+/// **Known residual bound** (honest, not closed here): `convert_ontology` and
+/// the saturator's `collect_el_rules` / `seed` prelude run before the first
+/// possible check, so an ontology whose *conversion* is the DNF is still
+/// unbounded. Only the two phases named above are covered.
+#[must_use]
+pub fn prep_deadline_enabled() -> bool {
+    std::env::var_os("RUSTDL_PREP_DEADLINE").is_some_and(|v| v == "1")
+}
+
 /// The `ABox`-saturation half of the KB-level inconsistency pre-check, factored
 /// out so `is_consistent` and `classify` cannot drift apart.
 ///
@@ -4888,7 +4927,36 @@ impl PreparedOntology {
     /// Run every preparation pass against `internal` so subsequent
     /// `decide` calls only have to allocate a fresh tableau and run
     /// the search.
-    pub(crate) fn from_internal(mut internal: InternalOntology) -> Result<Self, ReasonError> {
+    pub(crate) fn from_internal(internal: InternalOntology) -> Result<Self, ReasonError> {
+        // `deadline: None` makes every `expired` test below constant-false, so
+        // the `Ok(None)` arm is unreachable — hence the `expect`.
+        Ok(Self::from_internal_with_deadline(internal, None)?
+            .expect("from_internal_with_deadline(.., None) never aborts"))
+    }
+
+    /// [`Self::from_internal`] with a coarse wall-clock bound: the deadline is
+    /// tested between preparation passes and returns `Ok(None)` instead of a
+    /// snapshot once it has passed.
+    ///
+    /// Checks are deliberately COARSE — one per pass, not one per axiom — so the
+    /// clock is read a handful of times per build. The passes chosen are the ones
+    /// measured to dominate (`saturate`, `HyperCache::build`, `ConsistencyCache::
+    /// build`, `absorb`); the cheap ones ride on the neighbouring check.
+    ///
+    /// `Ok(None)` mirrors the `RUSTDL_MAX_NODES` → `NodeCap` → `Ok(None)`
+    /// precedent: the caller must degrade to a sound under-approximation and
+    /// report it as incomplete. `deadline == None` ⇒ always `Ok(Some(..))` and
+    /// zero clock reads, so the default path is untouched.
+    pub(crate) fn from_internal_with_deadline(
+        mut internal: InternalOntology,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Option<Self>, ReasonError> {
+        // One-liner so each boundary below is a single readable line. `None` ⇒
+        // constant-false (the closure is inlined and the branch folds away).
+        let expired = || deadline.is_some_and(|d| std::time::Instant::now() >= d);
+        if expired() {
+            return Ok(None);
+        }
         // Clone the vocabulary before `internal.concepts` is moved into `pool`
         // below, so downstream IRI↔id lookups survive `from_internal`.
         let vocabulary = internal.vocabulary.clone();
@@ -4909,6 +4977,15 @@ impl PreparedOntology {
         // `lazy_abox_saturation_enabled`'s doc for why.
         let closure = if lazy_abox_saturation_enabled() && !internal_has_abox(&internal) {
             None
+        } else if let Some(d) = deadline {
+            // Bounded fixpoint. An ABORTED closure is a sound under-approximation
+            // for `abox_check` (fewer derived types ⇒ fewer clashes ⇒ a missed
+            // inconsistency at worst) — but we bail immediately below anyway.
+            let (subs, aborted) = owl_dl_saturation::saturate_with_deadline(&internal, Some(d));
+            if aborted {
+                return Ok(None);
+            }
+            Some(subs)
         } else {
             Some(owl_dl_saturation::saturate(&internal))
         };
@@ -4921,7 +4998,13 @@ impl PreparedOntology {
         let data_counting_classes = build_data_counting_classes(&internal, &dkey_ranges);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
+        if expired() {
+            return Ok(None);
+        }
         let hyper = hyper_wedge_enabled().then(|| HyperCache::build(&internal));
+        if expired() {
+            return Ok(None);
+        }
         // ABox-seeded wedge consistency: build iff enabled AND the input
         // has ABox axioms (so ABox-free inputs pay nothing and classify
         // stays byte-identical). Built from the un-mutated `internal`,
@@ -4964,12 +5047,18 @@ impl PreparedOntology {
         } else {
             (0, 0)
         };
+        if expired() {
+            return Ok(None);
+        }
         expand_role_characteristics(&mut internal);
         let hierarchy = build_role_hierarchy(&internal);
         let inverse_pairs = collect_inverse_pairs(&internal);
         let asymmetric_roles = collect_asymmetric_roles(&internal);
         let disjoint_role_pairs = collect_disjoint_role_pairs(&internal);
         let chain_axioms = collect_chain_axioms(&internal)?;
+        if expired() {
+            return Ok(None);
+        }
         let normalized = nnf_axioms(&mut internal);
         let tbox = absorb(&normalized, &mut internal.concepts);
         // Ensure `⊥` is interned — `apply_max` flags inequality
@@ -4979,7 +5068,7 @@ impl PreparedOntology {
         let _ = internal.concepts.bot();
         let complements = precompute_max_complements(&mut internal.concepts);
         let abox = collect_abox(&mut internal);
-        Ok(Self {
+        Ok(Some(Self {
             pool: internal.concepts,
             vocabulary,
             tbox,
@@ -5003,7 +5092,7 @@ impl PreparedOntology {
             dkey_ranges,
             data_counting_classes,
             consistency,
-        })
+        }))
     }
 
     /// `ABox`-seeded wedge consistency verdict, or `None` when the wedge

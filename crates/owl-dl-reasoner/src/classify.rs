@@ -416,11 +416,49 @@ pub struct ClassificationStats {
     /// Sum over all pairs reaching `subsumes_via_tableau` with the
     /// snapshot path active. Diagnostic only.
     pub snapshot_replay_wall_ms: u64,
-    /// Phase 2a recon: top-level classify wall minus the three
-    /// component fields above. Captures residual orchestrator
-    /// overhead (tier walk, label-cache lookups, wedge calls that
-    /// DON'T hit the snapshot path, etc.). Diagnostic only.
+    /// Wall time in the TIER WALK proper — the `for tier in &tiers` loop of
+    /// `classify_top_down_internal`, MEASURED DIRECTLY. Diagnostic only.
+    ///
+    /// **This used to be a residual** (`total − label_cache − snapshot_build −
+    /// snapshot_replay`), which silently charged every unmeasured phase — the
+    /// EL saturation, `from_internal`, the unsat probes, both sweeps, the
+    /// entailment-matrix BFS — to the tier walk. On `ore_ont_1028` it reported
+    /// `tier_walk = 7198 ms` for a tier walk that actually took 80 ms, and an
+    /// earlier taxonomy of the DNF corpus was FALSIFIED because of it: the
+    /// instrument pointed at the wrong phase and a whole bucket classification
+    /// was built on the reading. Every phase now has its own line item and the
+    /// leftover is named [`Self::unattributed_wall_ms`], so a residual can never
+    /// masquerade as a phase again.
     pub tier_walk_wall_ms: u64,
+    /// Wall time in `owl_dl_saturation::saturate` (the EL closure). Diagnostic only.
+    pub saturate_wall_ms: u64,
+    /// Wall time in the KB-level inconsistency pre-check plus, on the
+    /// saturation fast path, the `abox_check` build+run. Diagnostic only.
+    pub precheck_wall_ms: u64,
+    /// Wall time in `PreparedOntology::from_internal` plus the `abox_verdict()`
+    /// that first forces it. Diagnostic only.
+    pub prepare_wall_ms: u64,
+    /// Wall time in the per-class unsatisfiability probe loop. Diagnostic only.
+    pub unsat_probe_wall_ms: u64,
+    /// Wall time in the defined-sup sweep, the defined-SUB sweep and the
+    /// label-cache back-fold, together. Diagnostic only.
+    pub sweep_wall_ms: u64,
+    /// Wall time building the entailment matrix (closure seed + transitive-closure
+    /// BFS over `direct_supers`). Diagnostic only.
+    pub matrix_wall_ms: u64,
+    /// The NAMED leftover: total classify wall minus every phase line item above.
+    /// Covers the class-IRI/index build, the fragment analysis, tier grouping and
+    /// the `Classification` assembly.
+    ///
+    /// It exists so the components SUM to the wall without any one phase
+    /// absorbing the difference. If this grows large, a phase is missing a timer
+    /// — which is exactly the failure the old residual `tier_walk_wall_ms` hid.
+    /// Pinned by `phase_components_sum_to_wall` in `crates/owl-dl-cli/tests`.
+    ///
+    /// NOTE `snapshot_cache_build_wall_ms` / `snapshot_replay_wall_ms` are NESTED
+    /// sub-timers of the label-cache and tier-walk phases, so they are
+    /// deliberately NOT part of this sum — subtracting them would double-count.
+    pub unattributed_wall_ms: u64,
     /// Phase 3a recon: count of classes that the per-class
     /// `BackPropRisk::classify_class` variant would mark Safe.
     /// Diagnostic only; the ontology-wide classifier still gates
@@ -438,6 +476,14 @@ pub struct ClassificationStats {
     /// a wedge `NotSubsumed` that the main-tableau `concrete_domain_clash`
     /// flipped to `Subsumed` because the pair was data-counting-relevant.
     pub counting_verified_pairs: usize,
+    /// `RUSTDL_PREP_DEADLINE` fired: the global wall-clock budget expired during
+    /// a PREPARATION phase (EL saturation or
+    /// `PreparedOntology::from_internal`), so the reported hierarchy is the EL
+    /// closure read-off — **sound, and a deliberate under-approximation**.
+    /// Always accompanied by a `timed_out_pairs` bump, so
+    /// `completeness_guaranteed()` is false and `classify --json` reports
+    /// `"incomplete": true`. See [`crate::prep_deadline_enabled`].
+    pub prep_timed_out: bool,
 }
 
 impl Classification {
@@ -751,9 +797,26 @@ pub fn classify_with_global_deadline<A: ForIRI>(
     ontology: &SetOntology<A>,
     budget: std::time::Duration,
 ) -> Result<Classification, ReasonError> {
+    let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    let deadline = Instant::now() + budget;
-    classify_top_down_internal(&internal, None, Some(deadline))
+    classify_top_down_internal(&internal, None, Some(budget_origin(t0) + budget))
+}
+
+/// Where a global budget's clock starts.
+///
+/// Historically it started AFTER `convert_ontology`, so a caller's "1 ms" was
+/// really "conversion + 1 ms" — and conversion is itself a multi-second DNF on
+/// some ORE inputs (`ore_ont_10926`: 23.8 s). Under
+/// [`crate::prep_deadline_enabled`] the clock starts at the call instead, which
+/// is what the caller asked for; conversion is still not INTERRUPTIBLE (a known
+/// residual), but it no longer silently extends the promise. Flag off ⇒ the
+/// pre-existing origin, exactly.
+fn budget_origin(call_instant: Instant) -> Instant {
+    if crate::prep_deadline_enabled() {
+        call_instant
+    } else {
+        Instant::now()
+    }
 }
 
 /// Classify with BOTH a per-pair tableau deadline and a global wall-clock
@@ -775,8 +838,9 @@ pub fn classify_with_budget<A: ForIRI>(
     per_pair_timeout: Option<std::time::Duration>,
     global_budget: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
+    let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    let global_deadline = global_budget.map(|b| Instant::now() + b);
+    let global_deadline = global_budget.map(|b| budget_origin(t0) + b);
     classify_top_down_internal(&internal, per_pair_timeout, global_deadline)
 }
 
@@ -852,7 +916,13 @@ pub(crate) fn classify_saturation_only_internal(
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
     let closure = saturate(internal);
-    Ok(classify_pure_el(internal, &classes, &index, &closure))
+    Ok(classify_pure_el(
+        internal,
+        &classes,
+        &index,
+        &closure,
+        analyze_fragment(internal),
+    ))
 }
 
 /// Internal entry point. Useful for tests that hand-build an
@@ -953,7 +1023,13 @@ pub(crate) fn classify_internal_with_timeout(
                 ));
             }
         }
-        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+        return Ok(classify_pure_el(
+            internal,
+            &classes,
+            &index,
+            &closure,
+            analyze_fragment(internal),
+        ));
     }
 
     // Prepare the tableau-side pipeline once. Every subsequent
@@ -1101,20 +1177,72 @@ pub(crate) fn classify_internal_with_timeout(
     })
 }
 
+/// Degrade to the EL closure read-off because the global wall-clock budget
+/// expired during a PREPARATION phase (`RUSTDL_PREP_DEADLINE`; `phase` names
+/// which one, for `RUSTDL_TRACE`).
+///
+/// **Sound under-approximation, explicitly flagged incomplete.** The partial
+/// closure holds only entailed subsumptions, so the hierarchy can MISS but never
+/// gain an edge — the `RUSTDL_MAX_NODES` → `NodeCap` → `Ok(None)` precedent
+/// applied to the build instead of the search. Three signals fire so no caller
+/// can mistake this for a complete answer:
+///
+/// * `stats.prep_timed_out = true` (programmatic, unambiguous);
+/// * `timed_out_pairs` is bumped, which is what `classify --json` maps to
+///   `"incomplete": true` and what `completeness_guaranteed()` reads;
+/// * `fragment` is forced to `OutOfFragment` — the conservative value. It is NOT
+///   `analyze_fragment(internal)`: that clausifies the entire ontology, which is
+///   exactly the sort of unbudgeted work this path exists to avoid, and a
+///   `PureEl`/`Horn` verdict here would claim a completeness we just abandoned.
+fn classify_prep_timeout(
+    internal: &InternalOntology,
+    classes: &[String],
+    index: &HashMap<String, usize>,
+    closure: &owl_dl_saturation::Subsumers,
+    phase: &str,
+) -> Classification {
+    if std::env::var_os("RUSTDL_TRACE").is_some() {
+        eprintln!("classify: prep deadline expired in {phase} — partial EL closure returned");
+    }
+    let mut h = classify_pure_el(
+        internal,
+        classes,
+        index,
+        closure,
+        FragmentClassification::OutOfFragment,
+    );
+    h.stats.prep_timed_out = true;
+    // Invariant kept by every other timeout site: +1 count, +1 id (so
+    // `undecided_pairs()` stays index-safe). With no classes there is no id to
+    // record; the count alone still drives the `incomplete` signal.
+    h.stats.timed_out_pairs += 1;
+    if !classes.is_empty() {
+        h.stats.timed_out_pair_ids.push((0, 0));
+    }
+    h
+}
+
 /// Fast-path classifier for ontologies that lie entirely inside our
 /// EL saturation fragment. The closure is then *complete* — both
 /// subsumption and unsatisfiability decisions reduce to closure
 /// lookups, with no tableau calls. Sets `stats.pure_el_mode = true`.
+///
+/// `fragment` is passed in rather than computed here: [`analyze_fragment`]
+/// clausifies the whole ontology, and the `RUSTDL_PREP_DEADLINE` degradation
+/// path (which reuses this read-off for a PARTIAL closure) must not pay that
+/// cost after its budget has already expired — it supplies the conservative
+/// [`FragmentClassification::OutOfFragment`] instead.
 fn classify_pure_el(
     internal: &InternalOntology,
     classes: &[String],
     index: &HashMap<String, usize>,
     closure: &owl_dl_saturation::Subsumers,
+    fragment: FragmentClassification,
 ) -> Classification {
     let n = classes.len();
     let mut stats = ClassificationStats {
         pure_el_mode: true,
-        fragment: analyze_fragment(internal),
+        fragment,
         ..ClassificationStats::default()
     };
 
@@ -1897,6 +2025,13 @@ fn aggregate_deadline_env_override() -> Option<u64> {
 /// The per-pair term is re-evaluated at call time (`Instant::now()`)
 /// so each probe gets a fresh budget even when called sequentially
 /// (matches the existing `Instant::now() + timeout` pattern).
+/// Whole milliseconds since `t`, saturating. One place so every phase line
+/// item in [`ClassificationStats`] is computed identically.
+#[inline]
+fn elapsed_ms(t: Instant) -> u64 {
+    u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 #[inline]
 fn effective_deadline(
     global: Option<Instant>,
@@ -1963,10 +2098,38 @@ pub(crate) fn classify_top_down_internal(
         (_, gd) => gd,
     };
 
-    let closure = saturate(internal);
+    // Deadline-bounded PREP (`RUSTDL_PREP_DEADLINE`, default OFF). Without the
+    // flag this is verbatim `saturate(internal)`; with it, and only when a
+    // global deadline is actually active, the fixpoint is abandoned at the
+    // deadline and the PARTIAL closure is read off as a sound, explicitly
+    // INCOMPLETE hierarchy. See `crate::prep_deadline_enabled` for the measured
+    // motivation (77 of 252 DNF ontologies burned ≥ 10 s against a 1 ms budget).
+    let prep_deadline = if crate::prep_deadline_enabled() {
+        global_deadline
+    } else {
+        None
+    };
+    let t_saturate = Instant::now();
+    let (closure, sat_aborted) = match prep_deadline {
+        None => (saturate(internal), false),
+        Some(_) => owl_dl_saturation::saturate_with_deadline(internal, prep_deadline),
+    };
+    // Phase line item, MEASURED (not derived): see the doc comment on
+    // `ClassificationStats::tier_walk_wall_ms` for why every phase now carries
+    // its own timer instead of one residual absorbing them all.
+    let saturate_ms = elapsed_ms(t_saturate);
     // RSS probe: after EL closure / saturation.
     crate::rss_probe::probe("after_saturate");
 
+    if sat_aborted {
+        // The fixpoint was abandoned. Every derived edge is still entailed, so
+        // read the partial closure off as the answer and flag it incomplete.
+        return Ok(classify_prep_timeout(
+            internal, &classes, &index, &closure, "saturate",
+        ));
+    }
+
+    let t_precheck = Instant::now();
     // Sound KB-level inconsistency pre-check (`RUSTDL_CLASSIFY_INCONSISTENCY`,
     // default OFF). Placed BEFORE the fast-path branch so both dispatch arms —
     // the saturation fast path and the hybrid path — are covered by one call
@@ -2025,17 +2188,52 @@ pub(crate) fn classify_top_down_internal(
                 ));
             }
         }
-        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+        let precheck_ms = elapsed_ms(t_precheck);
+        let mut h = classify_pure_el(
+            internal,
+            &classes,
+            &index,
+            &closure,
+            analyze_fragment(internal),
+        );
+        // The fast path runs only two of the phases, but it must still report
+        // them: before this it printed an all-zero breakdown, so a pure-EL run
+        // that spent 15 s in saturation looked like it spent nothing anywhere.
+        h.stats.saturate_wall_ms = saturate_ms;
+        h.stats.precheck_wall_ms = precheck_ms;
+        h.stats.unattributed_wall_ms = elapsed_ms(classify_start)
+            .saturating_sub(saturate_ms)
+            .saturating_sub(precheck_ms);
+        return Ok(h);
     }
+
+    let precheck_ms = elapsed_ms(t_precheck);
 
     // RSS probes: bracket PreparedOntology::from_internal — before/after delta
     // directly answers whether the snapshot is a large allocation.
     crate::rss_probe::probe("before_prepared");
-    let prepared = PreparedOntology::from_internal(internal.clone())?;
+    // Second half of the prep-deadline fix: `from_internal` was the single
+    // largest unbudgeted phase (26 of the 252 DNF ontologies never finished it
+    // at all). `from_internal_with_deadline(.., None)` is the pre-change call.
+    let t_prepare = Instant::now();
+    let Some(prepared) =
+        PreparedOntology::from_internal_with_deadline(internal.clone(), prep_deadline)?
+    else {
+        return Ok(classify_prep_timeout(
+            internal,
+            &classes,
+            &index,
+            &closure,
+            "from_internal",
+        ));
+    };
     crate::rss_probe::probe("after_prepared");
 
     // Sound ABox-driven inconsistency pre-check. If it fires, return
     // an every-class-unsatisfiable Classification (mirroring Konclude).
+    // `abox_verdict()` is `get_or_init`-lazy, so the FIRST call is where the
+    // check actually runs — it belongs inside the prepare line item, which is
+    // why `t_prepare` is not stopped until after it.
     if let crate::abox_check::AboxVerdict::Inconsistent { reason } = prepared.abox_verdict() {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("abox_check: inconsistent — {reason:?}");
@@ -2047,10 +2245,15 @@ pub(crate) fn classify_top_down_internal(
         ));
     }
 
+    let prepare_ms = elapsed_ms(t_prepare);
+
     // Per-class unsat probes — identical to the naive path. Reuse
     // the same parallel pattern.
     let mut stats = ClassificationStats {
         fragment: analyze_fragment(internal),
+        saturate_wall_ms: saturate_ms,
+        precheck_wall_ms: precheck_ms,
+        prepare_wall_ms: prepare_ms,
         ..ClassificationStats::default()
     };
 
@@ -2115,6 +2318,7 @@ pub(crate) fn classify_top_down_internal(
     // RSS probe: after label-cache build.
     crate::rss_probe::probe("after_label_cache");
 
+    let t_unsat_probe = Instant::now();
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -2196,6 +2400,7 @@ pub(crate) fn classify_top_down_internal(
             unsatisfiable_idxs.insert(i);
         }
     }
+    stats.unsat_probe_wall_ms = elapsed_ms(t_unsat_probe);
 
     // Compute closure-subsumer counts once per class (used for sort key and
     // tier grouping). `subsumers_count` is O(1) (no Vec allocation) vs
@@ -2279,6 +2484,9 @@ pub(crate) fn classify_top_down_internal(
     // coarse sawtooth that reflects allocated-then-freed per unit of work, and
     // (c) the atomic overhead per class in rayon workers would be visible noise.
     let mut rss_pair_counter: u64 = 0;
+    // THE fix for the mis-attribution: `tier_walk_wall_ms` is now this interval,
+    // not `total − (label_cache + snapshot_build + snapshot_replay)`.
+    let t_tier_walk = Instant::now();
     for tier in &tiers {
         // Each tier member walks the snapshot of `direct_children`
         // + `top_level` as of tier entry and returns its
@@ -2353,6 +2561,7 @@ pub(crate) fn classify_top_down_internal(
             crate::rss_probe::probe_pair(rss_pair_counter);
         }
     }
+    stats.tier_walk_wall_ms = elapsed_ms(t_tier_walk);
 
     // Defined-sup sweep: same-tier inferred subsumptions are missed by
     // the parallel walk above ("two same-tier classes don't see each
@@ -2367,6 +2576,7 @@ pub(crate) fn classify_top_down_internal(
     // pizza), tightening the per-pair budget to 200 ms (most wedge
     // calls finish in < 100 ms; the slow tail times out as "not
     // subsumed" — sound under-approximation), parallel via rayon.
+    let t_sweeps = Instant::now();
     let defined_sups: Vec<usize> = {
         let mut set: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for ax in &internal.axioms {
@@ -2712,6 +2922,7 @@ pub(crate) fn classify_top_down_internal(
         &mut direct_children,
         &mut stats,
     );
+    stats.sweep_wall_ms = elapsed_ms(t_sweeps);
 
     // Build the full entailment matrix. Three sources contribute:
     //
@@ -2724,6 +2935,7 @@ pub(crate) fn classify_top_down_internal(
     // 2. **Reflexive + unsat-row trivial fill.**
     // 3. **Tableau-derived direct supers** from the top-down walk,
     //    transitively closed via BFS over `direct_supers`.
+    let t_matrix = Instant::now();
     let mut entailed = EntailmentMatrix::new(n);
     // Reused BFS-visited buffer with per-row generation stamps: `visited_gen[j]
     // == gen` means "visited this row". Bumping `gen` resets it in O(1), avoiding
@@ -2765,21 +2977,36 @@ pub(crate) fn classify_top_down_internal(
         }
     }
 
+    stats.matrix_wall_ms = elapsed_ms(t_matrix);
+
     let _ = top_level; // currently informational only
 
-    // Phase 2a recon: pull AtomicU64 snapshot timers and derive
-    // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
+    // Snapshot timers are NESTED inside the label-cache / tier-walk phases (they
+    // accumulate inside `decide` calls), so they are reported but deliberately
+    // EXCLUDED from the phase sum below — subtracting them, as the old residual
+    // `tier_walk_wall_ms` did, double-counted them.
     stats.snapshot_cache_build_wall_ms = prepared.snapshot_cache_build_wall_ms();
     stats.snapshot_replay_wall_ms = prepared.snapshot_cache_replay_wall_ms();
     // Phase 3a recon: per-class BackPropRisk diagnostic counts. Pure
     // instrumentation; does not affect the snapshot cache gate.
     stats.per_class_safe_count = prepared.per_class_safe_count();
     stats.per_class_unsafe_count = prepared.per_class_unsafe_count();
-    let total_wall = u64::try_from(classify_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    stats.tier_walk_wall_ms = total_wall
+    // The leftover is NAMED (`unattributed_wall_ms`) instead of being folded into
+    // a phase. It covers the class-IRI/index build, `analyze_fragment`, tier
+    // grouping and the `Classification` assembly. A large value here means a
+    // phase is missing a timer — which is precisely what the old residual
+    // `tier_walk_wall_ms` concealed (`ore_ont_1028`: 7198 ms reported for an
+    // 80 ms tier walk).
+    let total_wall = elapsed_ms(classify_start);
+    stats.unattributed_wall_ms = total_wall
+        .saturating_sub(stats.saturate_wall_ms)
+        .saturating_sub(stats.precheck_wall_ms)
+        .saturating_sub(stats.prepare_wall_ms)
         .saturating_sub(stats.label_cache_build_wall_ms)
-        .saturating_sub(stats.snapshot_cache_build_wall_ms)
-        .saturating_sub(stats.snapshot_replay_wall_ms);
+        .saturating_sub(stats.unsat_probe_wall_ms)
+        .saturating_sub(stats.tier_walk_wall_ms)
+        .saturating_sub(stats.sweep_wall_ms)
+        .saturating_sub(stats.matrix_wall_ms);
 
     Ok(Classification {
         classes,

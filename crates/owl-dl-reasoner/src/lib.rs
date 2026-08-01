@@ -1855,6 +1855,31 @@ pub fn abox_check_enabled() -> bool {
     std::env::var_os("RUSTDL_ABOX_CHECK").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Elide the `PreparedOntology`-owned EL saturation on provably `ABox`-free
+/// inputs (`RUSTDL_LAZY_ABOX_SATURATION`). **Default OFF** (set `=1` to opt in).
+///
+/// `PreparedOntology::closure` has exactly ONE consumer:
+/// [`PreparedOntology::abox_verdict`], which feeds it to [`abox_check::check`].
+/// `check` early-returns [`abox_check::AboxVerdict::Unknown`] before touching the
+/// closure whenever `abox.individuals` is empty, so on an `ABox`-free ontology the
+/// whole saturation is dead work — a *third* full saturation of the same ontology
+/// on the hybrid classify path (the other two are `lib.rs`'s
+/// `saturate_with_exists_facts` label-cache seed and `classify.rs`'s own closure).
+///
+/// The gate is `internal_has_abox`, evaluated on the **un-mutated** input, and it is
+/// exactly equivalent to `abox.individuals.is_empty()` at `collect_abox` time:
+/// `collect_abox` populates `individuals` from precisely the five axiom kinds
+/// `internal_has_abox` matches, `nnf_axioms` leaves `internal.axioms` unchanged
+/// (pinned by `normalize::tests::nnf_axioms_leaves_original_axioms_unchanged`), and
+/// `expand_role_characteristics` only appends `SubClassOf` / `InverseObjectProperties`.
+/// Should that ever drift, `abox_verdict` degrades to `Unknown` — a sound
+/// under-approximation (a missed inconsistency is a MISS, never an FP), pinned by a
+/// `debug_assert`.
+#[must_use]
+pub fn lazy_abox_saturation_enabled() -> bool {
+    std::env::var_os("RUSTDL_LAZY_ABOX_SATURATION").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
 /// Consequence-based ABox-saturation consistency pre-check
 /// (`RUSTDL_ABOX_SATURATION`). **Default on** (set `=0` or empty to disable); a
 /// derived clash ⇒ inconsistent (sound under-approximation — non-clash falls
@@ -4380,7 +4405,11 @@ pub(crate) struct PreparedOntology {
     /// Computed once at build time; classify already computes the same
     /// closure at its own call site, so we keep `abox_check`'s copy
     /// self-contained rather than threading it through.
-    pub(crate) closure: owl_dl_saturation::Subsumers,
+    ///
+    /// `None` **only** when [`lazy_abox_saturation_enabled`] is on AND the input
+    /// is provably `ABox`-free — in which case `abox_check::check` early-returns
+    /// before reading it. See that flag's doc for the equivalence argument.
+    pub(crate) closure: Option<owl_dl_saturation::Subsumers>,
     /// Told-disjoint pairs (and other told-* relations) over the
     /// input ontology. Used by [`abox_check`] P2/P7. Built once in
     /// `from_internal`.
@@ -4656,10 +4685,19 @@ impl PreparedOntology {
             && !ontology_uses_nominals(&internal);
         // Phase A1 (ABox consistency check): EL closure over the
         // un-mutated input. Used by abox_check for P1 (is_unsatisfiable)
-        // and P2 (subsumers_of). Cheap on small ABox-bearing ontologies;
-        // on ABox-free ontologies, abox_check exits early before
-        // querying the closure, so the cost is amortised.
-        let closure = owl_dl_saturation::saturate(&internal);
+        // and P2 (subsumers_of).
+        //
+        // On an ABox-FREE ontology `abox_check::check` early-returns before it
+        // ever reads the closure, so this whole saturation is dead work — it is
+        // elided under `RUSTDL_LAZY_ABOX_SATURATION` (default OFF). The gate is
+        // evaluated on the un-mutated input and is equivalent to
+        // `abox.individuals.is_empty()` below; see
+        // `lazy_abox_saturation_enabled`'s doc for why.
+        let closure = if lazy_abox_saturation_enabled() && !internal_has_abox(&internal) {
+            None
+        } else {
+            Some(owl_dl_saturation::saturate(&internal))
+        };
         let told = owl_dl_core::told::build_told_tables(&internal);
         let axioms = internal.axioms.clone();
         // Concrete-domain solver (P2): decode the synthetic DKey filler
@@ -4787,20 +4825,32 @@ impl PreparedOntology {
     /// always returns `Unknown` without invoking the check.
     pub(crate) fn abox_verdict(&self) -> &abox_check::AboxVerdict {
         self.abox_verdict.get_or_init(|| {
-            if crate::abox_check_enabled() {
-                abox_check::check(&abox_check::AboxCheckInputs {
-                    abox: &self.abox,
-                    axioms: &self.axioms,
-                    told: &self.told,
-                    pool: &self.pool,
-                    inverse_pairs: &self.inverse_pairs,
-                    hierarchy: &self.hierarchy,
-                    disjoint_role_pairs: &self.disjoint_role_pairs,
-                    closure: &self.closure,
-                })
-            } else {
-                abox_check::AboxVerdict::Unknown
+            if !crate::abox_check_enabled() {
+                return abox_check::AboxVerdict::Unknown;
             }
+            let Some(closure) = self.closure.as_ref() else {
+                // `RUSTDL_LAZY_ABOX_SATURATION` elided the saturation because the
+                // input is provably ABox-free — the exact case in which `check`
+                // early-returns `Unknown` anyway. If the gate's equivalence with
+                // `abox.individuals.is_empty()` ever drifts, this arm degrades to
+                // `Unknown`: a sound under-approximation (a missed inconsistency
+                // is a MISS, never an FP).
+                debug_assert!(
+                    self.abox.individuals.is_empty(),
+                    "lazy-saturation gate elided the closure on an ABox-bearing ontology"
+                );
+                return abox_check::AboxVerdict::Unknown;
+            };
+            abox_check::check(&abox_check::AboxCheckInputs {
+                abox: &self.abox,
+                axioms: &self.axioms,
+                told: &self.told,
+                pool: &self.pool,
+                inverse_pairs: &self.inverse_pairs,
+                hierarchy: &self.hierarchy,
+                disjoint_role_pairs: &self.disjoint_role_pairs,
+                closure,
+            })
         })
     }
 
@@ -8537,5 +8587,162 @@ mod abox_check_differential_tests {
             false,
             "ABox-free",
         );
+    }
+}
+
+/// Canaries for the lazy `ABox`-saturation gate (`RUSTDL_LAZY_ABOX_SATURATION`,
+/// default OFF). Lives in-crate because `PreparedOntology::closure` and
+/// `test_env_lock` are `pub(crate)`.
+///
+/// **Negatives first.** The gate elides work; the failure mode that matters is
+/// eliding it on an input that still needs it, which would silently downgrade an
+/// `Inconsistent` verdict to `Unknown`. So the tests pin, in order:
+/// (1) the ABox-BEARING half still builds the closure and still reaches the same
+/// verdict, (2) the ABox-FREE half actually elides (otherwise the lever is inert),
+/// (3) OFF-vs-ON verdict identity over both shapes.
+///
+/// Sabotage record (2026-08-01) — each mutation was applied, the suite run, and
+/// the change reverted:
+/// * gate → `lazy_abox_saturation_enabled()` alone (elide unconditionally):
+///   `lazy_saturation_on_keeps_closure_when_abox_present`,
+///   `lazy_saturation_on_preserves_p2_inconsistency` and
+///   `lazy_saturation_verdict_identical_off_vs_on` all FAIL.
+/// * gate → `false` (never elide): `lazy_saturation_on_elides_closure_when_abox_free`
+///   FAILS.
+#[cfg(test)]
+mod lazy_abox_saturation_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read as read_ofn;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use std::io::Cursor;
+
+    const PFX: &str = "Prefix(:=<http://t/>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    /// An `ABox`-bearing ontology whose inconsistency is found by `abox_check`
+    /// P2 (one individual typed into two disjoint classes) — i.e. by the very
+    /// closure this gate may elide.
+    const ABOX_INCONSISTENT: &str = "Declaration(Class(:A)) Declaration(Class(:B))
+         Declaration(Class(:C)) Declaration(NamedIndividual(:i))
+         DisjointClasses(:A :B)
+         ClassAssertion(:A :i) ClassAssertion(:B :i)
+         SubClassOf(:C :A)";
+
+    /// `ABox`-bearing but consistent — the negative control for the above.
+    const ABOX_CONSISTENT: &str = "Declaration(Class(:A)) Declaration(Class(:B))
+         Declaration(NamedIndividual(:i))
+         ClassAssertion(:A :i) SubClassOf(:A :B)";
+
+    /// No individuals at all — the case the gate is allowed to elide.
+    const ABOX_FREE: &str = "Declaration(Class(:A)) Declaration(Class(:B))
+         Declaration(Class(:C))
+         SubClassOf(:A :B) SubClassOf(:B :C)";
+
+    fn to_internal(body: &str) -> InternalOntology {
+        let src = format!("{PFX}Ontology(<http://t/x>\n{body}\n)\n");
+        let mut reader = Cursor::new(src);
+        let (onto, _): (SetOntology<RcStr>, _) =
+            read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
+        owl_dl_core::convert::convert_ontology(&onto).expect("convert ofn")
+    }
+
+    /// Build a `PreparedOntology` with the lazy gate forced on/off, restoring the
+    /// prior env value. Serialised via `test_env_lock`, mirroring
+    /// `build_cache_with_sat_seed_flag`.
+    #[allow(unsafe_code)]
+    fn prepare_with_flag(body: &str, enable: bool) -> PreparedOntology {
+        let internal = to_internal(body);
+        let _lock = test_env_lock();
+        let prior = std::env::var_os("RUSTDL_LAZY_ABOX_SATURATION");
+        // SAFETY: serialized by test_env_lock (one test at a time); restored
+        // before the lock is released.
+        unsafe {
+            std::env::set_var(
+                "RUSTDL_LAZY_ABOX_SATURATION",
+                if enable { "1" } else { "0" },
+            );
+        }
+        let prepared = PreparedOntology::from_internal(internal).expect("prepare");
+        match prior {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_LAZY_ABOX_SATURATION", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_LAZY_ABOX_SATURATION") },
+        }
+        prepared
+    }
+
+    fn is_inconsistent(prepared: &PreparedOntology) -> bool {
+        matches!(
+            prepared.abox_verdict(),
+            abox_check::AboxVerdict::Inconsistent { .. }
+        )
+    }
+
+    /// NEGATIVE #1 — flag ON must NOT elide the closure when the input has an
+    /// `ABox`. This is the arm an unconditional elision would break.
+    #[test]
+    fn lazy_saturation_on_keeps_closure_when_abox_present() {
+        for body in [ABOX_INCONSISTENT, ABOX_CONSISTENT] {
+            let prepared = prepare_with_flag(body, true);
+            assert!(
+                prepared.closure.is_some(),
+                "ABox-bearing input must keep its EL closure even with the lazy gate on"
+            );
+            assert!(
+                !prepared.abox.individuals.is_empty(),
+                "fixture is supposed to have individuals"
+            );
+        }
+    }
+
+    /// NEGATIVE #2 — flag ON on an `ABox`-bearing INCONSISTENT input must still
+    /// report `Inconsistent`. Eliding the closure there downgrades it to
+    /// `Unknown` (sound, but a completeness regression).
+    #[test]
+    fn lazy_saturation_on_preserves_p2_inconsistency() {
+        assert!(
+            is_inconsistent(&prepare_with_flag(ABOX_INCONSISTENT, true)),
+            "P2 inconsistency must survive the lazy-saturation gate"
+        );
+    }
+
+    /// The lever actually fires: flag ON + no individuals ⟹ no closure built.
+    /// Without this the gate could be a no-op and every other test would pass.
+    #[test]
+    fn lazy_saturation_on_elides_closure_when_abox_free() {
+        let prepared = prepare_with_flag(ABOX_FREE, true);
+        assert!(
+            prepared.abox.individuals.is_empty(),
+            "fixture is supposed to be ABox-free"
+        );
+        assert!(
+            prepared.closure.is_none(),
+            "ABox-free input with the lazy gate on must skip the EL saturation"
+        );
+        assert!(
+            !is_inconsistent(&prepared),
+            "an elided closure must still yield a usable (Unknown) verdict"
+        );
+    }
+
+    /// Default / explicit-OFF keeps today's behaviour: the closure is always built.
+    #[test]
+    fn lazy_saturation_off_always_builds_closure() {
+        for body in [ABOX_INCONSISTENT, ABOX_CONSISTENT, ABOX_FREE] {
+            assert!(
+                prepare_with_flag(body, false).closure.is_some(),
+                "flag OFF must build the closure unconditionally"
+            );
+        }
+    }
+
+    /// OFF-vs-ON verdict identity across both shapes — the differential gate.
+    #[test]
+    fn lazy_saturation_verdict_identical_off_vs_on() {
+        for body in [ABOX_INCONSISTENT, ABOX_CONSISTENT, ABOX_FREE] {
+            let off = is_inconsistent(&prepare_with_flag(body, false));
+            let on = is_inconsistent(&prepare_with_flag(body, true));
+            assert_eq!(off, on, "lazy-saturation gate changed the ABox verdict");
+        }
     }
 }

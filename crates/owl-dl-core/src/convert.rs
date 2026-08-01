@@ -2559,6 +2559,40 @@ fn dkey_merging_gate_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
 }
 
+/// Emit-ordering fix for [`seed_disjoint_bucket`] (2026-08-01). **Default OFF** —
+/// `RUSTDL_DKEY_EMIT_ORDER=1` opts in.
+///
+/// # The defect
+///
+/// A `DKey` pair can belong to SEVERAL role components, and the collapse/broadcast
+/// split ([`dkey_collapse_split_enabled`]) is a PER-COMPONENT judgement: the same
+/// pair can be unusable in one component (both keys value-only, no collapse role)
+/// and genuinely consumable in another (one key broadcast by a `∀`). `try_emit`
+/// nevertheless claimed the pair in its `emitted` dedup set BEFORE consulting the
+/// split, so the first component the `BTreeMap` reached spent the pair for good; if
+/// that component declined it, the component that could have used it was never asked
+/// and the `DisjointClasses` axiom was silently never emitted.
+///
+/// The symptom is NON-MONOTONIC: on `∀p.[0,5] ⊓ ∃p.{9}` rustdl derives `⊥`, but
+/// adding an UNRELATED second data property `q` that merely mentions the same two
+/// keys in value position makes the class satisfiable again. It is also what made
+/// `RUSTDL_DKEY_MERGING_GATE=0` report FEWER entailments than the default — a purely
+/// restrictive gate cannot lose entailments by being switched OFF, and it was only
+/// "winning" because gating `q`'s component out kept it from eating the pair.
+///
+/// # Direction of risk
+///
+/// This lever makes conversion emit MORE `DisjointClasses(DKey, DKey)`, so unlike the
+/// surrounding gates its failure mode would be a FALSE POSITIVE. Three properties bound
+/// it: every emitted pair still passes the per-pair `disjoint()` value-space test (only
+/// provably disjoint ranges); [`seed_disjoint_bucket`] is called once per DATATYPE
+/// bucket with only that bucket's keys, so no cross-datatype pair is constructible; and
+/// the emitted set is a SUBSET of what `RUSTDL_DKEY_COLLAPSE_SPLIT=0` already emits, so
+/// it introduces no axiom the pre-split code did not.
+fn dkey_emit_order_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_EMIT_ORDER").is_some_and(|v| v == "1")
+}
+
 /// See a role restriction that only exists **after NNF** when classifying roles for
 /// the bounded `DKey`-disjointness seeding. Default **OFF**; `RUSTDL_DKEY_POST_NNF=1`
 /// opts in.
@@ -3158,6 +3192,14 @@ fn seed_disjoint_bucket<R>(
     // overlaps every group — dedup emitted pairs.
     let mut emitted: std::collections::HashSet<(ClassId, ClassId)> =
         std::collections::HashSet::new();
+    // ORDERING LEVER (2026-08-01, `RUSTDL_DKEY_EMIT_ORDER=1`, default OFF).
+    // Pairs the collapse/broadcast split DECLINED in some component. With the
+    // lever on, declining no longer SPENDS the pair, so a pair recorded here may
+    // still be emitted from a later component; only `deferred \ emitted` was
+    // genuinely dropped. STATS-ONLY (populated when `RUSTDL_DKEY_SPLIT_STATS=1`).
+    let mut deferred: std::collections::HashSet<(ClassId, ClassId)> =
+        std::collections::HashSet::new();
+    let emit_order = dkey_emit_order_enabled();
     let InternalOntology {
         concepts, axioms, ..
     } = out;
@@ -3177,7 +3219,23 @@ fn seed_disjoint_bucket<R>(
         } else {
             (*b_cid, *a_cid)
         };
-        if !emitted.insert(pair) {
+        // DEDUP, two spellings of the same job.
+        //
+        // OFF (historical): claim the pair HERE, before the droppable test. A pair
+        // that spans two role components is therefore spent by whichever component
+        // the `BTreeMap` reaches first — and if the split declines it THERE, the
+        // component where it is consumable never gets a turn. That is a silent
+        // completeness defect, not a dedup: it drops an entailed axiom.
+        //
+        // ON (`RUSTDL_DKEY_EMIT_ORDER=1`): only LOOK here; the pair is claimed at
+        // the emit site below. Dedup is preserved exactly — the `contains` guard
+        // rejects any pair already emitted, and the single-threaded walk visits
+        // each (pair, component) at most once, so a pair is pushed at most once.
+        if emit_order {
+            if emitted.contains(&pair) {
+                return;
+            }
+        } else if !emitted.insert(pair) {
             return;
         }
         // Would the collapse/broadcast split drop this pair? Only when the component
@@ -3189,7 +3247,9 @@ fn seed_disjoint_bucket<R>(
                 |cid: &ClassId| !comp.broadcast_in.get(cid).is_some_and(|v| v.contains(&c));
             !comp.collapse_comps.contains(&c) && value_only(a_cid) && value_only(b_cid)
         });
-        if stats {
+        // Lever ON: a per-(pair, component) tally would double-count a multi-component
+        // pair, so the counters are settled once after the walk, from the sets.
+        if stats && !emit_order {
             use std::sync::atomic::Ordering;
             DKEY_SPLIT_TOTAL.fetch_add(1, Ordering::Relaxed);
             if droppable {
@@ -3197,7 +3257,13 @@ fn seed_disjoint_bucket<R>(
             }
         }
         if split && droppable {
+            if stats && emit_order {
+                deferred.insert(pair);
+            }
             return;
+        }
+        if emit_order {
+            emitted.insert(pair);
         }
         let a = concepts.atomic(*a_cid);
         let b = concepts.atomic(*b_cid);
@@ -3217,6 +3283,16 @@ fn seed_disjoint_bucket<R>(
         for &b_idx in &anchored {
             try_emit(a_idx, b_idx, None);
         }
+    }
+    // MEASUREMENT, lever ON: settle the counters per UNIQUE pair now that every
+    // component has had its turn. A pair in `deferred` that also reached `emitted`
+    // was declined somewhere and emitted elsewhere — NOT dropped, so it must not
+    // score as `would_drop`. `total` = |emitted ∪ deferred|.
+    if stats && emit_order {
+        use std::sync::atomic::Ordering;
+        let dropped = deferred.difference(&emitted).count();
+        DKEY_SPLIT_TOTAL.fetch_add(emitted.len() + dropped, Ordering::Relaxed);
+        DKEY_SPLIT_WOULD_DROP.fetch_add(dropped, Ordering::Relaxed);
     }
 }
 

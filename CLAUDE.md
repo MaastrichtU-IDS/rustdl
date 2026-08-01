@@ -1358,13 +1358,44 @@ inputs, not wall time.
 >   completeness **regression** from the 07-20/07-30 DKey gates that *either gate alone*
 >   loses.
 >
-> **EXPLAINED (was an open anomaly):** why `RUSTDL_DKEY_MERGING_GATE=0` found *fewer*
-> entailments than the default. `seed_disjoint_bucket::try_emit` runs
-> `emitted.insert(pair)` **BEFORE** the droppable test, so a pair spanning two components
-> is permanently consumed by whichever the `BTreeMap` reaches first; the merging gate was
-> masking it. **That ordering is a THIRD latent completeness defect with a one-line fix,
-> deliberately NOT in 0.4.8** — kept separately gated rather than muddying two correctness
-> commits. It is the next correctness item.
+> **FIXED behind `RUSTDL_DKEY_EMIT_ORDER` (2026-08-01, default OFF, `=1` enables)** —
+> the THIRD latent completeness defect, and the explanation of why
+> `RUSTDL_DKEY_MERGING_GATE=0` found *fewer* entailments than the default.
+> `seed_disjoint_bucket::try_emit` ran `emitted.insert(pair)` **BEFORE** the droppable
+> test, so a pair spanning two role components was permanently consumed by whichever the
+> `BTreeMap` reached first; if that component's collapse/broadcast split declined it, the
+> component where it was consumable was never asked and the entailed
+> `DisjointClasses(DKey, DKey)` was never emitted. The merging gate masked it by skipping
+> the greedy component. **The one-line move was the right fix but not sufficient on its
+> own**: the `RUSTDL_DKEY_SPLIT_STATS` counters were per-`(pair, component)`, which
+> double-counts a multi-component pair once declining stops spending it, so under the
+> lever they are settled after the walk from `|emitted ∪ deferred|` /
+> `|deferred \ emitted|`. Dedup is preserved — the lever only *looks* at `emitted` up
+> front and claims the pair at the emit site.
+>
+> **This one is live at DEFAULT settings and is NON-MONOTONIC**, which is what makes it
+> worth the flag: `∀p.[0,5] ⊓ ∃p.{9}` is `⊥`, but adding an *unrelated* data property `q`
+> that merely mentions the same two keys in value position makes it satisfiable again
+> (`would_drop` 1, no axiom emitted). Lever ON recovers it and `would_drop` goes 1 → 0.
+>
+> **DIRECTION OF RISK IS INVERTED here** — the change emits MORE disjointness, so the
+> failure mode is a FALSE POSITIVE, not a miss. Three properties bound it: every pair
+> still passes the per-pair `disjoint()` value-space test; `seed_disjoint_bucket` is
+> called once per DATATYPE bucket, so no cross-datatype pair is constructible; and the
+> result is a SUBSET of what `RUSTDL_DKEY_COLLAPSE_SPLIT=0` already emits.
+>
+> Gates: FP=0 net **flag ON**, 11 VERIFIED all closures exact; flag-OFF byte-identical to
+> pre-change on 10/10 curated fixtures (after stripping `# wedge-cost-histogram`, which an
+> OFF-vs-OFF control on one binary shows is nondeterministic); **both DKey-spec
+> discriminators unmoved — `ore_ont_9347` 113 and `ore_ont_5368` 18,620,251 at both flag
+> settings**. Canaries `crates/owl-dl-reasoner/tests/dkey_emit_order.rs`. **Sabotage: 3 of
+> 4 caught.** Reverting the fix fails 3 canaries; deleting the dedup LOOK fails the
+> emitted-exactly-once control (which needs a THREE-component fixture — with only one
+> keeping component the guard is unobservable); neutering `disjoint()` fails 4. **The one
+> that SURVIVED:** making the lever ignore the collapse/broadcast split entirely left all
+> 6 green — these canaries pin the split's FP-safety, not its cost bound. Benign (the
+> split is subtractive and documented as a cost bound, so ignoring it can only add dead
+> weight) but it means a future regression in the split's *volume* will not be caught here.
 >
 > **Evidence caveat to carry:** the curated corpus is inert for the DKey area by
 > `datatype_value_membership.rs`'s own admission, so an all-green FP=0 net shows

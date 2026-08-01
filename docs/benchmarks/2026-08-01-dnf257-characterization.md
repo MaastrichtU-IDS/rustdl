@@ -225,13 +225,15 @@ transitive reduction in the print loop was presenting as a reasoning DNF.
 
 ## 6. Threats to validity
 
-1. **The rustdl side of the partition is not yet validated uncontended.** The 257 come from a
-   120 s re-run that ran **four ontologies concurrently**. Contention inflates wall, so a
-   borderline ontology could be a *phantom* Set A member. This confound has already bitten
-   this arc twice (55 of 312 "DNF" completed at a larger budget; a separate measurement was
-   inflated 9× by `-P4`). `scripts/validate-dnf.sh` re-runs a seeded random sample strictly
-   sequentially and **refuses to run while any measurement process is alive**. It must pass
-   before the 242 is final.
+1. ~~The rustdl side of the partition is not validated uncontended.~~ **CLOSED — it passed.**
+   A seeded random sample of 20 of the 257, re-run strictly sequentially on an idle host with
+   the **same binary** (sha256 `fd8ad6573505`, verified identical to the sweep's):
+   **completed = 0, dnf = 19, err = 1.** The single error is `ore_ont_10621` aborting at
+   94.9 s under a 24 GB address-space cap that this check imposes and the original sweep did
+   not — i.e. the check is *harsher* than the sweep, and that ontology was DNF there too. So
+   20 of 20 confirm, and **Set A = 242 is a measured result rather than a bound.** This
+   mattered: the same confound produced two retractions earlier in this arc (55 of 312 "DNF"
+   completed at a larger budget; another measurement was inflated 9× by `-P4`).
 2. **Peer walls are mildly contention-inflated** — a review agent profiled concurrently. This
    biases toward "peer failed", so it *understates* Set A; 242 is a floor for this reason too.
    Set A walls will be re-measured in isolation before being quoted as targets.

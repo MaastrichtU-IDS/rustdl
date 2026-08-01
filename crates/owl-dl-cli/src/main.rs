@@ -730,13 +730,31 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
         "# label heuristic: pruned={} pass_through={} misses={}",
         stats.label_cache_pruned, stats.label_cache_pass_through, stats.label_cache_misses,
     )?;
+    // Phase line items, in execution order, each MEASURED DIRECTLY. These eight
+    // plus `unattributed` sum to the classify wall — no residual absorbs the
+    // difference. Before 2026-08-01 `tier_walk` was that residual and every
+    // unbudgeted prep second was charged to it (`ore_ont_1028`: 7198 ms reported
+    // for an 80 ms tier walk), which falsified a taxonomy of the DNF corpus.
     writeln!(
         out,
-        "# wall breakdown ms: label_cache_build={} snapshot_cache_build={} snapshot_replay={} tier_walk={}",
+        "# wall breakdown ms: saturate={} precheck={} prepare={} label_cache_build={} \
+         unsat_probe={} tier_walk={} sweeps={} matrix={} unattributed={}",
+        stats.saturate_wall_ms,
+        stats.precheck_wall_ms,
+        stats.prepare_wall_ms,
         stats.label_cache_build_wall_ms,
-        stats.snapshot_cache_build_wall_ms,
-        stats.snapshot_replay_wall_ms,
+        stats.unsat_probe_wall_ms,
         stats.tier_walk_wall_ms,
+        stats.sweep_wall_ms,
+        stats.matrix_wall_ms,
+        stats.unattributed_wall_ms,
+    )?;
+    // NESTED sub-timers of the label-cache / tier-walk phases above — reported on
+    // their own line precisely so they are not mistaken for members of that sum.
+    writeln!(
+        out,
+        "# wall breakdown ms (nested): snapshot_cache_build={} snapshot_replay={}",
+        stats.snapshot_cache_build_wall_ms, stats.snapshot_replay_wall_ms,
     )?;
     writeln!(
         out,

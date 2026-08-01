@@ -90,10 +90,31 @@ is residual. Three standard absorption techniques are therefore absent:
    absorption fires only when both `A` and `B` are present.
 3. **Nominal absorption** beyond the single `Not(Nominal)` case.
 
+## CORRECTION (2026-08-01, from the census that followed)
+
+Two claims above are **wrong**, and the census caught both.
+
+1. **"rustdl handles `ObjectPropertyDomain` natively" is FALSE as implemented.** `absorb.rs:290`
+   lowers *every* `ObjectPropertyDomain(R, D)` to `⊤ ⊑ ∀R.⊥ ⊔ D` — i.e. straight into
+   `residual_gcis`, a global disjunction. So the problem is far more common than the analysis
+   assumed: **every domain axiom in every ontology already pays this cost.** That makes the
+   redundancy argument for `ore_ont_3281` still correct, but for a different reason than stated.
+2. **`ore_ont_10019` is NOT a negative control.** It reports 5 residuals, all
+   domain-absorbable — from its 5 `ObjectPropertyDomain` axioms. My check was a *source-syntax*
+   scan; the residual population is a strict superset of what that scan can see. The lesson is
+   the recorded one: **grep is not the gate**, and I applied it to the population but not to my
+   own control.
+
+The census also **bounds the claim much harder than the calibration suggested** — see
+`docs/2026-08-01-residual-absorbability-census.md`. Domain absorption removes only **6.3%** of
+survivor residual *volume*; the mass is `qualified_exists_antecedent` (58%) and
+`genuinely_disjunctive` (36%). Only **54 of 167** survivors reach zero residuals under it.
+And critically: **the residual-count → wall relationship is calibrated at exactly one point.**
+Two residuals costing 300× on one ontology does not establish that residual count predicts wall.
+
 ## Scope — stated honestly
 
-**This is one mechanism, not the mechanism.** Checked against the other extreme instance:
-**`ore_ont_10019` has ZERO axioms of this shape**, so domain absorption cannot explain it.
+**This is one mechanism, not the mechanism.**
 `ore_ont_10407` and `ore_ont_8666` do have it. Any claim that absorption explains the whole
 tail would be over-generalisation from one confirming case.
 

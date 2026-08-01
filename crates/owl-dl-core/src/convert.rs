@@ -490,7 +490,9 @@ fn lower_str_data_to_some(
 //
 // Each IRI encodes the SET of distinct values, semicolon-separated:
 //   io:<v1>;<v2>;…       integer oneof  (decimal i64 strings)
-//   fo:<bits1>;<bits2>;… float oneof    (f64::to_bits decimal, normalized)
+//   fo:<bits1>;<bits2>;… float oneof    (xsd:float, f32-rounded then widened;
+//                                        f64::to_bits decimal, normalized)
+//   dbo:<bits1>;<bits2>;… double oneof  (xsd:double, f64::to_bits decimal)
 //   deo:<k1>;<k2>;…      decimal oneof  (decimal_key encoding, no `:`)
 //   dao:<k1>;<k2>;…      date oneof     (date_key  encoding, no `:`)
 //   dto:<k1>;<k2>;…      dateTime oneof (datetime_key encoding, no `:`)
@@ -502,6 +504,7 @@ fn lower_str_data_to_some(
 
 const DKEY_INT_ONEOF_TAG: &str = "io:";
 const DKEY_FLOAT_ONEOF_TAG: &str = "fo:";
+const DKEY_DOUBLE_ONEOF_TAG: &str = "dbo:";
 const DKEY_DECIMAL_ONEOF_TAG: &str = "deo:";
 const DKEY_DATE_ONEOF_TAG: &str = "dao:";
 const DKEY_DATETIME_ONEOF_TAG: &str = "dto:";
@@ -587,6 +590,37 @@ pub fn decode_float_oneof_dkey(
     iri: &str,
 ) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
     parse_float_oneof_iri(iri)
+}
+
+// ── DOUBLE ONEOF ───────────────────────────────────────────────────────
+// A SEPARATE bucket from `fo:` because OWL 2 gives `xsd:float` and `xsd:double`
+// disjoint value spaces — see `data_axioms::parse_xsd_double_oneof`. The `db:`
+// interval tag and this `dbo:` tag do not shadow each other: `"dbo:…"` does not
+// start with `"db:"` (the char after `db` is `o`, not `:`), and vice versa.
+
+fn double_oneof_iri(set: &std::collections::BTreeSet<crate::data_axioms::OrdF64>) -> String {
+    numeric_oneof_iri(DKEY_DOUBLE_ONEOF_TAG, set, float_oneof_member_key)
+}
+
+fn parse_double_oneof_iri(
+    iri: &str,
+) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
+    parse_numeric_oneof_iri(iri, DKEY_DOUBLE_ONEOF_TAG, |s| {
+        let bits: u64 = s.parse().ok()?;
+        let v = f64::from_bits(bits);
+        if !v.is_finite() {
+            return None;
+        }
+        Some(crate::data_axioms::OrdF64::new(v))
+    })
+}
+
+/// Public decoder for a DOUBLE-ONEOF `DKey` IRI.
+#[must_use]
+pub fn decode_double_oneof_dkey(
+    iri: &str,
+) -> Option<std::collections::BTreeSet<crate::data_axioms::OrdF64>> {
+    parse_double_oneof_iri(iri)
 }
 
 // ── DECIMAL ONEOF ──────────────────────────────────────────────────────
@@ -689,8 +723,10 @@ fn data_range_dkey<A: ForIRI>(
         str_dkey_iri(&s)
     } else if let Some(s) = crate::data_axioms::parse_integer_oneof(dr) {
         int_oneof_iri(&s)
-    } else if let Some(s) = crate::data_axioms::parse_float_oneof(dr) {
+    } else if let Some(s) = crate::data_axioms::parse_xsd_float_oneof(dr) {
         float_oneof_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_xsd_double_oneof(dr) {
+        double_oneof_iri(&s)
     } else if let Some(s) = crate::data_axioms::parse_decimal_oneof(dr) {
         decimal_oneof_iri(&s)
     } else if let Some(s) = crate::data_axioms::parse_date_oneof(dr) {
@@ -1375,8 +1411,10 @@ fn lower_int_oneof_data_cardinality<A: ForIRI>(
     }
 }
 
-/// Lower a FLOAT-ONEOF qualified data cardinality. Returns `UnsupportedDataRange`
-/// for any non-`DataOneOf`-of-floats qualifier.
+/// Lower a FLOAT-ONEOF or DOUBLE-ONEOF qualified data cardinality. Returns
+/// `UnsupportedDataRange` for any other qualifier. The two datatypes share this
+/// entry point but land in DIFFERENT `DKey` buckets (`fo:` / `dbo:`) — see
+/// `data_axioms::parse_xsd_double_oneof`.
 fn lower_float_oneof_data_cardinality<A: ForIRI>(
     n: u32,
     dp: &horned_owl::model::DataProperty<A>,
@@ -1386,7 +1424,9 @@ fn lower_float_oneof_data_cardinality<A: ForIRI>(
     want_min: bool,
     want_max: bool,
 ) -> Result<ConceptId, ConversionError> {
-    if crate::data_axioms::parse_float_oneof(dr).is_none() {
+    if crate::data_axioms::parse_xsd_float_oneof(dr).is_none()
+        && crate::data_axioms::parse_xsd_double_oneof(dr).is_none()
+    {
         return Err(ConversionError::UnsupportedDataRange);
     }
     let (role, filler) = data_range_dkey(dr, dp.0.as_ref(), vocab, pool)
@@ -2466,6 +2506,37 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_string_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
+    // ── The six NUMERIC `DataOneOf` buckets (`io:` / `fo:` / `dbo:` / `deo:` /
+    // `dao:` / `dto:`) ────────────────────────────────────────────────────────
+    // These were minted by `data_range_dkey` but NEVER collected here, so they
+    // got neither told `DKey ⊑ DKey` edges nor `DisjointClasses(DKey, DKey)`
+    // entries — while `is_pure_el` still certified the saturator-only closure
+    // COMPLETE (`incomplete: false`). That is the D10 failure class: the gate
+    // says complete, the engine drops the axiom. The `str:` bucket (the seventh
+    // enumeration bucket) was always seeded; these five/six were the asymmetry.
+    //
+    // Each is a `BTreeSet<T>` over an EXACTLY-keyed value domain, so set
+    // inclusion IS `⊑` and set intersection-emptiness IS provable disjointness —
+    // no boundary algebra, unlike the interval buckets. Same `seed_bucket` /
+    // `seed_disjoint_bucket` route as every other bucket; strictly WITHIN a
+    // bucket, so int / float / double / decimal / date / dateTime never
+    // cross-subsume (the `numeric_oneof_parser_matrix_exclusivity` canary pins
+    // the decoders pairwise-exclusive).
+    //
+    // Gated `RUSTDL_DKEY_ONEOF_SEED` (default OFF; `=1` opts in).
+    let oneof_seed = dkey_oneof_seed_enabled();
+    let int_oneof_dkeys: OneofBucket<i64> =
+        collect_oneof_dkeys(out, oneof_seed, parse_int_oneof_iri);
+    let float_oneof_dkeys: OneofBucket<crate::data_axioms::OrdF64> =
+        collect_oneof_dkeys(out, oneof_seed, parse_float_oneof_iri);
+    let double_oneof_dkeys: OneofBucket<crate::data_axioms::OrdF64> =
+        collect_oneof_dkeys(out, oneof_seed, parse_double_oneof_iri);
+    let dec_oneof_dkeys: OneofBucket<Decimal> =
+        collect_oneof_dkeys(out, oneof_seed, parse_decimal_oneof_iri);
+    let date_oneof_dkeys: OneofBucket<DateKey> =
+        collect_oneof_dkeys(out, oneof_seed, parse_date_oneof_iri);
+    let dt_oneof_dkeys: OneofBucket<DateTimeKey> =
+        collect_oneof_dkeys(out, oneof_seed, parse_datetime_oneof_iri);
     // Bounded DKey-disjointness seeding (2026-07-20): compute the merge-aware
     // role-component map NOW — before `seed_bucket` pushes the told
     // `DKey ⊑ DKey` edges, whose bare-atomic DKey operands would otherwise be
@@ -2482,6 +2553,27 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_bucket(out, &date_dkeys, OrdRange::subset);
     seed_bucket(out, &dt_dkeys, OrdRange::subset);
     seed_bucket(out, &str_dkeys, StrSet::subset);
+    // Numeric-oneof `⊑`: `DKey(S1) ⊑ DKey(S2)` iff `S1 ⊆ S2` (exact set
+    // inclusion — every member of `S1` is a member of `S2`, so any value in
+    // `S1` is in `S2`). Empty when the flag is off ⟹ these are no-ops.
+    seed_bucket(out, &int_oneof_dkeys, std::collections::BTreeSet::is_subset);
+    seed_bucket(
+        out,
+        &float_oneof_dkeys,
+        std::collections::BTreeSet::is_subset,
+    );
+    seed_bucket(
+        out,
+        &double_oneof_dkeys,
+        std::collections::BTreeSet::is_subset,
+    );
+    seed_bucket(out, &dec_oneof_dkeys, std::collections::BTreeSet::is_subset);
+    seed_bucket(
+        out,
+        &date_oneof_dkeys,
+        std::collections::BTreeSet::is_subset,
+    );
+    seed_bucket(out, &dt_oneof_dkeys, std::collections::BTreeSet::is_subset);
 
     // Phase D11b: `DisjointClasses(DKey(ra), DKey(rb))` for every PROVABLY
     // disjoint pair within a bucket — the basis of the `∃p.DKey(v) ⊓
@@ -2518,6 +2610,84 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint, comp);
+    // Numeric-oneof disjointness. FP-CRITICAL DIRECTION: emitting a
+    // `DisjointClasses` ADDS clashes, so a wrong "disjoint" is a false UNSAT,
+    // not a miss. `BTreeSet::is_disjoint` is exact here because every bucket's
+    // key type is an EXACT representative of its OWL value (i64 for
+    // `xsd:integer`; the normalized-lexical `Decimal` — never an `f64`, whose
+    // rounding would make two distinct decimals collide; timezone-free
+    // component tuples for `date`/`dateTime`; and, for the two IEEE buckets,
+    // signed-zero-normalized `OrdF64` at the bucket's OWN precision — `fo:`
+    // f32-rounded, `dbo:` f64 — kept in SEPARATE buckets because OWL 2 gives
+    // `xsd:float` and `xsd:double` disjoint value spaces). So distinct keys
+    // ⟹ distinct values ⟹ the sets really are disjoint.
+    seed_disjoint_bucket(
+        out,
+        &int_oneof_dkeys,
+        std::collections::BTreeSet::is_disjoint,
+        comp,
+    );
+    seed_disjoint_bucket(
+        out,
+        &float_oneof_dkeys,
+        std::collections::BTreeSet::is_disjoint,
+        comp,
+    );
+    seed_disjoint_bucket(
+        out,
+        &double_oneof_dkeys,
+        std::collections::BTreeSet::is_disjoint,
+        comp,
+    );
+    seed_disjoint_bucket(
+        out,
+        &dec_oneof_dkeys,
+        std::collections::BTreeSet::is_disjoint,
+        comp,
+    );
+    seed_disjoint_bucket(
+        out,
+        &date_oneof_dkeys,
+        std::collections::BTreeSet::is_disjoint,
+        comp,
+    );
+    seed_disjoint_bucket(
+        out,
+        &dt_oneof_dkeys,
+        std::collections::BTreeSet::is_disjoint,
+        comp,
+    );
+}
+
+/// One numeric-`DataOneOf` bucket: the `DKey` classes of that datatype paired
+/// with their decoded value SETS. Empty when `RUSTDL_DKEY_ONEOF_SEED` is off.
+type OneofBucket<T> = Vec<(ClassId, std::collections::BTreeSet<T>)>;
+
+/// Collect every numeric-`DataOneOf` `DKey` class whose IRI `decode` recognizes,
+/// paired with its decoded value set. Returns EMPTY when `enabled` is false, so
+/// the flag-off path feeds `seed_bucket` / `seed_disjoint_bucket` nothing and is
+/// byte-identical to not calling them at all.
+fn collect_oneof_dkeys<T: Ord>(
+    out: &InternalOntology,
+    enabled: bool,
+    decode: impl Fn(&str) -> Option<std::collections::BTreeSet<T>>,
+) -> OneofBucket<T> {
+    if !enabled {
+        return Vec::new();
+    }
+    out.vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| decode(iri).map(|r| (cid, r)))
+        .collect()
+}
+
+/// Numeric-`DataOneOf` `DKey` seeding (2026-08-01). **Default OFF** — set
+/// `RUSTDL_DKEY_ONEOF_SEED=1` to seed told `DKey ⊑ DKey` edges and
+/// `DisjointClasses(DKey, DKey)` entries for the six numeric enumeration
+/// buckets (`io:` / `fo:` / `dbo:` / `deo:` / `dao:` / `dto:`), which were
+/// minted but never collected into `seed_dkey_subsumptions`.
+fn dkey_oneof_seed_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_ONEOF_SEED").is_some_and(|v| v == "1")
 }
 
 /// Bounded DKey-disjointness seeding (2026-07-20). **Default ON** — set
@@ -4253,8 +4423,8 @@ mod tests {
         }
     }
 
-    /// Companion matrix for the five numeric-`DataOneOf` buckets (`io:` / `fo:` /
-    /// `deo:` / `dao:` / `dto:`). Each oneof decoder must return `Some` for
+    /// Companion matrix for the six numeric-`DataOneOf` buckets (`io:` / `fo:` /
+    /// `dbo:` / `deo:` / `dao:` / `dto:`). Each oneof decoder must return `Some` for
     /// EXACTLY its own oneof IRI and `None` for every other oneof IRI AND for
     /// every interval/string IRI — and, conversely, every interval/string decoder
     /// (including the untagged integer-interval `parse_dkey_iri`, the riskiest
@@ -4269,6 +4439,17 @@ mod tests {
             (
                 "fo",
                 float_oneof_iri(
+                    &[
+                        crate::data_axioms::OrdF64::new(1.5),
+                        crate::data_axioms::OrdF64::new(2.5),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            ),
+            (
+                "dbo",
+                double_oneof_iri(
                     &[
                         crate::data_axioms::OrdF64::new(1.5),
                         crate::data_axioms::OrdF64::new(2.5),
@@ -4294,11 +4475,13 @@ mod tests {
                 ),
             ),
         ];
-        // Every IRI in the system: the 7 interval/string samples + the 5 oneof.
+        // Every IRI in the system: the 7 interval/string samples + the 6 oneof.
         let mut all = sample_iris();
         all.extend(oneof.iter().cloned());
 
-        // Decoders for ALL twelve buckets (7 interval/string + 5 oneof).
+        // Decoders for ALL thirteen buckets (7 interval/string + 6 oneof).
+        // `db:` (double interval) vs `dbo:` (double oneof) is the newest
+        // near-collision the matrix has to rule out.
         let probe = |bucket: &str, iri: &str| -> bool {
             match bucket {
                 "int" => parse_dkey_iri(iri).is_some(),
@@ -4310,6 +4493,7 @@ mod tests {
                 "str" => parse_string_dkey_iri(iri).is_some(),
                 "io" => parse_int_oneof_iri(iri).is_some(),
                 "fo" => parse_float_oneof_iri(iri).is_some(),
+                "dbo" => parse_double_oneof_iri(iri).is_some(),
                 "deo" => parse_decimal_oneof_iri(iri).is_some(),
                 "dao" => parse_date_oneof_iri(iri).is_some(),
                 "dto" => parse_datetime_oneof_iri(iri).is_some(),

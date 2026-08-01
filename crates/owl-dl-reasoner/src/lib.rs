@@ -1761,7 +1761,11 @@ pub(crate) fn classify_amortize_idx_enabled() -> bool {
 /// See `docs/superpowers/specs/2026-08-01-clauseindex-per-class-adjudication.md`.
 #[must_use]
 pub(crate) fn classify_labels_amortize_enabled() -> bool {
-    std::env::var_os("RUSTDL_CLASSIFY_LABELS_AMORTIZE").is_some_and(|v| v != "0" && !v.is_empty())
+    // DEFAULT ON since 0.4.10 (`=0` reverts). Verdict-preserving: closures are
+    // byte-identical at a non-truncating budget on both adjudication ontologies. The win
+    // is large (ore_ont_12698 100.46 -> 5.40 s; ore_ont_1508 202.79 -> 98.47 s) and it
+    // targets the phase where 123 of the 199 remaining DNF ontologies stall.
+    std::env::var_os("RUSTDL_CLASSIFY_LABELS_AMORTIZE").is_none_or(|v| v != "0")
 }
 
 /// One-shot stderr provenance marker for which engine-construction path
@@ -8414,25 +8418,35 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         out
     }
 
-    /// The flag is OPT-IN: unset ⇒ off. Guards against an accidental
-    /// default flip (`is_none_or` instead of `is_some_and`).
+    /// DEFAULT ON since 0.4.10. Pins BOTH halves of the contract: an unset variable
+    /// must ENABLE, and `=0` must still REVERT. The second half matters as much as the
+    /// first — a flag whose opt-out silently stopped working would leave no way back to
+    /// the prior behaviour, and this is the escape hatch for a 52–95% behaviour change.
     #[test]
     #[allow(unsafe_code)]
-    fn flag_defaults_off() {
+    fn flag_defaults_on() {
         let _lock = test_env_lock();
         let prior = std::env::var_os("RUSTDL_CLASSIFY_LABELS_AMORTIZE");
         // SAFETY: serialized by `test_env_lock`; restored below.
         unsafe { std::env::remove_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE") };
         assert!(
-            !classify_labels_amortize_enabled(),
-            "RUSTDL_CLASSIFY_LABELS_AMORTIZE must default OFF"
+            classify_labels_amortize_enabled(),
+            "RUSTDL_CLASSIFY_LABELS_AMORTIZE must default ON since 0.4.10"
         );
         unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "1") };
         assert!(classify_labels_amortize_enabled(), "=1 must enable");
         unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "0") };
         assert!(!classify_labels_amortize_enabled(), "=0 must disable");
+        // EMPTY ENABLES, matching every other default-ON flag in this workspace
+        // (`is_none_or(|v| v != "0")`): for a default-ON flag only an explicit `=0` is the
+        // opt-out. The previous assertion here required empty to DISABLE, which was correct
+        // under the old default-OFF semantics but would now make `VAR=$UNSET_VAR` silently
+        // revert a 52-95% improvement -- the opposite of safe for this polarity.
         unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", "") };
-        assert!(!classify_labels_amortize_enabled(), "empty must disable");
+        assert!(
+            classify_labels_amortize_enabled(),
+            "empty must enable (only =0 reverts)"
+        );
         match prior {
             Some(v) => unsafe { std::env::set_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE", v) },
             None => unsafe { std::env::remove_var("RUSTDL_CLASSIFY_LABELS_AMORTIZE") },

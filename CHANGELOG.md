@@ -4,6 +4,76 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10] — 2026-08-01
+
+Throughput release, and the first one chosen by a **pre-registered experiment** rather than by
+a profile. `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, **default ON** (`=0` reverts). FP=0 net 11/11
+VERIFIED with exact closures; 1418 tests pass.
+
+### The fix
+
+`classify_labels` obtained a `HyperEngine` per **class**, full-rebuilding `ClauseIndexes` every
+time: SP2.1/SP3 seed clauses are absent from `base_indexes` while `RUSTDL_SAT_SEED` defaults ON,
+so v0.3.39's per-**pair** amortization never reached the label-cache build. The amortizer already
+existed at `hyper.rs:1349/1167` and was simply unwired for this path.
+
+Measured on the merged binary at a non-truncating `--pair-timeout-ms 1000`, **closures
+byte-identical both ways**:
+
+| ontology | OFF | ON | |
+|---|---|---|---|
+| `ore_ont_12698` | 100.46 s | **5.40 s** | −94.6%, 21,313 rows identical |
+| `ore_ont_1508` | 202.79 s | **98.47 s** | −51.4%, 13,926 rows identical |
+
+`label_cache_build` alone: 163.3 → 59.9 s and 95.7 → 2.05 s.
+
+### Why it was adjudicated rather than simply built
+
+Two independent reviewers reached **opposite verdicts** on this exact code. One reported it
+CONFIRMED and DNF-scale; the other reported SUSPECTED and flagged its own measurement as
+confounded — because `RUSTDL_SAT_SEED=0` removes the seed *clauses* as well as the rebuild, so
+less work of every kind is done. That objection was correct, and it applied to **both** reviewers'
+numbers.
+
+So a third arm was built and the design, predictions and decision rule were committed *before*
+running it (`docs/superpowers/specs/2026-08-01-clauseindex-per-class-adjudication.md`):
+
+| arm | `ore_ont_1508` | `ore_ont_12698` |
+|---|---|---|
+| A stock | 197.83 s | 98.78 s |
+| B `SAT_SEED=0` (the confounded arm) | 114.12 s | 49.80 s |
+| **C seeds kept, index amortized** | **94.89 s** | **5.33 s** |
+
+**Arm C beats arm B on both.** Keeping the clauses and removing only the rebuild is *better*
+than removing both, so the cost was the rebuild. The methodological objection was right; the
+substantive suspicion that "wiring the amortizer buys little" is refuted.
+
+Method notes that make the number trustworthy: min-of-3 **interleaved** (drift over minutes is
+comparable to the effect size); one probe at a time on an idle host; each binary pinned to a
+uniquely named path and `sha256`-verified; and **arm C was proven to fire** via a marker with
+both branches demonstrated able to print — 6 of 6 runs took the delta path, 0 fell back. A
+4-row closure diff at a *truncating* budget was correctly diagnosed as budget noise, not an arm
+effect: timed-out pairs vary 57–68 across runs of a single binary and the same 4 rows differ
+*within* one flag setting.
+
+### Scope
+
+Phase 2 attribution of the 199 remaining DNF ontologies puts **123 of them (62%) in the
+`after_prepared` phase — which is the label-cache build**, i.e. exactly this code. How many that
+converts into completions is measured separately and is not claimed here.
+
+### Also
+
+- Empty-value semantics aligned with the seven other default-ON flags: only an explicit `=0`
+  reverts. The prior assertion required an empty value to *disable*, which was right under
+  default-OFF but would have let `VAR=$UNSET` silently revert a 52–95% improvement.
+- **Recorded, not fixed:** a misdirected sabotage landed in the *shipped* per-pair amortizer and
+  panicked on `ore_ont_10019` with no in-tree test catching it — an unclaimed coverage gap around
+  live delta arithmetic.
+- Sabotage of the new canaries: 4 run, 2 caught, **2 survived**, with both survivors and their
+  reasons recorded in the canaries' doc comments — one of which stated a rationale the sabotage
+  disproved and was corrected.
+
 ## [0.4.9] — 2026-08-01
 
 **Soundness release. Fixes a false-positive subsumption present since at least v0.4.6.**

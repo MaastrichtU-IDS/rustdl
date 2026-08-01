@@ -250,6 +250,33 @@ transitive reduction in the print loop was presenting as a reasoning DNF.
 
 ## 7. What follows
 
+### Status as of v0.4.8
+
+| item | state |
+|---|---|
+| Phase 0 harness + normaliser gate (11/11 exact) | **done** |
+| Phase 1 peer triage, A/B/C = 242/15/25 | **done**, contention-validated |
+| Two performance levers promoted default ON | **shipped v0.4.7** |
+| Three correctness fixes promoted default ON | **shipped v0.4.8** |
+| Re-measure of the 257 against v0.4.8 | **running** |
+| Phase 2 clustering of the survivors | tooling built, blocked on the re-measure |
+| `try_emit` ordering defect | in progress |
+| `DataOneOf` bucket seeding (D10 #6) | in progress |
+| R3-vs-R4 disagreement on `lib.rs:2958` | **unresolved** — see below |
+| Unbudgeted prep + `tier_walk` mis-attribution | not started |
+| `seed_bucket` indexing | not started, gated on signed-zero normalisation |
+
+### The one disagreement that needs settling
+
+On `reasoner/src/lib.rs:2958` (per-**class** `ClauseIndexes` rebuild) **R3 reports CONFIRMED**
+— 31.0% inclusive on `ore_ont_1508`, isolated effect **209.6 → 119.9 s** with byte-identical
+closures — while **R4 reports SUSPECTED** and flags its own measurement as confounded by
+seed-clause removal. One is wrong. It is the largest unclaimed wall lever, and the amortizer
+already exists at `hyper.rs:1349/1167`, merely unwired for this path. Adjudicate before
+building.
+
+### Original plan items, still standing
+
 - Finish HermiT and KM legs; finalise A/B/C; run the uncontended validation in §6.1.
 - Cluster Set A by (last phase reached × structural signature) — **re-derived, not inherited**:
   the earlier A/B DNF taxonomy was falsified as an artifact of which budget each phase honours.

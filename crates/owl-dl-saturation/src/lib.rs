@@ -78,6 +78,27 @@ fn proof_enabled() -> bool {
     std::env::var("RUSTDL_PROOF").as_deref() == Ok("1")
 }
 
+/// Record a derived subsumer pair at **enqueue** time instead of at **pop**
+/// time (ELK's order).  Default **OFF**; `RUSTDL_SAT_ENQUEUE_DEDUP=1` opts in.
+///
+/// With the flag OFF, `todo_subsumer` has no in-queue membership test: a pair
+/// only enters `subsumers` when it is popped, so the transitivity rules re-push
+/// the same pair once per intermediate class and a deep backlog grows without
+/// bound.  Measured on `ore_ont_11085` (22 642 classes, 732 `⊤ ⊑ C` axioms) the
+/// queue reaches 1.07 G entries / 8 GB and the process dies allocating 16 GiB,
+/// with 927 M pushes against only 512 M distinct pairs.
+///
+/// **Verdict-preserving.**  Marking a pair earlier is monotone: every rule tests
+/// `subsumers.contains(..)` for whether a pair is *derivable*, never for whether
+/// its consequences have been applied, and every enqueued pair is still popped
+/// and still runs its full rule scan exactly once.  Early marking can only let a
+/// conjunctive-trigger / disjointness / forced-disjunct check succeed sooner,
+/// never fail.  The fixpoint is unchanged — only the enqueue order and the
+/// queue's peak size change.
+fn enqueue_dedup_enabled() -> bool {
+    std::env::var_os("RUSTDL_SAT_ENQUEUE_DEDUP").is_some_and(|v| v == "1")
+}
+
 /// Configuration for [`saturate_with_config`].
 #[derive(Debug, Clone)]
 pub struct SaturateConfig {
@@ -373,6 +394,18 @@ struct WorklistEngine {
     todo_subsumer: VecDeque<(ClassId, ClassId)>,
     todo_fact: VecDeque<usize>,
     todo_unsat: VecDeque<ClassId>,
+    /// `RUSTDL_SAT_ENQUEUE_DEDUP` — record a subsumer pair into `subsumers` at
+    /// **enqueue** time rather than at **pop** time, which gives
+    /// `todo_subsumer` an in-queue membership test and bounds its size by the
+    /// number of *distinct* pairs.  Read once at construction so the hot loop
+    /// never touches the environment.  See [`enqueue_dedup_enabled`].
+    enqueue_dedup: bool,
+    /// High-water mark of `todo_subsumer.len()`.  This is the quantity the
+    /// enqueue-dedup fix bounds (by the number of *distinct* class pairs), and
+    /// the only observable that distinguishes the two paths — the closure they
+    /// compute is identical.  Maintained on the push path only; a single
+    /// compare-and-store, negligible against the work each push causes.
+    peak_todo_subsumer: usize,
 
     rules: ElRules,
     /// Dense reflexive-transitive super-role closure indexed by `RoleId::index()`.
@@ -535,6 +568,8 @@ impl WorklistEngine {
             todo_subsumer: VecDeque::new(),
             todo_fact: VecDeque::new(),
             todo_unsat: VecDeque::new(),
+            enqueue_dedup: enqueue_dedup_enabled(),
+            peak_todo_subsumer: 0,
             rules,
             role_super,
             role_super_bitset,
@@ -694,7 +729,7 @@ impl WorklistEngine {
         // Enqueue the F ⊑ Bi atomic subsumptions so existing rules fire on them.
         for added_idx in before_atomic..self.rules.atomic_subsumptions.len() {
             let sub_ax = self.rules.atomic_subsumptions[added_idx];
-            self.todo_subsumer.push_back((sub_ax.sub, sub_ax.sup));
+            self.push_subsumer(sub_ax.sub, sub_ax.sup);
         }
         synthetic
     }
@@ -707,7 +742,7 @@ impl WorklistEngine {
         // introduced them.
         for i in 0..self.num_user_classes {
             let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
-            self.todo_subsumer.push_back((id, id));
+            self.push_subsumer(id, id);
         }
         // Synthetic Tseitin classes need explicit reflexivity too —
         // they don't appear in the user vocabulary but the engine
@@ -716,7 +751,7 @@ impl WorklistEngine {
         // HashSet implementation.
         for i in self.num_user_classes..self.num_total_classes {
             let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
-            self.todo_subsumer.push_back((id, id));
+            self.push_subsumer(id, id);
         }
         // Told atomic subsumers. When proof recording is on, tag each
         // seeded subsumption with the axiom that produced it.
@@ -726,8 +761,12 @@ impl WorklistEngine {
                 .as_ref()
                 .map(|t| t.atomic_sub_axiom.clone())
                 .unwrap_or_default();
-            for (idx, rule) in self.rules.atomic_subsumptions.iter().enumerate() {
-                self.todo_subsumer.push_back((rule.sub, rule.sup));
+            // Index-and-copy (rather than `.iter().enumerate()`) so the loop
+            // body can call `&mut self` methods: `AtomicSubsumption` is `Copy`,
+            // so no borrow of `self.rules` stays live across `push_subsumer`.
+            for idx in 0..self.rules.atomic_subsumptions.len() {
+                let rule = self.rules.atomic_subsumptions[idx];
+                self.push_subsumer(rule.sub, rule.sup);
                 // Pre-record ToldSubsumer so process_subsumer finds it after
                 // record_subsumer; we use the probe in record_subsumer_with_rule.
                 let ax_ref = axiom_refs.get(idx).copied().flatten().map(AxiomRef);
@@ -741,8 +780,9 @@ impl WorklistEngine {
                 }
             }
         } else {
-            for rule in &self.rules.atomic_subsumptions {
-                self.todo_subsumer.push_back((rule.sub, rule.sup));
+            for idx in 0..self.rules.atomic_subsumptions.len() {
+                let rule = self.rules.atomic_subsumptions[idx];
+                self.push_subsumer(rule.sub, rule.sup);
             }
         }
         // `⊤ ⊑ C` broadcast: C is Top-equivalent ⟹ every named class ⊑ C. Seed
@@ -754,7 +794,7 @@ impl WorklistEngine {
             for i in 0..self.num_user_classes {
                 let x = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
                 for &c in &tops {
-                    self.todo_subsumer.push_back((x, c));
+                    self.push_subsumer(x, c);
                 }
             }
         }
@@ -918,7 +958,7 @@ impl WorklistEngine {
     /// Enqueue `c ⊑ d` as a starting fact, exactly as `seed` does for told
     /// subsumptions.  Used by the seed-sat API.
     pub(crate) fn inject_subsumer(&mut self, c: ClassId, d: ClassId) {
-        self.todo_subsumer.push_back((c, d));
+        self.push_subsumer(c, d);
     }
 
     /// Enqueue `c ⊑ ∃role.target` as a starting existential fact.
@@ -937,26 +977,66 @@ impl WorklistEngine {
 
     /// Insert a derived `(C, D)` subsumer edge — no-op if already
     /// present. Returns whether the insert was new.
-    fn record_subsumer(&mut self, c: ClassId, d: ClassId) -> bool {
+    ///
+    /// Split out as an associated function over the two fields it touches so
+    /// the seed loops can call it while holding an immutable borrow of
+    /// `self.rules` (disjoint-field borrows).
+    fn record_pair(
+        subsumers: &mut Subsumers,
+        subsumed_by: &mut IdMatrix,
+        c: ClassId,
+        d: ClassId,
+    ) -> bool {
         let ci = c.index() as usize;
         let di = d.index() as usize;
-        let newly = self
-            .subsumers
+        let newly = subsumers
             .subsumers
             .insert(ci, u32::try_from(di).expect("class id fits in u32"));
         if newly {
-            self.subsumed_by
-                .insert(di, u32::try_from(ci).expect("class id fits in u32"));
+            subsumed_by.insert(di, u32::try_from(ci).expect("class id fits in u32"));
             return true;
         }
         false
     }
 
-    /// Push `(c, d)` onto the subsumer worklist if not yet asserted.
-    fn enqueue_subsumer(&mut self, c: ClassId, d: ClassId) {
-        if !self.subsumers.contains(c, d) {
+    /// Insert a derived `(C, D)` subsumer edge — no-op if already
+    /// present. Returns whether the insert was new.
+    fn record_subsumer(&mut self, c: ClassId, d: ClassId) -> bool {
+        Self::record_pair(&mut self.subsumers, &mut self.subsumed_by, c, d)
+    }
+
+    /// **The single chokepoint for adding to `todo_subsumer`.**  Every push
+    /// site must route through this (or through [`Self::enqueue_subsumer`],
+    /// which delegates here) — a direct `todo_subsumer.push_back` would, under
+    /// `RUSTDL_SAT_ENQUEUE_DEDUP=1`, enqueue a pair that is never recorded in
+    /// `subsumers`, silently losing it from the closure.
+    ///
+    /// Flag ON: record at enqueue; push only if the pair is new.
+    /// Flag OFF: push unconditionally (recording happens at pop) — the exact
+    /// pre-2026-08 behaviour.
+    fn push_subsumer(&mut self, c: ClassId, d: ClassId) {
+        if self.enqueue_dedup {
+            if !self.record_subsumer(c, d) {
+                return;
+            }
+            self.todo_subsumer.push_back((c, d));
+        } else {
             self.todo_subsumer.push_back((c, d));
         }
+        if self.todo_subsumer.len() > self.peak_todo_subsumer {
+            self.peak_todo_subsumer = self.todo_subsumer.len();
+        }
+    }
+
+    /// Push `(c, d)` onto the subsumer worklist if not yet asserted.
+    fn enqueue_subsumer(&mut self, c: ClassId, d: ClassId) {
+        // Flag OFF: `contains` is the only (weak) filter — a pair already in
+        // the queue but not yet popped is not in `subsumers`, so it re-enters.
+        // Flag ON: `push_subsumer`'s record-at-enqueue subsumes this test.
+        if !self.enqueue_dedup && self.subsumers.contains(c, d) {
+            return;
+        }
+        self.push_subsumer(c, d);
     }
 
     /// Cluster-B path (b) core: seed `sub ⊑ ForallKey(role, S)` for every
@@ -1074,7 +1154,13 @@ impl WorklistEngine {
     /// Fire all rules triggered by a freshly-derived `(C, D)` edge.
     #[allow(clippy::too_many_lines)]
     fn process_subsumer(&mut self, c: ClassId, d: ClassId) {
-        if !self.record_subsumer(c, d) {
+        // Flag OFF: the pair is recorded here, at pop, and a duplicate pop is
+        // the *only* dedup — hence the unbounded queue this flag exists to fix.
+        // Flag ON: `push_subsumer` already recorded it (and pushed only if it
+        // was new), so this guard MUST be skipped — otherwise every pair would
+        // be recorded at enqueue and then rejected here, and nothing would ever
+        // be processed.
+        if !self.enqueue_dedup && !self.record_subsumer(c, d) {
             return;
         }
         // Cluster-B path (b), ≤1-driven symmetric direction: if D is a
@@ -4596,6 +4682,187 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
             .vocabulary
             .class_id(&format!("http://rustdl.test/{local}"))
             .expect("class declared")
+    }
+
+    // -----------------------------------------------------------------------
+    // `RUSTDL_SAT_ENQUEUE_DEDUP` canaries.
+    // -----------------------------------------------------------------------
+
+    /// Run the saturator with `enqueue_dedup` forced to `dedup`, bypassing the
+    /// environment (env vars are process-global; forcing the field keeps these
+    /// tests immune to parallel-test interference and to the shipped default).
+    ///
+    /// Returns `(closure, peak todo_subsumer length, class-universe size)`.
+    /// The universe size is taken from the engine rather than guessed from the
+    /// named-class count — a guess that under-counts the Tseitin synthetics
+    /// would silently truncate the closure comparison below.
+    fn run_with_dedup(internal: &InternalOntology, dedup: bool) -> (Subsumers, usize, usize) {
+        let n = internal.vocabulary.num_classes();
+        let role_super_map = build_role_super(internal);
+        let (rules, tseitin, num_total_classes, maybe_trace) =
+            collect_el_rules_with_provenance(internal, &role_super_map, false);
+        let role_super = freeze_role_super(&role_super_map);
+        let mut engine = WorklistEngine::new(
+            n,
+            num_total_classes,
+            rules,
+            tseitin,
+            role_super,
+            false,
+            maybe_trace,
+        );
+        engine.enqueue_dedup = dedup;
+        engine.seed(internal);
+        engine.run();
+        let universe = engine.num_total_classes;
+        (engine.subsumers, engine.peak_todo_subsumer, universe)
+    }
+
+    /// Flatten a closure to a sorted `(sub, sup)` list for exact comparison.
+    fn closure_rows(subs: &Subsumers, num_total: usize) -> Vec<(usize, u32)> {
+        let mut rows = Vec::new();
+        for c in 0..num_total {
+            for d in subs.subsumers.row_ascending(c) {
+                rows.push((c, d));
+            }
+        }
+        rows
+    }
+
+    /// A `⊤ ⊑ Cᵢ` broadcast over a `⊑`-chain — the `ore_ont_11085` shape in
+    /// miniature.  The broadcast seeds `k × n` pairs, and each is then re-derived
+    /// by transitivity once per intermediate class in the chain.
+    fn top_broadcast_chain(n_classes: usize, n_tops: usize) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::from(HEADER);
+        s.push_str("Ontology(<http://rustdl.test/dedup>\n");
+        for i in 0..n_classes {
+            let _ = writeln!(s, "    Declaration(Class(:A{i}))");
+        }
+        // A chain A0 ⊑ A1 ⊑ … ⊑ A(n-1): a dense transitive closure.
+        for i in 0..n_classes - 1 {
+            let _ = writeln!(s, "    SubClassOf(:A{i} :A{})", i + 1);
+        }
+        // `⊤ ⊑ Tⱼ` broadcast, each Tⱼ also sitting on the chain's tail.
+        for j in 0..n_tops {
+            let _ = writeln!(s, "    Declaration(Class(:T{j}))");
+            let _ = writeln!(s, "    SubClassOf(owl:Thing :T{j})");
+            let _ = writeln!(s, "    SubClassOf(:T{j} :A{})", n_classes - 1);
+        }
+        s.push_str(")\n");
+        s
+    }
+
+    /// **THE CANARY.**  Enqueue-time recording must bound `todo_subsumer` by the
+    /// number of *distinct* class pairs, while computing a byte-identical
+    /// closure.
+    ///
+    /// Without the fix the two paths are the same code, so *both* the bound and
+    /// the "the defect is real" assertion below fail — which is what makes this
+    /// test a guard rather than a description.
+    ///
+    /// **Sabotage-verified** (three independent breakages, each confirmed to
+    /// FAIL this test):
+    /// - reverting `push_subsumer` + `process_subsumer` to unconditional push /
+    ///   pop-time record → peak 90 167 against a 4 560-pair bound;
+    /// - un-routing one seed push site (the `⊤ ⊑ C` broadcast) → peak 5 057;
+    /// - keeping the pop-time `record_subsumer` guard alongside the
+    ///   enqueue-time one → nothing is processed, closure collapses.
+    #[test]
+    fn enqueue_dedup_bounds_the_subsumer_queue() {
+        let internal = parse_internal(&top_broadcast_chain(60, 30));
+
+        let (off_closure, off_peak, universe) = run_with_dedup(&internal, false);
+        let (on_closure, on_peak, universe_on) = run_with_dedup(&internal, true);
+        assert_eq!(
+            universe, universe_on,
+            "class universe must not depend on the flag"
+        );
+        let num_total = universe;
+
+        // 1. Verdict identity — the whole point of the fix being a perf fix.
+        assert_eq!(
+            closure_rows(&off_closure, num_total),
+            closure_rows(&on_closure, num_total),
+            "enqueue-dedup must compute a byte-identical closure",
+        );
+
+        // 2. The bound: with dedup, a pair enters the queue at most once, so the
+        //    peak can never exceed the number of pairs in the final closure.
+        let distinct_pairs = closure_rows(&on_closure, num_total).len();
+        assert!(
+            on_peak <= distinct_pairs,
+            "dedup peak {on_peak} must be bounded by the {distinct_pairs} distinct \
+             closure pairs (a pair may be enqueued at most once)",
+        );
+
+        // 3. The defect is real: without dedup the same pairs are re-pushed once
+        //    per intermediate class, so the queue runs far past that bound.
+        assert!(
+            off_peak > distinct_pairs,
+            "expected the un-deduped queue to exceed the {distinct_pairs}-pair \
+             bound (got {off_peak}); if this fails the fixture no longer \
+             reproduces the duplicate-re-push defect",
+        );
+        assert!(
+            off_peak > on_peak * 2,
+            "expected a >2x peak-queue reduction from enqueue dedup, \
+             got off={off_peak} on={on_peak}",
+        );
+    }
+
+    /// Every direct `todo_subsumer` push site must route through
+    /// `push_subsumer`, or under dedup the pair is enqueued without ever being
+    /// recorded.  This test pins the closure against the un-deduped path over a
+    /// fixture that exercises the reflexive, told, `⊤ ⊑ C`-broadcast and
+    /// Tseitin-introduction seed sites.
+    ///
+    /// **What this actually guards (measured by sabotage, NOT assumed).**
+    /// Un-routing the *reflexive* seed site makes this test FAIL with a
+    /// genuinely truncated closure.  Un-routing any *other* site does **not** —
+    /// it self-heals: `process_subsumer` still runs on the unrecorded pair, and
+    /// its backward-transitivity leg walks `subs_of_class(c)`, which contains
+    /// `c` because reflexivity *was* recorded, so `enqueue_subsumer(c, d)`
+    /// re-derives and records the pair.  Confirmed: un-routing the `⊤ ⊑ C`
+    /// broadcast leaves this test GREEN.  Those sites are caught instead by
+    /// `enqueue_dedup_bounds_the_subsumer_queue`, where the double enqueue
+    /// shows up as a peak over the distinct-pair bound.  So the two canaries
+    /// are complementary and **both** are load-bearing — do not delete the
+    /// bound assertion as redundant.
+    #[test]
+    fn enqueue_dedup_loses_no_seeded_pair() {
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/seedroute>\n\
+    Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+    Declaration(Class(:D)) Declaration(Class(:E)) Declaration(Class(:T))\n\
+    Declaration(ObjectProperty(:r))\n\
+    SubClassOf(owl:Thing :T)\n\
+    SubClassOf(:A :B)\n\
+    SubClassOf(:B :C)\n\
+    EquivalentClasses(:D ObjectIntersectionOf(:C :T))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r :B))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :C) :E)\n\
+)\n"
+        ));
+        let (off_closure, _, num_total) = run_with_dedup(&internal, false);
+        let (on_closure, _, _) = run_with_dedup(&internal, true);
+        assert_eq!(
+            closure_rows(&off_closure, num_total),
+            closure_rows(&on_closure, num_total),
+            "dedup must not drop a seeded pair (reflexive / told / ⊤-broadcast / \
+             Tseitin-introduced)",
+        );
+        // Sanity: the fixture actually derives something non-trivial, so the
+        // equality above is not two empty closures agreeing.
+        assert!(
+            on_closure.contains(class(&internal, "A"), class(&internal, "E")),
+            "fixture must derive A ⊑ E (∃r.B ⊑ ∃r.C ⊑ E)",
+        );
+        assert!(
+            on_closure.contains(class(&internal, "A"), class(&internal, "D")),
+            "fixture must derive A ⊑ D (A ⊑ C and ⊤ ⊑ T ⟹ A ⊑ C ⊓ T ≡ D)",
+        );
     }
 
     /// NOMINAL-FILLER TYPING canary (`RUSTDL_NOMINAL_TYPING`, default-ON): a nominal

@@ -1,5 +1,45 @@
 # The remaining tail is an ABSORPTION problem, not a search problem
 
+> # RETRACTED IN ITS CENTRAL CLAIM — 2026-08-01
+>
+> **The title is wrong and the calibration behind it was confounded.** Read this banner before
+> anything below it. Full data: `docs/2026-08-01-domain-absorption-results.md`.
+>
+> **1. The 300× calibration was a MIS-ATTRIBUTION.** The controlled deletion removed an
+> `EquivalentClasses` axiom, which is *two* axioms in one — a `⟸` half and a `⟹` half. Splitting
+> them: the `⟸` half alone (28 residuals) runs in **0.02 s**; the `⟹` half alone (26 residuals,
+> a disjunctive concept rule) runs in **0.02 s**; only **both together** cost 8.84 s. So
+> "two residual disjunctions cost 300×" is false — the deletion changed two things at once, and
+> I attributed the whole effect to the residual count. This is exactly the confound I had caught
+> two reviewers on days earlier (`SAT_SEED=0` changing rebuild *and* clause volume) and then
+> committed myself.
+>
+> **2. The thesis was tested directly and FAILED.** Domain absorption was implemented and the
+> pre-registered experiment run over the 167 survivors:
+>
+> | group | n | recovery |
+> |---|---|---|
+> | **Z** — residuals driven to **zero** | 54 | **1 (1.9%)** |
+> | **N** — residuals remain | 77 | **3 (3.9%)** |
+>
+> Zero is **not** a threshold (53 of 54 reach zero and still DNF), and recovery is **not**
+> continuous in residual count — the group that *kept* residuals recovered slightly more, and the
+> 21 ontologies left with only 1–2 residuals recovered nothing. **Residual count is not the
+> operative variable.** Recovery depends on *which* axiom is absorbed, matching the split above.
+>
+> **What survives.** Domain absorption is sound by logical identity with `ObjectPropertyDomain`,
+> verdict-preserving (13/13 curated and 10/10 ORE closures byte-identical, FP=0 net 11/11 exact),
+> and it does recover **4** real DNFs — `ore_ont_3281` goes 28 residuals → 0 and
+> **DNF@300 s → 11.40 s** at a non-truncating budget. That is a genuine but *narrow* win, not the
+> general mechanism this document claimed.
+>
+> **What it kills, which is the more valuable output.** Qualified-`∃` absorption — 58% of
+> residual volume, the obvious next step — is a **NO-GO as motivated**. It would take 31 more
+> ontologies to zero residuals; at the measured 1-in-54 rate that predicts **~0.6 recoveries**,
+> against building a *backward* role rule `RoleRule` cannot express. The experiment stopped a
+> large project that would not have paid, which is what it was designed to do.
+
+
 **Date:** 2026-08-01 · rustdl v0.4.10 · analysis from first principles on the instances
 
 ## Summary

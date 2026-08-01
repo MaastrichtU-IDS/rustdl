@@ -888,6 +888,27 @@ pub(crate) fn classify_internal_with_timeout(
     // nothing to say.
     let closure = saturate(internal);
 
+    // Sound KB-level inconsistency pre-check (`RUSTDL_CLASSIFY_INCONSISTENCY`,
+    // default OFF). Placed BEFORE the fast-path branch so both dispatch arms —
+    // the saturation fast path and the hybrid path — are covered by one call
+    // site. See `classify_inconsistency_precheck`: it tests that `⊤` is
+    // unsatisfiable, NOT that every named class is (the latter is not an
+    // inconsistency signal). This is the fix for `classify --json family.ofn`
+    // reporting `"consistent": true` where `rustdl consistent` reports
+    // `inconsistent`.
+    if crate::classify_inconsistency_enabled()
+        && crate::classify_inconsistency_precheck(internal, &closure)
+    {
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("classify: KB inconsistent (pre-check)");
+        }
+        return Ok(classify_inconsistent(
+            classes,
+            index,
+            analyze_fragment(internal),
+        ));
+    }
+
     // If the entire ontology fits inside the EL fragment our
     // saturation engine recognises, the closure is *also complete*
     // — saturation's `no` answer is itself the verdict, and we
@@ -1945,6 +1966,27 @@ pub(crate) fn classify_top_down_internal(
     let closure = saturate(internal);
     // RSS probe: after EL closure / saturation.
     crate::rss_probe::probe("after_saturate");
+
+    // Sound KB-level inconsistency pre-check (`RUSTDL_CLASSIFY_INCONSISTENCY`,
+    // default OFF). Placed BEFORE the fast-path branch so both dispatch arms —
+    // the saturation fast path and the hybrid path — are covered by one call
+    // site. See `classify_inconsistency_precheck`: it tests that `⊤` is
+    // unsatisfiable, NOT that every named class is (the latter is not an
+    // inconsistency signal). This is the fix for `classify --json family.ofn`
+    // reporting `"consistent": true` where `rustdl consistent` reports
+    // `inconsistent`.
+    if crate::classify_inconsistency_enabled()
+        && crate::classify_inconsistency_precheck(internal, &closure)
+    {
+        if std::env::var_os("RUSTDL_TRACE").is_some() {
+            eprintln!("classify: KB inconsistent (pre-check)");
+        }
+        return Ok(classify_inconsistent(
+            classes,
+            index,
+            analyze_fragment(internal),
+        ));
+    }
 
     // Pure-EL path: the closure is complete; reuse the naive
     // classifier's fast path. Top-down only earns its complexity on

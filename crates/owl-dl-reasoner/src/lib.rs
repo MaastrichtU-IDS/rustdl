@@ -1891,6 +1891,73 @@ pub fn abox_saturation_enabled() -> bool {
     std::env::var_os("RUSTDL_ABOX_SATURATION").is_none_or(|v| v != "0" && !v.is_empty())
 }
 
+/// Run the KB-level inconsistency pre-checks on the **classify** path too, so
+/// `classify --json` cannot report `"consistent": true` on a KB the sibling
+/// `rustdl consistent` subcommand calls `inconsistent`
+/// (`RUSTDL_CLASSIFY_INCONSISTENCY`). **Default OFF** (set `=1` to opt in;
+/// `=0`/empty is the pre-2026-08-01 behaviour).
+///
+/// Motivation: `classify` used to consult only [`abox_check`] (the Phase A1
+/// pattern matcher) and, on the *pure-EL path only*, the saturator's `⊤`-unsat
+/// signal. `is_consistent` additionally runs the
+/// [`abox_saturation`] consequence-based fixpoint, and `realize_internal` gained
+/// the same short-circuit in v0.3.36. `family.ofn` is exactly the gap: `HermiT`,
+/// Konclude, `rustdl consistent` and `rustdl realize` all call it inconsistent
+/// in under a second, while `classify --json` reported
+/// `"consistent": true, "unsatisfiable": []`.
+///
+/// See [`classify_inconsistency_precheck`] for the (sound) signals consulted.
+#[must_use]
+pub fn classify_inconsistency_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_INCONSISTENCY").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// The `ABox`-saturation half of the KB-level inconsistency pre-check, factored
+/// out so `is_consistent` and `classify` cannot drift apart.
+///
+/// **Sound under-approximation:** a clash derived by the consequence-based
+/// fixpoint over named individuals is a genuine inconsistency (every derived
+/// type/edge/merge is entailed); no clash yields no verdict, and the caller
+/// falls through to its normal path unchanged. Guarded by
+/// [`abox_saturation_enabled`] and `has_abox_axioms`, so `ABox`-free inputs pay
+/// nothing.
+#[must_use]
+pub(crate) fn abox_saturation_inconsistent(internal: &InternalOntology) -> bool {
+    abox_saturation_enabled()
+        && classify::has_abox_axioms(internal)
+        && abox_saturation::saturate_abox_consistency(internal).clash
+}
+
+/// Sound KB-level inconsistency pre-check for the classify drivers.
+///
+/// Returns `true` only when the KB is **provably** inconsistent. Two independent
+/// signals, both already shipped elsewhere in the tree — this reuses them rather
+/// than inventing a third mechanism:
+///
+/// 1. **`⊤` is unsatisfiable** — `closure.globally_inconsistent()` (a syntactic
+///    `⊤ ⊑ ⊥`) or `closure.top_is_unsat()` (some `C` with `⊤ ⊑ C` saturated to
+///    `⊥`). This is verbatim the test `classify_pure_el` already applies; the
+///    hybrid path simply never ran it.
+/// 2. **`ABox`-saturation clash** — [`abox_saturation_inconsistent`], the same
+///    pre-check `is_consistent` runs before its tableau.
+///
+/// **Soundness subtlety (deliberate, load-bearing):** *all named classes being
+/// unsatisfiable is NOT an inconsistency signal.* `{A ⊑ ⊥, B ⊑ ⊥}` empties every
+/// named class yet has a perfectly good non-empty model. The correct test is that
+/// `⊤` is unsatisfiable, which is what `top_is_unsat` reports and what signal (1)
+/// asks for. Nothing here inspects the unsatisfiable-class list.
+///
+/// A negative verdict is *not* a claim of consistency: both signals are
+/// under-approximations, so the caller proceeds exactly as before.
+pub(crate) fn classify_inconsistency_precheck(
+    internal: &InternalOntology,
+    closure: &owl_dl_saturation::Subsumers,
+) -> bool {
+    closure.globally_inconsistent()
+        || closure.top_is_unsat()
+        || abox_saturation_inconsistent(internal)
+}
+
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache
 /// build during classification. **Distinct from `--pair-timeout-ms`**:
 /// the cache build is one-shot per class at classify-start, and a
@@ -4011,10 +4078,7 @@ fn is_consistent_internal_full(
     // Runs before `from_internal` (which moves `internal`); guarded by
     // `has_abox_axioms` so ABox-free inputs skip it. Non-clash ⇒ fall through to
     // the existing hybrid path unchanged (FP-safe; sound under-approximation).
-    if abox_saturation_enabled()
-        && classify::has_abox_axioms(&internal)
-        && abox_saturation::saturate_abox_consistency(&internal).clash
-    {
+    if abox_saturation_inconsistent(&internal) {
         if std::env::var_os("RUSTDL_TRACE").is_some() {
             eprintln!("abox_saturation: inconsistent");
         }

@@ -3857,6 +3857,30 @@ impl SnapshotCache {
     }
 }
 
+/// Build the absorbed `TBox` and classify every residual GCI by
+/// **which absorption technique would remove it** — see
+/// [`owl_dl_core::residual_absorbability`] and
+/// `docs/2026-08-01-absorption-is-the-bottleneck.md`.
+///
+/// Report-only: this changes no reasoning behaviour. It exists so the
+/// decision to implement domain / binary absorption is made on measured
+/// population counts rather than on a grep.
+///
+/// # Errors
+///
+/// See [`ReasonError`].
+pub fn residual_absorbability_stats<A: horned_owl::model::ForIRI>(
+    ontology: &horned_owl::ontology::set::SetOntology<A>,
+) -> Result<owl_dl_core::residual_absorbability::ResidualAbsorbabilityStats, ReasonError> {
+    let mut internal = owl_dl_core::convert::convert_ontology(ontology)?;
+    let normalized = owl_dl_core::normalize::nnf_axioms(&mut internal);
+    let tbox = owl_dl_core::absorb::absorb(&normalized, &mut internal.concepts);
+    Ok(owl_dl_core::residual_absorbability::census(
+        &tbox,
+        &internal.concepts,
+    ))
+}
+
 /// Build the absorbed `TBox` and classify every residual GCI's
 /// trigger per [`owl_dl_core::residual_trigger`]. The result is
 /// the histogram needed to decide whether the lazy-unfolding

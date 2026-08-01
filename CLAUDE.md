@@ -805,6 +805,23 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
     range-vs-range float subset `VeryFastExposure ⊑ FastExposure`,
     `(-∞,0.002) ⊆ (-∞,0.01)`).
 
+  > **FP FOUND AND FIXED 2026-08-01 (v0.4.9) — THIS SECTION'S OWN INVARIANT WAS VIOLATED.**
+  > `parse_float_oneof` folded `xsd:float` and `xsd:double` into ONE f64-keyed `fo:`
+  > bucket, so `∃h.DataOneOf("1.0"^^xsd:float)` and `∃h.DataOneOf("1.0"^^xsd:double)`
+  > were reported **EQUIVALENT**. Reproduced on a pinned **v0.4.6** binary, so it is
+  > long-standing, not a recent regression. Konclude declares both classes and reports no
+  > relation; the discriminating control (float-vs-**float**, where Konclude DOES report
+  > equivalence) is what proves its silence is a genuine non-entailment rather than the
+  > under-reporting Konclude does elsewhere. Fixed by splitting `fo:` (f32-rounded) from a
+  > new `dbo:` (f64) bucket — **unflagged**, since a soundness fix is not opt-in.
+  >
+  > **Why the FP=0 net did not catch it, and what that means:** the curated corpus is
+  > INERT for this area, exactly as `datatype_value_membership.rs` warns —
+  > *"the corpus has NO such clash, so these canaries are the ENTIRE safety net."* A
+  > green FP=0 net over the curated fixtures is therefore **not** evidence of soundness
+  > for DKey work; only the canaries and a Konclude ∪ HermiT adjudication are. Treat any
+  > future claim of "FP=0, corpus-wide" in this subsystem as non-regression only.
+
   **Datatype keying is soundness-critical**: float `DKey`s are
   datatype-tagged (`urn:rustdl-dkey:f:<minbits>:<i|e>:<maxbits>:<i|e>`,
   bounds via `f64::to_bits()` for exact round-trip) and

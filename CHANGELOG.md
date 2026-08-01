@@ -4,6 +4,78 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] — 2026-08-01
+
+**Soundness release. Fixes a false-positive subsumption present since at least v0.4.6.**
+FP=0 is this project's absolute invariant and it was being violated. FP=0 net 11/11 VERIFIED,
+closures exact; 1413 tests pass.
+
+### Fixed — a FALSE POSITIVE across `xsd:float` / `xsd:double` (unflagged)
+
+`parse_float_oneof` folded `xsd:float` and `xsd:double` into a single f64-keyed `fo:` DKey
+bucket, so
+
+```
+EquivalentClasses(:AF DataSomeValuesFrom(:h DataOneOf("1.0"^^xsd:float)))
+EquivalentClasses(:AD DataSomeValuesFrom(:h DataOneOf("1.0"^^xsd:double)))
+```
+
+were reported **equivalent**. They are not: the two datatypes have distinct value spaces.
+
+**Reproduced independently before the fix was accepted.** rustdl emitted `equiv AD AF`;
+Konclude declared both classes and reported **no** relation between them. The discriminating
+control is what makes that conclusive — on a float-vs-**float** variant Konclude *does* report
+mutual subsumption, so its silence on float-vs-double is a genuine non-entailment rather than
+the under-reporting Konclude is documented to do elsewhere (`ore_ont_10407`, `ore_ont_9540`).
+HermiT produced an empty output on this fixture and is **not** evidence here.
+
+**Pre-existing, not a regression** — a pinned v0.4.6 binary reproduces it. It escaped the FP=0
+net because the curated corpus is **inert** for the DKey area, exactly as
+`datatype_value_membership.rs` warns: *"the corpus has NO such clash, so these canaries are the
+ENTIRE safety net."* This is what that warning looks like when it comes true.
+
+Fix: split into `fo:` (f32-rounded) and a new `dbo:` (f64) bucket. **Unflagged and on by
+default** — a soundness fix is not opt-in. It is also a prerequisite: the seeding below would
+be FP-unsound on `fo:` without it.
+
+### Added — numeric `DataOneOf` bucket seeding (`RUSTDL_DKEY_ONEOF_SEED`, default OFF)
+
+The sixth D10-class bug: the five numeric `DataOneOf` DKey buckets were never collected into
+`seed_dkey_subsumptions`, so they received no told `DKey ⊑ DKey` edges and no disjointness,
+while `is_pure_el` still certified the saturator complete. Recovers 3 of the 5 oracle-confirmed
+results (`F ⊑ D`, `D ⊑ E`, and the `∀p.DataOneOf(1,2) ⊓ ∃p.{3}` unsatisfiability). The other
+two (`C ≡ F` in both directions) turned out to be **already held** — identical sets intern to
+one DKey — and are reported as not-reproducible rather than claimed.
+
+11 canaries; **7 sabotages, 7 caught, 0 survivors**. Konclude and HermiT agree exactly on both
+fixtures. Both DKey discriminators unmoved at each flag setting (`ore_ont_9347` = 113,
+`ore_ont_5368` = 18,620,251 — and `9347` alone cannot validate this area).
+
+Stays default OFF pending a cost measurement: the disjointness half is O(k²) per component,
+the same shape that caused the v0.3.29 conversion DNFs, and no numeric-`DataOneOf`-heavy ORE
+population has been measured.
+
+### Added — DKey disjointness emit ordering (`RUSTDL_DKEY_EMIT_ORDER`, default OFF)
+
+`seed_disjoint_bucket::try_emit` ran `emitted.insert(pair)` **before** the droppable test, so a
+pair spanning two role components was permanently consumed by whichever component the
+`BTreeMap` reached first — even when the *other* component was the one that could consume it.
+
+**The defect is live at default settings and is NON-MONOTONIC:** `∀p.[0,5] ⊓ ∃p.{9}` is
+unsatisfiable alone, but adding an *unrelated* property `q` that merely mentions the same two
+keys makes it satisfiable again. Adding an axiom must never remove an entailment.
+
+Resolves the previously unexplained anomaly where `RUSTDL_DKEY_MERGING_GATE=0` found *fewer*
+entailments than the default, with no fourth mechanism. The one-line reordering was necessary
+but not sufficient — the `RUSTDL_DKEY_SPLIT_STATS` counters were per-`(pair, component)` and
+double-counted once declining stops spending a pair.
+
+Default OFF pending an ORE `concept_rules` volume scan: this lever emits *more* axioms, so the
+risk is both FP and volume re-inflation — precisely what the 2026-07-30 non-merging-component
+gate exists to prevent. Sabotage reported as run: **3 of 4 caught, 1 survived** (ignoring the
+collapse/broadcast split left all six canaries green, so they pin the split's FP-safety but not
+its volume bound).
+
 ## [0.4.8] — 2026-08-01
 
 Correctness release. Three wrong answers fixed, all flipped **default ON** (`=0` reverts

@@ -1288,6 +1288,37 @@ same frontier as the ORE hard cases — NOT the ABox/classify-index paths the
 to the curated corpus — the ORE/BioPortal tiers are untested here and remain an
 empirical, not provable, claim.** The
 remaining rustdl weakness is the multi-GB RSS tail on a few pathological SROIQ
-inputs, not wall time. Performance claims in docs are backed by the corpus harness
+inputs, not wall time.
+
+> **CORRECTED 2026-08-01 — "RSS, not wall time" IS TOO NARROW, AND THE TAIL IS NOT
+> INTRINSIC.** Peer triage of the real DNF population (257 ontologies genuinely
+> unfinished at a 120 s single-thread cap, out of 1,920 ORE):
+> **Konclude classifies 242 of them — 94% — at a median wall of 3.57 s**, 186 under
+> 10 s, same cap and host. HermiT/KM can only move ontologies from B to A, so
+> **Set A ≥ 242, Set B ≤ 15**: at most ~6% of the tail is plausibly intrinsic. The
+> repeated framing elsewhere in this file and in the design record — "all levers
+> measured out", "no cheap entry", "the frontier is a clash-driven search rewrite" —
+> is defensible only in the narrow sense that *the mechanisms actually investigated*
+> were measured out. No peer had been asked; a rustdl-vs-rustdl measurement cannot
+> establish intrinsic hardness.
+>
+> Both halves of the "RSS not wall" claim need splitting. RSS is real
+> (`ore_ont_11085`: OOM at 16.96 GB → 491 MB once the saturator's subsumer worklist
+> dedups at enqueue instead of at pop — 35×, and its root cause was the worklist, NOT
+> the D4 dense matrices, which were re-refuted by direct container dumps). But the
+> most extreme peer ratio in the corpus is **wall-only**: `ore_ont_10019` is a
+> **47-class** ontology, 182 concept rules, **0.01 GB** peak RSS, conversion and
+> saturation each 0.01 s, stalling entirely after the label cache — Konclude does it
+> in **0.06 s**. Profiling also puts that stall at **84.6% MAIN TABLEAU** vs 15.3%
+> `hyper::solve`, so the standing attribution of the hard tail to wedge disjunctive
+> branching does not hold on the named cases either.
+>
+> See `docs/benchmarks/2026-08-01-dnf257-characterization.md` (results, threats to
+> validity, and eight confirmed defects with predicted effects) and
+> `docs/reviews-2026-08-01/`. Caveat still open at time of writing: the rustdl half of
+> that comparison is inherited from a 4-way concurrent re-run and awaits an
+> uncontended re-measurement (`owl-reasoner-harness/scripts/validate-dnf.sh`).
+
+Performance claims in docs are backed by the corpus harness
 — re-measure with `scripts/bench-rustdl-modes.sh` (on a **freshly built** binary,
 per the toolchain gotcha above) rather than trusting stale numbers.

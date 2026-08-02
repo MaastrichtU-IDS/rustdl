@@ -83,6 +83,74 @@ the profile-independent replacement is
 `default_budget_still_detects_small_abox_inconsistency`, a small functional-role
 `ABox` clash detected under the shipped default.
 
+## [0.4.12] — 2026-08-02
+
+**Iterative deepening for the wedge search, default ON.** `HYPER_WEDGE_DEPTH = 256` was a fixed
+constant, and a fixed constant is wrong in both directions at once.
+
+**Curated `wine` now classifies by default in 73.9 s.** It previously did not finish — and the
+project's own record closed that case as needing a nominal re-architecture, *"no cheap entry,
+DON'T reopen w/o new evidence."* This is that evidence, and it came from the depth schedule
+without touching nominals at all.
+
+### The defect
+
+| | `ore_ont_10407` | `ore_ont_2182` |
+|---|---|---|
+| genuine proof depth | **319** — 256 too LOW | **≤7** — 256 is 36× too HIGH |
+| at a better depth | 512 → 10.0 s, `stalled=0` | 8 → 1.01 s, *more* subsumptions than 256 gave |
+| cost of the wrong cap | **4.4× more work than completing** — a capped branch cannot conclude, so the search re-descends through sibling disjuncts | 2,357 stalled pairs |
+
+**FP-safe by construction:** a depth cap can only *suppress* an `Unsat`, never manufacture one,
+so deepening only ever adds entailments.
+
+### Measured, ORE-wide (1,920 ontologies, two sequential arms, 60 s cap, single-thread)
+
+| | |
+|---|---|
+| recoveries (`dnf` → `ok`) | **16** |
+| regressions (`ok` → `dnf`) | **0** |
+| materially faster / slower (>25% and >2 s) | **12 / 0** |
+| aggregate wall over 1,730 both-completing | −2.1% |
+| closure losses | **0** (superset verified on the fixed build, 26 ontologies) |
+
+**Budgeted runs improve most**, because the shallow level *decides* rather than re-works: on
+`wine` at `--pair-timeout-ms 25`, **108.8 s → 4.60 s** with identical subsumptions. At a 5 ms
+budget the OFF arm has 3,340 pairs burning their full budget then stalling; the ON arm has 3,454
+resolved at depth 8 in the **0 ms** bucket.
+
+### A regression caught, and the fix it forced
+
+The first corpus sweep found **one** `ok → dnf` — `ore_ont_13991`, 3,119 classes, 32.79 s → DNF.
+A rule fixed *before* the numbers blocks a flip on any such transition, so the default stayed OFF
+until it was understood. Cause, confirmed by dose–response rather than arithmetic: the shallow
+budget was a **per-pair constant**, so its cost scaled with the pair count — quadratic in classes.
+At 56,760 pairs, 5 ms each is 284 s of pure tax. (5 ms → DNF; 1 ms → completes at 90.31 s, an
+overhead of 57.5 s against a predicted 57 s.)
+
+`RUSTDL_ID_SHALLOW_WASTE_MS` (default 1000, `0` reverts) now budgets **wall wasted by shallow
+phases that did not decide** — metering the harm in its own units. The obvious alternative, a
+consecutive-miss counter, was implemented and **refuted by measurement**: `ore_ont_13991`'s
+shallow phase *does* decide 84 pairs while missing 200, so interleaved successes keep resetting
+it. Verified at the boundary — `WASTE_MS=0` reproduces the regression exactly.
+
+### How it was found
+
+Two independent root-cause investigations, each of which **refuted its own starting hypothesis**
+before converging here. Cardinality: `ore_ont_10407` has **zero** `Max`/`Exact` axioms — 41 of its
+"50 cardinality axioms" are `MinCardinality(0 R)` tautologies. Blocking: 81.82 s vs 81.96 s with
+anywhere-blocking toggled, and double-blocking already firing on 74.5% of calls.
+
+Also corrected: CLAUDE.md claimed nominal-tainted nodes are excluded from **both** blocking
+predicates. Only `is_blocked_anywhere` excludes them; `is_blocked_ancestor` does not — and
+classify uses ancestor-blocking by default, so the deferred issue-#35 v4 redesign never applied
+to the classify path.
+
+### Gates
+
+FP=0 net **11 VERIFIED, closures exact**; 1,510 tests; fmt and clippy clean; sabotage 8/8.
+`RUSTDL_ITERATIVE_DEEPENING=0` reverts.
+
 ## [0.4.11] — 2026-08-02
 
 The release that a **full-corpus regression sweep** made possible — and the one it caught a

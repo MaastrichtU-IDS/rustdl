@@ -1506,7 +1506,7 @@ pub fn sat_class_probe<A: horned_owl::model::ForIRI>(
 const HYPER_WEDGE_DEPTH: usize = 256;
 
 /// Depth schedule for the classify per-pair **iterative-deepening** wedge
-/// search (`RUSTDL_ITERATIVE_DEEPENING`, default OFF — see
+/// search (`RUSTDL_ITERATIVE_DEEPENING`, default ON — see
 /// [`iterative_deepening_enabled`]).
 ///
 /// The fixed [`HYPER_WEDGE_DEPTH`] is measurably wrong in **both** directions:
@@ -1556,17 +1556,34 @@ pub(crate) struct DeepeningTrace {
     pub(crate) levels_run: usize,
     /// Depth cap of the level that produced the returned verdict.
     pub(crate) final_depth: usize,
+    /// The adaptive shutoff was latched for this pair, so the shallow phase was
+    /// skipped and only the final (unbounded, deepest) level ran. Observable so
+    /// the canaries can pin the shutoff without depending on wall-clock timing.
+    pub(crate) shallow_skipped: bool,
 }
 
 /// Iterative deepening of the classify per-pair wedge depth cap
-/// (`RUSTDL_ITERATIVE_DEEPENING`). **DEFAULT OFF**; `=1` opts in.
+/// (`RUSTDL_ITERATIVE_DEEPENING`). **DEFAULT ON** since 2026-08-02; only an
+/// explicit `=0` reverts (an EMPTY value ENABLES, per the house default-ON
+/// idiom — see `hyper_*_enabled`).
 ///
 /// Flag-OFF the classify subsumption oracle takes exactly the pre-change path
 /// (one `decide_with_stats` at [`HYPER_WEDGE_DEPTH`]), so the off path is
 /// byte-identical by construction.
+///
+/// **Why the default flipped.** A 1,920-ontology ORE sweep (single-thread,
+/// 60 s cap, one pinned binary with the flag toggled by env) measured, ON vs
+/// OFF: **16 recoveries** (`dnf` → `ok`), **0 regressions** (`ok` → `dnf`),
+/// 10 materially faster / **0 materially slower** (>25% and >2 s), and a 2.1%
+/// aggregate wall reduction over the 1,730 both-completing ontologies. The
+/// pre-registered decision rule was zero `ok` → `dnf`. Deepening is
+/// verdict-monotone (the final level's cap is `>= HYPER_WEDGE_DEPTH`), and a
+/// 26-ontology OFF-vs-ON closure diff — biased toward the ontologies where the
+/// shutoff demonstrably acts — found **0 lost and 0 gained** subsumptions.
+/// See `docs/2026-08-02-iterative-deepening-results.md`.
 #[must_use]
 pub(crate) fn iterative_deepening_enabled() -> bool {
-    std::env::var_os("RUSTDL_ITERATIVE_DEEPENING").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_ITERATIVE_DEEPENING").is_none_or(|v| v != "0")
 }
 
 /// Default wall budget, in milliseconds, for the WHOLE shallow phase of one
@@ -1643,6 +1660,121 @@ fn id_shallow_budget_ms() -> u64 {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(ID_SHALLOW_BUDGET_MS)
+}
+
+/// How much wall, in milliseconds, one classify may WASTE on iterative-deepening
+/// shallow phases that fail to decide their pair, before the shallow phase is
+/// switched off for the rest of that classify. Overridable with
+/// `RUSTDL_ID_SHALLOW_WASTE_MS`; `0` disables the shutoff (restoring the
+/// always-run-shallow behaviour that regressed `ore_ont_13991`).
+///
+/// **Why a fixed per-pair shallow budget is not enough.** [`ID_SHALLOW_BUDGET_MS`]
+/// is a **per-pair** constant, so the shallow phase's total cost scales with the
+/// pair count — which is quadratic in the class count. `ore_ont_13991` (3,119
+/// classes, **56,760 pairs**) classifies in 32.79 s with deepening off and **DNFs
+/// at 180 s** with it on. The dose–response confirms the mechanism rather than
+/// merely fitting it:
+///
+/// | `RUSTDL_ID_SHALLOW_MS` | `ore_ont_13991` |
+/// |---|---|
+/// | 5 (default) | DNF @200 s |
+/// | 1 | completes, 90.31 s, 2,558 subs — identical to OFF |
+/// | 0 (bound disabled) | DNF @200 s |
+///
+/// At 1 ms the overhead is 90.31 − 32.79 = **57.5 s** against a predicted
+/// 1 ms × 56,760 = **57 s**.
+///
+/// **The discriminator is not size — it is whether the shallow phase DECIDES.**
+/// The shallow phase never does re-work that the final level then repeats for
+/// free: it either decides the pair (and the deepest level is never run) or it
+/// is pure tax. On `wine` it decides nearly every pair (3,454 land in the 0 ms
+/// bucket at depth 8) and repays its cost many times over; on `ore_ont_13991` it
+/// decides essentially nothing and costs 5 ms × 56,760. So the fix measures the
+/// discriminator directly instead of proxying it.
+///
+/// **A CONSECUTIVE-MISS COUNTER WAS TRIED FIRST AND IS REFUTED — do not
+/// reintroduce it.** "Stop after the shallow phase fails to decide the last K
+/// consecutive pairs" is the obvious reading of the discriminator, and it does
+/// not survive contact with `13991`, measured on this binary:
+///
+/// | consecutive-miss K | `ore_ont_13991` |
+/// |---|---|
+/// | 1 | completes, 39.46 s (= the 39.25 s flag-OFF baseline) |
+/// | 16 | **DNF @90 s** |
+/// | 256 | **DNF @60 s** |
+///
+/// The cliff between K=1 and K=16 is the refutation. `13991`'s shallow phase is
+/// not uniformly useless — it decides a great many pairs *cheaply* (an easy pair
+/// goes `Sat` at depth 8 in microseconds) while a separate subpopulation misses
+/// at the full 5 ms. Those interleave, so any decide resets the run and the latch
+/// never trips. "Consecutive" measures the WRONG THING: the harm is not a run of
+/// failures, it is accumulated wall.
+///
+/// **So the shutoff meters the harm in the units the harm is measured in:**
+/// wall spent on shallow phases that did not decide. A decide is not charged —
+/// it is the thing being paid for, and on the winning population it is nearly
+/// free anyway. This is immune to the interleaving that broke the counter,
+/// because a cheap decide neither adds to the total nor cancels what is already
+/// in it.
+///
+/// **Why 1000 ms.** It bounds the worst measured tax to ~1 s (`13991`: 39.25 s
+/// flag-OFF, so ~3%) while being far more than the winning population ever
+/// wastes — `wine` and the depth-8 recoveries `ore_ont_2182`/`16481` decide in
+/// the shallow phase, so they accumulate waste slowly and never reach it.
+///
+/// **Why the shutoff is permanent for the rest of the classify, with no retry.**
+/// It is self-latching rather than explicitly latched: once the total reaches the
+/// budget the shallow phase stops running, so it can no longer add to the total.
+/// That needs no second constant and no second mechanism. A periodic re-probe was
+/// considered and rejected as unjustified — it would cost little, but nothing
+/// measured shows it recovers anything, and all 16 sweep recoveries are retained
+/// without it.
+///
+/// **Alternatives considered and rejected**, both of which proxy the
+/// discriminator instead of measuring it:
+/// * A **global budget on the shallow phase itself** (rather than on its waste).
+///   This conflates exactly the two populations the per-pair constant already
+///   conflates: `wine` runs its shallow phase on thousands of pairs and *wins*
+///   there, so a global cap small enough to protect `13991` would cut `wine`'s
+///   shallow phase off partway through and destroy its 92–98% win. Charging only
+///   the non-deciding pairs is what separates them.
+/// * **Scaling the per-pair constant by the pair count.** Size is only a proxy: a
+///   large ontology whose shallow phase does pay would be penalised for being
+///   large, and a small one where it never pays would keep paying. The same
+///   structural-profile trap is on record in
+///   `docs/2026-08-02-iterative-deepening-results.md`, where 41 of
+///   `ore_ont_10407`'s "50 cardinality axioms" turned out to be
+///   `MinCardinality(0 R)` tautologies.
+///
+/// **Determinism note.** The accumulator is shared across rayon workers, so
+/// *which* pairs get a shallow phase can vary run to run. That cannot vary the
+/// ANSWERS on an unbounded run: by the soundness note below, both paths return a
+/// verdict `>=` the flag-OFF verdict for that pair, and the flag-OFF verdict does
+/// not depend on the accumulator. Under a truncating `--pair-timeout-ms` the
+/// hierarchy is already documented as run-to-run nondeterministic on hard
+/// ontologies, independently of this.
+///
+/// **Soundness is untouched, and this is verified rather than assumed** — see
+/// `id_shallow_shutoff_cannot_change_a_verdict` and the canaries in
+/// [`iterative_deepening_tests`]. Skipping the shallow phase runs only the final
+/// level, whose cap is `>= HYPER_WEDGE_DEPTH` and whose deadline is the caller's
+/// own, so a skipped pair gets *exactly* the flag-OFF search at a cap that is
+/// `>=` the flag-OFF cap. By the monotonicity argument on
+/// [`HyperCache::decide_iterative_deepening`] that verdict is a superset of the
+/// flag-OFF verdict, never a subset. Under a bounded deadline the shutoff can
+/// only *return* budget to the final level, so it cannot lose a pair either.
+const ID_SHALLOW_WASTE_BUDGET_MS: u64 = 1000;
+
+/// Wasted-wall budget for the adaptive shallow shutoff
+/// (`RUSTDL_ID_SHALLOW_WASTE_MS`, default [`ID_SHALLOW_WASTE_BUDGET_MS`], `0`
+/// disables the shutoff). Garbage parses to the default rather than to `0` —
+/// silently disabling the shutoff would reintroduce the `ore_ont_13991`
+/// regression it exists to prevent, exactly as for [`id_shallow_budget_ms`].
+fn id_shallow_waste_budget_ms() -> u64 {
+    std::env::var("RUSTDL_ID_SHALLOW_WASTE_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(ID_SHALLOW_WASTE_BUDGET_MS)
 }
 
 /// Was the depth cap NOT the binding constraint at this level — i.e. would a
@@ -2552,7 +2684,41 @@ fn push_different_individuals_disjoint(
     }
 }
 
+/// One line per classify on `RUSTDL_ID_STATS=1`, so the shutoff's inputs can be
+/// read off a real run instead of inferred. Diagnostic only — nothing in the
+/// engine reads these counters.
+impl Drop for HyperCache {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if std::env::var_os("RUSTDL_ID_STATS").is_some_and(|v| v == "1") {
+            eprintln!(
+                "# id-stats: shallow_decided={} shallow_missed={} shallow_waste_ms={}",
+                self.id_shallow_decided.load(Relaxed),
+                self.id_shallow_missed.load(Relaxed),
+                self.id_shallow_waste_us.load(Relaxed) / 1000,
+            );
+        }
+    }
+}
+
 pub(crate) struct HyperCache {
+    /// Adaptive shutoff for the iterative-deepening shallow phase: cumulative
+    /// MICROSECONDS this classify has spent in shallow phases that did **not**
+    /// decide their pair. Once it reaches [`ID_SHALLOW_WASTE_BUDGET_MS`] the
+    /// shallow phase stops running for the rest of this classify (and therefore
+    /// can no longer add to this total — the latch is self-sustaining).
+    ///
+    /// Scoped to one classify because a `HyperCache` is built per
+    /// `PreparedOntology`. `Relaxed` is sufficient and deliberate: this is a
+    /// cost heuristic, never a correctness input, so an interleaving that
+    /// miscounts under rayon can only shift *when* the shutoff fires, never
+    /// *what* any pair answers (see the soundness note on
+    /// [`ID_SHALLOW_WASTE_BUDGET_MS`]).
+    id_shallow_waste_us: std::sync::atomic::AtomicU64,
+    /// Telemetry only (`RUSTDL_ID_STATS=1` dumps it): pairs the shallow phase
+    /// decided, and pairs it did not. Never read by the shutoff.
+    id_shallow_decided: std::sync::atomic::AtomicU64,
+    id_shallow_missed: std::sync::atomic::AtomicU64,
     /// Base clauses + complement clash clauses (+ the pair-invariant
     /// `value_disjoint` clash clauses when `amortize_idx` is on — folded
     /// in once at build so the shared index covers them). The per-pair
@@ -3044,6 +3210,9 @@ impl HyperCache {
             None
         };
         Self {
+            id_shallow_waste_us: std::sync::atomic::AtomicU64::new(0),
+            id_shallow_decided: std::sync::atomic::AtomicU64::new(0),
+            id_shallow_missed: std::sync::atomic::AtomicU64::new(0),
             clauses,
             sup_neg,
             fresh_q,
@@ -3059,6 +3228,33 @@ impl HyperCache {
             defined_exists_bodies,
             defined_body_by_genus,
         }
+    }
+
+    /// Test accessors for the adaptive-shutoff accumulator. Canaries drive the
+    /// accumulator DIRECTLY rather than trying to burn a real millisecond
+    /// budget, so the shutoff is pinned by construction instead of by timing —
+    /// a wall-clock-dependent test on a loaded host would be flaky in exactly
+    /// the direction that stops testing anything.
+    #[cfg(test)]
+    pub(crate) fn id_shallow_waste_us_for_test(&self) -> u64 {
+        self.id_shallow_waste_us
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_id_shallow_waste_us_for_test(&self, v: u64) {
+        self.id_shallow_waste_us
+            .store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Test accessor: `(shallow_decided, shallow_missed)` telemetry counters.
+    #[cfg(test)]
+    pub(crate) fn id_shallow_counts_for_test(&self) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.id_shallow_decided.load(Relaxed),
+            self.id_shallow_missed.load(Relaxed),
+        )
     }
 
     /// Test accessor: returns the SP2 sat-seed table when the flag is on.
@@ -3104,7 +3300,7 @@ impl HyperCache {
     }
 
     /// Iterative-deepening driver for the classify per-pair oracle
-    /// (`RUSTDL_ITERATIVE_DEEPENING`, default OFF). Runs
+    /// (`RUSTDL_ITERATIVE_DEEPENING`, default ON). Runs
     /// [`decide_with_stats`](Self::decide_with_stats) at each level of
     /// [`depth_schedule`] until the engine returns a **definite** verdict
     /// (`Unsat`/`Sat`) or the schedule is exhausted, and returns that level's
@@ -3176,27 +3372,40 @@ impl HyperCache {
         DeepeningTrace,
     ) {
         use owl_dl_tableau::hyper::HyperResult;
+        use std::sync::atomic::Ordering::Relaxed;
         let schedule = crate::depth_schedule();
         // Shallow phase (every level but the last) shares ONE small wall budget,
         // so the re-work iterative deepening adds to a pair is bounded a priori
         // — see `ID_SHALLOW_BUDGET_MS` for the measurement that forces this.
         // The final level always gets the caller's own deadline, so it is
         // exactly today's search at a deeper cap.
-        let shallow = crate::id_shallow_deadline(
-            std::time::Instant::now(),
-            deadline,
-            crate::id_shallow_budget_ms(),
-        );
+        let started = std::time::Instant::now();
+        let shallow = crate::id_shallow_deadline(started, deadline, crate::id_shallow_budget_ms());
         let last = schedule.len() - 1;
+        // ADAPTIVE SHUTOFF. The per-pair shallow budget bounds the tax on ONE
+        // pair; nothing bounded it across a quadratic pair count, which is the
+        // `ore_ont_13991` regression. Once this classify has burned `waste_budget`
+        // of wall on shallow phases that did NOT decide, the shallow phase has
+        // demonstrably stopped paying on THIS ontology, so skip straight to the
+        // final level. That level carries the caller's own deadline at a cap
+        // `>= HYPER_WEDGE_DEPTH`, so a skipped pair gets exactly the flag-OFF
+        // search at a `>=` cap — it cannot change an answer, only its cost.
+        // See `ID_SHALLOW_WASTE_BUDGET_MS` (incl. why counting CONSECUTIVE
+        // non-deciding pairs instead was measured and refuted).
+        let waste_budget_us = crate::id_shallow_waste_budget_ms().saturating_mul(1000);
+        let shallow_skipped =
+            waste_budget_us != 0 && self.id_shallow_waste_us.load(Relaxed) >= waste_budget_us;
+        let start = if shallow_skipped { last } else { 0 };
         let level_deadline = |i: usize| if i == last { deadline } else { shallow };
         // `schedule` is non-empty by construction (compiled default is, and a
         // malformed override is rejected wholesale in `depth_schedule`).
-        let mut level = self.decide_with_stats(sub, sup, schedule[0], level_deadline(0));
+        let mut level = self.decide_with_stats(sub, sup, schedule[start], level_deadline(start));
         let mut trace = DeepeningTrace {
             levels_run: 1,
-            final_depth: schedule[0],
+            final_depth: schedule[start],
+            shallow_skipped,
         };
-        let mut i = 0usize;
+        let mut i = start;
         while i < last {
             // A definite verdict is final — never deepen past it.
             if !matches!(level.0, HyperResult::Stalled) {
@@ -3225,6 +3434,34 @@ impl HyperCache {
             level = self.decide_with_stats(sub, sup, schedule[i], level_deadline(i));
             trace.levels_run += 1;
             trace.final_depth = schedule[i];
+        }
+        // Feed the shutoff. Only observations count: when the shallow phase was
+        // skipped there is nothing to learn, and not touching the accumulator
+        // here is what makes the latch permanent for the rest of the classify
+        // without a second flag to hold it. "Decided" means a DEFINITE verdict
+        // from a NON-final level — a `Stalled` that merely fell through to the
+        // final level is the tax this shutoff exists to stop paying, and a
+        // verdict from the final level would have been reached with no shallow
+        // phase at all.
+        if !shallow_skipped {
+            let decided_shallow = i < last && !matches!(level.0, HyperResult::Stalled);
+            if decided_shallow {
+                self.id_shallow_decided.fetch_add(1, Relaxed);
+            } else {
+                self.id_shallow_missed.fetch_add(1, Relaxed);
+                // Charge only the shallow phase, never the final level: on a
+                // miss the shallow phase ran until `shallow` (or until it fell
+                // through earlier), and the final level's own wall is work the
+                // flag-OFF path would have done anyway.
+                let spent = shallow
+                    .map_or_else(
+                        || started.elapsed(),
+                        |d| d.saturating_duration_since(started).min(started.elapsed()),
+                    )
+                    .as_micros();
+                self.id_shallow_waste_us
+                    .fetch_add(u64::try_from(spent).unwrap_or(u64::MAX), Relaxed);
+            }
         }
         (level.0, level.1, trace)
     }
@@ -10032,22 +10269,28 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
     // ------------------------------------------------------------ flag + schedule
 
-    /// Default OFF, and ONLY `=1` turns it on (`RUSTDL_ITERATIVE_DEEPENING=true`
-    /// or `=2` must not silently enable a non-default search).
+    /// Default ON (2026-08-02 flip), and ONLY an explicit `=0` reverts.
+    ///
+    /// BOTH halves are pinned deliberately. The unset half guards the flip
+    /// itself; the `=0` half guards the ESCAPE HATCH, and it is the more
+    /// important of the two — an opt-out that silently stopped working would
+    /// leave no way back from a change this large, and would do so without
+    /// failing a single test. Per the house default-ON idiom an EMPTY value
+    /// ENABLES, so it is asserted on the ON side, not the OFF side.
     #[test]
     #[allow(unsafe_code)]
-    fn flag_defaults_off_and_only_1_enables() {
+    fn flag_defaults_on_and_only_0_reverts() {
         let _lock = test_env_lock();
         let prev = std::env::var_os("RUSTDL_ITERATIVE_DEEPENING");
         // SAFETY: serialised by `test_env_lock`; restored below.
         unsafe { std::env::remove_var("RUSTDL_ITERATIVE_DEEPENING") };
-        assert!(!iterative_deepening_enabled(), "default must be OFF");
-        for v in ["0", "", "true", "2", "on"] {
+        assert!(iterative_deepening_enabled(), "unset must be ON");
+        unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", "0") };
+        assert!(!iterative_deepening_enabled(), "=0 must revert");
+        for v in ["", "1", "true", "2", "on"] {
             unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", v) };
-            assert!(!iterative_deepening_enabled(), "{v:?} must not enable");
+            assert!(iterative_deepening_enabled(), "{v:?} must stay ON");
         }
-        unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", "1") };
-        assert!(iterative_deepening_enabled(), "=1 must enable");
         match prev {
             Some(v) => unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", v) },
             None => unsafe { std::env::remove_var("RUSTDL_ITERATIVE_DEEPENING") },
@@ -10199,6 +10442,243 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         }
     }
 
+    // --------------------------------------------- adaptive shallow shutoff
+
+    /// Run `f` with `RUSTDL_ID_SHALLOW_WASTE_MS` set (or cleared) AND
+    /// `RUSTDL_ID_SHALLOW_MS` pinned to `0`, serialised through `test_env_lock`.
+    /// Pinning the per-pair budget off keeps these canaries about the SHUTOFF
+    /// rather than about whether a microsecond search outran a 5 ms wall.
+    #[allow(unsafe_code)]
+    fn with_waste_budget<T>(val: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_ID_SHALLOW_WASTE_MS");
+        let prev_ms = std::env::var_os("RUSTDL_ID_SHALLOW_MS");
+        let prev_sched = std::env::var_os("RUSTDL_ID_SCHEDULE");
+        // SAFETY: serialised by `test_env_lock`; restored before release.
+        unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", "0") };
+        // A two-level schedule makes "reached the FINAL level" — i.e. a shallow
+        // MISS — reachable on the 12-deep chain, which the default schedule
+        // decides at its second (non-final) level.
+        unsafe { std::env::set_var("RUSTDL_ID_SCHEDULE", "8,256") };
+        match val {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_WASTE_MS", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_WASTE_MS") },
+        }
+        let out = f();
+        for (k, v) in [
+            ("RUSTDL_ID_SHALLOW_WASTE_MS", prev),
+            ("RUSTDL_ID_SHALLOW_MS", prev_ms),
+            ("RUSTDL_ID_SCHEDULE", prev_sched),
+        ] {
+            match v {
+                Some(v) => unsafe { std::env::set_var(k, v) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
+        out
+    }
+
+    /// **Control (negatives-first).** On a FRESH cache the accumulator is zero
+    /// and the shallow phase RUNS — so every "the shutoff fired" assertion below
+    /// is discriminating rather than describing the default state. Also pins the
+    /// complement of "the shutoff triggers immediately": it must NOT fire on the
+    /// first pair of a classify.
+    #[test]
+    fn fresh_cache_runs_the_shallow_phase() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        assert_eq!(cache.id_shallow_waste_us_for_test(), 0, "fresh cache");
+        let (res, _, trace) = with_waste_budget(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert!(
+            !trace.shallow_skipped,
+            "the shutoff must NOT fire on the first pair of a classify"
+        );
+        assert_eq!(trace.levels_run, 2, "8 stalls, 256 decides");
+        assert_eq!(res, HyperResult::Unsat);
+    }
+
+    /// A pair the shallow phase DECIDES charges NO waste. **Sabotage target:
+    /// charging every pair** — that would make the accumulator track total
+    /// shallow spend rather than wasted shallow spend, and would shut the phase
+    /// off on exactly the population it wins on (`wine` decides 3,465 pairs and
+    /// wastes 195 ms; `ore_ont_13991` decides 84 and wastes its whole budget).
+    #[test]
+    fn a_deciding_pair_charges_no_waste() {
+        // 3-deep: the FIRST level (8) decides, which is a non-final level.
+        let internal = build_disjunction_chain(3);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _, trace) = with_waste_budget(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert_eq!(res, HyperResult::Unsat);
+        assert_eq!(trace.levels_run, 1, "decided at the first level");
+        assert_eq!(
+            cache.id_shallow_waste_us_for_test(),
+            0,
+            "a shallow DECIDE must not be charged as waste"
+        );
+        assert_eq!(cache.id_shallow_counts_for_test(), (1, 0));
+    }
+
+    /// A pair that falls through to the FINAL level charges waste. **Sabotage
+    /// target: never charging** — an accumulator that never grows is a shutoff
+    /// that never fires, which is the `ore_ont_13991` regression verbatim.
+    #[test]
+    fn a_non_deciding_pair_charges_waste() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _, _) = with_waste_budget(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert_eq!(res, HyperResult::Unsat, "the final level still decides");
+        assert_eq!(
+            cache.id_shallow_counts_for_test(),
+            (0, 1),
+            "reaching the final level is a shallow MISS"
+        );
+        assert!(
+            cache.id_shallow_waste_us_for_test() > 0,
+            "a shallow MISS must be charged, or the shutoff can never fire"
+        );
+    }
+
+    /// A latched accumulator skips the shallow phase entirely: ONE level runs,
+    /// and it is the final one. **Sabotage target: the shutoff never
+    /// triggering.**
+    #[test]
+    fn a_latched_accumulator_skips_the_shallow_phase() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        cache.set_id_shallow_waste_us_for_test(u64::from(u32::MAX));
+        let (res, _, trace) = with_waste_budget(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert!(trace.shallow_skipped, "the shutoff must fire when latched");
+        assert_eq!(trace.levels_run, 1, "only the final level may run");
+        assert_eq!(trace.final_depth, 256, "and it must BE the final level");
+        assert_eq!(res, HyperResult::Unsat);
+    }
+
+    /// **The soundness gate, verified rather than assumed.** The claim on
+    /// [`ID_SHALLOW_WASTE_BUDGET_MS`] is that skipping the shallow phase cannot
+    /// change any answer — it runs only the final level, whose cap is
+    /// `>= HYPER_WEDGE_DEPTH` and whose deadline is the caller's own. Pinned on
+    /// BOTH verdict directions, because a subtractive-only check would miss a
+    /// shutoff that suppressed an `Unsat` into a `Sat`.
+    #[test]
+    fn shutoff_cannot_change_a_verdict() {
+        for (n, want) in [(12usize, HyperResult::Unsat), (20, HyperResult::Unsat)] {
+            for entailed in [true, false] {
+                let internal = if entailed {
+                    build_disjunction_chain(n)
+                } else {
+                    build_unprovable_chain(n)
+                };
+                let expect = if entailed { want } else { HyperResult::Sat };
+                let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+
+                let on = HyperCache::build(&internal);
+                on.set_id_shallow_waste_us_for_test(u64::from(u32::MAX));
+                let (latched, _, t_latched) =
+                    with_waste_budget(None, || on.decide_iterative_deepening_traced(a0, y, None));
+
+                let off = HyperCache::build(&internal);
+                let (unlatched, _, t_unlatched) =
+                    with_waste_budget(None, || off.decide_iterative_deepening_traced(a0, y, None));
+
+                assert!(t_latched.shallow_skipped && !t_unlatched.shallow_skipped);
+                assert_eq!(
+                    latched, unlatched,
+                    "shutoff changed the verdict on chain n={n} entailed={entailed}"
+                );
+                assert_eq!(latched, expect, "chain n={n} entailed={entailed}");
+            }
+        }
+    }
+
+    /// `=0` disables the shutoff, restoring the always-run-shallow behaviour —
+    /// the escape hatch, and the arm that reproduces the `ore_ont_13991`
+    /// regression. **Sabotage target: the shutoff triggering unconditionally.**
+    #[test]
+    fn waste_budget_zero_disables_the_shutoff() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        cache.set_id_shallow_waste_us_for_test(u64::MAX);
+        let (res, _, trace) = with_waste_budget(Some("0"), || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert!(
+            !trace.shallow_skipped,
+            "=0 must disable the shutoff even with the accumulator saturated"
+        );
+        assert_eq!(trace.levels_run, 2, "the shallow phase must still run");
+        assert_eq!(res, HyperResult::Unsat);
+    }
+
+    /// Once latched the shutoff STAYS latched: a skipped pair neither adds to
+    /// the accumulator nor resets it, so no second flag is needed to hold it.
+    /// **Sabotage target: resetting (or charging) on a skipped pair** — a reset
+    /// would re-enable the shallow phase every other pair and halve rather than
+    /// remove the `13991` tax.
+    #[test]
+    fn the_latch_is_self_sustaining() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let latched = u64::from(u32::MAX);
+        cache.set_id_shallow_waste_us_for_test(latched);
+        for _ in 0..3 {
+            let (_, _, trace) = with_waste_budget(None, || {
+                cache.decide_iterative_deepening_traced(a0, y, None)
+            });
+            assert!(trace.shallow_skipped, "must stay latched");
+        }
+        assert_eq!(
+            cache.id_shallow_waste_us_for_test(),
+            latched,
+            "a skipped pair must not touch the accumulator"
+        );
+        assert_eq!(
+            cache.id_shallow_counts_for_test(),
+            (0, 0),
+            "a skipped pair is not an observation"
+        );
+    }
+
+    /// Garbage in `RUSTDL_ID_SHALLOW_WASTE_MS` falls back to the DEFAULT, not to
+    /// `0` — parsing `"abc"` as "disabled" would silently reinstate the
+    /// `ore_ont_13991` DNF, exactly as for `RUSTDL_ID_SHALLOW_MS`.
+    #[test]
+    #[allow(unsafe_code)]
+    fn waste_budget_env_garbage_falls_back_to_the_default() {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_ID_SHALLOW_WASTE_MS");
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        for bad in ["abc", "", "-1", "1s"] {
+            unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_WASTE_MS", bad) };
+            assert_eq!(
+                id_shallow_waste_budget_ms(),
+                ID_SHALLOW_WASTE_BUDGET_MS,
+                "{bad:?} must fall back to the default, NOT to 0"
+            );
+        }
+        unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_WASTE_MS", "250") };
+        assert_eq!(id_shallow_waste_budget_ms(), 250);
+        unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_WASTE_MS") };
+        assert_eq!(id_shallow_waste_budget_ms(), ID_SHALLOW_WASTE_BUDGET_MS);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_WASTE_MS", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_WASTE_MS") },
+        }
+    }
+
     /// A budget-cut shallow level must NOT be mistaken for an exhausted one.
     /// **Sabotage target: dropping the `shallow_spent` term** from
     /// `id_cap_was_not_binding` — that inversion silently turns every deep pair
@@ -10256,18 +10736,30 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 
     /// Flag-OFF, `decide` takes the single fixed-cap path and agrees with a
     /// direct `decide_with_stats(.., HYPER_WEDGE_DEPTH, ..)`.
+    ///
+    /// Pins `RUSTDL_ITERATIVE_DEEPENING=0` EXPLICITLY rather than reading it off
+    /// the ambient default. This test used to assert the ambient default was
+    /// OFF, which made it fail the moment the default flipped to ON on
+    /// 2026-08-02 — a dispatch change, not a regression: the test wants the
+    /// flag-OFF path, so it should ASK for it.
     #[test]
+    #[allow(unsafe_code)]
     fn flag_off_matches_the_fixed_cap_path() {
         let internal = build_disjunction_chain(12);
         let cache = HyperCache::build(&internal);
         let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
         let _lock = test_env_lock();
-        assert!(
-            !iterative_deepening_enabled(),
-            "this test assumes the ambient default (OFF)"
-        );
+        let prev = std::env::var_os("RUSTDL_ITERATIVE_DEEPENING");
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", "0") };
+        assert!(!iterative_deepening_enabled(), "pinned OFF for this test");
         let (fixed, _) = cache.decide_with_stats(a0, y, HYPER_WEDGE_DEPTH, None);
+        let decided = cache.decide(a0, y, None);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ITERATIVE_DEEPENING") },
+        }
         assert_eq!(fixed, HyperResult::Unsat);
-        assert_eq!(cache.decide(a0, y, None), HyperVerdict::Subsumed);
+        assert_eq!(decided, HyperVerdict::Subsumed);
     }
 }

@@ -109,6 +109,60 @@ pub struct SaturationResult {
     /// derived. Sound under-approximation of entailed `SameIndividual`.
     /// Empty on clash.
     pub derived_same: Vec<(IndividualId, IndividualId)>,
+    /// True iff the fixpoint was ABANDONED on the caller's deadline before
+    /// reaching a fixpoint (only reachable via
+    /// [`saturate_abox_consistency_bounded`] with `Some(deadline)`; the
+    /// unbounded entry point can never set it).
+    ///
+    /// When set, **the result carries no information**: `clash` is `false`
+    /// (which is *not* a claim of consistency — the pre-check is a sound
+    /// under-approximation, so "no clash" already means "no verdict"), and
+    /// `edges` / `derived_same` are empty so a partial closure can never be
+    /// mistaken for the fixpoint one.
+    pub timed_out: bool,
+}
+
+/// How many worklist pops / inner chain steps between two clock reads.
+///
+/// A per-iteration `Instant::now()` is itself a measured cost in this codebase
+/// (11.28% self-time on one ontology), so the deadline is sampled every
+/// `DEADLINE_CHECK_EVERY` steps instead. Overshoot is bounded by the cost of
+/// that many steps, which is microseconds here — negligible against a
+/// budget quoted in milliseconds.
+const DEADLINE_CHECK_EVERY: u32 = 4096;
+
+/// Cheap periodic deadline sampler. `None` ⇒ every probe is a single
+/// `Option` test and no clock read at all, so the unbounded callers
+/// (`is_consistent`, `realize`, `materialize_*`, `diagnose`, …) are
+/// byte-for-byte on their old path.
+struct Deadline {
+    at: Option<std::time::Instant>,
+    tick: u32,
+}
+
+impl Deadline {
+    fn new(at: Option<std::time::Instant>) -> Self {
+        Self { at, tick: 0 }
+    }
+
+    /// Hot-loop probe: reads the clock only once every
+    /// [`DEADLINE_CHECK_EVERY`] calls.
+    #[inline]
+    fn hit(&mut self) -> bool {
+        let Some(at) = self.at else { return false };
+        self.tick = self.tick.wrapping_add(1);
+        if !self.tick.is_multiple_of(DEADLINE_CHECK_EVERY) {
+            return false;
+        }
+        std::time::Instant::now() >= at
+    }
+
+    /// Coarse probe for once-per-phase sites (top of the fixpoint iteration,
+    /// per rule) where a clock read is already amortized over a lot of work.
+    #[inline]
+    fn hit_now(&self) -> bool {
+        self.at.is_some_and(|at| std::time::Instant::now() >= at)
+    }
 }
 
 /// Check whether `internal` is ABox-inconsistent under named-only semantics.
@@ -123,9 +177,39 @@ pub struct SaturationResult {
 /// 2. Apply inverse materialization, role hierarchy, role chains, domain/range,
 ///    type propagation (SubClassOf/EquivalentClasses), and functional merge until stable.
 /// 3. After every iteration, check disjoint clash.
-#[allow(clippy::too_many_lines)]
 pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResult {
+    saturate_abox_consistency_bounded(internal, None)
+}
+
+/// [`saturate_abox_consistency`] with an optional wall-clock deadline.
+///
+/// `None` is exactly the unbounded function (no clock reads at all). With
+/// `Some(deadline)`, the fixpoint is ABANDONED once the deadline passes and the
+/// result comes back with [`SaturationResult::timed_out`] set, `clash == false`
+/// and empty `edges` / `derived_same`.
+///
+/// **Bounding is safe by this pre-check's own contract**: it is a sound
+/// UNDER-approximation — a clash proves inconsistency, but *no clash yields no
+/// verdict and the caller proceeds exactly as before*. Abandoning therefore
+/// costs at most the inconsistency detection (a MISS), never correctness. It
+/// can never turn a consistent KB inconsistent, because a verdict is only ever
+/// derived from a clash that was actually found.
+///
+/// Only the **classify** path passes a deadline (see
+/// `classify_inconsistency_precheck`): there the pre-check is an accelerator
+/// bolted onto an answer classify can produce anyway, and on ABoxes with
+/// ~60k–110k assertions it dominated the whole classify wall (four ORE
+/// ontologies regressed from ~2–4 s to DNF at 60 s when it was made default-ON
+/// in v0.4.8). `is_consistent` / `realize` / `materialize_*` / `diagnose` keep
+/// calling the unbounded entry point — for them the pre-check *is* the point of
+/// the call.
+#[allow(clippy::too_many_lines)]
+pub fn saturate_abox_consistency_bounded(
+    internal: &InternalOntology,
+    deadline: Option<std::time::Instant>,
+) -> SaturationResult {
     let trace = std::env::var("RUSTDL_TRACE").map_or(false, |v| v == "1");
+    let mut budget = Deadline::new(deadline);
 
     let pool = &internal.concepts;
     let vocab = &internal.vocabulary;
@@ -582,6 +666,7 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         edge_additions: 0,
         edges: Vec::new(),
         derived_same: Vec::new(),
+        timed_out: false,
     };
 
     // Helper closures (we'll use inline logic for borrow reasons)
@@ -643,11 +728,23 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
     // ── Fixpoint ───────────────────────────────────────────────────────────────
 
     let mut changed = true;
-    while changed {
+    // Set iff the caller's deadline expired mid-fixpoint; see the
+    // `timed_out` contract on `SaturationResult`.
+    let mut timed_out = false;
+    'fixpoint: while changed {
         changed = false;
+
+        if budget.hit_now() {
+            timed_out = true;
+            break 'fixpoint;
+        }
 
         // Drain type queue
         while let Some((ind, cls)) = type_queue.pop_front() {
+            if budget.hit() {
+                timed_out = true;
+                break 'fixpoint;
+            }
             if types.entry(ind).or_default().insert(cls) {
                 result.type_additions += 1;
                 changed = true;
@@ -716,6 +813,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
 
         // Drain edge queue
         while let Some((rid, a, b)) = edge_queue.pop_front() {
+            if budget.hit() {
+                timed_out = true;
+                break 'fixpoint;
+            }
             result.edge_additions += 1;
             changed = true;
 
@@ -799,6 +900,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
 
         // Rule 4: role chains. Snapshot the current edge set once per outer
         // iteration (new edges are picked up next iteration, as before).
+        if budget.hit_now() {
+            timed_out = true;
+            break 'fixpoint;
+        }
         let edge_vec: Vec<RawEdge> = edges.iter().copied().collect();
 
         // Phase 1a (perf/abox-chain-index): index the snapshot by (role, src)
@@ -850,6 +955,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         {
             // edge matching r1 (a→b) + edge matching r2 (b→c) → sup (a→c).
             for &(ea_id, ea, eb) in &edge_vec {
+                if budget.hit() {
+                    timed_out = true;
+                    break 'fixpoint;
+                }
                 if ea_id != r1_id {
                     continue;
                 }
@@ -875,6 +984,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
             .collect::<Vec<_>>()
         {
             for &(ea_id, ea, eb) in &edge_vec {
+                if budget.hit() {
+                    timed_out = true;
+                    break 'fixpoint;
+                }
                 if ea_id != r1_id {
                     continue;
                 }
@@ -897,6 +1010,10 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         // For each functional role R and each individual a that has ≥2 distinct R-fillers,
         // propagate types bidirectionally between the fillers.
         for &(func_rid, func_inv) in &functional {
+            if budget.hit_now() {
+                timed_out = true;
+                break 'fixpoint;
+            }
             // Collect all a → fillers(a) via role func_rid (in direction func_inv)
             // functional role: FunctionalRole(R) means at most one R-successor
             // InverseFunctionalRole(R) = FunctionalRole(R⁻) → at most one R-predecessor
@@ -1023,6 +1140,31 @@ pub fn saturate_abox_consistency(internal: &InternalOntology) -> SaturationResul
         if result.clash {
             break;
         }
+    }
+
+    // ── Deadline abandonment ─────────────────────────────────────────────────
+    // Reachable only from `saturate_abox_consistency_bounded(_, Some(..))`.
+    // The fixpoint is incomplete, so report NOTHING: `clash = false` is already
+    // the "no verdict" answer this pre-check gives when it finds nothing, and
+    // the partial `edges` / `derived_same` are dropped so no caller can mistake
+    // them for the fixpoint sets. Note `clash` cannot have been true here — a
+    // clash breaks the loop at the bottom check above, before any deadline
+    // probe of the next iteration.
+    if timed_out {
+        if trace {
+            eprintln!(
+                "[abox-sat] DEADLINE: fixpoint abandoned after {} type / {} edge additions \
+                 (no verdict)",
+                result.type_additions, result.edge_additions
+            );
+        }
+        return SaturationResult {
+            clash: false,
+            timed_out: true,
+            edges: Vec::new(),
+            derived_same: Vec::new(),
+            ..result
+        };
     }
 
     // ── Diagnostic: sex-clash candidates (Man ∩ Woman co-occurrence) ─────────

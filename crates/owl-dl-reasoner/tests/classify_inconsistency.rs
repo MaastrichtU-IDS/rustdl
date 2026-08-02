@@ -107,6 +107,16 @@ fn family_classify_agrees_with_is_consistent() {
     );
 
     let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_INCONSISTENCY", "1");
+    // Pin the classify-path budget OFF (`0` = unbounded). `family.ofn` needs
+    // ~2.0 s of ABox saturation in a RELEASE build (506 individuals, but a
+    // 267k-edge role-chain closure) and several times that in the unoptimized
+    // test profile, so under the shipped 3000 ms default this canary would be
+    // measuring the host rather than the code. What it must pin is the
+    // *signal*: that classify consults the ABox-saturation clash at all.
+    // That the shipped DEFAULT budget suffices in a release build is gated
+    // separately — at the CLI, and profile-independently by
+    // `classify_inconsistency_budget::default_budget_still_detects_small_abox_inconsistency`.
+    let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_INCONSISTENCY_MS", "0");
     let classification = classify(&onto).expect("classify succeeds");
 
     assert!(

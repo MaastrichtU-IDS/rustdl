@@ -1390,6 +1390,30 @@ inputs, not wall time.
 >   ABox-bearing ORE ontologies. Six ontologies *appeared* to change output — an
 >   **OFF-vs-OFF control reproduced the identical diffs**, and banner-stripped bodies
 >   matched 6/6, so those were nondeterministic timing banners, not answers.
+>   > **THAT −1.5% SAMPLE WAS TOO SMALL — the flip SHIPPED A REGRESSION, fixed
+>   > 2026-08-02 by `RUSTDL_CLASSIFY_INCONSISTENCY_MS` (default 3000, `0` =
+>   > unbounded).** A 1,920-ontology v0.4.6-vs-`main` sweep found **four ontologies
+>   > that went `ok` → `dnf`** — `ore_ont_10838` 4.86 s, `15846` 21.73 s, `16315`
+>   > 4.42 s, `3087` 4.80 s, all **DNF at 60 s** — and bisected every one to this
+>   > flag. Mechanism: the flag runs the *unbounded* `abox_saturation` fixpoint on
+>   > the classify path, and these ABoxes carry 60k–110k assertions, so the
+>   > pre-check dominates the classify it precedes. The 12-ontology cost benchmark
+>   > simply did not contain this population.
+>   >
+>   > The fix budgets the ABox half **on the classify path only** (a timeout ⇒ no
+>   > verdict, which is what "no clash" already meant; `is_consistent` / `realize` /
+>   > `materialize_*` / `diagnose` stay unbounded). Post-fix: 5.43 / 7.78 / 4.34 /
+>   > 4.98 s, three of the four at or below their v0.4.6 wall.
+>   >
+>   > **The obvious default is wrong: "a few hundred ms" is NOT ample.** `family.ofn`
+>   > — the very ontology this flag exists for — needs **~2.0 s** of ABox saturation
+>   > in a release build (classify 2.67 s with the pre-check vs 0.67 s without; 506
+>   > individuals but a **267k-edge** role-chain closure). Anything under ~2.5 s
+>   > silently re-breaks `family`. Measure `family` before touching this default.
+>   > Corollary for tests: the unoptimized test profile is several times slower
+>   > again, so `family_classify_agrees_with_is_consistent` pins the budget to `0`;
+>   > the default-budget property is canaried on a small synthetic ABox clash
+>   > instead (`classify_inconsistency_budget.rs`).
 > - **`RUSTDL_EL_BOT_FILLER`** — `X ⊑ ∃r.⊥` was certified pure-EL-complete while the
 >   lowering dropped it. Fixed in the **saturator**, not by tightening the gate (which
 >   would only relocate the MISS to the hybrid path), and made **total** via a recursive

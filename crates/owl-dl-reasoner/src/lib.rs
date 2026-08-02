@@ -1954,8 +1954,9 @@ pub fn abox_saturation_enabled() -> bool {
 /// Run the KB-level inconsistency pre-checks on the **classify** path too, so
 /// `classify --json` cannot report `"consistent": true` on a KB the sibling
 /// `rustdl consistent` subcommand calls `inconsistent`
-/// (`RUSTDL_CLASSIFY_INCONSISTENCY`). **Default OFF** (set `=1` to opt in;
-/// `=0`/empty is the pre-2026-08-01 behaviour).
+/// (`RUSTDL_CLASSIFY_INCONSISTENCY`). **Default ON since 0.4.8** (`=0` reverts
+/// to the pre-2026-08-01 behaviour). The `ABox`-saturation half runs under the
+/// [`classify_inconsistency_budget_ms`] budget on this path only.
 ///
 /// Motivation: `classify` used to consult only [`abox_check`] (the Phase A1
 /// pattern matcher) and, on the *pure-EL path only*, the saturator's `⊤`-unsat
@@ -1971,8 +1972,10 @@ pub fn abox_saturation_enabled() -> bool {
 pub fn classify_inconsistency_enabled() -> bool {
     // DEFAULT ON since 0.4.8 (`=0` reverts). Without it `classify --json` and the
     // `consistent` subcommand contradict each other on an inconsistent KB. Measured
-    // verdict-inert on consistent input and cost-free (-1.5% over 12 ABox-bearing ORE
-    // ontologies; the apparent output diffs reproduce under an OFF-vs-OFF control).
+    // Verdict-inert on consistent input. NOTE the original cost justification (-1.5% over 12
+    // ABox-bearing ORE ontologies) was UNDER-POWERED: a full-corpus sweep later found 4
+    // ontologies regressing from ~5 s to DNF, because 12 ontologies missed the 60k+-assertion
+    // population entirely. The cost is now bounded by `classify_inconsistency_budget_ms`.
     std::env::var_os("RUSTDL_CLASSIFY_INCONSISTENCY").is_none_or(|v| v != "0")
 }
 
@@ -2015,6 +2018,41 @@ pub fn prep_deadline_enabled() -> bool {
     std::env::var_os("RUSTDL_PREP_DEADLINE").is_some_and(|v| v == "1")
 }
 
+/// Wall-clock budget, in milliseconds, for the `ABox`-saturation half of the
+/// **classify** inconsistency pre-check (`RUSTDL_CLASSIFY_INCONSISTENCY_MS`).
+/// **Default 3000**; `0` (or a garbage value) means unbounded.
+///
+/// Bounds ONLY the classify path. `is_consistent` / `realize` /
+/// `materialize_*` / `diagnose` stay unbounded — for them the pre-check *is*
+/// the point of the call.
+///
+/// **Why a budget at all:** making `RUSTDL_CLASSIFY_INCONSISTENCY` default-ON
+/// in v0.4.8 put an unbounded named-individual fixpoint in front of every
+/// classify. On ORE ontologies with ~60k–110k `ABox` assertions that fixpoint
+/// dominates the whole run — `ore_ont_{10838,15846,16315,3087}` went from
+/// 1.3–4.4 s to **DNF at 60 s**. Bounding it is safe by the pre-check's own
+/// contract (sound under-approximation: no clash ⇒ no verdict ⇒ the caller
+/// proceeds exactly as before), so a timeout costs at most the inconsistency
+/// detection, never correctness.
+///
+/// **Why 3000 and not "a few hundred ms":** measured, not assumed. On
+/// `family.ofn` — the ontology this pre-check exists for — the `ABox`
+/// saturation itself takes **~2.0 s** on the reference host (classify 2.67 s
+/// with the pre-check vs 0.67 s without; 506 individuals but a 267k-edge
+/// role-chain closure). A few-hundred-ms budget would silently break exactly
+/// the detection the flag was added for. 3000 ms keeps `family` with ~1.5×
+/// headroom while capping the pathological `ABox`es; a much larger default would
+/// just move the tax onto every big-ABox classify. Raise it (or set `0`) if you
+/// have a large `ABox` whose inconsistency you need `classify` to see.
+#[must_use]
+pub fn classify_inconsistency_budget_ms() -> u64 {
+    const DEFAULT_MS: u64 = 3000;
+    std::env::var("RUSTDL_CLASSIFY_INCONSISTENCY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MS)
+}
+
 /// The `ABox`-saturation half of the KB-level inconsistency pre-check, factored
 /// out so `is_consistent` and `classify` cannot drift apart.
 ///
@@ -2024,11 +2062,30 @@ pub fn prep_deadline_enabled() -> bool {
 /// falls through to its normal path unchanged. Guarded by
 /// [`abox_saturation_enabled`] and `has_abox_axioms`, so `ABox`-free inputs pay
 /// nothing.
+///
+/// Unbounded — the shape `is_consistent` and friends want.
 #[must_use]
 pub(crate) fn abox_saturation_inconsistent(internal: &InternalOntology) -> bool {
-    abox_saturation_enabled()
-        && classify::has_abox_axioms(internal)
-        && abox_saturation::saturate_abox_consistency(internal).clash
+    abox_saturation_inconsistent_bounded(internal, None)
+}
+
+/// [`abox_saturation_inconsistent`] with an optional wall-clock budget; the two
+/// share one body so the bounded (classify) and unbounded (`is_consistent`)
+/// surfaces still cannot drift.
+///
+/// A timeout yields `false` — i.e. *no verdict*, indistinguishable from "the
+/// fixpoint completed and found no clash", which is what every caller already
+/// handles. It can never manufacture an inconsistency.
+#[must_use]
+pub(crate) fn abox_saturation_inconsistent_bounded(
+    internal: &InternalOntology,
+    budget: Option<std::time::Duration>,
+) -> bool {
+    if !abox_saturation_enabled() || !classify::has_abox_axioms(internal) {
+        return false;
+    }
+    let deadline = budget.map(|b| std::time::Instant::now() + b);
+    abox_saturation::saturate_abox_consistency_bounded(internal, deadline).clash
 }
 
 /// Sound KB-level inconsistency pre-check for the classify drivers.
@@ -2042,7 +2099,11 @@ pub(crate) fn abox_saturation_inconsistent(internal: &InternalOntology) -> bool 
 ///    `⊥`). This is verbatim the test `classify_pure_el` already applies; the
 ///    hybrid path simply never ran it.
 /// 2. **`ABox`-saturation clash** — [`abox_saturation_inconsistent`], the same
-///    pre-check `is_consistent` runs before its tableau.
+///    pre-check `is_consistent` runs before its tableau, here under the
+///    [`classify_inconsistency_budget_ms`] wall-clock budget (classify is the
+///    one caller for which this pre-check is an accelerator rather than the
+///    answer, and an unbounded fixpoint over a 60k-assertion `ABox` costs more
+///    than the classify it precedes). A timeout yields no verdict.
 ///
 /// **Soundness subtlety (deliberate, load-bearing):** *all named classes being
 /// unsatisfiable is NOT an inconsistency signal.* `{A ⊑ ⊥, B ⊑ ⊥}` empties every
@@ -2058,7 +2119,13 @@ pub(crate) fn classify_inconsistency_precheck(
 ) -> bool {
     closure.globally_inconsistent()
         || closure.top_is_unsat()
-        || abox_saturation_inconsistent(internal)
+        || abox_saturation_inconsistent_bounded(
+            internal,
+            match classify_inconsistency_budget_ms() {
+                0 => None,
+                ms => Some(std::time::Duration::from_millis(ms)),
+            },
+        )
 }
 
 /// Per-class deadline (in milliseconds) for the Phase 7 label-cache

@@ -4,6 +4,85 @@ All notable changes to rustdl are documented here. Format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); rustdl follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — classify regression from the v0.4.8 inconsistency pre-check
+
+`RUSTDL_CLASSIFY_INCONSISTENCY` (default ON since v0.4.8) puts an **unbounded**
+consequence-based fixpoint over named individuals in front of every classify. On ORE
+ontologies with very large `ABox`es that fixpoint costs more than the classify it
+precedes. A full-corpus before/after sweep (v0.4.6 vs `main`, 1,920 ontologies, 60 s
+cap, single-thread) found **four ontologies that went from `ok` to `dnf`**, and
+bisected all four to that one flag.
+
+The `ABox`-saturation half now runs under a wall-clock budget **on the classify path
+only** (`RUSTDL_CLASSIFY_INCONSISTENCY_MS`, **default 3000**, `0` = unbounded).
+`is_consistent` / `realize` / `materialize_*` / `diagnose` are untouched — for them
+the pre-check *is* the point of the call.
+
+| ontology | v0.4.6 | `main` (v0.4.10) | this fix |
+|---|---|---|---|
+| `ore_ont_10838` | 4.86 s | **DNF @60 s** | 5.43 s |
+| `ore_ont_15846` | 21.73 s | **DNF @60 s** | 7.78 s |
+| `ore_ont_16315` | 4.42 s | **DNF @60 s** | 4.34 s |
+| `ore_ont_3087` | 4.80 s | **DNF @60 s** | 4.98 s |
+
+**Bounding is safe by the pre-check's own contract**: it is a sound
+UNDER-approximation — a clash proves inconsistency, but *no clash yields no verdict
+and the caller proceeds exactly as before*. A timeout therefore returns the
+no-verdict answer every caller already handles; it can never manufacture an
+inconsistency. The abandoned run also drops its partial `edges` / `derived_same` so
+a half-saturated closure cannot be mistaken for the fixpoint one. The clock is
+sampled every 4096 worklist pops / chain steps, and a `None` deadline reads it zero
+times, so the unbounded callers keep their exact previous code path.
+
+**The default is 3000 ms because "a few hundred ms" was falsified by measurement.**
+On `family.ofn` — the ontology this pre-check exists for — the `ABox` saturation
+itself takes **~2.0 s** on the reference host (classify 2.67 s with the pre-check vs
+0.67 s without: 506 individuals, but a 267k-edge role-chain closure). A
+few-hundred-ms budget would silently break exactly the detection the flag was added
+for. At 3000 ms the tax on a pathological `ABox` is ~3.0–3.5 s and `family` keeps
+~1.5× headroom. Gates: `classify --json family.ofn` output **byte-identical** to
+pre-change `main`; `{A ⊑ ⊥, B ⊑ ⊥}` still `consistent: true` (all-classes-unsat is
+NOT inconsistency); `rustdl consistent family.ofn` unchanged at 2.63 s.
+
+**Sabotage record — 8 sabotages, 5 caught, 3 survivors** (each run strictly
+serially against `classify_inconsistency_budget.rs`; survivors reported because a
+test written to guard X often does not guard X):
+
+| # | sabotage | result |
+|---|---|---|
+| 1 | delete the two **worklist-drain** probes | first run **SURVIVED 8/8** → drove two new single-drain fixtures (`type_ladder` / `role_ladder`) → then **caught, 2 fail** |
+| 2 | delete the two **role-chain** probes | **SURVIVED 10/10** |
+| 3 | timeout returns `clash: true` | caught, 2 fail |
+| 4 | timeout publishes the partial `edges` | caught, 1 fail |
+| 5 | budget wired into `abox_saturation_inconsistent` (the unbounded wrapper) | **SURVIVED twice** (cheap and slow fixtures) |
+| 6 | budget wired into `saturate_abox_consistency` (the unbounded saturator entry) | caught, 1 fail |
+| 7 | shipped default slashed 3000 → 1 ms | **SURVIVED twice** |
+| 8 | sampler `Deadline::hit` never fires | caught, 2 fail |
+
+The three survivors are **latent, not absent**, and each has a diagnosis recorded
+in the test file: (2) the chain probe fires per *outer* chain edge, and every
+fixture here grows its closure across iterations, so the per-iteration probe cuts
+first — a fixture whose single chain pass exceeds 4096 outer edges would be needed;
+(5) `is_consistent` has a complete tableau fallback, so a leak is invisible on any
+fixture the tableau can also solve — the known exception is `family.ofn` itself,
+which would hang rather than fail; (7) **no in-tree canary pins the 3000 ms
+number** — every cheap synthetic ABox clash is also caught by an unbudgeted route
+(the slow one still reports `consistent: false` under both
+`RUSTDL_CLASSIFY_INCONSISTENCY=0` and `RUSTDL_ABOX_CHECK=0`). The default is
+carried by the release-CLI `family.ofn` measurement above; re-measure `family`
+before changing it. Sabotage 6 is the one with teeth for leaks, because
+`materialize_object_property_assertions` publishes the closure itself.
+
+Canaries: `crates/owl-dl-reasoner/tests/classify_inconsistency_budget.rs` (12,
+negatives first). The pre-existing `family_classify_agrees_with_is_consistent` now
+pins the budget to `0` — `family` needs more than any sane default in the
+unoptimized test profile, so under the default that canary would measure the host;
+the profile-independent replacement is
+`default_budget_still_detects_small_abox_inconsistency`, a small functional-role
+`ABox` clash detected under the shipped default.
+
 ## [0.4.10] — 2026-08-01
 
 Throughput release, and the first one chosen by a **pre-registered experiment** rather than by

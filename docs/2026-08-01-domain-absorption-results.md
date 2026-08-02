@@ -360,3 +360,67 @@ has yet been shown to recover from removing qualified-∃ residuals. But it is *
 is a precise cut (or the implementation itself) applied to `ore_ont_14551` — 2,755 classes, the
 only small one in that band, and therefore the one case where a recovery could not be dismissed
 as scale.
+
+---
+
+## Two-factor test (2026-08-02): residuals are NOT the discriminator — disjunctive concept rules are
+
+The `3281` split showed cost came from the *interaction* of residual disjunctions and
+disjunctive concept rules (either alone: 0.02 s; both: 8.84 s). That suggested coupling domain
+absorption with a second technique. Tested on a population instead of an instance.
+
+**Design.** All 167 DNF survivors (161 measurable) against a **contrast group of 180 ontologies
+that COMPLETE** (seeded sample of the 1,607 `ok` at 60 s). A correlation within the DNF set
+alone would have been meaningless — every member has the same outcome by construction.
+
+**AUC = P[DNF value > OK value]; 0.5 is no separation.**
+
+| factor | AUC | OK median | DNF median |
+|---|---:|---:|---:|
+| `residual_gcis` | **0.585** | 28 | 36 |
+| **`concept_rule_or`** | **0.849** | **0** | **294** |
+| product (resid × rule_or) | 0.759 | 0 | 3046 |
+| `concept_rules` (size) | 0.783 | 3,121 | 41,940 |
+
+**Controlled for size**, since DNF ontologies are ~13× larger and would have more of everything:
+
+| normalised factor | AUC |
+|---|---:|
+| `rule_or / concept_rules` | **0.787** |
+| `residual_gcis / concept_rules` | **0.480** — *below chance* |
+
+And size-matched within bands, where the effect must survive if it is real:
+
+| band (`concept_rules`) | n (OK/DNF) | `rule_or` AUC | `residuals` AUC |
+|---|---|---:|---:|
+| 1k–10k | 74 / 24 | **0.808** | 0.603 |
+| 10k–60k | 27 / 45 | **0.815** | 0.766 |
+| 60k+ | 11 / 70 | **0.880** | 0.722 |
+
+**56% of completing ontologies have ZERO disjunctive concept rules, against 15% of DNF.**
+
+### Conclusions
+
+1. **Residual GCIs are definitively not the discriminator.** Per unit size the signal is
+   *0.480* — literally none. This closes the absorption-of-residuals thesis on population
+   evidence, independently of the instance-level refutation above, and retires
+   qualified-`∃` absorption as a target: it optimises a variable that does not separate.
+2. **Coupling does not help.** The product (0.759) is **worse** than `concept_rule_or` alone
+   (0.849). Multiplying a strong factor by a null one dilutes it. The interaction seen on
+   `3281` is real for that instance but is not the population mechanism.
+3. **`concept_rule_or` is the discriminator**, and it survives every size control
+   (0.81–0.88 within bands). That is the target.
+
+### What this implies for what to build
+
+**Binary absorption** (Hudek & Weddell) is precisely the technique that reduces
+`concept_rule_or`: `as_trigger` picks one `¬Atomic` from `A ⊓ B ⊑ C` and leaves
+`A → (¬B ⊔ C)` firing as a disjunction on every `A`-node. The census already sized the
+population — **34,667** `Or`-conclusion concept rules still carrying a `¬Atomic`, of 199,019.
+It is also a far smaller build than qualified-`∃`, needing no backward role rule.
+
+**Do not build it yet.** AUC 0.85 is discrimination, not causation, and this project has just
+been burned by exactly that inference. The next step is the same one-directional falsification
+that worked before: on a high-`rule_or` ontology, **delete** those rules (strictly stronger
+than absorbing them) and see whether it completes. No rescue under deletion ⇒ no rescue under
+absorption, and binary absorption dies cheaply too.

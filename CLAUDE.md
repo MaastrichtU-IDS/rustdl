@@ -262,8 +262,22 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   to an untriggered residual `⊤ ⊑ ¬∃r.⊤ ⊔ A`; picking its `A` disjunct on a fresh
   `≥2 r.C` witness re-opens the covering nominal disjunction and the o-rule folds
   the witness back into the constraint owner → unbounded generation, and blocking
-  can't cut it (every cycle node is nominal-tainted, excluded from
-  `is_blocked_anywhere`/`_ancestor` at `lib.rs:1021/1062`). **Fix shipped = a sound
+  can't cut it (every cycle node is nominal-tainted, excluded from `is_blocked_anywhere` at `lib.rs:1021/1062`)
+
+> **CORRECTED 2026-08-02 — "BOTH predicates" WAS WRONG, and it matters.** Only
+> `is_blocked_anywhere` (`owl-dl-tableau/src/lib.rs:1073`) excludes nominal-tainted nodes
+> ("A nominal `y` denotes a fixed individual and must not be blocked").
+> **`is_blocked_ancestor` (`:961`) has NO such exclusion** — its sole early `return false` is
+> for a missing parent — and **classify uses ancestor-blocking by default**. So the deferred
+> issue-#35 v4 nominal-aware-blocking redesign **does not apply to the classify path at all**,
+> and a plan aimed there would have been aimed at nothing. Verified by reading both predicates.
+>
+> The measurement that exposed it also refutes the hypothesis outright, in the opposite
+> direction: on `ore_ont_2182`/`16481` blocking fires on **18.4%/20.4%** of eligible nodes
+> against **5.5%** on `ore_ont_7668`, a same-profile ontology that classifies in 0.03 s.
+> Blocking fires 2.2 M times and `RUSTDL_MAX_NODES` is never hit — the graph stays under 200
+> nodes. **The search TREE explodes, not the model.** See
+> `docs/2026-08-02-nominal-blocking-rootcause.md`.). **Fix shipped = a sound
   deterministic safety net, NOT a completeness fix:** (1) `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
   now **defaults to 750 ms** (was unbounded since 0.3.18; `=0` opts out) — bounds each
   per-individual realize probe → sound MISS; realize-only, never classify/consistency.

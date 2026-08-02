@@ -83,6 +83,89 @@ the profile-independent replacement is
 `default_budget_still_detects_small_abox_inconsistency`, a small functional-role
 `ABox` clash detected under the shipped default.
 
+## [0.4.11] — 2026-08-02
+
+The release that a **full-corpus regression sweep** made possible — and the one it caught a
+regression in. 1,920 ontologies measured v0.4.6 vs this tree, single-thread, 60 s cap:
+
+| | |
+|---|---|
+| recoveries (`dnf` → `ok`) | **91** |
+| regressions (`ok` → `dnf`) | **4 — all fixed below** |
+| answer changes among completing ontologies | **0** |
+| materially slower (>25% and >2 s) | **0** |
+| peak-RSS growth >2× and >500 MB | **0** |
+
+FP=0 net 11/11 VERIFIED, closures exact; 1479 tests pass.
+
+### Fixed — a regression this project shipped in v0.4.8
+
+`RUSTDL_CLASSIFY_INCONSISTENCY` was flipped to default ON after a cost benchmark over **12**
+ABox-bearing ORE ontologies showed −1.5%, "a wash". Twelve was not enough. It put an
+**unbounded** named-individual fixpoint in front of every classify, and on ontologies carrying
+60k–110k ABox assertions that fixpoint dominates the entire run:
+
+| ontology | v0.4.6 | v0.4.10 | **v0.4.11** |
+|---|---|---|---|
+| `ore_ont_10838` | 4.86 s | DNF @60 s | **6.43 s** |
+| `ore_ont_15846` | 21.73 s | DNF @60 s | **8.24 s** |
+| `ore_ont_16315` | 4.42 s | DNF @60 s | **4.35 s** |
+| `ore_ont_3087` | 4.80 s | DNF @60 s | **5.01 s** |
+
+Now bounded by `RUSTDL_CLASSIFY_INCONSISTENCY_MS` (**default 3000**, `0` = unbounded), on the
+**classify path only** — `is_consistent`, `realize`, `materialize_*` and `diagnose` keep the
+unbounded pre-check, because for them it *is* the point of the call. Safe by the pre-check's own
+contract: it is a sound under-approximation, so a clash proves inconsistency while no clash
+yields no verdict and the caller proceeds exactly as before. A timeout costs at most the
+detection, never correctness. The motivating fix is intact — `classify --json family.ofn` still
+reports `consistent: false` with 58 unsatisfiable classes and still agrees with `rustdl consistent`.
+
+**The 3000 ms default was measured, not guessed** — and the guess was wrong. "A few hundred ms"
+was proposed and falsified: `family.ofn`'s ABox saturation alone takes **~2.0 s** (506
+individuals, a 267k-edge role-chain closure), so a sub-2.5 s budget would have silently
+re-broken the very detection the flag exists for — a fix quietly reintroducing the bug it repairs.
+
+### Added — `--global-timeout-ms` now bounds preparation (`RUSTDL_PREP_DEADLINE`, default OFF)
+
+`saturate()` and `from_internal()` ran before any deadline check, so the global timeout bounded
+only the *search*. Under a **1 ms** budget, 77 of 252 DNF ontologies still burned ≥10 s and 26
+never finished `from_internal` (`ore_ont_10926`: 84.9 s against a 1 ms promise). A caller asking
+for a bounded classify got an unbounded one. `ore_ont_1028` at a 3000 ms budget: 9.38 s → 3.19 s,
+flagged **incomplete** — an early abort degrades to the EL closure read-off and can never present
+itself as complete. Known residual: `convert_ontology` and `collect_el_rules` remain uninterruptible.
+
+### Fixed — the attribution banner was lying by ~1500×
+
+`tier_walk_wall_ms` was a **residual subtraction**, so all unbudgeted prep was charged to the
+tier walk: `ore_ont_1028` reported **8964 ms for a 6 ms walk**. This is the instrument that
+falsified an earlier taxonomy of this corpus. Phases are now measured directly across nine line
+items with the leftover explicitly named `unattributed_ms`, so a residual can never masquerade
+as a phase again. The real cost is finally visible (`prepare=4486`, `saturate=2215`).
+
+### Added — domain absorption (`RUSTDL_DOMAIN_ABSORPTION`, default OFF)
+
+`(≥1 R) ⊑ C` is logically identical to `ObjectPropertyDomain(R, C)` but fell into
+`residual_gcis` — a global disjunction on every node. Note `absorb.rs` lowers *every*
+`ObjectPropertyDomain` that way too, so this was universal. Sound and completeness-preserving;
+recovers 4 DNFs (`ore_ont_3281`: 28 residuals → 0, DNF@300 s → 11.4 s). Default OFF: it alters
+the absorbed TBox of 1,030 of 1,913 pool ontologies without a wall check at that scale.
+
+**Its motivating thesis was refuted and is documented as such** — see
+`docs/2026-08-01-absorption-is-the-bottleneck.md`, which carries a retraction banner. Residual
+count does *not* predict tractability: driving 54 ontologies to **zero** residuals recovered
+**1**, while 77 that kept residuals recovered **3**, and per unit size the signal is
+**AUC 0.480 — below chance**. Qualified-`∃` absorption is therefore a documented **NO-GO**.
+The discriminator is `concept_rule_or` (AUC 0.849, holding 0.81–0.88 within every size band;
+56% of completing ontologies have zero disjunctive concept rules against 15% of failing ones).
+
+### Also
+
+- Guarded the shipped per-pair amortizer's delta arithmetic, which a misdirected sabotage
+  panicked on `ore_ont_10019` with no test catching it.
+- **Unguarded, recorded:** sabotage showed nothing pins the `CLASSIFY_INCONSISTENCY_MS` value —
+  slashing it to 1 ms passes every canary, because cheap synthetic clashes are also caught by
+  unbudgeted routes. The substance of that fix is untested.
+
 ## [0.4.10] — 2026-08-01
 
 Throughput release, and the first one chosen by a **pre-registered experiment** rather than by

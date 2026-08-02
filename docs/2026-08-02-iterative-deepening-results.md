@@ -1,6 +1,9 @@
 # Iterative deepening of the classify per-pair wedge depth cap — results
 
-**Flag:** `RUSTDL_ITERATIVE_DEEPENING`, **default OFF** (`=1` opts in).
+**Flag:** `RUSTDL_ITERATIVE_DEEPENING`, **DEFAULT ON** as of 2026-08-02 (`=0`
+reverts; an empty value ENABLES, per the house default-ON idiom). The flip is
+justified by Gate 4 + Gate 5 at the end of this document; everything above them
+was measured while the flag was still opt-in and is labelled `=1` / `=0`.
 **Date:** 2026-08-02 · **Base:** `main` @ `68597ba`, rustdl 0.4.11.
 
 Binaries, pinned immediately after the build that produced each:
@@ -442,3 +445,295 @@ per-pair, or scaling the constant by the pair count.
 **Not yet implemented.** Note the fix must be re-gated by a full Gate 1 re-run, not by
 `ore_ont_13991` alone — fixing the one instance that a sweep caught is exactly how a
 12-ontology benchmark misses a population.
+
+---
+
+# The adaptive shutoff — fixing the regression and re-gating (2026-08-02)
+
+**Flag unchanged:** `RUSTDL_ITERATIVE_DEEPENING`. New knob
+`RUSTDL_ID_SHALLOW_WASTE_MS` (default **1000**, `0` disables the shutoff).
+**Base:** `main` @ `d36401a`, rustdl 0.4.11.
+
+Binaries, pinned immediately after the build that produced each:
+
+| path | sha256 (16) | what |
+|---|---|---|
+| `…/scratchpad/bin/rustdl-IDFIX` | `54a36487c04a84cd` | first attempt — consecutive-miss counter (**refuted**, kept for the record) |
+| `…/scratchpad/bin/rustdl-IDFIX-waste` | `69e36d2c6895d029` | the shutoff, pre-`cargo fmt` |
+| `…/scratchpad/bin/rustdl-IDFIX-sweep` | `684b73951f8c2167` | **the gated binary** — post-fmt/clippy; a later rebuild from the restored tree reproduced this sha **byte-identically**, so the sweep binary provably matches the committed source |
+
+Both Gate 4 arms come from the single `rustdl-IDFIX-sweep` binary switched by the
+env flag, so a stale-binary mix-up cannot produce the delta.
+
+Host discipline: every probe under
+`( ulimit -v $((24*1024*1024)); RAYON_NUM_THREADS=1 timeout N … )`, serial, on an
+otherwise idle 32-core host. **The host ran out of disk mid-session** (430 G,
+264 K free) and a `cc` link died with `signal 7 [Bus error]`; ~33 G was reclaimed
+by deleting four *stale* agent-worktree `target/` directories (gitignored build
+output only — no source, no git objects, and no build was running). Any
+measurement taken before that point would be suspect; every number below was
+taken after.
+
+## 9. The first attempt — a consecutive-miss counter — is REFUTED
+
+The brief's own suggested shape ("stop after it fails to decide the last K
+consecutive pairs") was implemented first and **does not work**. Measured on
+`rustdl-IDFIX`, `ore_ont_13991`, 90 s cap:
+
+| consecutive-miss K | `ore_ont_13991` |
+|---|---|
+| flag OFF (baseline) | 39.25 s, 2,571 lines |
+| 1 | **39.46 s**, 2,571 lines |
+| 16 | **DNF @90 s** |
+| 256 (the first shipped guess) | **DNF @60 s** |
+
+The cliff between K=1 and K=16 is the refutation, and it is not a tuning
+problem — K=1 means "shut off at the first miss", i.e. the counter is doing no
+work at all beyond a single observation. Any K that tolerates even a short run of
+misses never latches.
+
+**Why.** `13991`'s shallow phase is *not* uniformly useless. The telemetry added
+for this investigation (`RUSTDL_ID_STATS=1`) reads, at the moment the shutoff now
+fires, `shallow_decided=84 shallow_missed=200`. An easy pair goes `Sat` at depth 8
+in microseconds — a decide — while a separate subpopulation misses at the full
+5 ms. They interleave, so ~30% of observations reset the run and a 16-long streak
+essentially never occurs. **"Consecutive" measures the wrong thing: the harm is
+not a run of failures, it is accumulated wall.** The earlier note in §"The fix
+this implies" was therefore right about the *discriminator* and wrong about the
+*statistic*.
+
+## 10. What shipped: a cumulative wasted-wall budget
+
+`HyperCache` carries an `AtomicU64` of **microseconds spent in shallow phases that
+did not decide their pair**. When it reaches `RUSTDL_ID_SHALLOW_WASTE_MS`
+(default 1000) the shallow phase stops running for the rest of that classify. A
+*decide* is never charged — it is the thing being paid for.
+
+* **Immune to the interleaving that broke the counter.** A cheap decide neither
+  adds to the total nor cancels what is already in it.
+* **Meters the harm in the units the harm is measured in.** The regression was
+  stated as `5 ms × 56,760 pairs`; the budget bounds exactly that product.
+* **Self-latching, no retry.** Once latched the shallow phase does not run, so it
+  cannot add to the total — permanence needs no second flag and no second
+  constant. A periodic re-probe was considered and rejected as unjustified: it
+  would be cheap, but nothing measured shows it recovers anything, and all 16
+  sweep recoveries survive without it.
+* **Scope** is one classify (a `HyperCache` is built per `PreparedOntology`).
+  `Relaxed` ordering is deliberate — a cost heuristic, never a correctness input.
+
+**Why 1000 ms:** it bounds the worst measured tax to ~1 s (~3% of `13991`'s
+39.25 s) while sitting far above what the winning population ever wastes.
+
+### The telemetry is what makes the two populations legible
+
+`RUSTDL_ID_STATS=1` prints one line per classify. The separation is not marginal:
+
+| ontology | shallow decided | shallow missed | waste | shutoff fires? |
+|---|---|---|---|---|
+| `wine` @`--pair-timeout-ms 25` | **3,465** | 39 | 195 ms | no |
+| `ore_ont_2182` | 2,252 | 13 | 65 ms | no |
+| `ore_ont_4903` | 7,620 | 24 | 120 ms | no |
+| `ore_ont_13991` | 84 | 200 | **1000 ms** | **yes** |
+| `ore_ont_10407` | **0** | 200 | **1000 ms** | **yes** |
+
+`10407` is the clarifying case: its shallow phase decides *literally nothing*
+(the §2 table already showed 926 subsumptions at every depth), so the shutoff
+stops paying for it and the ontology gets **faster** — 10.62 s → 8.57 s.
+
+### Alternatives considered and rejected
+
+* **A global budget on the shallow phase itself** (not on its waste). This
+  conflates exactly the two populations the per-pair constant already conflates:
+  `wine` runs a shallow phase on ~3,500 pairs and *wins* there, so a global cap
+  small enough to protect `13991` would cut `wine`'s shallow phase off partway
+  and destroy the 92–98% win. Charging only non-deciding pairs is precisely what
+  separates them.
+* **Scaling the per-pair constant by the pair count.** Size is a proxy, not the
+  discriminator: a large ontology whose shallow phase pays would be penalised for
+  being large. The same structural-profile trap is already on record above, where
+  41 of `ore_ont_10407`'s "50 cardinality axioms" were `MinCardinality(0 R)`
+  tautologies.
+
+### Soundness — verified, not assumed
+
+Skipping the shallow phase runs **only** the final level, at cap
+`512 >= HYPER_WEDGE_DEPTH` and with the caller's own deadline. That is exactly the
+flag-OFF search at a cap `>=` the flag-OFF cap, so by the monotonicity argument in
+§1c the verdict is a superset of flag-OFF's, never a subset. Under a bounded
+deadline the shutoff only *returns* budget to the final level, so it cannot lose a
+pair either. Checked rather than asserted by
+`shutoff_cannot_change_a_verdict` (latched vs unlatched, over entailed **and**
+non-entailed chains at two depths, pinning both `Unsat` and `Sat`), and
+empirically by `13991`'s classified body being **byte-identical to flag-OFF**.
+
+**Determinism note:** the accumulator is shared across rayon workers, so *which*
+pairs get a shallow phase can vary run to run. That cannot vary the answers on an
+unbounded run — both paths return a verdict `>=` flag-OFF for that pair, and
+flag-OFF does not depend on the accumulator.
+
+## 11. Gates
+
+### Gate 1 — `ore_ont_13991` completes
+
+| arm | wall | subsumptions | body |
+|---|---|---|---|
+| flag OFF | 39.25 s | 2,558 | — |
+| **flag ON, default settings** | **41.04 s** | **2,558** | **byte-identical to flag-OFF** |
+
+Completes far inside the 60 s cap, against **DNF @180 s** before the fix. The
+residual +1.8 s (+4.6%) is the bounded tax: 1 s of budgeted waste plus the
+shallow phase's own decides.
+
+### Gate 2 — all 16 recoveries retained
+
+Stems derived from `runs/full-IDOFF.jsonl` vs `full-IDON.jsonl` (`dnf` → `ok`).
+Re-run with the fix, 60 s cap, default settings. **16/16 still complete**, and
+every `out_lines` matches the original ON sweep exactly.
+
+| ontology | wall | lines | decided / missed |
+|---|---|---|---|
+| `ore_ont_10407` | **8.57 s** (was 10.62) | 525 | 0 / 200 — shutoff fires |
+| `ore_ont_9941` | **8.59 s** (was 10.46) | 525 | 0 / 200 — shutoff fires |
+| `ore_ont_2826` | 7.29 s | 216 | 336 / 6 |
+| `ore_ont_5834` | 7.28 s | 216 | 336 / 6 |
+| `ore_ont_8042` | 7.28 s | 216 | 336 / 6 |
+| `ore_ont_850` | 7.29 s | 216 | 336 / 6 |
+| `ore_ont_6272` | 7.21 s | 140 | 293 / 6 |
+| `ore_ont_2182` | 41.99 s | 138 | 2252 / 13 |
+| `ore_ont_16481` | 45.03 s | 140 | 2455 / 13 |
+| `ore_ont_7204` | 45.22 s | 29244 | 13 / 0 |
+| `ore_ont_7011` | 46.26 s | 274 | 4432 / 14 |
+| `ore_ont_13545` | 46.35 s | 2500 | 4261 / 14 |
+| `ore_ont_1958` | 46.49 s | 684 | 5038 / 14 |
+| `ore_ont_13859` | 48.32 s | 986 | 4442 / 14 |
+| `ore_ont_5964` | 50.66 s | 23903 | 4981 / 18 |
+| `ore_ont_4903` | 56.81 s | 1914 | 7620 / 24 |
+
+### Gate 3 — `wine`'s budgeted win retained
+
+`ontologies/real/wine.ofn --pair-timeout-ms 25`, same binary:
+
+| arm | wall | subsumptions |
+|---|---|---|
+| flag OFF | 109.18 s | 201 |
+| **flag ON** | **4.66 s** | **201** |
+
+Unchanged from the pre-fix ON figure (4.60 s) — the shutoff never fires here
+(195 ms of waste against a 1000 ms budget). Both arms report **201**, so nothing
+is lost; the brief's "197" does not reproduce on either arm of this host, and
+CLAUDE.md already records 201–203 as the run-to-run range at this budget.
+
+### Gate 5 — sabotage, 8 run / **8 caught**
+
+Strictly serial (apply → `cargo test -p owl-dl-reasoner --lib iterative_deepening`
+→ revert), counts reported as run.
+
+| # | sabotage | caught by |
+|---|---|---|
+| 1 | charge waste on EVERY pair (a decide is not free) | `a_deciding_pair_charges_no_waste` |
+| 2 | shutoff NEVER triggers | `a_latched_accumulator_skips_the_shallow_phase` +2 |
+| 3 | shutoff triggers IMMEDIATELY (always) | `fresh_cache_runs_the_shallow_phase` +8 |
+| 4 | never charge waste (accumulator cannot grow) | `a_non_deciding_pair_charges_waste` |
+| 5 | a skipped pair RESETS the accumulator | `the_latch_is_self_sustaining` |
+| 6 | env garbage parses as `0` (silently disables) | `waste_budget_env_garbage_falls_back_to_the_default` +3 |
+| 7 | shutoff jumps to a NON-final level | `a_latched_accumulator_skips_the_shallow_phase` |
+| 8 | shutoff runs only the FIRST level | `a_latched_accumulator_skips_the_shallow_phase` |
+
+The three the brief named specifically are #1 (the counter never resetting on a
+decide — here, its analogue: a decide never being treated as free), #2 and #3.
+
+**Honest limitation of #8.** It was caught, but by the *structural* canary, not by
+`shutoff_cannot_change_a_verdict` — with `start = 0` the loop still deepens to the
+final level and gets the right answer, so #8 is not actually verdict-losing. That
+means the soundness canary's power is demonstrated by #2/#3/#6 (which do change
+what runs) and **not** by #8. No sabotage I could construct made the shutoff lose
+a verdict, which is consistent with the monotonicity argument but is weaker
+evidence than a caught mutant would be.
+
+### Gate 6 — hygiene and FP=0
+
+* `cargo fmt --all -- --check` — clean.
+* `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean.
+* `cargo test --workspace --exclude owl-dl-py --release` — **128 result groups,
+  1,510 passed, 0 failed**, 79 ignored. 31 of those are the iterative-deepening
+  canaries (8 new).
+* **FP=0 net with the flag ON** — **11 VERIFIED, every closure EXACT** at the
+  committed reference: galen 27997, notgalen 32739, sio 8904, ore-10908 6001,
+  wine 653, pizza 499, alehif 247, ro 158, ore-15672 142, sulo 51, bibtex 16.
+  Nothing grew and nothing shrank, so no adjudication was owed. The three
+  `NOT VERIFIED (fixture absent)` entries are the pre-existing documented gaps.
+
+### Gate 4 — full two-arm ORE re-sweep
+
+**One binary, `rustdl-IDFIX-sweep`, sha256 `684b7395…5361803`; the two arms are
+`RUSTDL_ITERATIVE_DEEPENING=0` / `=1`, not two builds.** Single-thread, 60 s cap,
+1,920 ontologies resolved in each arm (`runs/full-FIXOFF.jsonl`,
+`runs/full-FIXON.jsonl`).
+
+| | OFF | ON |
+|---|---|---|
+| `ok` | 1,730 | **1,746** |
+| `dnf` | 189 | **173** |
+| `err_reject` | 1 | 1 |
+
+* **recoveries (`dnf` → `ok`): 16**
+* **regressions (`ok` → `dnf`): 0** ← the pre-registered decision rule
+* materially faster / slower (>25% **and** >2 s): **10 / 0**
+* aggregate wall over the 1,730 both-completing: 3,059 s → 2,996 s (**−2.1%**)
+* `ore_ont_13991`, the regression this whole shutoff exists to fix: **`ok` → `ok`,
+  41.06 s** (was a 180 s DNF before the shutoff)
+
+The decision rule was satisfied, so **the default is flipped to ON** in
+`iterative_deepening_enabled()`.
+
+### Gate 5 — closure superset on the fixed build, and the knob's boundaries
+
+**Superset check — 0 lost, 0 gained on 26 ontologies.** Deepening is
+verdict-monotone (the final level's cap is `>= HYPER_WEDGE_DEPTH`), so a LOST pair
+would mean the implementation is wrong, not merely slow. Run OFF vs ON on the
+worktree build — which is **byte-identical to the swept binary** (same sha256
+`684b7395…`), so this validates the shutoff and not just the feature.
+
+**A methodological trap worth recording: "digest-differing" is a near-useless
+selector here.** 1,082 of the 1,730 both-`ok` ontologies have differing
+`out_sha256`, but the digest covers the `# wall breakdown ms:` banner, so almost
+all of that is timing noise. A first 12-ontology sample drawn that way came back
+0 lost / 0 gained — but on inspection **11 of the 12 differed ONLY in timing
+lines**, i.e. the flag had been inert on them and the check was close to vacuous.
+The sample was therefore re-drawn to target ontologies where deepening
+**demonstrably acts**: all 10 materially-faster ontologies plus the 4 hardest
+both-`ok` ones. 12 of those 14 show non-timing banner differences.
+
+| set | n | lost | gained |
+|---|---|---|---|
+| stratified digest-differing (mostly inert) | 12 | **0** | 0 |
+| materially-faster + hardest (flag demonstrably active) | 14 | **0** | 0 |
+
+`ore_ont_13991` is the clearest single case: its wedge-cost histogram moves from
+`56434 \| 186 \| 83 \| 37 \| 18 \| 2` to `53173 \| 3167 \| 95 \| 282 \| 39 \| 4`
+— a materially different search trajectory — against a **bit-identical 2,558-pair
+closure**. All 52 runs exited 0; none was truncated by the wall or address-space cap.
+
+**`RUSTDL_ID_SHALLOW_WASTE_MS` boundaries — the knob controls what it claims.**
+Single-thread, 240 s wall cap, `ore_ont_13991`:
+
+| setting | outcome |
+|---|---|
+| unset (default 1000) | **41.03 s**, 2,558 subs — matches the sweep's 41.06 s |
+| `=1000` explicit | 1.71 s multi-thread, 2,558 subs — same as unset |
+| **`=0` (shutoff disabled)** | **DNF at the 240 s cap, 0 subs** |
+| `RUSTDL_ITERATIVE_DEEPENING=0` baseline | 39.78 s, 2,558 subs |
+
+`=0` **reproduces the pre-fix regression exactly as predicted**, which is the
+positive control: it shows the shutoff — and not some unrelated change — is what
+converts that DNF into a 41 s completion. A `=0` that had quietly still completed
+would have meant the knob was not gating the code it is documented to gate.
+
+### Gate 6b — hygiene after the flip
+
+Re-run because flipping a default can break tests that silently assumed the old
+one. See the commit for the one test updated (`flag_defaults_off_and_only_1_enables`
+→ `flag_defaults_on_and_only_0_reverts`, which now pins **both** halves: unset ⇒ ON
+**and** `=0` ⇒ OFF — an escape hatch that stopped working would otherwise fail no
+test at all).
+

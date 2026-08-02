@@ -1,6 +1,8 @@
 # Iterative deepening × `--pair-timeout-ms`: does the shallow phase steal the budget?
 
-**Flag:** `RUSTDL_ITERATIVE_DEEPENING`, **default OFF** (`=1` opts in).
+**Flag:** `RUSTDL_ITERATIVE_DEEPENING`, **default ON** since 2026-08-02 (`=0`
+reverts). This document was written while the flag was still default OFF, so its
+arms are labelled `=1` / `=0`; the measurements are unaffected.
 **Date:** 2026-08-02 · **Base:** `main` @ `d0859ba`, rustdl 0.4.11.
 **Binary:** `/tmp/rustdl-id`, sha256 prefix `fee336354f3dfeb2` — **one** binary for
 both arms; the arms are env settings, not builds.

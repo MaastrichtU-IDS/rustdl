@@ -382,3 +382,63 @@ but they are five instances; the corpus-wide effect is exactly what Gate 1 measu
 `ore_ont_10407` root cause showed a target chosen from a *structural profile* can be
 semantically misleading — 41 of its "50 cardinality axioms" were `MinCardinality(0 R)`
 tautologies — so no claim about *which* ontologies benefit should rest on construct counts.
+
+---
+
+## Gate 1 result and the regression it caught (2026-08-02)
+
+ORE-wide two-arm sweep, 1,920 ontologies, 60 s cap, single-thread, sequential arms, one pinned
+binary (`fee336354f3dfeb2`) with the arms as env settings.
+
+| | |
+|---|---|
+| recoveries (`dnf` → `ok`) | **16** |
+| regressions (`ok` → `dnf`) | **1 — `ore_ont_13991`** |
+| materially faster / slower (>25% and >2 s) | 12 / 4 |
+| aggregate wall over both-completing | −2.4% |
+| closure losses (8 sampled digest diffs) | **0 lost, 0 gained** — banner noise only |
+
+**The pre-registered rule says any `ok → dnf` blocks the flip, so the default stays OFF.** The
+rule was fixed before the numbers precisely so a 16-to-1 ratio could not tempt an override. This
+is the second time in two days that a full-corpus sweep caught a regression that instance-level
+evidence missed.
+
+### Root cause of the regression — confirmed by dose–response, not by arithmetic
+
+`ore_ont_13991`: 3,119 classes, **56,760 pairs**, ID OFF completes in 32.79 s / 2,558 subs.
+
+`ID_SHALLOW_BUDGET_MS = 5` is a **per-pair constant**, so the shallow phase's total cost scales
+with the pair count — which is quadratic in classes:
+
+| `RUSTDL_ID_SHALLOW_MS` | outcome |
+|---|---|
+| 5 (default) | DNF @200 s |
+| **1** | **completes, 90.31 s, 2,558 subs** (identical to OFF) |
+| 0 (disables the bound) | DNF @200 s — the unbounded case already refuted on `10407` |
+
+At 1 ms the overhead is **90.31 − 32.79 = 57.5 s** against a predicted 1 ms × 56,760 = **57 s**.
+The dose–response is what confirms this; a single matching number would not have, since a
+`~303 M calls ≈ 12 s` estimate once matched a measured 12.36 s in this project and was still the
+wrong cause.
+
+### Why this explains both populations at once
+
+The shallow phase is not re-work — **it either decides or it taxes.**
+
+- `wine` @5 ms: OFF has 3,340 pairs burning their full budget then stalling; ON has 3,454 in the
+  **0 ms** bucket, decided at depth 8. The tax is repaid many times over.
+- `ore_ont_13991`: shallow decides essentially nothing, so the 5 ms is pure per-pair overhead,
+  56,760 times.
+
+### The fix this implies
+
+The shallow budget must not be a fixed per-pair constant. The distinction to exploit is exactly
+the one above — **whether the shallow phase is deciding anything on this ontology.** An adaptive
+shutoff (stop running the shallow phase once it has failed to decide the last K pairs) captures
+it directly, keeps `wine`'s 92–98% win, and reduces `13991` to approximately its OFF cost.
+Alternatives worth weighing: a *global* shallow budget for the whole classify rather than
+per-pair, or scaling the constant by the pair count.
+
+**Not yet implemented.** Note the fix must be re-gated by a full Gate 1 re-run, not by
+`ore_ont_13991` alone — fixing the one instance that a sweep caught is exactly how a
+12-ontology benchmark misses a population.

@@ -310,3 +310,53 @@ in this family touches, and on this evidence the tail is not primarily an absorp
 `census167.tsv` (this binary's census over the survivors) — scratchpad only, not committed;
 the tables above reproduce every number that carries an argument.
 
+
+---
+
+## Follow-up (2026-08-02): the NO-GO's weak step, tested
+
+The NO-GO was challenged on a fair point, so the extrapolation behind it was tested rather
+than restated.
+
+**The weak step.** "31 more ontologies reach zero residuals × a 1-in-54 recovery rate ≈ 0.6
+recoveries" applies a rate measured on **Group Z** — median **36** residuals, all
+domain-shaped — to a set that is materially different:
+
+| | Group Z (where 1/54 was measured) | the 31 qualified-∃ extras |
+|---|---|---|
+| median residuals | 36 | **80** |
+| max | 2,452 | **13,511** |
+| ≥100 residuals | — | **15 of 31** |
+
+`ore_ont_2874` and `ore_ont_2738` carry **13,511 / 13,509 residuals that are 100%
+qualified-∃ with ZERO domain-absorbable** — precisely the ontologies qualified-∃ absorption
+exists to serve, and ones domain absorption cannot touch. The experiment never drove any
+high-residual ontology to zero, so the transfer was untested.
+
+**The test.** Deletion is strictly STRONGER than absorption — absorption removes the residual
+*while preserving semantics* — so if deleting the axioms does not rescue, absorption provably
+cannot. One-directional, and immune to the two-things-changed confound that invalidated this
+document's original calibration.
+
+| ontology | classes | residuals cut | uncut | cut |
+|---|---:|---|---|---|
+| `ore_ont_2874` | 51,810 | **13,511 → 42** | DNF @120 s | **DNF @120 s** |
+| `ore_ont_2738` | 45,756 | **13,509 → 40** | DNF @120 s | **DNF @120 s** |
+
+**At the extreme the NO-GO holds by measurement, not extrapolation.** Caveat: both are very
+large, so scale may dominate independently of residuals.
+
+**The mid-range is NOT tested, and the attempt failed honestly.** Four extras with 136–339
+residuals were probed and **the intervention did not fire** — residuals were unchanged
+(339→339, 148→148, 136→136, 136→136), so `cut` was byte-equivalent to `uncut` and those runs
+are evidence of nothing. Their qualified-∃ residuals arise from a shape the grep-level cut does
+not match. Recorded rather than reported as four more confirmations, which is what they would
+have looked like at a glance.
+
+**Status of the NO-GO.** It stands on the balance of evidence — the motivating argument
+(residual volume, zero-reachers) is refuted, the extreme cases are measured, and no instance
+has yet been shown to recover from removing qualified-∃ residuals. But it is **weaker than
+"documented NO-GO" implies**: the 136–339 residual band remains untested. What would settle it
+is a precise cut (or the implementation itself) applied to `ore_ont_14551` — 2,755 classes, the
+only small one in that band, and therefore the one case where a recovery could not be dismissed
+as scale.

@@ -338,3 +338,47 @@ regressions over 32 wedge-exercising ontologies, 8/8 sabotages caught — but:
 None of these is a soundness risk (§1b), and none can lose a pair on an unbounded
 run (§1c). They are reasons the *default* should follow a population measurement
 rather than a five-instance one.
+
+---
+
+## Default-ON decision: the two gates, in flight (2026-08-02)
+
+The flag ships **default OFF**. Two things gate the flip, both now running, and both chosen
+because they are the gaps the implementation itself named rather than ones invented afterwards.
+
+**Gate 1 — ORE-wide two-arm sweep.** `scripts/sweep-arm.sh` over all 1,920 ontologies, OFF arm
+then ON arm, **sequential** (contention would inflate whichever arm shared the host), 60 s cap,
+single-thread, `--digest-output`, one output file per chunk. Binary pinned `/tmp/rustdl-id`
+sha `fee336354f3dfeb2`; the arms are **env settings on one binary**, not two builds.
+
+This exists because the addressable set is **unmeasured** — 5 confirmed instances, and a grep is
+not a gate. It also answers the question that actually matters for a default: does anything
+*regress*. The precedent is direct and recent: `RUSTDL_CLASSIFY_INCONSISTENCY` was flipped ON in
+v0.4.8 on a **12-ontology** benchmark reading −1.5%, and a full-corpus sweep later found **4
+ontologies going from ~5 s to DNF**. Twelve ontologies is not a population.
+
+Decision rule, fixed now:
+- **any `ok → dnf`** ⇒ do not flip; root-cause first;
+- **any closure that shrinks** ⇒ hard stop (deepening is monotone, so a loss means the
+  implementation is wrong, not the idea);
+- closures that **grow** are expected and permitted, but each added pair must be adjudicated
+  against **Konclude ∪ HermiT** before acceptance;
+- otherwise flip ON.
+
+**Gate 2 — per-pair budget interaction.** The shallow phase shares
+`min(5 ms, caller_budget/4)`. With no budget that is negligible, but `--pair-timeout-ms` is a
+documented operating mode — CLAUDE.md tells users to run `wine` at `--pair-timeout-ms 25`, where
+the shallow phase can take **~24% of every pair's budget**. Measured at budgets 5/25/100/1000
+against an **OFF-vs-OFF control at each budget first**, because timed-out-pair counts vary
+run-to-run on a single binary and that variance has already been mistaken for an arm effect once
+in this arc.
+
+Not a soundness risk — fewer answers, never wrong ones — but a completeness/throughput loss at
+small budgets would gate the default, or require the schedule to skip the shallow phase below
+some N.
+
+**Known limits of what has been established.** The five recoveries are real and oracle-checked,
+but they are five instances; the corpus-wide effect is exactly what Gate 1 measures. And the
+`ore_ont_10407` root cause showed a target chosen from a *structural profile* can be
+semantically misleading — 41 of its "50 cardinality axioms" were `MinCardinality(0 R)`
+tautologies — so no claim about *which* ontologies benefit should rest on construct counts.

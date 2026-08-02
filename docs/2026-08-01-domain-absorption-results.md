@@ -333,6 +333,21 @@ qualified-∃ with ZERO domain-absorbable** — precisely the ontologies qualifi
 exists to serve, and ones domain absorption cannot touch. The experiment never drove any
 high-residual ontology to zero, so the transfer was untested.
 
+> **CORRECTION 2026-08-02 — THE ONE-DIRECTIONAL INFERENCE BELOW IS UNSOUND.** An adversarial
+> review caught it. Deletion is semantically *weaker*, not computationally *stronger*: removing
+> axioms turns cheaply-proved subsumptions into non-subsumptions that must be **refuted**
+> (proved satisfiable), and removes clashes that would have terminated branches early. Since
+> refutation is where this reasoner's cost lives, the deleted arm can DNF for work the absorbed
+> arm would never do. **So "no rescue under deletion" does NOT imply "no rescue under
+> absorption", and the 2874/2738 result below does not carry the weight assigned to it.**
+>
+> The qualified-`∃` NO-GO still stands, on its two *independent* legs — residual count scoring
+> **AUC 0.480 (below chance)** against a completing contrast group, and the Group Z/N experiment
+> run with a **real absorption implementation** (1/54 vs 3/77). Neither uses the deletion
+> inference. But this leg is retracted, and any future plan proposing a deletion-based
+> falsification must first show the cut arm's *cost profile* improved (timed-out pairs or branch
+> counts down); otherwise a non-rescue is uninformative rather than confirming.
+
 **The test.** Deletion is strictly STRONGER than absorption — absorption removes the residual
 *while preserving semantics* — so if deleting the axioms does not rescue, absorption provably
 cannot. One-directional, and immune to the two-things-changed confound that invalidated this

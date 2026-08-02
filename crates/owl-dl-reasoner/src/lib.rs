@@ -1505,6 +1505,202 @@ pub fn sat_class_probe<A: horned_owl::model::ForIRI>(
 /// subsumption check (the per-pair wall budget bounds it further).
 const HYPER_WEDGE_DEPTH: usize = 256;
 
+/// Depth schedule for the classify per-pair **iterative-deepening** wedge
+/// search (`RUSTDL_ITERATIVE_DEEPENING`, default OFF — see
+/// [`iterative_deepening_enabled`]).
+///
+/// The fixed [`HYPER_WEDGE_DEPTH`] is measurably wrong in **both** directions:
+/// `ore_ont_10407` needs depth **319** (256 truncates a search that would have
+/// terminated, and the truncated run does 4.4× MORE work than the completing
+/// one, because a capped branch cannot conclude and the search re-descends
+/// through every sibling disjunct), while `ore_ont_2182`'s useful proof depth
+/// is **≤7** (256 buys 2357 stalled pairs and 13× the wall of depth 8, and
+/// finds *fewer* subsumptions). See `docs/2026-08-02-cardinality-rootcause.md`
+/// and `docs/2026-08-02-nominal-blocking-rootcause.md`.
+///
+/// **Invariants this array must satisfy** (both asserted at compile time by
+/// [`assert_depth_schedule_well_formed`]):
+/// 1. strictly increasing — a level that does not deepen is pure re-work;
+/// 2. the LAST element is `>= HYPER_WEDGE_DEPTH`. This is what makes the
+///    change completeness-safe under an unbounded deadline: increasing the cap
+///    is **verdict-monotone** (see [`Self::decide_iterative_deepening`]), so a
+///    final level at or above today's fixed cap can only *add* entailments.
+const HYPER_WEDGE_DEPTH_SCHEDULE: &[usize] = &[8, 32, 128, 512];
+
+/// Compile-time check of the two [`HYPER_WEDGE_DEPTH_SCHEDULE`] invariants.
+const fn assert_depth_schedule_well_formed() {
+    assert!(!HYPER_WEDGE_DEPTH_SCHEDULE.is_empty());
+    let mut i = 1;
+    while i < HYPER_WEDGE_DEPTH_SCHEDULE.len() {
+        assert!(
+            HYPER_WEDGE_DEPTH_SCHEDULE[i] > HYPER_WEDGE_DEPTH_SCHEDULE[i - 1],
+            "depth schedule must be strictly increasing"
+        );
+        i += 1;
+    }
+    assert!(
+        HYPER_WEDGE_DEPTH_SCHEDULE[HYPER_WEDGE_DEPTH_SCHEDULE.len() - 1] >= HYPER_WEDGE_DEPTH,
+        "final schedule level must be >= HYPER_WEDGE_DEPTH or deepening can lose entailments"
+    );
+}
+const _: () = assert_depth_schedule_well_formed();
+
+/// What the iterative-deepening loop actually did on one pair: how many
+/// schedule levels it ran, and the depth cap of the level whose verdict was
+/// returned. Recorded on the production path (it is two stack words), so the
+/// canaries observe the real loop rather than a test-only twin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeepeningTrace {
+    /// Number of `decide_with_stats` calls made (always `>= 1`, never more
+    /// than the schedule length).
+    pub(crate) levels_run: usize,
+    /// Depth cap of the level that produced the returned verdict.
+    pub(crate) final_depth: usize,
+}
+
+/// Iterative deepening of the classify per-pair wedge depth cap
+/// (`RUSTDL_ITERATIVE_DEEPENING`). **DEFAULT OFF**; `=1` opts in.
+///
+/// Flag-OFF the classify subsumption oracle takes exactly the pre-change path
+/// (one `decide_with_stats` at [`HYPER_WEDGE_DEPTH`]), so the off path is
+/// byte-identical by construction.
+#[must_use]
+pub(crate) fn iterative_deepening_enabled() -> bool {
+    std::env::var_os("RUSTDL_ITERATIVE_DEEPENING").is_some_and(|v| v == "1")
+}
+
+/// Default wall budget, in milliseconds, for the WHOLE shallow phase of one
+/// iterative-deepening pair (every level except the last, taken together).
+/// Overridable with `RUSTDL_ID_SHALLOW_MS`; `0` disables the bound.
+///
+/// **Why the shallow levels must be bounded at all** — measured on the two
+/// root-caused instances, `hyper-classify-probe --per-pair-timeout-ms 0`,
+/// single-thread, v0.4.11:
+///
+/// | depth | `ore_ont_10407` wall / stalled | `ore_ont_2182` wall / stalled |
+/// |---|---|---|
+/// | 8   | **68.18 s** / 1726 | **1.06 s** / 4 |
+/// | 32  | 169.30 s / 1726 | 2.50 s / 6 |
+/// | 128 | 82.47 s / 787 | 7.12 s / 2097 |
+/// | 256 | 44.50 s / 357 | 13.41 s / 2357 |
+/// | 512 | **10.45 s** / 0 | 13.36 s / 2357 |
+///
+/// So UNBOUNDED iterative deepening is refuted on `10407`: its shallow levels
+/// find nothing the final level does not (926 subsumptions at every depth) and
+/// cost 68 s + 169 s + 82 s of pure re-work before the 10.45 s level that
+/// actually decides. The per-pair profile says why: every stalled depth-8 pair
+/// costs ~**50 ms** (502 branches at ~100 µs each — the adaptive-budget
+/// divergence cut already bounds the *branch count*, but not the wall).
+/// `2182`'s depth-8 pairs cost ≤ **1.67 ms** (110–216 branches at ~8 µs). A few
+/// milliseconds separates the population the shallow level rescues from the one
+/// it merely taxes.
+///
+/// **Bounding the shallow phase cannot change any verdict** when the final level
+/// runs: by the monotonicity argument in
+/// [`HyperCache::decide_iterative_deepening`], a shallow level that is cut short
+/// returns `Stalled`, and the unbounded final level (depth `>= HYPER_WEDGE_DEPTH`)
+/// then reproduces whatever the shallow level would have concluded. The shallow
+/// levels are pure accelerators; their budget is a wall knob, not a semantic one.
+const ID_SHALLOW_BUDGET_MS: u64 = 5;
+
+/// Fraction of the caller's remaining per-pair budget that the shallow phase may
+/// consume. The shallow phase gets `min(ID_SHALLOW_BUDGET_MS, remaining / N)`, so
+/// at least `(N-1)/N` of a caller-supplied budget always reaches the final level.
+/// Without this, a small `--pair-timeout-ms` would be spent entirely on shallow
+/// probes and the final level — the only one that can decide a deep pair — would
+/// never run.
+const ID_SHALLOW_BUDGET_DIVISOR: u32 = 4;
+
+/// Wall budget for the shallow phase of one pair. Pure function of the inputs so
+/// the arithmetic is unit-testable without a search.
+///
+/// Returns the deadline every NON-final level shares. `None` only when the bound
+/// is disabled (`RUSTDL_ID_SHALLOW_MS=0`) *and* the caller supplied no deadline.
+fn id_shallow_deadline(
+    now: std::time::Instant,
+    caller: Option<std::time::Instant>,
+    budget_ms: u64,
+) -> Option<std::time::Instant> {
+    if budget_ms == 0 {
+        return caller;
+    }
+    let mut slice = std::time::Duration::from_millis(budget_ms);
+    if let Some(dl) = caller {
+        // Never exceed the caller's budget, and never take more than
+        // 1/ID_SHALLOW_BUDGET_DIVISOR of what remains of it.
+        let remaining = dl.saturating_duration_since(now);
+        slice = slice.min(remaining / ID_SHALLOW_BUDGET_DIVISOR);
+    }
+    Some(now + slice)
+}
+
+/// Shallow-phase wall budget in ms (`RUSTDL_ID_SHALLOW_MS`, default
+/// [`ID_SHALLOW_BUDGET_MS`], `0` disables the bound). Garbage parses to the
+/// default rather than to `0` — silently disabling the bound would reintroduce
+/// the 68 s re-work the bound exists to prevent.
+fn id_shallow_budget_ms() -> u64 {
+    std::env::var("RUSTDL_ID_SHALLOW_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(ID_SHALLOW_BUDGET_MS)
+}
+
+/// Was the depth cap NOT the binding constraint at this level — i.e. would a
+/// deeper cap run the identical search, so that deepening cannot change the
+/// verdict? Pure predicate so the reasoning is unit-testable.
+///
+/// * `shallow_spent` — the level was cut by the shallow-phase wall budget.
+///   **Load-bearing**: a budget-cut level has an arbitrarily small
+///   `max_branch_depth`, so without this term the caller would conclude "cap not
+///   binding", stop, and never run the final level — the only one that can
+///   decide a deep pair. This term must dominate.
+/// * `diverged` — the adaptive-budget divergence cut fired. That cut depends on
+///   `init_depth`, so it fires LESS at a larger cap and a deeper level may get
+///   further; never treat a diverged level as exhausted.
+/// * otherwise the level is exhausted iff no branch ever reached its cap.
+fn id_cap_was_not_binding(
+    shallow_spent: bool,
+    diverged: bool,
+    max_branch_depth: u32,
+    level_depth: usize,
+) -> bool {
+    !shallow_spent
+        && !diverged
+        && u64::from(max_branch_depth) < u64::try_from(level_depth).unwrap_or(u64::MAX)
+}
+
+/// Diagnostic override of [`HYPER_WEDGE_DEPTH_SCHEDULE`]
+/// (`RUSTDL_ID_SCHEDULE="8,32,128,512"`), so a schedule can be A/B-measured
+/// without a rebuild. Only consulted when [`iterative_deepening_enabled`].
+///
+/// A malformed override — unparsable, empty, non-increasing, or with a final
+/// level below [`HYPER_WEDGE_DEPTH`] — is **rejected wholesale** (falls back to
+/// the compiled default) rather than silently reasoning under a schedule that
+/// could lose entailments.
+fn depth_schedule() -> Vec<usize> {
+    let Some(raw) = std::env::var_os("RUSTDL_ID_SCHEDULE") else {
+        return HYPER_WEDGE_DEPTH_SCHEDULE.to_vec();
+    };
+    let parsed: Option<Vec<usize>> = raw
+        .to_str()
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().parse::<usize>().ok())
+                .collect()
+        })
+        .and_then(|v: Option<Vec<usize>>| v);
+    match parsed {
+        Some(v)
+            if !v.is_empty()
+                && v.windows(2).all(|w| w[1] > w[0])
+                && v[v.len() - 1] >= HYPER_WEDGE_DEPTH =>
+        {
+            v
+        }
+        _ => HYPER_WEDGE_DEPTH_SCHEDULE.to_vec(),
+    }
+}
+
 /// Whether the hypertableau sound-accelerator wedge (H4) is enabled.
 /// **Default on** as of 2026-05-29 — the corpus is now sound across
 /// every tested ontology (pizza/ro/sulo/SIO/GALEN/notgalen/ALEHIF+),
@@ -2892,7 +3088,11 @@ impl HyperCache {
         deadline: Option<std::time::Instant>,
     ) -> HyperVerdict {
         use owl_dl_tableau::hyper::HyperResult;
-        let (result, stats) = self.decide_with_stats(sub, sup, HYPER_WEDGE_DEPTH, deadline);
+        let (result, stats) = if crate::iterative_deepening_enabled() {
+            self.decide_iterative_deepening(sub, sup, deadline)
+        } else {
+            self.decide_with_stats(sub, sup, HYPER_WEDGE_DEPTH, deadline)
+        };
         match result {
             HyperResult::Unsat => HyperVerdict::Subsumed,
             HyperResult::Sat => HyperVerdict::NotSubsumed,
@@ -2901,6 +3101,132 @@ impl HyperCache {
             HyperResult::Stalled if stats.diverged => HyperVerdict::UnknownDiverged,
             HyperResult::Stalled => HyperVerdict::Unknown,
         }
+    }
+
+    /// Iterative-deepening driver for the classify per-pair oracle
+    /// (`RUSTDL_ITERATIVE_DEEPENING`, default OFF). Runs
+    /// [`decide_with_stats`](Self::decide_with_stats) at each level of
+    /// [`depth_schedule`] until the engine returns a **definite** verdict
+    /// (`Unsat`/`Sat`) or the schedule is exhausted, and returns that level's
+    /// `(result, stats)`.
+    ///
+    /// # Why this is FP-safe by construction
+    ///
+    /// A depth cap can only *suppress* an `Unsat`: on hitting `depth == 0`
+    /// `HyperEngine::solve` returns `Stalled`, and a parent frame with any
+    /// stalled child returns `Stalled` rather than `Unsat`. It can never
+    /// *manufacture* an `Unsat`. So no depth schedule can create a subsumption
+    /// the fixed cap would not also have found sound — the classify FP surface
+    /// is untouched. Deepening can only add entailments.
+    ///
+    /// # Why it does not lose entailments (unbounded deadline)
+    ///
+    /// Raising the cap is **verdict-monotone**:
+    /// * `Unsat` at cap `k` requires *every* branch decisively unsat (no child
+    ///   stalled), so the identical DFS at cap `k' > k` re-derives it;
+    /// * `Sat` at cap `k` means a completed model was found; the DFS prefix at
+    ///   `k' > k` is identical except that some frames which returned `Stalled`
+    ///   may now return `Sat` (immediate `Sat`) or `Unsat` (the parent
+    ///   continues to the next disjunct — exactly what it did after `Stalled`),
+    ///   so the outcome is still `Sat`;
+    /// * only `Stalled` can change, and only into a definite verdict.
+    ///
+    /// The adaptive-budget divergence cut does not break this: `is_diverging`
+    /// requires depth saturation, so a larger `init_depth` makes it fire *less*,
+    /// which only lets a search run longer.
+    ///
+    /// Since [`HYPER_WEDGE_DEPTH_SCHEDULE`]'s last level is `>= HYPER_WEDGE_DEPTH`
+    /// (compile-time asserted), the final level dominates today's fixed cap.
+    ///
+    /// # Deadline
+    ///
+    /// The caller's `deadline` bounds the **whole loop**, not each level: every
+    /// level is passed the same `Instant`, and the loop breaks before starting
+    /// a level once it has passed. Iterative deepening therefore never
+    /// multiplies the per-pair budget. The converse is the one real completeness
+    /// exposure: under a *bounded* deadline the shallow levels spend budget the
+    /// final level might have needed, so a deadline-bounded run can lose a pair
+    /// the fixed cap would have found. Unbounded runs cannot (monotonicity above).
+    fn decide_iterative_deepening(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> (
+        owl_dl_tableau::hyper::HyperResult,
+        owl_dl_tableau::hyper::SearchStats,
+    ) {
+        let (result, stats, _trace) = self.decide_iterative_deepening_traced(sub, sup, deadline);
+        (result, stats)
+    }
+
+    /// [`decide_iterative_deepening`](Self::decide_iterative_deepening) plus a
+    /// [`DeepeningTrace`] recording how many levels ran and which one produced
+    /// the returned verdict. The trace is a two-word stack value, not a
+    /// heap-allocated log, so the traced form IS the production path — there is
+    /// no untraced twin that could drift from it.
+    fn decide_iterative_deepening_traced(
+        &self,
+        sub: owl_dl_core::ir::ClassId,
+        sup: owl_dl_core::ir::ClassId,
+        deadline: Option<std::time::Instant>,
+    ) -> (
+        owl_dl_tableau::hyper::HyperResult,
+        owl_dl_tableau::hyper::SearchStats,
+        DeepeningTrace,
+    ) {
+        use owl_dl_tableau::hyper::HyperResult;
+        let schedule = crate::depth_schedule();
+        // Shallow phase (every level but the last) shares ONE small wall budget,
+        // so the re-work iterative deepening adds to a pair is bounded a priori
+        // — see `ID_SHALLOW_BUDGET_MS` for the measurement that forces this.
+        // The final level always gets the caller's own deadline, so it is
+        // exactly today's search at a deeper cap.
+        let shallow = crate::id_shallow_deadline(
+            std::time::Instant::now(),
+            deadline,
+            crate::id_shallow_budget_ms(),
+        );
+        let last = schedule.len() - 1;
+        let level_deadline = |i: usize| if i == last { deadline } else { shallow };
+        // `schedule` is non-empty by construction (compiled default is, and a
+        // malformed override is rejected wholesale in `depth_schedule`).
+        let mut level = self.decide_with_stats(sub, sup, schedule[0], level_deadline(0));
+        let mut trace = DeepeningTrace {
+            levels_run: 1,
+            final_depth: schedule[0],
+        };
+        let mut i = 0usize;
+        while i < last {
+            // A definite verdict is final — never deepen past it.
+            if !matches!(level.0, HyperResult::Stalled) {
+                break;
+            }
+            // Was this level cut by the SHALLOW budget rather than by its own cap?
+            let shallow_spent = shallow.is_some_and(|d| std::time::Instant::now() >= d);
+            if crate::id_cap_was_not_binding(
+                shallow_spent,
+                level.1.diverged,
+                level.1.max_branch_depth,
+                schedule[i],
+            ) {
+                break;
+            }
+            // The CALLER's deadline bounds the LOOP: never start a level after
+            // it passes, so deepening cannot multiply the per-pair budget.
+            if deadline.is_some_and(|dl| std::time::Instant::now() >= dl) {
+                break;
+            }
+            // Once the shallow budget is spent, jump straight to the final
+            // level: every intermediate level would return `Stalled` on its
+            // first deadline check anyway, after paying a full per-pair engine
+            // build for nothing.
+            i = if shallow_spent { last } else { i + 1 };
+            level = self.decide_with_stats(sub, sup, schedule[i], level_deadline(i));
+            trace.levels_run += 1;
+            trace.final_depth = schedule[i];
+        }
+        (level.0, level.1, trace)
     }
 
     /// Diagnostic sibling of [`decide`](Self::decide): runs the identical
@@ -9422,5 +9748,526 @@ mod lazy_abox_saturation_tests {
             let on = is_inconsistent(&prepare_with_flag(body, true));
             assert_eq!(off, on, "lazy-saturation gate changed the ABox verdict");
         }
+    }
+}
+
+/// Iterative-deepening (`RUSTDL_ITERATIVE_DEEPENING`) canaries.
+///
+/// **Negatives first.** Every positive assertion below is preceded by a control
+/// that proves the fixture actually discriminates — a fixture that the FIRST
+/// schedule level already decides would make "deepening works" vacuously true.
+/// `deep_chain_stalls_at_the_first_level` is that control; if it ever starts
+/// passing at depth 8, the rest of this module is measuring nothing.
+///
+/// Inline (not in `tests/`) because `HyperCache`, `decide_iterative_deepening_traced`
+/// and `test_env_lock` are `pub(crate)` / `#[cfg(test)]`.
+#[cfg(test)]
+mod iterative_deepening_tests {
+    use super::*;
+    use horned_owl::io::ParserConfiguration;
+    use horned_owl::io::ofn::reader::read;
+    use horned_owl::model::RcStr;
+    use horned_owl::ontology::set::SetOntology;
+    use owl_dl_tableau::hyper::HyperResult;
+    use std::io::Cursor;
+    use std::time::Duration;
+
+    const HEADER: &str = "\
+Prefix(:=<http://rustdl.test/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
+
+    fn parse(src: &str) -> SetOntology<RcStr> {
+        let mut reader = Cursor::new(src);
+        let (ontology, _prefixes) =
+            read(&mut reader, ParserConfiguration::default()).expect("fixture parses");
+        ontology
+    }
+
+    /// A `⊔`-chain of length `n` whose proof genuinely needs branch depth `n`:
+    ///
+    /// ```text
+    /// A0 ⊑ K
+    /// A_{i-1} ⊑ P_i ⊔ Q_i,   P_i ⊑ A_i,   Q_i ⊓ K ⊑ ⊥      (i = 1..n)
+    /// An ⊑ Y
+    /// ```
+    ///
+    /// Refuting `A0 ⊓ ¬Y` must choose `P_i` at every level — `Q_i` clashes
+    /// against the `K` that `A0` puts on the same node — and level `i`'s
+    /// disjunction only opens once `A_{i-1}` is present, so the `n` decisions
+    /// cannot be reordered or merged. A cap below `n` yields `Stalled`; a cap at
+    /// or above `n` yields `Unsat`.
+    ///
+    /// **The obvious fixture does not work, and the negative control caught it.**
+    /// Writing the disjunction as `A_{i-1} ⊑ A_i ⊔ B_i` with `B_i ⊑ A_i` gives
+    /// the two disjuncts a common told subsumer, so the minimal-common-subsumer
+    /// pass rewrites the whole chain to Horn implications and `sat_seed` hands
+    /// the wedge `Y` at the root: `pairs_branched: 0`, decided at depth 0. Here
+    /// `Q_i` has NO told superclass (a conjunctive-`⊥` GCI is recorded as a
+    /// told-DISJOINT pair, not a subsumer), so no common subsumer exists and the
+    /// case split survives to the engine.
+    fn build_disjunction_chain(n: usize) -> InternalOntology {
+        owl_dl_core::convert::convert_ontology(&parse(&chain_src(n, true)))
+            .expect("chain fixture converts")
+    }
+
+    /// The same chain with the terminal `An ⊑ Y` link REMOVED, so `A0 ⊑ Y`
+    /// genuinely does not hold and the wedge answers `Sat`.
+    fn build_unprovable_chain(n: usize) -> InternalOntology {
+        owl_dl_core::convert::convert_ontology(&parse(&chain_src(n, false)))
+            .expect("chain fixture converts")
+    }
+
+    fn chain_src(n: usize, entail_y: bool) -> String {
+        use std::fmt::Write as _;
+        let mut b = String::from("Declaration(Class(:Y)) Declaration(Class(:K))\n");
+        for i in 0..=n {
+            let _ = writeln!(b, "Declaration(Class(:A{i}))");
+        }
+        b.push_str("SubClassOf(:A0 :K)\n");
+        for i in 1..=n {
+            let prev = i - 1;
+            let _ = write!(
+                b,
+                "Declaration(Class(:P{i})) Declaration(Class(:Q{i}))\n\
+                 SubClassOf(:A{prev} ObjectUnionOf(:P{i} :Q{i}))\n\
+                 SubClassOf(:P{i} :A{i})\n\
+                 SubClassOf(ObjectIntersectionOf(:Q{i} :K) owl:Nothing)\n"
+            );
+        }
+        if entail_y {
+            let _ = writeln!(b, "SubClassOf(:A{n} :Y)");
+        }
+        format!("{HEADER}Ontology(\n{b})\n")
+    }
+
+    fn class_id(internal: &InternalOntology, local: &str) -> owl_dl_core::ir::ClassId {
+        let iri = format!("http://rustdl.test/{local}");
+        internal
+            .vocabulary
+            .classes()
+            .find(|(_, i)| *i == iri.as_str())
+            .map_or_else(|| panic!("class {local} not found"), |(id, _)| id)
+    }
+
+    /// Run `f` with `RUSTDL_ID_SCHEDULE` set (or cleared), serialised through
+    /// `test_env_lock` and restored afterwards.
+    ///
+    /// `RUSTDL_ID_SHALLOW_MS` is pinned to `0` (bound disabled) for the whole
+    /// closure. Without that pin these canaries would depend on whether a
+    /// microsecond-scale search happened to outrun a 5 ms wall budget on a
+    /// loaded machine — a flaky test that would also silently stop testing the
+    /// deepening path. The budget itself is covered by its own canaries.
+    #[allow(unsafe_code)]
+    fn with_schedule<T>(val: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_ID_SCHEDULE");
+        let prev_ms = std::env::var_os("RUSTDL_ID_SHALLOW_MS");
+        // SAFETY: serialised by `test_env_lock`; restored before release.
+        unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", "0") };
+        match val {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ID_SCHEDULE", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ID_SCHEDULE") },
+        }
+        let out = f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ID_SCHEDULE", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ID_SCHEDULE") },
+        }
+        match prev_ms {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_MS") },
+        }
+        out
+    }
+
+    // ---------------------------------------------------------------- negatives
+
+    /// **Control (negatives-first).** The 12-deep chain is genuinely beyond the
+    /// first schedule level: a single search capped at depth 8 `Stalled`s. If
+    /// this ever returns `Unsat`, every deepening assertion below is vacuous.
+    #[test]
+    fn deep_chain_stalls_at_the_first_level() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _) = cache.decide_with_stats(a0, y, 8, None);
+        assert_eq!(
+            res,
+            HyperResult::Stalled,
+            "12-deep ⊔-chain must NOT be decidable at depth 8, or the fixture is inert"
+        );
+    }
+
+    /// **Control.** The same chain IS decidable at the second schedule level,
+    /// so the deepening test below has somewhere to succeed.
+    #[test]
+    fn deep_chain_is_unsat_at_the_second_level() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _) = cache.decide_with_stats(a0, y, 32, None);
+        assert_eq!(res, HyperResult::Unsat, "depth 32 must prove A0 ⊑ Y");
+    }
+
+    /// **Control.** The shallow chain is decided by the FIRST level, so
+    /// `stops_at_first_definite_verdict` is not vacuous either.
+    #[test]
+    fn shallow_chain_is_unsat_at_the_first_level() {
+        let internal = build_disjunction_chain(3);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _) = cache.decide_with_stats(a0, y, 8, None);
+        assert_eq!(
+            res,
+            HyperResult::Unsat,
+            "depth 8 must prove the 3-deep chain"
+        );
+    }
+
+    // ---------------------------------------------------------------- the loop
+
+    /// The loop deepens past a `Stalled` first level and returns the deeper
+    /// level's definite verdict. **Sabotage target: "the loop never deepens"**
+    /// (returning after level 0) and **"a `Stalled` is treated as definite"**
+    /// (breaking on `Stalled`) both fail here.
+    #[test]
+    fn deepens_past_a_stalled_first_level() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _, trace) = with_schedule(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert_eq!(res, HyperResult::Unsat, "deepening must recover the proof");
+        assert_eq!(trace.levels_run, 2, "must run exactly levels 8 then 32");
+        assert_eq!(trace.final_depth, 32);
+    }
+
+    /// A definite verdict at the first level ends the loop — no re-work.
+    /// **Sabotage target: "a `Stalled` is treated as definite"** inverted —
+    /// a loop that ignores the verdict and always runs the whole schedule
+    /// fails here.
+    #[test]
+    fn stops_at_the_first_definite_verdict() {
+        let internal = build_disjunction_chain(3);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _, trace) = with_schedule(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert_eq!(res, HyperResult::Unsat);
+        assert_eq!(
+            trace.levels_run, 1,
+            "a definite verdict must not be deepened past"
+        );
+        assert_eq!(trace.final_depth, HYPER_WEDGE_DEPTH_SCHEDULE[0]);
+    }
+
+    /// A `Sat` (genuine non-subsumption) is definite too — the loop must not
+    /// grind through the whole schedule looking for an `Unsat` that cannot exist.
+    #[test]
+    fn sat_is_definite_and_ends_the_loop() {
+        // n = 3, so the model is found within the FIRST level's cap of 8.
+        let internal = build_unprovable_chain(3);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _, trace) = with_schedule(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert_eq!(
+            res,
+            HyperResult::Sat,
+            "A0 ⊑ Y does not hold without the link"
+        );
+        assert_eq!(trace.levels_run, 1, "a Sat verdict must end the loop");
+    }
+
+    /// The loop never runs a level that is not in the schedule, and never runs
+    /// more levels than the schedule has. **Sabotage target: "the loop deepens
+    /// past the final cap"** — a driver that multiplies the depth itself (or
+    /// appends a level beyond the last) lands on a depth outside the schedule.
+    /// A three-level schedule is used so two deepening steps are exercised.
+    #[test]
+    fn never_leaves_the_schedule() {
+        // A 20-deep chain, so BOTH intermediate levels (8, 12) genuinely stall
+        // and two deepening steps are exercised before 256 decides.
+        let internal = build_disjunction_chain(20);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let (res, _, trace) = with_schedule(Some("8,12,256"), || {
+            cache.decide_iterative_deepening_traced(a0, y, None)
+        });
+        assert_eq!(res, HyperResult::Unsat);
+        assert_eq!(trace.levels_run, 3, "8 and 12 both stall; 256 decides");
+        assert_eq!(
+            trace.final_depth, 256,
+            "must land on the LAST schedule level"
+        );
+        assert!(
+            [8usize, 12, 256].contains(&trace.final_depth),
+            "the loop must only ever run scheduled depths"
+        );
+    }
+
+    /// An already-expired deadline bounds the WHOLE loop: no second level is
+    /// started. **Sabotage target: dropping the deadline guard** (which would
+    /// let iterative deepening multiply the effective per-pair budget).
+    #[test]
+    fn expired_deadline_stops_the_loop() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("instant is well past process start");
+        let (res, _, trace) = with_schedule(None, || {
+            cache.decide_iterative_deepening_traced(a0, y, Some(past))
+        });
+        assert_eq!(res, HyperResult::Stalled);
+        assert_eq!(
+            trace.levels_run, 1,
+            "an expired deadline must stop the loop, not restart it deeper"
+        );
+    }
+
+    // ------------------------------------------------------------ flag + schedule
+
+    /// Default OFF, and ONLY `=1` turns it on (`RUSTDL_ITERATIVE_DEEPENING=true`
+    /// or `=2` must not silently enable a non-default search).
+    #[test]
+    #[allow(unsafe_code)]
+    fn flag_defaults_off_and_only_1_enables() {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_ITERATIVE_DEEPENING");
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe { std::env::remove_var("RUSTDL_ITERATIVE_DEEPENING") };
+        assert!(!iterative_deepening_enabled(), "default must be OFF");
+        for v in ["0", "", "true", "2", "on"] {
+            unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", v) };
+            assert!(!iterative_deepening_enabled(), "{v:?} must not enable");
+        }
+        unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", "1") };
+        assert!(iterative_deepening_enabled(), "=1 must enable");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ITERATIVE_DEEPENING", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ITERATIVE_DEEPENING") },
+        }
+    }
+
+    /// The compiled schedule's final level dominates the fixed cap it replaces.
+    /// This is the completeness invariant: deepening is verdict-monotone, so a
+    /// final level `>= HYPER_WEDGE_DEPTH` can only ADD entailments.
+    #[test]
+    fn final_level_dominates_the_fixed_cap() {
+        let last = *HYPER_WEDGE_DEPTH_SCHEDULE
+            .last()
+            .expect("schedule is non-empty");
+        assert!(
+            last >= HYPER_WEDGE_DEPTH,
+            "final level {last} < fixed cap {HYPER_WEDGE_DEPTH}: deepening could LOSE entailments"
+        );
+        assert!(
+            HYPER_WEDGE_DEPTH_SCHEDULE.windows(2).all(|w| w[1] > w[0]),
+            "schedule must be strictly increasing"
+        );
+    }
+
+    /// A malformed `RUSTDL_ID_SCHEDULE` is rejected wholesale rather than
+    /// silently reasoning under a schedule that could lose entailments. The
+    /// dangerous case is the third: a well-formed but SHALLOW schedule whose
+    /// final level is below the fixed cap.
+    #[test]
+    fn malformed_schedule_override_falls_back_to_default() {
+        for bad in [
+            "",         // empty
+            "nonsense", // unparsable
+            "8,,256",   // empty component
+            "256,8",    // not increasing
+            "8,8,256",  // not STRICTLY increasing
+            "8,32,128", // final level below HYPER_WEDGE_DEPTH — would lose entailments
+            "-4,256",   // negative
+        ] {
+            let got = with_schedule(Some(bad), depth_schedule);
+            assert_eq!(
+                got,
+                HYPER_WEDGE_DEPTH_SCHEDULE.to_vec(),
+                "malformed schedule {bad:?} must fall back to the default"
+            );
+        }
+    }
+
+    /// A well-formed override IS honoured (otherwise the rejection test above
+    /// would pass trivially for a `depth_schedule` that ignores the env var).
+    #[test]
+    fn well_formed_schedule_override_is_honoured() {
+        let got = with_schedule(Some("4, 16, 300"), depth_schedule);
+        assert_eq!(got, vec![4usize, 16, 300]);
+    }
+
+    // -------------------------------------------------- shallow-phase budget
+
+    /// The shallow phase gets at most `ID_SHALLOW_BUDGET_MS` when the caller
+    /// supplied no deadline, and the FINAL level then runs unbounded.
+    #[test]
+    fn shallow_budget_bounds_the_unbounded_case() {
+        let now = std::time::Instant::now();
+        let d = id_shallow_deadline(now, None, 5).expect("bounded when budget > 0");
+        assert_eq!(d.saturating_duration_since(now), Duration::from_millis(5));
+    }
+
+    /// With a caller deadline the shallow phase takes at most
+    /// `1/ID_SHALLOW_BUDGET_DIVISOR` of what remains, so the majority of a
+    /// `--pair-timeout-ms` budget always reaches the final level.
+    /// **Sabotage target: dropping the divisor clamp** — at a 4 ms per-pair
+    /// budget the shallow phase would otherwise eat 4 of the 4 ms.
+    #[test]
+    fn shallow_budget_never_eats_the_callers_budget() {
+        let now = std::time::Instant::now();
+        let caller = now + Duration::from_millis(4);
+        let d = id_shallow_deadline(now, Some(caller), 5).expect("bounded");
+        assert_eq!(
+            d.saturating_duration_since(now),
+            Duration::from_millis(1),
+            "4ms budget / divisor 4 = 1ms for the shallow phase"
+        );
+        assert!(
+            d < caller,
+            "shallow phase must end strictly before the caller deadline"
+        );
+    }
+
+    /// A generous caller deadline does not raise the shallow budget above its
+    /// absolute cap.
+    #[test]
+    fn shallow_budget_is_capped_absolutely() {
+        let now = std::time::Instant::now();
+        let d = id_shallow_deadline(now, Some(now + Duration::from_secs(60)), 5).expect("bounded");
+        assert_eq!(d.saturating_duration_since(now), Duration::from_millis(5));
+    }
+
+    /// `=0` disables the bound: the shallow levels then share the caller's own
+    /// deadline (i.e. exactly the unbounded-re-work variant that measurement
+    /// refuted on `ore_ont_10407`). Kept as an escape hatch and an A/B arm.
+    #[test]
+    fn shallow_budget_zero_disables_the_bound() {
+        let now = std::time::Instant::now();
+        assert!(id_shallow_deadline(now, None, 0).is_none());
+        let caller = now + Duration::from_secs(1);
+        assert_eq!(id_shallow_deadline(now, Some(caller), 0), Some(caller));
+    }
+
+    /// An already-expired caller deadline yields a zero-width shallow slice
+    /// rather than panicking on a negative duration.
+    #[test]
+    fn shallow_budget_handles_an_expired_caller_deadline() {
+        let now = std::time::Instant::now();
+        let past = now
+            .checked_sub(Duration::from_secs(1))
+            .expect("instant is well past process start");
+        let d = id_shallow_deadline(now, Some(past), 5).expect("bounded");
+        assert_eq!(d.saturating_duration_since(now), Duration::ZERO);
+    }
+
+    /// Garbage in `RUSTDL_ID_SHALLOW_MS` must fall back to the DEFAULT, not to
+    /// `0` — parsing `"abc"` as "disabled" would silently reinstate the 68 s of
+    /// shallow re-work the bound exists to prevent.
+    #[test]
+    #[allow(unsafe_code)]
+    fn shallow_budget_env_garbage_falls_back_to_the_default() {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_ID_SHALLOW_MS");
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        for bad in ["abc", "", "-1", "5ms"] {
+            unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", bad) };
+            assert_eq!(
+                id_shallow_budget_ms(),
+                ID_SHALLOW_BUDGET_MS,
+                "{bad:?} must fall back to the default, NOT to 0"
+            );
+        }
+        unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", "17") };
+        assert_eq!(
+            id_shallow_budget_ms(),
+            17,
+            "a valid override must be honoured"
+        );
+        unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_MS") };
+        assert_eq!(id_shallow_budget_ms(), ID_SHALLOW_BUDGET_MS);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", v) },
+            None => unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_MS") },
+        }
+    }
+
+    /// A budget-cut shallow level must NOT be mistaken for an exhausted one.
+    /// **Sabotage target: dropping the `shallow_spent` term** from
+    /// `id_cap_was_not_binding` — that inversion silently turns every deep pair
+    /// into a stall, because the final level is never reached.
+    #[test]
+    fn a_budget_cut_level_is_never_treated_as_exhausted() {
+        // Cut by the shallow budget at depth 0 of a 512-cap level: NOT exhausted.
+        assert!(!id_cap_was_not_binding(true, false, 0, 512));
+        assert!(!id_cap_was_not_binding(true, true, 0, 512));
+    }
+
+    /// A diverged level is not exhausted either: the divergence cut depends on
+    /// `init_depth`, so a deeper level may get further.
+    #[test]
+    fn a_diverged_level_is_never_treated_as_exhausted() {
+        assert!(!id_cap_was_not_binding(false, true, 512, 512));
+        assert!(!id_cap_was_not_binding(false, true, 3, 512));
+    }
+
+    /// The positive case the exit exists for: the search finished inside its cap
+    /// (no branch reached it) and was neither budget-cut nor diverged, so a
+    /// deeper cap would run the identical search.
+    #[test]
+    fn an_exhausted_level_stops_the_deepening() {
+        assert!(id_cap_was_not_binding(false, false, 3, 8));
+        // Reaching the cap is NOT exhaustion — deepening must continue.
+        assert!(!id_cap_was_not_binding(false, false, 8, 8));
+        assert!(!id_cap_was_not_binding(false, false, 9, 8));
+    }
+
+    /// Integration: at the SHIPPING shallow budget (not the `0` the other loop
+    /// canaries pin), a pair that needs a deeper level is still decided.
+    #[test]
+    #[allow(unsafe_code)]
+    fn default_shallow_budget_still_decides_a_deep_pair() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_ID_SHALLOW_MS");
+        let prev_s = std::env::var_os("RUSTDL_ID_SCHEDULE");
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe { std::env::remove_var("RUSTDL_ID_SHALLOW_MS") };
+        unsafe { std::env::remove_var("RUSTDL_ID_SCHEDULE") };
+        let res = cache.decide_iterative_deepening_traced(a0, y, None);
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("RUSTDL_ID_SHALLOW_MS", v) };
+        }
+        if let Some(v) = prev_s {
+            unsafe { std::env::set_var("RUSTDL_ID_SCHEDULE", v) };
+        }
+        assert_eq!(res.0, HyperResult::Unsat);
+        assert!(res.2.levels_run >= 2, "depth 8 cannot decide this pair");
+    }
+
+    /// Flag-OFF, `decide` takes the single fixed-cap path and agrees with a
+    /// direct `decide_with_stats(.., HYPER_WEDGE_DEPTH, ..)`.
+    #[test]
+    fn flag_off_matches_the_fixed_cap_path() {
+        let internal = build_disjunction_chain(12);
+        let cache = HyperCache::build(&internal);
+        let (a0, y) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let _lock = test_env_lock();
+        assert!(
+            !iterative_deepening_enabled(),
+            "this test assumes the ambient default (OFF)"
+        );
+        let (fixed, _) = cache.decide_with_stats(a0, y, HYPER_WEDGE_DEPTH, None);
+        assert_eq!(fixed, HyperResult::Unsat);
+        assert_eq!(cache.decide(a0, y, None), HyperVerdict::Subsumed);
     }
 }

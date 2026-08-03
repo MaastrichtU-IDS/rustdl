@@ -1428,6 +1428,57 @@ inputs, not wall time.
 >   > again, so `family_classify_agrees_with_is_consistent` pins the budget to `0`;
 >   > the default-budget property is canaried on a small synthetic ABox clash
 >   > instead (`classify_inconsistency_budget.rs`).
+>   >
+>   > **SUPERSEDED 2026-08-03 — THE FLAT 3000 ms IS NOW AN ADAPTIVE, TWO-LEVEL RULE
+>   > (default ON; `RUSTDL_CLASSIFY_INCONSISTENCY_MS` still overrides outright,
+>   > incl. `0`).** And the "~2.0 s" figure just above is **RETRACTED**: it is a
+>   > confounded subtraction, because a clash **short-circuits** the rest of
+>   > classify, so `with − without` measures "pre-check minus the classify it
+>   > replaced". Measured *in isolation*, `family.ofn`'s pre-check is **2585 ms**
+>   > and the classify-level detection flips between **2600 and 2700 ms** — so
+>   > 3000 ms had only **~13% headroom**, and a host 15% slower silently lost the
+>   > detection. Measure this fixpoint with
+>   > `crates/owl-dl-reasoner/examples/abox_precheck_probe.rs`, never by subtracting
+>   > two classify walls.
+>   >
+>   > **`ABox` SIZE DOES NOT PREDICT THE COST, AND SCALING THE BUDGET UP WITH IT IS
+>   > BACKWARDS.** A 1137-ontology isolation scan of the whole ABox-bearing ORE
+>   > population found `ore_ont_4510` (114 957 `ObjectPropertyAssertion`) at
+>   > **136 ms** against `family.ofn` (1 337) at **2585 ms**, and `ore_ont_6233`
+>   > (176 043 `ClassAssertion`) at 17 ms. Global rank correlation *prefers*
+>   > `class_assertions` (+0.863 vs +0.462) and would have misled — it is dominated
+>   > by the mass of sub-millisecond ontologies, while the decision is about the
+>   > tail. The rule keys on
+>   > `work_proxy = ObjectPropertyAssertion × max(role-chain + transitive roles, 1)`:
+>   > **≤ 300 000 ⟹ 12 000 ms, else 3 000 ms.** The threshold sits in a measured,
+>   > **empty 40× gap** (`family` 50 806; cheapest fixpoint-expensive ontology
+>   > `ore_ont_16315` 2 047 210). The stingy branch is **bit-identical to the
+>   > superseded flat default**, so the rule can only ever *raise* a budget and
+>   > cannot reintroduce the four-ontology DNF (re-verified: 5.43 / 8.24 / 4.39 /
+>   > 4.90 s, `classify --json` byte-identical).
+>   >
+>   > **A SECOND COST DRIVER EXISTS AND IS DELIBERATELY NOT MODELLED.** The first
+>   > pass of this analysis (409 ontologies) concluded edge multiplication was
+>   > *necessary* for expense; extending to 1137 refuted it. `ore_ont_5368` does
+>   > **zero** type and **zero** edge additions and still costs 5936 ms — its cost is
+>   > the fixpoint's **pre-indexing prelude**, which walks all 18.6 M of its lowered
+>   > axioms (~0.3 µs/axiom, stable across cases). The reflex is to add an
+>   > axiom-count gate; measurement says that makes things **worse**, because the
+>   > prelude runs before the first deadline probe and so its cost is
+>   > **budget-independent** (`1833` 4065→4023 ms and `5368` 6059→5871 ms going
+>   > 3000→12 000 ms, while `timed_out` flips `true`→`false`). **Honest residual: no
+>   > budget bounds the prelude** — pre-existing, identical at 3000 ms, a separate
+>   > lever. Pinned by `prelude_dominated_predictors_stay_generous`.
+>   >
+>   > Population effect: **no wall change and no outcome change across all 1137**,
+>   > because 1089 of the 1102 low-work members cost <500 ms (a cap is not an
+>   > expenditure) and the 35 high-work members keep exactly today's budget.
+>   > Canaries `crates/owl-dl-reasoner/tests/adaptive_inconsistency_budget.rs` (13;
+>   > **9 sabotages run, 8 caught first pass, 1 survived** — an unbounded-generous
+>   > mutation — closed by `generous_budget_is_bounded_above`, replay caught). The
+>   > release-only `family` value test is `#[ignore]`d **with its reason in the
+>   > attribute**: 37.9 s in the debug profile vs ~2.6 s in release. Spec
+>   > `docs/2026-08-03-adaptive-inconsistency-budget.md`.
 > - **`RUSTDL_EL_BOT_FILLER`** — `X ⊑ ∃r.⊥` was certified pure-EL-complete while the
 >   lowering dropped it. Fixed in the **saturator**, not by tightening the gate (which
 >   would only relocate the MISS to the hybrid path), and made **total** via a recursive

@@ -2379,43 +2379,224 @@ pub fn prep_deadline_enabled() -> bool {
 /// proceeds exactly as before), so a timeout costs at most the inconsistency
 /// detection, never correctness.
 ///
-/// **Why 3000 and not "a few hundred ms":** measured, not assumed. On
-/// `family.ofn` — the ontology this pre-check exists for — the `ABox`
-/// saturation itself is what the budget has to cover (506 individuals but a
-/// 267k-edge role-chain closure). A few-hundred-ms budget would silently break
-/// exactly the detection the flag was added for.
+/// **The 3000 ms flat default was too tight at the only end that matters, and
+/// is superseded by [`adaptive_classify_inconsistency_budget_ms`]** (2026-08-03).
+/// Measured in isolation on the reference host, `family.ofn`'s pre-check costs
+/// **2585 ms** and the classify-level detection flips between **2600 and
+/// 2700 ms** — i.e. 3000 ms left only ~13% headroom, so a host 15% slower
+/// silently lost the detection v0.4.11 shipped to provide.
 ///
-/// **CORRECTED 2026-08-03 — the headroom is ~13%, not ~1.5×.** The figures
-/// previously recorded here ("~2.0 s", "~1.5× headroom") were derived from
-/// `classify 2.67 s with the pre-check vs 0.67 s without`, which is a
-/// CONFOUNDED subtraction: detecting the inconsistency short-circuits the
-/// classification, so that 2.0 s difference is `pre-check MINUS the full
-/// classify work it skips`, and understates the pre-check. Measured directly
-/// instead, by sweeping this variable and reading the verdict flip (release,
-/// `RAYON_NUM_THREADS=1`, three repeats per step):
+/// (The earlier "~2.0 s" figure was a confounded subtraction — classify *with*
+/// the pre-check minus *without*. A clash short-circuits the rest of classify,
+/// so that difference measures "pre-check minus the classify it replaced", not
+/// the pre-check. Always measure this fixpoint in isolation; see
+/// `crates/owl-dl-reasoner/examples/abox_precheck_probe.rs`.)
 ///
-/// | budget ms | 2500 | 2600 | 2700 | 2800 | 3000 |
-/// |-----------|------|------|------|------|------|
-/// | detected  |  no  |  no  | YES  | YES  | YES  |
-///
-/// So the real cost is **~2.65 s** and 3000 ms clears it by only ~13%. A
-/// slower host, or any growth in `family`'s closure, re-breaks the detection
-/// silently. **Prefer raising this default to lowering it**, and re-measure the
-/// flip table before changing it either way — a much larger default would just
-/// move the tax onto every big-`ABox` classify, which is the regression the
-/// budget exists to prevent. Set `0` if you have a large `ABox` whose
-/// inconsistency you need `classify` to see.
-///
-/// Guarded by `shipped_default_budget_covers_family_precheck` and
-/// `family_detection_is_governed_by_the_budget` in
-/// `tests/classify_inconsistency_budget.rs`.
+/// This function is now only the **explicit override** reader — a documented
+/// escape hatch that always wins, including `0` for unbounded.
 #[must_use]
-pub fn classify_inconsistency_budget_ms() -> u64 {
-    const DEFAULT_MS: u64 = 3000;
+pub fn classify_inconsistency_budget_override_ms() -> Option<u64> {
     std::env::var("RUSTDL_CLASSIFY_INCONSISTENCY_MS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_MS)
+}
+
+/// Cheap structural predictors of the `ABox`-saturation fixpoint's cost, read in
+/// ONE linear pass over the lowered axioms — no reasoning, no allocation beyond
+/// three counters.
+///
+/// **Which predictors, and why these.** A 1137-ontology scan of the ABox-bearing
+/// ORE population measured the pre-check *in isolation* against every cheap
+/// structural quantity on offer. Named-individual count, `ClassAssertion` count
+/// and `ObjectPropertyAssertion` count **do not track cost, in either
+/// direction** — `ore_ont_4510` carries 114 957 `ObjectPropertyAssertion` and
+/// saturates in **136 ms**, while `family.ofn` carries 1 337 and takes
+/// **2585 ms**. `ore_ont_6233` (176 043 `ClassAssertion`) takes 17 ms.
+///
+/// What does separate them is whether the ontology has a rule that *multiplies*
+/// edges. The fixpoint's cost is the size of the derived edge closure; without a
+/// role chain or a transitive role the closure is the asserted edge set expanded
+/// through the sub-role/inverse hierarchy, which is linear (`4510`'s
+/// `edge_additions` equals its assertion count exactly). With one, it is up to a
+/// transitive closure — `family` turns 1 337 asserted edges into **267 112**.
+///
+/// **A SECOND, INDEPENDENT COST DRIVER EXISTS, and these predictors deliberately
+/// do not model it.** The first version of this analysis concluded that edge
+/// multiplication was *necessary* for expense. Extending the scan from 409 to
+/// 1137 ontologies refuted that: `ore_ont_5368` performs **zero** type additions
+/// and **zero** edge additions and still costs **5936 ms**, and `ore_ont_1833`
+/// costs 4478 ms for a closure that does not grow at all. Their cost is the
+/// fixpoint's **pre-indexing prelude**, which walks every lowered axiom — and
+/// they carry 18.6 M and 14.1 M axioms respectively (`DKey` disjointness floods).
+/// The rate is strikingly stable at ~0.3 µs/axiom across all three
+/// prelude-dominated cases.
+///
+/// That driver is **left out of the rule on purpose, on measurement**: the
+/// prelude runs before the first deadline probe, so its cost is
+/// *budget-independent*. Measured on both, at 3000 ms vs 12 000 ms:
+/// `1833` 4065 → 4023 ms and `5368` 6059 → 5871 ms — the **same wall**, but
+/// `timed_out` flips from `true` to `false`, i.e. the larger budget converts
+/// work that was already paid for and then discarded into an actual verdict.
+/// Gating on axiom count would push these two back into the stingy class and
+/// make them strictly worse. (The honest residual: **no budget bounds the
+/// prelude**, so such an ontology overruns any budget by several seconds. That
+/// is pre-existing and identical at 3000 ms; it is a separate lever.)
+///
+/// See `docs/2026-08-03-adaptive-inconsistency-budget.md` for the full table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AboxCostPredictors {
+    /// `ObjectPropertyAssertion` count — the fixpoint's *input* edge set.
+    pub asserted_edges: usize,
+    /// Rules that can multiply an edge set: `SubObjectPropertyOf` with a role
+    /// **chain** body, plus `TransitiveObjectProperty` (which the saturator
+    /// handles as the self-chain `R∘R ⊑ R`).
+    pub multiplying_rules: usize,
+}
+
+impl AboxCostPredictors {
+    /// The work proxy the budget rule thresholds on: asserted edges times the
+    /// number of edge-multiplying rules, **at least one** so that a
+    /// chain-free ontology is still scored on its raw edge count rather than
+    /// collapsing to zero (a multi-million-assertion chain-free `ABox` is
+    /// linear, but linear in something large).
+    #[must_use]
+    pub fn work_proxy(self) -> u64 {
+        (self.asserted_edges as u64).saturating_mul(self.multiplying_rules.max(1) as u64)
+    }
+}
+
+/// Read [`AboxCostPredictors`] off the lowered ontology.
+#[must_use]
+pub fn abox_cost_predictors(internal: &InternalOntology) -> AboxCostPredictors {
+    let mut asserted_edges = 0usize;
+    let mut multiplying_rules = 0usize;
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::ObjectPropertyAssertion { .. } => asserted_edges += 1,
+            Axiom::SubObjectPropertyOf { sub, .. } => {
+                if matches!(sub, SubRolePath::Chain(_)) {
+                    multiplying_rules += 1;
+                }
+            }
+            Axiom::TransitiveRole(_) => multiplying_rules += 1,
+            _ => {}
+        }
+    }
+    AboxCostPredictors {
+        asserted_edges,
+        multiplying_rules,
+    }
+}
+
+/// Work proxy at or below which the classify pre-check gets the **generous**
+/// budget.
+///
+/// **Placed inside a measured, EMPTY 40× gap.** Over the ABox-bearing ORE
+/// population plus `family.ofn`, every ontology whose pre-check exceeds 3000 ms
+/// *for fixpoint reasons* scores at least **2 047 210** (`ore_ont_16315`,
+/// 68.8 s), and `family.ofn` scores **50 806**. Nothing lies between. 300 000 is
+/// the balance point of that gap on a log scale: `family` clears it by 5.9× and
+/// the cheapest expensive ontology exceeds it by 6.8×.
+///
+/// (The two ontologies that are expensive for *prelude* reasons —
+/// `ore_ont_{1833,5368}` — score 10 865 and 6 099 and so fall below this line.
+/// That is the intended outcome, not a leak: see the second cost driver
+/// discussed on [`AboxCostPredictors`]. Their wall is budget-independent, so the
+/// generous branch costs them nothing and gains them a verdict.)
+///
+/// **The asymmetry that decided the exact position:** landing too LOW costs an
+/// ontology only *today's* behaviour (the flat 3000 ms — not a regression),
+/// while landing too HIGH hands a runaway fixpoint the full generous budget.
+/// So a mid-gap value is preferred to one hugging the expensive end.
+pub const INCONSISTENCY_WORK_THRESHOLD: u64 = 300_000;
+
+/// Budget granted to the low-work class. 4.6× `family.ofn`'s measured 2585 ms
+/// (4.4× its 2700 ms classify-level flip point) — the headroom the flat 3000 ms
+/// did not have.
+pub const INCONSISTENCY_GENEROUS_MS: u64 = 12_000;
+
+/// Budget granted to the high-work class. Deliberately **identical to the
+/// superseded flat default**, so this change can only ever *raise* a budget,
+/// never lower one: every ontology outside the low-work class is bounded exactly
+/// as it is today, which is what keeps `ore_ont_{10838,15846,16315,3087}` at the
+/// walls the flat budget bought them.
+pub const INCONSISTENCY_STINGY_MS: u64 = 3_000;
+
+/// Adaptive wall-clock budget for the `ABox`-saturation half of the **classify**
+/// inconsistency pre-check. **Default ON**;
+/// `RUSTDL_CLASSIFY_INCONSISTENCY_MS` overrides it outright (including `0` for
+/// unbounded).
+///
+/// Bounds ONLY the classify path. `is_consistent` / `realize` / `materialize_*`
+/// / `diagnose` stay unbounded — for them the pre-check *is* the point of the
+/// call.
+///
+/// **The rule, and the direction that is easy to get backwards.** The budget
+/// *decreases* with predicted work. It is tempting to scale it up with `ABox`
+/// size — the pathological ontologies have big `ABox`es, so surely they need
+/// more time? — but that is exactly inverted: the expensive cases are expensive
+/// *because* the closure runs away, and `family.ofn` needs its 2.6 s with only
+/// 508 individuals. A budget increasing in `ABox` size would starve `family` and
+/// subsidise the four ontologies whose DNF the budget exists to prevent.
+///
+/// So: **generous when the fixpoint provably cannot run away, unchanged when it
+/// can.**
+///
+/// ```text
+/// work_proxy = asserted_edges × max(multiplying_rules, 1)
+/// budget     = work_proxy ≤ 300_000 ? 12_000 ms : 3_000 ms
+/// ```
+///
+/// **Why two levels and not a formula.** The proxy separates the expensive tail
+/// cleanly but its magnitude does NOT predict milliseconds, and the refutation
+/// is exact: `ore_ont_1579` and `ore_ont_15846` have **identical** predictors
+/// (78 441 asserted edges, 55 multiplying rules, work proxy 4 314 255) and cost
+/// **1502 ms** and **>5000 ms** respectively. A formula would be reading a
+/// precision the measurement does not contain. A threshold reads only the
+/// ordering, which is what was measured.
+///
+/// **Soundness is untouched, and this is structural rather than inherited:**
+/// a deadline abandonment returns `clash: false` with `edges` / `derived_same`
+/// emptied ([`abox_saturation::saturate_abox_consistency_bounded`]), and
+/// `clash: false` is *already* the no-verdict answer every caller handles. No
+/// budget — larger, smaller, or absent — can manufacture an inconsistency, so
+/// changing it costs at most the detection, never correctness.
+///
+/// **Residual exposure, measured rather than argued.** The generous branch *can*
+/// grant more than the flat 3000 ms, so in principle an ontology could sit in the
+/// low-work class and burn 12 000 ms. Over the 1137-ontology ABox-bearing ORE
+/// population, **1089 of the 1102 low-work members cost under 500 ms** — a
+/// 12 000 ms cap is unobservable for them, because a budget is a cap and not an
+/// expenditure. Of the 13 that cost ≥500 ms, 11 complete in ≤1627 ms (so the cap
+/// never binds) and the remaining 2 are the prelude-dominated
+/// `ore_ont_{1833,5368}`, measured at the same wall under 12 000 ms as under
+/// 3000 ms. Net effect on the population: **no wall change and no outcome
+/// change, except that those 2 stop discarding a pre-check they had already paid
+/// for.**
+///
+/// **Coverage.** The pre-check is `has_abox_axioms`-guarded, so an ABox-free
+/// ontology cannot be reached by this rule at all; the ABox-bearing set *is* the
+/// complete affected population, and 1137 of the 1144 in the ORE pool were
+/// measured (7 excluded: 6 exceed a 60 s cap inside `convert_ontology`, before
+/// the pre-check runs; 1 fails to parse). See
+/// `docs/2026-08-03-adaptive-inconsistency-budget.md`.
+#[must_use]
+pub fn adaptive_classify_inconsistency_budget_ms(predictors: AboxCostPredictors) -> u64 {
+    if predictors.work_proxy() <= INCONSISTENCY_WORK_THRESHOLD {
+        INCONSISTENCY_GENEROUS_MS
+    } else {
+        INCONSISTENCY_STINGY_MS
+    }
+}
+
+/// The budget the classify path actually uses: the explicit override if set,
+/// else [`adaptive_classify_inconsistency_budget_ms`] over predictors read from
+/// `internal`. `0` means unbounded.
+#[must_use]
+pub fn classify_inconsistency_budget_ms(internal: &InternalOntology) -> u64 {
+    classify_inconsistency_budget_override_ms().unwrap_or_else(|| {
+        adaptive_classify_inconsistency_budget_ms(abox_cost_predictors(internal))
+    })
 }
 
 /// The `ABox`-saturation half of the KB-level inconsistency pre-check, factored
@@ -2486,7 +2667,7 @@ pub(crate) fn classify_inconsistency_precheck(
         || closure.top_is_unsat()
         || abox_saturation_inconsistent_bounded(
             internal,
-            match classify_inconsistency_budget_ms() {
+            match classify_inconsistency_budget_ms(internal) {
                 0 => None,
                 ms => Some(std::time::Duration::from_millis(ms)),
             },

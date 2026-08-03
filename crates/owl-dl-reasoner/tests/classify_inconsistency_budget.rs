@@ -704,9 +704,13 @@ fn shipped_default_budget_covers_family_precheck() {
         "precondition: the ABox-saturation pre-check finds family.ofn's clash"
     );
 
-    // Read the SHIPPED default, with no env override in scope.
+    // Read the budget family ACTUALLY RECEIVES, with no env override in scope.
+    // Since 2026-08-03 this is adaptive: the flat 3000 ms left only ~1.16x
+    // headroom over family's measured 2585 ms, so a slightly slower host lost
+    // the detection silently. family's work_proxy (50,806) is well inside the
+    // generous branch, so it should now get 12_000 ms.
     let _clear = SetEnvGuard::unset("RUSTDL_CLASSIFY_INCONSISTENCY_MS");
-    let default_ms = owl_dl_reasoner::classify_inconsistency_budget_ms();
+    let default_ms = owl_dl_reasoner::classify_inconsistency_budget_ms(&onto);
 
     assert!(
         default_ms > measured_ms,
@@ -716,9 +720,11 @@ fn shipped_default_budget_covers_family_precheck() {
          was added to fix. Raise the default, or re-measure the flip table in \
          the section header if the pre-check itself got faster."
     );
-    // Headroom is thin by design of the trade-off (a larger default taxes every
-    // big-ABox classify), so report it rather than asserting a ratio that would
-    // just be a second arbitrary constant.
+    // Headroom used to be thin by necessity, because one flat constant had to
+    // serve both family and the 60k-110k-assertion ontologies whose unbounded
+    // pre-check caused the v0.4.8 DNF regression. The adaptive rule removes that
+    // conflict, so the ratio should now be comfortable; it is reported rather
+    // than asserted, to avoid pinning a second arbitrary constant.
     eprintln!(
         "shipped default {default_ms} ms vs measured family pre-check \
          {measured_ms} ms (headroom {:.2}x)",

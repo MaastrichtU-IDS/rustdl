@@ -552,3 +552,177 @@ fn unbounded_is_never_cut() {
     assert!(!full.timed_out);
     assert_eq!(full.edges.len() as u64, CHAIN_EDGES);
 }
+
+// ── 6. The shipped 3000 ms VALUE itself ────────────────────────────────────
+//
+// Everything above pins that the budget EXISTS, is threaded to the right
+// callers, and cuts inside the hot loops. **None of it pins the NUMBER.**
+// Sabotage of the v0.4.11 fix established that: slashing the default from
+// 3000 ms to 1 ms leaves every canary in this file green, because each cheap
+// synthetic clash is also reachable by an unbudgeted route.
+//
+// The tautological repair — `assert!(classify_inconsistency_budget_ms() >= 2500)`
+// — is arithmetic, not evidence: it restates the constant against a second
+// constant chosen to match it, and would survive any change that keeps the
+// number large while breaking what the number is *for*.
+//
+// The two tests below split the job, because no single test can do both:
+//
+//   * `family_detection_is_governed_by_the_budget` is PROFILE-INDEPENDENT and
+//     always runs. It pins the causal claim — that the budget is what decides
+//     `family.ofn`'s verdict — via a verdict PAIR on one fixture.
+//   * `shipped_default_budget_covers_family_precheck` pins the NUMBER, by
+//     comparing the shipped constant against a MEASURED cost. It is
+//     release-only, for the reason recorded on it.
+//
+// MEASURED 2026-08-03 (release, `RAYON_NUM_THREADS=1`, 32-core host), by
+// sweeping `RUSTDL_CLASSIFY_INCONSISTENCY_MS` and reading the verdict flip:
+//
+// | budget ms | 2500 | 2600 | 2700 | 2800 | 3000 |
+// | detected  |  no  |  no  | YES  | YES  | YES  |
+//
+// Stable over three repeats per step. So `family.ofn`'s classify-path
+// pre-check costs **~2.65 s**, and the shipped 3000 ms default carries only
+// **~13% headroom** — NOT the "~2.0 s / ~1.5× headroom" recorded when the flag
+// shipped. Re-measure this table before changing the default, and prefer
+// raising it to lowering it.
+
+/// **The causal guard: the budget is what decides `family.ofn`'s verdict.**
+///
+/// `family.ofn` is the one fixture in the corpus whose inconsistency ONLY the
+/// budgeted `ABox`-saturation pre-check finds — `HermiT` and Konclude both call it
+/// inconsistent in under a second, rustdl's cheaper routes do not reach it at
+/// all. That makes it the only place where a verdict can be attributed to the
+/// budget rather than to some other path.
+///
+/// The evidence is the PAIR, not either half:
+///
+/// * **unbounded (`0`) ⇒ detected** — the clash is genuinely there, so a
+///   non-detection is a cut and not an absent inconsistency;
+/// * **`1` ms ⇒ NOT detected** — nothing else in the pipeline finds it, so the
+///   budget is load-bearing rather than decorative.
+///
+/// This is exactly the property sabotage showed was untested: wire the budget so
+/// it never actually cuts, or move detection to an unbudgeted route, and the
+/// 1 ms arm starts detecting and this test fails.
+///
+/// Profile-independent **because both arms are one-sided**: the debug profile is
+/// ~14× slower (measured: 37.9 s vs ~2.65 s for the pre-check alone), which can
+/// only make a 1 ms budget cut *harder*, never softer, and `0` means unbounded
+/// in either profile. It is therefore slow in debug but not flaky.
+#[test]
+fn family_detection_is_governed_by_the_budget() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = std::path::Path::new("../../ontologies/real/family.ofn");
+    let Ok(src) = std::fs::read_to_string(path) else {
+        eprintln!(
+            "SKIP family_detection_is_governed_by_the_budget: {} absent \
+             (run ./scripts/fetch-real-ontologies.sh)",
+            path.display()
+        );
+        return;
+    };
+    let onto = parse(&src);
+
+    let _flag = SetEnvGuard::set("RUSTDL_CLASSIFY_INCONSISTENCY", "1");
+
+    // Arm A — unbounded. Establishes that the clash IS reachable, so arm B's
+    // non-detection can only be the cut. Without this arm, B alone would also
+    // pass on an ontology that is simply consistent.
+    {
+        let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_INCONSISTENCY_MS", "0");
+        let c = classify(&onto).expect("classify succeeds");
+        assert!(
+            !classify_says_consistent(&c),
+            "unbounded: family.ofn IS inconsistent and the pre-check reaches it \
+             — if this fires, the ABox-saturation pre-check regressed, not the budget"
+        );
+    }
+
+    // Arm B — 1 ms. The half that sabotage showed was missing.
+    {
+        let _budget = SetEnvGuard::set("RUSTDL_CLASSIFY_INCONSISTENCY_MS", "1");
+        let c = classify(&onto).expect("classify succeeds");
+        assert!(
+            classify_says_consistent(&c),
+            "family.ofn was still detected inconsistent with the classify budget \
+             pinned to 1 ms. The budget is therefore NOT what governs this \
+             verdict, and the shipped default is unpinned by construction. Do \
+             not relax this assertion: find the route that detected it (try \
+             RUSTDL_ABOX_CHECK=0 and RUSTDL_CLASSIFY_INCONSISTENCY=0 to bisect) \
+             and guard that route instead."
+        );
+    }
+}
+
+/// **The value guard: the shipped default must exceed the cost it exists to
+/// cover**, compared against a cost MEASURED here rather than a second constant.
+///
+/// `RELEASE-ONLY, and that is a real limitation, stated rather than hidden.`
+/// The comparison is only meaningful against a release-speed cost: the
+/// unoptimized test profile needs ~37.9 s for the same pre-check (measured
+/// 2026-08-03), so in debug this would demand a ~38 s default and fail on a
+/// correct binary. `cargo test --workspace` therefore reports it **ignored**,
+/// with the reason attached — a visible gap, not a silent skip. It runs under
+/// `cargo test --release`, which is where it was sabotage-verified.
+///
+/// What it catches that nothing else does: any reduction of the default below
+/// `family.ofn`'s actual pre-check cost — including the exact 3000 → 1 ms
+/// sabotage that motivated this section, and equally a 3000 → 2500 trim that
+/// *looks* conservative but silently re-breaks the detection the flag was added
+/// for.
+#[cfg_attr(
+    debug_assertions,
+    ignore = "needs release speed: family's pre-check is ~37.9 s in the test \
+              profile vs ~2.65 s in release, so the debug cost cannot be \
+              compared against a release-tuned default. Run with --release."
+)]
+#[test]
+fn shipped_default_budget_covers_family_precheck() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = std::path::Path::new("../../ontologies/real/family.ofn");
+    let Ok(src) = std::fs::read_to_string(path) else {
+        eprintln!(
+            "SKIP shipped_default_budget_covers_family_precheck: {} absent \
+             (run ./scripts/fetch-real-ontologies.sh)",
+            path.display()
+        );
+        return;
+    };
+    let onto = internal(&src);
+
+    // The cost the default has to cover, measured now on this host and binary.
+    let t = Instant::now();
+    let full = saturate_abox_consistency(&onto);
+    let measured_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+    assert!(
+        full.clash,
+        "precondition: the ABox-saturation pre-check finds family.ofn's clash"
+    );
+
+    // Read the SHIPPED default, with no env override in scope.
+    let _clear = SetEnvGuard::unset("RUSTDL_CLASSIFY_INCONSISTENCY_MS");
+    let default_ms = owl_dl_reasoner::classify_inconsistency_budget_ms();
+
+    assert!(
+        default_ms > measured_ms,
+        "the shipped RUSTDL_CLASSIFY_INCONSISTENCY_MS default ({default_ms} ms) \
+         is below family.ofn's measured pre-check cost ({measured_ms} ms), so \
+         classify silently reports family CONSISTENT — the exact bug the flag \
+         was added to fix. Raise the default, or re-measure the flip table in \
+         the section header if the pre-check itself got faster."
+    );
+    // Headroom is thin by design of the trade-off (a larger default taxes every
+    // big-ABox classify), so report it rather than asserting a ratio that would
+    // just be a second arbitrary constant.
+    eprintln!(
+        "shipped default {default_ms} ms vs measured family pre-check \
+         {measured_ms} ms (headroom {:.2}x)",
+        f64::from(u32::try_from(default_ms).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(measured_ms.max(1)).unwrap_or(u32::MAX))
+    );
+}

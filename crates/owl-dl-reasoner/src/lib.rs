@@ -2365,13 +2365,34 @@ pub fn prep_deadline_enabled() -> bool {
 ///
 /// **Why 3000 and not "a few hundred ms":** measured, not assumed. On
 /// `family.ofn` — the ontology this pre-check exists for — the `ABox`
-/// saturation itself takes **~2.0 s** on the reference host (classify 2.67 s
-/// with the pre-check vs 0.67 s without; 506 individuals but a 267k-edge
-/// role-chain closure). A few-hundred-ms budget would silently break exactly
-/// the detection the flag was added for. 3000 ms keeps `family` with ~1.5×
-/// headroom while capping the pathological `ABox`es; a much larger default would
-/// just move the tax onto every big-ABox classify. Raise it (or set `0`) if you
-/// have a large `ABox` whose inconsistency you need `classify` to see.
+/// saturation itself is what the budget has to cover (506 individuals but a
+/// 267k-edge role-chain closure). A few-hundred-ms budget would silently break
+/// exactly the detection the flag was added for.
+///
+/// **CORRECTED 2026-08-03 — the headroom is ~13%, not ~1.5×.** The figures
+/// previously recorded here ("~2.0 s", "~1.5× headroom") were derived from
+/// `classify 2.67 s with the pre-check vs 0.67 s without`, which is a
+/// CONFOUNDED subtraction: detecting the inconsistency short-circuits the
+/// classification, so that 2.0 s difference is `pre-check MINUS the full
+/// classify work it skips`, and understates the pre-check. Measured directly
+/// instead, by sweeping this variable and reading the verdict flip (release,
+/// `RAYON_NUM_THREADS=1`, three repeats per step):
+///
+/// | budget ms | 2500 | 2600 | 2700 | 2800 | 3000 |
+/// |-----------|------|------|------|------|------|
+/// | detected  |  no  |  no  | YES  | YES  | YES  |
+///
+/// So the real cost is **~2.65 s** and 3000 ms clears it by only ~13%. A
+/// slower host, or any growth in `family`'s closure, re-breaks the detection
+/// silently. **Prefer raising this default to lowering it**, and re-measure the
+/// flip table before changing it either way — a much larger default would just
+/// move the tax onto every big-`ABox` classify, which is the regression the
+/// budget exists to prevent. Set `0` if you have a large `ABox` whose
+/// inconsistency you need `classify` to see.
+///
+/// Guarded by `shipped_default_budget_covers_family_precheck` and
+/// `family_detection_is_governed_by_the_budget` in
+/// `tests/classify_inconsistency_budget.rs`.
 #[must_use]
 pub fn classify_inconsistency_budget_ms() -> u64 {
     const DEFAULT_MS: u64 = 3000;

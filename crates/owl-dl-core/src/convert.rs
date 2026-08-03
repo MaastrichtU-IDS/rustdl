@@ -2523,7 +2523,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     // cross-subsume (the `numeric_oneof_parser_matrix_exclusivity` canary pins
     // the decoders pairwise-exclusive).
     //
-    // Gated `RUSTDL_DKEY_ONEOF_SEED` (default OFF; `=1` opts in).
+    // Gated `RUSTDL_DKEY_ONEOF_SEED` (default ON since 2026-08-03; `=0` reverts).
     let oneof_seed = dkey_oneof_seed_enabled();
     let int_oneof_dkeys: OneofBucket<i64> =
         collect_oneof_dkeys(out, oneof_seed, parse_int_oneof_iri);
@@ -2681,13 +2681,36 @@ fn collect_oneof_dkeys<T: Ord>(
         .collect()
 }
 
-/// Numeric-`DataOneOf` `DKey` seeding (2026-08-01). **Default OFF** — set
-/// `RUSTDL_DKEY_ONEOF_SEED=1` to seed told `DKey ⊑ DKey` edges and
+/// Numeric-`DataOneOf` `DKey` seeding (2026-08-01). **Default ON since
+/// 2026-08-03** (`=0` reverts) — seeds told `DKey ⊑ DKey` edges and
 /// `DisjointClasses(DKey, DKey)` entries for the six numeric enumeration
 /// buckets (`io:` / `fo:` / `dbo:` / `deo:` / `dao:` / `dto:`), which were
-/// minted but never collected into `seed_dkey_subsumptions`.
+/// minted but never collected into `seed_dkey_subsumptions` — the sixth
+/// D10-class bug (the gate certifies the closure complete while the engine
+/// drops the axiom).
+///
+/// # Why it shipped OFF, and what changed
+///
+/// It was held back solely for a volume measurement: the disjointness half is
+/// `O(k²)` per component, the shape that caused the v0.3.29 conversion DNFs.
+/// That scan is now done — `rustdl tbox-stats` over all 1,920 ORE ontologies in
+/// four arms (neither / `EMIT_ORDER` / `ONEOF_SEED` / both), recording
+/// `concept_rules`, told-subsumer edges, told-disjoint pairs AND conversion
+/// wall, and counting timeouts per arm so a flag-induced one could not be
+/// dropped as an unparseable row.
+///
+/// **Result: this flag moves NOTHING on the ORE corpus** — zero ontologies
+/// change any of the three counts, zero gain a conversion timeout, and the
+/// `ore_ont_5368` discriminator is unmoved at 18,620,251. The numeric
+/// `DataOneOf` pattern simply does not occur there. So the corpus establishes
+/// only that the flip is free; the evidence that it is *right* is its canaries
+/// plus a Konclude ∪ `HermiT` adjudication of the fixture where it does fire
+/// (rustdl ON reproduces the oracle union exactly; OFF misses three
+/// subsumptions).
+///
+/// See `docs/2026-08-03-dkey-volume-scan.md`.
 fn dkey_oneof_seed_enabled() -> bool {
-    std::env::var_os("RUSTDL_DKEY_ONEOF_SEED").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_DKEY_ONEOF_SEED").is_none_or(|v| v != "0")
 }
 
 /// Bounded DKey-disjointness seeding (2026-07-20). **Default ON** — set
@@ -2729,8 +2752,8 @@ fn dkey_merging_gate_enabled() -> bool {
     std::env::var("RUSTDL_DKEY_MERGING_GATE").map_or(true, |v| v != "0")
 }
 
-/// Emit-ordering fix for [`seed_disjoint_bucket`] (2026-08-01). **Default OFF** —
-/// `RUSTDL_DKEY_EMIT_ORDER=1` opts in.
+/// Emit-ordering fix for [`seed_disjoint_bucket`] (2026-08-01). **Default ON
+/// since 2026-08-03** (`=0` reverts to the defect).
 ///
 /// # The defect
 ///
@@ -2759,13 +2782,41 @@ fn dkey_merging_gate_enabled() -> bool {
 /// bucket with only that bucket's keys, so no cross-datatype pair is constructible; and
 /// the emitted set is a SUBSET of what `RUSTDL_DKEY_COLLAPSE_SPLIT=0` already emits, so
 /// it introduces no axiom the pre-split code did not.
+///
+/// # Why it shipped OFF, and what changed (2026-08-03)
+///
+/// It was held back for a volume measurement — it emits MORE axioms, the shape
+/// that caused the v0.3.29 conversion DNFs. The scan (`rustdl tbox-stats` over
+/// all 1,920 ORE ontologies, four arms, recording `concept_rules`, told-subsumer
+/// edges, told-disjoint pairs and conversion wall, with timeouts counted per
+/// arm) found **exactly one ontology in 1,920 whose numbers move at all**:
+/// `ore_ont_9303`, `concept_rules` 8886 → 8887 and told-disjoint pairs
+/// 6669 → 6670. One extra axiom. No ontology grew past the >2× / >100k
+/// threshold, none gained a conversion timeout, none slowed >2×, and the
+/// `ore_ont_5368` discriminator is unmoved at 18,620,251.
+///
+/// Because the risk direction here is a FALSE POSITIVE, the mover was
+/// adjudicated rather than merely counted: `ore_ont_9303`'s classify output is
+/// **byte-identical** ON vs OFF (the pair is emitted but never consumed), and
+/// its verdict — inconsistent, all 726 classes unsatisfiable — is confirmed by
+/// **both** Konclude (727 of 728 classes ≡ `owl:Nothing`) and `HermiT`
+/// (`InconsistentOntologyException`). FP=0.
+///
+/// Caveat worth carrying: the curated corpus is inert for the `DKey` area by
+/// `datatype_value_membership.rs`'s own admission, so the FP=0 net shows
+/// non-regression only. The positive evidence is the canaries plus the
+/// Konclude ∪ `HermiT` adjudication above.
+///
+/// See `docs/2026-08-03-dkey-volume-scan.md`.
 fn dkey_emit_order_enabled() -> bool {
-    std::env::var_os("RUSTDL_DKEY_EMIT_ORDER").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_DKEY_EMIT_ORDER").is_none_or(|v| v != "0")
 }
 
 /// See a role restriction that only exists **after NNF** when classifying roles for
-/// the bounded `DKey`-disjointness seeding. Default **OFF**; `RUSTDL_DKEY_POST_NNF=1`
-/// opts in.
+/// the bounded `DKey`-disjointness seeding. **Default ON since 0.4.8**;
+/// `RUSTDL_DKEY_POST_NNF=0` reverts. (This header said "Default OFF" until
+/// 2026-08-03 — stale since the 0.4.8 flip; the predicate below has been the
+/// default-ON idiom throughout, so the doc was wrong, not the code.)
 ///
 /// # The D10 bug this closes
 ///
@@ -3047,7 +3098,7 @@ fn dkey_components(out: &InternalOntology) -> DkeyComponents {
             _ => {}
         }
     }
-    // `RUSTDL_DKEY_POST_NNF` (default OFF): the `∀`/`≤n` restrictions that only
+    // `RUSTDL_DKEY_POST_NNF` (default ON): the `∀`/`≤n` restrictions that only
     // come into existence at NNF. Both duals are merge-inducing for exactly the
     // reasons the syntactic arm above lists. See [`dkey_post_nnf_enabled`].
     let nnf_duals = collect_nnf_duals(&out.concepts);
@@ -3362,7 +3413,7 @@ fn seed_disjoint_bucket<R>(
     // overlaps every group — dedup emitted pairs.
     let mut emitted: std::collections::HashSet<(ClassId, ClassId)> =
         std::collections::HashSet::new();
-    // ORDERING LEVER (2026-08-01, `RUSTDL_DKEY_EMIT_ORDER=1`, default OFF).
+    // ORDERING LEVER (2026-08-01, `RUSTDL_DKEY_EMIT_ORDER`, default ON since 2026-08-03).
     // Pairs the collapse/broadcast split DECLINED in some component. With the
     // lever on, declining no longer SPENDS the pair, so a pair recorded here may
     // still be emitted from a later component; only `deferred \ emitted` was

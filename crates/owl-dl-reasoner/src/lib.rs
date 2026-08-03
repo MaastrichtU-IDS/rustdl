@@ -624,6 +624,22 @@ pub struct TBoxStats {
     /// the dominant branching source (the residual count is only
     /// 4). Candidates for the Lever-A-extension lazy unfolding.
     pub concept_rule_or_count: usize,
+    /// Told-subsumer edges after [`owl_dl_core::told::build_told_tables`] closes
+    /// the relation transitively — i.e. `Σ_c |super_classes(c)|`.
+    ///
+    /// **Why this is instrumented separately from `concept_rules`** (2026-08-03,
+    /// for the `DKey` volume scan): `RUSTDL_DKEY_ONEOF_SEED` emits told
+    /// `DKey ⊑ DKey` edges, which land in THIS table and appear nowhere in the
+    /// absorbed-`TBox` rule counts. `told.rs` closes them transitively at build,
+    /// so a linear growth in seeded edges can be a quadratic growth here — and
+    /// the v0.3.27 fix was a DNF in exactly this table. Without this field a
+    /// `concept_rules`-only scan is blind to the failure mode it exists to detect.
+    pub told_super_edges: usize,
+    /// Told-disjoint pairs, counted **unordered** (the underlying table is
+    /// symmetric, so this is `Σ_c |disjoints_of(c)| / 2`).
+    /// `RUSTDL_DKEY_EMIT_ORDER` makes conversion emit MORE
+    /// `DisjointClasses(DKey, DKey)`; this is where that volume shows up.
+    pub told_disjoint_pairs: usize,
 }
 
 /// Clausify the ontology into DL-clauses and return the shape
@@ -4589,6 +4605,21 @@ pub fn tbox_stats<A: horned_owl::model::ForIRI>(
             stats.concept_rule_or_count += 1;
         }
     }
+    // Told tables are the OTHER volume sink a DKey lever can inflate, and the
+    // absorbed-TBox counts above do not see them at all. Built here on the same
+    // `InternalOntology` the real pipeline uses (`PreparedOntology::from_internal`
+    // also calls `build_told_tables(&internal)`), so the counts are the shipped
+    // ones, not a re-derivation.
+    let told = owl_dl_core::told::build_told_tables(&internal);
+    for i in 0..told.num_classes() {
+        let cid = owl_dl_core::ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+        stats.told_super_edges += told.super_classes(cid).len();
+        stats.told_disjoint_pairs += told.disjoints_of(cid).len();
+    }
+    // `disjoint_with` is symmetric, so every unordered pair was counted twice.
+    // (A degenerate self-disjoint `DisjointClasses(c, c)` is counted once and so
+    // would round down; it is a malformed axiom and does not occur in the corpus.)
+    stats.told_disjoint_pairs /= 2;
     Ok(stats)
 }
 

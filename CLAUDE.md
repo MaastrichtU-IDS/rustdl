@@ -1437,7 +1437,17 @@ inputs, not wall time.
 >   completeness **regression** from the 07-20/07-30 DKey gates that *either gate alone*
 >   loses.
 >
-> **FIXED behind `RUSTDL_DKEY_EMIT_ORDER` (2026-08-01, default OFF, `=1` enables)** —
+> **FIXED behind `RUSTDL_DKEY_EMIT_ORDER` (2026-08-01; DEFAULT ON since 2026-08-03, `=0` reverts)** —
+> The 1,920-ontology × 4-arm volume scan that gated the flip found **exactly one ontology whose
+> numbers move** (`ore_ont_9303`: `concept_rules` 8886→8887, told-disjoint pairs 6669→6670 — a
+> corpus-wide total of +1 axiom), 0 over the >2×/>100k threshold, 0 new conversion timeouts, and
+> `ore_ont_5368` unmoved at 18,620,251. The mover was FP-adjudicated (byte-identical ON vs OFF;
+> verdict confirmed by Konclude AND HermiT). `RUSTDL_DKEY_ONEOF_SEED` was flipped ON in the same
+> pass and moves **nothing** on ORE — the numeric `DataOneOf` pattern does not occur there, so its
+> evidence is its canaries plus a Konclude ∪ HermiT adjudication, not the corpus. Both now use the
+> house default-ON idiom (`is_none_or(|v| v != "0")`), so **empty enables**; defaults are pinned on
+> both halves by `crates/owl-dl-reasoner/tests/dkey_flag_defaults.rs`, which also guards the
+> `tbox-stats` told counters the scan was decided on. See `docs/2026-08-03-dkey-volume-scan.md`.
 > the THIRD latent completeness defect, and the explanation of why
 > `RUSTDL_DKEY_MERGING_GATE=0` found *fewer* entailments than the default.
 > `seed_disjoint_bucket::try_emit` ran `emitted.insert(pair)` **BEFORE** the droppable

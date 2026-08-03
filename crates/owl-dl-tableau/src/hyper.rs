@@ -43,7 +43,56 @@ type Binding = SmallVec<[(Var, HNode); 4]>;
 /// Defensive cap on the number of body variables `match_body` will
 /// bind; bodies above it are treated as unsupported (deferred). Real
 /// clausifier bodies are 1–3 vars; this guards pathological inputs.
+///
+/// **This cap is NOT a work budget — it deletes inferences.** A body over
+/// the cap makes [`eval_order`] refuse, which `match_body` reports as `None` —
+/// "unsupported", and all three consumers then *skip the clause entirely*.
+/// The consequence is a **silent MISS**: a completeness loss with no
+/// `incomplete` signal. See `docs/2026-08-03-max-body-vars.md`.
 const MAX_BODY_VARS: usize = 8;
+
+/// The raised cap selected by `RUSTDL_WIDE_BODY_VARS=1` (default OFF).
+/// 16 is the value `docs/2026-08-03-constant-audit.md` §6 measured as
+/// sufficient for every ORE ontology observed to bind the cap
+/// (`ore_ont_10140` needs 12).
+const WIDE_BODY_VARS: usize = 16;
+
+/// The effective body-variable cap. `RUSTDL_WIDE_BODY_VARS=1` raises it from
+/// [`MAX_BODY_VARS`] to [`WIDE_BODY_VARS`]; anything else keeps the shipped
+/// default, so the flag-off path is byte-identical.
+///
+/// Raising the cap makes previously-dead clauses fire, so unlike the
+/// early-termination budgets elsewhere in this file it **adds** derived facts
+/// and hence `Unsat` verdicts — the FP direction. Enabling it requires a
+/// Konclude ∪ `HermiT` adjudication of any newly-derived pair, not merely a
+/// superset check.
+fn max_body_vars() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        if std::env::var("RUSTDL_WIDE_BODY_VARS")
+            .ok()
+            .is_some_and(|v| v == "1")
+        {
+            WIDE_BODY_VARS
+        } else {
+            MAX_BODY_VARS
+        }
+    })
+}
+
+/// `RUSTDL_TRACE_BODY_VARS=1` prints one stderr line per clause body whose
+/// shape [`eval_order`] refuses, plus one per body accepted with more than
+/// [`MAX_BODY_VARS`] variables. This is the instrumentation that proves
+/// whether the var cap — as opposed to one of `eval_order`'s other refusal
+/// branches — is the reason a clause never fires.
+fn trace_body_vars() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("RUSTDL_TRACE_BODY_VARS")
+            .ok()
+            .is_some_and(|v| v == "1")
+    })
+}
 
 /// Defensive cap on the Horn-fixpoint inner loop during branching
 /// search. Anywhere blocking bounds the graph, so a real fixpoint is
@@ -899,7 +948,7 @@ struct ClauseMatchPlan {
 /// Precompute one clause's [`ClauseMatchPlan`], or `None` if its body shape is
 /// unsupported (mirrors the inline classification `match_body` used to do per
 /// call): an equality body atom is unsupported, and a non-tree role-atom
-/// structure makes `eval_order` return `None`.
+/// structure makes `eval_order` refuse.
 fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
     let mut x_classes: SmallVec<[ClassId; 4]> = SmallVec::new();
     let mut role_atoms: SmallVec<[(Role, Var, Var); 4]> = SmallVec::new();
@@ -914,7 +963,32 @@ fn build_clause_match_plan(clause: &DlClause) -> Option<ClauseMatchPlan> {
             _ => return None,
         }
     }
-    let order = eval_order(&role_atoms)?;
+    let order = match eval_order(&role_atoms) {
+        Ok(order) => {
+            if trace_body_vars() {
+                let vars = distinct_body_vars(&role_atoms);
+                if vars > MAX_BODY_VARS {
+                    eprintln!(
+                        "[mbv] accepted body: vars={vars} role_atoms={} cap={}",
+                        role_atoms.len(),
+                        max_body_vars()
+                    );
+                }
+            }
+            order
+        }
+        Err(reject) => {
+            if trace_body_vars() {
+                eprintln!(
+                    "[mbv] refused body: vars={} role_atoms={} cap={} reason={reject:?}",
+                    distinct_body_vars(&role_atoms),
+                    role_atoms.len(),
+                    max_body_vars()
+                );
+            }
+            return None;
+        }
+    };
     Some(ClauseMatchPlan {
         x_classes,
         role_atoms,
@@ -4560,14 +4634,58 @@ struct MatchPlan<'p> {
     other_classes: &'p [(ClassId, Var)],
 }
 
+/// Why [`eval_order`] refused a body. Only [`OrderReject::VarCap`] is the
+/// variable cap; the other two are genuine shape restrictions that raising
+/// the cap cannot reach. Keeping them apart is what lets
+/// `RUSTDL_TRACE_BODY_VARS=1` attribute a never-firing clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderReject {
+    /// The body's variable count exceeded [`max_body_vars`]. `vars` is the
+    /// count at the moment of refusal (i.e. `cap + 1`), not the body's full
+    /// requirement — see [`distinct_body_vars`] for that.
+    VarCap { vars: usize, cap: usize },
+    /// Two role atoms target the same variable, or the atoms form a cycle.
+    NotTree,
+    /// Some role atom's source variable is unreachable from `X`.
+    Disconnected,
+}
+
+/// Total distinct variables a body mentions, counting `X`. Used only by the
+/// `RUSTDL_TRACE_BODY_VARS` diagnostic, which needs the body's *full*
+/// requirement rather than the cap-truncated count [`OrderReject::VarCap`]
+/// carries.
+fn distinct_body_vars(role_atoms: &[(Role, Var, Var)]) -> usize {
+    let mut seen: SmallVec<[Var; 16]> = smallvec![X];
+    for (_, u, v) in role_atoms {
+        for w in [*u, *v] {
+            if !seen.contains(&w) {
+                seen.push(w);
+            }
+        }
+    }
+    seen.len()
+}
+
 /// Order role atoms so every atom's source variable is bound before
-/// it (BFS from `X`). `None` if the variables don't form a tree rooted
+/// it (BFS from `X`). `Err` if the variables don't form a tree rooted
 /// at `X` (unbindable source, duplicate target, or more than
-/// [`MAX_BODY_VARS`] vars) — an unsupported shape.
-fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Option<SmallVec<[usize; 8]>> {
-    // All three scratch buffers stay inline: bodies have ≤ MAX_BODY_VARS
-    // vars and a handful of role atoms, so this allocates nothing in the
-    // common case (called once per `match_body`, a hot path).
+/// [`max_body_vars`] vars) — an unsupported shape. The caller turns any
+/// `Err` into the `None` that makes `match_body` skip the clause.
+fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Result<SmallVec<[usize; 8]>, OrderReject> {
+    eval_order_with_cap(role_atoms, max_body_vars())
+}
+
+/// [`eval_order`] against an explicit cap. Split out so the unit tests can
+/// exercise the ordering logic at widths the shipped cap refuses — that is what
+/// establishes the buffers spill *correctly* rather than truncate, which is the
+/// whole FP-safety question for raising the cap.
+fn eval_order_with_cap(
+    role_atoms: &[(Role, Var, Var)],
+    cap: usize,
+) -> Result<SmallVec<[usize; 8]>, OrderReject> {
+    // The scratch buffers stay inline for the ordinary 1–3-var body and spill
+    // to the heap above that (`SmallVec` grows; it is not a fixed array), so a
+    // raised `cap` costs an allocation, never correctness.
     let mut bound: SmallVec<[Var; 8]> = smallvec![X];
     let mut order: SmallVec<[usize; 8]> = SmallVec::with_capacity(role_atoms.len());
     let mut used: SmallVec<[bool; 8]> = SmallVec::from_elem(false, role_atoms.len());
@@ -4580,23 +4698,26 @@ fn eval_order(role_atoms: &[(Role, Var, Var)]) -> Option<SmallVec<[usize; 8]>> {
             if bound.contains(v) {
                 // `v` already bound ⇒ not a tree (two role atoms
                 // target the same var, or a cycle). Unsupported.
-                return None;
+                return Err(OrderReject::NotTree);
             }
             used[i] = true;
             bound.push(*v);
             order.push(i);
             progressed = true;
-            if bound.len() > MAX_BODY_VARS {
-                return None;
+            if bound.len() > cap {
+                return Err(OrderReject::VarCap {
+                    vars: bound.len(),
+                    cap,
+                });
             }
         }
         if !progressed {
             // Remaining atoms have unbindable sources (disconnected
             // from `X`). Unsupported.
-            return None;
+            return Err(OrderReject::Disconnected);
         }
     }
-    Some(order)
+    Ok(order)
 }
 
 /// Resolve a clause variable to a graph node: `X` is the match root
@@ -4658,6 +4779,126 @@ mod tests {
 
     fn cls(i: u32) -> ClassId {
         ClassId::new(i)
+    }
+
+    /// A star of `n` role atoms out of `X`, i.e. a variable-tree body with
+    /// `n + 1` distinct variables — the shape
+    /// `∃r1.A1 ⊓ … ⊓ ∃rn.An ⊑ …` clausifies to.
+    fn star_body(n: u32) -> Vec<(Role, Var, Var)> {
+        (0..n)
+            .map(|i| (Role::Named(RoleId::new(i)), X, i + 1))
+            .collect()
+    }
+
+    /// `eval_order` refuses an over-cap body through the VARIABLE branch,
+    /// distinguishably from its two shape branches. The `vars`/`cap` payload is
+    /// what `RUSTDL_TRACE_BODY_VARS` attribution rests on, and a cap refusal
+    /// mis-labelled `NotTree` would make the diagnostic lie.
+    fn assert_var_cap_refusal(n: u32) {
+        match eval_order(&star_body(n)) {
+            Err(OrderReject::VarCap { vars, cap }) => {
+                assert_eq!(cap, MAX_BODY_VARS, "unexpected effective cap");
+                assert_eq!(
+                    vars,
+                    cap + 1,
+                    "refusal should fire the instant the cap is passed"
+                );
+            }
+            other => panic!("expected a VarCap refusal for {n} role atoms, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_order_accepts_up_to_the_cap_and_refuses_past_it() {
+        // `bound` starts holding `X`, so `n` successors means `n + 1` vars: the
+        // largest accepted star has `MAX_BODY_VARS - 1` role atoms.
+        let widest_ok = u32::try_from(MAX_BODY_VARS - 1).expect("cap fits u32");
+        let order = eval_order(&star_body(widest_ok)).expect("at-cap body must be accepted");
+        assert_eq!(order.len(), widest_ok as usize);
+        assert_var_cap_refusal(widest_ok + 1);
+    }
+
+    /// The scratch buffers in `eval_order` are `SmallVec`s, not fixed arrays, so
+    /// a body far wider than any inline capacity must still be ordered
+    /// CORRECTLY once the cap admits it — it spills to the heap rather than
+    /// truncating or corrupting. This is the load-bearing check behind "raising
+    /// the cap is perf-only for the buffers": 40 vars is 5× the inline `[Var; 8]`.
+    #[test]
+    fn eval_order_orders_a_far_wider_body_correctly_when_admitted() {
+        // A CHAIN, presented in REVERSE, at 40 variables — 5× the `[Var; 8]`
+        // inline capacity and well past `WIDE_BODY_VARS`. Every atom must be
+        // ordered after its predecessor, so a buffer that truncated or
+        // corrupted on spill shows up as a wrong `order` (or a bogus refusal),
+        // not merely as a slow one.
+        let n: u32 = 40;
+        let mut reversed: Vec<(Role, Var, Var)> = (0..n)
+            .map(|i| (Role::Named(RoleId::new(i)), i, i + 1))
+            .collect();
+        reversed.reverse();
+        let order = eval_order_with_cap(&reversed, 64).expect("well-formed 41-var chain");
+        // `reversed[k]` is atom `n-1-k`, so a correct BFS from `X` emits
+        // indices n-1, n-2, …, 0.
+        let expect: Vec<usize> = (0..n as usize).rev().collect();
+        assert_eq!(order.to_vec(), expect);
+        // The shipped cap refuses exactly this body — that refusal is what the
+        // lever withholds, and it is a VarCap refusal, not a shape complaint.
+        assert!(matches!(
+            eval_order(&reversed),
+            Err(OrderReject::VarCap { .. })
+        ));
+        // A star of the same width spills identically.
+        let wide_star = star_body(n);
+        assert_eq!(
+            eval_order_with_cap(&wide_star, 64)
+                .expect("well-formed 41-var star")
+                .to_vec(),
+            (0..n as usize).collect::<Vec<_>>()
+        );
+    }
+
+    /// The lever's own value: `WIDE_BODY_VARS` must admit the 12-variable body
+    /// `ore_ont_10140` and the committed synthetic both need. A cap of 16 that
+    /// silently behaved like 8 would leave every measurement in
+    /// `docs/2026-08-03-max-body-vars.md` meaningless.
+    #[test]
+    fn wide_cap_admits_the_twelve_variable_body_the_default_refuses() {
+        let body = star_body(11);
+        assert_eq!(distinct_body_vars(&body), 12);
+        assert!(matches!(
+            eval_order_with_cap(&body, MAX_BODY_VARS),
+            Err(OrderReject::VarCap { .. })
+        ));
+        assert!(eval_order_with_cap(&body, WIDE_BODY_VARS).is_ok());
+    }
+
+    /// `distinct_body_vars` reports the body's FULL requirement, not the
+    /// cap-truncated count the refusal carries. Without this the trace would
+    /// under-report how far over the cap an ontology actually sits — the exact
+    /// figure the audit needed (`ore_ont_10140` needs 12, not 9).
+    #[test]
+    fn distinct_body_vars_counts_the_full_requirement() {
+        assert_eq!(distinct_body_vars(&[]), 1, "a body on X alone has one var");
+        assert_eq!(distinct_body_vars(&star_body(11)), 12);
+        let chain: Vec<(Role, Var, Var)> = (0..11)
+            .map(|i| (Role::Named(RoleId::new(i)), i, i + 1))
+            .collect();
+        assert_eq!(distinct_body_vars(&chain), 12);
+    }
+
+    /// The other two refusal branches must stay distinguishable from the cap —
+    /// raising the cap cannot reach either, so conflating them would make the
+    /// lever look applicable where it is not.
+    #[test]
+    fn shape_refusals_are_not_reported_as_the_cap() {
+        let r = Role::Named(RoleId::new(0));
+        let s = Role::Named(RoleId::new(1));
+        // Two atoms targeting the same var: not a tree.
+        assert_eq!(
+            eval_order(&[(r, X, 1), (s, X, 1)]),
+            Err(OrderReject::NotTree)
+        );
+        // A source unreachable from X.
+        assert_eq!(eval_order(&[(r, 7, 8)]), Err(OrderReject::Disconnected));
     }
 
     /// Assert that the sparse per-pair delta for `extra` (appended after

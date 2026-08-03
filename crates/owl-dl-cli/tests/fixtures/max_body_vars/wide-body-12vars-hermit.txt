@@ -1,0 +1,3 @@
+SubClassOf( <http://ex.org/mbv#C> <http://ex.org/mbv#D> )
+SubClassOf( <http://ex.org/mbv#X> <http://ex.org/mbv#C> )
+

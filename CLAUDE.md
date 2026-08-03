@@ -1377,9 +1377,20 @@ pair the probe with a case where Konclude *does* report the relation.
   bind, and halving breaks a healthy ontology), `DIV_WINDOW` (null), `RUSTDL_MAX_NODES` (does not
   bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), `label_cache_timeout_ms` (**dead code**).
 
-**Open, and known to be a completeness risk:** `MAX_BODY_VARS = 8` (`hyper.rs:46`) binds on 23 of
-368 probed ontologies and `ore_ont_10140` needs **12**. Raising it **adds** entailments, so unlike
-the levers above it is **asymmetric and needs an oracle**, not a wall measurement.
+**`MAX_BODY_VARS = 8` — RESOLVED 2026-08-03, and the answer is "mis-designed, not mis-tuned".**
+The silent MISS is **real**: a fixture that provably trips the `> MAX_BODY_VARS` branch (12 body
+vars, verified via `RUSTDL_TRACE_BODY_VARS=1`) is decided by **both** Konclude and HermiT and missed
+by rustdl. **But raising the cap is a hard stop.** 8 → 16 over a census of all 868 OFN ORE
+ontologies (23 binders) recovers **nothing** and **destroys three completers** — `ore_ont_16461`
+0.02 s → DNF, `7775` 3.14 s → DNF, `15491` 27.98 s → DNF, **9,773 sound pairs lost** — because in
+each case the withheld clause is **disjunctive**, and a wide disjunctive body explodes the search.
+No fixed value works either: binders need 9, 11, 12, 16, **25 and 133** vars, so 16 does not even
+close its own set.
+**If you attempt this, the only plausible shape is admitting wide HORN bodies while continuing to
+refuse wide DISJUNCTIVE ones** — unbuilt, and note it would *not* recover the fixture above, whose
+clause is itself disjunctive. `RUSTDL_WIDE_BODY_VARS` ships **default OFF** as a documented negative
+result; the tracing is what makes this shape observable at all. See
+`docs/2026-08-03-max-body-vars.md`.
 
 **Method notes that earned their place** (each cost a retraction to learn):
 - **A single instance beats a population statistic on this tail.** Three population studies here

@@ -581,3 +581,323 @@ mod tests {
         );
     }
 }
+
+/// Canaries for the adaptive early-abandon
+/// (`RUSTDL_TABLEAU_EARLY_ABANDON`; see `TableauContext::note_depth_cap_hit` and
+/// `docs/2026-08-03-tableau-early-abandon.md`).
+///
+/// These live in the tableau crate on purpose: the lever's two hooks are *in*
+/// `search`/`branch`, and the iterative-deepening write-up recorded an uncaught
+/// sabotage precisely because its canaries pinned a `TableauContext` API without
+/// pinning the call. Every test below goes through the real `search` driver.
+///
+/// The env flag is NOT read here — the limit is passed explicitly to
+/// `enable_early_abandon`, so these tests are immune to env-ordering flakiness
+/// (`OnceLock`-cached reads elsewhere in the workspace have caused exactly that).
+/// The flag's own default-OFF idiom is canaried on the reasoner side, which owns it.
+#[cfg(test)]
+mod early_abandon_tests {
+    use super::{SearchVerdict, search};
+    use crate::TableauContext;
+    use owl_dl_core::{ClassId, ConceptId, ConceptPool};
+
+    /// `⊔`-chain depth. Level 0 is `⊔(a ⊓ ¬a, b ⊓ ¬b)`; level k is
+    /// `⊔(level_{k-1}, c_k ⊓ ¬c_k)`. So every level has TWO live options: the
+    /// nested one recurses, and the conjunction clashes only *after* the ⊓-rule
+    /// expands it — a DEFINITE verdict. One branch level per link, so a cap below
+    /// `CHAIN_DEPTH` bottoms out and a cap above it refutes.
+    ///
+    /// **The obvious fixture does NOT work, and finding that out is why this is a
+    /// negatives-first suite.** A first attempt labelled `¬a, ¬b, ¬c_k` at the
+    /// node and used bare atomics as the second option. Every such disjunct is
+    /// pruned by the deterministic `⊔`-rule's literal-complement check, leaving a
+    /// single live disjunct per level, so the whole chain unit-propagated to a
+    /// clash with **zero** branch decisions and **zero** depth-cap hits — the
+    /// three controls passed and five assertions were vacuous. A clash that needs
+    /// *expansion* is what forces a real branch.
+    const CHAIN_DEPTH: usize = 12;
+
+    /// A cap comfortably above `CHAIN_DEPTH` (plus the frames `search` itself
+    /// consumes) — the arm where the depth cap is never reached.
+    const DEEP_CAP: usize = 40;
+
+    /// A cap comfortably below `CHAIN_DEPTH` — the arm that bottoms out.
+    const SHALLOW_CAP: usize = 8;
+
+    /// `(trials, definite, depth0, max_stall_run, abandoned)` — the per-probe
+    /// early-abandon telemetry, as `TableauContext::early_abandon_stats` returns it.
+    type Stats = (u64, u64, u64, u64, bool);
+
+    /// `x ⊓ ¬x` — unsatisfiable, but only once the ⊓-rule has expanded it, so it
+    /// survives the `⊔`-rule's cheap literal prune and forces a real branch.
+    fn clashing_conjunction(pool: &mut ConceptPool, id: u32) -> ConceptId {
+        let x = pool.atomic(ClassId::new(id));
+        let nx = pool.not(x);
+        pool.and([x, nx])
+    }
+
+    /// Build one clashing `⊔`-chain over class ids `base..`, returning its top
+    /// `Or`.
+    ///
+    /// The nested level is wrapped in `⊓(level, filler)` because
+    /// [`ConceptPool::or`] **flattens** a nested `Or`: the naive
+    /// `or([level_{k-1}, c_k])` collapsed the whole chain into ONE flat 14-ary
+    /// disjunction, which the driver resolved in a single frame — measured as
+    /// `trials = 14, definite = 14, depth0 = 0` at every cap from 2 to 40, i.e.
+    /// the fixture had no depth at all. A conjunction is not flattened into a
+    /// disjunction, so the `⊓`-rule re-exposes the inner `Or` one level down and
+    /// each link costs exactly one branch level.
+    fn chain(pool: &mut ConceptPool, base: u32, depth: usize) -> ConceptId {
+        let leaf_a = clashing_conjunction(pool, base);
+        let leaf_b = clashing_conjunction(pool, base + 1);
+        let mut top = pool.or([leaf_a, leaf_b]);
+        for k in 0..depth {
+            let off = base + 2 + 2 * u32::try_from(k).expect("small");
+            let c = clashing_conjunction(pool, off);
+            let filler = pool.atomic(ClassId::new(off + 1));
+            let nested = pool.and([top, filler]);
+            top = pool.or([nested, c]);
+        }
+        top
+    }
+
+    /// One node labelled a single clashing chain: **unsatisfiable**, and its
+    /// refutation needs `CHAIN_DEPTH`-ish branch levels.
+    fn one_chain() -> (ConceptPool, ConceptId) {
+        let mut pool = ConceptPool::new();
+        let top = chain(&mut pool, 0, CHAIN_DEPTH);
+        (pool, top)
+    }
+
+    /// `⊔(chainA, chainB)` over disjoint class ids: **two** independent paths to
+    /// the cap, with decisive clashes in between. The fixture that shows a
+    /// *definite verdict does not reset the criterion*.
+    fn two_chains() -> (ConceptPool, ConceptId) {
+        let mut pool = ConceptPool::new();
+        let a_top = chain(&mut pool, 0, CHAIN_DEPTH);
+        let b_top = chain(&mut pool, 500, CHAIN_DEPTH);
+        let root = pool.or([a_top, b_top]);
+        (pool, root)
+    }
+
+    /// `⊔(⊓(chain, f), ⊓(s, g))` — a deep unsatisfiable-at-this-cap option
+    /// followed by a plainly satisfiable one. Flag-OFF this fixture is
+    /// **satisfiable** (the chain bottoms out, then the second option models),
+    /// which is the shape that makes a verdict *change* observable rather than
+    /// only a counter.
+    ///
+    /// **Both sides must be wrapped in `⊓`.** The naive
+    /// `or([chain_top, or([s1, s2])])` is FLATTENED into one disjunction, and
+    /// `reorder_disjuncts` then scores the bare atomics 1 against the
+    /// conjunctions' 2 — so the satisfiable atomic was tried FIRST, the chain was
+    /// never entered, and the cut never fired. Measured, not assumed: that
+    /// version failed this test with "the cut must have fired".
+    fn sat_behind_a_deep_option() -> (ConceptPool, ConceptId) {
+        let mut pool = ConceptPool::new();
+        let c_top = chain(&mut pool, 0, CHAIN_DEPTH);
+        let f = pool.atomic(ClassId::new(900));
+        let deep_side = pool.and([c_top, f]);
+        let s = pool.atomic(ClassId::new(901));
+        let g = pool.atomic(ClassId::new(902));
+        let sat_side = pool.and([s, g]);
+        let root = pool.or([deep_side, sat_side]);
+        (pool, root)
+    }
+
+    /// Run one `search` over `fixture` at `cap`, with the early-abandon armed at
+    /// `limit` (`None` = unarmed, i.e. the flag-OFF path).
+    /// Returns `(verdict, stats)`.
+    fn run(
+        fixture: (ConceptPool, ConceptId),
+        cap: usize,
+        limit: Option<u64>,
+    ) -> (SearchVerdict, Option<Stats>) {
+        let (pool, root) = fixture;
+        let mut ctx = TableauContext::new(&pool);
+        if let Some(l) = limit {
+            ctx.enable_early_abandon(l);
+        }
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        let v = search(&mut ctx, cap);
+        let s = ctx.early_abandon_stats();
+        (v, s)
+    }
+
+    // ---------------------------------------------------------- negatives first
+
+    /// **Control.** Unarmed, at a cap ABOVE the chain depth, the fixture is
+    /// refuted. If this ever stopped being `Unsat`, every "the cut lost a
+    /// verdict" assertion below would be measuring a fixture that had no verdict
+    /// to lose.
+    #[test]
+    fn unarmed_deep_cap_refutes_the_chain() {
+        let (v, s) = run(one_chain(), DEEP_CAP, None);
+        assert!(matches!(v, SearchVerdict::Unsat(_)), "got {v:?}");
+        assert!(s.is_none(), "unarmed ⇒ no accounting at all");
+    }
+
+    /// **Control.** Armed at a cap ABOVE the chain depth, the depth cap is never
+    /// reached — `depth0 == 0` — so the criterion is INERT and the verdict is
+    /// unchanged even at the most aggressive limit of 1. This is the
+    /// completeness-preservation property the whole design rests on: a search
+    /// that does not bottom out cannot be cut.
+    #[test]
+    fn a_search_that_never_bottoms_out_is_never_cut() {
+        let (v, s) = run(one_chain(), DEEP_CAP, Some(1));
+        let (_, _, depth0, _, abandoned) = s.expect("armed");
+        assert_eq!(depth0, 0, "the cap must not be reached at DEEP_CAP");
+        assert!(!abandoned, "nothing to abandon");
+        assert!(
+            matches!(v, SearchVerdict::Unsat(_)),
+            "verdict unchanged: {v:?}"
+        );
+    }
+
+    /// **Control.** Armed at a cap BELOW the chain depth with the limit
+    /// DISABLED (`0`), the accounting is live and the cap IS reached — so the
+    /// fixture really does exercise the criterion's input, and
+    /// `the_cut_fires_at_the_limit` is not vacuous.
+    #[test]
+    fn limit_zero_keeps_accounting_but_never_cuts() {
+        let (v, s) = run(one_chain(), SHALLOW_CAP, Some(0));
+        let (trials, _, depth0, _, abandoned) = s.expect("armed");
+        assert!(depth0 >= 1, "the cap must be reached at SHALLOW_CAP");
+        assert!(trials >= 1, "branch trials must have happened");
+        assert!(!abandoned, "limit 0 must never cut");
+        assert!(matches!(v, SearchVerdict::DepthLimit), "got {v:?}");
+    }
+
+    // ------------------------------------------------------------- the criterion
+
+    /// The cut fires once the cap has been hit `limit` times, and reports
+    /// `DepthLimit`.
+    #[test]
+    fn the_cut_fires_at_the_limit() {
+        let (v, s) = run(one_chain(), SHALLOW_CAP, Some(1));
+        let (_, _, depth0, _, abandoned) = s.expect("armed");
+        assert!(abandoned, "limit 1 must cut on the first bottom-out");
+        assert_eq!(depth0, 1, "and must cut AT the limit, not later");
+        assert!(matches!(v, SearchVerdict::DepthLimit), "got {v:?}");
+    }
+
+    /// **The refutation of the "no progress" shape, pinned in code.** On
+    /// `two_chains` the search returns DEFINITE verdicts (decisive atomic
+    /// clashes) *between* the two paths to the cap, so a criterion that reset on
+    /// progress would never reach 2. The shipped cumulative criterion does.
+    #[test]
+    fn a_definite_verdict_does_not_reset_the_criterion() {
+        // Arm A (limit 0, accounting only) establishes that this fixture really
+        // does interleave progress with cap hits — `max_stall_run < depth0` is the
+        // discriminating fact, and without it arm B would prove nothing.
+        let (_, a) = run(two_chains(), SHALLOW_CAP, Some(0));
+        let (_, definite, depth0, max_stall_run, _) = a.expect("armed");
+        assert!(definite >= 1, "the fixture must produce definite verdicts");
+        assert!(depth0 >= 2, "and must reach the cap more than once");
+        assert!(
+            max_stall_run < depth0,
+            "a definite verdict must have interrupted the run \
+             (max_stall_run {max_stall_run} vs depth0 {depth0}) — otherwise this \
+             fixture does not distinguish the two criteria"
+        );
+        // Arm B: the limit is set STRICTLY ABOVE the longest run but at or below
+        // the cumulative total, so it is reachable ONLY by the cumulative
+        // criterion. Choosing `max_stall_run` itself here would leave the refuted
+        // variant passing — measured: with the limit at 2 (== max_stall_run) a
+        // sabotage that switches the criterion back to `stall_run` kept all 8
+        // canaries green.
+        let limit = max_stall_run + 1;
+        assert!(
+            limit <= depth0,
+            "limit {limit} must still be reachable cumulatively"
+        );
+        let (_, b) = run(two_chains(), SHALLOW_CAP, Some(limit));
+        assert!(
+            b.expect("armed").4,
+            "the cumulative criterion must fire at a limit ({limit}) the \
+             reset-on-progress variant can never reach (longest run {max_stall_run})"
+        );
+    }
+
+    /// **A DEADLINE cut is not a depth-cap hit.** The two exits share a
+    /// `DepthLimit` verdict, and the constant audit had to split its
+    /// `search_depth0`/`search_deadline0` counters for exactly this reason — a
+    /// merged counter reads a deadline as a cap hit and the lever then fires on
+    /// budget pressure rather than on depth. With an already-elapsed deadline the
+    /// accounting must record ZERO cap hits and never abandon.
+    #[test]
+    fn a_deadline_cut_is_not_counted_as_a_depth_cap_hit() {
+        let (pool, root) = one_chain();
+        let mut ctx = TableauContext::new(&pool);
+        ctx.enable_early_abandon(1);
+        ctx.set_deadline(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .expect("an instant one second in the past exists"),
+        );
+        let n = ctx.new_node();
+        ctx.add_label(n, root);
+        let v = search(&mut ctx, DEEP_CAP);
+        let (_, _, depth0, _, abandoned) = ctx.early_abandon_stats().expect("armed");
+        assert!(matches!(v, SearchVerdict::DepthLimit), "got {v:?}");
+        assert!(ctx.deadline_reached(), "the deadline must be what cut this");
+        assert_eq!(depth0, 0, "a deadline cut must NOT count as a cap hit");
+        assert!(!abandoned, "and must never trip the early abandon");
+    }
+
+    /// The cut does LESS work: fewer branch trials than the same search with the
+    /// cut disabled. This is the wall claim, at unit scale.
+    #[test]
+    fn the_cut_does_strictly_less_work() {
+        let (_, off) = run(two_chains(), SHALLOW_CAP, Some(0));
+        let (_, on) = run(two_chains(), SHALLOW_CAP, Some(1));
+        let (off_trials, _, _, _, _) = off.expect("armed");
+        let (on_trials, _, _, _, on_abandoned) = on.expect("armed");
+        assert!(on_abandoned, "the ON arm must actually cut");
+        assert!(
+            on_trials < off_trials,
+            "cut must reduce trials ({on_trials} vs {off_trials})"
+        );
+    }
+
+    // ------------------------------------------------------------- soundness
+
+    /// **FP=0, in the only direction that matters.** The cut may only ever turn
+    /// a verdict INTO a non-verdict. On a fixture that is genuinely SATISFIABLE
+    /// behind a deep first option, flag-OFF returns `Sat`; the cut turns that
+    /// into `DepthLimit` — a MISS — and must NEVER return `Unsat`.
+    #[test]
+    fn the_cut_never_manufactures_an_unsat() {
+        let (off, _) = run(sat_behind_a_deep_option(), SHALLOW_CAP, None);
+        assert_eq!(
+            off,
+            SearchVerdict::Sat,
+            "control: the fixture IS satisfiable"
+        );
+        let (on, s) = run(sat_behind_a_deep_option(), SHALLOW_CAP, Some(1));
+        assert!(s.expect("armed").4, "the cut must have fired");
+        assert!(
+            !matches!(on, SearchVerdict::Unsat(_)),
+            "an early abandon must never yield Unsat, got {on:?}"
+        );
+        assert_eq!(
+            on,
+            SearchVerdict::DepthLimit,
+            "and it degrades to a non-verdict"
+        );
+    }
+
+    /// Armed-with-limit-0 is verdict-identical to unarmed on every fixture, so
+    /// the accounting itself never perturbs the search.
+    #[test]
+    fn accounting_alone_is_verdict_neutral() {
+        for cap in [SHALLOW_CAP, DEEP_CAP] {
+            let (unarmed, _) = run(one_chain(), cap, None);
+            let (armed, _) = run(one_chain(), cap, Some(0));
+            assert_eq!(unarmed, armed, "cap {cap}");
+            let (unarmed2, _) = run(sat_behind_a_deep_option(), cap, None);
+            let (armed2, _) = run(sat_behind_a_deep_option(), cap, Some(0));
+            assert_eq!(unarmed2, armed2, "cap {cap} (sat fixture)");
+        }
+    }
+}

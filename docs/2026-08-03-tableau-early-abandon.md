@@ -9,8 +9,26 @@ commit the committed MISSED-net baseline was built from.
 
 > ## Headline
 >
-> *(filled in after the net — see §4. The prediction in §3 was committed BEFORE
-> any outcome was measured; the commit hash is recorded there.)*
+> **ΔMISSED = 0 against the 5 198 baseline, FP = 0, and the recoveries are real.**
+> Over the committed 400-ontology MISSED-net population the arm scores
+> **MISSED = 5 198 on 60 of 393 ontologies — identical to the baseline, pair for
+> pair** (0 lost, 0 gained, 0 newly unscored), with **all 400 closures
+> byte-identical** and **0 outcome changes**, while the aggregate wall falls
+> **−12.2%** and **22 ontologies get 1.3×–5.7× faster**.
+>
+> **Three DNFs recover, and all three are COMPLETE** against Konclude ∪ HermiT
+> (`ore_ont_3250` 76 pairs, `8666` 68, `3281` 224 — **FP = 0 and MISSED = 0 vs
+> BOTH peers on each**). One of them is **`ore_ont_3281`, the ontology a fixed
+> lower cap makes two orders of magnitude WORSE** — which is the clearest evidence
+> that the adaptive shape is the right one rather than a re-tuned constant.
+>
+> **`ore_ont_10019` is NOT recovered, exactly as predicted in writing before the
+> measurement** (§3): its probes at the default budget mostly never reach the cap
+> (median `depth0 = 0`), so there is no stall to detect.
+>
+> **By the pre-fixed decision rule — ΔMISSED = 0 with recoveries — this is an
+> unambiguous win, and the recommendation is DEFAULT ON.** The flag ships **OFF**
+> in this commit, because flipping a default was explicitly out of scope here.
 
 ---
 
@@ -175,4 +193,314 @@ iterative-deepening census measured 1 638 of 1 664).
 
 ## 4. Results
 
-*(§4 onwards written after the arm ran.)*
+### 4a. Binaries and host discipline
+
+Every binary pinned to a uniquely named path **immediately after the build that
+produced it**, and named after its configuration. **Both arms of every A/B come
+from ONE binary switched by `RUSTDL_TABLEAU_EARLY_ABANDON`**, never from two
+builds, so a stale-binary mix-up cannot produce (or hide) a delta.
+
+| path | sha256 | what |
+|---|---|---|
+| `…/missed-net/bin/rustdl-v0413-main-72a1103` | `44d7d80e…` | the committed MISSED-net baseline, control |
+| `…/rustdl-scratch/ea-bin/rustdl-EA-72a1103` | `84b49e37…` | first build (refuted run-reset criterion + telemetry) |
+| `…/rustdl-scratch/ea-bin/rustdl-EA-CAPHITS-72a1103` | `a9cf7210…` | **the measured feature binary** (§2c, §4b–4e) |
+| `…/rustdl-scratch/ea-bin/rustdl-EA-FINAL-committed` | `da7f553a…` | **built from the COMMITTED tree** (post-`fmt`/clippy); §4f |
+
+Built with `PATH=/home/dumontier/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH
+RUSTUP_TOOLCHAIN=stable cargo build --release` (a bare `cargo` is not on `PATH`
+here). Every probe under `( ulimit -v $((24*1024*1024)); RAYON_NUM_THREADS=1
+timeout N … )`. The named-ontology and 25-ontology batteries ran **serially**; the
+400-ontology sweep ran at `JOBS=2`, so its walls are comparable *within* the
+sweep (both arms interleaved on the same host) and its one apparent regression was
+re-checked serially (§4d).
+
+**Flag-OFF is byte-identical to the pinned baseline binary**, checked before
+anything else: `classify` closures match on `ore_ont_2826` (201 rows) and
+`ore_ont_13545` (2 485 rows).
+
+### 4b. The MISSED net — the gate
+
+`scripts/missed-net.sh sweep EA32 <pinned bin>` over the committed
+400-ontology population (seed 20260803), then
+`net EA32 --baseline baselines/2026-08-03-missed-net-v0413.jsonl`.
+
+| | baseline v0413 | **EA32 (flag ON)** |
+|---|---|---|
+| scored ontologies | 393 | **393** |
+| **MISSED total** | **5 198** | **5 198** |
+| ontologies with MISSED | 60 | **60** |
+| **FP total** | **0** | **0** |
+| ontologies with FP | 0 | **0** |
+| `peer_disagreement` | 1 | 1 |
+| oracle closure | 14.0 M | 14.0 M |
+
+**`ΔMISSED = 0`. `onts_lost_pairs = 0`. `onts_gained_pairs = 0`.
+`newly_unscored = 0`. FP = 0.** And stronger than the net requires: **all 400
+closure hashes are identical between the two arms**, and there are **0 outcome
+changes**.
+
+### 4c. Proof the lever was not merely inert on that population
+
+A net that reports 0 because the flag never fired is indistinguishable from a
+broken net, so this is checked rather than assumed — and the check is the *reason*
+the ΔMISSED = 0 is meaningful:
+
+* **22 of 400 ontologies move by >20% and >1 s**, 21 of them **faster**, aggregate
+  **1 537.4 s → 1 349.8 s (−12.2%)**.
+* The attribution is exactly the mechanism. `ore_ont_13545`'s banner:
+  `unsat_probe` **30 016 → 6 519 ms**, `sweeps` 13 142 → 3 775 ms, `tier_walk`
+  2 713 → 1 163 ms — and the non-banner closure diff is **0 lines**. Same shape on
+  `7011` (30 008 → 5 962), `1958` (30 010 → 6 605), `7007` (1 001 → 161),
+  `2826` (1 000 → 642).
+* Per-probe telemetry (§2e): **44 of 44** armed probes on `13545` abandon, at
+  `depth0 = 32` exactly.
+
+| ontology | OFF | **ON** | speedup |
+|---|---|---|---|
+| `ore_ont_7007` | 31.73 s | **5.59 s** | 5.7× |
+| `ore_ont_7011` | 46.46 s | **11.02 s** | 4.2× |
+| `ore_ont_13545` | 46.30 s | **11.91 s** | 3.9× |
+| `ore_ont_1958` | 46.51 s | **12.17 s** | 3.8× |
+| `ore_ont_9689` | 2.05 s | **0.55 s** | 3.7× |
+| `ore_ont_10874` | 1.18 s | **0.32 s** | 3.7× |
+| `ore_ont_14379` | 4.03 s | **1.51 s** | 2.7× |
+| 13 more (`16847`, `5834`, `8042`, `850`, `2826`, `3156`, `3010`, `10702`, `13954`, `11477`, `16800`, `9053`, `5964`, `2182`) | | | 1.3×–1.6× |
+| **`ore_ont_12698`** | 5.04 s | **6.40 s** | **0.8× — the only regression** |
+
+### 4d. The five named ontologies (plus two controls), serial
+
+One binary, two env arms, 90 s cap, single thread, `RAYON_NUM_THREADS=1`.
+
+| ontology | OFF | **ON** | rows OFF / ON | closure |
+|---|---|---|---|---|
+| `ore_ont_13545` | 46.31 s | **11.88 s (3.9×)** | 2 485 / 2 485 | **IDENTICAL** |
+| `ore_ont_2826` | 7.31 s | **4.85 s (1.5×)** | 201 / 201 | **IDENTICAL** |
+| `ore_ont_3250` | **dnf @90 s** | **31.95 s — RECOVERED** | 0 / **76** | new |
+| `ore_ont_8666` | **dnf @90 s** | **67.84 s — RECOVERED** | 0 / **68** | new |
+| `ore_ont_10019` | dnf @90 s | **dnf @90 s — NOT recovered** | 0 / 0 | — |
+| **`ore_ont_3281`** (audit's counter-example) | **dnf @90 s** | **19.91 s — RECOVERED** | 0 / **224** | new |
+| `ore_ont_12698` (the sweep's regression) | 5.40 s | **5.46 s** | 21 316 / 21 316 | **IDENTICAL** |
+
+`ore_ont_12698` is **noise, not a regression**: serially it is 5.40 → 5.46 s
+(+1.1%) with an identical closure, against 5.04 → 6.40 s under the `JOBS=2`
+sweep. It is the only ontology in 400 that moved the wrong way, and it does not
+reproduce.
+
+**`ore_ont_3281` is the finding that distinguishes this lever from a re-tuned
+constant.** The audit measured it *harmed* two orders of magnitude by a fixed cap
+of 8 (10.3 M `search` entries, 7.9 M cap hits — re-descent caused by a cap that is
+too *small*), which is why "no single fixed value is right" was the audit's own
+conclusion. The adaptive cut leaves the cap at 256 and **recovers it in 19.91 s**.
+
+### 4e. FP adjudication of the three new answers — mandatory, and clean
+
+The recovered ontologies are **not** in the MISSED-net population (they were DNF
+when the frame was built, so they had no closure to diff), so their soundness is
+not covered by §4b. Each was adjudicated separately against **both** peers at a
+150 s cap, normalised and compared with `owl-reasoner-harness/scripts/normalise.py`
+(`compare`), peer output accepted only when `triage.declared_real_class` confirms a
+real hierarchy:
+
+| ontology | rustdl ON rows | vs Konclude | vs HermiT |
+|---|---|---|---|
+| `ore_ont_3250` | 76 | **FP=0 MISSED=0** | **FP=0 MISSED=0** |
+| `ore_ont_8666` | 68 | **FP=0 MISSED=0** | **FP=0 MISSED=0** |
+| `ore_ont_3281` | 224 | **FP=0 MISSED=0** | **FP=0 MISSED=0** |
+
+So these are not merely *fast* new answers, they are **complete** ones: three
+ontologies go from no answer at all to full Konclude ∪ HermiT parity.
+
+### 4f. Re-measured on a binary built from the COMMITTED source
+
+`rustdl-EA-CAPHITS` predates the `cargo fmt` + clippy fixes, so the named-ontology
+battery was re-run on `rustdl-EA-FINAL-committed` (`da7f553a…`), built from the
+committed tree. The clippy fixes were confined to `#[cfg(test)]` canary code, so
+this is a confirmation rather than a new measurement — but it is the confirmation
+that makes the headline rest on what ships:
+
+| ontology | OFF | ON | ON closure vs pre-`fmt` binary |
+|---|---|---|---|
+| `ore_ont_13545` | 46.35 s | 11.90 s | **SAME** |
+| `ore_ont_2826` | 7.31 s | 4.82 s | **SAME** |
+| `ore_ont_3250` | dnf | 31.98 s (76 rows) | **SAME** |
+| `ore_ont_8666` | dnf | 67.91 s (68 rows) | **SAME** |
+| `ore_ont_10019` | dnf | dnf | **SAME** |
+| `ore_ont_3281` | dnf | 19.91 s (224 rows) | **SAME** |
+
+### 4g. The 25-ontology fast-population control
+
+Deterministic stride over the population's `ok` rows with `wall < 15 s` and
+`rows > 0`, **excluding** the 22 wall movers, so this measures the *inert*
+population rather than re-measuring §4c. Serial, one binary, two env arms.
+
+| | |
+|---|---|
+| ontologies | 25 |
+| outcome changes | **0** |
+| row-count differences | **0** |
+| closures identical | **25 / 25** |
+| materially slower (>25% **and** >2 s) | **0** |
+| aggregate wall | OFF 15.45 s → ON **15.33 s** (**−0.8%**) |
+
+Row counts span 12 to 4 799. Two sub-second ontologies read slower in absolute
+terms (`10409` 0.28 → 0.54 s, `11291` 0.02 → 0.12 s) — first-run page-cache
+artefacts on the ON arm, well inside the >2 s materiality floor and not present in
+the 400-ontology sweep, where both read flat.
+
+The **400-ontology sweep in §4b is itself the stronger regression control**: 0
+outcome changes and 400/400 identical closures over a population that includes
+every fragment stratum.
+
+## 5. Gates
+
+* `cargo fmt --all -- --check` — clean.
+* `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean
+  (three findings fixed, all in canary code: `type_complexity`,
+  `unchecked_duration_subtraction`, `assertions_on_constants`).
+* `cargo test --workspace --exclude owl-dl-py --release --no-fail-fast` —
+  **131 result groups, 1 566 passed, 0 failed, 0 non-`ok` groups.**
+* **FP=0 net with the flag ON** (`RUSTDL_TABLEAU_EARLY_ABANDON=1
+  ./scripts/run-soundness-diff.sh`, exit 0) — **11 VERIFIED, every closure
+  EXACT** at the committed reference: galen 27997, notgalen 32739, sio 8904,
+  ore-10908 6001, wine 653, pizza 499, alehif 247, ro 158, ore-15672 142,
+  sulo 51, bibtex 16. Nothing grew and nothing shrank. The three
+  `NOT VERIFIED (fixture absent)` entries (`ro-stripped`, `sulo-stripped`,
+  `sio-stripped`) are the pre-existing documented gaps, unchanged. Note this net
+  is **FP-shaped and curated**; it does not substitute for §4b, and §4b is what
+  gates this change.
+
+### 5a. Canaries — 13, negatives first
+
+**9 in `owl_dl_tableau::search::early_abandon_tests`** (the mechanism, through the
+real `search` driver) **+ 4 in `owl_dl_reasoner::tableau_early_abandon_tests`**
+(the flag's default-OFF idiom, the limit override's fallback, the calibrated
+constant, and the `decide` verdict mapping).
+
+**Two controls paid for themselves immediately, and both were failures of the
+obvious fixture rather than of the feature:**
+
+> **(i) The naive `⊔`-chain has no depth at all.** Labelling `¬a, ¬b, ¬c_k` at the
+> node and using bare atomics as the second disjunct means every such disjunct is
+> pruned by the `⊔`-rule's literal-complement check, leaving one live disjunct per
+> level: the whole chain unit-propagated to a clash with **zero** branch decisions
+> and **zero** cap hits. Measured `trials = 14, definite = 14, depth0 = 0` at every
+> cap from 2 to 40. Three controls passed and five assertions were vacuous.
+> Fixed by making the second disjunct `c_k ⊓ ¬c_k` — a clash that needs
+> *expansion* and therefore survives the prune.
+>
+> **(ii) `ConceptPool::or` FLATTENS a nested `Or`.** `or([level_{k-1}, c_k])`
+> collapsed the 13-level chain into ONE flat 14-ary disjunction resolved in a
+> single frame. The nested level had to be wrapped in `⊓(level, filler)`. The same
+> bug bit the satisfiable fixture from the other side: flattening exposed bare
+> atomics, `reorder_disjuncts` scored them 1 against the conjunctions' 2, so the
+> **satisfiable** option was tried first, the chain was never entered and the cut
+> never fired.
+
+Both are recorded in the fixtures' own doc comments, because each is a trap the
+next person writing a depth canary for this engine will otherwise re-enter.
+
+### 5b. Sabotage — 10 applied strictly serially, **8 caught, 2 SURVIVORS**
+
+Counts reported **as run, including survivors**. Each: apply one mutation, run
+`cargo test -p owl-dl-tableau --lib early_abandon`, revert, next.
+
+| # | sabotage | result | first canary to catch it |
+|---|---|---|---|
+| 1 | the cut NEVER fires | **caught** (4 of 9 failed) | `the_cut_fires_at_the_limit` |
+| 2 | the cut ALWAYS fires (`0` no longer disables) | **caught** (4 failed) | `limit_zero_keeps_accounting_but_never_cuts` |
+| 3 | `early_abandoned()` hard-wired `false` (search-entry latch removed) | **SURVIVED** | — |
+| 4 | `note_branch_trial` never reports the cut | **caught** (1 failed) | `the_cut_does_strictly_less_work` |
+| **5** | **criterion switched back to the refuted `stall_run`** | **caught** (1 failed) | `a_definite_verdict_does_not_reset_the_criterion` |
+| 6 | `note_depth_cap_hit` call site deleted | **caught** (5 failed) | `limit_zero_keeps_accounting_but_never_cuts` |
+| **7** | **a DEADLINE cut miscounted as a depth-cap hit** | **caught** (1 failed) | `a_deadline_cut_is_not_counted_as_a_depth_cap_hit` |
+| 8 | `early_return.is_none()` guard dropped | **SURVIVED** | — |
+| 9 | abandon reported as `Unsat` (the FP direction) | **caught** (2 failed) | `the_cut_never_manufactures_an_unsat` |
+| 10 | arming alone aborts the search | **caught** (7 failed) | `unarmed_deep_cap_refutes_the_chain` |
+
+**#5 and #7 survived the FIRST battery and were closed by new canaries, which is
+the point of running it.** #5 is the design's central decision, and the original
+`a_definite_verdict_does_not_reset_the_criterion` set its limit to `max_stall_run`
+itself — a value the refuted variant also reaches, so all 9 stayed green. The
+canary now sets the limit to `max_stall_run + 1`, reachable only cumulatively, and
+asserts it is still `<= depth0`. #7 needed a fixture with an already-elapsed
+deadline; without one, the mutation's added hook sits on an unreachable path.
+
+**The two remaining survivors, honestly.** Both mutate code that is **provably
+redundant**, and I could not construct a fixture that distinguishes either:
+
+* **#3** — the `search`-entry latch check is defence in depth. The latch already
+  propagates through `note_branch_trial`'s early-return, so after the cut fires no
+  frame tries another sibling either way; removing the entry check is
+  trial-for-trial identical at unit scale (`the_cut_does_strictly_less_work` reads
+  the same counts). It earns its place only against a *future* edit that removes
+  the `branch` early-return — which no canary here would then catch.
+* **#8** — the `early_return.is_none()` guard cannot fire: a latched probe can no
+  longer produce a `Sat` or a back-jumped `Unsat`, because every `search` entry
+  returns `DepthLimit` from the latch onward. So the guard is unreachable by
+  construction, exactly as its comment claims, and no fixture can show its
+  absence. Recorded as uncaught rather than argued away.
+
+## 6. Recommendation
+
+**Against the decision rule fixed before any number was seen — "ΔMISSED = 0 with
+recoveries ⇒ unambiguous win; recommend default ON" — this qualifies, and the
+recommendation is DEFAULT ON.** The flag ships **OFF** in this commit because
+flipping a default was explicitly out of scope for this work.
+
+What carries it:
+
+* **ΔMISSED = 0** on the committed 400-ontology net, with **0 ontologies losing a
+  single pair** and **400/400 closures byte-identical** — not "small loss", *no*
+  loss;
+* **FP = 0** on the net, on the curated 11-fixture soundness diff with the flag
+  ON, and on all three new answers against both peers;
+* **3 DNFs recovered, all three at full Konclude ∪ HermiT parity**, including the
+  audit's own fixed-cap counter-example `ore_ont_3281`;
+* **−12.2% aggregate wall** over 400 ontologies with 22 ontologies 1.3×–5.7×
+  faster, and **0 outcome changes**;
+* **1 apparent regression in 400, which does not reproduce serially.**
+
+**What would change my mind, and what a default flip still owes.** The population
+here is the MISSED net's stratified 400, deliberately over-sampling
+search-exercised rows; it is **not a corpus share**, and it cannot see wall risk on
+the ~157 ontologies that DNF at 60 s and therefore have no closure to diff. The
+precedent in this repo is explicit — *a flag flipped on a 12-ontology benchmark
+took 4 others from ~5 s to DNF* — so **before flipping the default, run a full
+1,920-ontology two-arm sweep** and look for `ok → dnf`. Any `ok → dnf`, any FP
+anywhere, or any ontology losing a pair on a re-run of the net would reverse this
+recommendation. Because the mechanism is a **cut**, an `ok → dnf` transition is
+mechanistically hard to explain — but "hard to explain" is not "measured", and
+this arc has retracted ten premises for less.
+
+## 7. What is NOT established
+
+* **No 1,920-ontology sweep was run.** §4b covers 400; the DNF tail is outside its
+  frame by construction. That sweep is the one thing a default flip owes.
+* **`ore_ont_10019` is not addressed, and this lever is the wrong instrument for
+  it.** Its probes mostly never reach the cap at the default per-pair budget
+  (median `depth0 = 0`, 2 077 definite trials of 2 297); its cost is a decisively
+  exploring search that is simply too large. That is the `--pair-timeout-ms`
+  frontier, not the depth frontier.
+* **`K = 32` is calibrated on four ontologies** (§2c) and then measured once.
+  It was deliberately **not** tuned against the MISSED net — doing so would
+  launder the gate into the design. A different `K` has not been measured, so
+  nothing here says 32 is optimal, only that it is safe *and* effective.
+* **The lever is unreachable for the great majority of ontologies.** It touches
+  only `MAX_SEARCH_DEPTH`, i.e. the deadline-bounded main tableau; the
+  iterative-deepening census put that at ~26 of 1 664 completers. Read the −12.2%
+  as concentrated, not broad.
+* **Sabotages #3 and #8 are uncaught** (§5b), so the canaries do not protect the
+  search-entry latch check or the `early_return` guard — both argued redundant,
+  neither demonstrated so by a failing mutant.
+* **Peer-leg repair, disclosed.** Running the peer legs for the three recovered
+  ontologies re-used `missed-net.sh peer`, whose `sweep_chunks` rebuilds
+  `<peer>.jsonl` from a chunk glob; the 3-ontology run overwrote chunk `c00` of
+  the shared Konclude and HermiT legs, losing ~90 case records each (the raw
+  hierarchies were untouched). **The EA32 net had already been computed on the
+  intact legs.** The legs were repaired by re-running exactly the missing
+  ontologies into fresh chunk files and rebuilding, and the repair was validated by
+  re-running the net for **both** arms on it: baseline **5 198 / 60 / FP 0 /
+  393 scored** and EA32 **5 198 / 60 / FP 0 / 393 scored, ΔMISSED 0** — i.e. the
+  repaired oracle reproduces the committed baseline exactly. Anyone re-running a
+  peer leg on a sub-list should write it to a distinct tag.

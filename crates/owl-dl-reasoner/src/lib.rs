@@ -11504,6 +11504,156 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
 /// These drive `PreparedOntology::decide_classify_with_deadline`, the real
 /// classify tableau entry point, not a test-only twin.
 #[cfg(test)]
+/// Canaries for the reasoner-owned half of the main-tableau adaptive
+/// early-abandon: the **flag** (default-OFF idiom), the **limit** override, and
+/// the `decide` **verdict mapping**. The mechanism itself — `note_depth_cap_hit`,
+/// the latch, the unwind, and the FP direction — is canaried inside the tableau
+/// crate (`owl_dl_tableau::search::early_abandon_tests`), where the hooks live;
+/// the iterative-deepening write-up recorded an uncaught sabotage precisely
+/// because a canary pinned a `TableauContext` API without pinning its call.
+mod tableau_early_abandon_tests {
+    use super::*;
+
+    /// **Control.** The flag is OFF by default and only `=1` enables it — the
+    /// house default-OFF idiom. An empty value must NOT enable (that is the
+    /// default-ON idiom, and confusing the two is how a default gets flipped by
+    /// accident).
+    #[test]
+    #[allow(unsafe_code)]
+    fn flag_defaults_off_and_only_1_enables() {
+        let _lock = test_env_lock();
+        let k = "RUSTDL_TABLEAU_EARLY_ABANDON";
+        let prev = std::env::var_os(k);
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe { std::env::remove_var(k) };
+        assert!(!tableau_early_abandon_enabled(), "unset ⇒ OFF");
+        for v in ["", "0", "2", "true", "yes", "on"] {
+            unsafe { std::env::set_var(k, v) };
+            assert!(!tableau_early_abandon_enabled(), "{v:?} must NOT enable");
+        }
+        unsafe { std::env::set_var(k, "1") };
+        assert!(tableau_early_abandon_enabled(), "\"1\" enables");
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    /// The limit override parses, `0` is honoured (accounting-only, the arm the
+    /// constant was calibrated on), and anything unparsable falls back to the
+    /// compiled default rather than to `0` — falling back to `0` would silently
+    /// disable the lever for a caller who typed the value wrong.
+    #[test]
+    #[allow(unsafe_code)]
+    fn limit_override_parses_and_falls_back_to_the_constant() {
+        let _lock = test_env_lock();
+        let k = "RUSTDL_TABLEAU_EARLY_ABANDON_HITS";
+        let prev = std::env::var_os(k);
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe { std::env::remove_var(k) };
+        assert_eq!(
+            tableau_early_abandon_cap_hits(),
+            TABLEAU_EARLY_ABANDON_CAP_HITS
+        );
+        unsafe { std::env::set_var(k, "7") };
+        assert_eq!(tableau_early_abandon_cap_hits(), 7);
+        unsafe { std::env::set_var(k, " 0 ") };
+        assert_eq!(
+            tableau_early_abandon_cap_hits(),
+            0,
+            "0 must disable the cut"
+        );
+        for bad in ["", "abc", "-1", "1.5"] {
+            unsafe { std::env::set_var(k, bad) };
+            assert_eq!(
+                tableau_early_abandon_cap_hits(),
+                TABLEAU_EARLY_ABANDON_CAP_HITS,
+                "{bad:?} must fall back to the constant, not to 0"
+            );
+        }
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    /// The compiled default is the calibrated value, and it is bounded above.
+    /// A silently huge default would make the lever inert while reading as ON —
+    /// the failure mode the adaptive-inconsistency-budget work had to close with
+    /// its own `generous_budget_is_bounded_above` canary.
+    #[test]
+    fn the_default_limit_is_the_calibrated_value() {
+        let k = TABLEAU_EARLY_ABANDON_CAP_HITS;
+        assert_eq!(
+            k, 32,
+            "the calibrated value (docs/2026-08-03-tableau-early-abandon.md §2c)"
+        );
+        assert!(
+            k > 0 && k <= 128,
+            "a limit outside (0, 128] is either a no-op or indiscriminate"
+        );
+    }
+
+    /// **The verdict-mapping canary.** An abandoned probe must surface as
+    /// `Ok(None)` — the same sound "don't know" a deadline cut and a `NodeCap`
+    /// trip report — and **never** as `Err(NoVerdict)`, which
+    /// `classify_internal_with_timeout` propagates with `?`. The abandon arm
+    /// therefore has to sit BEFORE the deadline arm in `decide`'s `match`, and
+    /// this pins that the arm exists at all: with `HITS=1` a probe that reaches
+    /// the depth cap must return `Ok(None)`.
+    ///
+    /// The fixture is the 400-link `⊔`-chain, which was measured to reach
+    /// `MAX_SEARCH_DEPTH` through the real classify path (`depth0 = 2` on a
+    /// telemetry run). The assertion is deliberately weak on the OFF side (any
+    /// `Ok`), because what is being pinned is the mapping, not the chain's
+    /// verdict.
+    #[test]
+    #[allow(unsafe_code)]
+    fn an_abandoned_probe_maps_to_ok_none_not_an_error() {
+        use super::iterative_deepening_tests::{build_disjunction_chain, class_id};
+        use std::time::Duration;
+        let internal = build_disjunction_chain(400);
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("fixture prepares");
+        let (s, p) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let build = move |pool: &mut ConceptPool| {
+            let sc = pool.atomic(s);
+            let pc = pool.atomic(p);
+            let np = pool.not(pc);
+            pool.and(vec![sc, np])
+        };
+        let _lock = test_env_lock();
+        let keys = [
+            "RUSTDL_TABLEAU_EARLY_ABANDON",
+            "RUSTDL_TABLEAU_EARLY_ABANDON_HITS",
+        ];
+        let prev: Vec<_> = keys.iter().map(std::env::var_os).collect();
+        // SAFETY: serialised by `test_env_lock`; every key restored below.
+        unsafe {
+            std::env::set_var(keys[0], "1");
+            std::env::set_var(keys[1], "1");
+        }
+        let dl = std::time::Instant::now() + Duration::from_secs(60);
+        let got = prepared.decide_classify_with_deadline(dl, build);
+        for (k, v) in keys.iter().zip(prev) {
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        assert!(
+            matches!(got, Ok(None)),
+            "an abandoned probe must be Ok(None), got {got:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tableau_iterative_deepening_tests {
     use super::iterative_deepening_tests::{build_disjunction_chain, class_id};
     use super::*;

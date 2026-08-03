@@ -38,6 +38,31 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > `target/release/` binary**. Build and benchmark with
 > `RUSTUP_TOOLCHAIN=stable cargo …` (or `rustup component add cargo --toolchain 1.95.0`).
 > **Always confirm `target/release/rustdl` is freshly built before benchmarking** —
+> **SUPERSEDED 2026-08-03 (v0.4.13) — THE WINE GUIDANCE BELOW IS OBSOLETE. Read this first.**
+> **Unbounded `classify ontologies/real/wine.ofn` now completes in ~74 s with no flags**, so
+> everything below about wine DNF-ing, needing `--pair-timeout-ms 25`, or having a wall "~linear
+> in the budget" describes pre-v0.4.12 behaviour. Under a budget it is now far faster still:
+> `--pair-timeout-ms 25` runs in **4.6 s** (was 108.8 s) with identical subsumptions.
+>
+> **Use `wine` as a freshness canary by its WALL, not its outcome**: ~74 s unbounded or ~4.6 s at
+> `--pair-timeout-ms 25` on a current binary. A wine that DNFs unbounded is now itself the
+> stale-binary signal.
+>
+> **Cause:** `HYPER_WEDGE_DEPTH = 256` was a fixed constant, and a fixed constant is wrong in
+> both directions — `ore_ont_10407` genuinely needs depth **319** (at 256 it does **4.4× more work
+> than completing**, because a capped branch cannot conclude so the search re-descends through
+> sibling disjuncts), while `ore_ont_2182` needs only **≤7**. Replaced by iterative deepening
+> (`RUSTDL_ITERATIVE_DEEPENING`, **default ON** since v0.4.12, `=0` reverts): **16 ORE recoveries,
+> 0 regressions, 0 closure losses**, FP-safe by construction since a depth cap can only *suppress*
+> an `Unsat`, never manufacture one.
+>
+> **This also retires the "wine wall" closure recorded elsewhere in the design record** as
+> requiring a nominal re-architecture with "no cheap entry". It required neither; nominals were
+> never touched. The nominal-blocking hypothesis was separately **refuted** — blocking fires on
+> 18.4%/20.4% of eligible nodes in the failing ontologies against 5.5% in a same-profile ontology
+> that classifies in 0.03 s. See `docs/2026-08-02-iterative-deepening-results.md`,
+> `docs/2026-08-02-cardinality-rootcause.md`, `docs/2026-08-02-nominal-blocking-rootcause.md`.
+
 > a ~2-week-stale binary produced a spurious `wine` DNF and inflated hard-case walls
 > (2026-07-11). NOTE (re-measured 2026-07-23): the historical "`wine` ~1.8 s" figure
 > does NOT reproduce on current hardware/config — `wine` classify **DNFs
@@ -1309,6 +1334,67 @@ matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cac
 current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
+
+## State of play — v0.4.13 (2026-08-03)
+
+Seven releases (v0.4.7 → v0.4.13) moved the ORE picture materially. Read this before trusting an
+older performance or "closed frontier" claim elsewhere in this file.
+
+**Corpus:** rustdl now fails to classify roughly **157 of 1,920** ORE ontologies at a 60 s
+single-thread cap, down from **257**. Verified by a full before/after sweep: **91 recoveries, 4
+regressions (all fixed), 0 answer changes** among 1,633 completing ontologies, and no RSS growth.
+**FP=0 exact throughout**, plus one genuine long-standing false positive fixed (see below).
+
+**Defaults that changed** (each `=0` reverts):
+
+| flag | effect |
+|---|---|
+| `RUSTDL_ITERATIVE_DEEPENING` | replaces the fixed `HYPER_WEDGE_DEPTH`; **16 recoveries**, wine DNF → ~74 s |
+| `RUSTDL_FAST_DIRECT_SUBSUMERS` | an O(k²)-per-class Hasse reduction sat in the **output** loop — `ore_ont_10125` finished *reasoning* in 15 s then spent ≥385 s **emitting**; DNF@900 s → 14.6 s |
+| `RUSTDL_FRAGMENT_BARE_DECL` | a bare `Symmetric`/`Inverse` **declaration** refused the fast path; **44 recoveries** |
+| `RUSTDL_CLASSIFY_INCONSISTENCY` | `classify --json` and `consistent` no longer contradict each other |
+| `RUSTDL_EL_BOT_FILLER`, `RUSTDL_DKEY_POST_NNF`, `RUSTDL_DKEY_ONEOF_SEED`, `RUSTDL_DKEY_EMIT_ORDER` | four D10/completeness fixes, one of them a **live non-monotonic** defect |
+
+**A REAL FALSE POSITIVE SHIPPED FOR MONTHS AND THE FP=0 NET COULD NOT SEE IT.**
+`parse_float_oneof` folded `xsd:float` and `xsd:double` into one f64 DKey bucket, so
+`∃h.DataOneOf("1.0"^^xsd:float)` and its `xsd:double` twin were reported **equivalent**.
+Reproduced on a pinned **v0.4.6** binary. It escaped because the curated corpus is **inert** for
+the DKey area, exactly as `datatype_value_membership.rs` warns. **Consequence for anyone working
+here: a green FP=0 net over the curated fixtures is NOT evidence of soundness for DKey work** —
+only the canaries plus a Konclude ∪ HermiT adjudication are. And prove an FP with a
+*discriminating control*: Konclude's silence is ambiguous (it is documented to under-report), so
+pair the probe with a case where Konclude *does* report the relation.
+
+**Closed by measurement — do not re-propose without new evidence:**
+- **Absorption of residual GCIs.** Driving 54 ontologies to **zero** residuals recovered **1**,
+  while 77 that kept residuals recovered 3; per unit size the signal is **AUC 0.480, below
+  chance**. Qualified-`∃` absorption is a documented NO-GO. Domain absorption ships default OFF
+  (sound, 4 recoveries, but alters 1,030/1,913 absorbed TBoxes without a wall check).
+- **Iterative deepening does not transplant to the main tableau.** The audit's apparent 14× came
+  from probes that reach **no verdict at either depth** — the win is *giving up sooner*, and
+  deepening is defined not to. Default OFF as a documented negative result.
+- **Five constants**: `FIXPOINT_ITERS` (prior "structurally true" reading **refuted** — it does
+  bind, and halving breaks a healthy ontology), `DIV_WINDOW` (null), `RUSTDL_MAX_NODES` (does not
+  bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), `label_cache_timeout_ms` (**dead code**).
+
+**Open, and known to be a completeness risk:** `MAX_BODY_VARS = 8` (`hyper.rs:46`) binds on 23 of
+368 probed ontologies and `ore_ont_10140` needs **12**. Raising it **adds** entailments, so unlike
+the levers above it is **asymmetric and needs an oracle**, not a wall measurement.
+
+**Method notes that earned their place** (each cost a retraction to learn):
+- **A single instance beats a population statistic on this tail.** Three population studies here
+  were retracted or bounded; both of the largest wins came from reading one failing ontology.
+- **A controlled deletion is only controlled if the intervention changed ONE thing.** A "300×"
+  calibration was a mis-attribution: the deleted `EquivalentClasses` was two axioms, and either
+  half alone runs in 0.02 s.
+- **Deletion is NOT computationally stronger than absorption.** It turns cheap subsumptions into
+  non-subsumptions that must be *refuted*, so a cut arm can DNF for work the intact arm never does.
+- **Prove the instrument fires**, by a numeric criterion declared in advance. A probe silently
+  failed to fire on 4 of 6 targets and would have read as 4 confirmations.
+- **A full-corpus sweep is what catches default-flip regressions.** Twelve ontologies is not a
+  population: a flag flipped on a 12-ontology benchmark took 4 others from ~5 s to DNF.
+- Full record: `docs/benchmarks/2026-08-01-dnf257-characterization.md`,
+  `docs/2026-08-0{1,2,3}-*.md`, `docs/reviews-2026-08-01/`.
 
 ## Where to read more
 

@@ -1690,8 +1690,17 @@ fn main() -> Result<()> {
         }
         Command::TboxStats { file } => {
             let onto = parse_ofn(&file)?;
+            // Timed so a volume scan can see a conversion that grows in WALL without
+            // growing in rule count — the v0.3.27/v0.3.29 conversion-DNF signature.
+            // Covers convert + NNF + absorb + told-table build, i.e. everything
+            // `tbox_stats` does; parsing is deliberately outside.
+            let t0 = std::time::Instant::now();
             let stats = owl_dl_reasoner::tbox_stats(&onto).context("tbox_stats")?;
+            let convert_ms = t0.elapsed().as_millis();
+            println!("# convert_ms:           {convert_ms}");
             println!("# concept_rules:        {}", stats.concept_rules);
+            println!("# told_super_edges:     {}", stats.told_super_edges);
+            println!("# told_disjoint_pairs:  {}", stats.told_disjoint_pairs);
             // MEASUREMENT (RUSTDL_DKEY_SPLIT_STATS=1): how many DKey-disjointness
             // pairs the proposed collapse/broadcast split would drop. Report-only.
             if std::env::var("RUSTDL_DKEY_SPLIT_STATS").is_ok_and(|v| v != "0") {

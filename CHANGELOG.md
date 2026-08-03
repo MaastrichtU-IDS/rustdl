@@ -338,7 +338,7 @@ Fix: split into `fo:` (f32-rounded) and a new `dbo:` (f64) bucket. **Unflagged a
 default** — a soundness fix is not opt-in. It is also a prerequisite: the seeding below would
 be FP-unsound on `fo:` without it.
 
-### Added — numeric `DataOneOf` bucket seeding (`RUSTDL_DKEY_ONEOF_SEED`, default OFF)
+### Added — numeric `DataOneOf` bucket seeding (`RUSTDL_DKEY_ONEOF_SEED`, default ON since 2026-08-03)
 
 The sixth D10-class bug: the five numeric `DataOneOf` DKey buckets were never collected into
 `seed_dkey_subsumptions`, so they received no told `DKey ⊑ DKey` edges and no disjointness,
@@ -351,11 +351,19 @@ one DKey — and are reported as not-reproducible rather than claimed.
 fixtures. Both DKey discriminators unmoved at each flag setting (`ore_ont_9347` = 113,
 `ore_ont_5368` = 18,620,251 — and `9347` alone cannot validate this area).
 
-Stays default OFF pending a cost measurement: the disjointness half is O(k²) per component,
-the same shape that caused the v0.3.29 conversion DNFs, and no numeric-`DataOneOf`-heavy ORE
-population has been measured.
+Shipped default OFF pending a cost measurement: the disjointness half is O(k²) per component,
+the same shape that caused the v0.3.29 conversion DNFs.
 
-### Added — DKey disjointness emit ordering (`RUSTDL_DKEY_EMIT_ORDER`, default OFF)
+**FLIPPED ON 2026-08-03** after that measurement — `rustdl tbox-stats` over all 1,920 ORE
+ontologies in four arms, recording `concept_rules`, told-subsumer edges, told-disjoint pairs
+AND conversion wall, with timeouts counted per arm. This flag moves **nothing**: zero
+ontologies change any count, zero gain a conversion timeout, `ore_ont_5368` unmoved at
+18,620,251. The numeric `DataOneOf` pattern does not occur in ORE at all, so the corpus shows
+only that the flip is free; the evidence that it is right is the canaries plus a
+Konclude ∪ HermiT adjudication of the ladder fixture (ON reproduces the oracle union exactly,
+FP=0/MISSED=0; OFF misses three subsumptions). See `docs/2026-08-03-dkey-volume-scan.md`.
+
+### Added — DKey disjointness emit ordering (`RUSTDL_DKEY_EMIT_ORDER`, default ON since 2026-08-03)
 
 `seed_disjoint_bucket::try_emit` ran `emitted.insert(pair)` **before** the droppable test, so a
 pair spanning two role components was permanently consumed by whichever component the
@@ -370,9 +378,18 @@ entailments than the default, with no fourth mechanism. The one-line reordering 
 but not sufficient — the `RUSTDL_DKEY_SPLIT_STATS` counters were per-`(pair, component)` and
 double-counted once declining stops spending a pair.
 
-Default OFF pending an ORE `concept_rules` volume scan: this lever emits *more* axioms, so the
-risk is both FP and volume re-inflation — precisely what the 2026-07-30 non-merging-component
-gate exists to prevent. Sabotage reported as run: **3 of 4 caught, 1 survived** (ignoring the
+Shipped default OFF pending an ORE volume scan: this lever emits *more* axioms, so the risk is
+both FP and volume re-inflation — precisely what the 2026-07-30 non-merging-component gate
+exists to prevent.
+
+**FLIPPED ON 2026-08-03.** The scan (1,920 ontologies × 4 arms) found **exactly one ontology
+whose numbers move**: `ore_ont_9303`, `concept_rules` 8886 → 8887 and told-disjoint pairs
+6669 → 6670 — a corpus-wide total of **+1 axiom**. No ontology over the >2× / >100k threshold,
+none gained a conversion timeout, none >2× slower, `ore_ont_5368` unmoved. Because the risk
+direction is a FALSE POSITIVE the mover was adjudicated, not just counted: its classify output
+is byte-identical ON vs OFF, and its verdict (inconsistent, 726/726 unsat) is confirmed by
+**both** Konclude (727/728 classes ≡ owl:Nothing) and HermiT (InconsistentOntologyException).
+FP=0. See `docs/2026-08-03-dkey-volume-scan.md`. Sabotage reported as run: **3 of 4 caught, 1 survived** (ignoring the
 collapse/broadcast split left all six canaries green, so they pin the split's FP-safety but not
 its volume bound).
 

@@ -624,6 +624,22 @@ pub struct TBoxStats {
     /// the dominant branching source (the residual count is only
     /// 4). Candidates for the Lever-A-extension lazy unfolding.
     pub concept_rule_or_count: usize,
+    /// Told-subsumer edges after [`owl_dl_core::told::build_told_tables`] closes
+    /// the relation transitively — i.e. `Σ_c |super_classes(c)|`.
+    ///
+    /// **Why this is instrumented separately from `concept_rules`** (2026-08-03,
+    /// for the `DKey` volume scan): `RUSTDL_DKEY_ONEOF_SEED` emits told
+    /// `DKey ⊑ DKey` edges, which land in THIS table and appear nowhere in the
+    /// absorbed-`TBox` rule counts. `told.rs` closes them transitively at build,
+    /// so a linear growth in seeded edges can be a quadratic growth here — and
+    /// the v0.3.27 fix was a DNF in exactly this table. Without this field a
+    /// `concept_rules`-only scan is blind to the failure mode it exists to detect.
+    pub told_super_edges: usize,
+    /// Told-disjoint pairs, counted **unordered** (the underlying table is
+    /// symmetric, so this is `Σ_c |disjoints_of(c)| / 2`).
+    /// `RUSTDL_DKEY_EMIT_ORDER` makes conversion emit MORE
+    /// `DisjointClasses(DKey, DKey)`; this is where that volume shows up.
+    pub told_disjoint_pairs: usize,
 }
 
 /// Clausify the ontology into DL-clauses and return the shape
@@ -2365,13 +2381,34 @@ pub fn prep_deadline_enabled() -> bool {
 ///
 /// **Why 3000 and not "a few hundred ms":** measured, not assumed. On
 /// `family.ofn` — the ontology this pre-check exists for — the `ABox`
-/// saturation itself takes **~2.0 s** on the reference host (classify 2.67 s
-/// with the pre-check vs 0.67 s without; 506 individuals but a 267k-edge
-/// role-chain closure). A few-hundred-ms budget would silently break exactly
-/// the detection the flag was added for. 3000 ms keeps `family` with ~1.5×
-/// headroom while capping the pathological `ABox`es; a much larger default would
-/// just move the tax onto every big-ABox classify. Raise it (or set `0`) if you
-/// have a large `ABox` whose inconsistency you need `classify` to see.
+/// saturation itself is what the budget has to cover (506 individuals but a
+/// 267k-edge role-chain closure). A few-hundred-ms budget would silently break
+/// exactly the detection the flag was added for.
+///
+/// **CORRECTED 2026-08-03 — the headroom is ~13%, not ~1.5×.** The figures
+/// previously recorded here ("~2.0 s", "~1.5× headroom") were derived from
+/// `classify 2.67 s with the pre-check vs 0.67 s without`, which is a
+/// CONFOUNDED subtraction: detecting the inconsistency short-circuits the
+/// classification, so that 2.0 s difference is `pre-check MINUS the full
+/// classify work it skips`, and understates the pre-check. Measured directly
+/// instead, by sweeping this variable and reading the verdict flip (release,
+/// `RAYON_NUM_THREADS=1`, three repeats per step):
+///
+/// | budget ms | 2500 | 2600 | 2700 | 2800 | 3000 |
+/// |-----------|------|------|------|------|------|
+/// | detected  |  no  |  no  | YES  | YES  | YES  |
+///
+/// So the real cost is **~2.65 s** and 3000 ms clears it by only ~13%. A
+/// slower host, or any growth in `family`'s closure, re-breaks the detection
+/// silently. **Prefer raising this default to lowering it**, and re-measure the
+/// flip table before changing it either way — a much larger default would just
+/// move the tax onto every big-`ABox` classify, which is the regression the
+/// budget exists to prevent. Set `0` if you have a large `ABox` whose
+/// inconsistency you need `classify` to see.
+///
+/// Guarded by `shipped_default_budget_covers_family_precheck` and
+/// `family_detection_is_governed_by_the_budget` in
+/// `tests/classify_inconsistency_budget.rs`.
 #[must_use]
 pub fn classify_inconsistency_budget_ms() -> u64 {
     const DEFAULT_MS: u64 = 3000;
@@ -4568,6 +4605,21 @@ pub fn tbox_stats<A: horned_owl::model::ForIRI>(
             stats.concept_rule_or_count += 1;
         }
     }
+    // Told tables are the OTHER volume sink a DKey lever can inflate, and the
+    // absorbed-TBox counts above do not see them at all. Built here on the same
+    // `InternalOntology` the real pipeline uses (`PreparedOntology::from_internal`
+    // also calls `build_told_tables(&internal)`), so the counts are the shipped
+    // ones, not a re-derivation.
+    let told = owl_dl_core::told::build_told_tables(&internal);
+    for i in 0..told.num_classes() {
+        let cid = owl_dl_core::ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+        stats.told_super_edges += told.super_classes(cid).len();
+        stats.told_disjoint_pairs += told.disjoints_of(cid).len();
+    }
+    // `disjoint_with` is symmetric, so every unordered pair was counted twice.
+    // (A degenerate self-disjoint `DisjointClasses(c, c)` is counted once and so
+    // would round down; it is a malformed axiom and does not occur in the corpus.)
+    stats.told_disjoint_pairs /= 2;
     Ok(stats)
 }
 

@@ -1,5 +1,5 @@
 //! Canaries for the `emitted`-before-`droppable` ordering defect in
-//! `seed_disjoint_bucket::try_emit` (`RUSTDL_DKEY_EMIT_ORDER`, default OFF).
+//! `seed_disjoint_bucket::try_emit` (`RUSTDL_DKEY_EMIT_ORDER`, default ON since 2026-08-03).
 //!
 //! THE BUG. A `DKey` pair can belong to SEVERAL role components, and the
 //! collapse/broadcast split is a PER-COMPONENT judgement — the same pair can be

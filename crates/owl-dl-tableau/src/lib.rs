@@ -234,6 +234,83 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     /// is omitted from the struct).
     #[cfg(feature = "counters")]
     counters: crate::counters::RuleCounters,
+    /// Adaptive early-abandon accounting for the **main tableau** search
+    /// (`RUSTDL_TABLEAU_EARLY_ABANDON`, default OFF — the reasoner facade owns
+    /// the flag and calls [`Self::enable_early_abandon`]). `None` ⇒ every hook is
+    /// one `Option` discriminant test and the search behaves exactly as before,
+    /// so the flag-OFF path is byte-identical by construction.
+    early_abandon: Option<EarlyAbandon>,
+}
+
+/// Per-probe accounting behind the main tableau's adaptive early-abandon.
+///
+/// **What it is for.** `docs/2026-08-03-constant-audit.md` §4 measured
+/// `MAX_SEARCH_DEPTH = 256` binding on 27 of the 33 ORE ontologies that reach the
+/// main tableau, with **zero** headroom on every one, and a *fixed lower* cap
+/// recovering three DNFs while making two completers ~14× faster with
+/// byte-identical answers. `docs/2026-08-03-tableau-iterative-deepening.md` then
+/// established, from the classify banner, that the whole 14× is time spent on
+/// probes that reach **no verdict at either depth** — the saving is *giving up
+/// sooner*, which is why iterative deepening (verdict-monotone by construction)
+/// could not capture any of it. A fixed lower cap is the wrong instrument too:
+/// `ore_ont_3281` is made two orders of magnitude worse by it (10.3 M `search`
+/// entries), so no single constant is right.
+///
+/// **The criterion: total depth-cap bottom-outs — `depth0 >= cap_hit_limit`.**
+/// A bottom-out is the direct evidence that the search is below what *this* cap
+/// can close: the frame receiving a `DepthLimit` child cannot return
+/// `Unsat(combined)` and must itself report `DepthLimit`, unless some *sibling*
+/// yields a `Sat` or a back-jumping `Unsat`. Accumulating `cap_hit_limit` of them
+/// says the probe is grinding through a subtree it cannot close at this cap.
+///
+/// Why that separates *"will not conclude"* from *"needs more depth"*: more depth
+/// is measured **not** to be the missing ingredient on this population. The audit
+/// read `ore_ont_10019`'s genuine depth requirement off two independent arms (459
+/// at cap 512, 460 at cap 2048) and it **still DNFs** with the cap effectively
+/// removed; and iterative deepening — the instrument that hands a probe more
+/// depth — was built and measured a null on all five of the audit's cases
+/// (`docs/2026-08-03-tableau-iterative-deepening.md` §5). A probe that has
+/// bottomed out `cap_hit_limit` times is in the regime this cap cannot serve, and
+/// raising the cap has been refuted as the answer.
+///
+/// **A "no progress" shape was tried FIRST and is refuted by its own calibration
+/// data** — recorded here because it is the shape the wedge's `is_diverging`
+/// suggests and the obvious thing to reach for again. Abandoning on a *run* of cap
+/// hits reset by any definite child verdict never fires on the very ontologies the
+/// audit names: `ore_ont_2826`'s doomed probes interleave 229 definite verdicts
+/// into 1 074 trials with a longest run of **2**, and `ore_ont_13545`'s interleave
+/// 242 into 2 570 with a longest run of **32**. These probes look locally
+/// productive throughout and still reach no verdict, so "consecutive" measures the
+/// wrong statistic here — the same conclusion the wedge write-up reached about a
+/// consecutive-miss counter, re-established on this engine.
+///
+/// **Soundness.** Abandoning yields [`crate::SearchVerdict::DepthLimit`], which
+/// the reasoner maps to `Ok(None)`. Exactly as for a depth-cap `DepthLimit` and
+/// for `NodeCap`, a cap-driven non-verdict can only **suppress** an `Unsat` and
+/// can never manufacture one, so **FP=0 is untouched in both directions**; the
+/// exposure is purely completeness (a MISS), which is what the corpus MISSED net
+/// measures.
+#[derive(Debug, Clone)]
+struct EarlyAbandon {
+    /// Abandon once `depth0` reaches this. `0` disables the cut while leaving the
+    /// accounting — and therefore the telemetry — live; that is the arm the
+    /// constant was calibrated on.
+    cap_hit_limit: u64,
+    /// Depth-cap entries since the last definite verdict. **Telemetry only** —
+    /// the refuted "no progress" statistic, kept observable so the refutation
+    /// stays checkable rather than becoming folklore.
+    stall_run: u64,
+    /// High-water mark of `stall_run` over the probe (telemetry).
+    max_stall_run: u64,
+    /// Total depth-cap (`max_depth == 0`) entries over the probe — the criterion.
+    depth0: u64,
+    /// Branch-option trials over the probe (telemetry).
+    trials: u64,
+    /// Trials that returned a definite (`Unsat`/`Sat`) verdict (telemetry).
+    definite: u64,
+    /// Latched once the criterion fires, so the cut is self-sustaining and the
+    /// whole DFS unwinds instead of re-deciding at every frame.
+    abandoned: bool,
 }
 
 impl<'pool> TableauContext<'pool, 'static, 'static> {
@@ -265,6 +342,7 @@ impl<'pool> TableauContext<'pool, 'static, 'static> {
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
+            early_abandon: None,
         }
     }
 }
@@ -297,6 +375,7 @@ impl<'pool, 'tbox> TableauContext<'pool, 'tbox, 'static> {
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
+            early_abandon: None,
         }
     }
 }
@@ -334,6 +413,7 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
             told_super_closure: std::cell::OnceCell::new(),
             #[cfg(feature = "counters")]
             counters: crate::counters::RuleCounters::default(),
+            early_abandon: None,
         }
     }
 
@@ -421,6 +501,81 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
     pub fn clear_deadline_hit(&mut self) -> &mut Self {
         self.deadline_hit = false;
         self
+    }
+
+    /// Arm the adaptive early-abandon on this probe with the given depth-cap-hit
+    /// limit (see [`EarlyAbandon`]). `0` leaves the accounting live but never cuts
+    /// — the telemetry-only arm the limit was calibrated on.
+    ///
+    /// Called by the reasoner facade only when `RUSTDL_TABLEAU_EARLY_ABANDON=1`;
+    /// an unarmed context is byte-identical to the pre-change search.
+    pub fn enable_early_abandon(&mut self, cap_hit_limit: u64) -> &mut Self {
+        self.early_abandon = Some(EarlyAbandon {
+            cap_hit_limit,
+            stall_run: 0,
+            max_stall_run: 0,
+            depth0: 0,
+            trials: 0,
+            definite: 0,
+            abandoned: false,
+        });
+        self
+    }
+
+    /// True once the early-abandon criterion has fired on this probe. Latched,
+    /// so the whole DFS unwinds. Always `false` when unarmed.
+    #[must_use]
+    pub fn early_abandoned(&self) -> bool {
+        self.early_abandon.as_ref().is_some_and(|e| e.abandoned)
+    }
+
+    /// Record that [`crate::search`] bottomed out at the depth cap
+    /// (`max_depth == 0`) — the harm this lever exists to bound. Deliberately
+    /// NOT called for a deadline cut: the two exits share a `DepthLimit` verdict
+    /// but only the cap one is evidence that the probe is thrashing at depth (the
+    /// constant audit's split `search_depth0`/`search_deadline0` counters made
+    /// exactly this distinction, and merging them would have read a deadline as a
+    /// cap hit).
+    /// This is also where the cut fires: latching at the source of the harm means
+    /// the `cap_hit_limit`-th bottom-out abandons immediately, and every
+    /// `crate::search` entry from then on returns `DepthLimit` so the DFS unwinds.
+    pub fn note_depth_cap_hit(&mut self) {
+        if let Some(e) = self.early_abandon.as_mut() {
+            e.depth0 += 1;
+            e.stall_run += 1;
+            e.max_stall_run = e.max_stall_run.max(e.stall_run);
+            if e.cap_hit_limit > 0 && e.depth0 >= e.cap_hit_limit {
+                e.abandoned = true;
+            }
+        }
+    }
+
+    /// Record the outcome of one branch-option trial and return `true` iff the
+    /// probe has been abandoned (so the caller stops trying siblings).
+    ///
+    /// `definite` (the child returned `Unsat`/`Sat`/`NodeCap`) resets the
+    /// `stall_run` telemetry only; the criterion itself is cumulative and lives in
+    /// [`Self::note_depth_cap_hit`] — see [`EarlyAbandon`] for why the
+    /// reset-on-progress variant was refuted by measurement.
+    pub fn note_branch_trial(&mut self, definite: bool) -> bool {
+        let Some(e) = self.early_abandon.as_mut() else {
+            return false;
+        };
+        e.trials += 1;
+        if definite {
+            e.definite += 1;
+            e.stall_run = 0;
+        }
+        e.abandoned
+    }
+
+    /// `(trials, definite, depth0, max_stall_run, abandoned)` — the early-abandon
+    /// telemetry for this probe, or `None` when unarmed. Diagnostic only.
+    #[must_use]
+    pub fn early_abandon_stats(&self) -> Option<(u64, u64, u64, u64, bool)> {
+        self.early_abandon
+            .as_ref()
+            .map(|e| (e.trials, e.definite, e.depth0, e.max_stall_run, e.abandoned))
     }
 
     /// Allocate the next fresh `branch_id` and push it onto the

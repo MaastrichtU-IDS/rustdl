@@ -4903,6 +4903,57 @@ pub(crate) fn tableau_iterative_deepening_enabled() -> bool {
     std::env::var_os("RUSTDL_TABLEAU_ITERATIVE_DEEPENING").is_some_and(|v| v == "1")
 }
 
+// ---------------------------------------------------------------------------
+// Main-tableau adaptive early-abandon (RUSTDL_TABLEAU_EARLY_ABANDON)
+// ---------------------------------------------------------------------------
+
+/// Adaptive early-abandon of a *doomed* main-tableau probe — the lever the
+/// iterative-deepening NO-GO identified as the shape its own data actually
+/// supports (`docs/2026-08-03-tableau-iterative-deepening.md` §10).
+///
+/// **DEFAULT OFF.** It trades completeness for wall: unlike deepening (whose
+/// verdicts are a superset of flag-OFF's) this one can lose an entailment the
+/// full budget would have found, so its gate is a corpus-wide MISSED net rather
+/// than a superset check. See `docs/2026-08-03-tableau-early-abandon.md` for the
+/// measurement and the recommendation.
+///
+/// Mechanism: [`owl_dl_tableau::TableauContext::note_depth_cap_hit`] abandons a
+/// probe once it has bottomed out at [`MAX_SEARCH_DEPTH`]
+/// [`TABLEAU_EARLY_ABANDON_CAP_HITS`] times. FP-safe by construction: the cut can
+/// only turn a would-be `Unsat` into a non-verdict, never the reverse.
+#[must_use]
+pub(crate) fn tableau_early_abandon_enabled() -> bool {
+    std::env::var_os("RUSTDL_TABLEAU_EARLY_ABANDON").is_some_and(|v| v == "1")
+}
+
+/// Depth-cap bottom-outs after which a main-tableau probe is abandoned.
+///
+/// **Calibrated, not guessed** (`docs/2026-08-03-tableau-early-abandon.md` §2).
+/// On the telemetry-only arm (`…_HITS=0`) at the CLI-default 1 000 ms per-pair
+/// budget, the per-probe cap-hit counts on the audit's targets are:
+/// `ore_ont_13545` min 1 003, `ore_ont_8666` min 864, `ore_ont_3250` median 648,
+/// `ore_ont_2826` 86. 32 therefore fires on all four while leaving 32 poisoned
+/// subtrees of slack. Overridable via `RUSTDL_TABLEAU_EARLY_ABANDON_HITS`; `0`
+/// keeps the accounting live but never cuts.
+const TABLEAU_EARLY_ABANDON_CAP_HITS: u64 = 32;
+
+/// Read the cap-hit limit, falling back to [`TABLEAU_EARLY_ABANDON_CAP_HITS`] on
+/// an absent or unparsable value.
+#[must_use]
+pub(crate) fn tableau_early_abandon_cap_hits() -> u64 {
+    match std::env::var("RUSTDL_TABLEAU_EARLY_ABANDON_HITS") {
+        Ok(v) => v.trim().parse().unwrap_or(TABLEAU_EARLY_ABANDON_CAP_HITS),
+        Err(_) => TABLEAU_EARLY_ABANDON_CAP_HITS,
+    }
+}
+
+/// `RUSTDL_TABLEAU_EA_STATS=1` ⇒ dump one stderr line per armed probe on drop.
+/// Calibration channel only; never read by the search.
+#[must_use]
+pub(crate) fn tableau_early_abandon_stats_enabled() -> bool {
+    std::env::var_os("RUSTDL_TABLEAU_EA_STATS").is_some_and(|v| v == "1")
+}
+
 /// Depth schedule for the main tableau's iterative-deepening search.
 ///
 /// The final level is [`MAX_SEARCH_DEPTH`] **exactly**, not more, and that is a
@@ -7477,6 +7528,13 @@ where
     // than an artificial recursion limit — the issue-#35 hang was this cap
     // cutting a blocking-bounded-but-deep branch and destroying back-jumping.
     let outcome = if let Some(dl) = deadline {
+        // Adaptive early-abandon (RUSTDL_TABLEAU_EARLY_ABANDON, default OFF).
+        // Armed only on the DEADLINE-BOUNDED arm — that is the one and only path
+        // `MAX_SEARCH_DEPTH` is reachable from, so arming the deep arm would be
+        // dead code that nonetheless changed a `search`-entry predicate.
+        if tableau_early_abandon_enabled() {
+            ctx.enable_early_abandon(tableau_early_abandon_cap_hits());
+        }
         // Iterative deepening of the modest cap (RUSTDL_TABLEAU_ITERATIVE_DEEPENING,
         // default OFF). Flag-OFF this is verbatim the pre-change single search at
         // `MAX_SEARCH_DEPTH`, so the OFF path is byte-identical by construction.
@@ -7497,6 +7555,17 @@ where
                 .expect("deep tableau search thread panicked")
         })
     };
+    // Calibration channel for the early-abandon constant. Read before `ctx` is
+    // dropped; one line per armed probe, and nothing at all when unarmed.
+    if let Some((trials, definite, depth0, max_stall_run, abandoned)) = ctx.early_abandon_stats()
+        && tableau_early_abandon_stats_enabled()
+    {
+        eprintln!(
+            "# ea probe trials={trials} definite={definite} depth0={depth0} \
+             max_stall_run={max_stall_run} abandoned={}",
+            u8::from(abandoned)
+        );
+    }
     match outcome {
         owl_dl_tableau::SearchVerdict::Sat => Ok(Some(true)),
         owl_dl_tableau::SearchVerdict::Unsat(_) => Ok(Some(false)),
@@ -7504,6 +7573,11 @@ where
         // safety net) — must be checked before the DepthLimit arms below so a
         // cap trip is never mistaken for a hard NoVerdict.
         owl_dl_tableau::SearchVerdict::NodeCap => Ok(None),
+        // Adaptive early-abandon: report the same sound "don't know" a deadline
+        // cut and a `NodeCap` trip report (`Ok(None)`), NOT `Err(NoVerdict)`.
+        // Checked BEFORE the deadline arm so the abandon reason is attributed
+        // even when the deadline happened to elapse during the unwind.
+        owl_dl_tableau::SearchVerdict::DepthLimit if ctx.early_abandoned() => Ok(None),
         owl_dl_tableau::SearchVerdict::DepthLimit if ctx.deadline_reached() => Ok(None),
         owl_dl_tableau::SearchVerdict::DepthLimit => Err(ReasonError::NoVerdict),
     }

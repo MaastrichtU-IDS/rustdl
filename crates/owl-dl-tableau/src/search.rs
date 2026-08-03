@@ -103,7 +103,19 @@ fn trace_enabled() -> bool {
 
 /// Drive deterministic saturation interleaved with `⊔` branching.
 pub fn search(ctx: &mut TableauContext<'_, '_, '_>, max_depth: usize) -> SearchVerdict {
-    if max_depth == 0 || ctx.check_deadline() {
+    if max_depth == 0 {
+        // Genuine depth-cap bottom-out — the harm the adaptive early-abandon
+        // meters. Kept FIRST so `check_deadline`'s sticky side effect stays
+        // short-circuited exactly as before.
+        ctx.note_depth_cap_hit();
+        if trace_enabled() {
+            eprintln!("# trace search depth=0_or_deadline");
+        }
+        return SearchVerdict::DepthLimit;
+    }
+    // `early_abandoned` is a latched flag and is `false` whenever the lever is
+    // unarmed, so flag-OFF this is verbatim the previous predicate.
+    if ctx.check_deadline() || ctx.early_abandoned() {
         if trace_enabled() {
             eprintln!("# trace search depth=0_or_deadline");
         }
@@ -245,7 +257,16 @@ fn branch(
         // The labelled disjunct depends on *this* branch decision and
         // every reason the parent disjunction was at this node.
         ctx.add_label_with_deps(node, *d, combined_deps.as_slice());
-        match search(ctx, max_depth - 1) {
+        let verdict = search(ctx, max_depth - 1);
+        // Whether the child concluded. Feeds the early-abandon telemetry (the
+        // criterion itself is the cumulative depth-cap-hit count, latched in
+        // `note_depth_cap_hit`). Flag-OFF `note_branch_trial` is a single
+        // `Option` discriminant test returning `false`.
+        let definite = matches!(
+            verdict,
+            SearchVerdict::Sat | SearchVerdict::Unsat(_) | SearchVerdict::NodeCap
+        );
+        match verdict {
             SearchVerdict::Sat => {
                 // Found a model; keep state, exit early. State is
                 // left as-is — the model labels are real.
@@ -301,6 +322,19 @@ fn branch(
                 ctx.rollback_to(cp);
                 early_return = Some(SearchVerdict::NodeCap);
             }
+        }
+        // Meter the trial. `note_branch_trial` returns `true` only when the cut
+        // fires, which requires `!definite` — and a `!definite` trial is exactly
+        // the `DepthLimit` arm, which sets no `early_return`, so this can never
+        // clobber a `Sat` / back-jumped `Unsat` / `NodeCap` verdict.
+        // Stop trying siblings once the probe is abandoned. No rollback is owed:
+        // the abandoning arm is `DepthLimit`, which has already rolled back to
+        // `cp`. `early_return.is_none()` is belt-and-braces — a latched probe can
+        // no longer produce a `Sat` or a back-jumped `Unsat`, because every
+        // `search` entry returns `DepthLimit` from the latch onwards — so this can
+        // never downgrade a definite verdict to a non-verdict.
+        if ctx.note_branch_trial(definite) && early_return.is_none() {
+            early_return = Some(SearchVerdict::DepthLimit);
         }
     }
     ctx.pop_branch();

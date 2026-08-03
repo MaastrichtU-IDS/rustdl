@@ -402,6 +402,27 @@ impl<'pool, 'tbox, 'hier> TableauContext<'pool, 'tbox, 'hier> {
         self.deadline_hit
     }
 
+    /// Clear the sticky [`Self::deadline_reached`] flag.
+    ///
+    /// Only for a caller that runs [`crate::search`] **more than once** on one
+    /// context under **different** deadlines — today that is the main-tableau
+    /// iterative-deepening driver, whose shallow levels each carry a small
+    /// sub-deadline while the final level carries the caller's own. Without
+    /// this the shallow level's elapsed sub-deadline would stick, and the final
+    /// level's genuine depth-cap `DepthLimit` would be misreported as a
+    /// deadline cut. Those two are NOT interchangeable at the reasoner's
+    /// mapping site: a deadline `DepthLimit` becomes `Ok(None)` while a
+    /// depth-cap `DepthLimit` becomes `Err(NoVerdict)`, and
+    /// `classify_internal_with_timeout` propagates that `Err` with `?`.
+    ///
+    /// Cannot affect soundness: the flag is a *reporting* channel, read only to
+    /// disambiguate two inconclusive verdicts. It can never turn an
+    /// inconclusive verdict into `Sat` or `Unsat`.
+    pub fn clear_deadline_hit(&mut self) -> &mut Self {
+        self.deadline_hit = false;
+        self
+    }
+
     /// Allocate the next fresh `branch_id` and push it onto the
     /// active-branches stack. Returns the freshly issued id.
     /// `branch()` calls this on entry, [`Self::pop_branch`] on exit.

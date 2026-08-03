@@ -4641,6 +4641,406 @@ use owl_dl_tableau::{NodeId, TableauContext};
 /// (rayon-worker) stack with zero overhead.
 const MAX_SEARCH_DEPTH: usize = 256;
 
+// ---------------------------------------------------------------------------
+// Main-tableau iterative deepening (RUSTDL_TABLEAU_ITERATIVE_DEEPENING)
+// ---------------------------------------------------------------------------
+
+/// Iterative deepening of [`MAX_SEARCH_DEPTH`], the **main tableau's**
+/// deadline-bounded depth cap — the sibling of the wedge's
+/// [`HYPER_WEDGE_DEPTH`] cap that [`HyperCache::decide_iterative_deepening`]
+/// already deepens (`RUSTDL_ITERATIVE_DEEPENING`, default ON since v0.4.12).
+///
+/// **DEFAULT OFF, and the measurement says it should stay off.** See
+/// `docs/2026-08-03-tableau-iterative-deepening.md`: the constant audit
+/// (`docs/2026-08-03-constant-audit.md` §4) found `MAX_SEARCH_DEPTH` binding on
+/// 82% of the ontologies that reach the main tableau at all, with three DNFs
+/// recovered and two completers ~14× faster **at a fixed cap of 8** — but
+/// deepening cannot capture any of that, because on every one of those
+/// ontologies the probes whose cost a shallow cap saves are probes that reach
+/// **no verdict at either depth**. Iterative deepening is verdict-monotone by
+/// construction, so it must re-run each undecided probe at the final level
+/// (`>= MAX_SEARCH_DEPTH`) under the caller's own deadline — reproducing the
+/// flag-OFF cost and adding the shallow phase's tax on top. That is measured,
+/// not predicted (§3 of the results doc). Kept as opt-in scaffolding: the
+/// mechanism is correct and the canaries pin its monotonicity, so a future
+/// workload where a shallow level genuinely *decides* pairs can switch it on
+/// without rebuilding it.
+#[must_use]
+pub(crate) fn tableau_iterative_deepening_enabled() -> bool {
+    std::env::var_os("RUSTDL_TABLEAU_ITERATIVE_DEEPENING").is_some_and(|v| v == "1")
+}
+
+/// Depth schedule for the main tableau's iterative-deepening search.
+///
+/// The final level is [`MAX_SEARCH_DEPTH`] **exactly**, not more, and that is a
+/// deliberate difference from the wedge's `[8, 32, 128, 512]`: the audit
+/// measured that *raising* this cap recovers nothing (`ore_ont_10019` reads
+/// `search_depth0 = 0` at 512 and 2048 — the cap stops binding, its true
+/// requirement being 459–460 — and still DNFs), so a deeper final level would
+/// buy no completeness and would make every undecided probe explore further
+/// before its deadline. `>= MAX_SEARCH_DEPTH` is the monotonicity requirement;
+/// `== MAX_SEARCH_DEPTH` additionally makes the ON path's final level *identical*
+/// to the OFF path's only level.
+const MAX_SEARCH_DEPTH_SCHEDULE: &[usize] = &[8, 32, MAX_SEARCH_DEPTH];
+
+/// Compile-time check of the two [`MAX_SEARCH_DEPTH_SCHEDULE`] invariants —
+/// the same pair [`assert_depth_schedule_well_formed`] pins for the wedge.
+const fn assert_search_depth_schedule_well_formed() {
+    assert!(!MAX_SEARCH_DEPTH_SCHEDULE.is_empty());
+    let mut i = 1;
+    while i < MAX_SEARCH_DEPTH_SCHEDULE.len() {
+        assert!(
+            MAX_SEARCH_DEPTH_SCHEDULE[i] > MAX_SEARCH_DEPTH_SCHEDULE[i - 1],
+            "tableau depth schedule must be strictly increasing"
+        );
+        i += 1;
+    }
+    assert!(
+        MAX_SEARCH_DEPTH_SCHEDULE[MAX_SEARCH_DEPTH_SCHEDULE.len() - 1] >= MAX_SEARCH_DEPTH,
+        "final tableau schedule level must be >= MAX_SEARCH_DEPTH or deepening can lose entailments"
+    );
+}
+const _: () = assert_search_depth_schedule_well_formed();
+
+/// Diagnostic override of [`MAX_SEARCH_DEPTH_SCHEDULE`]
+/// (`RUSTDL_TABLEAU_ID_SCHEDULE="8,32,256"`). A malformed override —
+/// unparsable, empty, non-increasing, or with a final level below
+/// [`MAX_SEARCH_DEPTH`] — is **rejected wholesale** (falls back to the compiled
+/// default) rather than silently reasoning under a schedule that could lose
+/// entailments. Mirrors [`depth_schedule`] exactly.
+fn tableau_depth_schedule() -> Vec<usize> {
+    let Some(raw) = std::env::var_os("RUSTDL_TABLEAU_ID_SCHEDULE") else {
+        return MAX_SEARCH_DEPTH_SCHEDULE.to_vec();
+    };
+    let parsed: Option<Vec<usize>> = raw
+        .to_str()
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().parse::<usize>().ok())
+                .collect()
+        })
+        .and_then(|v: Option<Vec<usize>>| v);
+    match parsed {
+        Some(v)
+            if !v.is_empty()
+                && v.windows(2).all(|w| w[1] > w[0])
+                && v[v.len() - 1] >= MAX_SEARCH_DEPTH =>
+        {
+            v
+        }
+        _ => MAX_SEARCH_DEPTH_SCHEDULE.to_vec(),
+    }
+}
+
+/// Default wall budget, in milliseconds, for the WHOLE shallow phase of one
+/// iterative-deepening main-tableau probe (every level except the last, taken
+/// together). Overridable with `RUSTDL_TABLEAU_ID_SHALLOW_MS`; `0` disables the
+/// bound (which is the unbounded variant the wedge's own
+/// [`ID_SHALLOW_BUDGET_MS`] docs already record as refuted).
+///
+/// **Why 20 ms rather than the wedge's 5 ms.** These are different engines with
+/// different per-probe costs and the constant must follow the engine it bounds.
+/// On the audit's own targets a *whole* depth-8 main-tableau probe costs
+/// ~19 ms (`ore_ont_13545`: 30 unsat probes, `unsat_probe` 562 ms at depth 8
+/// against 30 014 ms at 256) — so a 5 ms shallow budget would cut the shallow
+/// level short on the very population it exists to serve, and every probe would
+/// pay 5 ms for nothing. 20 ms clears a depth-8 probe on that population while
+/// still being ~50× below the 1 000 ms per-pair budget it is carved out of.
+const TABLEAU_ID_SHALLOW_BUDGET_MS: u64 = 20;
+
+/// Shallow-phase wall budget in ms (`RUSTDL_TABLEAU_ID_SHALLOW_MS`, default
+/// [`TABLEAU_ID_SHALLOW_BUDGET_MS`], `0` disables the bound). Garbage parses to
+/// the default rather than to `0` — silently disabling the bound is the refuted
+/// unbounded variant, exactly as for [`id_shallow_budget_ms`].
+fn tableau_id_shallow_budget_ms() -> u64 {
+    std::env::var("RUSTDL_TABLEAU_ID_SHALLOW_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(TABLEAU_ID_SHALLOW_BUDGET_MS)
+}
+
+/// How much wall, in milliseconds, one classify may WASTE on main-tableau
+/// iterative-deepening shallow phases that fail to decide their probe, before
+/// the shallow phase is switched off for the rest of that classify.
+/// Overridable with `RUSTDL_TABLEAU_ID_SHALLOW_WASTE_MS`; `0` disables the
+/// shutoff.
+///
+/// **This exists because the per-pair-tax failure mode is not hypothetical here
+/// — it is the documented regression the wedge shipped and had to fix.**
+/// [`ID_SHALLOW_BUDGET_MS`] was a per-*pair* constant, so its total cost scaled
+/// with the pair count, which is quadratic in the class count; `ore_ont_13991`
+/// (3 119 classes, 56 760 pairs) went from a 32.79 s completion to a DNF at
+/// 180 s, and the dose–response confirmed the mechanism (1 ms → 90.31 s, i.e.
+/// 57.5 s of overhead against a predicted 1 ms × 56 760 = 57 s).
+///
+/// The main tableau is exposed to the *same* arithmetic and the exposure is in
+/// fact worse per unit, because [`TABLEAU_ID_SHALLOW_BUDGET_MS`] is 4× the
+/// wedge's: an ontology on which many pairs fall through the wedge to the
+/// tableau and whose shallow level decides nothing would pay 20 ms × (pairs
+/// reaching the tableau). So the SAME shape of fix is applied, for the same
+/// reason: a cumulative budget on **wall wasted by shallow phases that did not
+/// decide**, which meters the harm in the units the harm is measured in.
+///
+/// **A CONSECUTIVE-MISS COUNTER IS ALREADY REFUTED — do not reintroduce it.**
+/// The wedge tried it first (see [`ID_SHALLOW_WASTE_BUDGET_MS`]): `13991`'s
+/// shallow phase decides 84 pairs while missing 200, and those interleave, so
+/// any decide resets the run and a latch tolerating even a short streak never
+/// trips. "Consecutive" measures the wrong thing — the harm is accumulated
+/// wall, not a run of failures.
+///
+/// **Why a SEPARATE accumulator from the wedge's, rather than sharing it.**
+/// Three reasons, in order of force:
+/// 1. **Volume.** The wedge runs on *every* classify pair; the main tableau runs
+///    only on the wedge's fallthrough subset (on `ore_ont_2826`: 342 pairs
+///    reach the wedge, 6 reach the tableau). A shared accumulator would be
+///    spent almost entirely by the higher-volume engine, latching the other's
+///    shallow phase off before it had been given a chance to pay for itself —
+///    the meter would measure one engine and charge both.
+/// 2. **Units.** A wedge shallow phase is bounded at 5 ms, a tableau one at
+///    20 ms. One budget cannot be correctly sized for both, and the whole point
+///    of the waste metric is that it is denominated in the harm's own units.
+/// 3. **Revertibility.** Two flags with two accumulators are independently
+///    A/B-able; the wedge feature is default ON and this one is default OFF, so
+///    a shared mutable counter would make the OFF path observably depend on the
+///    ON path's behaviour.
+///
+/// **Soundness is untouched.** Skipping the shallow phase runs only the final
+/// level, at cap `>= MAX_SEARCH_DEPTH` under the caller's own deadline — i.e.
+/// *exactly* the flag-OFF search at a cap `>=` the flag-OFF cap. By the
+/// monotonicity argument on [`search_iterative_deepening`] that verdict is a
+/// superset of flag-OFF's, never a subset.
+const TABLEAU_ID_SHALLOW_WASTE_BUDGET_MS: u64 = 1000;
+
+/// Wasted-wall budget for the main tableau's adaptive shallow shutoff
+/// (`RUSTDL_TABLEAU_ID_SHALLOW_WASTE_MS`, default
+/// [`TABLEAU_ID_SHALLOW_WASTE_BUDGET_MS`], `0` disables the shutoff). Garbage
+/// parses to the default rather than to `0`.
+fn tableau_id_shallow_waste_budget_ms() -> u64 {
+    std::env::var("RUSTDL_TABLEAU_ID_SHALLOW_WASTE_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(TABLEAU_ID_SHALLOW_WASTE_BUDGET_MS)
+}
+
+/// Per-classify accumulator for the main tableau's adaptive shallow shutoff.
+///
+/// Scope is one [`PreparedOntology`] — the tableau-side analogue of the
+/// wedge's per-[`HyperCache`] counters, which is what makes the budget a
+/// *per-classify* bound rather than a per-probe one. `Relaxed` ordering
+/// throughout: this is a cost heuristic and never a correctness input.
+#[derive(Debug, Default)]
+pub(crate) struct TableauIdBudget {
+    /// Microseconds spent in shallow phases that did NOT decide their probe.
+    waste_us: std::sync::atomic::AtomicU64,
+    /// Probes a non-final level decided (telemetry; `RUSTDL_TABLEAU_ID_STATS`).
+    decided: std::sync::atomic::AtomicU64,
+    /// Probes whose shallow phase failed to decide (telemetry).
+    missed: std::sync::atomic::AtomicU64,
+}
+
+impl TableauIdBudget {
+    /// `(decided, missed, waste_us)` — telemetry for the results write-up and
+    /// for the canaries, which drive the accumulator directly rather than
+    /// trying to burn a real millisecond budget (a wall-clock-dependent test on
+    /// a loaded host would be flaky in exactly the direction that stops testing
+    /// anything).
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.decided.load(Relaxed),
+            self.missed.load(Relaxed),
+            self.waste_us.load(Relaxed),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_waste_us(&self, v: u64) {
+        self.waste_us.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Is the shutoff latched — has this classify already wasted its whole
+    /// budget on non-deciding shallow phases? Self-latching: once latched the
+    /// shallow phase stops running, so it can no longer add to the total, so no
+    /// second flag is needed to hold the latch.
+    fn latched(&self) -> bool {
+        let budget_us = tableau_id_shallow_waste_budget_ms().saturating_mul(1000);
+        budget_us != 0 && self.waste_us.load(std::sync::atomic::Ordering::Relaxed) >= budget_us
+    }
+}
+
+impl Drop for TableauIdBudget {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        // Mirrors `impl Drop for HyperCache`'s `RUSTDL_ID_STATS` dump. This is
+        // also the POSITIVE CONTROL that the flag is live rather than a no-op:
+        // on a flag-ON run these counters must be non-zero on any ontology that
+        // reaches the deadline-bounded main tableau at all, and they must be
+        // zero flag-OFF. Without it a measured "ON == OFF" could not be told
+        // apart from "my flag never executed".
+        if std::env::var_os("RUSTDL_TABLEAU_ID_STATS").is_some_and(|v| v == "1") {
+            eprintln!(
+                "# tableau-id-stats: shallow_decided={} shallow_missed={} shallow_waste_ms={}",
+                self.decided.load(Relaxed),
+                self.missed.load(Relaxed),
+                self.waste_us.load(Relaxed) / 1000,
+            );
+        }
+    }
+}
+
+/// Iterative-deepening driver for the **main tableau** on the deadline-bounded
+/// query paths — the one call site of [`MAX_SEARCH_DEPTH`]. Runs
+/// [`owl_dl_tableau::search`] at each level of [`tableau_depth_schedule`] until
+/// the search returns something other than `DepthLimit`, or the schedule is
+/// exhausted, or the caller's deadline passes.
+///
+/// # Why this is FP-safe by construction — verified for THIS engine, not
+/// inherited from the wedge
+///
+/// The two engines differ, so the argument is re-derived from
+/// `owl-dl-tableau/src/search.rs` rather than transplanted. A depth cap can
+/// only *suppress* an `Unsat`, never manufacture one:
+/// * `search` returns `SearchVerdict::DepthLimit` at `max_depth == 0`, before
+///   any saturation or clash detection runs;
+/// * in `search::branch`, a `DepthLimit` from ANY child sets
+///   `depth_limited = true` and the frame returns `DepthLimit` **instead of**
+///   `Unsat(combined)` — the `Unsat` arm is reached only when every option
+///   clashed *decisively*;
+/// * `decide` maps `DepthLimit` to `Ok(None)` / `Err(NoVerdict)`, i.e. to
+///   "satisfiable / not subsumed" at every caller — a MISS, never a claim.
+///
+/// So no depth schedule can create a subsumption the fixed cap would not also
+/// have found sound. Deepening can only ADD entailments.
+///
+/// # Why it does not LOSE entailments: depth is verdict-monotone
+///
+/// Raising the cap from `k` to `k' > k`:
+/// * `Unsat` at `k` requires every branch decisively unsat with no stalled
+///   child, so the identical DFS at `k'` re-derives it;
+/// * `Sat` at `k` means a clash-free completion was found within `k`
+///   decisions; at `k'` the DFS prefix is identical except that frames which
+///   returned `DepthLimit` may now return `Sat` (immediate) or `Unsat` (the
+///   parent continues to the next disjunct — exactly what it did after a
+///   `DepthLimit`), so the outcome is still `Sat`;
+/// * only `DepthLimit` can change, and only into a definite verdict.
+///
+/// Since the schedule's last level is `>= MAX_SEARCH_DEPTH` (compile-time
+/// asserted) and carries the caller's own deadline, flag-ON's verdict is a
+/// superset of flag-OFF's — a LOST pair means the implementation is wrong, not
+/// that the idea is.
+///
+/// # Reusing one context across levels
+///
+/// The levels share the `ctx` rather than rebuilding it, which matters because
+/// `decide`'s per-probe setup clones the whole `ConceptPool` (documented there
+/// as dominating on large ontologies). This is sound because `search::branch`
+/// **rolls back to its checkpoint** on every `Unsat` / `DepthLimit` /
+/// `NodeCap`, so what survives a `DepthLimit` is exactly the top-level
+/// `saturate` fixpoint — the deterministic closure of the root state, i.e.
+/// sound consequences that a fresh run's own first `saturate` would recompute.
+/// Extra deterministic labels can only make clashes MORE likely, so a `Sat`
+/// found on the reused context is still a model of the root, and an `Unsat`
+/// still rests only on entailed labels. Pinned by
+/// `reused_context_matches_a_fresh_context_at_the_same_depth`.
+///
+/// # Deadline
+///
+/// The caller's `deadline` bounds the **whole loop**: the final level receives
+/// it verbatim, non-final levels receive `min(shallow budget, deadline)`, and
+/// the loop breaks before starting a level once the caller's deadline has
+/// passed. Deepening therefore never multiplies the per-probe budget. The
+/// converse is the one completeness exposure and is bounded by both the shallow
+/// budget and the shutoff: the shallow phase spends at most
+/// `remaining / TABLEAU_ID_SHALLOW_DIVISOR` of a budget the final level might
+/// have needed.
+fn search_iterative_deepening(
+    ctx: &mut TableauContext<'_, '_, '_>,
+    deadline: std::time::Instant,
+    budget: &TableauIdBudget,
+) -> owl_dl_tableau::SearchVerdict {
+    use owl_dl_tableau::SearchVerdict;
+    use std::sync::atomic::Ordering::Relaxed;
+    let schedule = tableau_depth_schedule();
+    // `schedule` is non-empty by construction (the compiled default is, and a
+    // malformed override is rejected wholesale in `tableau_depth_schedule`).
+    let last = schedule.len() - 1;
+    let started = std::time::Instant::now();
+    // Reuse the wedge's shallow-budget arithmetic verbatim: `min(budget_ms,
+    // remaining / DIVISOR)`, so at least (DIVISOR-1)/DIVISOR of the caller's
+    // budget always reaches the final level — the only one that can decide a
+    // deep probe.
+    let shallow = id_shallow_deadline(started, Some(deadline), tableau_id_shallow_budget_ms())
+        .unwrap_or(deadline)
+        .min(deadline);
+    let shallow_skipped = budget.latched();
+    let mut i = if shallow_skipped { last } else { 0 };
+    let verdict = loop {
+        let final_level = i == last;
+        if final_level {
+            // Restore the caller's deadline AND clear the sticky hit flag, so
+            // this level's verdict is reported exactly as the flag-OFF single
+            // search would report it. Without the clear, a shallow level's
+            // elapsed sub-deadline would make a genuine depth-cap `DepthLimit`
+            // read as a deadline cut.
+            ctx.set_deadline(deadline);
+            ctx.clear_deadline_hit();
+        } else {
+            ctx.set_deadline(shallow);
+        }
+        let v = owl_dl_tableau::search(ctx, schedule[i]);
+        if final_level {
+            break v;
+        }
+        // Only a `DepthLimit` can be improved by deepening (§ monotonicity).
+        // `Sat`/`Unsat` are final; `NodeCap` is a global resource cap that a
+        // deeper search can only hit sooner.
+        if !matches!(v, SearchVerdict::DepthLimit) {
+            break v;
+        }
+        // The CALLER's deadline bounds the LOOP: never start a level after it
+        // passes, so deepening cannot multiply the per-probe budget. Restore it
+        // first so `deadline_reached()` reports against the right instant.
+        if std::time::Instant::now() >= deadline {
+            ctx.set_deadline(deadline);
+            ctx.check_deadline();
+            break v;
+        }
+        // Once the shallow budget is spent, jump straight to the final level:
+        // every intermediate level would return `DepthLimit` on its first
+        // deadline check anyway, after paying a full re-descent for nothing.
+        i = if std::time::Instant::now() >= shallow {
+            last
+        } else {
+            i + 1
+        };
+    };
+    // Feed the shutoff. Only observations count: when the shallow phase was
+    // skipped there is nothing to learn, and not touching the accumulator here
+    // is what makes the latch permanent without a second flag. "Decided" means
+    // a DEFINITE verdict from a NON-final level — a `DepthLimit` that merely
+    // fell through to the final level is the tax this shutoff exists to stop
+    // paying, and a verdict from the final level would have been reached with
+    // no shallow phase at all.
+    if !shallow_skipped {
+        if i < last && !matches!(verdict, SearchVerdict::DepthLimit) {
+            budget.decided.fetch_add(1, Relaxed);
+        } else {
+            budget.missed.fetch_add(1, Relaxed);
+            // Charge only the shallow phase, never the final level: the final
+            // level's own wall is work the flag-OFF path would have done anyway.
+            let spent = shallow
+                .saturating_duration_since(started)
+                .min(started.elapsed())
+                .as_micros();
+            budget
+                .waste_us
+                .fetch_add(u64::try_from(spent).unwrap_or(u64::MAX), Relaxed);
+        }
+    }
+    verdict
+}
+
 /// Recursion depth cap for the **deadline-free** query paths (`is_consistent`,
 /// `is_class_satisfiable`, un-timed realize). Termination on these paths must
 /// come from pair-blocking (which bounds the completion *graph*), NOT from an
@@ -5365,6 +5765,14 @@ pub(crate) struct PreparedOntology {
     /// `None` otherwise (`ABox`-free inputs pay nothing, classify
     /// byte-identical). Consumed by [`is_consistent_internal_full`].
     consistency: Option<ConsistencyCache>,
+    /// Per-classify accumulator for the main tableau's iterative-deepening
+    /// adaptive shallow shutoff (`RUSTDL_TABLEAU_ITERATIVE_DEEPENING`, default
+    /// OFF). Lives here rather than on [`HyperCache`] so it is scoped to one
+    /// classify and is METERED SEPARATELY from the wedge's — see
+    /// [`TABLEAU_ID_SHALLOW_WASTE_BUDGET_MS`] for why sharing one budget across
+    /// two engines of very different per-probe volume would starve the
+    /// lower-volume one. Inert (never read) when the flag is off.
+    tableau_id: TableauIdBudget,
 }
 
 /// Build the concrete-domain solver's `ClassId → CardRange` side-map by
@@ -5746,6 +6154,7 @@ impl PreparedOntology {
             dkey_ranges,
             data_counting_classes,
             consistency,
+            tableau_id: TableauIdBudget::default(),
         }))
     }
 
@@ -5920,6 +6329,7 @@ impl PreparedOntology {
             &[],
             &[],
             &self.dkey_ranges,
+            &self.tableau_id,
             None,
             build_test_concept,
         )
@@ -5958,6 +6368,7 @@ impl PreparedOntology {
             &[],
             &[],
             &self.dkey_ranges,
+            &self.tableau_id,
             None,
             build_test_concept,
         )
@@ -5992,6 +6403,7 @@ impl PreparedOntology {
             &[],
             &[],
             &self.dkey_ranges,
+            &self.tableau_id,
             None,
             build_test_concept,
         )
@@ -6028,6 +6440,7 @@ impl PreparedOntology {
             &[],
             &[],
             &self.dkey_ranges,
+            &self.tableau_id,
             Some(deadline),
             build_test_concept,
         )
@@ -6119,6 +6532,7 @@ impl PreparedOntology {
             &[],
             &[],
             &self.dkey_ranges,
+            &self.tableau_id,
             Some(deadline),
             build_test_concept,
         )
@@ -6158,6 +6572,7 @@ impl PreparedOntology {
             extra_distinct,
             extra_neg_prop,
             &self.dkey_ranges,
+            &self.tableau_id,
             deadline,
             ConceptPool::top,
         )
@@ -6658,6 +7073,7 @@ fn decide<F>(
     extra_distinct: &[(IndividualId, IndividualId)],
     extra_neg_prop: &[(IndividualId, RoleId, IndividualId)],
     dkey_ranges: &std::collections::HashMap<owl_dl_core::ir::ClassId, owl_dl_datatypes::CardRange>,
+    id_budget: &TableauIdBudget,
     deadline: Option<std::time::Instant>,
     build_test_concept: F,
 ) -> Result<Option<bool>, ReasonError>
@@ -6827,8 +7243,15 @@ where
     // a large dedicated stack, so termination rests on pair-blocking rather
     // than an artificial recursion limit — the issue-#35 hang was this cap
     // cutting a blocking-bounded-but-deep branch and destroying back-jumping.
-    let outcome = if deadline.is_some() {
-        owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH)
+    let outcome = if let Some(dl) = deadline {
+        // Iterative deepening of the modest cap (RUSTDL_TABLEAU_ITERATIVE_DEEPENING,
+        // default OFF). Flag-OFF this is verbatim the pre-change single search at
+        // `MAX_SEARCH_DEPTH`, so the OFF path is byte-identical by construction.
+        if tableau_iterative_deepening_enabled() {
+            search_iterative_deepening(&mut ctx, dl, id_budget)
+        } else {
+            owl_dl_tableau::search(&mut ctx, MAX_SEARCH_DEPTH)
+        }
     } else {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
@@ -10042,7 +10465,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
     /// `Q_i` has NO told superclass (a conjunctive-`⊥` GCI is recorded as a
     /// told-DISJOINT pair, not a subsumer), so no common subsumer exists and the
     /// case split survives to the engine.
-    fn build_disjunction_chain(n: usize) -> InternalOntology {
+    pub(super) fn build_disjunction_chain(n: usize) -> InternalOntology {
         owl_dl_core::convert::convert_ontology(&parse(&chain_src(n, true)))
             .expect("chain fixture converts")
     }
@@ -10077,7 +10500,7 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         format!("{HEADER}Ontology(\n{b})\n")
     }
 
-    fn class_id(internal: &InternalOntology, local: &str) -> owl_dl_core::ir::ClassId {
+    pub(super) fn class_id(internal: &InternalOntology, local: &str) -> owl_dl_core::ir::ClassId {
         let iri = format!("http://rustdl.test/{local}");
         internal
             .vocabulary
@@ -10761,5 +11184,421 @@ Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
         }
         assert_eq!(fixed, HyperResult::Unsat);
         assert_eq!(decided, HyperVerdict::Subsumed);
+    }
+}
+
+/// Canaries for **main-tableau** iterative deepening
+/// (`RUSTDL_TABLEAU_ITERATIVE_DEEPENING`, default OFF). Negatives first: the
+/// three controls at the top establish that the fixture DISCRIMINATES — that
+/// the shallow level genuinely cannot decide the deep chain, and genuinely can
+/// decide a shallow one — before any deepening or shutoff claim is asserted.
+/// Without them every assertion below could pass on an inert fixture.
+///
+/// These drive `PreparedOntology::decide_classify_with_deadline`, the real
+/// classify tableau entry point, not a test-only twin.
+#[cfg(test)]
+mod tableau_iterative_deepening_tests {
+    use super::iterative_deepening_tests::{build_disjunction_chain, class_id};
+    use super::*;
+    use std::time::Duration;
+
+    /// Chain length whose refutation genuinely needs MORE branch depth than the
+    /// shallowest schedule level (8). **Measured, not assumed** — and the
+    /// negatives-first control is what forced the measurement: the wedge's own
+    /// 12-deep fixture is decided by the MAIN TABLEAU at depth 8, because
+    /// absorb + dependency-directed back-jumping compress this chain to roughly
+    /// one branch decision per five links. Depth 8 decides n = 4/8/12/24 and
+    /// first MISSES at n = 48. Two engines, two depth requirements from one
+    /// fixture generator — which is precisely why the FP-safety and
+    /// monotonicity arguments were re-derived for this engine rather than
+    /// inherited from the wedge.
+    const DEEP_N: usize = 48;
+
+    /// Chain length the shallowest level DOES decide, so "the shallow phase
+    /// decided" is a reachable state and the shutoff canaries are not vacuous.
+    const SHALLOW_N: usize = 12;
+
+    /// One `sub ⊓ ¬sup` probe through the production classify tableau path,
+    /// returning `(verdict, (decided, missed, waste_us))`. `verdict` is
+    /// `Some(false)` = unsat = subsumed, `Some(true)` = satisfiable,
+    /// `None` = no verdict.
+    fn probe(
+        internal: &InternalOntology,
+        sub: &str,
+        sup: &str,
+        budget_secs: u64,
+    ) -> (Option<bool>, (u64, u64, u64)) {
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("fixture prepares");
+        let (s, p) = (class_id(internal, sub), class_id(internal, sup));
+        let build = move |pool: &mut ConceptPool| {
+            let sc = pool.atomic(s);
+            let pc = pool.atomic(p);
+            let np = pool.not(pc);
+            pool.and(vec![sc, np])
+        };
+        let dl = std::time::Instant::now() + Duration::from_secs(budget_secs);
+        let v = prepared
+            .decide_classify_with_deadline(dl, build)
+            .expect("probe does not error");
+        (v, prepared.tableau_id.snapshot())
+    }
+
+    /// Run `f` with the tableau-ID env pinned: flag `on`, shallow budget
+    /// UNBOUNDED (`0`), shutoff `waste_ms`. Serialised through `test_env_lock`
+    /// and restored afterwards.
+    ///
+    /// The shallow bound is pinned to `0` for the same reason the wedge's
+    /// canaries pin theirs: otherwise these tests would depend on whether a
+    /// microsecond-scale search happened to outrun a 20 ms wall budget on a
+    /// loaded host — flaky in exactly the direction that silently stops testing
+    /// the deepening path. The budget arithmetic has its own canaries.
+    #[allow(unsafe_code)]
+    fn with_tid<T>(on: bool, waste_ms: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _lock = test_env_lock();
+        let keys = [
+            "RUSTDL_TABLEAU_ITERATIVE_DEEPENING",
+            "RUSTDL_TABLEAU_ID_SHALLOW_MS",
+            "RUSTDL_TABLEAU_ID_SHALLOW_WASTE_MS",
+        ];
+        let prev: Vec<_> = keys.iter().map(std::env::var_os).collect();
+        // SAFETY: serialised by `test_env_lock`; every key restored below.
+        unsafe {
+            std::env::set_var(keys[0], if on { "1" } else { "0" });
+            std::env::set_var(keys[1], "0");
+            match waste_ms {
+                Some(v) => std::env::set_var(keys[2], v),
+                None => std::env::remove_var(keys[2]),
+            }
+        }
+        let out = f();
+        for (k, v) in keys.iter().zip(prev) {
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+        out
+    }
+
+    // ------------------------------------------------------------- negatives
+
+    /// **Control (negatives-first).** The 12-deep `⊔`-chain is genuinely beyond
+    /// the shallowest schedule level (8): the shallow phase must record a MISS
+    /// and zero decides. If this ever reported a decide, every "deepening
+    /// works" assertion below would be vacuous — the fixture would simply be
+    /// shallow.
+    #[test]
+    fn deep_chain_is_not_decided_by_the_shallow_level() {
+        let internal = build_disjunction_chain(DEEP_N);
+        let (_, (decided, missed, _)) = with_tid(true, None, || probe(&internal, "A0", "Y", 20));
+        assert_eq!(decided, 0, "depth 8 must NOT decide a DEEP_N-deep chain");
+        assert!(missed >= 1, "the shallow phase must have run and missed");
+    }
+
+    /// **Control (negatives-first).** A 3-deep chain IS decided by the
+    /// shallowest level, so "the shallow phase decided" is a reachable state.
+    /// Without this, `a_deciding_probe_charges_no_waste` could pass simply
+    /// because nothing is ever decided.
+    #[test]
+    fn shallow_chain_is_decided_by_the_shallow_level() {
+        let internal = build_disjunction_chain(SHALLOW_N);
+        let (v, (decided, _, _)) = with_tid(true, None, || probe(&internal, "A0", "Y", 20));
+        assert_eq!(
+            v,
+            Some(false),
+            "a SHALLOW_N-deep chain must be refuted (A0 ⊑ Y)"
+        );
+        assert!(decided >= 1, "depth 8 must decide a SHALLOW_N-deep chain");
+    }
+
+    /// **Control.** The flag is OFF by default and only `=1` enables it — the
+    /// house default-OFF idiom. An empty value must NOT enable (that is the
+    /// default-ON idiom, and confusing the two is how a default gets flipped by
+    /// accident).
+    #[test]
+    #[allow(unsafe_code)]
+    fn flag_defaults_off_and_only_1_enables() {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_TABLEAU_ITERATIVE_DEEPENING");
+        // SAFETY: serialised by `test_env_lock`; restored below.
+        unsafe { std::env::remove_var("RUSTDL_TABLEAU_ITERATIVE_DEEPENING") };
+        assert!(!tableau_iterative_deepening_enabled(), "unset ⇒ OFF");
+        for (v, want) in [("1", true), ("0", false), ("", false), ("yes", false)] {
+            unsafe { std::env::set_var("RUSTDL_TABLEAU_ITERATIVE_DEEPENING", v) };
+            assert_eq!(tableau_iterative_deepening_enabled(), want, "value {v:?}");
+        }
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("RUSTDL_TABLEAU_ITERATIVE_DEEPENING", v),
+                None => std::env::remove_var("RUSTDL_TABLEAU_ITERATIVE_DEEPENING"),
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- the loop
+
+    /// The loop deepens past a `DepthLimit` shallow level and returns the
+    /// deeper level's definite verdict.
+    #[test]
+    fn deepens_past_a_depth_limited_shallow_level() {
+        let internal = build_disjunction_chain(DEEP_N);
+        let (v, _) = with_tid(true, None, || probe(&internal, "A0", "Y", 20));
+        assert_eq!(
+            v,
+            Some(false),
+            "the deep chain must be refuted by a deeper level"
+        );
+    }
+
+    /// **The superset property at unit scale, and the pin on REUSING ONE
+    /// CONTEXT across levels.** Flag ON must agree with flag OFF on both an
+    /// entailed and a non-entailed probe. Flag OFF builds a fresh context and
+    /// runs ONE search at `MAX_SEARCH_DEPTH`; flag ON reuses one context across
+    /// three levels. A disagreement here means the reused context is not the
+    /// deterministic closure of the root — i.e. that `search::branch`'s rollback
+    /// left residue — which would be a correctness bug, not a slow path.
+    #[test]
+    fn on_agrees_with_off_on_entailed_and_non_entailed_probes() {
+        let entailed = build_disjunction_chain(DEEP_N);
+        let (off_e, _) = with_tid(false, None, || probe(&entailed, "A0", "Y", 20_000));
+        let (on_e, _) = with_tid(true, None, || probe(&entailed, "A0", "Y", 20_000));
+        assert_eq!(
+            off_e,
+            Some(false),
+            "control: OFF refutes the entailed probe"
+        );
+        assert_eq!(on_e, off_e, "ON must not lose the entailed probe");
+
+        // Non-entailed: `A0 ⊑ K` holds but `K ⊑ Y` does not, so `K ⊓ ¬Y` is
+        // satisfiable and both arms must say so.
+        let (off_n, _) = with_tid(false, None, || probe(&entailed, "K", "Y", 20_000));
+        let (on_n, _) = with_tid(true, None, || probe(&entailed, "K", "Y", 20_000));
+        assert_eq!(off_n, Some(true), "control: OFF finds the model");
+        assert_eq!(on_n, off_n, "ON must not invent a subsumption");
+    }
+
+    /// The schedule is well-formed and its final level is `MAX_SEARCH_DEPTH`
+    /// exactly — so flag-ON's final level is the flag-OFF search verbatim.
+    #[test]
+    fn schedule_final_level_equals_the_fixed_cap() {
+        let s = MAX_SEARCH_DEPTH_SCHEDULE;
+        assert!(s.windows(2).all(|w| w[1] > w[0]), "strictly increasing");
+        assert_eq!(
+            s[s.len() - 1],
+            MAX_SEARCH_DEPTH,
+            "final level must equal the fixed cap"
+        );
+    }
+
+    /// A malformed `RUSTDL_TABLEAU_ID_SCHEDULE` is rejected WHOLESALE rather
+    /// than partially honoured. The `final < MAX_SEARCH_DEPTH` case is the
+    /// soundness-relevant one: honouring it would make the ON path lose
+    /// entailments the OFF path finds.
+    #[test]
+    #[allow(unsafe_code)]
+    fn malformed_schedule_override_is_rejected_wholesale() {
+        let _lock = test_env_lock();
+        let prev = std::env::var_os("RUSTDL_TABLEAU_ID_SCHEDULE");
+        let default = MAX_SEARCH_DEPTH_SCHEDULE.to_vec();
+        for bad in ["", "junk", "8,junk", "32,8", "8,32,64", "0", "8,8"] {
+            // SAFETY: serialised by `test_env_lock`; restored below.
+            unsafe { std::env::set_var("RUSTDL_TABLEAU_ID_SCHEDULE", bad) };
+            assert_eq!(
+                tableau_depth_schedule(),
+                default,
+                "malformed schedule {bad:?} must fall back to the default"
+            );
+        }
+        unsafe { std::env::set_var("RUSTDL_TABLEAU_ID_SCHEDULE", "4,16,256") };
+        assert_eq!(
+            tableau_depth_schedule(),
+            vec![4, 16, 256],
+            "a well-formed override must be honoured"
+        );
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("RUSTDL_TABLEAU_ID_SCHEDULE", v),
+                None => std::env::remove_var("RUSTDL_TABLEAU_ID_SCHEDULE"),
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- shutoff
+
+    /// A probe the shallow level DECIDED charges no waste — it is the thing
+    /// being paid for.
+    #[test]
+    fn a_deciding_probe_charges_no_waste() {
+        let internal = build_disjunction_chain(SHALLOW_N);
+        let (_, (decided, _, waste)) = with_tid(true, None, || probe(&internal, "A0", "Y", 20));
+        assert!(decided >= 1, "control: the shallow level decided");
+        assert_eq!(waste, 0, "a decide must never be charged");
+    }
+
+    /// A probe the shallow level MISSED charges waste, so the accumulator can
+    /// grow at all. With the shallow bound disabled (`=0`) the charge is the
+    /// whole shallow phase, which is > 0 µs for a 12-deep chain.
+    #[test]
+    fn a_non_deciding_probe_charges_waste() {
+        let internal = build_disjunction_chain(DEEP_N);
+        let (_, (_, missed, waste)) = with_tid(true, None, || probe(&internal, "A0", "Y", 20));
+        assert!(missed >= 1, "control: the shallow level missed");
+        assert!(waste > 0, "a miss must be charged, got {waste} us");
+    }
+
+    /// A LATCHED accumulator skips the shallow phase entirely: neither counter
+    /// moves, because a skipped probe has nothing to observe. That is also what
+    /// makes the latch self-sustaining without a second flag.
+    #[test]
+    fn a_latched_accumulator_skips_the_shallow_phase() {
+        let internal = build_disjunction_chain(DEEP_N);
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("fixture prepares");
+        let (s, p) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let build = move |pool: &mut ConceptPool| {
+            let sc = pool.atomic(s);
+            let pc = pool.atomic(p);
+            let np = pool.not(pc);
+            pool.and(vec![sc, np])
+        };
+        let v = with_tid(true, Some("1"), || {
+            // 1 ms budget, accumulator pre-loaded far past it ⇒ latched.
+            prepared.tableau_id.set_waste_us(10_000_000);
+            let dl = std::time::Instant::now() + Duration::from_secs(20);
+            prepared
+                .decide_classify_with_deadline(dl, build)
+                .expect("probe does not error")
+        });
+        let (decided, missed, waste) = prepared.tableau_id.snapshot();
+        assert_eq!(
+            v,
+            Some(false),
+            "a skipped shallow phase must not lose the verdict"
+        );
+        assert_eq!(decided, 0, "latched ⇒ no shallow observation");
+        assert_eq!(missed, 0, "latched ⇒ no shallow observation");
+        assert_eq!(waste, 10_000_000, "latched ⇒ the accumulator does not grow");
+    }
+
+    /// The shutoff **cannot change a verdict**: latched and unlatched agree on
+    /// an entailed probe AND on a non-entailed one. Verified rather than
+    /// asserted — the latched path runs only the final level, at a cap
+    /// `>= MAX_SEARCH_DEPTH` under the caller's own deadline.
+    #[test]
+    fn shutoff_cannot_change_a_verdict() {
+        let internal = build_disjunction_chain(DEEP_N);
+        for (sub, sup, want) in [("A0", "Y", Some(false)), ("K", "Y", Some(true))] {
+            let unlatched = with_tid(true, None, || probe(&internal, sub, sup, 20).0);
+            let latched = with_tid(true, Some("1"), || {
+                let prepared = PreparedOntology::from_internal(internal.clone()).expect("prepares");
+                prepared.tableau_id.set_waste_us(10_000_000);
+                let (s, p) = (class_id(&internal, sub), class_id(&internal, sup));
+                let build = move |pool: &mut ConceptPool| {
+                    let sc = pool.atomic(s);
+                    let pc = pool.atomic(p);
+                    let np = pool.not(pc);
+                    pool.and(vec![sc, np])
+                };
+                let dl = std::time::Instant::now() + Duration::from_secs(20);
+                prepared
+                    .decide_classify_with_deadline(dl, build)
+                    .expect("probe does not error")
+            });
+            assert_eq!(unlatched, want, "control: {sub} ⊑ {sup}");
+            assert_eq!(
+                latched, unlatched,
+                "shutoff changed the {sub} ⊑ {sup} verdict"
+            );
+        }
+    }
+
+    /// `RUSTDL_TABLEAU_ID_SHALLOW_WASTE_MS=0` disables the shutoff, so a
+    /// pre-loaded accumulator does NOT latch and the shallow phase still runs.
+    /// Positive control that the knob gates the code it documents.
+    #[test]
+    fn waste_budget_zero_disables_the_shutoff() {
+        let internal = build_disjunction_chain(DEEP_N);
+        let prepared = PreparedOntology::from_internal(internal.clone()).expect("fixture prepares");
+        let (s, p) = (class_id(&internal, "A0"), class_id(&internal, "Y"));
+        let build = move |pool: &mut ConceptPool| {
+            let sc = pool.atomic(s);
+            let pc = pool.atomic(p);
+            let np = pool.not(pc);
+            pool.and(vec![sc, np])
+        };
+        with_tid(true, Some("0"), || {
+            prepared.tableau_id.set_waste_us(10_000_000);
+            let dl = std::time::Instant::now() + Duration::from_secs(20);
+            let _ = prepared.decide_classify_with_deadline(dl, build);
+        });
+        let (_, missed, _) = prepared.tableau_id.snapshot();
+        assert!(
+            missed >= 1,
+            "with the shutoff disabled the shallow phase must still run"
+        );
+    }
+
+    /// Env garbage falls back to the DEFAULT, never to `0`. `0` silently
+    /// disables the bound / the shutoff, which is how the `ore_ont_13991`-class
+    /// per-pair-tax regression gets reintroduced.
+    #[test]
+    #[allow(unsafe_code)]
+    fn env_garbage_falls_back_to_the_defaults() {
+        let _lock = test_env_lock();
+        let keys = [
+            "RUSTDL_TABLEAU_ID_SHALLOW_MS",
+            "RUSTDL_TABLEAU_ID_SHALLOW_WASTE_MS",
+        ];
+        let prev: Vec<_> = keys.iter().map(std::env::var_os).collect();
+        for bad in ["", "junk", "5ms", "-1"] {
+            // SAFETY: serialised by `test_env_lock`; restored below.
+            unsafe {
+                std::env::set_var(keys[0], bad);
+                std::env::set_var(keys[1], bad);
+            }
+            assert_eq!(
+                tableau_id_shallow_budget_ms(),
+                TABLEAU_ID_SHALLOW_BUDGET_MS,
+                "shallow budget {bad:?} must fall back to the default, not 0"
+            );
+            assert_eq!(
+                tableau_id_shallow_waste_budget_ms(),
+                TABLEAU_ID_SHALLOW_WASTE_BUDGET_MS,
+                "waste budget {bad:?} must fall back to the default, not 0"
+            );
+        }
+        for (k, v) in keys.iter().zip(prev) {
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    /// Clearing the sticky deadline flag is what keeps the final level's
+    /// depth-cap `DepthLimit` distinguishable from a deadline cut. Pinned on
+    /// `TableauContext` directly, because the two map to DIFFERENT reasoner
+    /// results (`Err(NoVerdict)` vs `Ok(None)`) and one caller propagates the
+    /// `Err` with `?`.
+    #[test]
+    fn clearing_the_sticky_deadline_flag_works() {
+        let internal = build_disjunction_chain(SHALLOW_N);
+        let prepared = PreparedOntology::from_internal(internal).expect("fixture prepares");
+        let mut ctx = owl_dl_tableau::TableauContext::with_tbox_and_hierarchy(
+            &prepared.pool,
+            &prepared.tbox,
+            &prepared.hierarchy,
+        );
+        let past = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("an instant one second in the past exists");
+        ctx.set_deadline(past);
+        assert!(ctx.check_deadline(), "an elapsed deadline must be observed");
+        assert!(ctx.deadline_reached(), "and must be sticky");
+        ctx.clear_deadline_hit();
+        assert!(!ctx.deadline_reached(), "clear must reset the sticky flag");
     }
 }

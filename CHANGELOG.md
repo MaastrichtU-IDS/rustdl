@@ -83,6 +83,102 @@ the profile-independent replacement is
 `default_budget_still_detects_small_abox_inconsistency`, a small functional-role
 `ABox` clash detected under the shipped default.
 
+## [0.4.13] — 2026-08-03
+
+Two correctness levers taken off the shelf, one fragile constant made adaptive, and a
+well-evidenced NO-GO. FP=0 net 11 VERIFIED closures exact; 1,541 tests.
+
+### Enabled — two DKey levers that were built, gated, and dormant
+
+Both were finished work waiting only on a volume scan, and the scan (1,920 ontologies × 4 arms,
+7,680 runs) says the cost is nil:
+
+- **`RUSTDL_DKEY_EMIT_ORDER`** — fixes a **live, non-monotonic** defect: `∀p.[0,5] ⊓ ∃p.{9}` is
+  unsatisfiable alone, but adding an *unrelated* property that merely mentions the same keys made
+  it satisfiable again. Adding an axiom must never remove an entailment.
+- **`RUSTDL_DKEY_ONEOF_SEED`** — the sixth D10-class bug (a gate certifies completeness while the
+  engine drops the axiom).
+
+Corpus-wide delta: **+1 concept rule and +1 told-disjoint pair**, in one ontology
+(`ore_ont_9303`). Zero over the growth threshold; per-arm conversion timeouts 7/7/7/7 with an
+**identical stem set**, so zero flag-induced. `ore_ont_5368` — the DKey discriminator — reads
+**18,620,251 in all four arms** (`ore_ont_9347` is reported but never judged on: it reads 113
+under both a correct gate and a no-op build). The single mover's verdict is confirmed
+independently by **Konclude** and **HermiT**.
+
+**Honest scope:** `ONEOF_SEED` moving *nothing* corpus-wide means the corpus shows the flip is
+**free**, not that it is **right** — the numeric `DataOneOf` pattern is absent from ORE. The FP=0
+net is non-regression only here, by `datatype_value_membership.rs`'s own admission.
+
+### Fixed — the inconsistency pre-check budget was one constant serving two conflicting needs
+
+The v0.4.11 budget was measured at **~13% headroom**, not the ~50% previously recorded. (That
+figure was a **confounded subtraction** — detecting the inconsistency short-circuits the rest of
+classify, so `with − without` understates the pre-check. Swept directly, `family.ofn`'s detection
+flips between **2600 and 2700 ms** against a 3000 ms default.) A host 15% slower silently lost the
+detection v0.4.11 shipped to provide. Raising the constant would have reintroduced the
+four-ontology DNF regression the budget exists to prevent.
+
+**Both size models were wrong, including the one this release's author proposed.** ABox size does
+not predict cost in *either* direction — `ore_ont_4510` has 114,957 `ObjectPropertyAssertion` and
+costs **136 ms**; `family` has 1,337 and costs **2,585 ms**; `ore_ont_6233` has 176,043
+`ClassAssertion` and costs 17 ms. A global Spearman correlation would also have misled, preferring
+`class_assertions` (+0.863) because it is dominated by sub-millisecond ontologies while the
+decision is entirely about the tail.
+
+What tracks the tail is `work_proxy = OPA × max(chain + transitive roles, 1)` — the only separator
+with a mechanism (closure growth). Rule: `work_proxy ≤ 300_000` gets **12_000 ms**, else **3_000
+ms**, with the threshold inside a **measured empty 40× gap** (`family` 50,806; cheapest expensive
+case 2,047,210) and biased low. The stingy branch is bit-identical to the old flat default, so the
+rule **can only ever raise a budget** — which is why no corpus sweep was required.
+
+`family`'s headroom: **1.16× → 4.6×**, wall unchanged (2.70 → 2.71 s). The four v0.4.11 regressions
+stay byte-identical (5.43 / 8.24 / 4.39 / 4.90 s). 18-ontology ABox spot-check outcome-identical,
+worst case +9.6% (0.98 s).
+
+Two further premises were refuted during the work: "edge multiplication is necessary for expense"
+(held at 409 ontologies, broke at 1,137 — `ore_ont_5368` performs **zero** type/edge additions and
+still costs 5,936 ms, via a second driver: the per-axiom pre-indexing prelude), and the reflex to
+gate on axiom count (the prelude runs **before** the first deadline probe, so its cost is
+budget-independent and gating would have made those cases strictly worse). **Honest residual,
+pre-existing and unchanged: nothing bounds the prelude.**
+
+### NO-GO — iterative deepening does not transplant to the main tableau
+
+`RUSTDL_TABLEAU_ITERATIVE_DEEPENING`, shipped **default OFF** as a documented negative result.
+
+v0.4.12 fixed the *wedge's* fixed depth cap this way. A constant audit then found
+`MAX_SEARCH_DEPTH = 256` in the main tableau binding on **27 of the 33** ontologies that reach the
+tableau, with depth 8 recovering 3 DNFs and making 2 completers **~14× faster with identical rows**.
+The transplant looked obvious. **It is refuted, and the reason is the mechanism, not the code:** at
+depth 8 versus 256 those cases show `tableau=0`, *identical* timed-out-pair counts, and identical
+rows — the entire 14.7× is `unsat_probe` time (30,014 → 562 ms) on probes that reach **no verdict
+at either depth**. The audit's win is **giving up sooner**; deepening is defined not to, and must
+re-run every undecided probe at ≥256.
+
+Measured: **0 of 3 DNFs recovered, 0 of 2 speedups reproduced.** The positive control is what makes
+that trustworthy — 44 and 7 probes entered with **`shallow_decided = 0`**, so the code is live and
+simply decides nothing. Superset check 26/26 byte-identical over a **census** of all 1,920
+ontologies (the driver is reachable on 26, decides on 3) rather than an inert random sample.
+
+**No sweep queued**, deliberately: a sweep bounds population risk when instance evidence is good,
+and here the result is a null on its own addressable set. What the data supports instead is an
+adaptive **early-abandon** — a *completeness* trade (a lower cap loses 4 of 162 pairs on
+`ore_ont_10019`, including `KetoneGroup ⊑ CarbonylGroup`) that must be gated on a MISSED net rather
+than a wall measurement.
+
+### Also
+
+- **Five constants closed by the audit**: `FIXPOINT_ITERS` (the prior "structurally true"
+  reading **refuted** — it *does* bind on 11/368, and halving it breaks a healthy ontology, so it
+  is correctly sized), `DIV_WINDOW` (null — disabling rescues nothing it cuts), `RUSTDL_MAX_NODES`
+  (does not bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), and `label_cache_timeout_ms`
+  (**dead code, zero callers**).
+- **Logged, not fixed:** `MAX_BODY_VARS = 8` may be a silent-MISS source — `ore_ont_10140` needs
+  12, and raising it *adds* entailments, so it is asymmetric and needs an oracle.
+- Doc drift fixed: `dkey_post_nnf_enabled`'s header claimed "Default OFF" while the code has been
+  default-ON since 0.4.8.
+
 ## [0.4.12] — 2026-08-02
 
 **Iterative deepening for the wedge search, default ON.** `HYPER_WEDGE_DEPTH = 256` was a fixed

@@ -4726,6 +4726,7 @@ pub fn residual_absorbability_stats<A: horned_owl::model::ForIRI>(
     Ok(owl_dl_core::residual_absorbability::census(
         &tbox,
         &internal.concepts,
+        Some(&internal.vocabulary),
     ))
 }
 

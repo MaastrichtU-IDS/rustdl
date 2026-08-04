@@ -1750,7 +1750,7 @@ fn main() -> Result<()> {
                 // qualified genuinely concept_rules concept_rule_or
                 // concept_rule_or_with_extra_not_atomic
                 println!(
-                    "tsv:\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "tsv:\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     file.file_stem().unwrap_or_default().to_string_lossy(),
                     s.residual_gcis,
                     s.domain_absorbable,
@@ -1762,6 +1762,13 @@ fn main() -> Result<()> {
                     s.concept_rules,
                     s.concept_rule_or,
                     s.concept_rule_or_with_extra_not_atomic,
+                    s.concept_rule_or_guard_manufacturable,
+                    s.concept_rule_or_guard_manufacturable_card_ge2_only,
+                    s.concept_rule_or_guard_manufacturable_complex_only,
+                    s.concept_rule_or_guard_manufacturable_synthetic_only,
+                    s.distinct_shared_triggers,
+                    s.shared_triggers_ge5,
+                    s.max_disjunctive_rules_per_trigger,
                 );
             } else {
                 println!("# residual_gcis:                {}", s.residual_gcis);
@@ -1794,6 +1801,43 @@ fn main() -> Result<()> {
                 println!(
                     "#   ..with extra ¬Atomic:       {}  (binary-absorption candidates)",
                     s.concept_rule_or_with_extra_not_atomic
+                );
+                println!(
+                    "#   ..guard_mfg tierA:          {}  (∃r.F / ≥1 r.F, F named atomic)",
+                    s.concept_rule_or_guard_manufacturable
+                );
+                println!(
+                    "#   ..guard_mfg tierB only:     {}  (≥k r.F, k≥2, F named atomic)",
+                    s.concept_rule_or_guard_manufacturable_card_ge2_only
+                );
+                println!(
+                    "#   ..guard_mfg tierC only:     {}  (complex filler — recursive minting)",
+                    s.concept_rule_or_guard_manufacturable_complex_only
+                );
+                println!(
+                    "#   ..synthetic filler only:    {}",
+                    s.concept_rule_or_guard_manufacturable_synthetic_only
+                );
+                println!(
+                    "#   ..guard_mfg any tier:       {}",
+                    s.guard_manufacturable_any_tier()
+                );
+                println!(
+                    "# all_or_manufacturable tierA:  {}",
+                    s.all_or_rules_guard_manufacturable()
+                );
+                println!(
+                    "# all_or_manufacturable any:    {}",
+                    s.all_or_rules_guard_manufacturable_any_tier()
+                );
+                println!(
+                    "# distinct_shared_triggers:     {}  (≥2 disjunctive rules)",
+                    s.distinct_shared_triggers
+                );
+                println!("#   ..with ≥5:                  {}", s.shared_triggers_ge5);
+                println!(
+                    "# max_rules_per_trigger:        {}",
+                    s.max_disjunctive_rules_per_trigger
                 );
             }
         }

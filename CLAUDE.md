@@ -1416,6 +1416,19 @@ both.** v0.4.14's early-abandon passed ΔMISSED = 0 *and* a 1,920-ontology two-a
 recoveries, 0 regressions, −5.5%).
 
 **Method notes that earned their place** (each cost a retraction to learn):
+- **`classify --pair-timeout-ms 1` IS THE ADDRESSABILITY PRE-CHECK for any per-pair-search lever, and
+  it costs ~20 minutes.** It caps to ~zero exactly the phase such a lever improves, so an ontology
+  that **still DNFs under it cannot be rescued by any amount of branch reduction** — its stall is
+  elsewhere (`label_cache_build`, `saturate`, `prepare`). Run it on the candidate targets **before
+  planning**, with the phase breakdown, so you know which phase holds the wall. This single check
+  independently killed two consecutive absorption plans on 2026-08-04 (**6 of 9 targets DNF at 60 s
+  with per-pair search eliminated**), each of which had been justified on a *static* count of
+  absorbed-TBox shapes. **A shape census sizes a population; it does not predict a rescue.**
+  Corollary, measured the same day: the guard-manufacturable predicate holds on 77.5% of
+  peer-solvable ontologies **and 69.2% of peer-unsolvable ones**, and those with *nothing*
+  manufacturable are the ones peers do **fastest** (median 1.68 s vs 6.14 s) — **a shape predicate can
+  be anti-correlated with the tractability you are selecting for.** Cross-reference every target list
+  against the peer triage first; one plan named an ontology **no peer can classify** as a target.
 - **A single instance beats a population statistic on this tail.** Three population studies here
   were retracted or bounded; both of the largest wins came from reading one failing ontology.
 - **A controlled deletion is only controlled if the intervention changed ONE thing.** A "300×"

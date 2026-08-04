@@ -1392,6 +1392,29 @@ clause is itself disjunctive. `RUSTDL_WIDE_BODY_VARS` ships **default OFF** as a
 result; the tracing is what makes this shape observable at all. See
 `docs/2026-08-03-max-body-vars.md`.
 
+**A corpus-scale MISSED net now exists** — `owl-reasoner-harness/scripts/missed-net.*`. Reach for it
+whenever a change trades completeness for speed; every other gate here is **FP-shaped**
+(`run-soundness-diff.sh`) or **outcome-shaped** (a sweep counts `dnf → ok`) and cannot see a lost
+entailment. Baseline (v0.4.13): **MISSED = 5,198**, **FP = 0** over a 400-ontology seeded stratified
+population against a Konclude ∪ HermiT oracle; a later arm costs **~10 minutes**.
+
+Three usage notes, each of which cost something to learn:
+- **Stratify on `label … pass_through > 0`, NOT on `tableau > 0`.** The latter holds on **2 of 546**
+  completers, because the label heuristic prunes 96–100% — selecting on the intuitive proxy would
+  build a 2-row stratum and a net **vacuous for its primary purpose**.
+- **Where Konclude and HermiT disagree, EXCLUDE the ontology rather than picking a side.** A
+  contested oracle is not an oracle. Konclude is documented to under-report (three instances now:
+  `ore_ont_10407`, `9540`, `15682`).
+- **Prove the net's sensitivity before trusting a zero.** A net reporting 0 for everything is
+  indistinguishable from a broken net. The shipped one is validated by a pre-registered arm
+  (1 ms per-pair ⇒ ΔMISSED +80, all 13 losers search-exercised, 0 in fast-path rows).
+
+**The MISSED net does NOT replace a corpus sweep for a default flip.** Its frame is drawn from
+*completers*, so it structurally cannot observe an `ok → dnf` in the DNF tail — precisely the failure
+a 12-ontology benchmark missed in v0.4.8, which took four ontologies from ~5 s to DNF. **A flip needs
+both.** v0.4.14's early-abandon passed ΔMISSED = 0 *and* a 1,920-ontology two-arm sweep (6
+recoveries, 0 regressions, −5.5%).
+
 **Method notes that earned their place** (each cost a retraction to learn):
 - **A single instance beats a population statistic on this tail.** Three population studies here
   were retracted or bounded; both of the largest wins came from reading one failing ontology.

@@ -1,8 +1,46 @@
 # Absorption cannot help `ore_ont_10019`: every conjunctive definition needs a non-atomic conjunct decided
 
+> # ⚠️ TITLE AND CENTRAL INFERENCE CORRECTED, SAME DAY. THE MEASUREMENTS BELOW STAND; THE CONCLUSION DOES NOT.
+>
+> Binary absorption is **not** blocked on this ontology. It is the **single sufficient mechanism** —
+> established by reading Konclude's own absorbed TBox and by ablating its optimisations
+> (`docs/2026-08-04-konclude-cardinality-mechanism.md`).
+>
+> **What I got right:** `..with extra ¬Atomic: 0`, and 0 of 26 heads atomic-only. Both reproduce.
+>
+> **What I got wrong:** that counter counts only second guards that are *atomic conjuncts already
+> written in the definition*. **Konclude's second guard is a freshly minted surrogate propagated
+> backward along the role**, obtained from a cardinality conjunct by using only its `≥1`
+> consequence — `OxygenAtom ⊑ ∀hDBW.T₁`, `Alkyl ⊑ ∀hSBW.T₂`, `T₁ ⊓ T₂ → T₃`,
+> `CarbonAtom ⊓ T₃ → head`. That yields a second guard for **26 of 26** heads. I measured the
+> supply of *pre-existing* guards and concluded none could exist, when the mechanism **manufactures**
+> them. Consequences: the corpus census figures below (285 pool / 65 survivors) are an
+> **under-count of the addressable population**, and "no third variation on atomic absorption can
+> work either" is false.
+>
+> **The §"What 'decided' costs, per engine" analysis is also wrong in its pricing.** It prices
+> `∃`-conjunct bodies as needing a new edge-join rule kind — "a substantial engine change".
+> Konclude shows **`∀r.surrogate` propagation *is* the edge join**, and that is precisely the shape
+> rustdl's existing `RoleRule` already has. The remaining gap is (i) a multi-guard `ConceptRule` —
+> a **label lookup**, not a join, and exactly the `absorb.rs:45` "Phase 4 refinement" — and
+> (ii) emitting `F ⊑ ∀r⁻.T` per `∃r.F` / `≥n r.F` conjunct.
+>
+> **The one claim that survives fully:** the *cardinality* reverse derivation (deriving `≤n r.C`
+> holds at a node) is genuinely hard — and Konclude never attempts it, keeping the `≤n` disjuncts
+> in the head. So it was never on the critical path for this ontology. KM *does* attempt it
+> (`card_recog_step`, a deterministic counting rule at a saturated model), which is a separate,
+> stronger, and riskier lever.
+>
+> **The prioritisation argument also survives**: this ontology's unique remaining prize is one
+> subsumption, so a build must still be justified on a population, not on `ore_ont_10019`.
+>
+> **Method note this cost:** I inferred an impossibility from the *absence* of an input, without
+> checking whether the mechanism generates its own input. Peer behaviour was available to measure
+> the whole time — the reference implementation dumps its absorbed TBox on request.
+
 **Date:** 2026-08-04
-**Status:** measured negative. Supersedes the retracted plan
-`docs/superpowers/plans/2026-08-04-definitorial-absorption.md`.
+**Status:** measurements valid; conclusion superseded — see the banner above and
+`docs/2026-08-04-konclude-cardinality-mechanism.md`.
 **Reviews that produced it:** `docs/reviews-2026-08-04/R1-technical.md` (NO-GO),
 `docs/reviews-2026-08-04/R2-value.md` (DON'T DO IT).
 

@@ -235,7 +235,7 @@ pub struct TableauContext<'pool, 'tbox, 'hier> {
     #[cfg(feature = "counters")]
     counters: crate::counters::RuleCounters,
     /// Adaptive early-abandon accounting for the **main tableau** search
-    /// (`RUSTDL_TABLEAU_EARLY_ABANDON`, default OFF — the reasoner facade owns
+    /// (`RUSTDL_TABLEAU_EARLY_ABANDON`, default ON since 0.4.14 — the reasoner facade owns
     /// the flag and calls [`Self::enable_early_abandon`]). `None` ⇒ every hook is
     /// one `Option` discriminant test and the search behaves exactly as before,
     /// so the flag-OFF path is byte-identical by construction.

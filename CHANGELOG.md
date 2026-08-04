@@ -83,6 +83,84 @@ the profile-independent replacement is
 `default_budget_still_detects_small_abox_inconsistency`, a small functional-role
 `ABox` clash detected under the shipped default.
 
+## [0.4.14] — 2026-08-04
+
+**Adaptive early-abandon in the main tableau, default ON** — plus the measurement capability that
+made it decidable. `RUSTDL_TABLEAU_EARLY_ABANDON=0` reverts.
+
+### The lever, and why it was blocked until now
+
+`MAX_SEARCH_DEPTH = 256` binds on **27 of the 33** ontologies that reach the main tableau, with zero
+headroom on every one. Lowering it recovers DNFs and gives large speedups — but **loses pairs** (4 of
+162 on `ore_ont_10019`), and iterative deepening was already **refuted** here: at depth 8 versus 256
+the speedup cases show `tableau=0` and identical rows, because the entire gain is on probes that
+reach **no verdict at either depth**. The win is *giving up sooner*, and deepening is defined not to.
+
+So the right shape is an adaptive early-abandon — a **completeness/performance trade**, which this
+project had **no way to price**. Every gate here is FP-shaped (`run-soundness-diff.sh`) or
+outcome-shaped (a sweep counts `dnf → ok`). Nothing measured *entailments lost across the corpus*.
+
+### Added — a corpus-scale MISSED net (`owl-reasoner-harness`)
+
+Per-ontology MISSED against a **Konclude ∪ HermiT** oracle over a 400-ontology seeded, stratified
+population (**189, or 47%, exercise a per-pair search**), with a committed v0.4.13 baseline of
+**MISSED = 5,198** over 60 of 393 scored and **FP = 0 on all 393** against a 14.0M-pair union.
+Where the two peers disagree the ontology is **excluded, not adjudicated** — a contested oracle is
+not an oracle (1 case: `ore_ont_15682`, Konclude under-reporting, the third instance of that
+pattern). A later arm costs **~10 minutes**.
+
+**Its sensitivity is proven, not assumed.** A prediction was committed *before* the validating arm
+ran: a 1 ms per-pair budget must give ΔMISSED > 0, concentrated in search-exercised rows, FP still 0.
+Result: **+80 pairs over 13 ontologies, 13/13 search-exercised, 0 losses in the 140 fast-path rows,
+FP 0** — direction, magnitude and location all as predicted. A net that reports zero for everything
+is indistinguishable from a broken one.
+
+Selection note worth keeping: `tableau > 0` would have been the **wrong** stratifying predicate — it
+holds on **2 of 546** completers, because the label heuristic prunes 96–100%. The binding counter is
+`label … pass_through > 0`. Choosing the intuitive proxy would have produced a net vacuous for its
+primary purpose.
+
+### The trade, priced
+
+| | |
+|---|---|
+| **ΔMISSED vs the 5,198 baseline** | **0** (0 ontologies lost pairs, 0 gained) |
+| FP | **0**; 400/400 closures byte-identical |
+| corpus sweep, 1,920 ontologies, two arms | **6 recoveries, 0 regressions, 14 faster, 0 slower, −5.5% aggregate** |
+
+Recoveries: `ore_ont_3281`, `3250`, `904`, `7204`, `9800`, `14351`. Speedups include `ore_ont_13545`
+46.31 → 11.88 s and `ore_ont_2826` 7.31 → 4.85 s, both with **identical closures**. The new closures
+are FP=0 **and** MISSED=0 against both Konclude and HermiT.
+
+**Both gates were required.** The corpus sweep is not redundant with the MISSED net: the net's frame
+is drawn from **completers** and structurally cannot observe an `ok → dnf` in the DNF tail — which is
+exactly the failure mode a 12-ontology benchmark missed in v0.4.8, taking four ontologies from ~5 s
+to DNF.
+
+### Design notes
+
+The criterion abandons a probe once it has bottomed out at `MAX_SEARCH_DEPTH` **32 times in total**,
+latched, returning `Ok(None)` exactly like a deadline cut or `NodeCap` — so it can only **suppress**
+an `Unsat`, never manufacture one. A bottom-out means the frame above cannot return
+`Unsat(combined)`, and "needs more depth" is already refuted (`ore_ont_10019` wants 459–460 and still
+DNFs at cap 2048).
+
+**The obvious criterion was built first and refuted by its own calibration.** An `is_diverging`-style
+run of cap hits reset by progress fails because the doomed probes are locally *productive* throughout
+— `ore_ont_2826` makes 229 definite decisions in 1,074 trials with a longest run of **2**.
+
+`ore_ont_3281` is why this is adaptive rather than a retuned constant: it recovers here
+(DNF → 20.1 s) and is the ontology a *fixed lower* cap makes two orders of magnitude **worse**.
+
+Sabotage: 10 run, 8 caught, **2 survivors recorded as uncaught** rather than explained away; two
+earlier survivors forced new canaries, one catching the criterion being silently reverted to the
+refuted form. Two fixture traps were found by the controls (the `⊔`-rule literal prune and
+`ConceptPool::or` flattening each made the naive fixture depth-free).
+
+### Gates
+
+FP=0 net **11 VERIFIED, closures exact**; **1,565 tests**; fmt and clippy clean.
+
 ## [0.4.13] — 2026-08-03
 
 Two correctness levers taken off the shelf, one fragile constant made adaptive, and a

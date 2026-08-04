@@ -4923,7 +4923,14 @@ pub(crate) fn tableau_iterative_deepening_enabled() -> bool {
 /// only turn a would-be `Unsat` into a non-verdict, never the reverse.
 #[must_use]
 pub(crate) fn tableau_early_abandon_enabled() -> bool {
-    std::env::var_os("RUSTDL_TABLEAU_EARLY_ABANDON").is_some_and(|v| v == "1")
+    // DEFAULT ON since 0.4.14 (`=0` reverts). Gated on the two measurements its
+    // decision rule demanded, both taken before the flip: the MISSED net shows
+    // **ΔMISSED = 0** against the 5,198 baseline with FP=0 and 400/400 closures
+    // byte-identical, and a full 1,920-ontology two-arm sweep shows **6 recoveries,
+    // 0 regressions, 14 faster / 0 slower, −5.5% aggregate**. The corpus sweep is
+    // not redundant with the net: the net's frame is drawn from COMPLETERS and
+    // structurally cannot observe an `ok → dnf` in the DNF tail.
+    std::env::var_os("RUSTDL_TABLEAU_EARLY_ABANDON").is_none_or(|v| v != "0")
 }
 
 /// Depth-cap bottom-outs after which a main-tableau probe is abandoned.
@@ -7528,7 +7535,7 @@ where
     // than an artificial recursion limit — the issue-#35 hang was this cap
     // cutting a blocking-bounded-but-deep branch and destroying back-jumping.
     let outcome = if let Some(dl) = deadline {
-        // Adaptive early-abandon (RUSTDL_TABLEAU_EARLY_ABANDON, default OFF).
+        // Adaptive early-abandon (RUSTDL_TABLEAU_EARLY_ABANDON, default ON since 0.4.14).
         // Armed only on the DEADLINE-BOUNDED arm — that is the one and only path
         // `MAX_SEARCH_DEPTH` is reachable from, so arming the deep arm would be
         // dead code that nonetheless changed a `search`-entry predicate.
@@ -11520,19 +11527,30 @@ mod tableau_early_abandon_tests {
     /// accident).
     #[test]
     #[allow(unsafe_code)]
-    fn flag_defaults_off_and_only_1_enables() {
+    fn flag_defaults_on_and_only_0_reverts() {
         let _lock = test_env_lock();
         let k = "RUSTDL_TABLEAU_EARLY_ABANDON";
         let prev = std::env::var_os(k);
         // SAFETY: serialised by `test_env_lock`; restored below.
         unsafe { std::env::remove_var(k) };
-        assert!(!tableau_early_abandon_enabled(), "unset ⇒ OFF");
-        for v in ["", "0", "2", "true", "yes", "on"] {
+        // DEFAULT ON since 0.4.14. Both halves are pinned deliberately: an unset
+        // variable must ENABLE, and `=0` must still REVERT. The opt-out matters as
+        // much as the default — it is the only way back from a change that alters
+        // search behaviour on every tableau-exercised ontology.
+        assert!(tableau_early_abandon_enabled(), "unset ⇒ ON since 0.4.14");
+        unsafe { std::env::set_var(k, "0") };
+        assert!(!tableau_early_abandon_enabled(), "\"0\" must revert");
+        // Empty ENABLES, matching the seven other default-ON flags in this
+        // workspace (`is_none_or(|v| v != "0")`): for this polarity only an
+        // explicit `=0` is the opt-out, so `VAR=$UNSET_VAR` cannot silently
+        // revert the change.
+        for v in ["", "1", "2", "true", "yes", "on"] {
             unsafe { std::env::set_var(k, v) };
-            assert!(!tableau_early_abandon_enabled(), "{v:?} must NOT enable");
+            assert!(
+                tableau_early_abandon_enabled(),
+                "{v:?} must enable (only 0 reverts)"
+            );
         }
-        unsafe { std::env::set_var(k, "1") };
-        assert!(tableau_early_abandon_enabled(), "\"1\" enables");
         unsafe {
             match prev {
                 Some(v) => std::env::set_var(k, v),

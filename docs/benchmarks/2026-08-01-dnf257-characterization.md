@@ -7,6 +7,46 @@
 > is final. One validation of the *rustdl* half is still running and is called out in
 > § Threats.
 
+> # ⚠️ SUPERSEDED 2026-08-04 — the population is now 151, not 257, and the partition has been re-measured.
+>
+> This document's numbers are correct **for v0.4.6** and remain the reference for that binary. Eight
+> releases later, on **v0.4.14**, the same 199-survivor list re-measured at the same 120 s cap gives
+> **48 newly complete** (median 17.6 s) and a tail of **151** — a strict **subset** of these 257,
+> with **zero new entrants**, so it is the identical population re-measured rather than an
+> approximate comparison.
+>
+> | | 08-01 (v0.4.6) | 08-04 (v0.4.14) |
+> |---|---:|---:|
+> | tail | 257 | **151** |
+> | Set A (≥1 peer classifies) | 242 (**94.2%**) | **138 (91.4%)** |
+> | Set B (no peer) | 15 (5.8%) | **13 (8.6%)** |
+>
+> **The peer-solvable fraction went DOWN and Set B's share rose — rustdl has been harvesting the
+> ontologies that were easier for peers too.** Of the 106 recovered, **104 (98.1%) were Set A**, and
+> on the 08-01 data Konclude's median was 3.08 s on the recovered versus 5.06 s on the survivors.
+> The enrichment is nonetheless **mild**: ~91% of the residual is still demonstrably tractable, so
+> this does **not** revive the "intrinsic SROIQ hardness" framing — the gap stays overwhelmingly
+> algorithmic while the per-ontology price rises (median target 3.47 s → 4.42 s).
+>
+> **New structural fact this document could not have seen:** HermiT's 63 and KM's 38 are strict
+> **subsets** of Konclude's 138; their union **is** Konclude's set exactly, with **zero peer-only
+> solves**. The three reasoners are *nested* on this population, not complementary — one peer
+> determines the whole partition. Konclude: median 5.11 s, 94 of 138 under 10 s, **39 under 1 s**,
+> **41 at ≥120×**. Verdicts are not run-to-run noise (Konclude 151/151 and KM 151/151 identical
+> on re-run; HermiT 148/151, its 3 flips at the cap boundary and partition-irrelevant).
+>
+> Two self-contained clusters were also isolated: **three tail members are simply INCONSISTENT**
+> (`ore_ont_16372`/`4141`/`8445` — Konclude finds `owl:Thing` unsat in 0.14–2.55 s while rustdl DNFs
+> at 120 s, matching the documented `RUSTDL_CLASSIFY_INCONSISTENCY` under-approximation residual),
+> and **two are ~140 k-class ontologies with a genuinely flat hierarchy** (`16744`/`8737`: 0 of
+> 142,884 and 0 of 136,612 `SubClassOf` axioms have a non-`Thing` superclass) — scale, not reasoning.
+>
+> The § "Next" item *"Phase 2 clustering of the survivors — tooling built, blocked on the
+> re-measure"* is now **unblocked**. Current data:
+> `docs/2026-08-04-tail151-peer-triage.md`; tail list
+> `owl-reasoner-harness/baselines/2026-08-04-tail-v0414-list.txt`; ranked targets
+> `…/2026-08-04-setA-138-ranked.txt`.
+
 ---
 
 ## 1. What was measured, and against what

@@ -1,6 +1,7 @@
 # Functionality is not propagated across a declared `InverseObjectProperties` pair
 
-**Found:** 2026-08-05 · **Status:** open, unfixed · **Severity:** wrong `consistent` verdict
+**Found:** 2026-08-05 · **Status:** **PARTIALLY FIXED** behind `RUSTDL_INVERSE_PAIR_FUNC`
+(default OFF) · **Severity:** wrong `consistent` verdict
 **Oracle:** Konclude 0.7.0 **and** HermiT 1.4.3, independently
 **Fixtures:** `crates/owl-dl-reasoner/tests/fixtures/inverse_functional_derivation/`
 
@@ -93,7 +94,64 @@ superset of a true minimal core.
 (BioCaster, 16 `FunctionalObjectProperty` + 32 `FunctionalDataProperty`) and very likely the same
 mechanism, but that is **not** yet verified.
 
-## Suggested fix, and the gate it needs
+## What was built, and what it does NOT fix
+
+`derive_inverse_pair_functionality` in `owl-dl-core/src/convert.rs`, behind
+`RUSTDL_INVERSE_PAIR_FUNC` (**default OFF**), runs at conversion time — **not** in
+`expand_role_characteristics`, because `build_abox_check_inputs` clones `axioms` at
+`lib.rs:5948` *before* calling that pass at `:5949`, so a derivation placed there would
+be invisible to `abox_check`, the one consumer that needs it. It runs before
+`derive_functional_max_cardinality` so a newly-functional role also gets that pass's
+`∃R.⊤ ⊑ ≤1 R` enforcement GCI.
+
+| fixture | flag OFF | flag ON |
+|---|---|---|
+| `a-derived-inverse-functional` | consistent ✗ | **inconsistent ✓** |
+| `f-derived-functional` (reverse direction) | consistent ✗ | **inconsistent ✓** |
+| `g-chained-needs-fixpoint` (two-link chain) | consistent ✗ | **inconsistent ✓** |
+| `d-direct-functional-CONTROL` | inconsistent ✓ | inconsistent ✓ |
+| `e-declared-inverse-functional-CONTROL` | inconsistent ✓ | inconsistent ✓ |
+| **`ore_ont_4141-7axiom-core`** | consistent ✗ | **consistent ✗ — STILL MISSED** |
+
+**The motivating ontology is NOT fixed, and that is the honest headline.** Probes isolate
+why: the real core's clash arrives through a **functional data property** on the merged
+individuals, and `abox_check`'s P5 re-tests only `different_pairs` after a merge — never
+data-value conflicts. Meanwhile the *directly* asserted analogue **is** caught, so the
+merge-plus-data-clash route works when no inverse is involved. Deriving the
+characteristic is therefore necessary but **not sufficient**.
+
+**The second, separable defect** (still open): after a functional/inverse-functional
+merge, the post-merge re-check must revisit functional-**data**-property value conflicts,
+not just `DifferentIndividuals`. Either `abox_check` P5 gains that re-check, or
+`abox_saturation`'s merge learns to honour inverse-functionality (it keys its
+`functional` set `(RoleId, bool)` but populates it only from declared axioms, and its
+own comment at `:254` says *"Only Named roles (not inverse) are stored"*).
+
+## Gates run
+
+- **Canaries:** `crates/owl-dl-reasoner/tests/inverse_pair_functionality.rs`, 6 tests.
+- **Sabotage: 2 of 3 caught, and the survivor is recorded.** Making the derivation
+  one-directional fails `derived_functional_needs_the_flag`; ignoring the flag fails both
+  flag-OFF assertions. **Replacing the fixpoint loop with a single pass leaves everything
+  green** — tried twice, including with the inverse-pair axioms in deliberately adverse
+  source order. So **the fixpoint loop is UNCOVERED and may be redundant**; a future
+  simplifier should not treat these canaries as protection.
+- **FP=0 net with the flag ON:** all present fixtures VERIFIED, every closure exact and
+  unchanged from the reference values (galen 27997, notgalen 32739, sio 8904,
+  ore-10908 6001, pizza 499, alehif 247, ro 158, ore-15672 142, bibtex 16). That is
+  **inertness** on the curated corpus, not evidence of correctness under load — the shape
+  needs an inverse pair *and* a functional role together, which no curated fixture has.
+- **DKey gate discriminators unchanged**, which was the specific perf risk since these
+  axioms feed `merge_inducing`/`collapse` at `convert.rs:3066`/`:3169`:
+  `ore_ont_9347` = 113 and `ore_ont_5368` = 18,620,251 concept rules at **both** flag
+  settings.
+- `cargo fmt` clean; `clippy -D warnings` clean; **1,586 tests pass, 0 fail**.
+
+**Not run, so not claimed:** a full 1,920-ontology two-arm sweep. That is required before
+any default flip, because the change adds role characteristics on every ontology carrying
+an inverse pair beside a functional role, and no MISSED-net arm was run either.
+
+## Original suggested fix, and the gate it needs
 
 A preprocessing derivation over `InverseObjectProperties(R, S)` — symmetric, so apply in both
 directions:

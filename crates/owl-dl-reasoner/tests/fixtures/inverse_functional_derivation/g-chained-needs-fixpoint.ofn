@@ -1,0 +1,9 @@
+Prefix(:=<http://e#>)
+Ontology(<http://e>
+InverseObjectProperties(:q :r)
+InverseObjectProperties(:p :q)
+FunctionalObjectProperty(:p)
+ObjectPropertyAssertion(:r :c :a)
+ObjectPropertyAssertion(:r :c :b)
+DifferentIndividuals(:a :b)
+)

@@ -1,0 +1,16 @@
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+
+Ontology(<http://owl.cs.man.ac.uk/dlapproximated/4e2093b2-cb74-4813-8fd5-4573726d3ff7_er20080420.owl.owl.xml>
+InverseObjectProperties(<http://biocaster.nii.ac.jp/biocaster#hasPart> <http://biocaster.nii.ac.jp/biocaster#partOf>)
+FunctionalObjectProperty(<http://biocaster.nii.ac.jp/biocaster#hasPart>)
+FunctionalDataProperty(<http://biocaster.nii.ac.jp/biocaster#label>)
+ObjectPropertyAssertion(<http://biocaster.nii.ac.jp/biocaster#partOf> <http://biocaster.nii.ac.jp/biocaster#SubCountry_3146> <http://biocaster.nii.ac.jp/biocaster#Country_181>)
+DataPropertyAssertion(<http://biocaster.nii.ac.jp/biocaster#label> <http://biocaster.nii.ac.jp/biocaster#SubCountry_3146> "Évora"^^xsd:string)
+ObjectPropertyAssertion(<http://biocaster.nii.ac.jp/biocaster#partOf> <http://biocaster.nii.ac.jp/biocaster#SubCountry_3147> <http://biocaster.nii.ac.jp/biocaster#Country_181>)
+DataPropertyAssertion(<http://biocaster.nii.ac.jp/biocaster#label> <http://biocaster.nii.ac.jp/biocaster#SubCountry_3147> "Faro"^^xsd:string)
+)

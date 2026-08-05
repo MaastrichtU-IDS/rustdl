@@ -108,6 +108,15 @@ Konclude's inconsistency claim. rustdl **drops** such axioms outright ("unsuppor
 they cannot affect its verdict either. **The actual source of the inconsistency in these two is still
 unidentified** — worth a `diagnose`/ddmin pass, and the 108- and 339-class collapse below is the
 starting point.
+>
+> **RESOLVED 2026-08-05 (later).** A Konclude-oracle delta-debugging pass reduced `ore_ont_4141`
+> from 67,143 axioms to a **7-axiom core**, and the mechanism is now exact: functionality is **not
+> propagated across a declared `InverseObjectProperties` pair**, so an inverse-induced functional
+> merge never fires. Minimal reproducer is 5 axioms; rustdl says `consistent` where Konclude and
+> HermiT both say inconsistent, and two controls (declared `InverseFunctionalObjectProperty`, and
+> the same shape without the inverse) are both decided correctly — so the gap is exactly the
+> inverse step. Full record and fixtures:
+> `docs/known-limitations/inverse-pair-functionality-not-derived.md`.
 
 **Class counts, reproduced and un-withdrawn.** Reading Konclude's hierarchy directly: `owl:Thing` is
 equivalent to `owl:Nothing` in all three, with **745 of 746**, **107 of 108** and **338 of 339**

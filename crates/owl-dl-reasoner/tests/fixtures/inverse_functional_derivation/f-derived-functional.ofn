@@ -1,0 +1,8 @@
+Prefix(:=<http://e#>)
+Ontology(<http://e>
+InverseObjectProperties(:hasPart :partOf)
+InverseFunctionalObjectProperty(:partOf)
+ObjectPropertyAssertion(:hasPart :c :a)
+ObjectPropertyAssertion(:hasPart :c :b)
+DifferentIndividuals(:a :b)
+)

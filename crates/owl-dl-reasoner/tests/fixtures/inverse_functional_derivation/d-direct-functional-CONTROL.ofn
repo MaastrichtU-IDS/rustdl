@@ -1,0 +1,7 @@
+Prefix(:=<http://e#>)
+Ontology(<http://e>
+FunctionalObjectProperty(:hasPart)
+ObjectPropertyAssertion(:hasPart :c :a)
+ObjectPropertyAssertion(:hasPart :c :b)
+DifferentIndividuals(:a :b)
+)

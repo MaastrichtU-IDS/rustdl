@@ -1,0 +1,9 @@
+Prefix(:=<http://e#>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://e>
+InverseObjectProperties(:hasPart :partOf)
+FunctionalObjectProperty(:hasPart)
+ObjectPropertyAssertion(:partOf :a :c)
+ObjectPropertyAssertion(:partOf :b :c)
+DifferentIndividuals(:a :b)
+)

@@ -37,20 +37,21 @@
 >
 > Two self-contained clusters were also isolated: **three tail members are simply INCONSISTENT**
 > (`ore_ont_16372`/`4141`/`8445` — Konclude finds `owl:Thing` unsat in 0.14–2.55 s while rustdl DNFs
-> at 120 s, matching the documented `RUSTDL_CLASSIFY_INCONSISTENCY` under-approximation residual),
->
-> > **AMENDED 2026-08-05 — this cluster does not survive investigation as stated, and the unsat
-> > counts are WITHDRAWN.** Only **one** of the three is oracle-adjudicated: `ore_ont_16372`, where
-> > Konclude's log and HermiT's `InconsistentOntologyException` agree independently (KM disagrees,
-> > producing an ordinary hierarchy). **It is now FIXED** — the domain-absorption flip turned a wrong
-> > `consistent` verdict into the correct `inconsistent` and classify DNF → **2.92 s**, so it is no
-> > longer a tail member at all. The other **two are CONTESTED and excluded**: HermiT gives *no*
-> > verdict on them (`MalformedLiteralException`) and KM classifies them into ordinary 444- and
-> > 1,927-pair hierarchies, so only Konclude claims inconsistency. The per-ontology unsat counts
-> > ("745/107/338") are **withdrawn as unverified** — they could not be reproduced. Full record:
-> > `docs/2026-08-05-inconsistent-tail-members.md`.
+> at 120 s, matching the documented `RUSTDL_CLASSIFY_INCONSISTENCY` under-approximation residual)
 > and **two are ~140 k-class ontologies with a genuinely flat hierarchy** (`16744`/`8737`: 0 of
 > 142,884 and 0 of 136,612 `SubClassOf` axioms have a non-`Thing` superclass) — scale, not reasoning.
+>
+> > **AMENDED 2026-08-05 — the inconsistent cluster does not survive investigation as stated, and its
+> > unsat counts are WITHDRAWN.** Only **one** of the three is oracle-adjudicated: `ore_ont_16372`,
+> > where Konclude's log and HermiT's `InconsistentOntologyException` agree independently (KM
+> > disagrees, producing an ordinary hierarchy). **It is now FIXED** — the domain-absorption flip
+> > turned a wrong `consistent` verdict into the correct `inconsistent`, and classify DNF → **2.92 s**,
+> > so it is no longer a tail member at all. The other **two are CONTESTED and excluded**: HermiT
+> > gives *no* verdict on them (`MalformedLiteralException`) and KM classifies them into ordinary
+> > 444- and 1,927-pair hierarchies, so only Konclude claims inconsistency. The per-ontology unsat
+> > counts ("745/107/338") are **withdrawn as unverified** — they could not be reproduced. The
+> > flat-hierarchy pair is unaffected by this amendment. Full record:
+> > `docs/2026-08-05-inconsistent-tail-members.md`.
 >
 > The § "Next" item *"Phase 2 clustering of the survivors — tooling built, blocked on the
 > re-measure"* is now **unblocked**. Current data:

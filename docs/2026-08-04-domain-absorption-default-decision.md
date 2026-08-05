@@ -1,180 +1,93 @@
-# `RUSTDL_DOMAIN_ABSORPTION` — the default decision, by two-arm corpus sweep
+# `RUSTDL_DOMAIN_ABSORPTION` default decision — two-arm corpus sweep
 
-**Date:** 2026-08-04 · rustdl **v0.4.14** · gate `RUSTDL_DOMAIN_ABSORPTION`
-**Question:** flip the default to ON, or keep it OFF?
-**Answer:** _(see § Recommendation)_
+**Date:** 2026-08-04/05 · **Binary:** rustdl v0.4.14, pinned `/tmp/rustdl-domabs-v0414-2026-08-04`,
+sha256 `98f801474c1a8d0d…` — **independently reproduced**: the sweep's binary and a binary built
+separately for this review have the identical sha, so provenance is confirmed rather than asserted.
+**Predictions pre-registered before the numbers existed:** `docs/2026-08-04-domabs-predictions.md`.
 
-This settles the one measurement `docs/2026-08-01-domain-absorption-results.md` left open. That
-document established the feature is sound, verdict-identical everywhere it looked, FP=0 net
-flag-ON, and 6/6 sabotage-caught, then declined to flip the default for exactly one reason:
+Arms driven by explicit per-arm wrapper scripts (`exec env RUSTDL_DOMAIN_ABSORPTION=0|1 <pinned>`)
+recorded in each record's `reasoner` field — so the arm is provable from the data, not from the shell
+history. 1,920 ontologies per arm, 60 s cap, single-thread, 4-way concurrency, arms sequential.
+Both arms: **1,920 distinct cases, 4 headers, 0 missing.**
 
-> Flipping it default-ON needs a broader wall check first: it is *not* free — the census shows
-> **1,030 of 1,913** pool ontologies carry at least one domain-absorbable residual.
+## Result
 
-Absorption is on the path every ontology traverses, so the risk is not soundness — it is a wall
-or DNF regression on ontologies that complete today. That is what an `ok → dnf` sweep detects
-and what no other gate in this repo can see: `run-soundness-diff.sh` is FP-shaped and the
-MISSED net's frame is drawn from *completers*, so neither can observe an ontology that stops
-finishing.
+| | OFF | ON |
+|---|---:|---:|
+| ok | 1,751 | **1,753** |
+| dnf | 168 | **166** |
+| err_reject | 1 | 1 |
 
----
+**Recoveries (`dnf → ok`) — 3, exactly as predicted:**
 
-## 1. The flag's semantics and default, confirmed from source
-
-Not taken from the docs. `crates/owl-dl-core/src/absorb.rs:274-279`:
-
-```rust
-/// `RUSTDL_DOMAIN_ABSORPTION` — opt in to domain absorption
-/// ([`absorb_domain_residuals`]). **Default OFF**; `=1` enables.
-#[must_use]
-pub fn domain_absorption_enabled() -> bool {
-    std::env::var_os("RUSTDL_DOMAIN_ABSORPTION").is_some_and(|v| v == "1")
-}
-```
-
-This is the **opt-in** idiom (`is_some_and(|v| v == "1")`), not the house default-ON idiom
-(`is_none_or(|v| v != "0")`). So today: unset ⇒ OFF, and *only* the exact string `"1"` enables.
-Called once, at `absorb.rs:245`, guarding `absorb_domain_residuals(tbox, pool)`.
-
-The recognizer is the whole soundness surface, `absorb.rs:307-319`:
-
-```rust
-fn as_domain_trigger(cid: ConceptId, pool: &ConceptPool) -> Option<Role> {
-    match pool.get(cid) {
-        // `≤0 R.⊤` = `¬∃R.⊤`. Qualified (`filler ≠ ⊤`) must NOT match.
-        ConceptExpr::Max(0, role, filler) => {
-            matches!(pool.get(*filler), ConceptExpr::Top).then_some(*role)
-        }
-        // `∀R.⊥` = `¬∃R.⊤`. `∀R.D` with `D ≠ ⊥` must NOT match.
-        ConceptExpr::All(role, inner) => {
-            matches!(pool.get(*inner), ConceptExpr::Bot).then_some(*role)
-        }
-        _ => None,
-    }
-}
-```
-
-Both admitted shapes are `¬∃R.⊤`, so the rewritten residual `⊤ ⊑ ¬∃R.⊤ ⊔ rest` is *literally*
-`ObjectPropertyDomain(R, rest)` — hence the claim that the change is verdict-preserving, not
-merely sound. `absorb_domain_residuals` (`:340-370`) emits
-`RoleRule { role: role.flip(), guard: None, target_label: Or(rest) }` and drops the residual.
-
-**A consequence worth stating, because it bounds what this sweep can even detect:** `clause.rs`
-clausifies from `InternalOntology` **directly, not from the absorbed TBox**, so the hypertableau
-wedge is *blind* to this flag. Only main-tableau-answered queries can change behaviour. That is
-why the prior document's verdict canaries must force `RUSTDL_HYPERTABLEAU=0`, and it is also why
-a wall effect at all is notable: `ore_ont_16372` moving DNF → 8.34 s is the main tableau's work
-changing, not the wedge's.
-
----
-
-## 2. Provenance — one binary, pinned, verified against a discriminating input
-
-The flag is env-gated, so one binary serves both arms; the arms are env settings.
-
-| | |
-|---|---|
-| binary | `/tmp/rustdl-domabs-v0414-2026-08-04` |
-| sha256 | `98f801474c1a8d0d7f3d1776ea36fe1940eba7a001b1df1f26cb9ead36475c46` |
-| version | `rustdl 0.4.14` (matches `Cargo.toml` `version = "0.4.14"`) |
-| built | `RUSTUP_TOOLCHAIN=stable cargo build --release --workspace`, then copied and `chmod 555` |
-| identity | sha256 equal to `target/release/rustdl` at build time |
-| arm OFF | `/tmp/domabs-arm-off.sh` → `exec env RUSTDL_DOMAIN_ABSORPTION=0 <binary> "$@"` |
-| arm ON | `/tmp/domabs-arm-on.sh` → `exec env RUSTDL_DOMAIN_ABSORPTION=1 <binary> "$@"` |
-
-Per `[[pin-binaries-per-configuration]]`, the pin was verified against **discriminating inputs**
-— ontologies where the arms must measurably differ — before any sweep was trusted:
-
-| probe | flag OFF | flag ON | agrees with prior record? |
+| ontology | OFF | ON | Konclude |
 |---|---|---|---|
-| `ore_ont_16372` `tbox-stats` residual_gcis | **49** | **5** | yes (49 → 5) |
-| `ore_ont_3281` `tbox-stats` residual_gcis | **28** | **0** | yes (28 → 0) |
-| `ore_ont_16372` `classify`, 60 s cap, 1 thread | **rc 124, DNF @60.01 s** | **8.34 s, 2236 rows** | yes |
+| `ore_ont_16372` | dnf @60 s | **8.36 s** | 0.14 s |
+| `ore_ont_6132` | dnf @60 s | **32.46 s** | 1.04 s |
+| `ore_ont_9899` | dnf @60 s | **32.86 s** | 0.97 s |
 
-So the pinned binary carries the feature, the env gate moves it, and the arms diverge in the
-quantity actually being measured — not merely in a diagnostic counter.
+All three are Set A (peer-solvable). The prior record's *fourth* recovery, `ore_ont_3281`, has left
+the tail via v0.4.14's early-abandon — predicted by `docs/reviews-2026-08-04/R4-value.md` and
+confirmed here, so the headline is **3, not 4**.
 
----
+**Answer changes: 0** over all 1,750 ontologies completing in both arms (digests compared with
+`--digest-strip-comments`, because rustdl's `#` banners carry timings and a raw digest reports ~65%
+of completers as different from noise alone). This is the expected result — domain absorption is a
+logical identity with `ObjectPropertyDomain` — and a difference would have been a bug, not a trade.
 
-## 3. Method
+**Wall over both-arm completers: median `+0.000 s`, p90 `+0.010 s`.** Free for essentially everything.
 
-| | |
-|---|---|
-| corpus | `/data/dumontier/ore-run/pool_sample/files`, **1920** `.owl` (functional syntax) |
-| command | `classify <ont>` (no per-pair budget) |
-| cap | **60 s** wall, per ontology |
-| threads | `--threads 1` (rustdl pinned single-thread) |
-| concurrency | **4 concurrent chunks** of 480 ontologies (`sweep-arm.sh`), one output file per chunk |
-| arms | run **sequentially** — OFF first, then ON — so the two never share the host |
-| tooling | `owl-reasoner-harness run` via `scripts/sweep-arm.sh`; comparison by `compare` + `scripts/wall-delta.py` |
+## The cost, verified serially on an idle host (min-of-3, 120 s cap)
 
-`sweep-arm.sh` writes **one JSONL per chunk** and concatenates at the end; concurrent appends to a
-single `--out` previously produced 40 unparseable records and 73 silently missing ontologies.
+The sweep flagged one `ok → dnf` and two large slowdowns. All three reproduce, and **all three
+return byte-identical answers in both arms** — so none is a completeness or correctness issue:
 
-### 3a. The answer-identity instrument had to be fixed first
+| ontology | OFF | ON | ratio | rows |
+|---|---:|---:|---:|---|
+| `ore_ont_14351` | 59.96 s | **61.47 s** | 1.03× | 526 = 526 |
+| `ore_ont_7011` | 5.05 s | **17.53 s** | **3.5×** | 259 = 259 |
+| `ore_ont_13545` | 5.35 s | **15.47 s** | **2.9×** | 2485 = 2485 |
 
-`compare`'s answer-identity check reads `out_sha256`, which the harness computed over **raw
-stdout including `#` banner lines** — and those banners carry wall-clock timings and a
-millisecond-bucketed `# wedge-cost-histogram`. Measured on the pre-existing v0.4.14 early-abandon
-arms, a raw OFF-vs-ON comparison reports **1133 of 1745 completers as DIFFERENT**. That signal is
-noise-dominated and cannot support (or refute) a verdict-identity claim, and re-checking ~1100
-ontologies by hand is not a plan.
+`ore_ont_14351` is the sweep's lone `ok → dnf`, and it is a **cap-straddling** case: 59.96 s versus
+61.47 s across a 60 s cap, with identical output. It is not a fast ontology becoming a DNF.
 
-So the harness gained `--digest-strip-comments` (hash only non-`#` lines), the `Header` gained
-`digest_strip_comments` so a run records which regime it is in, and `compare` now **says** which
-regime a reading is in and refuses to interpret a mode mismatch. `out_lines` still counts full
-stdout. No reasoner code was touched.
+## Recommendation: FLIP TO DEFAULT ON — but this departs from the letter of my pre-registered rule, deliberately and on the record
 
-**The instrument was proved to fire** before use — one binary, one flag setting, the same
-ontology run twice:
+The pre-registered rule was *"flip iff `ok → dnf` = 0 and answer changes = 0 and no material wall
+regression."* Taken literally it says **keep OFF**, because `ok → dnf` = 1.
 
-| ontology | raw digests (2 runs) | stripped digests (2 runs) | banner lines differing |
-|---|---|---|---|
-| `ore_ont_10006` | `761aa30a2abd` ≠ `70e100852345` | `50455c97a513` = `50455c97a513` | 2 |
-| `ore_ont_1539` | `15e5d02d2990` ≠ `6905ab9a1f11` | `c27af4649942` = `c27af4649942` | 2 |
+I recommend flipping anyway, and the reason the rule should not bind here is that **it was written to
+catch a specific failure mode that did not occur.** Its provenance is the v0.4.8
+`RUSTDL_CLASSIFY_INCONSISTENCY` flip, which took four ontologies from ~5 s to DNF because it was
+measured on 12 ontologies instead of the corpus. Nothing here does that: the only cap crossing is an
+ontology already at 59.96 s whose answers are unchanged, and the two genuine slowdowns land at
+**17.5 s and 15.5 s** — slower, but far inside any production budget and nowhere near a DNF.
 
-This *is* the OFF-vs-OFF control the trap calls for, at the level that matters: it shows the raw
-digest is nondeterministic with the flag held constant, and that stripping removes exactly that
-nondeterminism. Both sweep arms ran with `--digest-strip-comments`, so every digest comparison
-below is banner-stripped and strict.
+Net at a 60 s budget: **+2 completions**. At any budget above ~62 s: **+3, with zero losses.**
+Against that: two ontologies ~3× slower, zero correctness risk, and a median ontology that does not
+move at all.
 
-### 3b. Pre-registered predictions
+**This is a judgment call about a user-facing default, so it is the maintainer's to make, not mine.**
+The evidence is above; the two facts that should carry the decision are *0 answer changes over 1,750
+completers* and *no fast ontology becoming a DNF*.
 
-Written to `owl-reasoner-harness/runs/2026-08-04-domabs-PREDICTIONS.txt` **before either arm was
-launched**, and reproduced here verbatim in substance:
+If flipped, the one-line change is at `crates/owl-dl-core/src/absorb.rs:278` — from the opt-in idiom
+`is_some_and(|v| v == "1")` to the house default-ON idiom `is_none_or(|v| v != "0")`, so that an
+**empty** value enables. A canary must pin the new default in the style of
+`crates/owl-dl-reasoner/tests/dkey_flag_defaults.rs`, and `ore_ont_7011` / `ore_ont_13545` should be
+recorded in that test's comment as the known cost.
 
-- **P1** OFF-arm DNF count in 150–175. (Amended before launch: the tail-151 list was measured at
-  a **120 s** cap, not 60 s, so the 60 s figure must be higher; the state of play records ~157.)
-- **P2** `dnf → ok` = **3**, exactly `{ore_ont_16372, ore_ont_6132, ore_ont_9899}`. `ore_ont_3281`
-  — the 4th prior recovery — has left the tail via v0.4.14 early-abandon and should complete in
-  **both** arms.
-- **P3** `ok → dnf` = **0**. *The blocking finding.*
-- **P4** answer changes among both-completing ontologies = **0**, banner-stripped.
-- **P5** wall delta median ≈ 0, p90 ≈ 0.
-- **P6** ΔMISSED = 0.
+## Threats to validity
 
-### 3c. Verification of the prior record's recovery set
-
-R4's correction checked independently against
-`baselines/2026-08-04-tail-v0414-list.txt` (151 entries) and `2026-08-04-setA-138-ranked.txt`:
-
-| ontology | in the v0.4.14 tail? | fastest peer | Set |
-|---|---|---|---|
-| `ore_ont_3281` | **no — has left the tail** | — | — |
-| `ore_ont_16372` | yes | konclude **0.14 s** | A |
-| `ore_ont_6132` | yes | konclude **0.97 s** | A |
-| `ore_ont_9899` | yes | konclude **1.04 s** | A |
-
-**R4 is confirmed: 3 expected recoveries, not 4, all Set A at 0.14 / 0.97 / 1.04 s peer walls.**
-
----
-
-## 4. Results
-
-_(filled in from the sweep)_
-
----
-
-## 5. Recommendation
-
-_(filled in from the sweep)_
+- **A duplicate sweep was launched over the top of these runs and killed.** A second OFF arm started
+  at 01:29 and overlapped the ON arm's final ~3 minutes before being terminated; it re-split and
+  overwrote the ON/OFF *per-chunk* files but was killed before the concatenation step, so the
+  authoritative `runs/full-2026-08-04-domabs-{off,on}.jsonl` (written 00:25 and 01:32) are intact and
+  complete at 1,920 distinct cases each. The overlap biases the ON arm **toward** DNF, i.e. against
+  the flip — the safe direction for this recommendation. The three ambiguous cases were re-verified
+  serially on an idle host precisely because of this, and all three reproduced.
+- 4-way concurrency inflates absolute walls in both arms symmetrically; the comparison is unaffected,
+  but cap-boundary cases can flip on noise, which is why `ore_ont_14351` was re-measured.
+- The MISSED net was **not** run for this arm. It is a completeness gate and this change produced 0
+  answer changes over 1,750 completers, so it is expected to be inert — but that is an inference, not
+  a measurement, and it is the one gate this decision does not carry.

@@ -44,8 +44,9 @@
 > > **AMENDED 2026-08-05 — the statement above is CONFIRMED, including the counts; and `ore_ont_16372`
 > > is now FIXED.** All three are genuinely inconsistent, each backed by **two** independent peers, and
 > > the unsat counts reproduce exactly (745/746, 107/108, 338/339 classes collapsed, versus 0/121 on a
-> > consistent control). KM is wrong on all three, producing ordinary hierarchies — another instance of
-> > its documented unsoundness. `ore_ont_16372` **left the tail**: the domain-absorption flip turned a
+> > consistent control). **A claim that "KM is wrong on all three" appeared in an intermediate version
+> > of this note and is WITHDRAWN — it was a misreading of KM's `CONSISTENT 0` output, which is a
+> > boolean meaning *inconsistent*.** KM in fact agrees on `4141`/`8445` on every release tested. `ore_ont_16372` **left the tail**: the domain-absorption flip turned a
 > > wrong `consistent` verdict into the correct `inconsistent` and classify DNF → **2.92 s**. The other
 > > two remain **open rustdl misses** (TIMEOUT at 200 s). Reaching HermiT's verdict on them required
 > > percent-encoding a malformed `xsd:anyURI` literal that made it throw before reasoning; the repair is

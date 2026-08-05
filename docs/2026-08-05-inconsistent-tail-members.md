@@ -12,7 +12,22 @@ Follow-up on the cluster flagged in `docs/2026-08-04-tail151-peer-triage.md`: th
 151-ontology DNF tail that Konclude found **inconsistent** in 0.14–2.55 s while rustdl DNF'd at
 120 s. Investigated one at a time against an adjudicated oracle. **The cluster is real: all three are
 inconsistent, each confirmed by two independent peers.** One (`ore_ont_16372`) is already fixed; the
-other two are genuine open rustdl misses. KM is wrong on all three.
+other two are genuine open rustdl misses.
+
+> **CORRECTED 2026-08-05 (later) — "KM is wrong on all three" WAS MY MISREADING OF KM'S OUTPUT.**
+> `km classify --lines` prints `CONSISTENT 0` / `CONSISTENT 1`, and the trailing value is a
+> **boolean**, not a subsumption count — the JSON form makes it explicit
+> (`{"consistent": false, …}`). So `CONSISTENT 0` means **inconsistent**. Re-run across three KM
+> releases: **KM reports `ore_ont_4141` and `ore_ont_8445` as INCONSISTENT on every version**,
+> including the pre-fix `c6ced84` — it agreed with Konclude and HermiT throughout. Only the
+> *minimal fixture* was genuinely mis-reported, and KM `v0.2.5` now fixes that
+> (`408dee4`, closing the issue filed as bio-ontology-research-group/kobayashi-marust#3). A public
+> correction has been posted there.
+>
+> The "KM produced ordinary 444/1,927-pair hierarchies" figures came from the 2026-08-04 triage
+> baseline and are **inconsistent with KM's own output** (`"subsumptions": []` alongside
+> `consistent: false`), so the harness's KM reading needs its own check before those numbers are
+> re-used. Treat KM-vs-peer disagreement counts from that baseline as unverified.
 
 ## `ore_ont_16372` — a genuine WRONG VERDICT, fixed by the domain-absorption flip
 
@@ -20,9 +35,8 @@ other two are genuine open rustdl misses. KM is wrong on all three.
 (`Ontology 'http://konclude.com/test/kb' … is inconsistent`, after
 `'Individual-Precomputing' processing step failed`), and **HermiT agrees** by throwing
 `org.semanticweb.owlapi.reasoner.InconsistentOntologyException`. Two independent peers, so this is
-not the ambiguous-Konclude-silence case. **KM disagrees** — it produces an ordinary hierarchy — which
-is consistent with its documented concrete-domain unsoundness and is why KM is not used to adjudicate
-here.
+not the ambiguous-Konclude-silence case. KM does not decide this one (it times out on `v0.2.3` and
+exits `worker engine exited -1` on `v0.2.5`), so it neither confirms nor contradicts.
 
 **The clash, read off the source.** Lines 1050–1051 define the *same class twice with different
 enumerations*:
@@ -62,7 +76,7 @@ remains a known limitation of the `consistent` surface.
 |---|---|
 | Konclude | **inconsistent** (1.36 s / 2.55 s) |
 | HermiT | **inconsistent** — once its literal crash is worked around (below) |
-| KM | ordinary hierarchy, 444 / 1,927 pairs — i.e. **wrong** |
+| KM | **inconsistent** — agrees (see the correction note above; my earlier "wrong" was a misread) |
 | rustdl | `consistent` and `classify` both **TIMEOUT at 200 s** — open miss |
 
 **How the deadlock was broken.** HermiT refused to run at all, throwing

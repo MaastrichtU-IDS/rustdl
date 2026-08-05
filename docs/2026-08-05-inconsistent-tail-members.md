@@ -28,6 +28,13 @@ other two are genuine open rustdl misses.
 > baseline and are **inconsistent with KM's own output** (`"subsumptions": []` alongside
 > `consistent: false`), so the harness's KM reading needs its own check before those numbers are
 > re-used. Treat KM-vs-peer disagreement counts from that baseline as unverified.
+>
+> **Followed up 2026-08-05 and it went further than expected**: the standing
+> "KM 10-ontologies-FP / ~1795 spurious pairs" record is now **retracted in its FP half** —
+> KM v0.2.5 is FP=0 on every cited ontology testable, and **73% of the figure was a
+> `⊤`-equivalence convention artifact** (Konclude collapses `X ⊑ TopEquivClass` into
+> `EquivalentClasses(Thing, C)`; the old analysis normalised only the `⊥` side). See
+> `docs/2026-08-05-km-fp-claim-audit.md`.
 
 ## `ore_ont_16372` — a genuine WRONG VERDICT, fixed by the domain-absorption flip
 

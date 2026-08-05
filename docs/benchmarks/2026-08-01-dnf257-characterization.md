@@ -41,16 +41,17 @@
 > and **two are ~140 k-class ontologies with a genuinely flat hierarchy** (`16744`/`8737`: 0 of
 > 142,884 and 0 of 136,612 `SubClassOf` axioms have a non-`Thing` superclass) — scale, not reasoning.
 >
-> > **AMENDED 2026-08-05 — the inconsistent cluster does not survive investigation as stated, and its
-> > unsat counts are WITHDRAWN.** Only **one** of the three is oracle-adjudicated: `ore_ont_16372`,
-> > where Konclude's log and HermiT's `InconsistentOntologyException` agree independently (KM
-> > disagrees, producing an ordinary hierarchy). **It is now FIXED** — the domain-absorption flip
-> > turned a wrong `consistent` verdict into the correct `inconsistent`, and classify DNF → **2.92 s**,
-> > so it is no longer a tail member at all. The other **two are CONTESTED and excluded**: HermiT
-> > gives *no* verdict on them (`MalformedLiteralException`) and KM classifies them into ordinary
-> > 444- and 1,927-pair hierarchies, so only Konclude claims inconsistency. The per-ontology unsat
-> > counts ("745/107/338") are **withdrawn as unverified** — they could not be reproduced. The
-> > flat-hierarchy pair is unaffected by this amendment. Full record:
+> > **AMENDED 2026-08-05 — the statement above is CONFIRMED, including the counts; and `ore_ont_16372`
+> > is now FIXED.** All three are genuinely inconsistent, each backed by **two** independent peers, and
+> > the unsat counts reproduce exactly (745/746, 107/108, 338/339 classes collapsed, versus 0/121 on a
+> > consistent control). KM is wrong on all three, producing ordinary hierarchies — another instance of
+> > its documented unsoundness. `ore_ont_16372` **left the tail**: the domain-absorption flip turned a
+> > wrong `consistent` verdict into the correct `inconsistent` and classify DNF → **2.92 s**. The other
+> > two remain **open rustdl misses** (TIMEOUT at 200 s). Reaching HermiT's verdict on them required
+> > percent-encoding a malformed `xsd:anyURI` literal that made it throw before reasoning; the repair is
+> > verdict-neutral for Konclude. An intermediate version of this amendment wrongly called those two
+> > "contested" and withdrew the counts — both reversed. A fourth tail member, `ore_ont_20`, also
+> > surfaced as a single-peer inconsistency candidate. Full record:
 > > `docs/2026-08-05-inconsistent-tail-members.md`.
 >
 > The § "Next" item *"Phase 2 clustering of the survivors — tooling built, blocked on the

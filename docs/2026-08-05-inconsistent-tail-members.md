@@ -1,11 +1,18 @@
-# The "three inconsistent tail members": one was a real wrong verdict and is now fixed; two are contested
+# The three inconsistent tail members: all three ARE inconsistent (two peers each); one is fixed, two are genuine open misses
+
+> **REVISED 2026-08-05, later the same day, after adjudicating properly.** An earlier version of this
+> document called `ore_ont_4141` and `ore_ont_8445` **contested** and excluded them, and **withdrew**
+> the "745/107/338 unsat classes" figures as unverified. Both calls were wrong and are reversed below:
+> HermiT confirms inconsistency on both once its literal-validation crash is worked around, and the
+> three class counts reproduce exactly. What follows is the corrected record.
 
 **Date:** 2026-08-05 · **Binary:** rustdl v0.4.14 at `62013d2` (domain absorption default ON)
 
 Follow-up on the cluster flagged in `docs/2026-08-04-tail151-peer-triage.md`: three members of the
-151-ontology DNF tail that Konclude reportedly found **inconsistent** in 0.14–2.55 s while rustdl
-DNF'd at 120 s. Investigated one at a time against an adjudicated oracle. The cluster does not
-survive as stated.
+151-ontology DNF tail that Konclude found **inconsistent** in 0.14–2.55 s while rustdl DNF'd at
+120 s. Investigated one at a time against an adjudicated oracle. **The cluster is real: all three are
+inconsistent, each confirmed by two independent peers.** One (`ore_ont_16372`) is already fixed; the
+other two are genuine open rustdl misses. KM is wrong on all three.
 
 ## `ore_ont_16372` — a genuine WRONG VERDICT, fixed by the domain-absorption flip
 
@@ -49,46 +56,86 @@ derive ⊥ loses entailments — it is **MISS-shaped** downstream. The user-faci
 of consistency from a failure to find the clash. That general property is unchanged by this fix and
 remains a known limitation of the `consistent` surface.
 
-## `ore_ont_4141` and `ore_ont_8445` — CONTESTED, excluded rather than adjudicated
+## `ore_ont_4141` and `ore_ont_8445` — ADJUDICATED INCONSISTENT, and genuine open rustdl misses
 
 | reasoner | verdict |
 |---|---|
-| Konclude | inconsistent (1.36 s / 2.55 s) |
-| HermiT | **no verdict** — `org.semanticweb.HermiT.datatypes.MalformedLiteralException` |
-| KM | ordinary hierarchy (444 and 1,927 pairs) — i.e. *consistent* |
-| rustdl (fresh binary) | `consistent` and `classify` both **TIMEOUT at 200 s** |
+| Konclude | **inconsistent** (1.36 s / 2.55 s) |
+| HermiT | **inconsistent** — once its literal crash is worked around (below) |
+| KM | ordinary hierarchy, 444 / 1,927 pairs — i.e. **wrong** |
+| rustdl | `consistent` and `classify` both **TIMEOUT at 200 s** — open miss |
 
-One peer claims inconsistency, one cannot process the file at all, and one disagrees. **A contested
-oracle is not an oracle**, so per standing project practice these are *excluded* from any MISSED
-claim rather than resolved by preferring a peer.
+**How the deadlock was broken.** HermiT refused to run at all, throwing
+`MalformedLiteralException` on an `xsd:anyURI` literal — `4141` on
+`"http://en.wikipedia.org/wiki/Nièvre"` (non-ASCII `è`), `8445` on
+`":  http://ncim.nci.nih.gov/…"` (leading colon plus two spaces). Its exception message names the
+literal, which is what made this tractable. Percent-encoding just the offending `anyURI` values — 361
+in `4141`, 15 in `8445`, datatypes and everything else untouched — let HermiT run, and **it reports
+both inconsistent**.
 
-The `MalformedLiteralException` is a substantive hint rather than mere noise: an ill-typed literal —
-one outside its datatype's value space — makes an OWL 2 DL KB inconsistent. That would explain all
-three behaviours at once (Konclude derives ⊥ from the literal; HermiT throws on the same literal
-instead of concluding; KM ignores datatypes, matching its recorded concrete-domain unsoundness). It is
-a **hypothesis, not a finding** — a scan of their literals showed nothing obviously ill-typed
-(`"true"^^xsd:boolean`, `"Virus"^^xsd:string`, and similar), so the offending literal, if any, was not
-located. Settling it needs the specific literal HermiT chokes on, which its exception message does not
-name.
+**Control against the obvious objection** (that the repair *introduced* the inconsistency): Konclude
+reports `is inconsistent` **18 times on both the original and the repaired file**, for each ontology.
+The repair is therefore verdict-neutral for the peer that could read both, so HermiT's verdict on the
+repaired file carries to the original.
 
-## Instrument gap found: `triage.py` conflates "peer proved inconsistency" with "peer crashed"
+**The ill-typed-literal hypothesis was tested and REFUTED as the cause.** It is true that an ill-typed
+literal makes an OWL 2 DL KB inconsistent, so this looked like a clean explanation. But a positive
+control — `DataPropertyAssertion(:p :a "abc"^^xsd:integer)`, unambiguously ill-typed — is reported
+**`consistent` by Konclude** and merely crashes HermiT. Neither peer implements
+"ill-typed literal ⟹ inconsistent", so these literals explain only HermiT's *lack* of a verdict, never
+Konclude's inconsistency claim. rustdl **drops** such axioms outright ("unsupported data range"), so
+they cannot affect its verdict either. **The actual source of the inconsistency in these two is still
+unidentified** — worth a `diagnose`/ddmin pass, and the 108- and 339-class collapse below is the
+starting point.
+
+**Class counts, reproduced and un-withdrawn.** Reading Konclude's hierarchy directly: `owl:Thing` is
+equivalent to `owl:Nothing` in all three, with **745 of 746**, **107 of 108** and **338 of 339**
+declared classes collapsed (a consistent control, `ore_ont_6485`, shows **0 of 121**). The earlier
+withdrawal of "745/107/338" is reversed — the figures are exact.
+
+## Instrument gap found AND FIXED: `triage.py` conflated "peer proved inconsistency" with "peer crashed"
 
 HermiT's `NO_OUTPUT` verdict covers **both**, and they are opposites in value: an inconsistency
 exception is exactly the verdict needed to adjudicate this class, while a parse/datatype crash is no
 verdict at all. Of the 5 `NO_OUTPUT` rows in `baselines/2026-08-04-triage-hermit-c120.jsonl`
-(`ore_ont_10949`, `16372`, `20`, `4141`, `8445`), `16372` is an **inconsistency verdict** and
-`4141`/`8445` are **crashes**; `10949` and `20` were not checked. This understates HermiT's Set A and
-silently discards the one signal that makes this cluster adjudicable. **`triage.py` should classify
-`InconsistentOntologyException` as its own outcome**, distinct from `NO_OUTPUT`.
+(`ore_ont_10949`, `16372`, `20`, `4141`, `8445`): **`16372` and `ore_ont_20` are inconsistency
+verdicts**, `4141`/`8445` are literal-validation crashes (which nonetheless *are* inconsistent, by the
+work-around above), and `10949` is a genuine other-exception crash. So **4 of the 5 involve a real
+inconsistency** that the triage recorded as "no output". `ore_ont_20` is a *newly surfaced* candidate —
+HermiT calls it inconsistent and Konclude produces no output, so it is single-peer and **not**
+adjudicated.
+
+**Fixed:** `triage.py` now emits a distinct `INCONSISTENT` verdict, via two routes because the peers
+signal differently — a hierarchy asserting `owl:Thing ≡ owl:Nothing` (Konclude, which still writes a
+full 128 KB hierarchy and so read as `CLASSIFIED`), or an `InconsistentOntologyException` in a captured
+log (HermiT, which writes nothing and so read as `NO_OUTPUT`, i.e. indistinguishable from a crash —
+its opposite in value). A new `--log-dir` supplies the logs.
+
+**The predicate is `owl:Thing`, not "all classes", and that is load-bearing.** `{A ⊑ ⊥, B ⊑ ⊥}` empties
+every named class yet has a model, so a ratio heuristic would be unsound. Verified by a negative-control
+fixture of exactly that shape (reads `CLASSIFIED`, correctly) and by **two sabotages, both caught**:
+dropping the `Thing` requirement makes the negative control false-positive to `INCONSISTENT`, and
+dropping the HermiT exception check turns its verdict back into `NO_OUTPUT`.
 
 ## Corrections to the record
 
-- `docs/benchmarks/2026-08-01-dnf257-characterization.md`'s 2026-08-04 banner says *"three tail
-  members are simply INCONSISTENT … (745/107/338 unsat classes)"*. Amended: **one** is adjudicated
-  inconsistent (and now fixed), **two** are contested. The per-ontology unsat counts are **withdrawn
-  as unverified** — a re-run of Konclude wrote its hierarchy to `/dev/null`, so those numbers could
-  not be reproduced here and their provenance is unclear.
+- `docs/benchmarks/2026-08-01-dnf257-characterization.md`'s 2026-08-04 banner said *"three tail
+  members are simply INCONSISTENT … (745/107/338 unsat classes)"*. **That statement is CORRECT and is
+  restored.** My first amendment to it — downgrading two to "contested" and withdrawing the counts —
+  was itself wrong and has been reversed. The counts reproduce exactly (745/746, 107/108, 338/339
+  classes collapsed, against 0/121 on a consistent control); the first re-run simply wrote Konclude's
+  hierarchy to `/dev/null`, so *my measurement* lacked the file, not the original claim.
 - `ore_ont_16372` should not be described as an open tail member; it classifies in 2.92 s.
+
+## Second trap, caught only by a control: `XML parsing error` in Konclude's log is BENIGN
+
+Mid-investigation I found `{error} XML parsing error at 1:1: 'Start tag expected.'` in Konclude's log
+for **all three** ontologies and concluded it had never parsed them — making its inconsistency claims
+parse artifacts. **Wrong.** Konclude probes formats, so it emits that error for *every*
+functional-syntax `.owl` file and then reads it successfully: a definitely-classified control
+(`ore_ont_6485`, 40 KB hierarchy) logs it identically. The diagnostic pair is
+`processing step failed` + `is inconsistent` — **0/0** on the control versus **18/18** on each
+inconsistent case. Recorded in `triage.py`'s docstring so the next reader does not repeat it.
 
 ## Method failure worth recording: ~10 measurements on a stale binary
 

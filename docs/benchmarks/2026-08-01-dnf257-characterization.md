@@ -195,8 +195,38 @@ Nothing below is implemented on `main`. Categories are *inefficient* / *incorrec
 | 4 | **incorrect (D10)** | `convert.rs:2431-2484` | The five numeric-`DataOneOf` DKey buckets are never collected into `seed_dkey_subsumptions` — no told edges, no disjointness — while `is_pure_el` still certifies completeness | Konclude-confirmed both directions: 3 missed subsumptions **and** a missed `∀p.DataOneOf(1,2) ⊓ ∃p.{3}` clash |
 | 5 | **incorrect (D10)** | `convert.rs:2210` | `dkey_components` runs **pre-NNF**, so a `∀p.DKey` that only exists post-NNF (`¬∃q.¬DKey`, legal OWL 2 DL) marks neither `merge_inducing` nor collapse/broadcast | Konclude: `Negated ≡ Nothing`; rustdl: satisfiable under every flag. A **completeness regression** from the 07-20/07-30 gates |
 | 6 | inefficient | `reasoner/src/lib.rs:2895` | Per-class `self.clauses.clone()` purely to concatenate, though `new_with_prebuilt_extras` already takes base+extras as slices | 20.28% incl on 1508 |
-| 7 | inefficient | `tableau/src/saturate.rs:118` | `Instant::now()` before each of 13 rules per node per pass (in-code comment claims negligible) | vdso clock **11.28% self** on 10019 |
+| 7 | ~~inefficient~~ **REFUTED 2026-08-05** | `tableau/src/saturate.rs:118` | `Instant::now()` before each of 13 rules per node per pass (in-code comment claims negligible) | vdso clock **11.28% self** on 10019 — **but see below: batching this site buys NOTHING, and the in-code comment was right** |
 | 8 | inefficient | `data_axioms.rs:3143` | `emit_data_cardinality_violations_typed` rescans the whole `ind_dp_vals` map inside a per-(constraint × individual) loop with `String` compares | 7.3% of `ore_ont_16632`; ~1.3 s of 18.2 s |
+
+### Defect 7 is REFUTED, and the 11.28% belongs to a DIFFERENT loop that was already fixed
+
+Built and measured on 2026-08-05, then **reverted**. Stride-sampling the 11 intra-node
+`check_deadline` probes in `saturate.rs`'s `step!` macro, min-of-2 on `ore_ont_10019`
+(the named target), serially, pinned binary:
+
+| `RUSTDL_DEADLINE_STRIDE` | wall |
+|---|---|
+| 1 (exact, = shipped) | **93.41 s** |
+| 8 | 93.70 s |
+| 32 | 96.14 s |
+
+**Flat — no win, and stride 32 is if anything worse.** So the in-code comment this row
+mocks ("a cheap Instant comparison, dwarfed by rule bodies") is **empirically correct at
+this site**, and the row's premise was wrong.
+
+**Where the 11.28% actually lives, and why it looked open.** `owl-dl-saturation/src/lib.rs:183`
+carries `DEADLINE_CHECK_STRIDE = 4096` with the comment: *"a per-pop clock read is a measured
+cost in this codebase (11.28% self-time on one ontology), while a 4096-pop stride overshoots a
+deadline by microseconds."* That is **the same number**, attached to the **EL saturator's
+worklist loop** — a different loop, in a different crate, and **already fixed**. This row
+mis-attributed a shipped fix's motivating measurement to an unrelated call site.
+
+Two lessons, both cheap to apply next time:
+- **Before optimising a profile attribution, grep the codebase for the number itself.** One
+  `grep 11.28` would have found the shipped constant and its comment in seconds.
+- **A profiler frame naming a cheap primitive (`Instant::now`, `memcpy`, a lock) does not
+  localise the cost to every call site of that primitive.** Confirm which loop by an A/B at
+  the specific site, which is what finally settled this.
 
 ### A landmine in a fix already recorded as ready
 

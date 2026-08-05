@@ -238,7 +238,8 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
     }
     tbox.nominal_rules = kept;
 
-    // Domain absorption (`RUSTDL_DOMAIN_ABSORPTION`, default OFF).
+    // Domain absorption (`RUSTDL_DOMAIN_ABSORPTION`, default ON since
+    // 2026-08-05; `=0` reverts).
     // Runs *after* the two rewrites above so their priority is
     // unchanged: a singleton `∀R.D` residual is still consumed as a
     // range-style `RoleRule`, and only what survives is offered here.
@@ -271,11 +272,28 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
     tbox.finalize();
 }
 
-/// `RUSTDL_DOMAIN_ABSORPTION` — opt in to domain absorption
-/// ([`absorb_domain_residuals`]). **Default OFF**; `=1` enables.
+/// `RUSTDL_DOMAIN_ABSORPTION` — domain absorption
+/// ([`absorb_domain_residuals`]). **Default ON** since 2026-08-05; `=0` reverts.
+///
+/// Flipped on the strength of a full 1,920-ontology two-arm sweep
+/// (`docs/2026-08-04-domain-absorption-default-decision.md`): **3 recoveries**
+/// (`ore_ont_16372` 60 s→8.36 s, `6132`→32.46 s, `9899`→32.86 s, all
+/// peer-solvable) and **0 answer changes** across all 1,750 ontologies that
+/// complete in both arms, with median wall delta `+0.000 s`. Zero correctness
+/// exposure is expected by construction — this rewrite is a logical identity
+/// with `ObjectPropertyDomain`, so a differing closure would be a bug, not a
+/// trade-off.
+///
+/// **Known cost, and it is real:** `ore_ont_7011` 5.05 s→17.53 s (3.5×) and
+/// `ore_ont_13545` 5.35 s→15.47 s (2.9×), both with byte-identical output. One
+/// ontology also crosses a 60 s cap — `ore_ont_14351` 59.96 s→61.47 s, output
+/// unchanged — so at a 60 s budget the net is +2 completions rather than +3.
+/// No *fast* ontology becomes a DNF, which is the failure mode that made the
+/// v0.4.8 `RUSTDL_CLASSIFY_INCONSISTENCY` flip a regression.
 #[must_use]
 pub fn domain_absorption_enabled() -> bool {
-    std::env::var_os("RUSTDL_DOMAIN_ABSORPTION").is_some_and(|v| v == "1")
+    // Default-ON idiom (see the house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_DOMAIN_ABSORPTION").is_none_or(|v| v != "0")
 }
 
 /// Recognise a **domain-absorbable** disjunct and return its role.

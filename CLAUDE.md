@@ -316,6 +316,32 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   this pattern is a known limitation. See
   `docs/superpowers/specs/2026-07-23-nominal-cardinality-realize-termination-design.md`
   (§ Outcome).
+
+> **THE COMPLETION-GRAPH HALF OF ISSUE #35 v4 IS CLOSED (2026-08-05) — by
+> `RUSTDL_DOMAIN_ABSORPTION` becoming the default, and it was NOT the fix anyone was
+> looking for.** The load-bearing gate
+> `nominal_first_bounded.rs::issue35_v4_completion_graph_is_bounded`, `#[ignore]`d
+> since 2026-07-23 *for failing*, is now **live and passing**. Measured on that gate,
+> cap OFF: `RUSTDL_DOMAIN_ABSORPTION=0` **does not terminate** (killed at 300 s); the
+> new default passes in **0.00 s**.
+>
+> This is causal, not coincidental, and the text above says why without drawing the
+> conclusion: v4's root cause is `ObjectPropertyDomain(r,A)` absorbing to an
+> **untriggered residual** `⊤ ⊑ ¬∃r.⊤ ⊔ A`. Domain absorption is *precisely* the pass
+> that converts that residual into a **triggered** role rule, so it is never offered on
+> a fresh `≥2 r.C` witness and the generating cycle never opens. The 2026-07-23
+> conclusion that this needed "a nominal-aware-blocking / NN-rule redesign" was
+> **wrong about the required mechanism** — a preprocessing pass that already existed,
+> behind a flag, was sufficient. `RUSTDL_NOMINAL_FIRST` remains falsified and OFF;
+> nothing here rehabilitates it.
+>
+> Scope, stated precisely: this closes **graph termination on the v4 reproducer**. The
+> `RUSTDL_REALIZE_PAIR_TIMEOUT_MS` and `RUSTDL_MAX_NODES` safety nets stay — they
+> protect every pattern domain absorption does not happen to cure, and the companion
+> `nominal_first_bounded_divergence_canary.rs` now **pins `RUSTDL_DOMAIN_ABSORPTION=0`**
+> in order to keep exercising the `NodeCap` net at all. Whether HermiT-matching
+> *realization* on this pattern now follows was **not** re-measured; do not upgrade that
+> claim without measuring it.
   **Wedge classify throughput (2026-07-23).** (v0.3.38) `HyperEngine::is_blocked`
   no longer clones the parent-role candidate bucket per call (iterate in place,
   stats in loop-locals) — behaviour-identical. (v0.3.39) The classify subsumption
@@ -1353,6 +1379,7 @@ regressions (all fixed), 0 answer changes** among 1,633 completing ontologies, a
 | `RUSTDL_FAST_DIRECT_SUBSUMERS` | an O(k²)-per-class Hasse reduction sat in the **output** loop — `ore_ont_10125` finished *reasoning* in 15 s then spent ≥385 s **emitting**; DNF@900 s → 14.6 s |
 | `RUSTDL_FRAGMENT_BARE_DECL` | a bare `Symmetric`/`Inverse` **declaration** refused the fast path; **44 recoveries** |
 | `RUSTDL_CLASSIFY_INCONSISTENCY` | `classify --json` and `consistent` no longer contradict each other |
+| `RUSTDL_DOMAIN_ABSORPTION` (2026-08-05) | absorbs domain residuals into triggered role rules; **3 ORE recoveries, 0 answer changes over 1,750 both-arm completers**, and it **closed the completion-graph half of issue #35 v4** (a >300 s hang → 0.00 s). Cost: 2 ontologies ~3× slower, 1 crossing a 60 s cap, all with byte-identical output |
 | `RUSTDL_EL_BOT_FILLER`, `RUSTDL_DKEY_POST_NNF`, `RUSTDL_DKEY_ONEOF_SEED`, `RUSTDL_DKEY_EMIT_ORDER` | four D10/completeness fixes, one of them a **live non-monotonic** defect |
 
 **A REAL FALSE POSITIVE SHIPPED FOR MONTHS AND THE FP=0 NET COULD NOT SEE IT.**

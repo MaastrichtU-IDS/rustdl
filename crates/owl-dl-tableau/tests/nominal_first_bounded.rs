@@ -177,15 +177,25 @@ fn build_reproducer_probe() -> SearchVerdict {
     })
 }
 
-/// See the module doc: this assertion is the brief's Step-1 load-bearing
-/// gate and CURRENTLY FAILS (the probe does not terminate) — Tasks 1-4 do
-/// not close this reproducer. `#[ignore]`d so `cargo test` never hangs;
-/// run manually under a shell `timeout` to reproduce the finding.
+/// The brief's Step-1 load-bearing gate. **PROMOTED TO LIVE 2026-08-05** — it
+/// had been `#[ignore]`d for failing (the probe did not terminate), and it now
+/// passes, because `RUSTDL_DOMAIN_ABSORPTION` became the default that day.
+///
+/// That is a *causal* fix, not a coincidence: issue #35 v4's documented root
+/// cause is `ObjectPropertyDomain(r, A)` absorbing to an **untriggered residual**
+/// `⊤ ⊑ ¬∃r.⊤ ⊔ A`, whose `A` disjunct, chosen on a fresh `≥2 r.C` witness,
+/// re-opens the covering nominal disjunction and generates unboundedly. Domain
+/// absorption is precisely the pass that turns that residual into a *triggered*
+/// role rule, so it is never offered on a bare witness.
+///
+/// Measured on the ignored gate itself, cap OFF: `RUSTDL_DOMAIN_ABSORPTION=0`
+/// does not terminate (killed at 300 s); the default passes in 0.00 s. The
+/// companion `nominal_first_bounded_divergence_canary.rs` therefore had to pin
+/// the flag OFF to keep observing the divergence it exists to characterise.
+///
+/// If this test starts failing, the domain-absorption default has been reverted
+/// or narrowed — check that before suspecting the tableau.
 #[test]
-#[ignore = "issue #35 v4: reproducer does NOT terminate even with the fix on \
-            (cap OFF) — see module doc + task-5-report.md. Run manually under \
-            `timeout` to confirm non-termination; do not remove this ignore \
-            without first fixing the domain-residual/cardinality-merge gap."]
 fn issue35_v4_completion_graph_is_bounded() {
     let _cap = SetEnvGuard::set("RUSTDL_MAX_NODES", "0");
     let _fix = SetEnvGuard::set("RUSTDL_NOMINAL_FIRST", "1");

@@ -148,6 +148,16 @@ fn run_probe() -> (SearchVerdict, usize) {
 fn issue35_v4_reproducer_diverges_graph_len_tracks_cap() {
     let _fix = SetEnvGuard::set("RUSTDL_NOMINAL_FIRST", "1");
     let _cap = SetEnvGuard::set("RUSTDL_MAX_NODES", "10");
+    // PINNED OFF 2026-08-05. `RUSTDL_DOMAIN_ABSORPTION` became the default that
+    // day and it CLOSES this reproducer — the sibling gate
+    // `issue35_v4_completion_graph_is_bounded` was promoted from `#[ignore]` on
+    // the strength of it (cap OFF: 300 s+ hang at `=0`, 0.00 s at the default).
+    // So this test no longer characterises the shipped configuration; it now
+    // characterises the NodeCap safety net on a deliberately UN-absorbed one,
+    // which is still worth keeping, because that net protects every ontology
+    // domain absorption does not happen to cure. Without this pin the test
+    // reports `Sat` and fails.
+    let _no_domain_absorption = SetEnvGuard::set("RUSTDL_DOMAIN_ABSORPTION", "0");
     let (verdict, len) = run_probe();
     assert!(
         matches!(verdict, SearchVerdict::NodeCap),

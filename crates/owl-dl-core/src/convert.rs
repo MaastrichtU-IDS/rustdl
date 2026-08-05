@@ -2411,6 +2411,76 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
         }
     }
     out.axioms.extend(added);
+
+    // ---- Part 2: materialise the inverse ABox edges for FUNCTIONAL partners ----
+    //
+    // Deriving the characteristic is necessary but NOT sufficient. The engine cannot
+    // merge PREDECESSORS: `derive_functional_max_cardinality` is deliberately
+    // forward-only because `∃R⁻.⊤ ⊑ ≤1 R⁻` is a measured no-op (see its comment). So
+    // `InverseFunctionalRole(S)` alone still leaves the clash undetected on the
+    // tableau path, which is where the *direct* analogue is actually caught — probes
+    // confirm the direct case is decided even with BOTH ABox pre-checks disabled.
+    //
+    // The fix reuses that proven forward path instead of building predecessor merge:
+    // for a declared pair `(R, S)` where `R` is functional, every asserted `S(a, b)`
+    // entails `R(b, a)`, so materialising it lets the existing
+    // `∃R.⊤ ⊑ ≤1 R` + `apply_max` fire at `b`. Verified by hand-adding the edges to
+    // the reproducer: `consistent` → `inconsistent`.
+    //
+    // Sound: `InverseObjectProperties(R, S)` makes `R(b, a)` an ENTAILED ground fact,
+    // so this adds no model. **Bounded on purpose:** materialisation happens only when
+    // the target role is functional (declared or derived above), so edge growth is
+    // proportional to assertions on the partner of a functional role rather than to the
+    // whole ABox. An unbounded version would double the edge count of every ontology
+    // declaring an inverse pair.
+    let mut inverse_of: std::collections::HashMap<crate::ir::RoleId, Vec<crate::ir::RoleId>> =
+        std::collections::HashMap::new();
+    for &(a, b) in &pairs {
+        inverse_of.entry(a).or_default().push(b);
+        inverse_of.entry(b).or_default().push(a);
+    }
+    let existing: std::collections::HashSet<(crate::ir::RoleId, IndividualId, IndividualId)> = out
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::ObjectPropertyAssertion {
+                role,
+                subject,
+                object,
+            } if !role.is_inverse() => Some((role.role_id(), *subject, *object)),
+            _ => None,
+        })
+        .collect();
+    let mut edges: Vec<Axiom> = Vec::new();
+    let mut seen = existing.clone();
+    for ax in &out.axioms {
+        let Axiom::ObjectPropertyAssertion {
+            role,
+            subject,
+            object,
+        } = ax
+        else {
+            continue;
+        };
+        if role.is_inverse() {
+            continue;
+        }
+        for &partner in inverse_of.get(&role.role_id()).into_iter().flatten() {
+            // Only where it can matter: the partner must be functional, so that the
+            // forward `≤1` constraint exists to fire on the materialised edge.
+            if !functional.contains(&partner) {
+                continue;
+            }
+            if seen.insert((partner, *object, *subject)) {
+                edges.push(Axiom::ObjectPropertyAssertion {
+                    role: Role::named(partner),
+                    subject: *object,
+                    object: *subject,
+                });
+            }
+        }
+    }
+    out.axioms.extend(edges);
 }
 
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional

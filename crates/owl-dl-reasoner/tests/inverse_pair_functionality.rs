@@ -14,14 +14,21 @@
 //! the merge or clash machinery. If a future change breaks them, the flag is not the
 //! suspect.
 //!
-//! **`g` is the honest limit of this fix and is expected to stay `consistent`.** It is
-//! the shape the motivating ontology (`ore_ont_4141`) actually has: the same
-//! inverse-induced merge, but the clash arrives via a **functional data property**
-//! rather than `DifferentIndividuals`. `abox_check`'s P5 re-tests only
-//! `different_pairs` after a merge, never data-value conflicts, so deriving the
-//! characteristic is necessary but not sufficient there. Closing `g` is a separate
-//! defect, recorded in the doc above. **If `g` ever starts reporting `inconsistent`,
-//! that is good news — update this test and the doc rather than "fixing" the test.**
+//! The fix has **two** parts, and the second is what makes it work:
+//!
+//! 1. derive the characteristic across the pair (`Functional(R)` ⟹ `InverseFunctional(S)`);
+//! 2. **materialise the entailed inverse `ABox` edge** where the partner is functional.
+//!
+//! Part 1 alone closes only the `DifferentIndividuals` route. It cannot close the
+//! functional-data-property route, because the engine does not merge PREDECESSORS —
+//! `derive_functional_max_cardinality` is forward-only by design, `∃R⁻.⊤ ⊑ ≤1 R⁻` being
+//! a measured no-op. Part 2 sidesteps that by making the forward path applicable.
+//!
+//! **Scope, stated plainly: the 7-axiom CORE is decided; the full `ore_ont_4141` still
+//! times out.** The clash is only reachable on the tableau path (the direct analogue is
+//! decided even with both `ABox` pre-checks disabled), and that path does not scale to a
+//! 67k-axiom `ABox`. Deciding the full ontology needs the clash in a PRE-CHECK — see the
+//! known-limitations doc.
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;
@@ -146,13 +153,21 @@ fn chained_derivation_across_two_inverse_pairs() {
     );
 }
 
+/// The motivating ontology's actual shape, reduced from `ore_ont_4141`'s 67,143 axioms
+/// to 7 by Konclude-oracle delta-debugging: the same inverse-induced merge, but the
+/// clash arrives via a **functional data property** rather than `DifferentIndividuals`.
+///
+/// Deriving the characteristic alone did **not** close this — the engine cannot merge
+/// PREDECESSORS (`derive_functional_max_cardinality` is forward-only by design, because
+/// `∃R⁻.⊤ ⊑ ≤1 R⁻` is a measured no-op). What closes it is Part 2: materialising the
+/// entailed inverse edge so the proven *forward* `≤1` path fires. `Konclude` and `HermiT`
+/// both call this inconsistent.
 #[test]
-fn known_residual_functional_data_property_route_is_still_missed() {
-    // The motivating ontology's actual shape. Documented limitation, not a passing
-    // grade — see the module docs. Konclude and HermiT both call this inconsistent.
+fn functional_data_property_route_needs_edge_materialisation() {
+    assert!(is_consistent("ore_ont_4141-7axiom-core.ofn", false));
     assert!(
-        is_consistent("ore_ont_4141-7axiom-core.ofn", true),
-        "if this now reports INCONSISTENT, the residual defect has been fixed — \
-         update this test and docs/known-limitations/ rather than reverting the fix"
+        !is_consistent("ore_ont_4141-7axiom-core.ofn", true),
+        "the 7-axiom core must be decided — deriving the characteristic is not enough, \
+         the entailed inverse EDGE has to be materialised so the forward ≤1 rule fires"
     );
 }

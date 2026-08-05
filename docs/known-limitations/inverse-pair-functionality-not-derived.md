@@ -1,7 +1,8 @@
 # Functionality is not propagated across a declared `InverseObjectProperties` pair
 
-**Found:** 2026-08-05 · **Status:** **PARTIALLY FIXED** behind `RUSTDL_INVERSE_PAIR_FUNC`
-(default OFF) · **Severity:** wrong `consistent` verdict
+**Found:** 2026-08-05 · **Status:** **MECHANISM FIXED** behind `RUSTDL_INVERSE_PAIR_FUNC`
+(default OFF); the full ontologies remain a **performance** DNF · **Severity:** wrong
+`consistent` verdict
 **Oracle:** Konclude 0.7.0 **and** HermiT 1.4.3, independently
 **Fixtures:** `crates/owl-dl-reasoner/tests/fixtures/inverse_functional_derivation/`
 
@@ -111,31 +112,50 @@ be invisible to `abox_check`, the one consumer that needs it. It runs before
 | `g-chained-needs-fixpoint` (two-link chain) | consistent ✗ | **inconsistent ✓** |
 | `d-direct-functional-CONTROL` | inconsistent ✓ | inconsistent ✓ |
 | `e-declared-inverse-functional-CONTROL` | inconsistent ✓ | inconsistent ✓ |
-| **`ore_ont_4141-7axiom-core`** | consistent ✗ | **consistent ✗ — STILL MISSED** |
+| **`ore_ont_4141-7axiom-core`** | consistent ✗ | **inconsistent ✓** |
 
-**The motivating ontology is NOT fixed, and that is the honest headline.** Probes isolate
-why: the real core's clash arrives through a **functional data property** on the merged
-individuals, and `abox_check`'s P5 re-tests only `different_pairs` after a merge — never
-data-value conflicts. Meanwhile the *directly* asserted analogue **is** caught, so the
-merge-plus-data-clash route works when no inverse is involved. Deriving the
-characteristic is therefore necessary but **not sufficient**.
+**Part 1 alone was NOT enough**, and finding out why produced the actual fix. Deriving
+`InverseFunctionalRole(S)` closes only the `DifferentIndividuals` route, because the
+engine does not merge **predecessors** — `derive_functional_max_cardinality` is
+forward-only by design, `∃R⁻.⊤ ⊑ ≤1 R⁻` being a measured no-op. Ablation showed the
+*direct* analogue is decided even with **both** `ABox` pre-checks disabled, i.e. on the
+tableau via the forward `≤1` rule.
 
-**The second, separable defect** (still open): after a functional/inverse-functional
-merge, the post-merge re-check must revisit functional-**data**-property value conflicts,
-not just `DifferentIndividuals`. Either `abox_check` P5 gains that re-check, or
-`abox_saturation`'s merge learns to honour inverse-functionality (it keys its
-`functional` set `(RoleId, bool)` but populates it only from declared axioms, and its
-own comment at `:254` says *"Only Named roles (not inverse) are stored"*).
+**Part 2 therefore reuses that proven forward path rather than building predecessor
+merge:** for a declared pair `(R, S)` with `R` functional, every asserted `S(a, b)`
+entails `R(b, a)`, so materialising that edge lets `∃R.⊤ ⊑ ≤1 R` + `apply_max` fire at
+`b`. Confirmed by hand-adding the edges before implementing anything: `consistent` →
+`inconsistent`. Bounded to functional partners on purpose, so edge growth tracks
+assertions on the partner of a functional role rather than the whole `ABox`.
+
+## SCOPE: the core is decided, the full ontologies are NOT
+
+| | flag OFF | flag ON |
+|---|---|---|
+| 7-axiom core | consistent ✗ | **inconsistent ✓** |
+| full `ore_ont_4141` (67,143 axioms) | TIMEOUT @300 s | **TIMEOUT @300 s** |
+| full `ore_ont_8445` (138,737 axioms) | TIMEOUT @300 s | **TIMEOUT @300 s** |
+
+**So this closes the mechanism gap, not the two ontologies.** The clash is reachable only
+on the tableau path, and that path does not scale to a 67k-axiom `ABox`. Deciding the full
+ontologies needs the clash in a **pre-check**: `abox_check`'s P5 re-tests only
+`different_pairs` after a merge, never functional-**data**-property value conflicts, and
+`abox_saturation`'s merge populates its `functional` set from declared axioms only (its own
+comment at `:254`: *"Only Named roles (not inverse) are stored"*). That remains open and is
+now the binding item for these two ontologies.
 
 ## Gates run
 
 - **Canaries:** `crates/owl-dl-reasoner/tests/inverse_pair_functionality.rs`, 6 tests.
-- **Sabotage: 2 of 3 caught, and the survivor is recorded.** Making the derivation
-  one-directional fails `derived_functional_needs_the_flag`; ignoring the flag fails both
-  flag-OFF assertions. **Replacing the fixpoint loop with a single pass leaves everything
-  green** — tried twice, including with the inverse-pair axioms in deliberately adverse
-  source order. So **the fixpoint loop is UNCOVERED and may be redundant**; a future
-  simplifier should not treat these canaries as protection.
+- **Sabotage: 6 mutations run, 4 caught, 2 survived — both survivors named rather than
+  hidden.** Caught: one-directional derivation; flag ignored; materialisation removed;
+  materialised edge direction not swapped. **Survived: (a) replacing the fixpoint loop
+  with a single pass** — tried twice, including with adverse source ordering, so the
+  fixpoint is UNCOVERED and may be redundant; **(b) removing the `functional` bound on
+  materialisation**, which is expected, since the bound is a *cost* property and no
+  correctness canary can see it. The bound's justification is the DKey discriminators
+  below, not a unit test. A future simplifier should not read these canaries as protecting
+  either property.
 - **FP=0 net with the flag ON:** all present fixtures VERIFIED, every closure exact and
   unchanged from the reference values (galen 27997, notgalen 32739, sio 8904,
   ore-10908 6001, pizza 499, alehif 247, ro 158, ore-15672 142, bibtex 16). That is
@@ -144,7 +164,8 @@ own comment at `:254` says *"Only Named roles (not inverse) are stored"*).
 - **DKey gate discriminators unchanged**, which was the specific perf risk since these
   axioms feed `merge_inducing`/`collapse` at `convert.rs:3066`/`:3169`:
   `ore_ont_9347` = 113 and `ore_ont_5368` = 18,620,251 concept rules at **both** flag
-  settings.
+  settings — re-verified after Part 2, which matters more there because materialised
+  object assertions feed the same component analysis.
 - `cargo fmt` clean; `clippy -D warnings` clean; **1,586 tests pass, 0 fail**.
 
 **Not run, so not claimed:** a full 1,920-ontology two-arm sweep. That is required before

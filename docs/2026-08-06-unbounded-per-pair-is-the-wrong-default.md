@@ -80,6 +80,46 @@ preparation may not fit inside a useful budget), the threshold's basis, and the 
 The `RUSTDL_CLASSIFY_INCONSISTENCY_MS` history is the cautionary precedent for picking a
 time constant by intuition.
 
+## An attractive-looking lever, KILLED by a confound check before it was built
+
+Phase timings answer the restart-cost question decisively — on `ore_ont_14272` at pt=1,
+`prepare=5 ms` of a 2,808 ms wall (`saturate=3`, `label_cache_build=525`, `tier_walk=1608`,
+`sweeps=652`). **A fallback that re-does preparation costs ~5 ms**, so a restart is
+affordable.
+
+The same banner surfaced something that looked far better than a budget: the
+**wedge-stall → main-tableau fallthrough**. Measured at pt=1 across the 15 ontologies:
+
+| | |
+|---|---:|
+| fallthrough probes run | **251,959** |
+| **rescued** | **0** |
+| rescue rate | **0.0000%** |
+
+That reads as pure waste, and suggests a clean sound lever: after N fallthroughs with no
+rescue, stop falling through — subtractive, so a MISS at worst, never an FP.
+
+**It is an artifact of the budget, and the check that found this is one command.** At pt=1
+the *tableau* probes are cut at 1 ms too, so of course they rescue nothing. Re-measured on
+`ore_ont_10019` at a 500 ms budget:
+
+```
+# fallthrough (wedge-stall→tableau): ran=156 rescued=2 (of which diverged-stall=2)
+```
+
+**The fallthrough does rescue — it is just slow.** So `rescued=0` measures the budget, not
+the mechanism, and the fallthrough-cut lever is **NO-GO**: it would discard genuine
+entailments. The 2 rescues are also exactly the size of the observed gap (pt=1 gives 157 of
+162 on this ontology; pt=50 gives 159), so the numbers are mutually consistent.
+
+**This does not weaken the main finding** — a small budget still buys 96.9–100% of the
+oracle closure where the default buys nothing. It relocates the cost: the missing pairs are
+precisely the ones the slow fallthrough would have rescued, which is a *completeness* price
+to be priced by the MISSED net, not a free win.
+
+Also recorded: `pizza`, `sio` and `ro` emit **no fallthrough banner at all** at default, so
+this path is specific to the hard population and a change to it cannot regress them.
+
 ## Scope and honesty
 
 - The completeness table is **15 of the 23** (12 in the widened batch, 3 earlier). Not all 23.
@@ -89,3 +129,7 @@ time constant by intuition.
   **transitive closure** and read 58-vs-162, i.e. catastrophic incompleteness. That was an
   invalid comparison and it inverted the conclusion; the table above normalises both sides.
   Worth stating because the wrong version was briefly convincing.
+- The **fallthrough-cut lever was killed by a confound check, not by a build** (above). Both
+  errors in this document were of the same kind: a number measured under one configuration
+  read as a property of the mechanism. That is now the most frequent failure mode in this
+  session's record, and a confound check is the cheapest guard against it.

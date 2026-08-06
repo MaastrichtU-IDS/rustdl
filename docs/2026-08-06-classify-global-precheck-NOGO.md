@@ -65,6 +65,55 @@ The existing pre-check is doing far better than the single failing example sugge
 of 41, i.e. 95%**. The gap is a 2-ontology defect, not an architectural one, which is the
 opposite of what it looked like from `ore_ont_16372` alone.
 
+## Both remaining instances characterised — and every candidate fix is measured out
+
+### `ore_ont_16372` — nominal-enumeration pigeonhole, worth exactly 1 ontology
+
+Mechanism known (a class defined twice by different `ObjectOneOf` enumerations plus
+`DifferentIndividuals`, forcing two distinct individuals into one slot). `consistent`
+catches it; **classify misses it, and so does classify on the minimal 3-axiom fixture and
+on scaled variants** — all report `consistent: true` while `consistent` reports
+`inconsistent`, with the genuinely-consistent control correctly `true`. So the gap is a
+missing `abox_check` pattern, which would slot into the existing P1–P8 architecture, and
+the counting argument is sound and search-free: `C ≡ E1` bounds `|C| ≤ |E1|`, `C ≡ E2` with
+`E2` pairwise distinct forces `|C| ≥ |E2|`, so `|E2| > |E1|` is a contradiction.
+
+**But the census kills it.** Across all 1,920 ontologies, the number with a class defined
+by ≥2 different `ObjectOneOf` enumerations *and* `DifferentIndividuals` is **1** —
+`ore_ont_16372` itself. A new default-path pattern in a pre-check that runs on every
+ABox-bearing classify, to fix one ontology, is not a good trade.
+
+### `ore_ont_7610` — a different mechanism, and NOT the one this session fixed
+
+**Zero `ObjectOneOf`, zero `DifferentIndividuals`**, so it is not the pigeonhole. It carries
+4 `InverseObjectProperties` and 4 functional/inverse-functional declarations — but it
+**already declares both halves** (`InverseFunctionalObjectProperty(has_case)` alongside
+`FunctionalObjectProperty(case_of)`), so `RUSTDL_INVERSE_PAIR_FUNC`'s derivation is
+redundant there. Measured: the flag changes nothing —
+`classify --json` reports `consistent: true` with **91 unsatisfiable classes** at both flag
+settings, while `consistent` reports `inconsistent` in **0.08 s**. Its mechanism is
+unidentified.
+
+Note classify is being *correctly* conservative in reporting 91 unsat classes without
+declaring inconsistency: all-named-classes-unsat is not inconsistency (`{A ⊑ ⊥, B ⊑ ⊥}` has
+a model). It simply cannot prove `⊤` unsatisfiable here.
+
+### Status of the divergence question: CLOSED as a documented residual
+
+Every candidate fix is now measured, not argued:
+
+| candidate | verdict |
+|---|---|
+| budgeted global pre-check reusing `is_consistent` | **NO-GO** — 2 fixed vs ~330 paying a budget for nothing |
+| `abox_check` pigeonhole pattern | **NO-GO** — census says 1 ontology corpus-wide |
+| `RUSTDL_INVERSE_PAIR_FUNC` | **does not help either instance** (measured) |
+| `decide(Top)` probe | previously refuted (hangs on consistent inputs) |
+
+So classify's inconsistency detection stays the sound under-approximation CLAUDE.md already
+documents, now with the residual **quantified at 2 of 1,920** and both instances
+characterised. That is the useful output: not a fix, but a closed question with the size of
+the gap known.
+
 ## What this changes
 
 - **Treat the divergence as a 2-ontology bug**, not a missing subsystem. Both are named and

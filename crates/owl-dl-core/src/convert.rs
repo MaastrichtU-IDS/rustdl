@@ -2316,11 +2316,26 @@ pub fn convert_ontology<A: ForIRI>(
     // no-op. Inverse-functional enforcement is a documented sound MISS pending
     // an engine fix to inverse-role predecessor merging. See
     // `docs/superpowers/specs/2026-06-15-functional-role-enforcement-design.md`.
-    // Propagate functionality ACROSS a declared inverse pair. Runs BEFORE
-    // `derive_functional_max_cardinality` on purpose, so a role newly known to be
-    // functional also gets that pass's `∃R.⊤ ⊑ ≤1 R` enforcement GCI.
-    derive_inverse_pair_functionality(&mut out);
+    // Propagate functionality ACROSS a declared inverse pair. Runs **AFTER**
+    // `derive_functional_max_cardinality`, and the order is load-bearing.
+    //
+    // It originally ran before, so that a newly-derived functional role also picked up
+    // that pass's `∃R.⊤ ⊑ ≤1 R` enforcement GCI. That was measured to be the wrong
+    // choice: a 1,920-ontology sweep found **4 ontologies going from 1–5 s to
+    // non-terminating** (`ore_ont_16372`, `7532`, `9662`, `9786`), each carrying 76–118
+    // inverse pairs and ~21 functional roles, so the derivation marks many roles
+    // functional and every one adds a `≤1` constraint for `apply_max` to police.
+    // Diagnostic: `ore_ont_7532`'s `role_rules_unguarded` went 80 → 81, and none of the
+    // four has a single `ObjectPropertyAssertion`, which rules out the materialisation
+    // half as the cause.
+    //
+    // Running after keeps the cheap win and drops the expensive one: the derived
+    // characteristics still reach `abox_check`'s P5 (which reads axioms, not GCIs), while
+    // no derived-functional role gains an enforcement GCI. The materialisation half is
+    // unaffected because it fires on a role whose functionality is DECLARED, so the `≤1`
+    // GCI it needs already exists.
     derive_functional_max_cardinality(&mut out);
+    derive_inverse_pair_functionality(&mut out);
     out.axioms.sort();
     Ok(out)
 }

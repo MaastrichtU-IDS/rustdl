@@ -76,12 +76,60 @@ surfaces that contradict each other is worse than shipping a known MISS.
 closes a real wrong-verdict defect and recovers 17 entailed subsumptions. It earns its
 place as `=1`.
 
+## ROOT-CAUSED AND 3 OF 4 FIXED (same day)
+
+**The materialisation hypothesis was wrong, and the diagnostic that refuted it was one
+grep:** none of the four ontologies has a single `ObjectPropertyAssertion`, so Part 2
+cannot fire on them at all. What they do have is **76–118 `InverseObjectProperties` and
+~21 `FunctionalObjectProperty`** each.
+
+The real cause was **my own pass ordering.** `derive_inverse_pair_functionality` ran
+*before* `derive_functional_max_cardinality`, deliberately, "so a newly-derived functional
+role also gets that pass's `∃R.⊤ ⊑ ≤1 R` enforcement GCI". On an ontology with ~100 inverse
+pairs the derivation marks many roles functional, and every one adds a `≤1` constraint for
+`apply_max` to police. Visible directly: `ore_ont_7532`'s `role_rules_unguarded` went
+**80 → 81**.
+
+**Fix: run the derivation AFTER that pass.** The derived characteristics still reach
+`abox_check`'s P5 (which reads axioms, not GCIs), so the correctness win is kept, while no
+derived-functional role gains an enforcement GCI. Part 2 is unaffected because it fires on
+a role whose functionality is **declared**, so the `≤1` GCI it needs already exists.
+
+| ontology | flag OFF | flag ON, before reorder | flag ON, after reorder |
+|---|---:|---|---|
+| `ore_ont_7532` | 1.24 s | dnf | **1.29 s ✓** |
+| `ore_ont_9662` | 1.10 s | dnf | **1.08 s ✓** |
+| `ore_ont_9786` | 5.14 s | dnf | **5.09 s ✓** |
+| `ore_ont_16372` | 3.42 s | dnf | **dnf — still open** |
+
+All 6 canaries remain correct after the reorder; FP=0 net flag-ON re-run: **13 VERIFIED,
+no `FP>0`/`MISSED>0`**; 1,586 tests pass; fmt and clippy clean.
+
+### `ore_ont_16372` — narrowed, not solved
+
+Ruled out by ablation: it is **not** the DKey channel (`RUSTDL_DKEY_MERGING_GATE=0`,
+`RUSTDL_DKEY_COLLAPSE_SPLIT=0` and `RUSTDL_DATA_PROPERTIES=0` all still DNF, and DKey
+seeding volume is **509 in both arms**), and **not** inconsistency detection — `consistent`
+returns `inconsistent` in **0.37 s** with the flag on, unchanged. The cost is confined to
+the **classify** path and its cause is unidentified.
+
+### A pre-existing defect this surfaced, unrelated to the flag
+
+At **flag OFF**, on `ore_ont_16372`: `rustdl consistent` says **`inconsistent`** (0.35 s)
+while `classify --json` says **`consistent: true` with 3 unsatisfiable classes** (2.95 s).
+So the two surfaces already disagree in shipped default behaviour on this ontology. This
+qualifies the 2026-08-05 domain-absorption record: that flip did fix `consistent` and did
+take classify from DNF to ~3 s, but **classify still reports the wrong verdict there** —
+something the earlier write-up did not check and therefore did not say.
+
 ## Follow-ups, in dependency order
 
-1. **Root-cause the 4 regressions.** Bounded and named. The likely channel is the
-   materialised inverse edges — added `ABox` edges feeding the tableau — but that is a
-   hypothesis, not a measurement. A per-ontology `--pair-timeout-ms 1` probe would say
-   whether the new cost is per-pair search or elsewhere.
+1. ~~Root-cause the 4 regressions.~~ **Done: 3 of 4 fixed by the reorder above.**
+   `ore_ont_16372` remains, narrowed to the classify path with DKey and consistency ruled
+   out. A `--pair-timeout-ms 1` probe is the next instrument.
+0. **`classify` disagrees with `consistent` on `ore_ont_16372` at DEFAULT settings** —
+   independent of this flag, and arguably higher priority than the rest of this list since
+   it is wrong behaviour in shipped defaults.
 2. **Teach classify's pre-check the tableau route**, which removes the divergence blocker
    and is the same open item that would let the full `ore_ont_4141`/`8445` be decided.
 3. Only then re-sweep for a flip.

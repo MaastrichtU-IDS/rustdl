@@ -1402,7 +1402,14 @@ pair the probe with a case where Konclude *does* report the relation.
   deepening is defined not to. Default OFF as a documented negative result.
 - **Five constants**: `FIXPOINT_ITERS` (prior "structurally true" reading **refuted** — it does
   bind, and halving breaks a healthy ontology), `DIV_WINDOW` (null), `RUSTDL_MAX_NODES` (does not
-  bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), `label_cache_timeout_ms` (**dead code**).
+  bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), `label_cache_timeout_ms`
+(~~**dead code**~~ — **THIS ENTRY IS WRONG, corrected 2026-08-06.** `RUSTDL_LABEL_CACHE_TIMEOUT_MS`
+is live and load-bearing: it "always wins" by construction (`lib.rs:2728-2730`), and setting it
+to `30000` takes `ore_ont_15010` from **103.98 s to 5.64 s for byte-identical output**. The
+adaptive rule that consumes it couples the label-cache budget to `--pair-timeout-ms`, so a
+*small* per-pair budget starves the cache — see
+`docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md`. A "dead code"
+label would deter exactly the investigation that found that).
 
 **`MAX_BODY_VARS = 8` — RESOLVED 2026-08-03, and the answer is "mis-designed, not mis-tuned".**
 The silent MISS is **real**: a fixture that provably trips the `> MAX_BODY_VARS` branch (12 body

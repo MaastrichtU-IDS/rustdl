@@ -97,6 +97,10 @@ fn trace_body_vars() -> bool {
 /// Defensive cap on the Horn-fixpoint inner loop during branching
 /// search. Anywhere blocking bounds the graph, so a real fixpoint is
 /// reached well under this; hitting it yields `Stalled`, not `Unsat`.
+/// Recursion steps between two `Instant::now()` reads in the match
+/// cross-product ([`HyperEngine::enumerate_matches`]). Coarse on purpose: a
+/// per-step clock read here is a measured cost in this codebase.
+const MATCH_DEADLINE_STRIDE: u64 = 4096;
 const FIXPOINT_ITERS: usize = 100_000;
 
 /// Node id in the hyper completion graph.
@@ -675,6 +679,14 @@ pub struct HyperEngine<'c> {
     stats: SearchStats,
     init_depth: usize,
     deadline: Option<Instant>,
+    /// Deadline expiry seen inside the match enumeration. `enumerate_matches`
+    /// takes `&self`, hence the `Cell`. **Load-bearing:** `horn_fixpoint` must
+    /// consult this BEFORE returning `Sat`, or a truncated enumeration surfaces
+    /// as a trusted `Sat` — FP-safe but silently incomplete, which this codebase
+    /// treats as worse than a DNF.
+    match_deadline_hit: std::cell::Cell<bool>,
+    /// Stride counter for the match-enumeration deadline probe.
+    match_steps: std::cell::Cell<u64>,
     /// Trigger indexes routing derivation events to the clauses they
     /// newly enable (see [`ClauseIndexes`]). Read-only after construction
     /// (never mutated during search). Stored as `Arc` so
@@ -1326,6 +1338,8 @@ impl<'c> HyperEngine<'c> {
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
+            match_deadline_hit: std::cell::Cell::new(false),
+            match_steps: std::cell::Cell::new(0),
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -1381,6 +1395,8 @@ impl<'c> HyperEngine<'c> {
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
+            match_deadline_hit: std::cell::Cell::new(false),
+            match_steps: std::cell::Cell::new(0),
             indexes,
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -2104,6 +2120,12 @@ impl<'c> HyperEngine<'c> {
                 return HyperResult::Unsat;
             }
         }
+        // THE load-bearing line: a truncated match enumeration must never
+        // surface as `Sat`. A clash found BEFORE truncation is still returned as
+        // `Unsat` above and stays sound.
+        if self.match_deadline_hit.get() {
+            return HyperResult::Stalled;
+        }
         HyperResult::Sat
     }
 
@@ -2775,6 +2797,8 @@ impl<'c> HyperEngine<'c> {
             stats: SearchStats::default(),
             init_depth: 0,
             deadline: None,
+            match_deadline_hit: std::cell::Cell::new(false),
+            match_steps: std::cell::Cell::new(0),
             indexes: std::sync::Arc::new(build_clause_indexes(clauses, None)),
             extra_indexes: ClauseIndexDelta::default(),
             worklist: Vec::new(),
@@ -4154,6 +4178,25 @@ impl<'c> HyperEngine<'c> {
             }
         }
         for m in targets {
+            // `solve` checks the deadline only at ENTRY, so a frame whose work
+            // stays inside this recursion never re-consults it: measured on
+            // `ore_ont_16056`, two `classify_labels` calls ran ~17 s each against
+            // a 1 ms label-cache budget. Strided so the clock read is amortized
+            // (cf. the saturator's shipped `DEADLINE_CHECK_STRIDE`). Gated,
+            // default OFF. Truncating here is sound ONLY because `horn_fixpoint`
+            // turns the flag into `Stalled` before it can return `Sat`.
+            if crate::hyper_match_deadline_enabled()
+                && let Some(dl) = self.deadline
+            {
+                let k = self.match_steps.get().wrapping_add(1);
+                self.match_steps.set(k);
+                if k.is_multiple_of(MATCH_DEADLINE_STRIDE) && Instant::now() >= dl {
+                    self.match_deadline_hit.set(true);
+                }
+                if self.match_deadline_hit.get() {
+                    return;
+                }
+            }
             binding.push((tgt_var, m));
             self.enumerate_matches(node, plan, i + 1, binding, out);
             binding.pop();

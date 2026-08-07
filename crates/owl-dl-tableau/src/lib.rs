@@ -3945,3 +3945,17 @@ mod phase3b_canaries {
         );
     }
 }
+
+/// `RUSTDL_HYPER_MATCH_DEADLINE` — probe the deadline inside the wedge's match
+/// cross-product. **Default OFF**; `=1` enables.
+///
+/// `HyperEngine::solve` checks its deadline only at entry, so a frame whose work
+/// stays inside `enumerate_matches` never re-consults it. Measured on
+/// `ore_ont_16056`: two `classify_labels` calls ran ~17 s each against a 1 ms
+/// label-cache budget, and `label_cache_build` was invariant (±0.3%) across ten
+/// configurations because nothing could stop it. See
+/// `docs/known-limitations/label-cache-build-unbounded.md`.
+#[must_use]
+pub fn hyper_match_deadline_enabled() -> bool {
+    std::env::var_os("RUSTDL_HYPER_MATCH_DEADLINE").is_some_and(|v| v == "1")
+}

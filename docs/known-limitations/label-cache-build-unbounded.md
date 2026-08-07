@@ -119,7 +119,50 @@ clashes ⇒ a MISS) but it would be **silently incomplete without the `incomplet
 is precisely the failure mode this codebase treats as worse than a DNF. So the fix is a
 plumbing change through the match path, not a one-line stride.
 
-## Verified design for the fix (not implemented)
+## FIXED behind `RUSTDL_HYPER_MATCH_DEADLINE` (default OFF) — 2026-08-07
+
+The design below was implemented as specified. **The deadline now binds:**
+
+| `RUSTDL_HYPER_MATCH_DEADLINE` | `label_cache_build` on `ore_ont_16056` (309 classes, 1 ms budget) |
+|---|---:|
+| 0 (off) | **83,201 ms** |
+| **1 (on)** | **102 ms** |
+
+**~800×**, and 102 ms is what a 1 ms per-class budget over 309 classes should cost — i.e. the
+phase is finally bounded by the budget it was given, which no configuration could achieve before.
+
+**A recovery attributable to the flag** (identical bounds on both arms; only the flag differs):
+
+| ontology | flag OFF | flag ON |
+|---|---|---|
+| `ore_ont_16056` | dnf @150 s | **ok / 485 rows / 16.9 s** |
+| `ore_ont_6134` | dnf | dnf |
+
+**Not universal, and the reason matters.** At *default* budgets `16056` still DNFs, because the
+default per-class budget is `clamp(n × per_pair, …)` = 30 s × 309 classes. The fix makes a
+budget *effective*; it does not make the default budget *sane*. **That is the second, still-open
+defect: `label_cache_build` has a per-class bound and no AGGREGATE bound.** Recovery needed the
+label cache bounded *and* the pair loop bounded — with only one of the two, the work simply
+moves downstream (bounding the cache removes pruning, so the tier walk does more).
+
+### Gates run
+
+- **Flag-OFF byte-identical** to flag-ON on pizza/ro/sulo/bibtex at `--pair-timeout-ms 1000`
+  (4/4), so the default path is untouched.
+- **FP=0 net, flag ON: 13 VERIFIED, zero `FP>0`/`MISSED>0` rows.**
+- **1,586 tests pass**; `fmt` clean; `clippy -D warnings` clean.
+- **Not run, so not claimed:** the 1,920-ontology two-arm sweep and a MISSED-net arm. Both are
+  required before any default flip. The flag ships OFF for exactly that reason.
+
+### The load-bearing detail, restated
+
+`horn_fixpoint` converts `match_deadline_hit` into `HyperResult::Stalled` **before** it can
+return `Sat` — both inside the drain loop and at the final return. Without that, a truncated
+enumeration would surface as a trusted `Sat`: FP-safe, but silently incomplete with no
+`incomplete` flag. `Unsat` is still returned first, so a clash found *before* truncation
+remains a real clash.
+
+## Design as implemented
 
 Signatures checked, so this is buildable as written:
 

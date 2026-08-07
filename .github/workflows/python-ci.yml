@@ -54,3 +54,20 @@ jobs:
         run: pip install ./crates/owl-dl-py
       - name: Run pytest
         run: pytest crates/owl-dl-py/tests/python/ -v
+      # The crate's Rust unit tests are otherwise NEVER RUN: ci.yml excludes
+      # owl-dl-py from `cargo test` (a PyO3 `cdylib` fails to link as an ordinary
+      # test binary), and pytest exercises only the Python surface. So
+      # `explain::tests::render_manchester_renders_subclass_chain` — a pure-Rust
+      # test that writes an `.ofn` and checks the Manchester rendering, with no
+      # Python involved — had zero CI coverage.
+      #
+      # `--no-default-features` drops `pyo3/extension-module`, which is what makes
+      # a normal test binary linkable at all; it then needs libpython on the link
+      # path, which is NOT in the default search path even when Python is
+      # installed (`sysconfig` reports `LIBDIR` but the bare `libpython3.X.so`
+      # symlink lives in `LIBPL`). Hence the explicit `-L`. Verified locally:
+      # without it the link fails with `unable to find library -lpython3.10`.
+      - name: Run owl-dl-py Rust unit tests
+        run: |
+          LIBPL="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBPL"))')"
+          RUSTFLAGS="-L $LIBPL" cargo test -p owl-dl-py --no-default-features

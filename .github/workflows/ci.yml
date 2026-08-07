@@ -63,6 +63,10 @@ jobs:
       - run: cargo build --workspace --all-targets --exclude owl-dl-py
       - run: cargo test --workspace --all-targets --exclude owl-dl-py
       - run: cargo test --workspace --doc --exclude owl-dl-py
+      # NOTE: the exclusion above means owl-dl-py's Rust unit tests run ONLY in
+      # python-ci.yml (which has a Python toolchain and so can put libpython on
+      # the link path). If you add a Rust test to that crate, it is covered there
+      # and nowhere else.
 
   deny:
     name: cargo-deny

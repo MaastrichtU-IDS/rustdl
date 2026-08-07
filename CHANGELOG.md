@@ -83,6 +83,104 @@ the profile-independent replacement is
 `default_budget_still_detects_small_abox_inconsistency`, a small functional-role
 `ABox` clash detected under the shipped default.
 
+## [0.4.15] — 2026-08-07
+
+**One default change, two sound opt-ins that measurement declined to flip, and a materially
+corrected record.** The headline is `RUSTDL_DOMAIN_ABSORPTION`; the more useful output may be the
+four retractions.
+
+### Changed — `RUSTDL_DOMAIN_ABSORPTION` default ON (`=0` reverts)
+
+Absorbs domain residuals into triggered role rules. Full 1,920-ontology two-arm sweep, 60 s cap,
+single-thread, arms sequential, per-arm wrapper scripts recorded in each record's provenance:
+
+| | OFF | ON |
+|---|---:|---:|
+| ok | 1,751 | **1,753** |
+| dnf | 168 | **166** |
+
+Three recoveries — `ore_ont_16372` 60 s → **8.36 s**, `6132` → 32.46 s, `9899` → 32.86 s, all
+peer-solvable — with **0 answer changes across all 1,750 both-arm completers** and a median wall
+delta of **+0.000 s**. FP=0 net: 11 VERIFIED, closures exact.
+
+**It also closed the completion-graph half of issue #35 v4.** The load-bearing gate
+`issue35_v4_completion_graph_is_bounded` had been `#[ignore]`d *for failing* since 2026-07-23; it
+is now live and passing. With the node cap off, `=0` does not terminate (killed at 300 s) and the
+new default passes in **0.00 s**. This is causal: v4's root cause is `ObjectPropertyDomain(r,A)`
+absorbing to an **untriggered** residual, and domain absorption is precisely the pass that makes
+it triggered. The 2026-07-23 conclusion that this needed "a nominal-aware-blocking / NN-rule
+redesign" was **wrong about the required mechanism** — a pass that already existed, behind a
+flag, sufficed. `RUSTDL_NOMINAL_FIRST` remains falsified and OFF.
+
+**Known cost, recorded rather than buried** (all with byte-identical output, re-verified serially
+at min-of-3): `ore_ont_7011` 5.05 → 17.53 s (3.5×), `ore_ont_13545` 5.35 → 15.47 s (2.9×), and
+`ore_ont_14351` crossing a 60 s cap (59.96 → 61.47 s). Net **+2 completions at a 60 s budget**,
++3 above ~62 s.
+
+### Added — `RUSTDL_INVERSE_PAIR_FUNC` (default **OFF**)
+
+Derives functionality across a declared inverse pair (`Functional(R)` ⟹ `InverseFunctional(S)`
+and the three symmetric cases) and materialises the entailed inverse `ABox` edge where the
+partner is functional. Closes a genuine **wrong-verdict** defect found by delta-debugging
+`ore_ont_4141` from 67,143 axioms to a **7-axiom core**: a 5-axiom `ABox` that Konclude and
+HermiT both call inconsistent was reported `consistent`.
+See `docs/known-limitations/inverse-pair-functionality-not-derived.md`.
+
+**Stays OFF:** a three-arm sweep found one real `ok → dnf` (`ore_ont_16372`, 8.28 s → dnf,
+reproduced serially). It also has **no corpus-level completeness gain** — the +17-pair oracle
+parity on `ore_ont_13859` measured on 2026-08-06 was lost when the derivation was reordered to
+run after `derive_functional_max_cardinality` (which repaired 3 of 4 earlier regressions). That
+trade was made without measuring the benefit side; recovering it by emitting the enforcement GCI
+*selectively* is the recorded follow-up.
+
+### Added — `RUSTDL_HYPER_MATCH_DEADLINE` (default **OFF**)
+
+`HyperEngine::solve` checked its deadline **only at entry** — the sole runtime deadline check in
+the engine — so a frame whose work stayed inside `enumerate_matches` never re-consulted it. On
+`ore_ont_16056` (309 classes) `label_cache_build` was ~34 s and **invariant across ten
+configurations**; two `classify_labels` calls ran ~17 s each against a **1 ms** budget. With the
+flag on that phase falls to **102 ms** (~800×) and the ontology classifies in 16.9 s.
+See `docs/known-limitations/label-cache-build-unbounded.md`.
+
+`horn_fixpoint` converts the truncation flag into `Stalled` **before** it can return `Sat` — the
+load-bearing line, without which a truncated enumeration would be FP-safe but *silently
+incomplete*.
+
+**Stays OFF:** it recovers **1 of 12** cluster members (predicted 3–8), needs non-default budgets
+to do so, and adds **+40%/+47%** wall on two completers.
+
+### Added — diagnostics
+
+`residual-absorbability` gains a guard-manufacturable predicate (plus a 1,920-ontology census).
+CI now runs `owl-dl-py`'s Rust unit tests, which previously had **zero** coverage: `ci.yml`
+excludes the crate and `pytest` only exercises the Python surface.
+
+### Fixed — the record
+
+Four of the project's own claims were withdrawn on evidence:
+
+- **The KM soundness comparison.** "KM 10-ontology FP / ~1795 spurious pairs" is retracted: KM
+  v0.2.5 is **FP=0 on every cited ontology testable**, and **73% of the figure was a
+  `⊤`-equivalence convention artifact** (Konclude collapses `X ⊑ TopEquivClass` into
+  `EquivalentClasses(Thing, C)`; the old analysis normalised only the `⊥` side). Version-independent,
+  so it was never sound methodology. rustdl's own FP=0 record is unaffected.
+- **Defect 7** (`Instant::now()` batching) is refuted — the 11.28% belonged to an
+  already-fixed loop in `owl-dl-saturation`.
+- **Konclude's mechanism**, corrected by reading its own absorbed-TBox dump: its `⇐` direction is
+  **not** Horn; it carries the same 4-way disjunctive head, and differs by being demand-driven
+  (all 47 absorbed rules have two guards; **zero** fire on a bare node).
+- **`CLAUDE.md`'s "dead code" label** on `label_cache_timeout_ms` — it is live and load-bearing,
+  and that label would have deterred the investigation that found the deadline defect.
+
+The DNF tail was also re-triaged: **151 ontologies, 138 peer-solvable**, superseding the
+257/242 figures, with HermiT's and KM's sets proven to be strict **subsets** of Konclude's.
+
+### Gates
+
+FP=0 net at pure defaults: **13 VERIFIED, zero `FP>0`/`MISSED>0`**, every reference closure exact
+(galen 27997, notgalen 32739, sio 8904, ore-10908 6001, pizza 499, alehif 247, ro 158,
+ore-15672 142, sulo 51, bibtex 16). **1,586 tests pass**; `fmt` and `clippy -D warnings` clean.
+
 ## [0.4.14] — 2026-08-04
 
 **Adaptive early-abandon in the main tableau, default ON** — plus the measurement capability that

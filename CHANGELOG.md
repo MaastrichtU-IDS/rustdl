@@ -83,6 +83,64 @@ the profile-independent replacement is
 `default_budget_still_detects_small_abox_inconsistency`, a small functional-role
 `ABox` clash detected under the shipped default.
 
+## [0.4.16] — 2026-08-07
+
+### Changed — `RUSTDL_HYPER_MATCH_DEADLINE` default ON (`=0` reverts)
+
+Shipped OFF in v0.4.15 on the strength of a wall regression **that turned out to be a
+measurement artifact**. Re-measured, it flips.
+
+**What it repairs is a contract violation, not a performance number.**
+`HyperEngine::solve` checked its deadline only at *function entry* — the sole runtime
+deadline check in the engine — so a frame whose work stayed inside `enumerate_matches`
+never re-consulted it. Consequence: **`--pair-timeout-ms` and `--global-timeout-ms` were
+silently unenforceable on that path.** On `ore_ont_16056` (309 classes) two
+`classify_labels` calls ran **~17 s each against a 1 ms budget**, and `label_cache_build`
+was invariant (±0.3%) across ten configurations because nothing could stop it. At the new
+default that phase is **112 ms** versus **110,821 ms** at `=0`.
+
+**Evidence for the flip** — matched arms of one pinned binary (sha `74180aca60d1bd8f`):
+
+| | flag OFF | flag ON |
+|---|---:|---:|
+| MISSED (400-ontology net) | 5,194 | **5,194** |
+| FP | 0 | **0** |
+| onts with MISSED | 59 | 59 |
+| `arm_no_closure` | 4 | 4 |
+
+**ΔMISSED = +0, FP = 0.** The 4 `arm_no_closure` drops occur in **both** arms, so they are
+not attributable to the flag — they were an artifact of comparing against the older
+**v0.4.13** baseline, which bundles every change since (including domain absorption going
+default ON). The 1,920-ontology sweep separately showed **0 answer changes** across 1,747
+both-arm completers.
+
+**The v0.4.15 note claiming "+40%/+47% wall on two completers" is WITHDRAWN.** Those were
+single runs taken under load. Clean min-of-3 on an idle host: `ore_ont_15491` 62.8 → **62.0 s**,
+`ore_ont_5617` 67.9 → 68.1 s, `ore_ont_14351` 57.9 → **57.3 s** — neutral to marginally
+faster. The explanation offered for the phantom slowdown (that truncation starves the label
+cache) is also refuted: label-heuristic prune rates are **identical** between arms
+(13,469,242 and 16,428,289, `misses=0` both). The three sweep `ok → dnf` rows were
+cap-boundary artifacts — all three complete at 57–68 s against a 60 s cap with identical
+output.
+
+**Soundness.** Truncating match enumeration derives *fewer* facts, so the failure mode is a
+MISS, never a false positive — and `horn_fixpoint` converts the truncation flag into
+`Stalled` **before** it can return `Sat`, which is what stops a truncated enumeration
+surfacing as a trusted `Sat` (FP-safe but silently incomplete). `Unsat` is still returned
+first, so a clash found before truncation remains a real clash.
+
+**Still open, unchanged by this release:** `label_cache_build` has a per-class bound and no
+*aggregate* bound, so the default per-class budget (`clamp(n × per_pair, …)`) can still be
+30 s × n classes. This flag makes a budget *effective*; it does not make the default budget
+*sane*. See `docs/known-limitations/label-cache-build-unbounded.md`.
+
+### Gates
+
+FP=0 net at the new defaults: **13 VERIFIED, zero `FP>0`/`MISSED>0`**. **1,590 tests pass**;
+`fmt` and `clippy -D warnings` clean. New canary
+`crates/owl-dl-tableau/tests/match_deadline_default.rs` pins all four rows of the default;
+sabotaging the flip fails exactly the two discriminating rows (unset, empty).
+
 ## [0.4.15] — 2026-08-07
 
 **One default change, two sound opt-ins that measurement declined to flip, and a materially

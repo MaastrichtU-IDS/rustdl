@@ -3947,7 +3947,22 @@ mod phase3b_canaries {
 }
 
 /// `RUSTDL_HYPER_MATCH_DEADLINE` — probe the deadline inside the wedge's match
-/// cross-product. **Default OFF**; `=1` enables.
+/// cross-product. **Default ON** since v0.4.16; `=0` reverts.
+///
+/// Flipped because it repairs a CONTRACT VIOLATION, not because it recovers
+/// ontologies: without it, `--pair-timeout-ms` and `--global-timeout-ms` are
+/// silently unenforceable on this path. Measured on matched arms of one pinned
+/// binary over the 400-ontology MISSED-net population: **ΔMISSED = +0, FP = 0**
+/// (5194/0 both arms, 59 onts-with-MISSED both, and the 4 `arm_no_closure` drops
+/// present in BOTH arms, so not attributable to the flag). Corpus sweep: **0
+/// answer changes** over 1,747 both-arm completers. Wall, min-of-3 on an idle
+/// host: neutral to marginally faster.
+///
+/// An earlier "+40%/+47% wall on two completers" reading was a MEASUREMENT
+/// ARTIFACT — single runs taken under load. Clean min-of-3 gives `ore_ont_15491`
+/// 62.8→62.0 s and `ore_ont_5617` 67.9→68.1 s. Label-heuristic prune rates are
+/// *identical* between arms (13,469,242 / 16,428,289, misses=0), which also
+/// refutes the "truncation starves the label cache" explanation offered for it.
 ///
 /// `HyperEngine::solve` checks its deadline only at entry, so a frame whose work
 /// stays inside `enumerate_matches` never re-consults it. Measured on
@@ -3957,5 +3972,6 @@ mod phase3b_canaries {
 /// `docs/known-limitations/label-cache-build-unbounded.md`.
 #[must_use]
 pub fn hyper_match_deadline_enabled() -> bool {
-    std::env::var_os("RUSTDL_HYPER_MATCH_DEADLINE").is_some_and(|v| v == "1")
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_HYPER_MATCH_DEADLINE").is_none_or(|v| v != "0")
 }

@@ -119,6 +119,43 @@ clashes ⇒ a MISS) but it would be **silently incomplete without the `incomplet
 is precisely the failure mode this codebase treats as worse than a DNF. So the fix is a
 plumbing change through the match path, not a one-line stride.
 
+## Verified design for the fix (not implemented)
+
+Signatures checked, so this is buildable as written:
+
+- `enumerate_matches(&self, node, plan, i, binding, out)` — `hyper.rs:4135`, **`&self`**, recursive
+  over the match cross-product. This is where the ~17 s sits.
+- `match_body(&self, ci, node) -> Option<Vec<Binding>>` — `:4104`.
+- `FireOutcome { Clash, Changed, NoChange }` — `:4621`.
+- `horn_fixpoint` already returns `HyperResult::Stalled` on `steps > max_iters`, so the
+  `Stalled → NoVerdict → incomplete` path exists end to end and needs no new plumbing.
+- `hyper.rs` contains **zero** `Cell`/`RefCell` today, so interior mutability is a new pattern
+  in this file — call it out in review rather than slipping it in.
+
+**Design:**
+
+1. Add `deadline_hit: std::cell::Cell<bool>` and `match_steps: std::cell::Cell<u64>` to
+   `HyperEngine` (needed because `enumerate_matches` takes `&self`).
+2. In `enumerate_matches`' recursion, every `DEADLINE_CHECK_STRIDE` steps test the deadline;
+   on expiry set `deadline_hit` and return early, truncating the enumeration.
+3. **Do NOT signal via `match_body`'s `None`.** `None` already means "this clause does not
+   match", so a deadline-`None` would silently skip a clause that might have derived a clash —
+   incompleteness with no `incomplete` flag, which is the failure mode this codebase treats as
+   worse than a DNF.
+4. Instead, test `deadline_hit` in `horn_fixpoint`'s drain **before** its final
+   `HyperResult::Sat` return, and return `Stalled`. That is the load-bearing line: it makes a
+   truncated enumeration incapable of surfacing as a trusted `Sat`.
+
+**Soundness argument:** a deadline is a cut. Truncating enumeration derives *fewer* facts ⇒
+fewer clashes ⇒ fewer `Unsat` verdicts ⇒ a MISS, never a false positive — *provided* step 4
+holds. Without step 4 the change is FP-safe but silently incomplete, which is not acceptable
+here.
+
+**Gates:** FP=0 net; the 12-ontology cluster (`label_cache_build` must fall below the
+label-cache budget on `ore_ont_16056`); `ore_ont_15010` as the discriminating pair-mate; and a
+1,920-ontology two-arm sweep, since this changes engine behaviour on every deadline-bounded
+classify.
+
 ## Next step (not attempted here)
 
 Add a deadline check inside the match/fire path (`process_event` → `match_body` /

@@ -138,6 +138,28 @@ phase is finally bounded by the budget it was given, which no configuration coul
 | `ore_ont_16056` | dnf @150 s | **ok / 485 rows / 16.9 s** |
 | `ore_ont_6134` | dnf | dnf |
 
+### Cluster measurement: 1 of 12 — my prediction was WRONG
+
+Pre-registered before the run: *"3–8 of 12 recover"*, with the rule *"≥6 ⇒ the aggregate-bound
+work is justified and urgent; 2–5 ⇒ keep the flag OFF; ≤1 ⇒ the fix is a correctness repair
+only and the cluster needs a different mechanism."* Pinned sha `74180aca60d1bd8f`, propagation
+proven on the discriminating input first (83,293 ms vs 105 ms), both arms with
+`LABEL_CACHE_TIMEOUT_MS=50` and `--pair-timeout-ms 1`, threads=1, 150 s cap.
+
+| | |
+|---|---:|
+| **RECOVERED** | **1 of 12** (`ore_ont_16056`, dnf → ok/485 rows/17 s) |
+| unchanged | 11 (`12432`, `6910`, `13122`, `14223`, `9944`, `15733`, `6134`, `8441`, `6608`, `10080`, `7174`) |
+| REGRESSED | 0 |
+| negative control `ore_ont_5368` (`prepare`-bound) | ok/6,100 rows in **both** arms, 125 s vs 117 s — correctly **unaffected** |
+
+**So the pre-registered rule says: this is a correctness repair, not a recovery lever, and the
+aggregate-bound follow-up does NOT inherit a justification from it.** The 12 are
+**phase-homogeneous but not mechanism-homogeneous** — they all stall in `label_cache_build`, for
+at least two different underlying reasons, and only `16056`'s is the unbounded match
+enumeration. The negative control behaving correctly is what makes that reading trustworthy
+rather than a null result from mis-wired arms.
+
 **Not universal, and the reason matters.** At *default* budgets `16056` still DNFs, because the
 default per-class budget is `clamp(n × per_pair, …)` = 30 s × 309 classes. The fix makes a
 budget *effective*; it does not make the default budget *sane*. **That is the second, still-open

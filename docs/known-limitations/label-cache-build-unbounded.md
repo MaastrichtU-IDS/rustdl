@@ -77,10 +77,62 @@ bug's signature, and `15010`/`16056` are a ready-made discriminating pair.
 - The bound is missing, not mis-tuned, which avoids the `n × F` trade that killed the
   floor-raise idea in the sibling document.
 
+## LOCALISED to a single line, by instrumentation (2026-08-07)
+
+A temporary construct/solve split inside `classify_labels` (since reverted) settles it:
+
+```
+[lc] calls=5 construct=0ms solve=17158ms
+[lc] calls=6 construct=0ms solve=17158ms
+[lc] calls=7 construct=0ms solve=34342ms
+```
+
+- **`construct = 0 ms`.** Engine construction is not the cost, confirming the amortization
+  result independently.
+- **`classify_labels` is called only 7 times** on a 309-class ontology — the rest are skipped
+  by the global-deadline early return. So this is not "many small calls".
+- **Individual `solve` calls take ~17 s each** (calls 1–5 total 17,158 ms; call 7 alone adds
+  ~17,184 ms) against a **1 ms** label-cache deadline.
+
+**The cause is `hyper.rs:2899-2903`: `fn solve` checks the deadline exactly once, at entry,
+and that is the ONLY runtime deadline check in the whole hyper engine.** A `solve` frame whose
+work stays inside its own body therefore never re-consults it.
+
+### A fix was attempted at the obvious place and did NOT work — recorded so it is not retried
+
+Adding a strided deadline check inside `horn_fixpoint`'s worklist drain (mirroring the
+saturator's shipped `DEADLINE_CHECK_STRIDE = 4096`) left `label_cache_build` at
+**34,298 ms vs 34,392 ms** — unchanged — and the ontologies still DNF. Verified the patch was
+in the binary and force-rebuilt before concluding.
+
+**So the 17 s is inside a single event, not spread across worklist events.** That excludes the
+drain loop and points at `process_event` (`:2188`) and below it `match_body` (`:4104`) /
+`enumerate_matches` (`:4135`) — the non-Horn fire loop already documented as ~25% of self
+time. The change was reverted; the tree is clean.
+
+### Why the remaining fix needs care rather than another quick patch
+
+`enumerate_matches` and `match_body` take `&self` and *return matches*. Bailing out of them
+early drops matches, and a dropped match must surface as **`Stalled`** — not as a silent
+`Sat`. A silent `Sat` would still be sound in the FP sense (fewer derived facts ⇒ fewer
+clashes ⇒ a MISS) but it would be **silently incomplete without the `incomplete` flag**, which
+is precisely the failure mode this codebase treats as worse than a DNF. So the fix is a
+plumbing change through the match path, not a one-line stride.
+
 ## Next step (not attempted here)
 
-Profile or instrument **inside** `classify_labels`, splitting construct / solve / post. Two
-notes for whoever does it: `perf` is unavailable in this environment (`samply` is present),
-and the string `match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {` occurs
-**twice** in `lib.rs`, so a naive single-anchor patch will hit the wrong site — disambiguate
-before editing. No code changes were made; the tree is clean.
+Add a deadline check inside the match/fire path (`process_event` → `match_body` /
+`enumerate_matches`), propagating exhaustion as `HyperResult::Stalled` so the `incomplete`
+signal is preserved. Then re-measure `ore_ont_16056` (`label_cache_build` must fall below the
+label-cache budget) and re-run the 12-ontology cluster.
+
+Three traps that cost time here, for whoever continues:
+- `perf` is unavailable in this environment (`samply` is present).
+- `match engine.decide_with_deadline(HYPER_WEDGE_DEPTH, deadline) {` occurs **twice** in
+  `lib.rs` — line 4100 is `classify_labels`, line 4461 is `base_model_types`. A single-anchor
+  patch silently hits the wrong site; patch by line number.
+- `cargo build` reporting `Finished … in 0.10s` means **nothing was rebuilt**. Verify with
+  `strings target/release/rustdl | grep <marker>` or `touch` the file before trusting a
+  measurement.
+
+No code changes ship from this investigation; the tree is clean and rebuilt.

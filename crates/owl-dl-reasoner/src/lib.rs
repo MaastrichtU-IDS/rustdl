@@ -2740,6 +2740,37 @@ pub(crate) fn label_cache_env_override() -> Option<u64> {
         .and_then(|s| s.parse().ok())
 }
 
+/// AGGREGATE wall budget (ms) for the WHOLE label-cache build phase.
+///
+/// The per-class budget (`adaptive_label_cache_ms`) bounds one class. It cannot
+/// bound the phase, because the phase costs `n × per-class` and `n` reaches
+/// 8,025 on the affected ontologies. Profiling the 11 `label_cache_build`-bound
+/// members of the DNF tail (2026-08-08,
+/// `docs/known-limitations/label-cache-build-unbounded.md`) found the MEDIAN
+/// per-class overshoot is **0 ms** — most classes are instant — with a tail of
+/// 400–560 ms classes. So even a *perfect* 10 ms per-class bound leaves
+/// 1,682–8,025 classes × 10 ms = **17–80 s**. Those ontologies are
+/// aggregate-bound, not precision-bound.
+///
+/// Cutting the phase early is **sound**: an unbuilt label is `NoVerdict`, which
+/// is exactly what a per-class timeout already yields, and `NoVerdict` only
+/// removes a pruning opportunity — the tier walk then falls through to the
+/// (separately bounded) probe path. It costs COMPLETENESS-VIA-BUDGET, never
+/// correctness. Whether the ontologies then actually classify is an empirical
+/// question, deliberately left to measurement.
+///
+/// **Default 0 = unbounded** (opt-in): `RUSTDL_LABEL_CACHE_TOTAL_MS`.
+#[must_use]
+pub fn label_cache_total_ms() -> Option<u64> {
+    match std::env::var("RUSTDL_LABEL_CACHE_TOTAL_MS") {
+        Ok(v) => match v.parse::<u64>() {
+            Ok(0) | Err(_) => None,
+            Ok(ms) => Some(ms),
+        },
+        Err(_) => None,
+    }
+}
+
 /// Minimum wedge wall-time threshold (in milliseconds) below which a
 /// `NotSubsumed` verdict is **distrusted** and the tableau is asked to
 /// verify. A wedge `NotSubsumed` returned in < threshold ms is conjectured

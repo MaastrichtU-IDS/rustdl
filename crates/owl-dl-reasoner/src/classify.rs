@@ -2291,6 +2291,19 @@ pub(crate) fn classify_top_down_internal(
         } else {
             Some(std::time::Duration::from_millis(cache_ms))
         };
+        // AGGREGATE phase bound (2026-08-08, opt-in `RUSTDL_LABEL_CACHE_TOTAL_MS`).
+        // The per-class budget above bounds ONE class; it cannot bound a phase
+        // that costs `n × per-class` with n up to 8,025. Folded into the same
+        // `Option<Instant>` the global deadline already flows through, so the
+        // skip-check and `effective_deadline` both see the tighter of the two and
+        // the unset path is bit-identical to before. See `label_cache_total_ms`.
+        let lc_deadline = match crate::label_cache_total_ms() {
+            Some(ms) => {
+                let pd = label_cache_start + std::time::Duration::from_millis(ms);
+                Some(global_deadline.map_or(pd, |gd| gd.min(pd)))
+            }
+            None => global_deadline,
+        };
         (0..n)
             .into_par_iter()
             .map(|i| {
@@ -2298,7 +2311,7 @@ pub(crate) fn classify_top_down_internal(
                 // point paying for a per-class wedge call that will instant-timeout
                 // anyway. `NoVerdict` is sound — it makes the unsat-probe and
                 // tier-walk fall through to the already-gd-bounded probe path.
-                if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
+                if lc_deadline.is_some_and(|gd| Instant::now() >= gd) {
                     return crate::LabelOracle::NoVerdict;
                 }
                 let class_id =
@@ -2306,7 +2319,7 @@ pub(crate) fn classify_top_down_internal(
                 // Effective deadline: earlier of the global deadline and the
                 // per-class cache budget. When global_deadline is None, this
                 // reproduces the pre-fix behaviour exactly.
-                let deadline = effective_deadline(global_deadline, per_class_cache_dur);
+                let deadline = effective_deadline(lc_deadline, per_class_cache_dur);
                 prepared.classify_labels(class_id, deadline)
             })
             .collect()

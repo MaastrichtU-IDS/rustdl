@@ -221,6 +221,43 @@ label-cache budget on `ore_ont_16056`); `ore_ont_15010` as the discriminating pa
 1,920-ontology two-arm sweep, since this changes engine behaviour on every deadline-bounded
 classify.
 
+## PROFILED 2026-08-08: the other 11 are AGGREGATE-bound, not precision-bound
+
+After v0.4.16 made the per-class deadline bind, all 11 remaining members are **still**
+`label_cache_build`-dominated (84–100% of wall; class counts 1,682–8,025). Instrumenting
+`classify_labels` on `ore_ont_6134` (n=1,682) at a **1 ms** per-class budget:
+
+| | flag ON (stride 4096) | flag OFF |
+|---|---|---|
+| classes processed in a 20 s window | 237 | 156 |
+| mean overshoot vs the 1 ms budget | **85.1 ms** | 127.5 ms |
+| median | **0 ms** | 0 ms |
+| p90 | 406 ms | 548 ms |
+| max | 560 ms | 559 ms |
+| `construct_tot` | 1 ms | — |
+
+Three things follow.
+
+1. **v0.4.16 helps but does not bound**: −33% mean overshoot and +52% classes processed
+   per window. A ~560 ms max against a 1 ms budget is too large to be stride granularity,
+   so **a third unguarded region exists inside `solve`**, beyond the match cross-product.
+   Unlike `ore_ont_16056`'s 17 s, it is worth ~85 ms per class here.
+2. **Construction is again free** (1 ms total), independently re-confirming that the
+   clause-index amortization is not the issue on this cluster.
+3. **The dominant term is arithmetic, not precision.** The median overshoot is **0 ms** —
+   most classes are instant — and the cost is a tail of 400–560 ms classes. But even at a
+   *perfect* 10 ms per class, 1,682–8,025 classes cost **17–80 s**. No achievable per-class
+   precision fixes that.
+
+**Conclusion: these 11 need the AGGREGATE bound, and chasing further per-class deadline
+precision would not recover them.** That settles the open question of whether the
+aggregate-bound work is justified — it is, for this cluster, and the profiling is what
+justifies it rather than the single `ore_ont_16056` recovery (which was 1 of 12 and is a
+*different* mechanism).
+
+An aggregate bound is also robust to the residual imprecision: it cuts the whole phase, so
+it works even while per-class deadlines still overshoot.
+
 ## Next step (not attempted here)
 
 Add a deadline check inside the match/fire path (`process_event` → `match_body` /

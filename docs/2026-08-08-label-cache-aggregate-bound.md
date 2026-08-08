@@ -50,15 +50,22 @@ Three things this establishes:
 
 ## Two corrections this work forced
 
-**1. `ore_ont_16056` does NOT recover at default settings.** The v0.4.16 record
-has it going `dnf/150s → ok/485r/17s`. On a clean v0.4.16 HEAD binary, on a
-quiet host, it **DNFs at 200 s** at the default `--pair-timeout-ms 1000`. It
-completes only under a small per-pair budget (`--pair-timeout-ms 50`: 112 s,
-487 rows). The `label_cache_build=30909` in that run shows why the earlier
-framing misled: the label cache costs 31 s and then the **pair loop** consumes
-the rest. **`16056`'s default-setting stall is the pair loop, not the label
-cache.** Any claim that it is "label-cache-bound" needs restating with its
-budget attached.
+**1. I RAISED A CONTRADICTION THAT DID NOT EXIST — and this is the more useful
+lesson.** I re-measured `ore_ont_16056` at *default* settings, saw it DNF at
+200 s, and wrote up the v0.4.16 record (`dnf/150s → ok/485r/17s`) as
+non-reproducing. It reproduces fine. The recovery arm's conditions are stated
+plainly in `label-cache-build-unbounded.md` — `LABEL_CACHE_TIMEOUT_MS=50`,
+`--pair-timeout-ms 1`, threads=1, pinned sha — and that same doc *already* says
+"At *default* budgets `16056` still DNFs, because the default per-class budget is
+`clamp(n × per_pair, …)` = 30 s × 309 classes." **I declared a contradiction
+without reading the conditions attached to the number I was contradicting.**
+The correction is withdrawn.
+
+What survives is narrower and still worth having: at **default** `--pair-timeout-ms
+1000`, `16056`'s wall is dominated by the pair loop, not the label cache
+(`label_cache_build=30,909` of a >200 s run). So "label-cache-bound" is a
+statement about a *configuration*, not about an ontology — which is exactly the
+distinction the cluster analysis below turns on.
 
 **2. A whole sweep was void'd for an invalid flag.** The first recovery sweep
 passed `--threads 1`, which `rustdl classify` does not accept. All 33 cells were
@@ -126,6 +133,28 @@ follows.
 That is the same residual unguarded region inside `solve` that the v0.4.16
 per-class fix reduced but did not close (~85 ms mean, 560 ms max overshoot on
 `ore_ont_6134`). An aggregate bound cannot be tighter than one class.
+
+## The pre-registered rule was right, and my reasoning overturned it wrongly
+
+`label-cache-build-unbounded.md` pre-registered a decision rule before the
+v0.4.16 cluster run: *"≥6 ⇒ the aggregate-bound work is justified and urgent;
+2–5 ⇒ keep the flag OFF; ≤1 ⇒ the fix is a correctness repair only and the
+cluster needs a different mechanism."* The run recovered **1 of 12**, and the
+doc concluded, correctly: **"the aggregate-bound follow-up does NOT inherit a
+justification from it."**
+
+I then overturned that on a mechanism argument — profiling showed median
+per-class overshoot of 0 ms and a tail of 400–560 ms classes, from which "these
+are aggregate-bound, so an aggregate bound is what they need" follows very
+naturally. It is also wrong, and the measurement above says so: bounding the
+aggregate frees ~95 s and buys 6 rows out of 2,349 on one ontology.
+
+**A pre-registered rule outperformed a plausible post-hoc mechanism argument.**
+The argument was not sloppy — it was quantitative, correctly derived from real
+profiling, and it predicted the wrong thing anyway, because it reasoned about
+which phase *consumes* the wall without asking what that phase *buys* the phase
+after it. When a pre-registered rule and a fresh mechanism story disagree, the
+cheap move is to measure the story's own prediction, not to re-derive the rule.
 
 ## Status: opt-in, NOT a default candidate
 

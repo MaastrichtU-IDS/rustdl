@@ -154,7 +154,19 @@ proven on the discriminating input first (83,293 ms vs 105 ms), both arms with
 | negative control `ore_ont_5368` (`prepare`-bound) | ok/6,100 rows in **both** arms, 125 s vs 117 s — correctly **unaffected** |
 
 **So the pre-registered rule says: this is a correctness repair, not a recovery lever, and the
-aggregate-bound follow-up does NOT inherit a justification from it.** The 12 are
+aggregate-bound follow-up does NOT inherit a justification from it.**
+
+> **CONFIRMED 2026-08-08 — the aggregate bound was built anyway, and the rule was right.**
+> `RUSTDL_LABEL_CACHE_TOTAL_MS` (opt-in) bounds the phase exactly (tracks its budget to
+> within 18 ms). Under an identical 100 s global budget it redirects **~95 seconds** from
+> `label_cache_build` into `tier_walk` and yields **+6 rows out of 2,349 on ONE** of five
+> tail members and **zero** on the other four; 0 of 11 recover at default or at
+> `--pair-timeout-ms 50`. The intervening justification — profiling showed the median
+> per-class overshoot is 0 ms, so "they are aggregate-bound and need an aggregate bound" —
+> was quantitative, correctly derived, and still wrong: it asked which phase *consumes* the
+> wall without asking what that phase *buys* the phase after it. The label cache is a
+> PRUNE, so starving it makes the tier walk probe more, not progress more.
+> See `docs/2026-08-08-label-cache-aggregate-bound.md`. The 12 are
 **phase-homogeneous but not mechanism-homogeneous** — they all stall in `label_cache_build`, for
 at least two different underlying reasons, and only `16056`'s is the unbounded match
 enumeration. The negative control behaving correctly is what makes that reading trustworthy

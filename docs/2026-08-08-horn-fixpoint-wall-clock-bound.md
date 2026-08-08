@@ -99,3 +99,58 @@ Canaries: `crates/owl-dl-tableau/tests/fixpoint_deadline_default.rs` (4; all env
 rows pinned including `""`). **Sabotage 2 of 2 caught** — dead flag, and the
 default-ON idiom. Honest limit: those pin the env plumbing only, not the
 mechanism; the mechanism is evidenced by the measurement above.
+
+## Gate results: NO-GO on the default flip
+
+Both gates ran. The fix is correct and sound; it has **no measured corpus value**.
+
+**Gate 1 (ΔMISSED) is INAPPLICABLE, not passed.** Two arms at default args and two
+at `--pair-timeout-ms 50`, 400-ontology population, same pinned sha, env recorded
+per arm: ΔMISSED **+0**, FP 0 both sides, in both configurations. But an
+instrument-fired check shows **answers identical on all 400 ontologies** in every
+arm — and the reason is structural: **none of the six affected ontologies
+(`6134`, `12432`, `10080`, `13122`, `6910`, `16056`) are in the population**,
+because that frame is drawn from *completers* and all six are DNF-tail members.
+The net cannot see this flag. Reporting its `+0` as a pass would have been
+reporting an arm that never ran the code.
+
+A second trap on the way: **321 of 400 output files differed byte-wise while
+answers were identical.** The banner's timings and `wedge-cost-histogram` are
+nondeterministic (already documented elsewhere in the design record). A raw
+byte-diff here manufactures 321 phantom regressions.
+
+**Gate 2 (full-corpus two-arm sweep), 1,920 ontologies, cap 60 s, `--threads 1`,
+`JOBS=4`:**
+
+| | OFF | ON |
+|---|---|---|
+| outcomes | 1,751 ok / 167 dnf / 2 err_reject | **identical** |
+| recovered `dnf → ok` | — | **0** |
+| regressed `ok → dnf` | — | **0** |
+| total wall (1,751 completers) | 3,583 s | 3,600 s (**+0.5%**) |
+| total peak RSS | 281.6 GB | 281.6 GB (**+0.0%**) |
+
+One ontology looked 2.5× slower (`ore_ont_5755`, 1.47 → 3.66 s); min-of-3 puts it
+at **1.35 vs 1.36 s** — sweep noise, not a regression.
+
+**The documented small-budget case shows nothing either.** `wine` at
+`--pair-timeout-ms 25` — the configuration the CLI's own help text recommends, and
+the one this fix should most help — is **204 rows in both arms**, 5.38 s vs 5.51 s
+(min-of-3). So the "budgets below the overshoot scale are silently not honoured"
+consequence, while true of the histogram, does not translate into a measurable
+wine effect.
+
+### Verdict
+
+**Default stays OFF.** The lever is sound, tested, and demonstrably makes the
+per-pair budget enforceable — the `ore_ont_6134` overshoot buckets go to zero, and
+that run decides 3.1× more pairs and finds +29 more subsumptions. But that effect
+required a *specific* configuration (`--pair-timeout-ms 50` + an aggregate
+label-cache bound + a global timeout) on an ontology that **still DNFs**, so the
+gain never reaches a user. Corpus-wide at default settings the flag is inert, and
+flipping it ON would add a strided clock read to a hot loop for no measured
+return.
+
+Kept as an opt-in because the *defect* it fixes is real and the fix is
+FP-safe by construction; if a future workload makes small per-pair budgets
+load-bearing, this is the switch that makes them honest.

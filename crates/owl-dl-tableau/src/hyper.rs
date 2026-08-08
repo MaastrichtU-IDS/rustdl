@@ -101,6 +101,11 @@ fn trace_body_vars() -> bool {
 /// cross-product ([`HyperEngine::enumerate_matches`]). Coarse on purpose: a
 /// per-step clock read here is a measured cost in this codebase.
 const MATCH_DEADLINE_STRIDE: u64 = 4096;
+
+/// Stride for the `horn_fixpoint` wall-clock probe. The drain loop's events are
+/// individually cheap, so the clock read must be amortized; 256 keeps the check
+/// well under 1% of loop cost while bounding overshoot to ~256 events.
+const FIXPOINT_DEADLINE_STRIDE: usize = 256;
 const FIXPOINT_ITERS: usize = 100_000;
 
 /// Node id in the hyper completion graph.
@@ -2114,6 +2119,26 @@ impl<'c> HyperEngine<'c> {
         while let Some(ev) = self.worklist.pop() {
             steps += 1;
             if steps > max_iters {
+                return HyperResult::Stalled;
+            }
+            // WALL-CLOCK bound (2026-08-08, `RUSTDL_FIXPOINT_DEADLINE`). This loop
+            // was bounded ONLY by the `max_iters` STEP count above, so a fixpoint
+            // whose events are individually expensive ran unbounded in time:
+            // measured on `ore_ont_6134`, 19,906 pairs cost 100-999 ms against a
+            // 50 ms per-pair budget, and a stride sweep of the
+            // `enumerate_matches` probe (4096/256/64) left that bucket flat —
+            // excluding the match cross-product as the cause.
+            //
+            // SOUNDNESS: this reuses the `Stalled` exit two lines above, which
+            // every caller already handles because `max_iters` reaches it. No new
+            // verdict and no new soundness surface — a clock-truncated fixpoint is
+            // indistinguishable, to callers, from a step-truncated one. `Stalled`
+            // is never `Sat`, so a truncated proof can only MISS.
+            if crate::hyper_fixpoint_deadline_enabled()
+                && steps.is_multiple_of(FIXPOINT_DEADLINE_STRIDE)
+                && let Some(dl) = self.deadline
+                && Instant::now() >= dl
+            {
                 return HyperResult::Stalled;
             }
             if matches!(self.process_event(ev), FireOutcome::Clash) {

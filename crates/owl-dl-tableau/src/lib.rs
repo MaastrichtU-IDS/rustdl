@@ -3975,3 +3975,21 @@ pub fn hyper_match_deadline_enabled() -> bool {
     // Default-ON idiom (house convention): an EMPTY value enables.
     std::env::var_os("RUSTDL_HYPER_MATCH_DEADLINE").is_none_or(|v| v != "0")
 }
+
+/// Whether `horn_fixpoint`'s drain loop consults the wall-clock deadline.
+///
+/// The loop is bounded by a `max_iters` STEP count only, so a fixpoint whose
+/// events are individually expensive overruns its time budget. Measured on
+/// `ore_ont_6134`: 19,906 pairs cost 100-999 ms against a 50 ms per-pair budget,
+/// and a stride sweep of the sibling `enumerate_matches` probe left that bucket
+/// flat, excluding the match cross-product.
+///
+/// Sound by reuse: it returns the same `Stalled` every caller already handles
+/// from the `max_iters` branch. `Stalled` is never `Sat`, so truncating can only
+/// MISS a subsumption, never manufacture one.
+///
+/// **Default OFF** pending measurement (`=1` opts in).
+#[must_use]
+pub fn hyper_fixpoint_deadline_enabled() -> bool {
+    std::env::var_os("RUSTDL_FIXPOINT_DEADLINE").is_some_and(|v| v == "1")
+}

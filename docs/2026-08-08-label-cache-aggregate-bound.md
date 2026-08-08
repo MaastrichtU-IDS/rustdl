@@ -219,3 +219,40 @@ per-pair budget grows (12 → 4 → 0 → 0 at 50/200/1000/5000 ms) because `ran
 generosity.** A prior session killed a lever on exactly this artifact. Any
 `rescued=0` observation here must be re-checked at a budget large enough for the
 fallthrough to run at volume before it is treated as evidence of a dead path.
+
+## Root cause of both negative results: the label cache is ALL-OR-NOTHING
+
+The `# label heuristic` counters explain the whole session in one mechanism:
+
+| | label heuristic |
+|---|---|
+| `ore_ont_10908` (healthy, 692 classes) | pruned=33,118 pass_through=1 **misses=0** |
+| `ore_ont_15672` (healthy, 82 classes) | pruned=2,795 pass_through=24 **misses=0** |
+| `ore_ont_6134` **with** the aggregate bound | pruned=1,326 pass_through=6 **misses=26,666** |
+
+On a healthy ontology the cache has a verdict for **every** pair (`misses=0`) and
+prunes 96–100%. Bounding the phase produces a cache with **26,666 misses**, which
+prunes ~5% — and each miss is not a cheap fallback but a **full tableau probe**.
+
+So the aggregate bound converts a slow-but-complete cache into a fast-but-useless
+one. Freeing ~95 s of label-cache time creates ~26,666 unpruned probes, and the
+tier walk spends the freed budget on them for +6 rows. **The bound is not merely
+unhelpful — the phase it starves is what makes the phase after it cheap.**
+
+This also retires the per-class-precision line of work: a *tighter* per-class
+bound produces *more* misses, not fewer, so it moves in the wrong direction.
+
+**The lever this implies is COMPLETION, not bounding.** For this cluster the goal
+is to make the label cache finish — because a complete cache is worth ~100%
+pruning and an incomplete one is worth almost nothing.
+
+Note a sound-looking shortcut that does NOT work: salvaging partial labels from a
+timed-out class. Pruning is justified by `D ∉ labels(C)` in a **complete** `Sat`
+model — absence from a partially-explored model is not absence from a complete
+one, so a partial label set cannot prune soundly. `NoVerdict` is the correct
+verdict for a truncated class; the cost is intrinsic to truncating.
+
+Open question, now well-scoped: on `ore_ont_6134` the median per-class label cost
+is **0 ms** with a tail of 400–560 ms classes. What distinguishes those classes?
+That is a causal question about a named, reproducible tail — unlike the two
+symptom-capping levers measured out above.

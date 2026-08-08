@@ -2401,6 +2401,52 @@ pub fn classify_inconsistency_budget_override_ms() -> Option<u64> {
         .and_then(|s| s.parse().ok())
 }
 
+/// Whether `classify` runs a **budgeted wedge-consistency probe** when it has
+/// already found at least one unsatisfiable class.
+///
+/// **The gap.** `classify`'s inconsistency detection is a sound
+/// under-approximation: it consults the saturator's `⊤`-unsat signal and the
+/// `ABox` pre-check, but never the wedge-consistency route that `is_consistent`
+/// uses. Measured over all 1,920 ORE ontologies (2026-08-08): `is_consistent`
+/// finds **43** inconsistent; classify agrees on 41 and reports
+/// `consistent = true` on **2** — `ore_ont_16372` and `ore_ont_7610`. Those are
+/// WRONG ANSWERS, the worst failure class, and both are caught by
+/// `consistency_wedge` in under 0.4 s.
+///
+/// **Why this is affordable, when running `is_consistent` on the classify path
+/// is not.** Unconditionally, it is not: on 60 sampled *consistent* ontologies
+/// `is_consistent` costs a mean of **5.1 s** (16 over 1 s, max 30 s), which is
+/// the documented dead-end. The gate is what makes it cheap:
+///
+/// > An inconsistent KB makes `⊤` unsatisfiable, hence **every** class
+/// > unsatisfiable. Contrapositive: **zero unsatisfiable classes ⟹ consistent**,
+/// > so no probe is needed there.
+///
+/// Measured, that gate admits **1 of 60** sampled ontologies (~1.6%), so the
+/// probe runs on roughly 31 of 1,920 rather than all of them. Both targets pass
+/// it (3 and 91 unsatisfiable classes respectively).
+///
+/// **Soundness.** Skipping keeps today's behaviour exactly, so the gate can only
+/// fail to fix, never break — note the gate is a heuristic for *when to look*,
+/// not a claim, because classify's per-class unsat detection is itself
+/// incomplete. A positive verdict is a wedge `Unsat`, which `is_consistent`
+/// already trusts as a real inconsistency on the same justification.
+///
+/// **Default OFF** pending a corpus sweep (`=1` opts in).
+#[must_use]
+pub fn classify_consistency_probe_enabled() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_CONSISTENCY_PROBE").is_some_and(|v| v == "1")
+}
+
+/// Budget in ms for the gated classify consistency probe. Default 1000.
+#[must_use]
+pub fn classify_consistency_probe_ms() -> u64 {
+    std::env::var("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
+}
+
 /// Cheap structural predictors of the `ABox`-saturation fixpoint's cost, read in
 /// ONE linear pass over the lowered axioms — no reasoning, no allocation beyond
 /// three counters.

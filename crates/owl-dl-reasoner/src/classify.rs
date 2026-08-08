@@ -1167,6 +1167,9 @@ pub(crate) fn classify_internal_with_timeout(
         }
     }
     let _ = satisfiable; // currently informational only
+    if probe_says_inconsistent(&prepared, &unsatisfiable_idxs, &stats) {
+        return Ok(classify_inconsistent(classes, index, stats.fragment));
+    }
     Ok(Classification {
         classes,
         index,
@@ -1322,6 +1325,45 @@ fn classify_pure_el(
 /// other class (the trivial entailment under inconsistency). Mirrors
 /// Konclude's behaviour. Used when the `ABox` consistency pre-check
 /// fires.
+/// Gated wedge-consistency probe for the classify path
+/// (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`, default OFF).
+///
+/// classify's inconsistency detection misses the wedge-consistency route
+/// `is_consistent` uses. Over all 1,920 ORE ontologies (2026-08-08),
+/// `is_consistent` finds **43** inconsistent while classify reports
+/// `consistent = true` on **2** — `ore_ont_16372` and `ore_ont_7610`. Wrong
+/// answers, both caught by the wedge in under 0.4 s.
+///
+/// **The gate is what makes this affordable.** Unconditionally, running the check
+/// costs a mean of **5.1 s** on consistent ontologies (60 sampled: 16 over 1 s,
+/// max 30 s) — the documented dead-end. But an inconsistent KB makes `⊤` unsat
+/// and therefore EVERY class unsat, so **zero unsatisfiable classes implies
+/// consistent** and needs no probe. Measured, that admits **1 of 60** (~1.6%), so
+/// the probe runs on ~31 of 1,920 ontologies.
+///
+/// **Sound.** Skipping preserves today's behaviour exactly, so the gate can only
+/// fail to fix, never break — it is a heuristic for *when to look*, not a claim,
+/// since classify's own per-class unsat detection is incomplete. A positive
+/// verdict is a wedge `Unsat`, which `is_consistent` already trusts as a real
+/// inconsistency on the same justification.
+fn probe_says_inconsistent(
+    prepared: &PreparedOntology,
+    unsatisfiable_idxs: &HashSet<usize>,
+    stats: &ClassificationStats,
+) -> bool {
+    if !crate::classify_consistency_probe_enabled()
+        || unsatisfiable_idxs.is_empty()
+        || stats.inconsistent
+    {
+        return false;
+    }
+    let budget = std::time::Duration::from_millis(crate::classify_consistency_probe_ms());
+    matches!(
+        prepared.consistency_wedge(Some(std::time::Instant::now() + budget)),
+        Some(owl_dl_tableau::hyper::HyperResult::Unsat)
+    )
+}
+
 fn classify_inconsistent(
     classes: Vec<String>,
     index: HashMap<String, usize>,
@@ -3021,6 +3063,9 @@ pub(crate) fn classify_top_down_internal(
         .saturating_sub(stats.sweep_wall_ms)
         .saturating_sub(stats.matrix_wall_ms);
 
+    if probe_says_inconsistent(&prepared, &unsatisfiable_idxs, &stats) {
+        return Ok(classify_inconsistent(classes, index, stats.fragment));
+    }
     Ok(Classification {
         classes,
         index,

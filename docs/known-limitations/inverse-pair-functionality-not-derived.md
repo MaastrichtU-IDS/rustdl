@@ -189,3 +189,83 @@ because new functional roles mean new merges on every ontology declaring an inve
 functional role. That is not a rare shape, so **do not assume it is cheap.** The four fixtures above
 are the correctness canaries: `a` and `f` must flip to inconsistent, and `d` and `e` must stay
 inconsistent.
+
+## 2026-08-08 re-measurement: the blocker is bigger than recorded, and it is not the enforcement GCI
+
+Re-measured on 0.4.16 (`9d44680`) while scoping the "recover the +17" follow-up.
+
+**`ore_ont_16372` flag-ON is NOT a DNF.** Every prior arm capped it at 120–150 s and
+recorded `dnf`; with a 200 s cap it **completes in 194.57 s**. That matters because the
+real shape is worse than a DNF is, not better:
+
+| | wall | rows |
+|---|---:|---:|
+| flag OFF | **3.66 s** | **2,236** |
+| flag ON | 194.57 s | **749** |
+
+A **53× slowdown** *and* a **two-thirds answer loss** — the missing rows are pairs that
+time out and default to `not-subsumed` (sound, but a large completeness loss).
+
+**The +17 is currently unrealised.** `ore_ont_13859` reports **971 rows at both flag
+settings** on this binary: the reorder that fixed 3 of 4 regressions did cost the gain, as
+suspected. So today the flag is **strictly harmful** — no benefit anywhere, one severe
+victim.
+
+### Where the flag-ON cost actually is
+
+`--global-timeout-ms 60000` forces a banner out of the slow arm:
+
+| | flag OFF | flag ON |
+|---|---|---|
+| label heuristic | pruned=98,697 pass_through=1,609 **misses=0** | pruned=10,079 pass_through=244 **misses=54** |
+| `label_cache_build` | 747 ms | 749 ms (**unchanged**) |
+| `tier_walk` | **1,669 ms** | **58,156 ms** |
+
+The cache builds in the *same* time and yields **54 `NoVerdict` classes**. This is the
+same all-or-nothing property documented in
+`docs/2026-08-08-label-cache-aggregate-bound.md`: 54 unprunable classes × 744 ≈ 40k
+unprunable pairs, and pruning collapses ~10×. **The flag's cost is not in preprocessing,
+absorption, or the merge — it is 54 poisoned label classes.**
+
+Part 2 (materialisation) is **inert here**: `ore_ont_16372` has **zero**
+`ObjectPropertyAssertion`. So the cost comes purely from Part 1's derived
+`InverseFunctionalRole` axioms. Ablations that do **not** fix it:
+`RUSTDL_INVERSE_FUNC_MERGE=0`, `RUSTDL_CLASSIFY_BACKFOLD=0`, `RUSTDL_HYPERTABLEAU=0`,
+`RUSTDL_DOMAIN_ABSORPTION=0`, `RUSTDL_ITERATIVE_DEEPENING=0`, and
+`RUSTDL_LABEL_CACHE_TIMEOUT_MS` at 5,000 or 30,000 (misses stay at 54 — they are **not**
+budget-starved).
+
+### Hypothesis raised and REFUTED: the adaptive-budget early-cut
+
+`RUSTDL_ADAPTIVE_BUDGET=0` takes misses **54 → 14** and `tier_walk` 58,156 → 28,606 ms,
+which implicates the divergence early-cut in *creating* the `NoVerdict`s. It also suggests
+a plausible asymmetry: a `Stalled` costs **O(1)** in the pair oracle (one pair defaults to
+not-subsumed) but **O(n)** in the label cache (it poisons every pair involving that class),
+so exempting the label path looks principled.
+
+**Measurement refutes it.** With no global cap:
+
+| | flag ON | flag OFF |
+|---|---|---|
+| `ADAPTIVE_BUDGET=1` | 194.57 s ✓ | **3.66 s** |
+| `ADAPTIVE_BUDGET=0` | **dnf @200 s** | 37.26 s |
+
+Disabling the early-cut makes the flag-ON arm **worse**, and costs the flag-OFF baseline
+**10×**. The early-cut is load-bearing on this ontology, not the culprit; it converts some
+classes to `NoVerdict` but prevents far more work than it causes.
+
+### Consequence for the "recover the +17" plan
+
+The plan was selective enforcement-GCI emission. Two findings retire it as the next step:
+
+1. **It targets the wrong problem.** `16372` regresses *without* any enforcement GCI (that
+   is what the reorder removed), so re-adding GCIs selectively cannot fix it and can only
+   add risk back.
+2. **Any count-based gate would be a lookup table.** The beneficiary has **14** inverse
+   pairs; the three GCI-caused regressors have 76–118; but `16372` has **20**. A threshold
+   admitting 14 while excluding 20 is a constant fitted to one ontology, not a criterion.
+
+**The binding item is the 54 poisoned label classes** — specifically, why derived
+`InverseFunctionalRole` axioms make those classes' wedge satisfiability searches diverge
+when the same ontology's declared characteristics do not. That is a wedge-search question,
+not a preprocessing one, and it is where any further work on this flag should start.

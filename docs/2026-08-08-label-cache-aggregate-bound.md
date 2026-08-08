@@ -176,3 +176,46 @@ guarded by the `16056` measurement above, not by a unit test.
 The fixture is deliberately **out-of-EL** (`ObjectAllValuesFrom`): on the pure-EL
 fast path the label cache is never built, so an EL fixture would make both
 behavioural canaries vacuous. Both assert `!pure_el_mode` as a precondition.
+
+## Follow-on: the per-pair budget overshoots too, and the stride is NOT why
+
+The `--global-timeout-ms` diagnostic that exposed the label-cache phase also exposes
+the pair loop. On `ore_ont_6134` at `--pair-timeout-ms 50` (global 240 s), the
+wedge-cost histogram puts **19,906 pairs in the 100–999 ms bucket** and 26 at
+≥1000 ms — a **2–20× overshoot** of the budget. The pattern is budget-relative: at
+`pair=1000`, 4,314 land in the ≥1000 ms bucket and only 97 in 100–999. So pairs
+consistently consume their full budget and spill into the next bucket.
+
+**Consequence worth flagging beyond this ontology:** a per-pair budget below the
+overshoot scale is silently not honoured. That includes the documented
+`--pair-timeout-ms 25` wine guidance and the 50 ms adaptive label-cache floor —
+neither delivers the budget it names.
+
+**Hypothesis tested and REFUTED: it is not `MATCH_DEADLINE_STRIDE` granularity.**
+Made the stride env-tunable and swept it (prediction declared first: the 100–999 ms
+bucket shrinks, `ran` rises, rows ≥ baseline):
+
+| stride | rows | fallthrough `ran` | 100–999 ms | ≥1000 ms |
+|---|---|---|---|---|
+| 4096 | 2,360 | 22,688 | 19,525 | 82 |
+| 256 | 2,360 | 22,237 | 19,180 | 46 |
+| 64 | 2,360 | 22,194 | 19,640 | **17** |
+
+The probe demonstrably **fires** — the ≥1000 ms tail falls 82 → 17 (4.8×) — which is
+what makes the flat 100–999 ms column a finding rather than a non-firing instrument.
+Rows are identical at 2,360 across all three arms. **So the bulk overshoot is not in
+`enumerate_matches`.** The experimental patch was reverted; the residual unguarded
+region is now localised by exclusion, and the candidates are the regions `solve`
+enters after its entry-time deadline check (notably the `horn_fixpoint` drain and
+disjunctive branching).
+
+## Follow-on: `rescued=0` was a budget artifact for the SECOND time
+
+The wedge-stall→tableau fallthrough reported `ran=9325 rescued=0` at a 100 s global
+budget, which reads like a pure-waste path worth deleting. It is not. Raising the
+global budget to 240 s gives `ran=21596 rescued=12`. Rescues then *fall* as the
+per-pair budget grows (12 → 4 → 0 → 0 at 50/200/1000/5000 ms) because `ran` collapses
+21,596 → 416 under a fixed global budget: **rescues track throughput, not per-pair
+generosity.** A prior session killed a lever on exactly this artifact. Any
+`rescued=0` observation here must be re-checked at a budget large enough for the
+fallthrough to run at volume before it is treated as evidence of a dead path.

@@ -2447,6 +2447,36 @@ pub fn classify_consistency_probe_ms() -> u64 {
         .unwrap_or(1000)
 }
 
+/// Whether the per-class unsat probe DISTRUSTS a wedge `Sat` for a class that has
+/// an **asserted instance**.
+///
+/// The unsat probe reuses the label cache's wedge verdict instead of re-running
+/// the main tableau (`classify.rs`, the `LabelOracle::Sat` arm) — a large win,
+/// but the wedge is Horn-incomplete, so a wrong `Sat` silently marks an
+/// unsatisfiable class satisfiable. On `ore_ont_16372` (inconsistent per Konclude
+/// AND `HermiT`) that hides **741 of 744** unsatisfiable classes:
+/// `RUSTDL_UNSAT_VIA_LABELS=0` finds 744 in 2.1 s where the default finds 3 in
+/// 3.2 s — i.e. on this ontology the optimisation is both less complete and
+/// SLOWER.
+///
+/// Disabling the shortcut wholesale is not an option (it is worth ~20× on
+/// alehif / ore-10908). This carve-out is narrow: only classes with an asserted
+/// instance are re-verified, which is where a wrong `Sat` can hide an
+/// inconsistency, since `ClassAssertion(C, a)` with `C` unsatisfiable has no
+/// model. Measured cost: **4–7 distinct asserted types** on
+/// `ore_ont_16372`/`10908`/`15672`, so a handful of extra tableau probes.
+///
+/// Follows the precedent immediately beside it — the concrete-domain
+/// `needs_verify` carve-out, which likewise swaps a wedge `Sat` for the complete
+/// path on a narrow class set.
+///
+/// Sound in the same direction as that precedent: it only ever replaces a wedge
+/// `Sat` with the main tableau's verdict. **Default OFF** (`=1` opts in).
+#[must_use]
+pub fn unsat_verify_asserted_enabled() -> bool {
+    std::env::var_os("RUSTDL_UNSAT_VERIFY_ASSERTED").is_some_and(|v| v == "1")
+}
+
 /// Cheap structural predictors of the `ABox`-saturation fixpoint's cost, read in
 /// ONE linear pass over the lowered axioms — no reasoning, no allocation beyond
 /// three counters.

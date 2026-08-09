@@ -112,14 +112,20 @@ fn explicit_one_is_on() {
 }
 
 #[test]
-fn probe_budget_defaults_to_ten_ms() {
-    // 10 ms, and the value is load-bearing. A 1,920-ontology sweep at 1000 ms cost
-    // 4 ontologies `ok` -> `dnf` and took `ore_ont_1966` 7.30 s -> 58.20 s. The cost
-    // is NOT proportional to the budget (1966: 66 s at 1000 ms, 73 s at 100 ms,
-    // 5.17 s at 10 ms) because `decide_with_deadline` overshoots on the main
-    // tableau. No single value satisfies both sides: `ore_ont_16372` needs >=200 ms,
-    // `ore_ont_1966` dies at 100 ms. Raising this re-breaks ontologies that
-    // currently answer correctly.
+fn probe_budget_defaults_to_two_hundred_ms() {
+    // 200 ms, paired with the UNSAT-FRACTION gate in `probe_says_inconsistent`.
+    //
+    // A 1,920-ontology sweep at 1000 ms with only the `>= 1 unsat` gate cost 4
+    // ontologies `ok` -> `dnf` (14881, 6108, 7416, 7803) and took 1966 from 7.30 to
+    // 58.20 s. All five are HUGE ABox-bearing ontologies with ONE unsatisfiable class
+    // (0.005-0.063%), admitted on that single class while the probe's cost scales
+    // with their ~90k-assertion ABox. The two ontologies that need the probe sit at
+    // 0.403% (16372) and 100% (7610), so the fraction threshold lives in a measured
+    // ~6x gap. With the gate, 200 ms fixes BOTH targets and leaves all five victims
+    // within noise.
+    //
+    // The threshold must stay LOW: 16372 is genuinely inconsistent yet shows only
+    // 0.403%, because classify's per-class unsat detection is itself incomplete.
     let prior = std::env::var_os("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS");
     assert!(
         prior.is_none() || owl_dl_reasoner::classify_consistency_probe_ms() > 0,
@@ -128,9 +134,10 @@ fn probe_budget_defaults_to_ten_ms() {
     if prior.is_none() {
         assert_eq!(
             owl_dl_reasoner::classify_consistency_probe_ms(),
-            10,
-            "raising this default re-breaks ore_ont_14881/6108/7416/7803 (ok -> dnf) \
-             and ore_ont_1966 (7.30 -> 58.20 s); see the doc comment"
+            200,
+            "changing this default without re-running the 1,920-ontology sweep risks \
+             ore_ont_14881/6108/7416/7803 (ok -> dnf) and ore_ont_1966 (7.30 -> 58.20 s); \
+             those are safe only because of the unsat-FRACTION gate"
         );
     }
 }

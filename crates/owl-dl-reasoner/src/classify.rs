@@ -1167,7 +1167,7 @@ pub(crate) fn classify_internal_with_timeout(
         }
     }
     let _ = satisfiable; // currently informational only
-    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, &stats) {
+    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &stats) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {
@@ -1350,6 +1350,7 @@ fn probe_says_inconsistent(
     internal: &InternalOntology,
     prepared: &PreparedOntology,
     unsatisfiable_idxs: &HashSet<usize>,
+    n_classes: usize,
     stats: &ClassificationStats,
 ) -> bool {
     if !crate::classify_consistency_probe_enabled()
@@ -1377,6 +1378,37 @@ fn probe_says_inconsistent(
         {
             return true;
         }
+    }
+    // UNSAT-FRACTION GATE for the expensive layers (2026-08-09).
+    //
+    // The `unsatisfiable_idxs.is_empty()` gate above is sound but too weak: it admits
+    // a HUGE ABox-bearing ontology on the strength of ONE unsatisfiable class, and the
+    // `⊤` probe's cost scales with the ABox, not with the unsat count. A
+    // 1,920-ontology sweep at a 1000 ms budget took exactly that shape to `dnf`:
+    //
+    // | ontology | classes | unsat | ABox | fraction |
+    // |---|---|---|---|---|
+    // | `ore_ont_14881` | 20,485 | 1 | 98,536 | 0.005% |
+    // | `ore_ont_6108` | 19,145 | 1 | 86,099 | 0.005% |
+    // | `ore_ont_7416` | 17,295 | 1 | 83,567 | 0.006% |
+    // | `ore_ont_7803` | 18,672 | 1 | 89,323 | 0.005% |
+    // | `ore_ont_1966` | 20,514 | 13 | 84,424 | 0.063% |
+    //
+    // against the two ontologies that need the probe: `ore_ont_16372` at **0.403%**
+    // and `ore_ont_7610` at **100%**. The threshold sits in that measured ~6× gap.
+    //
+    // The rationale is semantic, not curve-fitting: an inconsistent KB makes `⊤`
+    // unsatisfiable and therefore EVERY class unsatisfiable, so 1-in-20,000 is
+    // evidence of a satisfiable ontology with one modelling error, while a
+    // meaningful fraction is evidence of inconsistency. Note the threshold must stay
+    // LOW — `16372` is genuinely inconsistent yet shows only 0.403%, because
+    // classify's own per-class unsat detection is incomplete. Anything like "50% of
+    // classes" would miss it.
+    //
+    // Sound in the same sense as the outer gate: skipping preserves today's
+    // behaviour, so this can only fail to fix, never break.
+    if unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * 2 {
+        return false;
     }
     let budget = std::time::Duration::from_millis(crate::classify_consistency_probe_ms());
     // (2) Wedge consistency route — the cheap one `is_consistent` tries first.
@@ -3107,7 +3139,7 @@ pub(crate) fn classify_top_down_internal(
         .saturating_sub(stats.sweep_wall_ms)
         .saturating_sub(stats.matrix_wall_ms);
 
-    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, &stats) {
+    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &stats) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {

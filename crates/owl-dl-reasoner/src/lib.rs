@@ -2441,7 +2441,7 @@ pub fn classify_consistency_probe_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_CONSISTENCY_PROBE").is_none_or(|v| v != "0")
 }
 
-/// Budget in ms for the gated classify consistency probe. **Default 10.**
+/// Budget in ms for the gated classify consistency probe. **Default 200.**
 ///
 /// The value is small for a measured reason, not conservatism. A
 /// 1,920-ontology two-arm sweep at 1000 ms cost **4 ontologies `ok` → `dnf`**
@@ -2467,7 +2467,7 @@ pub fn classify_consistency_probe_ms() -> u64 {
     std::env::var("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(10)
+        .unwrap_or(200)
 }
 
 /// Cheap structural predictors of the `ABox`-saturation fixpoint's cost, read in

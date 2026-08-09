@@ -112,16 +112,25 @@ fn explicit_one_is_on() {
 }
 
 #[test]
-fn probe_budget_defaults_to_one_second() {
-    // The budget bounds the gated probe. Both known targets resolve in <0.4 s, so
-    // 1000 ms is generous; the value matters because the probe runs on ~1.6% of
-    // ontologies and a large budget there is the whole cost of the feature.
+fn probe_budget_defaults_to_ten_ms() {
+    // 10 ms, and the value is load-bearing. A 1,920-ontology sweep at 1000 ms cost
+    // 4 ontologies `ok` -> `dnf` and took `ore_ont_1966` 7.30 s -> 58.20 s. The cost
+    // is NOT proportional to the budget (1966: 66 s at 1000 ms, 73 s at 100 ms,
+    // 5.17 s at 10 ms) because `decide_with_deadline` overshoots on the main
+    // tableau. No single value satisfies both sides: `ore_ont_16372` needs >=200 ms,
+    // `ore_ont_1966` dies at 100 ms. Raising this re-breaks ontologies that
+    // currently answer correctly.
     let prior = std::env::var_os("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS");
     assert!(
         prior.is_none() || owl_dl_reasoner::classify_consistency_probe_ms() > 0,
         "budget must be positive"
     );
     if prior.is_none() {
-        assert_eq!(owl_dl_reasoner::classify_consistency_probe_ms(), 1000);
+        assert_eq!(
+            owl_dl_reasoner::classify_consistency_probe_ms(),
+            10,
+            "raising this default re-breaks ore_ont_14881/6108/7416/7803 (ok -> dnf) \
+             and ore_ont_1966 (7.30 -> 58.20 s); see the doc comment"
+        );
     }
 }

@@ -68,4 +68,53 @@ on the main tableau is exactly the cost `RUSTDL_UNSAT_VIA_LABELS` exists to avoi
 is a correctness-versus-wall trade — ~1 s on ABox-bearing ontologies to fix 2 wrong answers
 in 1,920 — and it needs a full-corpus two-arm sweep before any default flip.
 
-Workspace 1,605 pass / 0 fail; fmt and clippy clean.
+## The default flip, and the budget the sweep forced
+
+Shipped **default ON**, budget **10 ms**. Both numbers are measured, not chosen.
+
+**The first mechanism was wrong.** Verifying every asserted-instance class through
+the main tableau is `k` UNBOUNDED probes — 58 on `wine`, whose tableau probes are
+the documented hard frontier. It made the FP=0 net run **8h47m at 3162% CPU**
+without finishing, against a normal ~4 minutes. Removed, not left as a dead
+opt-in: a mechanism shown to be wrong invites a retry if the flag survives. (The
+"8.8× on `ore_ont_10908`" figure reported for it is therefore **superseded** — the
+shipped mechanism leaves `10908` at 0.14 s, unchanged.)
+
+**The shipped mechanism is three layers, cheapest first:** (1) an asserted instance
+of an unsatisfiable class — exact and engine-free, reading a set classify already
+has; (2) the wedge consistency route; (3) ONE bounded `⊤` probe, mirroring
+`is_consistent`'s fall-through after a wedge `Stalled`.
+
+**A 1,920-ontology two-arm sweep at a 1000 ms budget rejected that budget:**
+
+| | OFF | ON @1000 ms |
+|---|---|---|
+| outcomes | 1751 ok / 167 dnf / 2 rej | 1747 ok / **171 dnf** |
+| `ok → dnf` | — | **4** (`14881`, `6108`, `7416`, `7803`) |
+| `dnf → ok` | — | 0 |
+| wall | 3572 s | 3609 s (+1.06%) |
+
+plus `ore_ont_1966` at **7.30 → 58.20 s**.
+
+**The cost is not proportional to the budget**, which is the diagnostic detail:
+`1966` reads **66.08 s at 1000 ms, 73.00 s at 100 ms, and 5.17 s at 10 ms** against
+a 5.06 s baseline. `decide_with_deadline` overshoots its deadline on the main
+tableau — the same defect class found in `horn_fixpoint` the day before.
+
+**No single budget satisfies both sides.** `ore_ont_16372` needs **≥200 ms**;
+`ore_ont_1966` is already destroyed at 100 ms. At 10 ms the five harmed ontologies
+are back within noise (+0.06 to +0.37 s).
+
+## Outcome, stated without rounding up
+
+| | at the shipped default |
+|---|---|
+| `ore_ont_7610` | **fixed** — `consistent=false`, 91/91 unsat |
+| `ore_ont_16372` | **still wrong** — needs ≥200 ms, which costs 4 correct answers |
+
+So this closes **1 of the 2** wrong answers at a measured cost of ~0 and **0
+regressions**. The residual is not a mystery: raising the budget fixes `16372` and
+breaks ontologies that currently answer correctly, so **the real blocker is the
+`decide_with_deadline` overshoot**, not the consistency logic.
+
+Workspace 1,605 pass / 0 fail; fmt and clippy clean; FP=0 net all closures exact.

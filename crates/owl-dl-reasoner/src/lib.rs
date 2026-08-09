@@ -2441,13 +2441,33 @@ pub fn classify_consistency_probe_enabled() -> bool {
     std::env::var_os("RUSTDL_CLASSIFY_CONSISTENCY_PROBE").is_none_or(|v| v != "0")
 }
 
-/// Budget in ms for the gated classify consistency probe. Default 1000.
+/// Budget in ms for the gated classify consistency probe. **Default 10.**
+///
+/// The value is small for a measured reason, not conservatism. A
+/// 1,920-ontology two-arm sweep at 1000 ms cost **4 ontologies `ok` → `dnf`**
+/// (`ore_ont_14881`, `6108`, `7416`, `7803`) and took `ore_ont_1966` from 7.30 s
+/// to 58.20 s. The cost is **not proportional to the budget** — `1966` reads
+/// 66.08 s at 1000 ms, 73.00 s at 100 ms, and **5.17 s at 10 ms** against a 5.06 s
+/// baseline — because `decide_with_deadline` overshoots its deadline on the main
+/// tableau, the same defect class found in `horn_fixpoint` on 2026-08-08.
+///
+/// **There is no single budget that satisfies both sides**: `ore_ont_16372` needs
+/// **≥200 ms** to be decided, and `ore_ont_1966` is already destroyed at 100 ms.
+/// So 10 ms buys the two cheap layers — the exact asserted-instance test and the
+/// wedge route — at a measured cost of **+0.06 to +0.37 s** on the five ontologies
+/// the larger budget harmed, while layer 3 (the bounded `⊤` probe) rarely
+/// concludes.
+///
+/// Consequence, stated plainly: **`ore_ont_7610` is fixed and `ore_ont_16372` is
+/// not.** Raising this value fixes `16372` at the price of ontologies that
+/// currently answer correctly — a bad trade until the `decide_with_deadline`
+/// overshoot is fixed, which is the real blocker.
 #[must_use]
 pub fn classify_consistency_probe_ms() -> u64 {
     std::env::var("RUSTDL_CLASSIFY_CONSISTENCY_PROBE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(1000)
+        .unwrap_or(10)
 }
 
 /// Cheap structural predictors of the `ABox`-saturation fixpoint's cost, read in

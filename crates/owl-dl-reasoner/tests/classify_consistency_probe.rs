@@ -65,8 +65,10 @@ fn unset_is_off() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(None);
     assert!(
-        !owl_dl_reasoner::classify_consistency_probe_enabled(),
-        "unset must be OFF — opt-in pending a corpus sweep"
+        owl_dl_reasoner::classify_consistency_probe_enabled(),
+        "unset must be ON: classify reported `consistent = true` on ontologies both \
+         Konclude and HermiT call inconsistent. A wrong verdict is not an acceptable \
+         default, whatever it saves."
     );
 }
 
@@ -77,9 +79,10 @@ fn empty_string_is_off() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(Some(""));
     assert!(
-        !owl_dl_reasoner::classify_consistency_probe_enabled(),
-        "`\"\"` must be OFF: a bare `VAR=` in a shell wrapper is a common accident, \
-         and this is the row a future default-ON flip silently gets wrong"
+        owl_dl_reasoner::classify_consistency_probe_enabled(),
+        "`\"\"` must be ON under the default-ON idiom. This is the row a default-ON \
+         flip silently gets wrong: the opt-in spelling treats `\"\"` as OFF, and a bare \
+         `VAR=` in a shell wrapper is a common accident."
     );
 }
 
@@ -89,11 +92,14 @@ fn zero_is_off() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(Some("0"));
-    assert!(!owl_dl_reasoner::classify_consistency_probe_enabled());
+    assert!(
+        !owl_dl_reasoner::classify_consistency_probe_enabled(),
+        "`0` must revert to the pre-fix behaviour"
+    );
 }
 
 #[test]
-fn one_is_on() {
+fn explicit_one_is_on() {
     let _l = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

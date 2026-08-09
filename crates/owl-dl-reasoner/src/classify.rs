@@ -1346,24 +1346,6 @@ fn classify_pure_el(
 /// since classify's own per-class unsat detection is incomplete. A positive
 /// verdict is a wedge `Unsat`, which `is_consistent` already trusts as a real
 /// inconsistency on the same justification.
-/// Class indices carrying at least one `ClassAssertion(C, a)` with `C` atomic.
-///
-/// Used by the `RUSTDL_UNSAT_VERIFY_ASSERTED` carve-out: a wrong wedge `Sat` on
-/// such a class can hide an inconsistency, because an asserted instance of an
-/// unsatisfiable class has no model. Small by construction (4-7 on the measured
-/// ontologies), so it is cheap both to build and to re-verify.
-fn asserted_type_indices(internal: &InternalOntology) -> HashSet<usize> {
-    let mut out = HashSet::new();
-    for ax in &internal.axioms {
-        if let owl_dl_core::Axiom::ClassAssertion { class, .. } = ax
-            && let owl_dl_core::ir::ConceptExpr::Atomic(c) = internal.concepts.get(*class)
-        {
-            out.insert(c.index() as usize);
-        }
-    }
-    out
-}
-
 fn probe_says_inconsistent(
     internal: &InternalOntology,
     prepared: &PreparedOntology,
@@ -1397,9 +1379,32 @@ fn probe_says_inconsistent(
         }
     }
     let budget = std::time::Duration::from_millis(crate::classify_consistency_probe_ms());
+    // (2) Wedge consistency route — the cheap one `is_consistent` tries first.
+    match prepared.consistency_wedge(Some(std::time::Instant::now() + budget)) {
+        Some(owl_dl_tableau::hyper::HyperResult::Unsat) => return true,
+        Some(owl_dl_tableau::hyper::HyperResult::Sat) => return false,
+        _ => {}
+    }
+    // (3) ONE BOUNDED `⊤`-satisfiability probe, mirroring `is_consistent`'s
+    // fall-through after a wedge `Stalled`. `ore_ont_16372` needs exactly this: its
+    // wedge stalls, and this is what decides it (in 0.36 s there).
+    //
+    // A bounded global `decide(Top)` on the classify path is recorded elsewhere as a
+    // dead-end because it hung on CONSISTENT ontologies. Two things differ here: it
+    // runs only behind the `unsatisfiable_idxs` gate (~1.6% of ontologies), and it is
+    // deadline-bounded, so a timeout costs at most the budget.
+    //
+    // NOTE this replaces an earlier, WRONG mechanism: verifying every
+    // asserted-instance class through the main tableau. That is `k` UNBOUNDED probes
+    // — 58 of them on `wine` — and it made the FP=0 net run 8h47m at 32 cores without
+    // finishing. One bounded probe is the affordable shape.
+    //
+    // Sound: `Some(false)` is a real `⊤`-unsatisfiability. A timeout yields `None` ⇒
+    // no verdict ⇒ today's behaviour, which is the trusted direction.
+    let dl = std::time::Instant::now() + budget;
     matches!(
-        prepared.consistency_wedge(Some(std::time::Instant::now() + budget)),
-        Some(owl_dl_tableau::hyper::HyperResult::Unsat)
+        prepared.decide_with_deadline(dl, owl_dl_core::ConceptPool::top),
+        Ok(Some(false))
     )
 }
 
@@ -2413,12 +2418,6 @@ pub(crate) fn classify_top_down_internal(
     crate::rss_probe::probe("after_label_cache");
 
     let t_unsat_probe = Instant::now();
-    // Asserted-instance carve-out set (empty unless the flag is on, so zero cost).
-    let asserted_types: HashSet<usize> = if crate::unsat_verify_asserted_enabled() {
-        asserted_type_indices(internal)
-    } else {
-        HashSet::new()
-    };
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -2452,15 +2451,12 @@ pub(crate) fn classify_top_down_internal(
                         // — fall through to the main tableau (which runs
                         // `concrete_domain_clash`). Sound: only swaps a wedge
                         // `Sat` for the complete path. Empty set ⇒ no overhead.
-                        let needs_verify = (!prepared.data_counting_classes.is_empty()
+                        let needs_verify = !prepared.data_counting_classes.is_empty()
                             && (prepared.data_counting_classes.contains(&class_id)
                                 || closure
                                     .subsumers_of(class_id)
                                     .iter()
-                                    .any(|s| prepared.data_counting_classes.contains(s))))
-                            // Asserted-instance carve-out: see
-                            // `crate::unsat_verify_asserted_enabled`.
-                            || asserted_types.contains(&i);
+                                    .any(|s| prepared.data_counting_classes.contains(s)));
                         if !needs_verify {
                             return Ok((i, true, true));
                         }

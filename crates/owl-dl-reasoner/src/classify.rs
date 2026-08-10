@@ -1407,7 +1407,9 @@ fn probe_says_inconsistent(
     //
     // Sound in the same sense as the outer gate: skipping preserves today's
     // behaviour, so this can only fail to fix, never break.
-    if unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * 2 {
+    let min_permille = crate::classify_probe_min_frac_permille();
+    let min_permille = usize::try_from(min_permille).unwrap_or(usize::MAX);
+    if unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille {
         return false;
     }
     let budget = std::time::Duration::from_millis(crate::classify_consistency_probe_ms());

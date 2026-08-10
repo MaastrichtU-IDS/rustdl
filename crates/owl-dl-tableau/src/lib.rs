@@ -3988,8 +3988,18 @@ pub fn hyper_match_deadline_enabled() -> bool {
 /// from the `max_iters` branch. `Stalled` is never `Sat`, so truncating can only
 /// MISS a subsumption, never manufacture one.
 ///
-/// **Default OFF** pending measurement (`=1` opts in).
+/// **Default ON since 2026-08-10** (`=0` reverts). It shipped OFF on 2026-08-08 as a
+/// documented NO-GO: both gates passed but it was corpus-NEUTRAL (0 recoveries, 0
+/// regressions, +0.5% wall over 1,920 ontologies), so there was no reason to pay for
+/// it. What changed is not the measurement but the arrival of a CALLER that needs its
+/// budget honoured — the classify consistency probe. With the flag off, that probe
+/// overshoots a 100 ms budget by **66-80 s** on `ore_ont_1966` (80.28 s at 100 ms,
+/// 66.34 s at 1000 ms, against a 5.48 s baseline); with it on, the same probe costs
+/// **0.4-1.0 s at any budget** (5.89 s / 6.50 s). Localised by stack-sampling the
+/// overshoot, which showed `owl_dl_tableau::hyper::*` — the wedge, not the main
+/// tableau, correcting an earlier guess.
 #[must_use]
 pub fn hyper_fixpoint_deadline_enabled() -> bool {
-    std::env::var_os("RUSTDL_FIXPOINT_DEADLINE").is_some_and(|v| v == "1")
+    // Default-ON idiom (house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_FIXPOINT_DEADLINE").is_none_or(|v| v != "0")
 }

@@ -2470,6 +2470,33 @@ pub fn classify_consistency_probe_ms() -> u64 {
         .unwrap_or(200)
 }
 
+/// Minimum unsatisfiable-class fraction, in PER MILLE, for the expensive
+/// consistency-probe layers to run. **Default 2 (= 0.2%).** `0` disables the gate.
+///
+/// Not a tuning knob so much as a documented threshold: it sits in a measured ~6×
+/// gap between the ontologies the probe harms and the ones it must reach.
+///
+/// | ontology | classes | unsat | fraction | |
+/// |---|---|---|---|---|
+/// | `ore_ont_14881` | 20,485 | 1 | 0.005% | harmed |
+/// | `ore_ont_1966` | 20,514 | 13 | 0.063% | harmed |
+/// | `ore_ont_16372` | 744 | 3 | **0.403%** | must reach |
+/// | `ore_ont_7610` | 91 | 91 | **100%** | must reach |
+///
+/// **Keep it LOW.** `ore_ont_16372` is genuinely inconsistent yet shows only
+/// 0.403%, because classify's own per-class unsat detection is incomplete; a
+/// threshold like "half the classes" would miss it.
+///
+/// `0` is the diagnostic setting: it restores the pre-gate behaviour, which is the
+/// only way to exercise the `decide_with_deadline` overshoot this gate masks.
+#[must_use]
+pub fn classify_probe_min_frac_permille() -> u64 {
+    std::env::var("RUSTDL_CLASSIFY_PROBE_MIN_FRAC_PERMILLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2)
+}
+
 /// Cheap structural predictors of the `ABox`-saturation fixpoint's cost, read in
 /// ONE linear pass over the lowered axioms — no reasoning, no allocation beyond
 /// three counters.

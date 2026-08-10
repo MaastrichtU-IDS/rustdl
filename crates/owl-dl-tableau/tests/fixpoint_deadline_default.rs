@@ -28,23 +28,29 @@
 //! step-truncated one. `Stalled` is never `Sat`, so truncating can only MISS a
 //! subsumption, never manufacture one — no new verdict, no new soundness surface.
 //!
-//! **All four env rows are pinned.** The empty-string row is the one a future
-//! default-ON flip gets wrong: the opt-in idiom used here
-//! (`is_some_and(|v| v == "1")`) treats `""` as OFF, and a bare `VAR=` in a shell
-//! wrapper is a common accident.
+//! **DEFAULT FLIPPED ON 2026-08-10.** It shipped OFF two days earlier as a
+//! documented NO-GO: both gates passed (ΔMISSED = +0; a 1,920-ontology two-arm
+//! sweep with 0 recoveries, 0 regressions, +0.5% wall) but it was corpus-NEUTRAL,
+//! so there was no reason to pay for it.
+//!
+//! What changed is not the measurement but the arrival of a CALLER that needs its
+//! budget honoured: the classify consistency probe. With the flag off, that probe
+//! overshoots a 100 ms budget by **66–80 s** on `ore_ont_1966` (80.28 s at 100 ms,
+//! 66.34 s at 1000 ms, against a 5.48 s baseline). With it on, the same probe costs
+//! **0.4–1.0 s at any budget** (5.89 s / 6.50 s). The overshoot was localised by
+//! stack-sampling, which showed `owl_dl_tableau::hyper::*` — the WEDGE, not the main
+//! tableau, correcting the earlier guess that `decide_with_deadline` was at fault.
+//!
+//! **All four env rows are pinned.** The empty-string row is the one this flip most
+//! easily gets wrong: the previous opt-in idiom (`is_some_and(|v| v == "1")`) treats
+//! `""` as OFF, and a bare `VAR=` in a shell wrapper is a common accident.
 //!
 //! | value | behaviour |
 //! |---|---|
-//! | unset | OFF |
-//! | `""` | OFF |
+//! | unset | **ON** |
+//! | `""` | **ON** |
 //! | `"0"` | OFF |
 //! | `"1"` | **ON** |
-//!
-//! Default is **OFF** pending the two gates a flip requires here: a corpus-scale
-//! ΔMISSED arm (this trades a step bound for a time bound, so a fixpoint that
-//! would have completed just over budget now returns `Stalled` — a MISS) and a
-//! full-corpus two-arm sweep (whose frame, unlike the MISSED net's, can observe
-//! an `ok → dnf`).
 
 use owl_dl_tableau::hyper_fixpoint_deadline_enabled;
 
@@ -82,28 +88,29 @@ impl Drop for EnvGuard {
 }
 
 #[test]
-fn unset_is_off() {
+fn unset_is_on() {
     let _l = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(None);
     assert!(
-        !hyper_fixpoint_deadline_enabled(),
-        "unset must be OFF — this flag is opt-in until both flip gates are run"
+        hyper_fixpoint_deadline_enabled(),
+        "unset must be ON since 2026-08-10: without it the classify consistency probe \
+         overshoots a 100 ms budget by 66-80 s on ore_ont_1966"
     );
 }
 
 #[test]
-fn empty_string_is_off() {
+fn empty_string_is_on() {
     let _l = ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(Some(""));
     assert!(
-        !hyper_fixpoint_deadline_enabled(),
-        "`\"\"` must be OFF under the opt-in idiom. A bare `VAR=` in a shell \
-         wrapper is a common accident, and this is the row a future default-ON \
-         flip silently gets wrong."
+        hyper_fixpoint_deadline_enabled(),
+        "`\"\"` must be ON under the default-ON idiom — the row a default-ON flip \
+         silently gets wrong, since the opt-in spelling treats `\"\"` as OFF and a bare \
+         `VAR=` in a shell wrapper is a common accident."
     );
 }
 
@@ -113,7 +120,10 @@ fn zero_is_off() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _g = EnvGuard::set(Some("0"));
-    assert!(!hyper_fixpoint_deadline_enabled(), "`0` must be OFF");
+    assert!(
+        !hyper_fixpoint_deadline_enabled(),
+        "`0` must revert to the pre-2026-08-08 behaviour"
+    );
 }
 
 #[test]

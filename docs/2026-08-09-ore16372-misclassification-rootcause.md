@@ -156,3 +156,68 @@ produced 5.29–5.57 s at every value from 10 to 100 ms and was therefore **vacu
 the fraction gate skips `1966` before the probe runs, so varying the probe's budget
 could not exercise it. Localising this defect requires a diagnostic build that
 bypasses the gate.
+
+
+## 2026-08-10: the root cause of the *budget* problem, and the final sweep
+
+The probe could not be given an honest budget: at 100 ms it spent 66–80 s on
+`ore_ont_1966`. I attributed that to `decide_with_deadline` on the main tableau.
+**That was wrong.** Stack-sampling the overshoot region showed
+`owl_dl_tableau::hyper::*` — the **wedge**. It is `horn_fixpoint` failing to consult
+the clock: exactly the defect fixed on 2026-08-08 and then shipped **default OFF**
+as a corpus-neutral NO-GO.
+
+| `RUSTDL_FIXPOINT_DEADLINE` | budget 100 ms | budget 1000 ms |
+|---|---|---|
+| 0 (was default) | 80.28 s | 66.34 s |
+| **1** | **5.89 s** | **6.50 s** |
+| baseline (probe off) | 5.48 s | — |
+
+**What changed is not the measurement but the arrival of a caller.** The 08-08
+NO-GO was correct on the evidence then: both gates passed, but nothing in the corpus
+benefited, so there was no reason to pay for it. This probe is that reason. The flag
+is now **default ON**, and the two mechanisms compose — the fraction gate bounds
+*which* ontologies pay, the fixpoint deadline bounds *how much*.
+
+### Final gate: 1,920-ontology two-arm sweep of the COMBINED defaults
+
+| | OFF (probe off + deadline off) | ON (both) |
+|---|---|---|
+| outcomes | 1749 ok / 169 dnf / 2 rej | 1750 ok / 168 dnf / 2 rej |
+| `ok → dnf` | — | **0** |
+| `dnf → ok` | — | 1 (`ore_ont_15491`) |
+| wall (1749 completers) | 3695 s | 3762 s (+1.81%) |
+| peak RSS | 281.4 GB | 281.5 GB (+0.01%) |
+
+**Every apparent difference is contention, verified individually** — the sweep runs
+`JOBS=4`, and re-measuring on a quiet host collapses all of them:
+
+| ontology | sweep | re-measured |
+|---|---|---|
+| `ore_ont_13071` | 33.89 → 52.73 s | **20.61 → 20.68 s** |
+| `ore_ont_5852` | 0.17 → 2.66 s | **0.01 → 0.01 s** |
+| `ore_ont_5792` | 0.33 → 3.04 s | **0.16 → 0.17 s** |
+| `ore_ont_9257` | 0.43 → 2.28 s | **0.29 → 0.30 s** |
+| `ore_ont_15491` ("recovery") | dnf → ok | **41.86 → 39.50 s, ok in BOTH** |
+
+So the honest reading is **0 real regressions and 0 real recoveries**: the change is
+outcome-neutral corpus-wide. The "+1 recovery" is a 60 s cap crossed under load in
+one arm and not the other, and must not be quoted as a win.
+
+## Summary of the arc
+
+| | |
+|---|---|
+| wrong answers fixed | **2 of 2** (`ore_ont_16372`, `ore_ont_7610`), both agreeing with Konclude AND HermiT |
+| corpus regressions | **0** over 1,920 ontologies |
+| FP=0 net | clean, zero `FP>0` / `MISSED>0` |
+| workspace | 1,605 pass / 0 fail |
+| defaults flipped ON | consistency probe, unsat-fraction gate, `RUSTDL_FIXPOINT_DEADLINE` |
+
+### Still latent
+
+`solve_at_most` in the wedge has **no deadline check at all** — the same defect
+class, noticed while mapping the consultation sites and not pursued. Nothing
+measured so far reaches it. The `FIXPOINT_DEADLINE` history is the argument for
+waiting: a bound with no caller that needs it measures as a NO-GO, so this should be
+built when something provably reaches it, not before.

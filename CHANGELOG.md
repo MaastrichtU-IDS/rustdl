@@ -6,6 +6,92 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-08-10
+
+### Fixed — `classify` reported `consistent: true` on inconsistent ontologies
+
+Over all 1,920 ORE ontologies, `is_consistent` finds **43** inconsistent while
+`classify` agreed on only 41, reporting `consistent = true` on **2** —
+`ore_ont_16372` and `ore_ont_7610`. Konclude (`Ontology … is inconsistent`) and
+HermiT (`InconsistentOntologyException`) call both inconsistent independently, as
+does rustdl's own `is_consistent` in 0.09–0.36 s. A confidently wrong verdict is
+worse than a slow one, so this is not an opt-in.
+
+`classify`'s inconsistency detection consulted the saturator's `⊤`-unsat signal and
+the `ABox` pre-check, but never the wedge-consistency route `is_consistent` uses.
+`RUSTDL_CLASSIFY_CONSISTENCY_PROBE` (**default ON**, `=0` reverts) adds three
+layers, cheapest first:
+
+1. an asserted instance of an unsatisfiable class — exact and engine-free, reading a
+   set classify has already computed (`abox_check`'s P1 tests the same rule, but
+   against the *saturator closure*, which knows none of these classes are unsat);
+2. the wedge consistency route;
+3. one **bounded** `decide(⊤)`, mirroring `is_consistent`'s fall-through after a
+   wedge `Stalled`.
+
+**A gate makes it affordable.** Running a consistency check unconditionally on the
+classify path costs a mean of **5.1 s** on consistent ontologies (60 sampled, 16
+over 1 s, max 30 s) — a documented dead-end. But an inconsistent KB makes `⊤` unsat
+and therefore *every* class unsat, so **zero unsatisfiable classes implies
+consistent**. Measured, that admits ~1.6% of ontologies.
+
+**A second gate on the unsat FRACTION** (`RUSTDL_CLASSIFY_PROBE_MIN_FRAC_PERMILLE`,
+default `2` = 0.2‰… i.e. 0.2%) was forced by a sweep. The `≥1 unsat` gate alone
+admits a huge `ABox`-bearing ontology on the strength of one unsatisfiable class,
+while the probe's cost scales with the `ABox`:
+
+| ontology | classes | unsat | `ABox` | fraction | |
+|---|---|---|---|---|---|
+| `ore_ont_14881` | 20,485 | 1 | 98,536 | 0.005% | harmed |
+| `ore_ont_1966` | 20,514 | 13 | 84,424 | 0.063% | harmed |
+| `ore_ont_16372` | 744 | 3 | 108 | **0.403%** | must reach |
+| `ore_ont_7610` | 91 | 91 | 0 | **100%** | must reach |
+
+The threshold sits in that measured ~6× gap. The rationale is semantic, not
+curve-fitting; and it must stay **low**, because `16372` is genuinely inconsistent at
+only 0.403% — classify's own per-class unsat detection being incomplete.
+
+### Changed — `RUSTDL_FIXPOINT_DEADLINE` now defaults ON
+
+Shipped OFF in v0.4.16 as a documented NO-GO: both gates passed (ΔMISSED = +0; a
+1,920-ontology sweep with 0 recoveries, 0 regressions, +0.5% wall) but it was
+corpus-**neutral**, so there was no reason to pay for it. What changed is not the
+measurement but the arrival of a caller that needs its budget honoured. With it off,
+the new probe overshoots a 100 ms budget by **66–80 s** on `ore_ont_1966`; with it
+on, the same probe costs **0.4–1.0 s at any budget**.
+
+The overshoot was localised by stack-sampling, which showed
+`owl_dl_tableau::hyper::*` — the **wedge**, correcting an earlier attribution to
+`decide_with_deadline` on the main tableau.
+
+### Result
+
+| | |
+|---|---|
+| wrong answers fixed | **2 of 2**, both matching Konclude **and** HermiT |
+| corpus regressions | **0** over 1,920 ontologies |
+| FP=0 net | clean, zero `FP>0` / `MISSED>0`, all closures exact |
+| workspace | 1,605 pass / 0 fail |
+
+The combined-defaults sweep read `1750 ok / 168 dnf` vs `1749 / 169`, i.e. a nominal
+`+1 recovery` and eight slowdowns. **Every one is contention** — the sweep runs
+`JOBS=4`, and re-measuring on a quiet host collapses all of them (`ore_ont_13071`
+33.89→52.73 s in the sweep, **20.61→20.68 s** re-measured; the "recovered"
+`ore_ont_15491` completes in **both** arms at ~40 s). The change is
+**outcome-neutral**, not net-positive, and the `+1` must not be quoted as a win.
+
+### Known limitations
+
+* `solve_at_most` in the wedge has **no deadline check at all** — the same defect
+  class, not pursued because nothing measured reaches it. The `FIXPOINT_DEADLINE`
+  history is the argument for waiting: a bound with no caller that needs it measures
+  as a NO-GO.
+* Two mechanisms were built and discarded on measurement before the shipped one:
+  verifying every asserted-instance class through the main tableau (`k` **unbounded**
+  probes — 58 on `wine` — which ran the FP=0 net 8h47m at 3162% CPU without
+  finishing), and a flat 1000 ms probe budget (4 ontologies `ok → dnf`).
+
+
 ### Fixed — classify regression from the v0.4.8 inconsistency pre-check
 
 `RUSTDL_CLASSIFY_INCONSISTENCY` (default ON since v0.4.8) puts an **unbounded**

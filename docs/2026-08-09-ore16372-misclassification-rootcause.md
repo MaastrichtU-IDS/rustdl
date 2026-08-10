@@ -117,4 +117,42 @@ regressions**. The residual is not a mystery: raising the budget fixes `16372` a
 breaks ontologies that currently answer correctly, so **the real blocker is the
 `decide_with_deadline` overshoot**, not the consistency logic.
 
-Workspace 1,605 pass / 0 fail; fmt and clippy clean; FP=0 net all closures exact.
+## Final state: both fixed, zero regressions
+
+The unsat-FRACTION gate (see the commit) let the budget go back to 200 ms. Full
+1,920-ontology two-arm sweep, cap 60 s, `--threads 1`:
+
+| | OFF | ON |
+|---|---|---|
+| outcomes | 1749 ok / 169 dnf / 2 err_reject | **identical** |
+| `ok → dnf` | — | **0** |
+| `dnf → ok` | — | 0 |
+| wall (1749 completers) | 3564 s | 3547 s (**−0.48%**) |
+
+| | at the shipped default |
+|---|---|
+| `ore_ont_16372` | **fixed** — `consistent=false` |
+| `ore_ont_7610` | **fixed** — `consistent=false`, 91/91 unsat |
+
+Both now agree with Konclude and HermiT. Workspace 1,605 pass / 0 fail; FP=0 net
+14 VERIFIED with no `FP>0`/`MISSED>0`; fmt and clippy clean.
+
+## What is still latent, and why it is not this feature's problem
+
+`decide_with_deadline` overshoots on the main tableau: at a 1000 ms budget with only
+the `≥1 unsat` gate, `ore_ont_1966` spent **58–73 s**, and the cost was *not*
+proportional to the budget (66 s at 1000 ms, 73 s at 100 ms, 5.2 s at 10 ms). So
+there is a region of the main-tableau search that does not consult
+`check_deadline` — which itself reads the clock exactly, with no stride, so this is
+a missing call rather than granularity. It is the same defect class as
+`horn_fixpoint` (2026-08-08).
+
+The fraction gate **masks** it here — `1966` is now skipped outright — so it is no
+longer this feature's blocker. It remains latent for every other budget, notably
+`--pair-timeout-ms`.
+
+**Method note:** an attempt to bisect the budget to localise the unguarded region
+produced 5.29–5.57 s at every value from 10 to 100 ms and was therefore **vacuous**:
+the fraction gate skips `1966` before the probe runs, so varying the probe's budget
+could not exercise it. Localising this defect requires a diagnostic build that
+bypasses the gate.

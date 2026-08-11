@@ -407,3 +407,55 @@ that install landed on `fsesrv-node000003`. The two share `/data/dumontier` over
 which made the repo and corpus look identical while `/usr/lib/linux-tools` did not
 exist at all. All figures in this document are from `fsesrv-g1`, via gdb stack
 sampling.
+
+## Corpus sweep of the env-flag fix: 1 recovery, 0 regressions, −5.56% wall
+
+Full 1,920-ontology two-arm sweep (cap 60 s, `--threads 1`, `JOBS=4`), pinned
+pre-change binary:
+
+| | BASE | NEW |
+|---|---|---|
+| outcomes | 1752 ok / 166 dnf / 2 rej | 1754 ok / 164 dnf / 2 rej |
+| `ok → dnf` | — | **0** |
+| `dnf → ok` | — | 2 (nominal) |
+| wall over 1,752 completers | 3,682 s | **3,478 s (−5.56%)** |
+| >1.5× and >2 s faster | — | **18 ontologies** |
+
+**Every nominal difference re-verified individually on a quiet host, and two of the
+four moved:**
+
+| | sweep | min-of-3 re-measure | verdict |
+|---|---|---|---|
+| `ore_ont_9299` | dnf → ok | dnf @90 s → **6.15 s** | **genuine recovery** |
+| `ore_ont_14351` | dnf → ok | 61.28 → 66.78 s, **ok in both** | 60 s-cap artifact, **not** a recovery |
+| `ore_ont_5927` | 4.74 → 10.11 s | **4.33 → 4.30 s** | noise |
+| `ore_ont_10838` | 5.28 → 9.31 s | **5.06 → 5.26 s** | noise |
+
+So the honest tally is **1 genuine recovery and 0 regressions**, not 2 and 0.
+
+**The speedups are real and larger than the sweep showed** (min-of-3, quiet host):
+
+| ontology | base | new | |
+|---|---|---|---|
+| `ore_ont_15010` | 22.95 s | **0.64 s** | **36×** |
+| `ore_ont_7203` | 23.67 s | **1.84 s** | **13×** |
+| `ore_ont_7775` | 13.76 s | **3.18 s** | **4.3×** |
+
+### This supersedes a recorded known limitation
+
+`docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md` documents
+`ore_ont_15010` needing `RUSTDL_LABEL_CACHE_TIMEOUT_MS=30000` to go from **103.98 s to
+5.64 s**. At current defaults it is **0.64 s with no flags** — an order of magnitude
+below even the flag-assisted figure. That doc's mechanism (an adaptive label-cache
+budget starved by a small `--pair-timeout-ms`) is not wrong, but the wall it was
+diagnosing was mostly `env_read_lock` contention, and its worked example no longer
+reproduces. **Re-measure before relying on it.**
+
+### Scale of what one bug cost
+
+Two `std::env::var_os` calls in hot loops — one of them mis-ordered behind `&&` so it
+ran per-iteration rather than per-256 — accounted for a **5.56% corpus-wide wall**, up
+to **36× on individual ontologies**, and one DNF. Both were introduced during this
+arc, by changes whose own gates (ΔMISSED, FP=0, two-arm sweeps) all passed: a
+per-iteration `getenv` is invisible to every gate the project has, because it changes
+no answer.

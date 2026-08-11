@@ -155,3 +155,60 @@ and still must be settled first.
 **Both diagnostics were reverted.** The `SearchStats` dump is ~15 lines in
 `classify_labels`; the `RUSTDL_DIV_WINDOW` knob was dropped rather than kept, since a
 knob for a constant now measured null twice is noise.
+
+## Pricing the two candidate levers
+
+A graph-wide label signature (temporary, reverted) on `ore_ont_6134`'s expensive
+classes:
+
+| | value |
+|---|---|
+| nodes per class | 2,772 – 2,906 |
+| **distinct atomic labels in the graph** | **238 – 245** |
+| ontology classes | **1,682** |
+| distinct signatures across 204 expensive classes | **106** |
+
+Two things this prices.
+
+**1. Locality is real and quantified.** Each expensive class's graph involves only
+**~14% of the ontology's classes**. So the ∀/⊔/DisjointClasses that force the hybrid
+path are not merely *irrelevant* to these classes in principle — the search
+demonstrably never labels 86% of the vocabulary. A ⊥-locality module would cut the
+clause set the fire loop matches against, and `match_attempts` (3.3 M) is where the
+time goes. Order-of-magnitude: ~7× fewer classes in scope.
+
+Note what the node count says about the *shape* of the win: 2,800 nodes over 240
+distinct labels is ~12 nodes per label, i.e. the graph is mostly **anonymous
+witnesses** from transitive existential expansion. A module would therefore **not**
+shrink the node count much — it shrinks the *clauses each node must be matched
+against*. So the expected saving is in `match_attempts`, not in graph size, and that
+should be verified directly before building.
+
+**2. Cross-class duplication is ~2×, not ~200×.** 106 distinct signatures across 204
+expensive classes. That is meaningful but far short of the collapse a naive
+"compute-one-and-share" cache would need to pay for itself, and it tempers the
+build-once framing from the previous section: the graphs are *similar*, not
+*identical*.
+
+**Caveat on the signature, stated so it is not over-read:** it hashes the labels of
+**all** nodes in the final graph, which is not the label-cache's output — that is
+`satisfiability_labels(fresh_q)`, the ROOT node's labels. Two classes sharing a
+graph-wide signature therefore have very similar graphs but not provably identical
+oracle content. The 106/204 figure prices *structural* sharing, not oracle
+deduplication.
+
+## Where this leaves the cluster
+
+Ranked by what the evidence supports:
+
+1. **Per-class locality module** for the label-cache probe — best-supported, since the
+   measured 14% scope directly bounds the clause set, and the time is in clause
+   matching. Blocked on the soundness argument (a smaller label set makes the prune
+   more aggressive), which is analysis, not measurement, and should be settled first.
+2. **Verify the mechanism before building it:** confirm that restricting the clause
+   set actually cuts `match_attempts` proportionally. Cheap, and it would kill the
+   lever early if the fire loop's cost is not clause-count-driven.
+3. **Graph sharing / build-once** — reframed downward by the 2× duplication figure.
+   Not the order-of-magnitude win the previous section implied.
+
+All diagnostics reverted.

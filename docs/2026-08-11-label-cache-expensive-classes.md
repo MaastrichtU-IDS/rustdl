@@ -212,3 +212,63 @@ Ranked by what the evidence supports:
    Not the order-of-magnitude win the previous section implied.
 
 All diagnostics reverted.
+
+## Per-class locality: NO-GO, killed by one experiment
+
+Step 2 of the ranked plan above was "verify that restricting the clause set actually
+cuts cost proportionally — cheap, and it would kill the lever early". It did.
+
+**First, two dead ends on the way to a usable module:**
+
+* A **syntactic reachability closure** from the expensive class captured **5,353 of
+  5,362 axioms** (signature 1,709 IRIs) — useless. The ontology is densely connected;
+  everything reaches everything in 6 rounds.
+* My earlier claim that "rustdl already has ⊥-locality module extraction in
+  `locality.rs`" was **wrong**. `locality.rs` is a `LocalityPartition` computing
+  connected components for *disjointness* (`definitely_disjoint`). The real extractor
+  is `justify::extract_bot_module`, which is public and is what a build would use.
+
+**The real ⊥-module is usefully small, and extraction is cheap:**
+
+| seed class | module | extraction |
+|---|---|---|
+| `nlx_anat_20090704` (the 34 s class) | 1,323 / 3,645 candidates (**36.3%**) | 2 ms |
+| `nlx_anat_20090505` | 1,321 (36.2%) | 3 ms |
+| `birnlex_1167` (a superclass) | **3 axioms (0.1%)** | 0 ms |
+
+Extraction projects to **3.4–5.0 s for all 1,682 classes** — not a blocker, and the
+per-class variation (36% vs 0.1%) is exactly the shape a locality lever wants.
+
+**But the cost is not clause-count-driven.** Writing that module out as an ontology
+and re-running the label cache over it:
+
+| | worst class | nodes | `match_attempts` | branches |
+|---|---|---|---|---|
+| full ontology | 35,841 ms | 6,018 | 3,345,616 | 606 |
+| its 36.3% module | **36,788 ms** | 6,018 | **2,148,460** | 606 |
+
+`match_attempts` fell **36%**, tracking the clause reduction almost exactly — and the
+wall **did not move** (marginally worse, within noise). `nodes` and `branches` are
+**identical**, so the graph and the search are unchanged by the module.
+
+**Conclusion: a 36% clause cut buys 0% time.** Per-class locality is a NO-GO for the
+label cache. Its soundness question (a smaller label set makes the prune more
+aggressive) never needed settling, because the performance premise fails first — and
+that is the cheaper thing to test, which is why it was tested first.
+
+## What is still unexplained
+
+The 34 s is not clause matching, not graph size (identical across arms), not the
+disjunctive search (identical branch count; the divergence cut is null), and not
+blocking granularity. Per operation it is slow: ~17 µs per match attempt, or ~7 µs
+across match attempts plus 1.7 M `is_blocked_calls`.
+
+That points at per-operation cost inside the fire loop or the label/graph data
+structures, not at any count the current `SearchStats` exposes. **Settling it needs a
+profiler, not another counter.** `perf` is unavailable on this host; gdb stack
+sampling worked earlier in this arc and is the available tool.
+
+Until that is done, **no further lever should be proposed for this cluster** — four
+have now been measured out (phase bounding, per-class budget precision, the divergence
+cut, per-class locality), every one of them aimed at a count that turned out not to
+drive the wall.

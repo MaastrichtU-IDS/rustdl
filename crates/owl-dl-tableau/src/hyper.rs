@@ -764,6 +764,21 @@ pub struct HyperEngine<'c> {
     /// bounded (sub-`ALL`) — WITHOUT using it (real `clash_deps` stays `DepSet::ALL`
     /// ⇒ byte-identical verdicts). Set once per `decide_with_deadline` from env.
     at_most_exhaust_probe: bool,
+    /// Hot-loop flags, read ONCE PER ENGINE rather than per iteration.
+    ///
+    /// `horn_fixpoint`'s drain loop and `enumerate_matches`' recursion consulted
+    /// `crate::hyper_*_enabled()` directly, and each of those does a
+    /// `std::env::var_os`, which takes the process-global `env_read_lock`. Under rayon
+    /// that lock IS the bottleneck: profiling `ore_ont_12432` put **76% of self-time**
+    /// in `env_read_lock` (`is_read_lockable` 244 / `read_unlock` 182 / `read` 75 of
+    /// 660 samples) against ~3.5% in reasoning. Caching per engine (~1 read per class
+    /// instead of millions) took its `label_cache_build` from 58,729 ms to 6,087 ms
+    /// (**9.65×**).
+    ///
+    /// Per-ENGINE, deliberately not a process-wide `OnceLock`: the canaries set these
+    /// vars per test, and a process-scoped cache makes the first test to run win.
+    fixpoint_deadline: bool,
+    match_deadline: bool,
     /// `RUSTDL_INVERSE_FUNC_MERGE` (default OFF): fire deterministic `≤1`/
     /// functional merges INCREMENTALLY inside `horn_fixpoint` (via
     /// `process_event`) rather than routing them through the `solve`/
@@ -1358,6 +1373,8 @@ impl<'c> HyperEngine<'c> {
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
+            fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
+            match_deadline: crate::hyper_match_deadline_enabled(),
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
@@ -1415,6 +1432,8 @@ impl<'c> HyperEngine<'c> {
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
+            fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
+            match_deadline: crate::hyper_match_deadline_enabled(),
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
@@ -2134,8 +2153,10 @@ impl<'c> HyperEngine<'c> {
             // verdict and no new soundness surface — a clock-truncated fixpoint is
             // indistinguishable, to callers, from a step-truncated one. `Stalled`
             // is never `Sat`, so a truncated proof can only MISS.
-            if crate::hyper_fixpoint_deadline_enabled()
-                && steps.is_multiple_of(FIXPOINT_DEADLINE_STRIDE)
+            // Cheap test FIRST: `&&` is left-to-right, so putting the flag read first
+            // evaluated it on every iteration.
+            if steps.is_multiple_of(FIXPOINT_DEADLINE_STRIDE)
+                && self.fixpoint_deadline
                 && let Some(dl) = self.deadline
                 && Instant::now() >= dl
             {
@@ -2837,6 +2858,8 @@ impl<'c> HyperEngine<'c> {
             semantic_branching: false,
             precise_card_deps: false,
             at_most_exhaust_probe: false,
+            fixpoint_deadline: crate::hyper_fixpoint_deadline_enabled(),
+            match_deadline: crate::hyper_match_deadline_enabled(),
             inverse_func_merge: crate::inverse_func_merge_enabled(),
             mrv_ordering: false,
             tautology_pairs: None,
@@ -4210,7 +4233,7 @@ impl<'c> HyperEngine<'c> {
             // (cf. the saturator's shipped `DEADLINE_CHECK_STRIDE`). Gated,
             // default OFF. Truncating here is sound ONLY because `horn_fixpoint`
             // turns the flag into `Stalled` before it can return `Sat`.
-            if crate::hyper_match_deadline_enabled()
+            if self.match_deadline
                 && let Some(dl) = self.deadline
             {
                 let k = self.match_steps.get().wrapping_add(1);

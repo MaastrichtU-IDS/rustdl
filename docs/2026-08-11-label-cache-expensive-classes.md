@@ -339,3 +339,71 @@ trailing.
 **Do not start (1) without re-verifying the profile on a second cluster member** —
 this is one ontology, and the arc's repeated lesson is that a single instance
 motivates but does not price a lever.
+
+## The cluster is NOT homogeneous — and the second member's cost was `getenv`
+
+The doc above required verifying the profile on a second cluster member before
+starting the trailing rewrite. Doing so found a **completely different** dominant cost.
+
+| self-time | `ore_ont_6134` | `ore_ont_12432` |
+|---|---|---|
+| `RwLock` (read / read_unlock / is_read_lockable) | 12% | **76%** (244+182+75 of 660) |
+| allocation + node copying | ~49% | negligible |
+| `subset_sorted` ← `is_blocked` | 18% | 0.8% |
+| actual reasoning (`enumerate_matches`, `fire_clause`) | — | **~3.5%** |
+
+The lock is **not** one of ours. Walking up the stacks: `is_read_lockable` ←
+`RwLock::read` ← `env_read_lock` ← `getenv` — it is the **process-global environment
+lock**, taken by `std::env::var_os`. Under rayon, 32 threads reading feature flags
+serialise on it.
+
+Two call sites were doing this per-operation, **both introduced by this arc**:
+
+* `hyper_fixpoint_deadline_enabled()` in `horn_fixpoint`'s drain loop (2026-08-08,
+  default-ON 08-10). Worse, the condition read `flag && steps.is_multiple_of(STRIDE)`,
+  and `&&` is left-to-right — so the `getenv` ran on **every iteration**, not every
+  256th.
+* `hyper_match_deadline_enabled()` in `enumerate_matches`' recursion (v0.4.16).
+
+### Fix and effect
+
+Both flags are now read **once per engine** into `HyperEngine` fields, beside the
+existing `at_most_exhaust_probe`, and the cheap stride test comes first.
+
+| ontology | before | after | |
+|---|---|---|---|
+| `ore_ont_12432` `label_cache_build` | 58,608 ms | **12,491 ms** | **4.69×** |
+| `ore_ont_6134` `label_cache_build` | 60,724 ms | 60,993 ms | 1.00× |
+
+**Per-ENGINE, not a process-wide `OnceLock`** — that was tried first and is why the
+granularity is called out: a `OnceLock` measured *faster* (9.65×) but **broke
+`zero_is_off`**, because the canaries set these vars per test and the first test to run
+wins. The shipped number is the per-engine one.
+
+**It is a phase speedup, not a recovery.** `ore_ont_12432` still DNFs at 200 s in both
+arms — the label cache got 4.69× cheaper and the rest of classify still exceeds the
+budget.
+
+### Consequences for the cluster
+
+* **A single lever cannot fix this cluster.** Two members, two unrelated dominant
+  costs. The trailing rewrite (ranked #1 from `6134`'s profile) would have done
+  **nothing** for `12432`.
+* **Every remaining hot-path `std::env::var_os` is suspect.** `classify.rs` has 17
+  call sites and `reasoner/src/lib.rs` has 89; most are per-query and harmless, but any
+  in a per-node or per-clause path costs the same global lock. Worth an audit.
+* The `6134` targets (trailing, `subset_sorted`) stand unchanged, and still need a
+  second member that actually exhibits them before being priced.
+
+Gates: workspace **1,605 pass / 0 fail**; FP=0 net with **zero** `FP>0`/`MISSED>0`
+lines; canaries 4+4; fmt and clippy clean. A full corpus sweep has **not** been run —
+the change is behaviour-preserving by construction (same flag value, read once per
+engine instead of per iteration), but a sweep is the honest gate for a hot-loop change
+and is the next step.
+
+**Profiling note:** `perf` was unavailable — not because it is missing from the host
+the user installed it on, but because this session's shell runs on `fsesrv-g1` while
+that install landed on `fsesrv-node000003`. The two share `/data/dumontier` over NFS,
+which made the repo and corpus look identical while `/usr/lib/linux-tools` did not
+exist at all. All figures in this document are from `fsesrv-g1`, via gdb stack
+sampling.

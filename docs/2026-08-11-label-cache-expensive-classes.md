@@ -272,3 +272,70 @@ Until that is done, **no further lever should be proposed for this cluster** —
 have now been measured out (phase bounding, per-class budget precision, the divergence
 cut, per-class locality), every one of them aimed at a count that turned out not to
 drive the wall.
+
+## ROOT CAUSE (profiled): branch save clones the whole graph
+
+Four count-based levers failed because `SearchStats` has no counter for the dominant
+cost. Self-time attribution settles it. Sampling profiler (gdb attach ×20, all
+threads, 660 thread-stacks) on `ore_ont_6134`'s label-cache phase:
+
+| self-time frame | samples | called from | share |
+|---|---|---|---|
+| `mprotect` | 149 | `grow_heap` | 23% |
+| `subset_sorted` | 120 | **`is_blocked`** | 18% |
+| `write<HyperNode>` | 73 | **`to_vec<HyperNode>`** | 11% |
+| `sysmalloc` / `_int_malloc` / `memmove` | 100 | allocation | 15% |
+| `RwLock` read / read_unlock / is_read_lockable | 78 | — | 12% |
+
+Grouped: **~38% allocation, ~24% blocking, ~11% node copying, ~12% lock traffic.**
+
+The allocation and copying are the same cause. `HyperEngine::save`:
+
+```rust
+fn save(&mut self) -> Snapshot {
+    self.stats.node_clones += 1;        // counts SAVES, not nodes
+    nodes: self.nodes.clone(),          // full clone of the ENTIRE node vector
+    representative: ..., neq: ..., block_index: ..., origin: ..., worklist: ...
+}
+```
+
+**`node_clones = 534` counts 534 *whole-graph* clones.** At ~6,000 nodes each that is
+**~3.2 million `HyperNode` copies**, every one with its own label `Vec` — which is
+exactly the `to_vec<HyperNode>` → `write<HyperNode>` → `grow_heap`/`mprotect` chain the
+profile shows.
+
+### This explains every failed lever
+
+| lever | why it failed |
+|---|---|
+| clause-set restriction (locality) | graph size unchanged ⇒ clone cost unchanged. `match_attempts` fell 36%, wall unmoved. |
+| phase bounding / per-class budgets | budgets do not change per-branch clone cost |
+| divergence early-cut / `DIV_WINDOW` | fewer branches would help, but the cut needs `depth_saturated`, which these searches reach late |
+| reading `SearchStats` | **`node_clones` is per-save, not per-node** — 534 reads as trivial and is 3.2 M node copies |
+
+That last row is the methodological point: the counter that named the problem
+*understated it by ~6,000×*, so every count-driven analysis looked elsewhere.
+
+### The architectural gap
+
+The **main tableau already solves this**: `TableauTrail` gives log-and-undo
+backtracking via `Checkpoint` markers — O(changes) per branch. The **wedge** instead
+does copy-on-save — O(graph) per branch. On a fat graph with a thin search (6,000
+nodes, 534 branches) that is the worst case for copying and the best case for
+trailing.
+
+### Ranked targets, now evidence-based
+
+1. **Trail the wedge's branch state instead of cloning it** (~50% of self-time:
+   allocation + node copying). Large but well-understood — the main tableau is a
+   working reference implementation in-tree.
+2. **`subset_sorted` in `is_blocked`** (~18–24%, 1.7 M calls). Self-contained and much
+   cheaper to attempt. Note this **corrects an earlier conclusion in this document**
+   that the cost was "not blocking" — that was inferred from the `DIV_WINDOW` and
+   module experiments, neither of which isolated blocking.
+3. **12% `RwLock` traffic** under 32 threads suggests contention on a shared
+   structure; worth identifying before assuming the parallel classify scales.
+
+**Do not start (1) without re-verifying the profile on a second cluster member** —
+this is one ontology, and the arc's repeated lesson is that a single instance
+motivates but does not price a lever.

@@ -90,3 +90,68 @@ measurement was not run.
 Characterisation only; no code shipped. Instrumentation (a gated per-class
 `eprintln!` in the label-cache loop) was reverted — the recipe is 6 lines and the
 threshold used was 50 ms.
+
+## The cost is the DETERMINISTIC fixpoint, not the disjunctive search
+
+Instrumenting `classify_labels` with the engine's own `SearchStats` settles it. A
+**34-second** label class on `ore_ont_6134`:
+
+| metric | value |
+|---|---|
+| `nodes` | **5,978** |
+| `is_blocked_calls` | 1,721,455 |
+| `match_attempts` | 3,280,836 |
+| `branches_taken` / `restores` | **534 / 534** |
+| `node_clones` | 534 |
+| `fixpoint_passes` | 281 |
+| `max_branch_depth` | 256 (the cap) |
+
+`restores == branches` at saturated depth is *exactly* the `is_diverging` signature
+the adaptive budget exists to cut, so the obvious read is "a diverging disjunctive
+search, cut too late because `DIV_WINDOW = 500` is only sampled every 500 branches".
+
+**That read is wrong, and two measurements kill it:**
+
+| | `label_cache_build` |
+|---|---|
+| `RUSTDL_DIV_WINDOW` 500 / 100 / 50 | 101,299 / 101,207 / 101,242 ms |
+| `RUSTDL_ADAPTIVE_BUDGET` 1 / 0 | 101,328 / 100,517 ms |
+
+Rows identical (2,349) throughout. If the time were in the 534 branches, cutting at
+branch 50 instead of 500 would have saved ~90%. It saved **nothing**, and disabling
+the early-cut entirely costs nothing either. This independently re-confirms the
+"DIV_WINDOW (null)" verdict already in the design record — now with a mechanism for
+*why* it is null on this path.
+
+**So the 34 s is spent before the branching starts**: in the deterministic
+`horn_fixpoint` building a ~6,000-node graph by expanding transitive existentials
+through `proper_part_of`. 534 branches over a 6,000-node graph is a *thin* search on
+a *fat* graph.
+
+## What this implies
+
+The graph is substantially **the same for every class** — it is the part-of hierarchy
+reachable from the class, and these classes sit in one chain. It is being rebuilt
+**1,682 times**, once per label-cache entry.
+
+That reframes the cluster completely. Every lever tried against it so far has been
+aimed at the wrong thing:
+
+* bounding the phase (08-08) — backfires, the cache is all-or-nothing;
+* tightening the per-class budget — produces more misses, the wrong direction;
+* per-class deadline precision — dominated by the aggregate arithmetic;
+* the divergence early-cut / `DIV_WINDOW` — null, as measured above.
+
+The lever the evidence actually points to is **sharing the deterministic graph across
+classes** rather than rebuilding it per class — i.e. the "build-once, classify-many"
+direction, not a budget or a search heuristic. That is a large piece of work and is
+recorded here as a target, not started.
+
+The per-class-locality idea from the previous section is still viable and is now
+better motivated: a module would shrink the *graph*, which is where the time is. Its
+soundness caveat (a smaller label set makes the prune more aggressive) is unchanged
+and still must be settled first.
+
+**Both diagnostics were reverted.** The `SearchStats` dump is ~15 lines in
+`classify_labels`; the `RUSTDL_DIV_WINDOW` knob was dropped rather than kept, since a
+knob for a constant now measured null twice is noise.

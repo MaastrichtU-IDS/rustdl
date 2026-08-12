@@ -1,0 +1,17 @@
+stem	bucket	classes	stacks	top1	n1	top2	n2	top3	n3
+ore_ont_9540	label_cache_build	50	396	index<core::option::Option<owl_dl_tableau::hyper::ClauseMatchPlan>>	19	_int_malloc	11	drop<owl_dl_tableau::hyper::ClauseIndexes,	11	
+ore_ont_9429	label_cache_build	2636	396	is_blocked	3	index<owl_dl_tableau::hyper::HyperNode>	2	index<core::option::Option<owl_dl_tableau::hyper::ClauseMatchPlan>>	2	
+ore_ont_205	label_cache_build	5496	396	has	12	push<[owl_dl_tableau::hyper::HNode;	6	enumerate_matches	6	
+ore_ont_13122	label_cache_build	7120	396	subset_sorted	228	is_blocked	94	next<owl_dl_core::ir::ClassId>	30	
+ore_ont_11311	label_cache_build	8022	396	fire_clause	20	enumerate_matches	19	{closure#0}	10	
+ore_ont_7914	label_cache_build	17680	364	enumerate_matches	41	push<[(u32,	28	push<[owl_dl_tableau::hyper::HNode;	26	
+ore_ont_6712	label_cache_build	42183	396	enumerate_matches	38	push<[owl_dl_tableau::hyper::HNode;	25	push<[(u32,	24	
+ore_ont_10140	label_cache_build	83036	364	??	54	eq<owl_dl_core::ir::ClassId>	10	mprotect	7	
+ore_ont_11695	prepare	11786	108	find<(owl_dl_core::ir::Role,	8	enumerate_matches	8	push<[(u32,	5	
+ore_ont_13846	prepare	35706	12	rotate_left<u64>	2	write<owl_dl_saturation::ExistentialFact>	1	write<owl_dl_core::ontology::Axiom>	1	
+ore_ont_14817	prepare	58364	12	eq<owl_dl_core::ir::ClassId,	7	process_subsumer	1	process_fact	1	
+ore_ont_11460	prepare	83482	172	??	27	as_ref<owl_dl_tableau::hyper::ClauseMatchPlan>	9	fire_clause	7	
+ore_ont_10621	no-banner	?	12	likely	2	full	2	folded_multiply	2	
+ore_ont_14459	no-banner	?	12	__memset_avx2_unaligned_erms	11	spilled<[owl_dl_core::ir::ClassId;	1	
+ore_ont_20	no-banner	?	12	right_kv<alloc::collections::btree::node::marker::Immut,	5	as_ref<core::ptr::non_null::NonNull<alloc::collections::btree::node::InternalNode<(alloc::string::String,	3	right_edge<alloc::collections::btree::node::marker::Immut,	1	
+ore_ont_7507	no-banner	?	12	_mm_movemask_epi8	6	eq<owl_dl_core::ir::ClassId,	2	to_ne_bytes	1	

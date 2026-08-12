@@ -190,3 +190,64 @@ the CSV for the members that reported.
 * **`prepare` 13 (8%)** is half its earlier size, and the "39% stall in preprocessing"
   claim is now doubly unsupported: 13 + 24 = 37 (23%) even if every silent member were
   preprocessing, which the 4-member probe showed they are not.
+
+
+## THIRD run at 120 s — the method converges, and `prepare` was almost entirely an artifact
+
+| bucket | 20 s | 60 s | **120 s** | 60→120 |
+|---|---|---|---|---|
+| `label_cache_build` | 75 | 88 | **91 (55%)** | +3 |
+| `tier_walk` | 11 | 27 | **35 (21%)** | **+8** |
+| `no-banner` | 36 | 24 | **19 (12%)** | −5 |
+| `saturate` | 1 | 5 | **8 (5%)** | +3 |
+| `unsat_probe` | 13 | 6 | **4 (2%)** | −2 |
+| `sweeps` | 0 | 1 | **4 (2%)** | +3 |
+| `prepare` | 28 | 13 | **3 (2%)** | **−10** |
+
+**Reclassification rate is falling: 30% (20→60), then 18% (60→120).** So the attribution
+does converge rather than drift indefinitely — the earlier worry that this method
+saturates is not borne out. `label_cache_build` is effectively stable (75 → 88 → 91).
+
+Top flows 60→120: `prepare → label_cache_build` (10), `label_cache_build → tier_walk` (8),
+`no-banner → saturate` (3).
+
+### Predictions were registered in advance and 2 of 4 were wrong
+
+| prediction | outcome |
+|---|---|
+| `label_cache_build` shrinks (median 53 s of a 60 s cap ⇒ mostly capped) | **WRONG** — grew 88 → 91 |
+| `tier_walk` grows | ✓ 27 → 35 |
+| `no-banner` shrinks to ~15–20 | ✓ 19 |
+| `prepare`/`saturate` stable (early phases either finish or don't) | **WRONG both** — `prepare` collapsed 13 → 3, `saturate` grew 5 → 8 |
+
+The `prepare` error is the instructive one. I reasoned that an early sequential phase
+either completes or doesn't, so its count should be cap-insensitive. Wrong: a phase is
+labelled dominant only until a *later* phase outgrows it, so `prepare` members were
+steadily reclassified as their label-cache work overtook a fixed ~30 s preparation cost.
+**An early phase's count is the most cap-sensitive, not the least.**
+
+### `prepare` is not a class — retract it
+
+At 28 members (17%) it looked like a major unexamined cluster; at **3 (2%)** it is noise,
+and 10 of its 13 60-second members flowed into `label_cache_build`. Every claim built on
+it is withdrawn:
+
+* **"39% stall in sequential preprocessing"** — already withdrawn once; the residue
+  (`prepare` 3 + `no-banner` 19 = 22, **13%**) is a third of the original claim even
+  taking every silent member as preprocessing.
+* The proposal to "investigate the single-threaded preprocessing class first" is
+  **retracted**. The single-threadedness observation (12 stacks vs 396) stands as a
+  measurement, but it describes ~13% of the tail, not 39%, and the biggest part of what it
+  described has turned out to be label-cache work.
+
+### What to plan against — final
+
+* **`label_cache_build` 91 (55%)** — stable across all three caps and the clear target.
+* **`tier_walk` 35 (21%)** — still growing (11 → 27 → 35), so 35 is a *lower* bound. This
+  is the strongest remaining argument for the diagnosed-but-unbuilt surrogate-atom
+  absorption work: at 11 members it was unjustifiable, at ≥35 it is the second-largest
+  cluster.
+* **`no-banner` 19 (12%)** is the genuinely-unbounded class — nothing reports it even at
+  120 s.
+* `saturate` 8, `unsat_probe` 4, `sweeps` 4, `prepare` 3 are individually too small to
+  plan against.

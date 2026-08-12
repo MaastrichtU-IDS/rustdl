@@ -2336,8 +2336,14 @@ pub(crate) fn classify_top_down_internal(
     // largest unbudgeted phase (26 of the 252 DNF ontologies never finished it
     // at all). `from_internal_with_deadline(.., None)` is the pre-change call.
     let t_prepare = Instant::now();
-    let Some(prepared) =
-        PreparedOntology::from_internal_with_deadline(internal.clone(), prep_deadline)?
+    let Some(prepared) = PreparedOntology::from_internal_with_deadline(
+        internal.clone(),
+        prep_deadline,
+        // Hand over the closure computed above instead of re-saturating: the
+        // same fixpoint over the same unmutated ontology. `sat_aborted` returns
+        // early above, so this closure is complete.
+        Some(closure.clone()),
+    )?
     else {
         return Ok(classify_prep_timeout(
             internal,

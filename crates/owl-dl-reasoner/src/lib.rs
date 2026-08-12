@@ -6411,7 +6411,7 @@ impl PreparedOntology {
     pub(crate) fn from_internal(internal: InternalOntology) -> Result<Self, ReasonError> {
         // `deadline: None` makes every `expired` test below constant-false, so
         // the `Ok(None)` arm is unreachable — hence the `expect`.
-        Ok(Self::from_internal_with_deadline(internal, None)?
+        Ok(Self::from_internal_with_deadline(internal, None, None)?
             .expect("from_internal_with_deadline(.., None) never aborts"))
     }
 
@@ -6428,9 +6428,30 @@ impl PreparedOntology {
     /// precedent: the caller must degrade to a sound under-approximation and
     /// report it as incomplete. `deadline == None` ⇒ always `Ok(Some(..))` and
     /// zero clock reads, so the default path is untouched.
+    /// `precomputed_closure`: an EL closure the CALLER already computed over the
+    /// SAME unmutated ontology. Passing it skips a full re-saturation.
+    ///
+    /// `classify_top_down_internal` computes exactly this closure for its fast-path
+    /// check and then called here with no way to hand it over, so the identical
+    /// fixpoint ran twice. Measured (2026-08-12): `ore_ont_8475` 46,836 ms then
+    /// 46,318 ms — matching within 3%, and roughly HALF the total classify wall.
+    /// See `docs/2026-08-12-duplicate-saturation-in-prepare.md`.
+    ///
+    /// **Sound because the inputs are identical**, not because the values are
+    /// compared: the caller saturates `internal`, this receives `internal.clone()`,
+    /// and (with `RUSTDL_LAZY_ABOX_SATURATION` off — the default) the branch below
+    /// is `saturate(&internal)` *before* any mutation. `abox_irrelevant_to_classify`
+    /// is computed early but applied later, so it cannot affect the closure.
+    ///
+    /// **Completeness gate:** an ABORTED closure is a sound UNDER-approximation, so
+    /// reusing one would hand this a weaker closure than it would have built.
+    /// `classify_top_down_internal` returns early on `sat_aborted`, so its closure is
+    /// complete by construction at the call site — but a future caller must preserve
+    /// that, or pass `None`.
     pub(crate) fn from_internal_with_deadline(
         mut internal: InternalOntology,
         deadline: Option<std::time::Instant>,
+        precomputed_closure: Option<owl_dl_saturation::Subsumers>,
     ) -> Result<Option<Self>, ReasonError> {
         // One-liner so each boundary below is a single readable line. `None` ⇒
         // constant-false (the closure is inlined and the branch folds away).
@@ -6456,7 +6477,10 @@ impl PreparedOntology {
         // evaluated on the un-mutated input and is equivalent to
         // `abox.individuals.is_empty()` below; see
         // `lazy_abox_saturation_enabled`'s doc for why.
-        let closure = if lazy_abox_saturation_enabled() && !internal_has_abox(&internal) {
+        let closure = if let Some(pre) = precomputed_closure {
+            // Caller already ran this exact fixpoint (see the doc comment).
+            Some(pre)
+        } else if lazy_abox_saturation_enabled() && !internal_has_abox(&internal) {
             None
         } else if let Some(d) = deadline {
             // Bounded fixpoint. An ABORTED closure is a sound under-approximation

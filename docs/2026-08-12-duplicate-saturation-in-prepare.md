@@ -93,8 +93,46 @@ proportionally on the 93 spending ≥1 s. Verdict-preserving by construction (sa
 value), so the gate is a byte-identity check on classify output plus the FP=0 net, not a
 completeness argument.
 
-**Not yet built.** The other 50% (`HyperCache::build`) is a separate question and is *not*
-obviously duplicated — no other site builds it.
+## BUILT — prepare roughly halves
+
+Shipped **unflagged**: it is not a behaviour change, it is the removal of a repeated
+computation, and gating it would only preserve the waste behind a flag.
+
+`from_internal_with_deadline` gained a third parameter,
+`precomputed_closure: Option<Subsumers>`; `classify_top_down_internal` passes
+`Some(closure.clone())`. Only two call sites existed, so the change is small.
+
+**The completeness gate turned out to be free.** I proposed making reuse conditional on
+`!sat_aborted`; in fact `classify_top_down_internal` already **returns early** on
+`sat_aborted` (into `classify_prep_timeout`), so its closure is complete by construction at
+the call site. No conditional was needed — but the doc comment records the requirement, so
+a future caller cannot quietly violate it.
+
+| ontology | prepare BEFORE | prepare AFTER | |
+|---|---|---|---|
+| `ore_ont_8475` | 95,169 ms | **48,347 ms** | −49% |
+| `ore_ont_11196` | 33,117 ms | **16,773 ms** | −49% |
+| `ore_ont_10926` | 36,031 ms | **20,355 ms** | −44% |
+
+The `Subsumers` clone costs ~760 ms on a 74,258-class ontology (48,347 vs a perfect
+47,584), i.e. ~1.6% of what it saves.
+
+**Wall follows only where the ontology can finish.** `ore_ont_10926` went **229.5 s →
+107.3 s**; `8475` and `11196` both hit the 200 s cap either way and spend the freed time in
+later phases instead — which is the correct behaviour (more work inside the same budget),
+not a null result.
+
+### Gates
+
+* Workspace **1,605 pass / 0 fail**; fmt and clippy clean.
+* **Byte-identity on all 10 curated fixtures**, base vs reuse (answers sorted and hashed).
+  This is the right gate for this change: the claim is that the reused closure is the same
+  *value*, so identical output is the direct test.
+* FP=0 net: **13 closures VERIFIED, zero `FP>0`, zero `MISSED>0`**.
+
+**Still open: the other ~50%.** `HyperCache::build` costs about as much as the saturation
+did (45,449 ms on `8475`) and is **not** obviously duplicated — no other site builds it. It
+is now the single largest identified item inside `prepare`.
 
 ## Method note
 

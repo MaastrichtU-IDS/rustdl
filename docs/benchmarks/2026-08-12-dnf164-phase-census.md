@@ -138,3 +138,55 @@ assigned to a bucket that looks like a finding. The fix is to re-probe the
 non-reporting bucket at a larger cap before naming it — which is the same
 "a timeout is not a neutral sampler" rule the corpus-measurement skill already states for
 populations, applied here to *attribution*.
+
+
+## RE-RUN at a 60 s cap — and a third of the census changed bucket
+
+Raw data: [`data-2026-08-12-dnf164-phase-census-60s.csv`](data-2026-08-12-dnf164-phase-census-60s.csv)
+(carries both the 60 s and 20 s labels per ontology). Same harness, same pinned binary;
+the **only** change is `--global-timeout-ms 20000 → 60000`.
+
+| bucket | 20 s | **60 s** | median ms | med classes | med RSS |
+|---|---|---|---|---|---|
+| `label_cache_build` | 75 (46%) | **88 (54%)** | 53,326 | 15,116 | 0.44 GB |
+| `tier_walk` | 11 (7%) | **27 (16%)** | 44,779 | 1,405 | 0.06 GB |
+| `no-banner` | 36 (22%) | **24 (15%)** | — | — | 0.94 GB |
+| `prepare` | 28 (17%) | **13 (8%)** | 31,155 | 28,465 | 1.44 GB |
+| `unsat_probe` | 13 (8%) | 6 (4%) | 46,421 | 650 | 0.05 GB |
+| `saturate` | 1 (1%) | 5 (3%) | 7,140 | 232,084 | 1.89 GB |
+| `sweeps` | 0 | 1 (1%) | 44,974 | 35,196 | 1.37 GB |
+
+**50 of 164 ontologies (30%) were reclassified.** The old `no-banner` 36 split into 24
+still-silent, 8 `prepare`, 4 `saturate` — but the churn is much wider than that bucket:
+`tier_walk` **more than doubled** (11 → 27) and `prepare` **halved** (28 → 13).
+
+### The method has a structural limit, and this is it
+
+The phases run **in sequence**, so "dominant phase" is really **"the phase the budget ran
+out in"**. A short cap systematically over-attributes to early phases (`prepare`,
+`saturate`) and starves late ones (`tier_walk`, `sweeps`) — which is exactly the observed
+direction: at 60 s, ontologies get *past* the label cache and into the pair loop, and
+`tier_walk` grows accordingly, while `prepare`-labelled members turn out to have merely
+been early in their run.
+
+**Consequence: a phase share from this method is not cap-independent and must always be
+quoted with its cap.** What is stable is (a) which phases appear at all, (b) that
+`label_cache_build` is the largest bucket at both caps, and (c) the per-ontology labels in
+the CSV for the members that reported.
+
+### What to plan against
+
+* **`label_cache_build` 88 (54%)** — largest at both caps, so the ranking is robust even
+  if the share is not. But the bucket profiles showed its *causes* differ internally
+  (blocking on one member, `enumerate_matches` on three, graph cloning on exactly one), so
+  this sizes an opportunity, not a lever.
+* **`tier_walk` 27 (16%)** is 2.5× larger than the 20 s census suggested, which materially
+  raises the value of the diagnosed-but-unbuilt surrogate-atom absorption work
+  (`ore_ont_10019` sits here). At 11 members it was hard to justify; at 27 it is the
+  second-largest bucket.
+* **`no-banner` 24 (15%)** is the genuinely-unbounded class — not the 36/22% first
+  reported. Small median classes are unavailable (they never report), but median RSS
+  0.94 GB puts them with the heavy end.
+* **`prepare` 13 (8%)** is half its earlier size, and the "39% stall in preprocessing"
+  claim is now doubly unsupported: 13 + 24 = 37 (23%) even if every silent member were
+  preprocessing, which the 4-member probe showed they are not.

@@ -95,3 +95,46 @@ dominates.
   partition of the reporting 128 is sound; the 36 are classified only as "unbounded".
 * Single-thread outcome (the DNF list) but **default parallelism** during the census, so
   RSS from the sweep and phase timings here come from different thread configurations.
+
+
+## CORRECTION (2026-08-12, same day): the `no-banner` bucket is largely a CAP ARTIFACT
+
+Finding #1 above — "22% of the tail is where `--global-timeout-ms` does not take effect"
+— **overstates the case, and the census's own 20 s cap is why.** Re-probing 4 of the 36
+`no-banner` members at a **60 s** cap:
+
+| member | at 20 s | at 60 s | dominant |
+|---|---|---|---|
+| `ore_ont_14459` | silent | **reports** | `saturate` 9,953 ms |
+| `ore_ont_20` | silent | **reports** | `sweeps` 15,579 ms |
+| `ore_ont_7507` | silent | **reports** | `prepare` 45,673 ms |
+| `ore_ont_10621` | silent | **still silent** | genuinely unbounded |
+
+**3 of 4 were simply slower than 20 s**, not unbounded. So `no-banner` is not a failure
+mode; it is *"did not finish within the census cap"*, and its members redistribute across
+the real phases — including `sweeps`, which the original partition showed as **zero**
+members and which is in fact `ore_ont_20`'s dominant phase at 15.6 s.
+
+**What survives:** `ore_ont_10621` is silent even at 60 s, so a genuinely unbounded class
+exists — but the 36-member, 22% figure is not its size, and the honest count from this
+sample is nearer **1 in 4 of the bucket**, i.e. ~9 ontologies. Do not quote 22%.
+
+**What this does to the derived claims:**
+
+* **"39% stall in sequential preprocessing" is not supported.** It combined the 28
+  `prepare` members with all 36 `no-banner` on the strength of one sampled member. Of the
+  4 now probed, one is `prepare`-dominated (`7507`, 45.7 s — the largest single prepare
+  figure seen), one is `saturate`, one is `sweeps`, and one is unknown. The `prepare`
+  class is real and `7507` strengthens it, but the 39% aggregate was an inference, not a
+  measurement.
+* **The single-threaded finding is unaffected** — 12 stacks vs 396 is a direct
+  observation, independent of which phase owns the wall.
+* **The `label_cache_build` (75) and `tier_walk` (11) buckets are unaffected**; they
+  reported and were attributed.
+
+**Method lesson, recorded because it cost a wrong headline:** a cap chosen to make a
+census affordable *becomes a classifier*, and every item that fails to report is silently
+assigned to a bucket that looks like a finding. The fix is to re-probe the
+non-reporting bucket at a larger cap before naming it — which is the same
+"a timeout is not a neutral sampler" rule the corpus-measurement skill already states for
+populations, applied here to *attribution*.

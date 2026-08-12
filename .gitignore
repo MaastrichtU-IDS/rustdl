@@ -16,7 +16,14 @@ Cargo.lock.bak
 .DS_Store
 
 # Claude Code session state
-.claude/
+# NOTE the trailing `/*`, not `/`: git cannot re-include a path whose PARENT DIRECTORY is
+# excluded, so `.claude/` + `!.claude/skills/` silently keeps skills ignored. Excluding the
+# CONTENTS instead leaves the directory eligible for the negation below.
+.claude/*
+# DO track skills: they are the measurement/review discipline this repo runs on, and a
+# lesson that lives only on one machine gets re-learned the expensive way. Everything else
+# under .claude/ (worktrees, session state, local settings) stays ignored.
+!.claude/skills/
 
 # Local environments
 .venv/

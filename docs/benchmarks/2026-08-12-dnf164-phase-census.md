@@ -251,3 +251,78 @@ it is withdrawn:
   120 s.
 * `saturate` 8, `unsat_probe` 4, `sweeps` 4, `prepare` 3 are individually too small to
   plan against.
+
+
+## CRITICAL CORRECTION: all three censuses are CONTENTION-DISTORTED
+
+Asked whether `unsat_probe` deserved the same absolute-cost treatment that found the
+duplicate saturation in `prepare`, its four apparent outliers were re-measured **alone**.
+They do not reproduce:
+
+| ontology | census `unsat_probe` | measured ALONE | real dominant phase |
+|---|---|---|---|
+| `ore_ont_934` | 103.5 s | **4.1 s** | `tier_walk` 112.7 s |
+| `ore_ont_7828` | 118.1 s | **21.3 s** | `tier_walk` 98.1 s |
+| `ore_ont_10517` | 117.9 s | **20.9 s** | `tier_walk` 98.8 s |
+| `ore_ont_8273` | 96.4 s | **10.0 s** | `tier_walk` 104.7 s |
+
+Same binary, same 120 s budget. Verified this is **not** the closure-reuse change: the
+pre-fix and post-fix binaries give identical breakdowns on `ore_ont_934`
+(unsat_probe 4,078 vs 4,073 ms; tier_walk 112,671 vs 112,629 ms; 110 rows both).
+
+### The cause: 4× thread oversubscription
+
+`missed-net.sh` runs `JOBS=4` concurrent processes, and each `rustdl` uses **default rayon
+parallelism (32 threads)** — so 4 × 32 = **128 threads on 32 cores**. The harness's
+`--threads 1` governs its own dispatch, not the reasoner's internal fan-out.
+
+The distortion is **non-uniform and severe**, which is why it was not visible as a simple
+scale factor:
+
+* early phases inflate — `ore_ont_934`'s `label_cache_build` 3.3 s → 16.5 s (5×) and
+  `unsat_probe` 4.1 s → 103.5 s (**25×**), because the unsat probe fans 108 per-class
+  tableau probes across rayon and is worst hit by oversubscription;
+* later phases are **starved to zero** — `tier_walk` 112.7 s → **0**, because the budget
+  was exhausted before it began.
+
+So contention does not merely scale the numbers; it **reassigns the dominant phase**.
+
+### What is invalidated
+
+* **All phase *values* in all three censuses** (20 s / 60 s / 120 s) are
+  contention-inflated by an unknown, per-phase-varying factor.
+* **The dominance partition is distorted**, on top of the cap sensitivity already
+  documented. The `unsat_probe` bucket (13 → 6 → 4) is now believed to be **entirely
+  artifactual** — all four members are really `tier_walk`.
+* **The absolute-cost totals are not usable**: `label_cache_build` 10,051 s,
+  `tier_walk` 3,326 s, `unsat_probe` 735 s, `sweeps` 326 s. Directions may hold; magnitudes
+  do not.
+
+### What survives, and why
+
+Everything measured on **single runs** is unaffected:
+
+* **The duplicate saturation in `prepare`** — found and fixed. Both halves were measured
+  individually (`ore_ont_8475`: 46,836 ms then 46,318 ms) and the fix verified on single
+  runs (95,169 → 48,347 ms). The `1,082 s` tail-wide total came from census data and is
+  therefore suspect, but the per-ontology halving is real.
+* **The env-flag hot-loop fix** — single-run measurements plus a two-arm sweep where *both*
+  arms carried the same contention, so the comparison holds even if the absolutes do not.
+* **The bucket profiles** (gdb sampling, single runs) — including the kill of the
+  wedge-trailing lever and the `subset_sorted`/`enumerate_matches` findings.
+* **The 164-ontology DNF membership itself** — from the two-arm sweep, where contention
+  applied equally.
+
+### And a real finding falls out of the correction
+
+`tier_walk` takes **98–113 s on ontologies of 108–904 classes**. That is pathological on
+its face, and it is the *same* bucket as `ore_ont_10019` and the diagnosed-but-unbuilt
+surrogate-atom absorption work. Four ontologies just moved into it from `unsat_probe`, and
+it was already growing across caps (11 → 27 → 35). It is now the best-supported target in
+the tail — arrived at, ironically, by correcting the instrument rather than by any lever.
+
+### Fix for any future census
+
+Pin the reasoner's fan-out so total threads ≈ cores: `RAYON_NUM_THREADS=8` with `JOBS=4`,
+or `JOBS=1` and accept the wall. **Record both numbers** — the skill already says "record
+the thread pin" for RSS; this shows it governs *phase attribution* too.

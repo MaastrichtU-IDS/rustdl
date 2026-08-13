@@ -326,3 +326,65 @@ the tail — arrived at, ironically, by correcting the instrument rather than by
 Pin the reasoner's fan-out so total threads ≈ cores: `RAYON_NUM_THREADS=8` with `JOBS=4`,
 or `JOBS=1` and accept the wall. **Record both numbers** — the skill already says "record
 the thread pin" for RSS; this shows it governs *phase attribution* too.
+
+
+## RETRACTION of the "contention-distorted" correction — the census was RIGHT
+
+The section above claims all three censuses are contention-distorted by 4×32=128 threads on
+32 cores, and that the `unsat_probe` bucket is artifactual. **Both claims are false.**
+
+`missed-net.sh` passes `--threads 1` to the harness, and the harness sets
+**`RAYON_NUM_THREADS=1`** on the reasoner — verified by reading `/proc/<pid>/environ` of a
+live census child: `RAYON_NUM_THREADS=1`, 2 threads in the process. So the census is
+*under*-subscribed (≈4-8 threads on 32 cores), not over.
+
+The real explanation is **thread count, not contention.** The census runs single-threaded;
+my "measured alone" re-runs used default parallelism (32 threads). Reproducing `ore_ont_934`
+at each setting:
+
+| threads | `label_cache_build` | `unsat_probe` | `tier_walk` |
+|---|---|---|---|
+| **1** | **16,469 ms** | **103,528 ms** | **0** |
+| 8 | 4,714 ms | 14,072 ms | 101,209 ms |
+| 32 | 3,927 ms | 4,077 ms | 112,020 ms |
+| *census recorded* | *16,454* | *103,541* | *0* |
+
+The single-thread row matches the census to within 0.1%. The census was a **valid
+single-threaded profile**; the mismatched measurement was mine.
+
+### The genuine finding underneath
+
+**Phases parallelise at very different rates**, so *which phase to optimise depends on the
+thread count*:
+
+* `unsat_probe` — **25×** from 1→32 threads (103.5 s → 4.1 s). Near-perfectly parallel; it
+  is a per-class independent probe loop.
+* `label_cache_build` — only **4.2×** (16.5 s → 3.9 s).
+* `tier_walk` — *appears* from nowhere at ≥8 threads, because at 1 thread the budget is
+  exhausted before it starts.
+
+Consequences:
+
+1. **Both frames are legitimate and they rank differently.** Single-thread is the right
+   frame for reproducible comparison (and matches the `--threads 1` condition the DNF list
+   itself was produced under). Default parallelism is the right frame for user-facing
+   priority. On `ore_ont_934` the former says `unsat_probe`, the latter says `tier_walk`.
+2. **`label_cache_build` scaling only 4.2× while `unsat_probe` scales 25× is itself a
+   target** — and it is consistent with `label_cache_build` being the largest bucket at every
+   cap. A phase that refuses to parallelise on a 32-core machine is a better lever than one
+   that already does.
+3. **The `unsat_probe` bucket is real, not artifactual** — in single-threaded terms. Its four
+   members were correctly classified.
+
+### What this costs the record
+
+The `unsat_probe`-is-artifactual claim, and the sweeping "all phase values are
+contention-inflated", are withdrawn. The absolute-cost totals (`label_cache_build` 10,051 s,
+`tier_walk` 3,326 s, `unsat_probe` 735 s) are **valid single-thread figures** and may be
+quoted as such.
+
+**Method lesson, and it is the same one twice:** I diagnosed a discrepancy between two of my
+own measurements by inventing a mechanism (contention) instead of *reading the environment of
+the running process*. One `cat /proc/<pid>/environ` — which the harness makes trivial because
+it records and controls the pin — would have shown `RAYON_NUM_THREADS=1` immediately. Check
+what the measurement actually did before theorising about why it disagrees.

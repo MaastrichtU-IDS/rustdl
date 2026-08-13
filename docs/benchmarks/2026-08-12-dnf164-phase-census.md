@@ -388,3 +388,48 @@ own measurements by inventing a mechanism (contention) instead of *reading the e
 the running process*. One `cat /proc/<pid>/environ` — which the harness makes trivial because
 it records and controls the pin — would have shown `RAYON_NUM_THREADS=1` immediately. Check
 what the measurement actually did before theorising about why it disagrees.
+
+
+## The "label_cache scales only 4.2×" premise is ALSO refuted
+
+The retraction above proposed a new lever: `label_cache_build` scaling 4.2× while
+`unsat_probe` scales 25× looked like a parallelism defect worth fixing. It is not a defect,
+and the 4.2× is not a scaling measurement.
+
+Per-class instrumentation (temporary, reverted):
+
+| ontology | classes | total label CPU | max single class | ideal @32t | measured @32t |
+|---|---|---|---|---|---|
+| `ore_ont_934` | 108 | **116.0 s** | 2.56 s | **3.62 s** | 3.93 s → **92% efficient** |
+| `ore_ont_6134` | 922 | **6,412 s** | 41.0 s | 200.4 s | — |
+
+`label_cache_build` is **CPU-bound and parallelises near-perfectly** (92% of ideal on
+`934`). It is not straggler-bound either: max single class 2.56 s against a 3.62 s ideal.
+
+### Why the 4.2× was wrong
+
+The three rows (1/8/32 threads → 16.5/4.7/3.9 s) came from runs under a **120 s global
+budget**, and the budget changes *how much work each phase does*. At 1 thread the label cache
+was cut off at 16.5 s; given the phase's true cost of 116 s CPU, it completed only ~14% of its
+work. So the "16.5 s" and the "3.9 s" are not the same computation, and their ratio is not a
+speedup.
+
+**You cannot measure phase scaling under a global timeout.** Doing so compares different
+amounts of work and reports the difference as parallel efficiency. To measure scaling, the
+phase must run to completion at every thread count.
+
+### What the numbers do say
+
+`ore_ont_6134`'s label cache is **6,412 seconds of CPU work** — 200 s even at perfect 32-way
+parallelism, against a 60 s production cap. That is the real shape of this bucket: not a
+scaling problem, not a straggler problem, but **too much total work**. The lever is per-class
+cost, which returns to the original `ore_ont_6134` question and to the two recurring costs the
+gdb profiles found (`subset_sorted`/`is_blocked`, `enumerate_matches`).
+
+### Three refutations in a row, all cheap
+
+Contention → thread count → straggler → CPU-bound. Each was tested in minutes and each closed
+a direction. The pattern worth keeping is that every one of them was a *mechanism invented to
+explain a discrepancy between two of my own measurements*, when the discrepancy was in the
+measurement conditions: first the thread pin, then the budget. **Before theorising about why
+two numbers disagree, diff the conditions that produced them.**

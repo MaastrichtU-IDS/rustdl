@@ -172,3 +172,45 @@ Ranked by what perf actually supports:
 2. **Allocation ~12%** — diffuse; `SmallVec::clone` at 3.2% is the only named handle.
 3. **`apply_role_rules` 14%** — largest area, but Phase 3e already attempted edge-keyed
    indexing here and was reverted at a +2.34% GALEN regression, so it is known-hard.
+
+## The `concrete_domain_clash` fast path: built, measured ZERO, reverted
+
+perf put 10.79% of `tier_walk` in that function, so the obvious move is a precomputed
+relevance set (`Some`/`All`/`Min`/`Max` over a named role with a registered `DKey` filler)
+letting a node with no relevant label exit after O(labels) bit tests instead of a
+`pool.get` + match + `dkey_ranges` lookup per label.
+
+Built behind `RUSTDL_CDC_FAST_PATH` specifically so the A/B is **one variable** — unlike the
+invalid `RUSTDL_DATA_PROPERTIES=0` ablation above, this leaves the axioms in place and skips
+only the check.
+
+| ontology | FAST_PATH=0 | FAST_PATH=1 | rows |
+|---|---|---|---|
+| `ore_ont_7828` | 93,633 ms | 93,309 ms | 954 = 954 |
+| `ore_ont_10517` | 90,301 ms | 90,297 ms | **1191 vs 1185** |
+| `ore_ont_934` | 112,342 ms | 112,306 ms | 110 = 110 |
+| `ore_ont_8273` | 104,390 ms | 104,348 ms | 375 = 375 |
+
+**Zero speedup — 0.3% at best, against a 10.79% attribution.** Reverted, for three
+reasons:
+
+1. **No measured benefit.** Whatever perf is attributing to that symbol, this does not
+   recover it.
+2. **I never proved the fast path FIRES.** The most likely explanation for a null result is
+   that these nodes *do* carry DKey-relevant labels, so the early-out never triggers and the
+   change only adds a scan. That check is my own standing rule and I skipped it — the null
+   result is therefore uninterpretable, not negative.
+3. **`ore_ont_10517` returned 1191 vs 1185 rows.** Probably the documented
+   non-determinism under a truncating budget, but *probably* is not good enough for a
+   possible verdict change with no upside.
+
+### What this says about the 10.79%
+
+The attribution is presumably real — but 10.79% *of samples inside a function* is not
+10.79% *recoverable by skipping it*. The accumulation loop may be cheap per call and simply
+called enormously often, in which case the cost is the call frequency (i.e. how often
+`clash_at` runs), not the work inside. Distinguishing those needs a call-count, not a
+skip-flag.
+
+**Anyone retrying this must first instrument the early-out rate.** If it is near zero, the
+lever is dead by construction and no amount of tuning helps.

@@ -103,3 +103,52 @@ thing is a mechanism rustdl has never had.
 * **Not assessed: the cost of a portfolio in rustdl.** Racing arms multiplies CPU, and rustdl's
   `label_cache_build` is already 6,412 s of CPU on `ore_ont_6134`. A race that runs two
   expensive arms could be worse than either.
+
+
+## Sizing check: arm 2 recovers 3 of 164, not ~35 — do NOT build the portfolio yet
+
+Before building the two-arm fallback, the pre-registered sizing check: how many of the 164 DNFs
+complete at `--pair-timeout-ms 50`? Rule fixed in advance — ~35 recoveries justifies the
+portfolio's testing tax, ~5 does not.
+
+| | |
+|---|---|
+| completed **within 60 s** (the cap that DEFINED the 164) | **3 (2%)** |
+| completed within the 90 s sweep cap | 14 (9%) |
+| still DNF | **150** |
+
+Recovered walls: median 27.1 s, max 30.9 s.
+
+**The rule says do not build.**
+
+### Why my estimate was 10× too high — the same error, twice
+
+The "~35" came from four spot checks (`10019`, `6485`, `1707`, `14272`) run with **default rayon
+parallelism (32 threads)**. The harness pins **`RAYON_NUM_THREADS=1`**, and the 164-ontology DNF
+list was produced under that pin. So I extrapolated a 32-threaded sample onto a 1-threaded
+population.
+
+This is the **same thread-frame error** recorded earlier in this very document set — where I
+explained a discrepancy between two of my own measurements by inventing a contention mechanism,
+when the answer was `RAYON_NUM_THREADS=1` and one `cat /proc/<pid>/environ` would have shown it.
+The lesson was written down and then repeated within the same session, which suggests the rule as
+stated ("diff the conditions") is too passive. The operational form: **when a spot check and a
+population disagree, assume a condition differs and go find which one before interpreting either.**
+
+### What this does and does not settle
+
+* **Does not invalidate the KM finding.** KM demonstrably races CB against HT with a
+  preference order, its own `default` route DNFs where `production_all` succeeds, and rustdl has
+  no equivalent. That architectural gap is real and stays recorded.
+* **Does invalidate this particular arm.** A small per-pair budget is not the second arm worth
+  racing — at the thread setting the tail is defined under, it rescues 3 ontologies.
+* **Leaves the multi-threaded question open, and it is the more important one.** All census and
+  sweep work in this arc is 1-threaded, but users run with default parallelism. If the tail is
+  materially smaller at 32 threads, then the population everything here has been optimising
+  against is partly an artifact of the measurement pin.
+
+### The next measurement, and why it precedes any portfolio work
+
+**How many of the 164 complete at DEFAULT settings with default parallelism?** That is one sweep,
+and it determines whether the "164 DNF" figure is the user-facing tail or a 1-thread artifact. No
+architectural work should be scoped against a population that has not survived that check.

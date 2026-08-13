@@ -65,8 +65,43 @@ while `/usr/lib/linux-tools` does not exist here. Resolving these frames needs e
 
 * `tier_walk` spends **98–113 s on ontologies of 108–904 classes**, which remains
   pathological on its face and unexplained.
-* The `concrete_domain_clash` presence is worth a targeted check on its own: it is
-  refute-only and additive, so an ontology with many data properties but no
-  `DataSomeValuesFrom` / `DatatypeRestriction` (which is exactly `10517`: 165 data
-  properties, **0** of either) may be paying for a check that can never fire. That is a
-  cheap, testable hypothesis and does not need a profiler — it needs an ablation.
+* The `concrete_domain_clash` presence looked worth a targeted check, since it is
+  refute-only and additive and `ore_ont_10517` has 165 data properties with **zero**
+  `DataSomeValuesFrom` or `DatatypeRestriction` — i.e. possibly paying per-node for a check
+  that can never fire.
+
+## That hypothesis is REFUTED
+
+`RUSTDL_DATA_PROPERTIES=0` empties `dkey_ranges`, so `concrete_domain_clash` early-outs
+entirely. `tier_walk` does not improve:
+
+| ontology | default | `DATA_PROPERTIES=0` | |
+|---|---|---|---|
+| `ore_ont_10517` | 98,175 ms | 107,308 ms | **worse** |
+| `ore_ont_7828` | 98,606 ms | 102,192 ms | **worse** |
+| `ore_ont_934` | 114,229 ms | 112,595 ms | flat |
+| `ore_ont_8273` | 104,782 ms | 104,680 ms | flat |
+
+So the 13-of-200 samples were real but marginal, and removing the check entirely buys
+nothing. Cost 15 minutes and needed no profiler, which is why it was the right thing to try
+before asking for one.
+
+## Position: blocked on symbol resolution
+
+Every cheap hypothesis for the `tier_walk` cost is now eliminated:
+
+| hypothesis | outcome |
+|---|---|
+| clausification over-branching (the `10019` diagnosis) | **cannot apply** to the four data-heavy members' profile |
+| `concrete_domain_clash` | **refuted** by ablation above |
+| `env_read_lock` / flag reads | already fixed; 0 frames |
+| divergence early-cut / `DIV_WINDOW` | measured null earlier in this arc |
+
+What remains is the **81 of ~200 unattributable samples** (`??` 41, `{closure#1}` 40 on
+`ore_ont_7828`). gdb cannot resolve them. Progress on `tier_walk` — 27–35 ontologies, the
+second-largest bucket, spending 98–113 s on ontologies of 108–904 classes — requires
+`perf` on `fsesrv-g1`, or the profiling re-run on `fsesrv-node000003` where it is already
+installed.
+
+**Do not propose another `tier_walk` lever before that.** Four have now been eliminated on
+this bucket, and the pattern in this arc is that levers aimed at unattributed cost fail.

@@ -1100,10 +1100,12 @@ fn main() -> Result<()> {
             if timing {
                 eprintln!("TIMING parse_ms={parse_ms:.1} classify_ms={classify_ms:.1}");
             }
-            // NOTE: `dropped_block` re-runs `convert_ontology` (see its doc
-            // comment) — one extra conversion per invocation, negligible
-            // vs. reasoning; accepted trade-off.
-            let dropped = json_out::dropped_block(&onto);
+            // Read the conversion's dropped-axiom tally off the result rather
+            // than calling `dropped_block`, which re-runs `convert_ontology`.
+            // That second conversion is invisible when reasoning dominates and
+            // ruinous when it does not: `ore_ont_868` spends 42 s of a 92 s
+            // classify in conversion, so paying it twice was ~46% of the wall.
+            let dropped = h.stats().dropped.by_kind().clone();
             if json {
                 println!(
                     "{}",

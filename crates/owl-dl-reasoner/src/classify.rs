@@ -277,6 +277,15 @@ pub fn analyze_fragment(internal: &InternalOntology) -> FragmentClassification {
 /// is doing the work.
 #[derive(Debug, Clone, Default)]
 pub struct ClassificationStats {
+    /// Axioms dropped during conversion, tallied by diagnostic kind (issue
+    /// #43). Carried here so a caller that wants the tally does NOT have to
+    /// re-run `convert_ontology` to get it: the CLI used to, which cost a
+    /// SECOND full conversion per invocation. That was invisible while
+    /// reasoning dominated, but on a conversion-bound ontology it doubles the
+    /// wall — `ore_ont_868` spends 42 s of a 92 s classify converting, twice.
+    /// Stamped by the two internal classify entry points, so no result path
+    /// can forget it.
+    pub dropped: owl_dl_core::DroppedAxioms,
     /// Pairwise subsumption queries answered `yes` by saturation's
     /// EL closure (no tableau call issued).
     pub saturation_subsumption_hits: usize,
@@ -937,6 +946,19 @@ pub fn classify_internal(internal: &InternalOntology) -> Result<Classification, 
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn classify_internal_with_timeout(
+    internal: &InternalOntology,
+    per_pair_timeout: Option<std::time::Duration>,
+) -> Result<Classification, ReasonError> {
+    let mut c = classify_internal_with_timeout_impl(internal, per_pair_timeout)?;
+    c.stats.dropped = internal.dropped.clone();
+    Ok(c)
+}
+
+/// The body of [`classify_internal_with_timeout`]. Separated so the wrapper can
+/// stamp `stats.dropped` on every return path — this function has several
+/// (pure-EL fast path, inconsistency short-circuit, the pairwise loop), and a
+/// future one would otherwise silently ship an empty tally.
+fn classify_internal_with_timeout_impl(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
 ) -> Result<Classification, ReasonError> {
@@ -2167,6 +2189,19 @@ fn effective_deadline(
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn classify_top_down_internal(
+    internal: &InternalOntology,
+    per_pair_timeout: Option<std::time::Duration>,
+    global_deadline: Option<Instant>,
+) -> Result<Classification, ReasonError> {
+    let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;
+    c.stats.dropped = internal.dropped.clone();
+    Ok(c)
+}
+
+/// The body of [`classify_top_down_internal`]. Separated for the same reason as
+/// [`classify_internal_with_timeout_impl`]: several return paths, one place to
+/// stamp `stats.dropped`.
+fn classify_top_down_internal_impl(
     internal: &InternalOntology,
     per_pair_timeout: Option<std::time::Duration>,
     global_deadline: Option<Instant>,

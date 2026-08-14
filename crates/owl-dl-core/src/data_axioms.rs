@@ -3040,27 +3040,29 @@ fn emit_functional_dp_cardinality_violations<A: ForIRI>(
     // `is_sub_of(q, f)` iff `f ∈ closure[q]` (or `q == f` reflexively).
     let closure = closure_sub_dp(&sub_dp);
 
-    // Collect all distinct individuals.
-    let mut all_inds: BTreeSet<&str> = BTreeSet::new();
-    for (ind, _) in ind_dp_vals.keys() {
-        all_inds.insert(ind.as_str());
-    }
+    // Group the `(ind, prop) → values` map by individual, ONCE.
+    //
+    // This loop used to walk the whole of `ind_dp_vals` for every
+    // (functional dp, individual) pair and `continue` past every entry
+    // belonging to a different individual — `O(|F| × |I| × |I·P|)`. On
+    // `ore_ont_5753` (15 functional dps, 20,118 individuals, 20,149 entries)
+    // that is ~6.1e9 steps ≈ 33.5 s, 89.85% of a conversion profile, and the
+    // sole reason a 39 MB ABox DNF'd at a 60 s cap. Grouping first makes the
+    // whole pass `O(|I·P| + |F| × |I·P|)`.
+    let by_ind = group_by_individual(&ind_dp_vals);
 
     for f in &functional_dps {
-        for ind in &all_inds {
+        for entries in by_ind.values() {
             // Collect all distinct values for `f` on this individual,
             // including values on sub-properties of `f`.
             let mut distinct: BTreeSet<DistinctVal> = BTreeSet::new();
-            for ((i, q), vals) in &ind_dp_vals {
-                if i.as_str() != *ind {
-                    continue;
-                }
+            for (q, vals) in entries {
                 // `q ⊑ f` iff `f` is in `q`'s super-closure.
                 // If `q` has no hierarchy entries it isn't in the closure map;
                 // the reflexive fallback (`q == f`) handles that case.
                 let is_sub = closure
-                    .get(q.as_str())
-                    .map_or(q == f, |supers| supers.contains(f));
+                    .get(*q)
+                    .map_or(*q == f.as_str(), |supers| supers.contains(f));
                 if is_sub {
                     distinct.extend(vals.iter().cloned());
                 }
@@ -3074,6 +3076,24 @@ fn emit_functional_dp_cardinality_violations<A: ForIRI>(
             }
         }
     }
+}
+
+/// Index a `(individual, property) → values` map by individual.
+///
+/// Both D4 cardinality passes need one individual's entries at a time; without
+/// this they rescan the entire map per (constraint, individual) pair, which is
+/// quadratic in the ABox. Borrows throughout — no key or value is cloned.
+fn group_by_individual(
+    ind_dp_vals: &BTreeMap<(String, String), BTreeSet<DistinctVal>>,
+) -> BTreeMap<&str, Vec<(&str, &BTreeSet<DistinctVal>)>> {
+    let mut by_ind: BTreeMap<&str, Vec<(&str, &BTreeSet<DistinctVal>)>> = BTreeMap::new();
+    for ((i, q), vals) in ind_dp_vals {
+        by_ind
+            .entry(i.as_str())
+            .or_default()
+            .push((q.as_str(), vals));
+    }
+    by_ind
 }
 
 /// DP-2b: a typed/faceted from-type data-cardinality violation ⇒ global
@@ -3176,19 +3196,23 @@ fn emit_data_cardinality_violations_typed<A: ForIRI>(
         }
     }
 
+    // Same quadratic shape as `emit_functional_dp_cardinality_violations`
+    // (see `group_by_individual`): this rescanned all of `ind_dp_vals` per
+    // (constraint, individual) pair. `ore_ont_5753` exercises only the sibling
+    // pass, but the cost here is identical on an ontology carrying typed
+    // `≤n dp.dr` constraints over a large ABox.
+    let by_ind = group_by_individual(&ind_dp_vals);
+
     for (class, dp, n, dr) in &constraints {
         for (ind, types) in &ind_types {
             if !types.contains(class.as_str()) {
                 continue;
             }
             let mut distinct: BTreeSet<DistinctVal> = BTreeSet::new();
-            for ((i, q), vals) in &ind_dp_vals {
-                if i.as_str() != *ind {
-                    continue;
-                }
+            for &(q, vals) in by_ind.get(*ind).map_or(&[][..], Vec::as_slice) {
                 let is_sub = dp_closure
-                    .get(q.as_str())
-                    .map_or(q == dp, |supers| supers.contains(dp));
+                    .get(q)
+                    .map_or(q == dp.as_str(), |supers| supers.contains(dp));
                 if !is_sub {
                     continue;
                 }
@@ -3923,5 +3947,138 @@ Ontology(<http://t/x>
         let enum_ab = vir_data_one_of(&["a", "b"]);
         assert!(value_in_range(&sa, &enum_ab), "\"a\" ∈ {{\"a\",\"b\"}}");
         assert!(!value_in_range(&sz, &enum_ab), "\"z\" ∉ {{\"a\",\"b\"}}");
+    }
+
+    // ── D4 per-individual scan: linear, not quadratic ────────────────
+    //
+    // `emit_functional_dp_cardinality_violations` and
+    // `emit_data_cardinality_violations_typed` both need, for ONE individual,
+    // that individual's `(prop → values)` entries. `ind_dp_vals` is a
+    // `BTreeMap` keyed by `(ind, prop)`, so those entries are CONTIGUOUS and a
+    // range scan reaches them directly; both passes used to walk the WHOLE map
+    // per (constraint, individual) pair, `continue`-ing past every other
+    // individual — `O(|F| × |I| × |I·P|)`.
+    //
+    // Not theoretical. `ore_ont_5753` (15 functional dps, 20,118 individuals,
+    // 20,149 entries) spent ~6.1e9 steps ≈ 33.5 s of its conversion here —
+    // 94.65% of a perf profile, 89.85% in this one pass — and DNF'd at a 60 s
+    // cap on an ontology Konclude classifies in 2.02 s. rustdl never reached
+    // the reasoner at all.
+    //
+    // Sized so the OLD code is unmistakably slow in the (unoptimised) test
+    // profile while the fixed code is instant. SIZE IS CALIBRATED, NOT GUESSED:
+    // at 1,500 individuals the quadratic form takes only ~0.6 s in the debug
+    // profile and a deliberate re-introduction of the bug PASSED this test. At
+    // 6,000 it is ~16x that (cost is quadratic in `n_inds`) and fails clearly,
+    // while the fixed code stays linear and finishes in well under a second.
+    fn scaling_fixture(n_inds: usize, n_fdp: usize) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::from(
+            "Prefix(:=<http://t/>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\n\
+             Ontology(<http://t/x>\n",
+        );
+        for f in 0..n_fdp {
+            let _ = writeln!(
+                s,
+                "    Declaration(DataProperty(:p{f}))\n    FunctionalDataProperty(:p{f})"
+            );
+        }
+        // One value per (individual, p0): NO individual has two values for a
+        // functional dp, so there is no clash and the pass cannot exit early.
+        // That worst case is exactly what the real ontologies hit.
+        //
+        // CRITICAL FIXTURE DETAIL — values are drawn from a SMALL set (3), not
+        // one per individual. A functional dp makes its role component
+        // merge-inducing, so DISTINCT values would make `seed_disjoint_bucket`
+        // seed C(n,2) DKey-disjointness pairs — documented, intended, and
+        // quadratic in its own right. A first version of this fixture used
+        // `"{i}"` and measured *that* instead: it failed at ~9 s both before
+        // AND after the fix, i.e. it was never testing this loop at all.
+        // Three shared values keep DKey seeding at C(3,2)=3.
+        for i in 0..n_inds {
+            let v = i % 3;
+            let _ = writeln!(
+                s,
+                "    DataPropertyAssertion(:p0 :i{i} \"v{v}\"^^xsd:string)"
+            );
+        }
+        s.push_str(")\n");
+        s
+    }
+
+    /// `⊤ ⊑ ⊥` — the global-inconsistency axiom these passes emit. Resolved
+    /// through the pool rather than by id equality, since the ids are
+    /// interning-order dependent.
+    fn has_top_bot(internal: &crate::ontology::InternalOntology) -> bool {
+        use crate::ConceptExpr as CE;
+        internal.axioms.iter().any(|a| {
+            matches!(a, Axiom::SubClassOf { sub, sup }
+                if matches!(internal.concepts.get(*sub), CE::Top)
+                    && matches!(internal.concepts.get(*sup), CE::Bot))
+        })
+    }
+
+    #[test]
+    fn d4_per_individual_scan_is_not_quadratic() {
+        let src = scaling_fixture(6000, 5);
+        let onto = parse_str(&src);
+        let t = std::time::Instant::now();
+        let internal = convert_ontology(&onto).expect("convert");
+        let elapsed = t.elapsed();
+        assert!(
+            !has_top_bot(&internal),
+            "fixture is consistent: one value per individual per functional dp"
+        );
+        assert!(
+            elapsed.as_secs() < 5,
+            "D4 per-individual scan looks quadratic: {elapsed:?} for 6000 individuals × 5 \
+             functional dps"
+        );
+    }
+
+    /// The clash this pass exists to find must still be found: the scan change
+    /// may alter HOW entries are reached, never WHICH are considered.
+    #[test]
+    fn d4_functional_dp_two_values_still_clashes() {
+        let src = r#"Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/x>
+    Declaration(DataProperty(:age))
+    FunctionalDataProperty(:age)
+    DataPropertyAssertion(:age :bob "30"^^xsd:string)
+    DataPropertyAssertion(:age :bob "31"^^xsd:string)
+)
+"#;
+        let internal = convert_ontology(&parse_str(src)).expect("convert");
+        assert!(
+            has_top_bot(&internal),
+            "two distinct values for a functional data property is a clash"
+        );
+    }
+
+    /// The clash must still be found via a SUB-data-property, on an individual
+    /// that is NOT first in `BTreeMap` key order — the case a range scan with a
+    /// wrong upper bound, or one that drops the sub-property closure, silently
+    /// loses.
+    #[test]
+    fn d4_functional_dp_clash_via_subproperty_on_late_individual() {
+        let src = r#"Prefix(:=<http://t/>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Ontology(<http://t/x>
+    Declaration(DataProperty(:age))
+    Declaration(DataProperty(:exactAge))
+    FunctionalDataProperty(:age)
+    SubDataPropertyOf(:exactAge :age)
+    DataPropertyAssertion(:age :aaa "1"^^xsd:string)
+    DataPropertyAssertion(:age :zzz "30"^^xsd:string)
+    DataPropertyAssertion(:exactAge :zzz "31"^^xsd:string)
+)
+"#;
+        let internal = convert_ontology(&parse_str(src)).expect("convert");
+        assert!(
+            has_top_bot(&internal),
+            "`:zzz` has two values for functional `:age` (one via sub-property \
+             `:exactAge`) and is not first in key order"
+        );
     }
 }

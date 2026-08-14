@@ -119,11 +119,22 @@ The MISSED net exists to price that, and per the design record it does **not** r
 full-corpus sweep, because its frame is drawn from completers and cannot observe an
 `ok → dnf`.
 
-**A better-targeted change is available and untested:** bound `unsat_probe` *separately* from
-the per-pair budget, so it cannot consume the allocation `tier_walk` needs. That is strictly
-narrower than a global default change — it only affects a phase that is provably spending 200×
-its useful cost here — and it does not degrade pair-level completeness anywhere. No such knob
-exists today.
+**A better-targeted change was proposed here and has since been BUILT AND REFUTED.**
+`RUSTDL_UNSAT_PROBE_MS` (default OFF) caps the unsat probe per class, independently of the pair
+budget. The mechanism works exactly as designed — on `ore_ont_934` at the default pair budget it
+takes `unsat_probe` from 73,807 ms to **556 ms (133×)** and `tier_walk` from 0 ms to 73,309 ms,
+so the phase really is unblocked and decides 27 subsumptions it never previously reached.
+
+**It rescues nothing.** With the cap at 5 ms and the pair budget at 50 or 100 ms, both
+`ore_ont_934` and `ore_ont_10517` still DNF; only `--pair-timeout-ms 5` completes them. So the
+recovery reported above comes from **both** phases being small, not from `unsat_probe` being
+cheap, and the hoped-for benefit — a generous pair budget for completeness plus a cheap probe
+phase — does not exist, because the pair budget that rescues these ontologies is far below any
+value at which the cap would bind.
+
+The "starvation" framing in this document was **mechanically correct and practically empty**.
+Corrected here rather than deleted, because the mechanism measurement is real and the negative
+result is the useful output. See `unsat_probe_cap`'s doc comment.
 
 ## Status
 

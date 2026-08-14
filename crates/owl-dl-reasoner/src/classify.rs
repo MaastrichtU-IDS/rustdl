@@ -1105,7 +1105,7 @@ fn classify_internal_with_timeout_impl(
                 owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
             if closure.is_unsatisfiable(class_id) {
                 Ok((i, false, true))
-            } else if let Some(timeout) = per_pair_timeout {
+            } else if let Some(timeout) = unsat_probe_budget(per_pair_timeout) {
                 let deadline = Instant::now() + timeout;
                 // A timed-out unsat probe defaults to "satisfiable" —
                 // sound: if the class actually were unsat the timeout
@@ -2202,6 +2202,74 @@ fn elapsed_ms(t: Instant) -> u64 {
 }
 
 #[inline]
+/// Per-class budget cap for the UNSAT PROBE, from `RUSTDL_UNSAT_PROBE_MS`.
+/// Unset (the default) ⇒ `None` ⇒ the probe keeps exactly the pair budget and this
+/// is inert.
+///
+/// Why a cap exists at all: `unsat_probe` runs one satisfiability probe per class,
+/// each bounded by the PAIR budget, and on some ontologies not one of them
+/// concludes — so the phase costs `n × per_pair` and then `tier_walk`, the phase
+/// that actually computes the hierarchy, never runs. Measured on `ore_ont_934`
+/// (108 classes): `unsat_probe` = 103,541 ms ≈ 108 × 1000 ms, `tier_walk` = 0, and
+/// classify DNFs. At a 5 ms budget `unsat_probe` drops to 549 ms and the ontology
+/// completes in 50.1 s with FP=0/MISSED=0 against an adjudicated Konclude oracle.
+/// `ore_ont_10517` behaves the same way (DNF → 119.3 s, FP=0/MISSED=0).
+///
+/// Why PER-CLASS and not an aggregate phase budget: an aggregate deadline would
+/// decide whichever classes happened to finish first, so the unsatisfiable set —
+/// and therefore the output — would vary run to run. A per-class cap gives every
+/// class the same budget and stays deterministic.
+///
+/// Soundness: a timed-out probe already defaults to "satisfiable", which is a sound
+/// under-approximation (a class wrongly assumed satisfiable can only cost
+/// entailments, never manufacture one). Shrinking the budget can therefore only
+/// turn a found unsat into a MISS, never into a false subsumption.
+///
+/// # MEASURED NEGATIVE RESULT — this flag rescues NOTHING. Default OFF.
+///
+/// The mechanism works exactly as designed and buys nothing. On `ore_ont_934` with
+/// the default 1000 ms pair budget, `RUSTDL_UNSAT_PROBE_MS=5` takes `unsat_probe`
+/// from 73,807 ms to **556 ms (133×)** and `tier_walk` from 0 ms to 73,309 ms — the
+/// phase really is unblocked, and it decides 27 subsumptions it previously never
+/// reached. The ontology still DNFs, because `tier_walk` at ≥50 ms/pair cannot
+/// finish either:
+///
+/// | config | `ore_ont_934` | `ore_ont_10517` |
+/// |---|---|---|
+/// | `--pair-timeout-ms 50`, cap off | DNF | DNF |
+/// | `--pair-timeout-ms 50`, cap 5 | **DNF** | **DNF** |
+/// | `--pair-timeout-ms 100`, cap 5 | DNF | DNF |
+/// | `--pair-timeout-ms 5`, cap off | **50.0 s** | **118.8 s** |
+///
+/// So the recovery attributed to "`unsat_probe` starves `tier_walk`" comes from BOTH
+/// phases being small, not from `unsat_probe` being cheap. Only the PAIR budget
+/// moves the outcome; capping this phase alone changes which phase burns the wall
+/// and nothing else. The hoped-for benefit — keep a generous pair budget for
+/// completeness while making this phase cheap — **does not exist**, because the pair
+/// budget that rescues these ontologies (5 ms) is far below any value at which the
+/// cap would matter.
+///
+/// Kept as opt-in scaffolding (the `RUSTDL_WIDE_BODY_VARS` precedent) because it
+/// isolates a phase cleanly for future measurement. **Do not re-propose it as a
+/// recovery lever without new evidence.**
+fn unsat_probe_cap() -> Option<std::time::Duration> {
+    std::env::var("RUSTDL_UNSAT_PROBE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .map(std::time::Duration::from_millis)
+}
+
+/// The per-class budget the unsat probe should use: the pair budget, capped by
+/// [`unsat_probe_cap`] when set.
+fn unsat_probe_budget(per_pair: Option<std::time::Duration>) -> Option<std::time::Duration> {
+    match (per_pair, unsat_probe_cap()) {
+        (Some(t), Some(c)) => Some(t.min(c)),
+        (None, Some(c)) => Some(c),
+        (t, None) => t,
+    }
+}
+
 fn effective_deadline(
     global: Option<Instant>,
     per_pair: Option<std::time::Duration>,
@@ -2568,8 +2636,13 @@ fn classify_top_down_internal_impl(
                 }
             }
             // Use effective_deadline so that a global wall-clock budget
-            // bounds the unsat probe just as it bounds pair probes.
-            if let Some(deadline) = effective_deadline(global_deadline, per_pair_timeout) {
+            // bounds the unsat probe just as it bounds pair probes. The per-class
+            // budget is additionally capped by `RUSTDL_UNSAT_PROBE_MS` (inert when
+            // unset) so this phase cannot starve `tier_walk` — see
+            // `unsat_probe_budget`.
+            if let Some(deadline) =
+                effective_deadline(global_deadline, unsat_probe_budget(per_pair_timeout))
+            {
                 // Robustness: a `NoVerdict` (tableau internal cap, hit
                 // on large workloads like SIO) is treated as "possibly
                 // satisfiable" — the class survives the unsat probe,

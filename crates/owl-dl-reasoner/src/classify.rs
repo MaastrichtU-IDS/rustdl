@@ -562,6 +562,33 @@ impl Classification {
     /// `c ⊑ D`, `D ≢ c`, and no intermediate `E ≠ c, D` such that
     /// `c ⊑ E ⊑ D`. Empty if `c` is not declared. Ascending id order.
     #[must_use]
+    /// [`Self::direct_subsumers`] for TAXONOMY OUTPUT: empty when `c` is
+    /// unsatisfiable.
+    ///
+    /// `direct_subsumers` is mathematically right for an unsatisfiable `c` — it
+    /// denotes `⊥`, so every MINIMAL satisfiable class is a direct subsumer of
+    /// it — but as taxonomy output that is a spurious parent set, and a large
+    /// one. This is the exact argument `build_classify_json` already records for
+    /// excluding unsatisfiable classes from `equivalent_groups`: "they are all
+    /// mutually equivalent (≡ ⊥) … they belong in `unsatisfiable` (the bottom
+    /// node)". The equivalence half was excluded; the direct-edge half was not.
+    ///
+    /// It is not a small discrepancy. On `ore_ont_12567` (232,084 classes, 4,202
+    /// unsatisfiable) each unsatisfiable class emitted 180,328 direct edges:
+    /// 4,202 × 180,328 = 757,738,256 rows, **99.97%** of a 758-million-row,
+    /// ~21 GB output, against 256,785 rows for all satisfiable subjects combined
+    /// and 513,554 `SubClassOf` axioms in Konclude's taxonomy for the same file.
+    /// Emitting them also dominated the wall, since each costs an `O(n)` scan.
+    ///
+    /// Nothing is lost: an unsatisfiable class is reported in
+    /// `unsatisfiable_classes`, and "⊑ everything" follows from that.
+    pub fn taxonomy_direct_subsumers(&self, c: &str) -> Vec<&str> {
+        match self.index.get(c) {
+            Some(&i) if self.unsatisfiable_idxs.contains(&i) => Vec::new(),
+            _ => self.direct_subsumers(c),
+        }
+    }
+
     pub fn direct_subsumers(&self, c: &str) -> Vec<&str> {
         let Some(&i) = self.index.get(c) else {
             return Vec::new();

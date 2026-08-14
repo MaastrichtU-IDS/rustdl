@@ -180,9 +180,13 @@ pub(crate) fn build_classify_json(
     }
     groups.sort();
 
+    // Unsatisfiable subjects are excluded here for the same reason they are
+    // excluded from `equivalent_groups` just above: `≡ ⊥` makes their parent
+    // set spurious, and they belong in `unsatisfiable`. See
+    // `Classification::taxonomy_direct_subsumers`.
     let mut direct_subsumptions: Vec<[String; 2]> = Vec::new();
     for c in h.classes() {
-        for sup in h.direct_subsumers(c) {
+        for sup in h.taxonomy_direct_subsumers(c) {
             direct_subsumptions.push([c.clone(), sup.to_owned()]);
         }
     }

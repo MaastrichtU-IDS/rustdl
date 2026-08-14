@@ -847,10 +847,12 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             }
         }
     }
-    // Direct edges.
+    // Direct edges. `taxonomy_direct_subsumers` skips UNSATISFIABLE subjects,
+    // which are already reported on their own `unsat` lines — see its doc
+    // comment for why (and for the 758-million-row ontology that made it
+    // obvious).
     for c in classes {
-        let directs = h.direct_subsumers(c);
-        for sup in directs {
+        for sup in h.taxonomy_direct_subsumers(c) {
             writeln!(out, "direct\t{c}\t{sup}")?;
         }
     }

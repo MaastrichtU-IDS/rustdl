@@ -44,8 +44,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings   # lint; w
 > in the budget" describes pre-v0.4.12 behaviour. Under a budget it is now far faster still:
 > `--pair-timeout-ms 25` runs in **4.6 s** (was 108.8 s) with identical subsumptions.
 >
-> **Use `wine` as a freshness canary by its WALL, not its outcome**: ~74 s unbounded or ~4.6 s at
-> `--pair-timeout-ms 25` on a current binary. A wine that DNFs unbounded is now itself the
+> **Use `wine` as a freshness canary by its WALL, not its outcome**: **~38 s unbounded or ~2.7 s at
+> `--pair-timeout-ms 25`** on a current binary (v0.4.18; both roughly halved from the v0.4.13
+> figures of ~74 s / ~4.6 s by the v0.4.18 conversion and hot-loop fixes — 197 subsumptions
+> either way). A wine near ~74 s is now itself the stale-binary signal. A wine that DNFs unbounded is now itself the
 > stale-binary signal.
 >
 > **Cause:** `HYPER_WEDGE_DEPTH = 256` was a fixed constant, and a fixed constant is wrong in

@@ -64,21 +64,49 @@ count (`ore_ont_14881`, `6108`, `7416`, `7803`, `1966`, all at 0.005–0.063%).
 
 **Do not floor the whole unsat probe.** 744 classes × 100 ms = 74 s on this ontology alone.
 
-**The promising shape: floor the budget only for classes named in a `ClassAssertion`.** Layer 1
-needs unsat status for exactly those, and there are **7** on `ore_ont_16372`, not 744. Sized
-over the 424-ontology release population:
+### The `ClassAssertion`-scoped floor: BUILT AND REFUTED (2026-08-15)
 
-| distinct asserted types per ontology | median | p90 | max |
-|---|---|---|---|
-| count | 16 | 123 | **2,568** (`ore_ont_9694`) |
-| cost of a 100 ms floor | 1.6 s | 12.3 s | **257 s** |
+The obvious targeted fix is to floor the unsat-probe budget only for classes named in a
+`ClassAssertion` — layer 1 reads exactly those, and there are **7** on `ore_ont_16372`, not
+744. It was implemented and it **does not work**:
 
-262 of 424 ontologies carry at least one `ClassAssertion`. So the median case is cheap and the
-tail is not — a flat floor would cost `ore_ont_9694` 257 s and push it over any cap. **Any
-implementation needs a cap on the number of floored probes, and that cap needs its own
-measurement.** This is the same trap the code comment already records: an earlier version
-verified every asserted-instance class through the main tableau with *unbounded* probes — 58 of
-them on `wine` — and made the FP=0 net run 8h47m at 32 cores without finishing.
+| config, `--pair-timeout-ms 5` | verdict |
+|---|---|
+| floor off | `consistent=true` |
+| `RUSTDL_UNSAT_PROBE_FLOOR_MS=100` | `consistent=true` |
+| `RUSTDL_UNSAT_PROBE_FLOOR_MS=250` | `consistent=true` |
+
+**Because the premise is false.** The 3 classes proven unsat at 100 ms are `IDO_0000473`,
+`IDO_0000568`, `IDO_0000653`. The 7 asserted types are `IAO_0000078/0000225/0000409` and four
+`oboInOwl` classes. **The two sets are disjoint** — so layer 1 cannot be what fires here, and
+flooring the asserted types buys nothing.
+
+What those 3 proofs actually do is satisfy the **fraction gate** (3/744 = 4.03‰ ≥ 2‰). The
+detection itself is **layer 3**, the one bounded `⊤` probe, which the code comment already
+says decides this ontology in 0.36 s. The reverted implementation is not in the tree.
+
+**The lesson for the next attempt: the gate needs unsat evidence from ANY class, and which
+classes supply it is not predictable from the axioms.** A scoped floor cannot work, because
+there is no syntactic subset to scope it to. The sizing done for that scope (median 16
+asserted types, p90 123, max 2,568) measured the wrong population and does not apply.
+
+### Remaining candidates, none built
+
+* **Budget-independent gate evidence.** The saturation closure is the obvious source and is
+  useless here — it knows **0** of this ontology's classes are unsat, which is why the
+  tableau-derived 3 are load-bearing.
+* **Gate on "incomplete AND has an ABox" instead of on the unsat fraction.** If probes timed
+  out we do not *know* the fraction, so treating 0 as "no evidence" is the actual error. Cost
+  would be one bounded 200 ms probe per incomplete ABox-bearing ontology. Needs measuring —
+  including whether `decide_with_deadline` honours its deadline promptly on large ABoxes,
+  since the recorded 5-ontology DNF regression suggests setup cost may precede the first
+  deadline check (the same shape as the documented unbounded `abox_saturation` prelude).
+* **Do nothing and keep the default at 1000 ms**, accepting that the 16 recoveries and −15.8%
+  wall stay behind an explicit flag.
+
+The trap to avoid is already on record in the code: an earlier version verified every
+asserted-instance class through the main tableau with *unbounded* probes — 58 on `wine` — and
+ran the FP=0 net 8h47m at 32 cores without finishing.
 
 ## What this blocks, and what it does not
 

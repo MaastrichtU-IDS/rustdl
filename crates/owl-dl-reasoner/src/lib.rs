@@ -2490,6 +2490,35 @@ pub fn classify_consistency_probe_ms() -> u64 {
 /// `0` is the diagnostic setting: it restores the pre-gate behaviour, which is the
 /// only way to exercise the `decide_with_deadline` overshoot this gate masks.
 #[must_use]
+/// Admit the classify consistency probe on an INCOMPLETE, `ABox`-bearing run even when
+/// no class was proved unsatisfiable (`RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`, **default
+/// OFF**, `=1` enables).
+///
+/// The probe's existing admission test is the unsatisfiable FRACTION, which is
+/// budget-sensitive: a timed-out per-class probe defaults to *satisfiable*, so a small
+/// `--pair-timeout-ms` empties `unsatisfiable_idxs` and the gate reads "no evidence of
+/// inconsistency" when the truth is "we did not look long enough to have evidence".
+/// Those are different states and the gate conflates them.
+///
+/// `ore_ont_16372` is inconsistent (Konclude, `HermiT` and rustdl's own `consistent`
+/// agree) and its entire admission signal is **3** unsat proofs out of 744 classes,
+/// each needing >25 ms. At `--pair-timeout-ms 5` all three are lost and `classify`
+/// reports `consistent: true`. See `docs/2026-08-15-ore16372-verdict-rootcause.md`.
+///
+/// Scope: `timed_out_pairs > 0` AND the ontology has `ABox` axioms. Measured over the
+/// 424-ontology release population at a 5 ms budget, that is **49** ontologies — one
+/// bounded probe each, so ≤ 200 ms × 49 ≈ 9.8 s across the whole population in the
+/// worst case where every probe burns its budget.
+///
+/// The cost hazard the fraction gate was added for is ALREADY mitigated by bounding.
+/// Forcing the probe on the five ontologies that regression names
+/// (`ore_ont_14881`, `6108`, `7416`, `7803`, `1966`) costs −0.9 s … +0.9 s — noise
+/// against a 200 ms budget. The 8h47m FP=0-net disaster on record was the EARLIER
+/// mechanism: `k` UNBOUNDED probes, 58 of them on `wine`.
+pub fn classify_probe_on_incomplete() -> bool {
+    std::env::var_os("RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE").is_some_and(|v| v == "1")
+}
+
 pub fn classify_probe_min_frac_permille() -> u64 {
     std::env::var("RUSTDL_CLASSIFY_PROBE_MIN_FRAC_PERMILLE")
         .ok()

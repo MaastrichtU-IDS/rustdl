@@ -275,8 +275,20 @@ pub fn analyze_fragment(internal: &InternalOntology) -> FragmentClassification {
 /// classification loop. Useful for understanding when the EL
 /// saturation oracle is pulling its weight versus when the tableau
 /// is doing the work.
+// `struct_excessive_bools`: this is an instrumentation record, not an API taking
+// boolean parameters — each flag is an independently-read diagnostic, and grouping
+// them into an enum would make every consumer match on unrelated dimensions.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default)]
 pub struct ClassificationStats {
+    /// Whether the gated classify consistency probe was ADMITTED (its layers
+    /// actually ran) on this call. Diagnostic, and load-bearing for testing:
+    /// admission is what `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE` changes, and on a
+    /// CONSISTENT ontology admission has no effect on the verdict — so a test that
+    /// asserts on `inconsistent` cannot distinguish "the probe ran and found nothing"
+    /// from "the probe never ran". Two sabotages of an earlier verdict-only canary
+    /// both passed for exactly that reason.
+    pub consistency_probe_admitted: bool,
     /// Axioms dropped during conversion, tallied by diagnostic kind (issue
     /// #43). Carried here so a caller that wants the tally does NOT have to
     /// re-run `convert_ontology` to get it: the CLI used to, which cost a
@@ -1216,7 +1228,7 @@ fn classify_internal_with_timeout_impl(
         }
     }
     let _ = satisfiable; // currently informational only
-    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &stats) {
+    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &mut stats) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {
@@ -1400,12 +1412,21 @@ fn probe_says_inconsistent(
     prepared: &PreparedOntology,
     unsatisfiable_idxs: &HashSet<usize>,
     n_classes: usize,
-    stats: &ClassificationStats,
+    stats: &mut ClassificationStats,
 ) -> bool {
-    if !crate::classify_consistency_probe_enabled()
-        || unsatisfiable_idxs.is_empty()
-        || stats.inconsistent
-    {
+    if !crate::classify_consistency_probe_enabled() || stats.inconsistent {
+        return false;
+    }
+    // ADMISSION. Normally: at least one class proved unsatisfiable (layers 1-3 have
+    // something to go on). Additionally, under
+    // `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`: an INCOMPLETE `ABox`-bearing run, where
+    // an empty unsat set means "we did not look long enough", not "there is nothing".
+    // Conflating those two states is what makes the verdict budget-sensitive — see
+    // `classify_probe_on_incomplete`.
+    let incomplete_abox = crate::classify_probe_on_incomplete()
+        && stats.timed_out_pairs > 0
+        && has_abox_axioms(internal);
+    if unsatisfiable_idxs.is_empty() && !incomplete_abox {
         return false;
     }
     // (1) ASSERTED INSTANCE OF AN UNSATISFIABLE CLASS ⟹ inconsistent.
@@ -1458,9 +1479,11 @@ fn probe_says_inconsistent(
     // behaviour, so this can only fail to fix, never break.
     let min_permille = crate::classify_probe_min_frac_permille();
     let min_permille = usize::try_from(min_permille).unwrap_or(usize::MAX);
-    if unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille {
+    if !incomplete_abox && unsatisfiable_idxs.len() * 1000 < n_classes.max(1) * min_permille {
         return false;
     }
+    // Past every admission test: layers 2-3 are about to run.
+    stats.consistency_probe_admitted = true;
     let budget = std::time::Duration::from_millis(crate::classify_consistency_probe_ms());
     // (2) Wedge consistency route — the cheap one `is_consistent` tries first.
     match prepared.consistency_wedge(Some(std::time::Instant::now() + budget)) {
@@ -3282,7 +3305,7 @@ fn classify_top_down_internal_impl(
         .saturating_sub(stats.sweep_wall_ms)
         .saturating_sub(stats.matrix_wall_ms);
 
-    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &stats) {
+    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &mut stats) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {

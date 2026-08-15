@@ -6,6 +6,18 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Added — `PreparedOntology`: reuse justification state across queries
+
+`justify`/`justify_all` reload and re-derive per-ontology state (parse,
+logical-axiom split, fragment classification) on every call. `rustdl.prepare(path)`
+and `rustdl.prepare_bytes(data, format=...)` do that work once and return a
+`PreparedOntology` whose `.justify(query)` / `.justify_all(query, max)` reuse it,
+amortizing the setup across many justifications of the same ontology. Results are
+identical to the one-shot functions. On the reasoner side this is
+`justify::PreparedJustifier::{prepare, find_one, find_all}`; the existing
+`find_one_justification`/`find_all_justifications` now delegate to it. The
+`PreparedOntology` Python object is unsendable — use it from the creating thread.
+
 ## [0.4.17] - 2026-08-10
 
 ### Fixed — `classify` reported `consistent: true` on inconsistent ontologies

@@ -111,12 +111,69 @@ pub(crate) fn repair(path: &str, query: Vec<String>, max: usize) -> PyResult<Vec
         .collect())
 }
 
+/// A loaded ontology with the per-ontology justification state precomputed once
+/// (parse + logical-axiom split + fragment classification). Reuse it to justify
+/// many queries without re-doing that full-ontology work each call — a large
+/// win on big ontologies. Unsendable: use it from the thread that created it.
+#[pyclass(name = "PreparedOntology", module = "rustdl", unsendable)]
+pub(crate) struct PyPreparedOntology {
+    inner: owl_dl_reasoner::justify::PreparedJustifier<RcStr>,
+}
+
+#[pymethods]
+impl PyPreparedOntology {
+    /// One minimal justification for a query (CLI-style tokens; see `justify`).
+    /// Empty list if not entailed.
+    #[allow(clippy::needless_pass_by_value)]
+    fn justify(&self, query: Vec<String>) -> PyResult<Vec<String>> {
+        let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
+        let j = self.inner.find_one(&q).map_err(reason_error_to_py)?;
+        Ok(j.map(|j| j.axioms.iter().map(render).collect())
+            .unwrap_or_default())
+    }
+
+    /// All minimal justifications (capped by `max`).
+    #[pyo3(signature = (query, max = 10))]
+    #[allow(clippy::needless_pass_by_value)]
+    fn justify_all(&self, query: Vec<String>, max: usize) -> PyResult<Vec<Vec<String>>> {
+        let q = owl_dl_reasoner::justify::parse_query(&query).map_err(PyValueError::new_err)?;
+        let js = self.inner.find_all(&q, max).map_err(reason_error_to_py)?;
+        Ok(js
+            .into_iter()
+            .map(|j| j.axioms.iter().map(render).collect())
+            .collect())
+    }
+}
+
+/// `rustdl.prepare(path)` — load an ontology and precompute its justification
+/// state, returning a reusable `PreparedOntology`.
+#[pyfunction]
+pub(crate) fn prepare(path: &str) -> PyResult<PyPreparedOntology> {
+    let onto = load::load_path(path)?;
+    Ok(PyPreparedOntology {
+        inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
+    })
+}
+
+/// `rustdl.prepare_bytes(data, format="ofn")` — same, from in-memory bytes.
+#[pyfunction]
+#[pyo3(signature = (data, *, format))]
+pub(crate) fn prepare_bytes(data: &[u8], format: &str) -> PyResult<PyPreparedOntology> {
+    let onto = load::load_bytes(data, format)?;
+    Ok(PyPreparedOntology {
+        inner: owl_dl_reasoner::justify::PreparedJustifier::prepare(&onto),
+    })
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(justify, m)?)?;
     m.add_function(wrap_pyfunction!(justify_all, m)?)?;
     m.add_function(wrap_pyfunction!(diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(repair, m)?)?;
     m.add_function(wrap_pyfunction!(render_manchester, m)?)?;
+    m.add_class::<PyPreparedOntology>()?;
+    m.add_function(wrap_pyfunction!(prepare, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_bytes, m)?)?;
     Ok(())
 }
 

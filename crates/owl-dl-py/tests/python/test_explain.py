@@ -42,6 +42,29 @@ def test_justify(tmp_path):
     assert any("Bad" in a for a in ax)
 
 
+def test_prepare_reexports():
+    for name in ["prepare", "prepare_bytes", "PreparedOntology"]:
+        assert hasattr(rustdl, name), f"rustdl.{name} not exported"
+        assert name in rustdl.__all__, f"{name} missing from __all__"
+
+
+def test_prepared_justify_matches_free_function(tmp_path):
+    # A PreparedOntology reused across queries must give the same justification
+    # as the one-shot rustdl.justify().
+    p = _write(tmp_path, BROKEN)
+    onto = rustdl.prepare(p)
+    prepared = onto.justify(["unsat", "urn:Bad"])
+    cold = rustdl.justify(p, ["unsat", "urn:Bad"])
+    assert prepared, "expected a non-empty justification"
+    assert sorted(prepared) == sorted(cold)
+
+
+def test_prepare_bytes(tmp_path):
+    onto = rustdl.prepare_bytes(BROKEN.encode(), format="ofn")
+    ax = onto.justify(["unsat", "urn:Bad"])
+    assert any("Bad" in a for a in ax)
+
+
 def test_diagnose(tmp_path):
     p = _write(tmp_path, BROKEN)
     consistent, roots, derived = rustdl.diagnose(p)

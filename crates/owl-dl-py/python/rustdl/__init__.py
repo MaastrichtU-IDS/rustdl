@@ -49,6 +49,9 @@ from rustdl._native import (
     diagnose as diagnose,
     repair as repair,
     render_manchester as render_manchester,
+    prepare as prepare,
+    prepare_bytes as prepare_bytes,
+    PreparedOntology as PreparedOntology,
 )
 
 from ._results import (
@@ -353,6 +356,9 @@ __all__ = [
     "diagnose",
     "repair",
     "render_manchester",
+    "prepare",
+    "prepare_bytes",
+    "PreparedOntology",
     "debug",
     "Diagnosis",
     "Root",

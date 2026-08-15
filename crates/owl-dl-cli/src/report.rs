@@ -12,7 +12,9 @@ use horned_owl::curie::PrefixMapping;
 use horned_owl::io::omn::AsManchester;
 use horned_owl::model::{Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::justify::{Entailment, component_entities, find_one_justification};
+use owl_dl_reasoner::justify::{
+    Entailment, PreparedJustifier, component_entities, find_one_justification,
+};
 use std::collections::HashMap;
 
 /// One root unsatisfiable class with its explanation and fixes.
@@ -307,9 +309,15 @@ pub(crate) fn build_report(
     let truncated_roots = n_root.saturating_sub(max_roots);
     let mut repairs_complete = true;
     let mut roots = Vec::new();
+    // Every root is justified against the SAME ontology, so the per-ontology
+    // state (axiom split + fragment) is derived once and reused. Built lazily so
+    // a report with no roots to justify doesn't pay for it.
+    let mut justifier: Option<PreparedJustifier<RcStr>> = None;
     for iri in diag.roots.iter().take(max_roots) {
         let q = Entailment::Unsatisfiable { class: iri.clone() };
-        let justification = find_one_justification(onto, &q)
+        let justification = justifier
+            .get_or_insert_with(|| PreparedJustifier::prepare(onto))
+            .find_one(&q)
             .context("justify root")?
             .map(|j| j.axioms)
             .unwrap_or_default();

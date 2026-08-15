@@ -14,8 +14,11 @@ and `rustdl.prepare_bytes(data, format=...)` do that work once and return a
 `PreparedOntology` whose `.justify(query)` / `.justify_all(query, max)` reuse it,
 amortizing the setup across many justifications of the same ontology. Results are
 identical to the one-shot functions. On the reasoner side this is
-`justify::PreparedJustifier::{prepare, find_one, find_all}`; the existing
-`find_one_justification`/`find_all_justifications` now delegate to it. The
+`justify::PreparedJustifier::{prepare, find_one, find_all}`, sharing the
+`QuickXplain`/HST search with `find_one_justification`/`find_all_justifications`
+(which keep classifying the fragment only on the entailed path, so a not-entailed
+one-shot query costs no more than before). `rustdl report` now prepares once and
+reuses it across all roots instead of re-deriving per root. The
 `PreparedOntology` Python object is unsendable — use it from the creating thread.
 
 ## [0.4.17] - 2026-08-10

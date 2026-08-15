@@ -1129,12 +1129,6 @@ pub struct Justification<A: ForIRI> {
     pub minimal_guaranteed: bool,
 }
 
-/// Find ONE justification for `q` in `onto`, or `Ok(None)` if `onto` does not
-/// entail `q`. `QuickXplain` over the logical axioms; minimal on EL/Horn
-/// (rustdl complete), guaranteed-entailing on SROIQ.
-///
-/// # Errors
-/// Propagates [`ReasonError`].
 /// Per-ontology state precomputed once and reused across justification queries.
 ///
 /// [`find_one_justification`]/[`find_all_justifications`] redo the full-ontology
@@ -1161,29 +1155,14 @@ impl<A: ForIRI> PreparedJustifier<A> {
         }
     }
 
-    fn minimal_guaranteed(&self) -> bool {
-        matches!(
-            self.fragment,
-            FragmentClassification::PureEl | FragmentClassification::Horn
-        )
-    }
-
     /// One minimal justification for `q` (`None` if not entailed), reusing the
     /// prepared state.
     ///
     /// # Errors
     /// Propagates [`ReasonError`].
     pub fn find_one(&self, q: &Entailment) -> Result<Option<Justification<A>>, ReasonError> {
-        let _sat_guard = maybe_saturation_oracle(&self.fixed, &self.all_candidates, q);
-        let Some(candidates) = localized_candidates(&self.fixed, &self.all_candidates, q)? else {
-            return Ok(None); // not entailed — nothing to justify
-        };
-        let core = quickxplain(&self.fixed, &candidates, q)?;
-        Ok(Some(Justification {
-            axioms: core,
-            fragment: self.fragment,
-            minimal_guaranteed: self.minimal_guaranteed(),
-        }))
+        Ok(search_one(&self.fixed, &self.all_candidates, q)?
+            .map(|axioms| justification(axioms, self.fragment)))
     }
 
     /// Up to `max` minimal justifications for `q`, reusing the prepared state.
@@ -1195,69 +1174,112 @@ impl<A: ForIRI> PreparedJustifier<A> {
         q: &Entailment,
         max: usize,
     ) -> Result<Vec<Justification<A>>, ReasonError> {
-        let _sat_guard = maybe_saturation_oracle(&self.fixed, &self.all_candidates, q);
-        // Narrow to the query's ⊥-module up front: justification-preserving, so
-        // the HST below still discovers *every* justification — over a far
-        // smaller set.
-        let Some(candidates) = localized_candidates(&self.fixed, &self.all_candidates, q)? else {
-            return Ok(Vec::new()); // not entailed
-        };
-        let fixed = &self.fixed;
-        let mut found: Vec<Vec<Component<A>>> = Vec::new();
-        let mut seen: std::collections::HashSet<BTreeSet<Component<A>>> =
-            std::collections::HashSet::new();
-        // HST worklist: each node is a set of candidate-INDICES removed on the path.
-        let mut worklist: Vec<BTreeSet<usize>> = vec![BTreeSet::new()];
-        let mut explored: BTreeSet<BTreeSet<usize>> = BTreeSet::new();
-        while let Some(removed) = worklist.pop() {
-            if found.len() >= max {
-                break;
-            }
-            if !explored.insert(removed.clone()) {
-                continue;
-            }
-            let subset: Vec<Component<A>> = candidates
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !removed.contains(i))
-                .map(|(_, c)| c.clone())
-                .collect();
-            if !entails(&ontology_from(fixed, &subset), q)? {
-                continue; // this branch cannot yield a justification
-            }
-            let j = quickxplain(fixed, &subset, q)?;
-            // Record if this justification (as an axiom SET) is new.
-            let key: BTreeSet<Component<A>> = j.iter().cloned().collect();
-            if seen.insert(key) {
-                found.push(j.clone());
-            }
-            // Branch: remove each justification axiom (by its candidate index).
-            for c in &j {
-                if let Some(idx) = candidates.iter().position(|x| x == c) {
-                    let mut next = removed.clone();
-                    next.insert(idx);
-                    worklist.push(next);
-                }
-            }
-        }
-        let minimal_guaranteed = self.minimal_guaranteed();
-        let fragment = self.fragment;
-        Ok(found
+        Ok(search_all(&self.fixed, &self.all_candidates, q, max)?
             .into_iter()
-            .map(|axioms| Justification {
-                axioms,
-                fragment,
-                minimal_guaranteed,
-            })
+            .map(|axioms| justification(axioms, self.fragment))
             .collect())
     }
 }
 
+fn justification<A: ForIRI>(
+    axioms: Vec<Component<A>>,
+    fragment: FragmentClassification,
+) -> Justification<A> {
+    Justification {
+        axioms,
+        fragment,
+        minimal_guaranteed: matches!(
+            fragment,
+            FragmentClassification::PureEl | FragmentClassification::Horn
+        ),
+    }
+}
+
+/// The `QuickXplain` search over an already-split ontology: axioms only, no
+/// fragment classification, so callers that don't have one yet can stay lazy.
+fn search_one<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+) -> Result<Option<Vec<Component<A>>>, ReasonError> {
+    let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    let Some(candidates) = localized_candidates(fixed, all_candidates, q)? else {
+        return Ok(None); // not entailed — nothing to justify
+    };
+    Ok(Some(quickxplain(fixed, &candidates, q)?))
+}
+
+/// The HST search over an already-split ontology; see [`search_one`].
+fn search_all<A: ForIRI>(
+    fixed: &[Component<A>],
+    all_candidates: &[Component<A>],
+    q: &Entailment,
+    max: usize,
+) -> Result<Vec<Vec<Component<A>>>, ReasonError> {
+    let _sat_guard = maybe_saturation_oracle(fixed, all_candidates, q);
+    // Narrow to the query's ⊥-module up front: justification-preserving, so the
+    // HST below still discovers *every* justification — over a far smaller set.
+    let Some(candidates) = localized_candidates(fixed, all_candidates, q)? else {
+        return Ok(Vec::new()); // not entailed
+    };
+    let mut found: Vec<Vec<Component<A>>> = Vec::new();
+    let mut seen: std::collections::HashSet<BTreeSet<Component<A>>> =
+        std::collections::HashSet::new();
+    // HST worklist: each node is a set of candidate-INDICES removed on the path.
+    let mut worklist: Vec<BTreeSet<usize>> = vec![BTreeSet::new()];
+    let mut explored: BTreeSet<BTreeSet<usize>> = BTreeSet::new();
+    while let Some(removed) = worklist.pop() {
+        if found.len() >= max {
+            break;
+        }
+        if !explored.insert(removed.clone()) {
+            continue;
+        }
+        let subset: Vec<Component<A>> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !removed.contains(i))
+            .map(|(_, c)| c.clone())
+            .collect();
+        if !entails(&ontology_from(fixed, &subset), q)? {
+            continue; // this branch cannot yield a justification
+        }
+        let j = quickxplain(fixed, &subset, q)?;
+        // Record if this justification (as an axiom SET) is new.
+        let key: BTreeSet<Component<A>> = j.iter().cloned().collect();
+        if seen.insert(key) {
+            found.push(j.clone());
+        }
+        // Branch: remove each justification axiom (by its candidate index).
+        for c in &j {
+            if let Some(idx) = candidates.iter().position(|x| x == c) {
+                let mut next = removed.clone();
+                next.insert(idx);
+                worklist.push(next);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Find ONE justification for `q` in `onto`, or `Ok(None)` if `onto` does not
+/// entail `q`. `QuickXplain` over the logical axioms; minimal on EL/Horn
+/// (rustdl complete), guaranteed-entailing on SROIQ.
+///
+/// # Errors
+/// Propagates [`ReasonError`].
 pub fn find_one_justification<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
 ) -> Result<Option<Justification<A>>, ReasonError> {
-    PreparedJustifier::prepare(onto).find_one(q)
+    let (fixed, all_candidates) = logical_axioms(onto);
+    let Some(axioms) = search_one(&fixed, &all_candidates, q)? else {
+        return Ok(None);
+    };
+    // Classify the fragment only once there is a justification to label: on the
+    // not-entailed path that convert+analyze would be pure waste. (A
+    // [`PreparedJustifier`] amortizes it instead — a single query cannot.)
+    Ok(Some(justification(axioms, fragment_of(onto))))
 }
 
 fn fragment_of<A: ForIRI>(onto: &SetOntology<A>) -> FragmentClassification {
@@ -1297,7 +1319,16 @@ pub fn find_all_justifications<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Vec<Justification<A>>, ReasonError> {
-    PreparedJustifier::prepare(onto).find_all(q, max)
+    let (fixed, all_candidates) = logical_axioms(onto);
+    let found = search_all(&fixed, &all_candidates, q, max)?;
+    if found.is_empty() {
+        return Ok(Vec::new()); // not entailed — nothing to classify the fragment for
+    }
+    let fragment = fragment_of(onto);
+    Ok(found
+        .into_iter()
+        .map(|axioms| justification(axioms, fragment))
+        .collect())
 }
 
 /// `delta_nonempty`: whether the most recent addition to `fixed` was non-empty

@@ -155,7 +155,9 @@ pub(crate) fn prepare(path: &str) -> PyResult<PyPreparedOntology> {
     })
 }
 
-/// `rustdl.prepare_bytes(data, format="ofn")` — same, from in-memory bytes.
+/// `rustdl.prepare_bytes(data, *, format)` — same, from in-memory bytes.
+/// `format` is required and keyword-only (as on `classify_bytes`): one of
+/// `"ofn"`, `"owx"`, `"rdf-xml"`, `"omn"`.
 #[pyfunction]
 #[pyo3(signature = (data, *, format))]
 pub(crate) fn prepare_bytes(data: &[u8], format: &str) -> PyResult<PyPreparedOntology> {

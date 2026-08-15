@@ -59,7 +59,7 @@ def test_prepared_justify_matches_free_function(tmp_path):
     assert sorted(prepared) == sorted(cold)
 
 
-def test_prepare_bytes(tmp_path):
+def test_prepare_bytes():
     onto = rustdl.prepare_bytes(BROKEN.encode(), format="ofn")
     ax = onto.justify(["unsat", "urn:Bad"])
     assert any("Bad" in a for a in ax)

@@ -1100,9 +1100,8 @@ fn localized_candidates<A: ForIRI>(
         query_seed_signature(q)
     }) else {
         // Not localizable (or disabled): decide on the full set.
-        return Ok(
-            entails(&ontology_from(fixed, all_candidates), q)?.then(|| all_candidates.to_vec())
-        );
+        return Ok(entails(&ontology_from(fixed, all_candidates), q)?
+            .then(|| canonical_order(all_candidates.to_vec())));
     };
     let module = extract_bot_module(all_candidates, &seed);
     if std::env::var_os("RUSTDL_JUSTIFY_DEBUG").is_some() {
@@ -1113,12 +1112,28 @@ fn localized_candidates<A: ForIRI>(
         );
     }
     if entails(&ontology_from(fixed, &module), q)? {
-        Ok(Some(module))
+        Ok(Some(canonical_order(module)))
     } else if entails(&ontology_from(fixed, all_candidates), q)? {
-        Ok(Some(all_candidates.to_vec())) // locality bug — safe fallback
+        // locality bug — safe fallback
+        Ok(Some(canonical_order(all_candidates.to_vec())))
     } else {
         Ok(None) // genuinely not entailed
     }
+}
+
+/// Put the search input in a canonical, content-derived order.
+///
+/// [`SetOntology`] is backed by a `HashSet`, and std's `RandomState` is seeded
+/// per PROCESS — so [`logical_axioms`] hands back the ontology's axioms in a
+/// different order on every run. `QuickXplain` and the HST both follow their
+/// input order, so without this the same query reports the same justification's
+/// axioms in a different order each run, and where several minimal
+/// justifications exist it can return a *different* (equally valid) one, or a
+/// different subset of them under a `max` cap. Sorting the (usually small)
+/// ⊥-module makes justify/justify-all/repair/report byte-reproducible.
+fn canonical_order<A: ForIRI>(mut axioms: Vec<Component<A>>) -> Vec<Component<A>> {
+    axioms.sort();
+    axioms
 }
 
 /// A minimal (on EL/Horn) responsible-axiom set for an entailment.

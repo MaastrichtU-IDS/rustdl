@@ -1038,3 +1038,34 @@ fn prepared_justifier_matches_the_one_shot_functions() {
             .is_empty()
     );
 }
+
+#[test]
+fn justification_axioms_come_back_in_canonical_order() {
+    // `SetOntology` iterates a `HashSet` whose hasher is seeded per PROCESS, and
+    // QuickXplain/HST follow their input order — so without the canonical sort
+    // in `localized_candidates` the same query reports its axioms in a different
+    // order on every run (and can pick a different justification when several
+    // exist). Pin the sort here: `report`/`justify --json` diffability rests on it.
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:A :D) SubClassOf(:D :C)",
+    );
+    let q = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+    let j = find_one_justification(&o, &q).unwrap().expect("entailed");
+    assert_eq!(j.axioms.len(), 2);
+    assert!(
+        j.axioms.is_sorted(),
+        "find-one justification must be in canonical order: {:?}",
+        j.axioms
+    );
+    for j in find_all_justifications(&o, &q, 10).unwrap() {
+        assert!(
+            j.axioms.is_sorted(),
+            "find-all justification must be in canonical order: {:?}",
+            j.axioms
+        );
+    }
+}

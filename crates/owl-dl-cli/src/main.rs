@@ -140,19 +140,32 @@ enum Command {
         /// sound under-approximation — never a false subsumption, but
         /// real subsumptions may be missed). When any pair times out,
         /// the run prints a prominent INCOMPLETE warning to stderr.
-        /// Default 1000 ms bounds pathological SROIQ queries; pass
-        /// `--pair-timeout-ms 0` for the complete (unbounded) result.
-        /// (1000 ms is the empirical knee on pizza: higher budgets buy
-        /// no extra completeness — the remaining pairs are intractable
-        /// at any reasonable bound — but cost proportionally more wall.)
-        /// Conversely, on nominal-heavy ontologies (e.g. wine) the
-        /// engines never terminate on the hard pairs — they only ever
-        /// burn the full budget and time out without finding anything —
-        /// so a *low* budget like `--pair-timeout-ms 25` is much faster
-        /// with no completeness loss (wine: 7.5× faster, identical
-        /// hierarchy, verified `MISSED=0` vs `HermiT` across the corpus;
-        /// only pizza-class ontologies actually need the larger default).
-        #[arg(long, default_value_t = 1000)]
+        /// Default **5 ms** (was 1000 until v0.4.19); pass
+        /// `--pair-timeout-ms 0` for the complete (unbounded) result and
+        /// `--pair-timeout-ms 1000` to restore the pre-v0.4.19 behaviour
+        /// exactly.
+        ///
+        /// The old default was "the empirical knee on pizza" — tuned on
+        /// one ontology. A 1,920-ontology two-arm sweep at 5 ms found
+        /// **16 recoveries, 0 regressions and −15.9% wall**, with
+        /// ΔMISSED **+8 (+1.04%)** and FP=0 over a 400-ontology
+        /// Konclude ∪ `HermiT` net. On the hard tail the engines never
+        /// terminate on a pair — they only burn the whole budget and
+        /// time out having found nothing — so a large budget buys no
+        /// completeness and starves the phases that do the work
+        /// (`ore_ont_934` spent ~108 s in `unsat_probe` and never
+        /// reached `tier_walk`; at 5 ms it classifies in 50 s with
+        /// FP=0/MISSED=0 against an adjudicated oracle).
+        ///
+        /// **1 ms was screened and rejected**: ΔMISSED +360 (+46.75%),
+        /// ~9× the gate. The completeness cliff sits between 1 and 5.
+        ///
+        /// This default is coupled to `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE`,
+        /// which must stay ON: a small budget empties `unsatisfiable_idxs`
+        /// and would otherwise disable the classify inconsistency detector,
+        /// reporting `consistent: true` on `ore_ont_16372`, which three
+        /// reasoners call inconsistent.
+        #[arg(long, default_value_t = 5)]
         pair_timeout_ms: u64,
         /// Global wall-clock budget for the WHOLE classify, in
         /// milliseconds; `0` = unbounded (the default). Bounds total time

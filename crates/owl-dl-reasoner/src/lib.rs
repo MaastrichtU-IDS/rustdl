@@ -2516,7 +2516,11 @@ pub fn classify_consistency_probe_ms() -> u64 {
 /// against a 200 ms budget. The 8h47m FP=0-net disaster on record was the EARLIER
 /// mechanism: `k` UNBOUNDED probes, 58 of them on `wine`.
 pub fn classify_probe_on_incomplete() -> bool {
-    std::env::var_os("RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE").is_some_and(|v| v == "1")
+    // Default-ON idiom (house convention): an EMPTY value enables, `=0` reverts.
+    // Not opt-in, because the v0.4.19 per-pair default (5 ms) is exactly what empties
+    // `unsatisfiable_idxs`; shipping that budget without this flag reports
+    // `consistent: true` on `ore_ont_16372`. The two move together.
+    std::env::var_os("RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE").is_none_or(|v| v != "0")
 }
 
 pub fn classify_probe_min_frac_permille() -> u64 {

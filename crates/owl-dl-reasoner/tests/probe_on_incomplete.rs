@@ -248,3 +248,40 @@ Ontology(<http://t/x>
         "an individual in two disjoint classes is inconsistent"
     );
 }
+
+/// **DEFAULT PIN (v0.4.19).** `RUSTDL_CLASSIFY_PROBE_ON_INCOMPLETE` is ON by default,
+/// under the house idiom where an EMPTY value enables and `=0` reverts.
+///
+/// This is coupled to the CLI's `--pair-timeout-ms` default, which v0.4.19 lowered
+/// from 1000 ms to 5 ms. The small budget is exactly what empties
+/// `unsatisfiable_idxs`, so shipping it without this flag reports `consistent: true`
+/// on `ore_ont_16372` — an ontology Konclude, `HermiT` and rustdl's own `consistent`
+/// all call inconsistent. **The two defaults must move together**; if you are
+/// reverting one, revert both.
+#[test]
+fn flag_is_on_by_default_and_zero_reverts() {
+    let _l = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    {
+        let _g = EnvGuard::set(None);
+        assert!(
+            owl_dl_reasoner::classify_probe_on_incomplete(),
+            "unset must ENABLE (default-ON idiom)"
+        );
+    }
+    {
+        let _g = EnvGuard::set(Some(""));
+        assert!(
+            owl_dl_reasoner::classify_probe_on_incomplete(),
+            "an EMPTY value must enable, per the house default-ON idiom"
+        );
+    }
+    {
+        let _g = EnvGuard::set(Some("0"));
+        assert!(
+            !owl_dl_reasoner::classify_probe_on_incomplete(),
+            "`=0` must revert"
+        );
+    }
+}

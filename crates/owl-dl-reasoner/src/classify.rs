@@ -2176,6 +2176,206 @@ fn is_saturator_concept(c: ConceptId, pool: &ConceptPool) -> bool {
     }
 }
 
+// ─── CB Horn-ELHI eligibility gate (milestone 1 of the 2026-08-16
+//     cb-horn-eli spec; docs/superpowers/specs/2026-08-16-cb-horn-eli-design.md) ───
+
+/// True iff every axiom of `internal` lies in **Horn-ELHI** — the fragment the
+/// planned consequence-based ELI engine (Kazakov, "Consequence-Driven
+/// Reasoning for Horn SHIQ Ontologies", IJCAI 2009, restricted to ELHI + ⊥)
+/// will be complete for:
+///
+/// - concepts: `⊤` / atomic / `⊓` / `∃r.C` (with `r` possibly an
+///   `ObjectInverseOf` — inverse roles are the entire point of ELHI) / `⊥`;
+/// - axioms: `SubClassOf` / `EquivalentClasses` / `DisjointClasses` over those,
+///   `SubObjectPropertyOf` (incl. 2-step chains), `InverseObjectProperties`,
+///   `TransitiveObjectProperty`, `ObjectPropertyDomain` / `Range` (expressible
+///   in ELHI as `∃r.⊤ ⊑ C` / `∃r⁻.⊤ ⊑ C`, so complex fillers are admitted),
+///   class / object-property declarations.
+///
+/// Everything else — `∀`, `⊔`, `¬`, all cardinality forms (incl.
+/// `Functional` / `InverseFunctional`, which expand to `≤1`), nominals,
+/// `Self`, ALL `ABox` axioms, `SymmetricRole` / `EquivalentObjectProperties`
+/// (semantically in ELHI but not in the milestone-1 allowlist),
+/// `DisjointUnion`, `DisjointObjectProperties`, reflexivity characteristics —
+/// rejects via the explicit `_ => false` arm. STRICT ALLOWLIST, never a
+/// denylist: a new `Axiom` / `ConceptExpr` variant is out-of-fragment until
+/// someone proves the engine consumes it (the D10 lesson,
+/// `memory/d10-bug-class-recipe.md`).
+///
+/// Data properties are lowered to object roles with synthetic `DKey` atomic
+/// fillers at conversion, so "reject all datatype axioms" is enforced by
+/// rejecting any atomic in the reserved [`owl_dl_core::DKEY_IRI_PREFIX`]
+/// namespace (see [`is_cb_eli_concept`]). Known residual: a value-free
+/// data-property axiom (`SubDataPropertyOf`, `DataPropertyDomain` over an
+/// atomic) lowers to a plain role axiom indistinguishable from an object one —
+/// admitted; semantically faithful under the dp-as-role lowering and inert for
+/// class subsumption without a `DKey` consumer (which would reject).
+///
+/// **DEAD CODE by design for milestone 1**: nothing dispatches on this yet.
+/// The only caller is the opt-in `RUSTDL_CB_ELI_PROBE` census diagnostic in
+/// [`classify_top_down_internal`].
+#[must_use]
+pub fn cb_eli_eligible(internal: &InternalOntology) -> bool {
+    internal
+        .axioms
+        .iter()
+        .all(|ax| is_cb_eli_axiom(ax, internal))
+}
+
+/// Axiom-level allowlist backing [`cb_eli_eligible`]. Modelled on
+/// [`is_saturator_axiom`] / [`is_el_axiom`]; differences are exactly the ELHI
+/// deltas: inverse roles allowed everywhere a role appears, `⊥` allowed as a
+/// concept, complex `Domain` / `Range` fillers and `DisjointClasses` members
+/// allowed (both reduce to in-fragment GCIs), and NO functional / bare-decl /
+/// derived-`≤1` special cases (all cardinality is out).
+fn is_cb_eli_axiom(ax: &Axiom, internal: &InternalOntology) -> bool {
+    match ax {
+        Axiom::SubClassOf { sub, sup } => {
+            is_cb_eli_concept(*sub, internal) && is_cb_eli_concept(*sup, internal)
+        }
+        // `EquivalentClasses` = mutual SubClassOf; `DisjointClasses` = pairwise
+        // `Ci ⊓ Cj ⊑ ⊥` — both in-fragment over ELHI concepts (⊥ is native to
+        // the Kazakov calculus), so members need not be atomic here, unlike the
+        // EL-saturator gates (whose engine's `disjoint_pairs` collector keeps
+        // atomics only). Milestone 2+ MUST canary that the CB engine genuinely
+        // consumes complex members (G5), or tighten this to atomic.
+        Axiom::EquivalentClasses(members) | Axiom::DisjointClasses(members) => {
+            members.iter().all(|c| is_cb_eli_concept(*c, internal))
+        }
+        // Role hierarchy incl. 2-step chains; sub, sup, and chain parts may all
+        // be inverse (ELHI).
+        Axiom::SubObjectPropertyOf { sub, sup: _ } => match sub {
+            SubRolePath::Role(_) => true,
+            SubRolePath::Chain(parts) => parts.len() == 2,
+        },
+        // Unconditionally in-fragment: declared inverses + transitivity
+        // (Trans(r⁻) ≡ Trans(r), so inverse roles are fine on both), plus
+        // class / object-property declarations (semantically inert).
+        Axiom::InverseObjectProperties(_, _)
+        | Axiom::TransitiveRole(_)
+        | Axiom::DeclareClass(_)
+        | Axiom::DeclareObjectProperty(_) => true,
+        // Domain(r, C) ≡ ∃r.⊤ ⊑ C and Range(r, C) ≡ ∃r⁻.⊤ ⊑ C — with inverses
+        // in-fragment, a complex (ELHI) filler is fine, unlike the EL gates'
+        // atomic-or-trivial restriction.
+        Axiom::ObjectPropertyDomain { role: _, domain } => is_cb_eli_concept(*domain, internal),
+        Axiom::ObjectPropertyRange { role: _, range } => is_cb_eli_concept(*range, internal),
+        // Everything else is out-of-fragment: all ABox assertion axioms AND
+        // `DeclareNamedIndividual` (the milestone-1 allowlist admits class /
+        // role declarations only), `SymmetricRole` / `EquivalentObjectProperties`
+        // (ELHI-expressible but not allowlisted — revisit with census evidence),
+        // Functional / InverseFunctional (≤1), Asymmetric / (Ir)Reflexive,
+        // DisjointObjectProperties, DisjointUnion (disjunctive covering).
+        _ => false,
+    }
+}
+
+/// Concept-level allowlist backing [`cb_eli_eligible`]: `⊤` / atomic / `⊓` /
+/// `∃r.C` (any role polarity) / `⊥`.
+///
+/// TOTAL and RECURSIVE — `∃r.∃s.⊥` must be accepted and `∃r.(A ⊔ B)` rejected
+/// by recursion into the filler; a top-level match arm alone handles neither
+/// (the `RUSTDL_EL_BOT_FILLER` lesson).
+///
+/// `Bot` arm: this deliberately follows [`is_el_concept`] (which HAS a `Bot`
+/// arm), not [`is_saturator_concept`] (which does not). The saturator gate
+/// omits `⊥` because the EL engine's completeness for it was unproven at the
+/// time (the disjoint×functional-merge interaction); the CB engine is being
+/// built to a published calculus in which `⊥` is native, the spec (§4) names
+/// `⊥` and `DisjointClasses` as in-scope, and no functional role is admitted
+/// here at all, so the interaction that scared the saturator gate cannot
+/// arise. Milestone 2+ owes a canary that the engine consumes `⊥` (G5).
+fn is_cb_eli_concept(c: ConceptId, internal: &InternalOntology) -> bool {
+    match internal.concepts.get(c) {
+        ConceptExpr::Top | ConceptExpr::Bot => true,
+        // Reject synthetic DKey atomics: they are the lowered form of datatype
+        // value/range constructs (`DataHasValue` / `DataSomeValuesFrom` / …),
+        // and their semantics live in told-subsumption seeding + the
+        // concrete-domain solver, which the CB engine will not run. Admitting
+        // them would be a D10 bug (gate certifies complete, engine drops the
+        // datatype containment).
+        ConceptExpr::Atomic(cid) => !owl_dl_core::is_dkey_iri(internal.vocabulary.class_iri(*cid)),
+        ConceptExpr::And(ops) => ops.iter().all(|op| is_cb_eli_concept(*op, internal)),
+        // Inverse role allowed — ObjectInverseOf in role position is exactly
+        // what ELHI adds over ELH.
+        ConceptExpr::Some(_role, body) => is_cb_eli_concept(*body, internal),
+        // Nominal / Self / Not / Or / All / Min / Max: out.
+        _ => false,
+    }
+}
+
+/// Census diagnostic for [`cb_eli_eligible`]: a short label naming the FIRST
+/// out-of-fragment construct, or `None` iff eligible. Used by the
+/// `RUSTDL_CB_ELI_PROBE` line so a corpus census can tally blockers.
+/// Consistency with the gate is pinned by test
+/// (`blocker_agrees_with_gate` in `tests/cb_eli_eligible.rs`).
+#[must_use]
+pub fn cb_eli_blocker(internal: &InternalOntology) -> Option<String> {
+    for ax in &internal.axioms {
+        if is_cb_eli_axiom(ax, internal) {
+            continue;
+        }
+        // Name the axiom variant; for class axioms additionally name the
+        // offending concept constructor when there is one.
+        let (kind, concepts): (&str, Vec<ConceptId>) = match ax {
+            Axiom::SubClassOf { sub, sup } => ("SubClassOf", vec![*sub, *sup]),
+            Axiom::EquivalentClasses(m) => ("EquivalentClasses", m.clone()),
+            Axiom::DisjointClasses(m) => ("DisjointClasses", m.clone()),
+            Axiom::DisjointUnion { .. } => ("DisjointUnion", vec![]),
+            Axiom::SubObjectPropertyOf { .. } => ("SubObjectPropertyOf", vec![]),
+            Axiom::EquivalentObjectProperties(_) => ("EquivalentObjectProperties", vec![]),
+            Axiom::DisjointObjectProperties(_) => ("DisjointObjectProperties", vec![]),
+            Axiom::InverseObjectProperties(_, _) => ("InverseObjectProperties", vec![]),
+            Axiom::ObjectPropertyDomain { domain, .. } => ("ObjectPropertyDomain", vec![*domain]),
+            Axiom::ObjectPropertyRange { range, .. } => ("ObjectPropertyRange", vec![*range]),
+            Axiom::TransitiveRole(_) => ("TransitiveRole", vec![]),
+            Axiom::SymmetricRole(_) => ("SymmetricRole", vec![]),
+            Axiom::AsymmetricRole(_) => ("AsymmetricRole", vec![]),
+            Axiom::ReflexiveRole(_) => ("ReflexiveRole", vec![]),
+            Axiom::IrreflexiveRole(_) => ("IrreflexiveRole", vec![]),
+            Axiom::FunctionalRole(_) => ("FunctionalRole", vec![]),
+            Axiom::InverseFunctionalRole(_) => ("InverseFunctionalRole", vec![]),
+            Axiom::ClassAssertion { .. } => ("ClassAssertion", vec![]),
+            Axiom::ObjectPropertyAssertion { .. } => ("ObjectPropertyAssertion", vec![]),
+            Axiom::NegativeObjectPropertyAssertion { .. } => {
+                ("NegativeObjectPropertyAssertion", vec![])
+            }
+            Axiom::SameIndividual(_) => ("SameIndividual", vec![]),
+            Axiom::DifferentIndividuals(_) => ("DifferentIndividuals", vec![]),
+            Axiom::DeclareClass(_) => ("DeclareClass", vec![]),
+            Axiom::DeclareObjectProperty(_) => ("DeclareObjectProperty", vec![]),
+            Axiom::DeclareNamedIndividual(_) => ("DeclareNamedIndividual", vec![]),
+        };
+        let concept_label = concepts
+            .iter()
+            .find_map(|c| cb_concept_blocker(*c, internal));
+        return Some(match concept_label {
+            Some(l) => format!("{kind}[{l}]"),
+            None => kind.to_string(),
+        });
+    }
+    None
+}
+
+/// First out-of-fragment concept constructor under `c`, as a short label.
+fn cb_concept_blocker(c: ConceptId, internal: &InternalOntology) -> Option<&'static str> {
+    match internal.concepts.get(c) {
+        ConceptExpr::Top | ConceptExpr::Bot => None,
+        ConceptExpr::Atomic(cid) => {
+            owl_dl_core::is_dkey_iri(internal.vocabulary.class_iri(*cid)).then_some("DKey")
+        }
+        ConceptExpr::And(ops) => ops.iter().find_map(|op| cb_concept_blocker(*op, internal)),
+        ConceptExpr::Some(_, body) => cb_concept_blocker(*body, internal),
+        ConceptExpr::Or(_) => Some("Or"),
+        ConceptExpr::Not(_) => Some("Not"),
+        ConceptExpr::All(_, _) => Some("All"),
+        ConceptExpr::Min(_, _, _) => Some("Min"),
+        ConceptExpr::Max(_, _, _) => Some("Max"),
+        ConceptExpr::Nominal(_) => Some("Nominal"),
+        ConceptExpr::SelfRestriction(_) => Some("Self"),
+    }
+}
+
 // ─── Top-down classification ─────────────────────────────────────
 //
 // The naive [`classify_internal_with_timeout`] tests `n²` ordered
@@ -2452,6 +2652,16 @@ pub(crate) fn classify_top_down_internal(
     per_pair_timeout: Option<std::time::Duration>,
     global_deadline: Option<Instant>,
 ) -> Result<Classification, ReasonError> {
+    // Opt-in census diagnostic for the CB Horn-ELHI gate (milestone 1 —
+    // deliberately the gate's ONLY caller; nothing dispatches on it). stderr,
+    // unbuffered, printed BEFORE any classification work so a `timeout`-killed
+    // run still yields the line.
+    if std::env::var_os("RUSTDL_CB_ELI_PROBE").is_some() {
+        match cb_eli_blocker(internal) {
+            None => eprintln!("cb-eli-eligible: true"),
+            Some(blocker) => eprintln!("cb-eli-eligible: false blocker={blocker}"),
+        }
+    }
     let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;
     c.stats.dropped = internal.dropped.clone();
     Ok(c)

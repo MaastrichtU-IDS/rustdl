@@ -1,0 +1,250 @@
+ore_ont_12584|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_4671|cb-eli-eligible: true tbox_only=true
+ore_ont_11600|cb-eli-eligible: true tbox_only=true
+ore_ont_9303|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_1673|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_2612|cb-eli-eligible: true tbox_only=true
+ore_ont_11380|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_10702|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_15098|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_7610|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_16089|cb-eli-eligible: true tbox_only=true
+ore_ont_13141|cb-eli-eligible: true tbox_only=true
+ore_ont_14551|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_4652|cb-eli-eligible: true tbox_only=true
+ore_ont_9690|cb-eli-eligible: false blocker=EquivalentObjectProperties tbox_only=false
+ore_ont_16188|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_1346|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_5481|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_3914|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_6627|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_11878|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_15260|cb-eli-eligible: true tbox_only=true
+ore_ont_12914|cb-eli-eligible: true tbox_only=true
+ore_ont_6967|cb-eli-eligible: false blocker=SubClassOf[DKey] tbox_only=false
+ore_ont_7169|cb-eli-eligible: true tbox_only=true
+ore_ont_1840|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_12414|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_4936|cb-eli-eligible: false blocker=ObjectPropertyDomain[Or] tbox_only=false
+ore_ont_10537|cb-eli-eligible: false blocker=ObjectPropertyDomain[Or] tbox_only=false
+ore_ont_15331|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_2678|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_7858|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_12149|cb-eli-eligible: true tbox_only=true
+ore_ont_10460|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_9435|cb-eli-eligible: true tbox_only=true
+ore_ont_15985|cb-eli-eligible: true tbox_only=true
+ore_ont_13805|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_9896|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_14766|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_3463|cb-eli-eligible: true tbox_only=true
+ore_ont_1306|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_15932|cb-eli-eligible: true tbox_only=true
+ore_ont_4983|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_1965|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_4609|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_14800|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_1603|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_10161|cb-eli-eligible: true tbox_only=true
+ore_ont_5544|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_2012|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_4193|cb-eli-eligible: false blocker=ObjectPropertyDomain[Or] tbox_only=false
+ore_ont_8388|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_6859|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_1767|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_5664|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_11523|cb-eli-eligible: false blocker=ObjectPropertyDomain[Or] tbox_only=false
+ore_ont_4515|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_14334|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_6212|cb-eli-eligible: true tbox_only=true
+ore_ont_8203|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_5755|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_4616|cb-eli-eligible: true tbox_only=true
+ore_ont_7663|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_14746|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_1509|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_7820|cb-eli-eligible: false blocker=SubClassOf[Or] tbox_only=false
+ore_ont_15971|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_15933|cb-eli-eligible: true tbox_only=true
+ore_ont_3050|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_8141|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_7540|cb-eli-eligible: true tbox_only=true
+ore_ont_13220|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_4875|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_9668|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_12043|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_4315|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_4856|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_2317|cb-eli-eligible: true tbox_only=true
+ore_ont_13723|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_15210|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_3916|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_15968|cb-eli-eligible: true tbox_only=true
+ore_ont_6948|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_9031|cb-eli-eligible: true tbox_only=true
+ore_ont_15178|cb-eli-eligible: true tbox_only=true
+ore_ont_15575|cb-eli-eligible: false blocker=SubClassOf[DKey] tbox_only=false
+ore_ont_13584|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_8940|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_16321|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_3784|cb-eli-eligible: true tbox_only=true
+ore_ont_12087|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_8671|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_3737|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_11889|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_13752|cb-eli-eligible: true tbox_only=true
+ore_ont_16184|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_6765|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_11635|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_16124|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_11124|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_5289|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_2302|cb-eli-eligible: true tbox_only=true
+ore_ont_8806|cb-eli-eligible: true tbox_only=true
+ore_ont_3839|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_16821|cb-eli-eligible: true tbox_only=true
+ore_ont_1119|cb-eli-eligible: true tbox_only=true
+ore_ont_16420|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_11452|cb-eli-eligible: true tbox_only=true
+ore_ont_5485|cb-eli-eligible: true tbox_only=true
+ore_ont_2377|cb-eli-eligible: true tbox_only=true
+ore_ont_10431|cb-eli-eligible: true tbox_only=true
+ore_ont_8327|cb-eli-eligible: true tbox_only=true
+ore_ont_1330|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_1866|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_13581|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_9012|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_7220|cb-eli-eligible: true tbox_only=true
+ore_ont_16425|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_15635|NOPROBE
+ore_ont_8662|cb-eli-eligible: true tbox_only=true
+ore_ont_4952|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_6952|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_3639|cb-eli-eligible: false blocker=ObjectPropertyRange[DKey] tbox_only=false
+ore_ont_5841|cb-eli-eligible: false blocker=ObjectPropertyDomain[Or] tbox_only=false
+ore_ont_3640|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_2577|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_10026|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_1672|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_12448|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_9772|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_3978|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_10952|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_3156|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_6401|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_10833|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_7418|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_4092|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_155|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_14237|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_7567|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_5462|cb-eli-eligible: true tbox_only=true
+ore_ont_9617|cb-eli-eligible: true tbox_only=true
+ore_ont_11719|cb-eli-eligible: true tbox_only=true
+ore_ont_10348|cb-eli-eligible: true tbox_only=true
+ore_ont_7073|cb-eli-eligible: true tbox_only=true
+ore_ont_4006|cb-eli-eligible: true tbox_only=true
+ore_ont_5263|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_15249|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_11895|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_1199|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_11009|cb-eli-eligible: true tbox_only=true
+ore_ont_13937|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_9767|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_2703|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_1559|NOPROBE
+ore_ont_14331|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_16414|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_7818|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_4261|cb-eli-eligible: true tbox_only=true
+ore_ont_11647|cb-eli-eligible: false blocker=SubClassOf[Or] tbox_only=false
+ore_ont_10389|cb-eli-eligible: true tbox_only=true
+ore_ont_6495|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_12410|cb-eli-eligible: true tbox_only=true
+ore_ont_2497|cb-eli-eligible: true tbox_only=true
+ore_ont_316|cb-eli-eligible: true tbox_only=true
+ore_ont_6889|cb-eli-eligible: true tbox_only=true
+ore_ont_5646|cb-eli-eligible: true tbox_only=true
+ore_ont_9957|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_7730|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_3114|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_8595|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_16847|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_2556|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_15074|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_2038|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_13665|cb-eli-eligible: true tbox_only=true
+ore_ont_14901|cb-eli-eligible: true tbox_only=true
+ore_ont_10949|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_11685|cb-eli-eligible: true tbox_only=true
+ore_ont_11274|cb-eli-eligible: true tbox_only=true
+ore_ont_8432|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_15793|cb-eli-eligible: true tbox_only=true
+ore_ont_15160|cb-eli-eligible: true tbox_only=true
+ore_ont_15790|cb-eli-eligible: true tbox_only=true
+ore_ont_11696|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_11834|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_9783|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_2936|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_8475|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_8429|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_5197|cb-eli-eligible: true tbox_only=true
+ore_ont_12097|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_380|cb-eli-eligible: true tbox_only=true
+ore_ont_15882|cb-eli-eligible: true tbox_only=true
+ore_ont_5218|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_338|cb-eli-eligible: true tbox_only=true
+ore_ont_10362|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_7399|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_9695|cb-eli-eligible: true tbox_only=true
+ore_ont_12161|cb-eli-eligible: true tbox_only=true
+ore_ont_3270|cb-eli-eligible: false blocker=ObjectPropertyDomain[Or] tbox_only=false
+ore_ont_11014|cb-eli-eligible: true tbox_only=true
+ore_ont_8187|cb-eli-eligible: true tbox_only=true
+ore_ont_9835|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_13451|cb-eli-eligible: true tbox_only=true
+ore_ont_14860|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_6817|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_12000|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_1508|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_11577|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_14508|cb-eli-eligible: true tbox_only=true
+ore_ont_7256|cb-eli-eligible: true tbox_only=true
+ore_ont_9654|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_1870|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_7084|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_2837|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_1034|cb-eli-eligible: false blocker=ObjectPropertyAssertion tbox_only=true
+ore_ont_11126|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false
+ore_ont_16617|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_8982|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_10750|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_15145|cb-eli-eligible: true tbox_only=true
+ore_ont_644|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_7180|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_345|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_8641|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_11554|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_13398|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_16461|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_11745|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_7668|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_10019|cb-eli-eligible: false blocker=EquivalentClasses[Min] tbox_only=false
+ore_ont_1211|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_4133|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_1618|cb-eli-eligible: false blocker=SubClassOf[DKey] tbox_only=false
+ore_ont_11064|cb-eli-eligible: false blocker=SubClassOf[Or] tbox_only=false
+ore_ont_6198|cb-eli-eligible: true tbox_only=true
+ore_ont_10621|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_11502|cb-eli-eligible: false blocker=ClassAssertion tbox_only=true
+ore_ont_13355|cb-eli-eligible: true tbox_only=true
+ore_ont_15226|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_11504|cb-eli-eligible: true tbox_only=true
+ore_ont_10174|cb-eli-eligible: true tbox_only=true
+ore_ont_11395|NOPROBE
+ore_ont_7726|cb-eli-eligible: true tbox_only=true
+ore_ont_12474|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_12182|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_13405|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_891|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_6981|cb-eli-eligible: false blocker=SubClassOf[Max] tbox_only=false

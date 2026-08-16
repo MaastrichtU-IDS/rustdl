@@ -1,0 +1,15 @@
+ore_ont_10926|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_10929|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_15203|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_15635|cb-eli-eligible: false blocker=SubClassOf[DKey] tbox_only=false
+ore_ont_15803|cb-eli-eligible: false blocker=EquivalentClasses[Or] tbox_only=false
+ore_ont_16744|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_1833|cb-eli-eligible: false blocker=SubClassOf[Min] tbox_only=false
+ore_ont_2504|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_4141|cb-eli-eligible: false blocker=SubClassOf[Nominal] tbox_only=false
+ore_ont_4572|STILL_NOPROBE
+ore_ont_5368|cb-eli-eligible: false blocker=SubClassOf[DKey] tbox_only=false
+ore_ont_7646|cb-eli-eligible: false blocker=SubClassOf[All] tbox_only=false
+ore_ont_8445|STILL_NOPROBE
+ore_ont_8737|cb-eli-eligible: false blocker=SymmetricRole tbox_only=false
+ore_ont_9674|cb-eli-eligible: true tbox_only=true

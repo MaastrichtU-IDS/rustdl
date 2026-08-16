@@ -10,6 +10,53 @@ completeness proof already exists.
 
 ---
 
+## OUTCOME OF MILESTONE 1 (2026-08-16) — MARKET MEASURED AT 16; DEFER
+
+Milestone 1 shipped (gate + 14 canaries + census, 5 sabotages all caught) and its job was to
+size the market before anything expensive was built. It did.
+
+| measurement | value |
+|---|---|
+| ORE files accepted by the strict gate | **524 / 1,920 (27.3%)** |
+| accepted **AND** currently DNF at 60 s | **5** |
+| DNF-tail ontologies eligible under the **TBox-only** gate | **18** |
+| of those, inverse-bearing (genuinely need this engine) | **17** |
+| distinct after removing byte-identical duplicates | **16** |
+
+**The ABox rule in §4 as first written was the go/no-go.** Under the strict gate the answer
+was 5 — a clean stop. Under the corrected TBox-only gate it is 18. See the CORRECTION in §4;
+the error was mine, and it moved the decision by 3.6×.
+
+**Why the accepted set is so much larger than the market:** only **15 of the 524** accepted
+files contain `InverseObjectProperties` at all, and **zero** use `ObjectInverseOf`. The
+accepted set is overwhelmingly plain ELH that the existing saturator already fast-paths —
+median wall 0.1 s, p90 2.3 s. The addressable market *is* the inverse-bearing subset.
+
+**Recommendation: DEFER, do not build.** 16 distinct ontologies is 0.8% of the corpus, against
+a novel consequence-based calculus with a Pred rule — a large, multi-increment build. The
+spec's own stop rule was "under ~20 → stop", and 16–18 sits under it, if only just.
+
+**What would change the decision (record these, they are cheap to re-test):**
+1. A user-facing ontology landing in this family — all 17 are ELH + inverse + transitivity +
+   chains, a coherent and recognisable shape (OBO-style anatomy/phenotype ontologies).
+2. The engine becoming wanted for a second reason. It would also be a **certifier**: on this
+   family the EL closure is provably the answer, and
+   `docs/2026-08-16-label-cache-reproduces-the-closure.md` shows the label cache burns
+   230–600 s confirming exactly that. A CB engine dissolves the certification problem that
+   `docs/2026-08-16-per-class-certification-refuted.md` closed off — three cheap certifiers
+   refuted, and a certifier needs a *proof*, which this calculus ships.
+3. The rest of the DNF tail is **out of reach of this fragment** and no gate refinement
+   changes that: within the 141 DNFs the blockers are `Max` 30, `Or`-in-`EquivalentClasses`
+   25, `All` 21, `Min` 13, `Nominal` 5. Those need the ALCH/SROIQ machinery the parked branch
+   was originally built for. **The two halves of the CB arc address disjoint parts of the
+   tail** — neither subsumes the other.
+
+**Keep:** the gate, canaries and `RUSTDL_CB_ELI_PROBE` census are committed and are dead code
+(only the probe calls them), so re-sizing this market later costs one command, not a
+re-derivation.
+
+---
+
 ## 1. Why this is being reopened
 
 `docs/superpowers/specs/2026-07-28-cb-lazy-successor-design-seed.md` set the reopen bar:
@@ -77,7 +124,26 @@ role position, `TransitiveObjectProperty`, `ObjectPropertyDomain`/`Range`, `⊥`
 `DisjointClasses`.
 
 **Out (fall back to the existing hybrid, unchanged):** `⊔`, `∀`, `¬`, any cardinality,
-nominals, datatypes, `ABox`. A file containing any of these is simply not eligible.
+nominals, datatypes.
+
+**CORRECTION 2026-08-16 — the `ABox` rule as first written was WRONG, and it excluded one of
+the two motivating ontologies.** The original text listed `ABox` as disqualifying. Milestone 1
+then measured `ore_ont_11311` as **rejected, `blocker=ClassAssertion`** — despite its TBox
+being textbook ELHI and classification not needing the `ABox` at all.
+
+That is the same trap Lever 1 hit: EL-TBox-plus-big-`ABox` ontologies DNF'd because the
+Horn-shortcircuit gate counted `ABox` axioms. The shipped answer already exists —
+`saturator_complete_fragment_impl(internal, skip_abox = true)` and
+`RUSTDL_CLASSIFY_TBOX_ONLY` (default ON since v0.3.25), which drops the `ABox` for
+nominal-free CLASS classification and is verdict-safe by monotonicity.
+
+So the gate ships in two forms: `cb_eli_eligible` (strict) and
+**`cb_eli_eligible_tbox_only`** (the one dispatch should use). With TBox-only, `11311`
+qualifies. **Soundness condition, not optional:** dropping the `ABox` is safe for class
+classification only when the ontology is NOMINAL-FREE — a nominal ties a class to an
+individual, so an assertion can force a subsumption. The ELHI allowlist rejects
+`ObjectOneOf` everywhere, so anything reaching this predicate is nominal-free by
+construction; **any future widening of the fragment to nominals must revisit this.**
 
 ## 5. Integration
 

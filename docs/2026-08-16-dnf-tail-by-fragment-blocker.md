@@ -15,6 +15,29 @@ tail by **cause** rather than by which phase consumes the wall.
 
 **Inverse roles block 71% of the tail** (102 of 143). Everything else is a minority.
 
+> **SUPERSEDED 2026-08-16 — "71%" IS TRUE BUT MISLEADS, AND IT MISLED ME.** This counts
+> inverse as *a* blocker of the fast path. It does **not** mean an inverse-capable engine
+> recovers 71%: most of those 102 also carry `⊔`, `∀` or cardinality, so they need far more
+> than inverse. Measuring the FULL feature set per ontology instead of one blocker
+> (`docs/2026-08-16-cb-fragment-coverage-of-the-dnf-tail.md`), over 129 of the 141 v0.4.19
+> DNFs:
+>
+> | fragment | covers | marginal |
+> |---|---|---|
+> | Horn-ELHI (inverse, no ⊔/∀/card) | **17 (13%)** | 17 |
+> | + role characteristics | 22 | +5 |
+> | + `Or`,`Not` | 45 (35%) | +23 |
+> | + `All` | 46 | +1 |
+> | + `Min`,`Max` | 90 (70%) | **+44** |
+> | + `Nominal` | 101 | +11 |
+> | + `Self`,`DKey` | 125 (97%) | +24 |
+>
+> **An inverse-only engine reaches 13%, not 71%**, and the single biggest lever is
+> **cardinality (+44)** — not inverse and not disjunction. The "inverse is 71%" reading was
+> used to justify re-aiming the CB arc at Horn-ELHI; that arc's market then measured at 16–17
+> ontologies and was DEFERRED. **A first-blocker census answers "what stops the fast path",
+> never "what would a new engine recover".** The two questions need different instruments.
+
 ## Consequence 1: the parked saturator branch is confirmed dead for this purpose
 
 `feat/saturator-forall-propagation` carries two built, sound, FP=0 increments — general

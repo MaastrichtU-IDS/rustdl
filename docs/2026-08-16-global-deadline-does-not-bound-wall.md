@@ -52,9 +52,7 @@ was invisible.
    remaining 5 s. `ore_ont_2574` at a 30 s deadline completes at 48.9 s with all 57,851
    rows, confirming the mechanism: the answer was ready, the tail spent the budget.
    (The third, `ore_ont_10689`, was cap-boundary noise — 3/3 repeats complete at 57.2–59.2 s.)
-3. **It contaminates any deadline-default decision.** The scan's headline — 113 ontologies
-   going from no output to a hierarchy, 3 regressions, +8.3% wall — cannot be read cleanly
-   while the deadline's own cost is unbounded and n-proportional.
+3. **It is the deadline's ONLY real cost** — see the retraction below.
 
 ## What the scan showed anyway
 
@@ -68,21 +66,61 @@ Arm A = v0.4.19 defaults, no internal deadline. Arm B = the same plus
 | complete in both arms | 1,774 |
 | wall over both-arm completers | 3,012 s → 3,260 s (+8.3%) |
 
-113 recoveries is a large effect and the direction is right. But the +8.3% on ontologies
-that never needed the deadline is unexplained, and plausibly the same accounting hole.
+## RETRACTED: the +8.3% wall cost
+
+**It does not reproduce, and the deadline is net FASTER.** A 90-ontology random sample of
+the `both` set, re-run in both arms:
+
+| group | n | no deadline | with 55 s deadline | |
+|---|---|---|---|---|
+| **all sampled** | 90 | 256.8 s | **230.8 s** | **−10.1%** |
+| deadline fired | 4 | 153.5 s | 123.6 s | −19.5% (truncation saves work) |
+| never fired | 86 | 103.3 s | 107.2 s | +3.8% (single runs) |
+
+And a deadline that *cannot* fire (600,000 ms) is free: over 6 ontologies at min-of-3
+interleaved, −1.9% to +4.0%, mean ~0.4%.
+
+**Why the +3.8% and my follow-up "+15.3%" are not real either.** I localised an apparent
+40% cost to the `sweeps` phase from one run per arm. Repeating it 4× per arm on
+`ore_ont_7803`, single-threaded:
+
+```
+run 1:  no-dl sweeps=8582   dl sweeps=5308
+run 2:  no-dl sweeps=3557   dl sweeps=7187
+run 3:  no-dl sweeps=4231   dl sweeps=4299
+run 4:  no-dl sweeps=4684   dl sweeps=5759
+```
+
+**The sweeps phase varies 2.4× within a single arm.** The "+40%" was noise, and a min-of-5
+wall comparison sitting on top of that variance does not establish 15% either. The
+mechanism is not the truncating budget — `--pair-timeout-ms 5` and `1000` both spread 1.4×.
+
+Confirmed independently by code: `effective_deadline` (`classify.rs:2296`) computes
+`gd.min(Instant::now() + t)` and calls `Instant::now()` in the no-global branch too, so
+with `gd = start+55 s` against a 5 ms per-pair budget the effective deadline is *identical*
+either way. There is no extra clock check to pay for.
+
+**Method note worth keeping:** the sweeps phase has 1.4–2.4× run-to-run variance
+single-threaded at a non-truncating budget. Per-ontology wall comparisons on sweep-heavy
+ontologies need many repeats or an aggregate over a large sample; one run per arm is not
+usable, and neither is min-of-5 for a 15% effect.
 
 ## Recommendation
 
-**Do not propose a non-zero default until the tail is bounded.** Two orderings are
-defensible:
+**The deadline is a win; the tail is the defect.** On the measured sample it recovers 113
+ontologies from no-output-at-all and is 10% *faster* in aggregate. Its only genuine cost is
+the unbounded post-deadline region, which can push a run that was going to finish just under
+the cap over it — 2 ontologies out of 1,920.
 
-1. **Fix first.** Bring the post-phase region inside the deadline (or subtract a
-   class-count-proportional reserve), then re-run the scan. The 2 regressions should
-   disappear, and the +8.3% becomes interpretable.
-2. **Ship the capability, not the default.** The harness and any batch caller can set an
-   internal deadline today and get the 113; the CLI default stays 0, because rustdl cannot
-   know the caller's patience.
+So the order is:
 
-Either way the measurement to repeat afterwards is the same, and it must include the
-repeat-runs for cap-boundary cases — one of the three regressions here was noise, and only
-3× repeats distinguished it.
+1. **Bound the tail** — bring the post-phase region inside the deadline, or subtract a
+   class-count-proportional reserve when arming it. This is the actual bug and it is worth
+   fixing on its own merits: `--global-timeout-ms 20000` producing a 58 s wall is a broken
+   contract regardless of what the default becomes.
+2. **Then flip the default**, gated as usual on the three-clause release gate. The evidence
+   so far is favourable, but the flip needs a full-corpus two-arm sweep — the 113 gains come
+   from the DNF tail, which a sample drawn from completers structurally cannot see.
+
+Repeat-runs are mandatory for cap-boundary cases: one of the three apparent regressions was
+noise, and only 3× repeats distinguished it.

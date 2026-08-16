@@ -20,27 +20,75 @@ Same binary, `--pair-timeout-ms 5`, `--global-timeout-ms 20000`, 1 thread:
 because it completes before the deadline — so this is not a function of size alone, it is
 post-deadline work.
 
-## Where the time goes
+## Where the time goes — it is ALL before the deadline is armed
 
-`ore_ont_2574` at a 30 s deadline, wall 46.6 s:
+An early single run suggested "~12.5 s unaccounted **after** the phases". That was an
+outlier. Five runs at a 30 s deadline are tight and say something different:
 
-| segment | ms |
-|---|---|
-| parse + convert (before any phase timer) | 4,063 |
-| measured phases, summed | 30,072 — exactly the deadline |
-| **unaccounted, after the phases** | **~12,500** |
+```
+run   wall     phase-sum    gap
+  1   35.0s       30.1s     4.9s
+  2   35.2s       30.1s     5.2s
+  3   34.9s       30.1s     4.8s
+  4   35.0s       30.1s     4.9s
+  5   35.0s       30.1s     4.9s
+```
 
-Ruled out by measurement:
+Nothing meaningful happens after the phases. Timestamping the output stream confirms it:
+first row at 34.71 s, all **57,851 rows emitted in 0.27 s**, process exit immediately after.
+Emission and teardown are both free.
 
-* **Not output writing** — redirecting to `/dev/null` gives 49.7 s, no better.
-* **Not the Hasse reduction** — `RUSTDL_FAST_DIRECT_SUBSUMERS=1` vs `=0` is 46.6 s vs
-  46.3 s.
+The gap is **pre-deadline work**, and `RUSTDL_TIMING=1` splits it exactly:
 
-The remaining candidates are the per-class structures built after the reasoning phases for
-an 81,270-class ontology (class vector, index map, entailment matrix, and teardown of the
-`PreparedOntology`), none of which is inside the deadline's accounting. **Not yet localised
-further** — the phase instrumentation stops before this region, which is precisely why it
-was invisible.
+| ontology | parse (CLI, outside `classify`) | classify (30 s deadline) | wall |
+|---|---|---|---|
+| `ore_ont_2574` | 2.78 s | 31.87 s | ~35 s |
+| `ore_ont_7192` | **10.81 s** | 36.07 s | ~49 s |
+
+Two separate segments precede the deadline:
+
+1. **Parsing**, in the CLI before `classify_with_budget` is called at all.
+2. **`convert_ontology`**, inside `classify_with_budget` but before the clock starts —
+   already a known issue, documented on `budget_origin` (`classify.rs:862`) and covered by
+   the opt-in `RUSTDL_PREP_DEADLINE` (default OFF).
+
+Measured, verdict-preserving (identical row counts), `--global-timeout-ms 30000`:
+
+| | `PREP_DEADLINE=0` | `PREP_DEADLINE=1` |
+|---|---|---|
+| `ore_ont_2574` | 35.1 s | 33.3 s |
+| `ore_ont_7192` | 48.3 s | 42.4 s |
+
+With conversion absorbed, the residual is exactly parse: 33.3 = 30 + 2.8, and
+42.4 = 30 + 10.8.
+
+## Fix shipped for the parse half
+
+`global_budget_after_parse` (`owl-dl-cli/src/main.rs`) charges the elapsed parse against the
+budget, so `--global-timeout-ms N` stops being extended by work that already happened.
+`0` still means unbounded; `saturating_sub` floors at zero so a parse that outspends the
+budget yields an immediate cut and the sound partial hierarchy, rather than an underflow
+panic or a wrapped-to-huge budget.
+
+A/B on ONE commit (the reference binary `rustdl-v0419rc-af9b93b` predates the v0.4.19
+release commit's code changes and is **not** a valid baseline — comparing against it made
+the fix look like a regression), interleaved, row counts identical in every run:
+
+| ontology | base | with the fix |
+|---|---|---|
+| `ore_ont_7192` (parse 10.8 s) | 72.1 / 70.1 s | **55.1 / 54.4 s** (−24%) |
+| `ore_ont_2574` (parse 2.8 s) | 47.0 / 49.4 s | 46.3 / 45.4 s |
+
+**Honest bound:** parse and conversion are not interruptible, so this is not a hard wall
+cap. It stops the budget being *extended*; an ontology whose parse alone exceeds the budget
+still takes its parse. Closing that needs an interruptible reader, which is a separate and
+much larger piece of work.
+
+Guarded by four unit tests in `global_budget_tests`; **three sabotages run, all three
+caught** (dropping the subtraction fails 3 of 4; a plain `-` instead of `saturating_sub`
+fails the floor test by panicking; treating `0` as a real budget fails the unbounded test).
+The in-tree fixtures parse in milliseconds, so a CLI-level timing test would be vacuous —
+hence the arithmetic is factored out and tested directly.
 
 ## Why it matters
 
@@ -114,13 +162,14 @@ the cap over it — 2 ontologies out of 1,920.
 
 So the order is:
 
-1. **Bound the tail** — bring the post-phase region inside the deadline, or subtract a
-   class-count-proportional reserve when arming it. This is the actual bug and it is worth
-   fixing on its own merits: `--global-timeout-ms 20000` producing a 58 s wall is a broken
-   contract regardless of what the default becomes.
-2. **Then flip the default**, gated as usual on the three-clause release gate. The evidence
-   so far is favourable, but the flip needs a full-corpus two-arm sweep — the 113 gains come
-   from the DNF tail, which a sample drawn from completers structurally cannot see.
+1. **Bound the pre-deadline work.** ✅ Parse: done, above. ⬜ Conversion: `RUSTDL_PREP_DEADLINE`
+   already exists, is verdict-preserving on both cases here, and buys another 1.8 s / 5.9 s
+   — but flipping its default needs its own corpus sweep, because on a conversion-heavy
+   ontology it cuts reasoning earlier and can cost answers under a tight budget.
+2. **Then flip the `--global-timeout-ms` default**, gated on the three-clause release gate.
+   The evidence so far is favourable, but the flip needs a full-corpus two-arm sweep — the
+   113 gains come from the DNF tail, which a sample drawn from completers structurally
+   cannot see.
 
 Repeat-runs are mandatory for cap-boundary cases: one of the three apparent regressions was
 noise, and only 3× repeats distinguished it.

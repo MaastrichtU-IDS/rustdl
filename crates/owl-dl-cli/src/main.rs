@@ -674,6 +674,34 @@ fn print_classification(h: &Classification) {
 /// timeout — those pairs were recorded as "not subsumed", so the
 /// hierarchy may be missing real subsumptions. Sound (no false edges),
 /// but the user must know the result is an under-approximation.
+/// The global budget left for classification once parsing has been paid for.
+///
+/// `--global-timeout-ms N` promises a bound on the WHOLE run, so the clock has to
+/// include the parse that already happened. Charging it is the difference between
+/// the flag meaning "N ms of reasoning" and "N ms of wall": on `ore_ont_7192`
+/// parsing alone is 10.8 s, so a 55 s budget produced a ~66 s wall and blew a 60 s
+/// cap that the same run finished under with NO deadline at all. Measured A/B on
+/// one commit, verdict-preserving (identical row counts): `ore_ont_7192`
+/// 68.6 s → 54.6 s, `ore_ont_2574` 45.8 s → 42.5 s.
+///
+/// `0` means unbounded and stays unbounded. `saturating_sub` floors at zero: if
+/// parsing already outspent the budget the deadline is effectively "now", every
+/// probe is cut, and the run returns the sound partial hierarchy rather than
+/// silently running on.
+///
+/// **Honest bound.** Parsing and `convert_ontology` are not interruptible, so this
+/// does not make the flag a hard wall cap — it stops the budget being *extended*
+/// by work that already happened. Conversion is the other pre-deadline segment and
+/// is covered separately by `RUSTDL_PREP_DEADLINE` (default off). See
+/// `docs/2026-08-16-global-deadline-does-not-bound-wall.md`.
+fn global_budget_after_parse(
+    global_timeout_ms: u64,
+    parse_elapsed: std::time::Duration,
+) -> Option<std::time::Duration> {
+    (global_timeout_ms != 0)
+        .then(|| std::time::Duration::from_millis(global_timeout_ms).saturating_sub(parse_elapsed))
+}
+
 fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64, global_timeout_ms: u64) {
     if timed_out_pairs == 0 {
         return;
@@ -1093,8 +1121,7 @@ fn main() -> Result<()> {
             // 0 = unbounded; any positive value bounds each pair / the whole run.
             let timeout =
                 (pair_timeout_ms != 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
-            let global_budget = (global_timeout_ms != 0)
-                .then(|| std::time::Duration::from_millis(global_timeout_ms));
+            let global_budget = global_budget_after_parse(global_timeout_ms, t_parse.elapsed());
             let t_classify = std::time::Instant::now();
             let h = if saturation_only {
                 classify_saturation_only(&onto).context("classify_saturation_only")?
@@ -2347,5 +2374,54 @@ SubClassOf(:A :B))\n";
         assert_eq!(m.get("http://t/A").map(String::as_str), Some("Alpha"));
         // rdfs:comment is not a label, and B has no label
         assert_eq!(m.get("http://t/B"), None);
+    }
+}
+
+#[cfg(test)]
+mod global_budget_tests {
+    use super::global_budget_after_parse;
+    use std::time::Duration;
+
+    /// `0` means unbounded, and stays unbounded no matter how long parsing took.
+    #[test]
+    fn zero_stays_unbounded() {
+        assert_eq!(global_budget_after_parse(0, Duration::from_secs(30)), None);
+    }
+
+    /// The point of the change: parse time is CHARGED against the budget, so a
+    /// 55 s budget after an 11 s parse leaves 44 s — not 55. Deleting the
+    /// `saturating_sub` fails here.
+    #[test]
+    fn parse_time_is_charged_against_the_budget() {
+        let budget = Duration::from_secs(55);
+        let parse = Duration::from_millis(10_800);
+        let left = global_budget_after_parse(55_000, parse).expect("a non-zero budget is bounded");
+        assert_eq!(left, Duration::from_millis(44_200));
+        assert!(
+            left < budget,
+            "budget must shrink by the parse, else the flag means 'N ms of reasoning'"
+        );
+    }
+
+    /// A parse that outspends the whole budget floors at zero rather than
+    /// underflowing (a `Duration` subtraction below zero panics) or wrapping to a
+    /// huge budget — which would be an unbounded run wearing a deadline.
+    #[test]
+    fn parse_longer_than_budget_floors_at_zero() {
+        assert_eq!(
+            global_budget_after_parse(1_000, Duration::from_secs(9)),
+            Some(Duration::ZERO)
+        );
+    }
+
+    /// An instant parse leaves the budget intact — the change must not tax runs
+    /// whose input is cheap to read, which is every in-tree fixture.
+    #[test]
+    fn negligible_parse_leaves_the_budget_intact() {
+        let parse = Duration::from_micros(50);
+        assert_eq!(
+            global_budget_after_parse(30_000, parse),
+            Duration::from_secs(30).checked_sub(parse)
+        );
     }
 }

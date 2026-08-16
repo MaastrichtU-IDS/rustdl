@@ -2393,6 +2393,129 @@ pub fn cb_eli_blocker(internal: &InternalOntology) -> Option<String> {
     None
 }
 
+/// EVERY out-of-fragment feature in `internal`, as a sorted set of short labels.
+///
+/// [`cb_eli_blocker`] reports only the FIRST blocker, which is enough to explain
+/// one rejection but **cannot** answer "which fragment would cover this
+/// ontology?" — a file whose first blocker is `All` may also carry `Max`, so
+/// counting first-blockers over-credits every candidate fragment. This returns
+/// the full set so fragment coverage can be computed by subset test.
+///
+/// Diagnostic only (`RUSTDL_CB_ELI_PROBE`); gates nothing. Labels are the same
+/// vocabulary `cb_eli_blocker` uses: concept constructors (`Or`, `Not`, `All`,
+/// `Min`, `Max`, `Nominal`, `Self`, `DKey`) and axiom kinds for the non-class
+/// axioms (`SymmetricRole`, `FunctionalRole`, `ClassAssertion`, …).
+#[must_use]
+pub fn cb_fragment_features(internal: &InternalOntology) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for ax in &internal.axioms {
+        if is_cb_eli_axiom(ax, internal) {
+            continue;
+        }
+        let (kind, concepts): (&str, Vec<ConceptId>) = match ax {
+            Axiom::SubClassOf { sub, sup } => ("SubClassOf", vec![*sub, *sup]),
+            Axiom::EquivalentClasses(m) => ("EquivalentClasses", m.clone()),
+            Axiom::DisjointClasses(m) => ("DisjointClasses", m.clone()),
+            Axiom::ObjectPropertyDomain { domain, .. } => ("ObjectPropertyDomain", vec![*domain]),
+            Axiom::ObjectPropertyRange { range, .. } => ("ObjectPropertyRange", vec![*range]),
+            other => (cb_axiom_kind(other), vec![]),
+        };
+        let mut found = false;
+        for c in &concepts {
+            let mut acc = std::collections::BTreeSet::new();
+            cb_concept_features(*c, internal, &mut acc);
+            found |= !acc.is_empty();
+            out.extend(acc);
+        }
+        // A class axiom rejected with no offending constructor (or a non-class
+        // axiom) is attributed to its axiom kind, so nothing is silently lost.
+        if !found {
+            out.insert(kind.to_string());
+        }
+    }
+    out
+}
+
+/// Axiom-kind label for [`cb_fragment_features`] on non-class axioms.
+fn cb_axiom_kind(ax: &Axiom) -> &'static str {
+    match ax {
+        Axiom::SubObjectPropertyOf { .. } => "SubObjectPropertyOf",
+        Axiom::EquivalentObjectProperties(_) => "EquivalentObjectProperties",
+        Axiom::DisjointObjectProperties(_) => "DisjointObjectProperties",
+        Axiom::InverseObjectProperties(_, _) => "InverseObjectProperties",
+        Axiom::TransitiveRole(_) => "TransitiveRole",
+        Axiom::SymmetricRole(_) => "SymmetricRole",
+        Axiom::AsymmetricRole(_) => "AsymmetricRole",
+        Axiom::ReflexiveRole(_) => "ReflexiveRole",
+        Axiom::IrreflexiveRole(_) => "IrreflexiveRole",
+        Axiom::FunctionalRole(_) => "FunctionalRole",
+        Axiom::InverseFunctionalRole(_) => "InverseFunctionalRole",
+        Axiom::ClassAssertion { .. } => "ClassAssertion",
+        Axiom::ObjectPropertyAssertion { .. } => "ObjectPropertyAssertion",
+        Axiom::NegativeObjectPropertyAssertion { .. } => "NegativeObjectPropertyAssertion",
+        Axiom::SameIndividual(_) => "SameIndividual",
+        Axiom::DifferentIndividuals(_) => "DifferentIndividuals",
+        Axiom::DisjointUnion { .. } => "DisjointUnion",
+        _ => "Other",
+    }
+}
+
+/// All out-of-fragment concept constructors under `c`, accumulated into `out`.
+fn cb_concept_features(
+    c: ConceptId,
+    internal: &InternalOntology,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match internal.concepts.get(c) {
+        ConceptExpr::Top | ConceptExpr::Bot => {}
+        ConceptExpr::Atomic(cid) => {
+            if owl_dl_core::is_dkey_iri(internal.vocabulary.class_iri(*cid)) {
+                out.insert("DKey".to_string());
+            }
+        }
+        ConceptExpr::And(ops) => {
+            for op in ops {
+                cb_concept_features(*op, internal, out);
+            }
+        }
+        ConceptExpr::Some(_, body) => cb_concept_features(*body, internal, out),
+        // Recurse into the fillers too: a `∀r.(A ⊔ B)` is BOTH All and Or, and
+        // a fragment-coverage count that saw only the outermost would
+        // over-credit an ALC-without-disjunction engine.
+        ConceptExpr::Or(ops) => {
+            out.insert("Or".to_string());
+            for op in ops {
+                cb_concept_features(*op, internal, out);
+            }
+        }
+        ConceptExpr::Not(b) => {
+            out.insert("Not".to_string());
+            cb_concept_features(*b, internal, out);
+        }
+        ConceptExpr::All(_, b) => {
+            out.insert("All".to_string());
+            cb_concept_features(*b, internal, out);
+        }
+        ConceptExpr::Min(_, _, b) | ConceptExpr::Max(_, _, b) => {
+            out.insert(
+                if matches!(internal.concepts.get(c), ConceptExpr::Min(_, _, _)) {
+                    "Min"
+                } else {
+                    "Max"
+                }
+                .to_string(),
+            );
+            cb_concept_features(*b, internal, out);
+        }
+        ConceptExpr::Nominal(_) => {
+            out.insert("Nominal".to_string());
+        }
+        ConceptExpr::SelfRestriction(_) => {
+            out.insert("Self".to_string());
+        }
+    }
+}
+
 /// First out-of-fragment concept constructor under `c`, as a short label.
 fn cb_concept_blocker(c: ConceptId, internal: &InternalOntology) -> Option<&'static str> {
     match internal.concepts.get(c) {
@@ -2694,8 +2817,15 @@ pub(crate) fn classify_top_down_internal(
     // run still yields the line.
     if std::env::var_os("RUSTDL_CB_ELI_PROBE").is_some() {
         match cb_eli_blocker(internal) {
-            None => eprintln!("cb-eli-eligible: true"),
-            Some(blocker) => eprintln!("cb-eli-eligible: false blocker={blocker}"),
+            None => eprintln!("cb-eli-eligible: true tbox_only=true feats="),
+            Some(blocker) => {
+                let tbox_only = cb_eli_eligible_tbox_only(internal);
+                let feats: Vec<String> = cb_fragment_features(internal).into_iter().collect();
+                eprintln!(
+                    "cb-eli-eligible: false blocker={blocker} tbox_only={tbox_only} feats={}",
+                    feats.join(",")
+                );
+            }
         }
     }
     let mut c = classify_top_down_internal_impl(internal, per_pair_timeout, global_deadline)?;

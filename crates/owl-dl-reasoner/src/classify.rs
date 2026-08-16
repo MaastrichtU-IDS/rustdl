@@ -2303,10 +2303,24 @@ fn unsat_probe_budget(per_pair: Option<std::time::Duration>) -> Option<std::time
 /// `C ∈ labels(E)` and `D ∉ labels(E)`, so the coverage curve is computable
 /// from this dump alone.
 ///
+/// It also emits the EL saturation closure per class, keyed by the SAME indices,
+/// so the two bounds can be compared directly. The closure is a LOWER bound
+/// (entailed subsumers) and the labels an UPPER bound (model candidates); the
+/// gap between them is what a per-class wedge search buys over the shared
+/// fixpoint, and sizing that gap is the next go/no-go
+/// (`docs/2026-08-16-merged-refuter-go-no-go.md`).
+///
 /// Format, one line per class: `<idx> sat <label-idx>...` / `<idx> unsat` /
-/// `<idx> noverdict`. Failure to write is reported and otherwise ignored — a
-/// diagnostic must not abort a classify.
-fn dump_label_cache(cache: &[crate::LabelOracle], path: &std::path::Path) {
+/// `<idx> noverdict`, then a `#closure` section with `<idx> <subsumer-idx>...`.
+/// Failure to write is reported and otherwise ignored — a diagnostic must not
+/// abort a classify.
+fn dump_label_cache(
+    cache: &[crate::LabelOracle],
+    closure: &owl_dl_saturation::Subsumers,
+    times: &[std::sync::atomic::AtomicU64],
+    n: usize,
+    path: &std::path::Path,
+) {
     use std::fmt::Write as _;
     use std::io::Write as _;
     let mut out = String::new();
@@ -2332,6 +2346,25 @@ fn dump_label_cache(cache: &[crate::LabelOracle], path: &std::path::Path) {
                 let _ = writeln!(out, "{i} noverdict");
             }
         }
+    }
+    out.push_str("#times\n");
+    for (i, t) in times.iter().enumerate() {
+        let _ = writeln!(out, "{i} {}", t.load(std::sync::atomic::Ordering::Relaxed));
+    }
+    out.push_str("#closure\n");
+    for i in 0..n {
+        let cid = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        let mut ids: Vec<u32> = closure
+            .subsumers_of(cid)
+            .into_iter()
+            .map(owl_dl_core::ClassId::index)
+            .collect();
+        ids.sort_unstable();
+        let _ = write!(out, "{i}");
+        for id in ids {
+            let _ = write!(out, " {id}");
+        }
+        out.push('\n');
     }
     match std::fs::File::create(path).and_then(|mut f| f.write_all(out.as_bytes())) {
         Ok(()) => eprintln!("label dump: {} classes -> {}", cache.len(), path.display()),
@@ -2593,6 +2626,17 @@ fn classify_top_down_internal_impl(
     // `NoVerdict`, so the walk falls through to the wedge/tableau
     // path uniformly (used by tests that exercise the wedge directly).
     let label_cache_start = Instant::now();
+    // Empty unless `RUSTDL_DUMP_LABELS` is set; emptiness is the "off" test
+    // inside the parallel map, so the non-diagnostic path pays one length check
+    // per class against a ≥14.7 ms wedge call.
+    let label_times: Vec<std::sync::atomic::AtomicU64> =
+        if std::env::var_os("RUSTDL_DUMP_LABELS").is_some() {
+            (0..n)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect()
+        } else {
+            Vec::new()
+        };
     let label_cache: Vec<crate::LabelOracle> = if crate::label_heuristic_enabled() {
         // Phase 8: cache-build deadline is independent of per_pair_timeout.
         // The per-pair budget (typically 200 ms) is too tight for the ~5%
@@ -2645,7 +2689,23 @@ fn classify_top_down_internal_impl(
                 // per-class cache budget. When global_deadline is None, this
                 // reproduces the pre-fix behaviour exactly.
                 let deadline = effective_deadline(lc_deadline, per_class_cache_dur);
-                prepared.classify_labels(class_id, deadline)
+                // Per-class timing is recorded ONLY while dumping (diagnostic).
+                // Counting classes where `labels == closure` is not the same
+                // question as what fraction of the phase's WALL those classes
+                // consume, and the cheap-to-certify classes may well be the
+                // cheap-to-build ones — in which case certifying them buys far
+                // less than their headcount suggests.
+                if label_times.is_empty() {
+                    prepared.classify_labels(class_id, deadline)
+                } else {
+                    let t = Instant::now();
+                    let o = prepared.classify_labels(class_id, deadline);
+                    label_times[i].store(
+                        u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    o
+                }
             })
             .collect()
     } else {
@@ -2658,7 +2718,13 @@ fn classify_top_down_internal_impl(
     // offline. Off unless `RUSTDL_DUMP_LABELS=<path>` is set; no effect on
     // any verdict. One line per class: `<class-idx> <verdict> <label-idx>*`.
     if let Some(path) = std::env::var_os("RUSTDL_DUMP_LABELS") {
-        dump_label_cache(&label_cache, std::path::Path::new(&path));
+        dump_label_cache(
+            &label_cache,
+            &closure,
+            &label_times,
+            n,
+            std::path::Path::new(&path),
+        );
     }
     // RSS probe: after label-cache build.
     crate::rss_probe::probe("after_label_cache");

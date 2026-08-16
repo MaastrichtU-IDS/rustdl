@@ -1963,6 +1963,61 @@ fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool
         })
 }
 
+/// Classes mentioned by at least one axiom OUTSIDE the saturator's complete
+/// fragment ("tainted"), as a `num_classes`-length bitvector.
+///
+/// Diagnostic support for the per-class certification question
+/// (`docs/2026-08-16-label-cache-reproduces-the-closure.md`). The shipped gate
+/// [`saturator_complete_fragment`] is per-ONTOLOGY: one out-of-fragment axiom
+/// anywhere rejects the whole file, so `ore_ont_11311` pays a per-class wedge
+/// search for all 8,022 classes even though every one of them turns out to
+/// agree with the closure exactly. The obvious refinement is per-CLASS, and its
+/// crudest form is "certify `C` when nothing in `closure(C)` is tainted".
+///
+/// This function exists to SCORE that candidate offline before anything is
+/// built on it; it is called only from the `RUSTDL_DUMP_LABELS` path and gates
+/// nothing. The prelude (functional roles, `disjoint_ok`, bare declarations) is
+/// copied from [`saturator_complete_fragment_impl`] deliberately so the taint
+/// and the real gate cannot disagree about what "out of fragment" means.
+fn tainted_classes(internal: &InternalOntology, num_classes: usize) -> Vec<bool> {
+    let functional_roles: HashSet<Role> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::FunctionalRole(r) => Some(*r),
+            _ => None,
+        })
+        .collect();
+    let has_cardinality_role = functional_roles.iter().next().is_some()
+        || internal
+            .axioms
+            .iter()
+            .any(|ax| matches!(ax, Axiom::InverseFunctionalRole(_)));
+    let disjoint_ok = !has_cardinality_role;
+    let bare = BareRoleDecls::analyze(internal);
+    let mut tainted = vec![false; num_classes];
+    let mut buf: Vec<owl_dl_core::ClassId> = Vec::new();
+    for ax in &internal.axioms {
+        if is_saturator_axiom(
+            ax,
+            &internal.concepts,
+            &functional_roles,
+            disjoint_ok,
+            &bare,
+        ) {
+            continue;
+        }
+        buf.clear();
+        owl_dl_core::locality::collect_classes_in_axiom(ax, &internal.concepts, &mut buf);
+        for c in &buf {
+            if let Some(slot) = tainted.get_mut(c.index() as usize) {
+                *slot = true;
+            }
+        }
+    }
+    tainted
+}
+
 /// Lever 1 eligibility: the ontology has an `ABox`, uses NO nominals, and its
 /// `TBox` (all non-`ABox` axioms) lies in the saturator's complete fragment
 /// (pure-EL, or the EL+functional/hierarchy/chains fragment). When true, the
@@ -2318,6 +2373,7 @@ fn dump_label_cache(
     cache: &[crate::LabelOracle],
     closure: &owl_dl_saturation::Subsumers,
     times: &[std::sync::atomic::AtomicU64],
+    tainted: &[bool],
     n: usize,
     path: &std::path::Path,
 ) {
@@ -2345,6 +2401,12 @@ fn dump_label_cache(
             crate::LabelOracle::NoVerdict => {
                 let _ = writeln!(out, "{i} noverdict");
             }
+        }
+    }
+    out.push_str("#tainted\n");
+    for (i, t) in tainted.iter().enumerate() {
+        if *t {
+            let _ = writeln!(out, "{i}");
         }
     }
     out.push_str("#times\n");
@@ -2722,6 +2784,7 @@ fn classify_top_down_internal_impl(
             &label_cache,
             &closure,
             &label_times,
+            &tainted_classes(internal, n),
             n,
             std::path::Path::new(&path),
         );

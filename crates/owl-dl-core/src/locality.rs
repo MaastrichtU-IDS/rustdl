@@ -102,7 +102,7 @@ impl LocalityPartition {
 /// underlying `ClassId`s into `out`. Roles are ignored — the
 /// co-occurrence graph is over class IRIs only (role hierarchy
 /// is its own structure and doesn't enter the partition).
-fn collect_classes_in_axiom(axiom: &Axiom, pool: &ConceptPool, out: &mut Vec<ClassId>) {
+pub fn collect_classes_in_axiom(axiom: &Axiom, pool: &ConceptPool, out: &mut Vec<ClassId>) {
     match axiom {
         Axiom::SubClassOf { sub, sup } => {
             collect_classes_in_concept(*sub, pool, out);

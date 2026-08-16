@@ -159,6 +159,24 @@ SubClassOf(:A DataSomeValuesFrom(:d xsd:integer))",
 }
 
 #[test]
+fn three_step_chain_is_decomposed_and_accepted() {
+    // Written as a REJECTION canary first (sabotage planning found no test
+    // pinned the chain-length arm), and it FAILED: `decompose_long_chains` in
+    // convert.rs rewrites every >2-step chain into an EXACT-equivalent cascade
+    // of 2-step chains over fresh aux roles, so the post-convert IR this gate
+    // reads never contains a longer chain — acceptance is correct, same
+    // rationale as the `X ⊑ ¬Y` rewrite in `rejects_complement`. The
+    // `parts.len() == 2` arm is therefore belt-and-braces; this test pins the
+    // conversion-level invariant it relies on.
+    let i = internal_of("SubObjectPropertyOf(ObjectPropertyChain(:r :s :t) :t)");
+    assert!(
+        cb_eli_eligible(&i),
+        "3-step chain must arrive decomposed into 2-step chains (blocker: {:?})",
+        cb_eli_blocker(&i)
+    );
+}
+
+#[test]
 fn rejects_class_assertion_abox() {
     assert_rejected(
         "Declaration(NamedIndividual(:a))

@@ -19,7 +19,7 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_core::InternalOntology;
-use owl_dl_reasoner::{cb_eli_blocker, cb_eli_eligible};
+use owl_dl_reasoner::{cb_eli_blocker, cb_eli_eligible, cb_eli_eligible_tbox_only};
 use std::io::Cursor;
 
 const PFX: &str = "Prefix(:=<http://ex.org/>)\nPrefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)\nPrefix(owl:=<http://www.w3.org/2002/07/owl#>)\n";
@@ -224,4 +224,58 @@ fn blocker_agrees_with_gate() {
     let bad = internal_of("SubClassOf(:A ObjectAllValuesFrom(:r :B))");
     assert_eq!(cb_eli_eligible(&bad), cb_eli_blocker(&bad).is_none());
     assert!(!cb_eli_eligible(&bad));
+}
+
+// ---------------------------------------------------------------------------
+// TBox-only gate. `ore_ont_11311` — a motivating ontology for the whole arc —
+// is rejected by the strict gate solely because it carries 45,179
+// `oboInOwl#Subset` ClassAssertions, while its TBox is textbook ELHI. Class
+// classification does not need the ABox. Same trap Lever 1 hit; same shipped
+// answer (`skip_abox` / `RUSTDL_CLASSIFY_TBOX_ONLY`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tbox_only_accepts_abox_over_elhi_tbox() {
+    // The exact shape that rejected ore_ont_11311: an in-fragment ELHI TBox
+    // plus an ABox assertion. Strict rejects; TBox-only accepts.
+    let src = "SubClassOf(:A ObjectSomeValuesFrom(:r :B))\nClassAssertion(:A :x)";
+    let i = internal_of(src);
+    assert!(
+        !cb_eli_eligible(&i),
+        "strict gate must still count the ABox (blocker: {:?})",
+        cb_eli_blocker(&i)
+    );
+    assert!(
+        cb_eli_eligible_tbox_only(&i),
+        "TBox-only must accept an ELHI TBox carrying an ABox"
+    );
+}
+
+#[test]
+fn tbox_only_still_rejects_out_of_fragment_tbox() {
+    // TBox-only relaxes the ABox and NOTHING else. A ∀ in the TBox must still
+    // reject under both gates — otherwise `skip_abox` would be laundering
+    // out-of-fragment axioms, which is the D10 failure mode (gate certifies
+    // COMPLETE while the engine drops the axiom).
+    let i = internal_of("SubClassOf(:A ObjectAllValuesFrom(:r :B))\nClassAssertion(:A :x)");
+    assert!(!cb_eli_eligible(&i), "strict must reject ∀");
+    assert!(
+        !cb_eli_eligible_tbox_only(&i),
+        "TBox-only must reject ∀ too — it relaxes the ABox and nothing else"
+    );
+}
+
+#[test]
+fn tbox_only_rejects_nominals_so_the_abox_drop_stays_sound() {
+    // Dropping the ABox is verdict-safe for CLASS classification only when the
+    // ontology is nominal-free: a nominal ties a class to an individual, so an
+    // assertion can force a subsumption. The allowlist rejects ObjectOneOf
+    // everywhere, which is what makes the drop sound by construction. If a
+    // future widening admits nominals, THIS test is the one that should stop it.
+    let i = internal_of("SubClassOf(:A ObjectSomeValuesFrom(:r ObjectOneOf(:x)))");
+    assert!(!cb_eli_eligible(&i), "strict must reject nominals");
+    assert!(
+        !cb_eli_eligible_tbox_only(&i),
+        "TBox-only must reject nominals — the ABox drop's soundness depends on it"
+    );
 }

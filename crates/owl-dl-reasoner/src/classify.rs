@@ -2216,9 +2216,45 @@ fn is_saturator_concept(c: ConceptId, pool: &ConceptPool) -> bool {
 /// [`classify_top_down_internal`].
 #[must_use]
 pub fn cb_eli_eligible(internal: &InternalOntology) -> bool {
+    cb_eli_eligible_impl(internal, false)
+}
+
+/// `TBox`-only variant of [`cb_eli_eligible`]: evaluate the allowlist over the
+/// non-`ABox` axioms. **This is the variant a dispatcher should use**, and it is
+/// the one the market was sized on.
+///
+/// **Why it exists.** `ore_ont_11311` — one of the two ontologies that motivated
+/// the Horn-ELHI arc — is rejected by the strict gate with
+/// `blocker=ClassAssertion`, because it carries 45,179 `oboInOwl#Subset`
+/// assertions. Its `TBox` is textbook ELHI and class classification does not need
+/// the `ABox` at all. That is the same trap Lever 1 hit: EL-`TBox`-plus-big-`ABox`
+/// ontologies DNF'd because the Horn-shortcircuit gate counted `ABox` axioms, and
+/// the shipped answer is `saturator_complete_fragment_impl(internal, skip_abox)`
+/// plus `RUSTDL_CLASSIFY_TBOX_ONLY` (default ON since v0.3.25), verdict-safe for
+/// class classification by monotonicity.
+///
+/// It moved the go/no-go: over the 141-ontology DNF tail the strict gate accepts
+/// **5** and this one accepts **18**
+/// (`docs/superpowers/specs/2026-08-16-cb-horn-eli-design.md` § OUTCOME).
+///
+/// **Soundness condition, not optional.** Dropping the `ABox` is safe for CLASS
+/// classification only when the ontology is NOMINAL-FREE — a nominal ties a class
+/// to an individual, so an assertion can force a subsumption. The ELHI allowlist
+/// rejects `ObjectOneOf` everywhere, so anything reaching this predicate is
+/// nominal-free by construction; **widening the fragment to nominals invalidates
+/// this and must revisit it.** Pinned by
+/// `tbox_only_still_rejects_out_of_fragment_tbox` and
+/// `tbox_only_accepts_abox_over_elhi_tbox`.
+#[must_use]
+pub fn cb_eli_eligible_tbox_only(internal: &InternalOntology) -> bool {
+    cb_eli_eligible_impl(internal, true)
+}
+
+fn cb_eli_eligible_impl(internal: &InternalOntology, skip_abox: bool) -> bool {
     internal
         .axioms
         .iter()
+        .filter(|ax| !(skip_abox && is_abox_axiom(ax)))
         .all(|ax| is_cb_eli_axiom(ax, internal))
 }
 

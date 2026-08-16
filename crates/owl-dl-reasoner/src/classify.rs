@@ -2293,6 +2293,52 @@ fn unsat_probe_budget(per_pair: Option<std::time::Duration>) -> Option<std::time
     }
 }
 
+/// Write the per-class pseudo-model root labels to `path` (`RUSTDL_DUMP_LABELS`).
+///
+/// Diagnostic only — never called unless the env var is set, and it reads the
+/// cache without touching it, so no verdict can change. Exists to answer the
+/// merged-refuter go/no-go offline: the label cache is `n` independent wedge
+/// runs, and the question is whether `k ≪ n` of those models refute the same
+/// pairs. Since `labels(C) ∋ C`, model `E` refutes `(C,D)` whenever
+/// `C ∈ labels(E)` and `D ∉ labels(E)`, so the coverage curve is computable
+/// from this dump alone.
+///
+/// Format, one line per class: `<idx> sat <label-idx>...` / `<idx> unsat` /
+/// `<idx> noverdict`. Failure to write is reported and otherwise ignored — a
+/// diagnostic must not abort a classify.
+fn dump_label_cache(cache: &[crate::LabelOracle], path: &std::path::Path) {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let mut out = String::new();
+    for (i, o) in cache.iter().enumerate() {
+        match o {
+            crate::LabelOracle::Sat { labels, .. } => {
+                let mut ids: Vec<u32> = labels
+                    .iter()
+                    .copied()
+                    .map(owl_dl_core::ClassId::index)
+                    .collect();
+                ids.sort_unstable();
+                let _ = write!(out, "{i} sat");
+                for id in ids {
+                    let _ = write!(out, " {id}");
+                }
+                out.push('\n');
+            }
+            crate::LabelOracle::Unsat => {
+                let _ = writeln!(out, "{i} unsat");
+            }
+            crate::LabelOracle::NoVerdict => {
+                let _ = writeln!(out, "{i} noverdict");
+            }
+        }
+    }
+    match std::fs::File::create(path).and_then(|mut f| f.write_all(out.as_bytes())) {
+        Ok(()) => eprintln!("label dump: {} classes -> {}", cache.len(), path.display()),
+        Err(e) => eprintln!("label dump failed ({}): {e}", path.display()),
+    }
+}
+
 fn effective_deadline(
     global: Option<Instant>,
     per_pair: Option<std::time::Duration>,
@@ -2607,6 +2653,13 @@ fn classify_top_down_internal_impl(
     };
     stats.label_cache_build_wall_ms =
         u64::try_from(label_cache_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Diagnostic-only: dump each class's pseudo-model root labels so the
+    // "can k models replace n models?" coverage question can be answered
+    // offline. Off unless `RUSTDL_DUMP_LABELS=<path>` is set; no effect on
+    // any verdict. One line per class: `<class-idx> <verdict> <label-idx>*`.
+    if let Some(path) = std::env::var_os("RUSTDL_DUMP_LABELS") {
+        dump_label_cache(&label_cache, std::path::Path::new(&path));
+    }
     // RSS probe: after label-cache build.
     crate::rss_probe::probe("after_label_cache");
 

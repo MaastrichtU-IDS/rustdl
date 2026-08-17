@@ -296,6 +296,26 @@ def render_manchester(path: str) -> list[str]:
     """Every logical axiom of the ontology at `path` as Manchester strings."""
     ...
 
+class PreparedOntology:
+    """A loaded ontology with per-ontology justification state precomputed once
+    (parse + axiom split + fragment classification). Reuse it to justify many
+    queries without re-doing that full-ontology work on each call. Use it from
+    the thread that created it."""
+    def justify(self, query: list[str]) -> list[str]:
+        """One minimal justification (Manchester axioms) for `query`."""
+        ...
+    def justify_all(self, query: list[str], max: int = 10) -> list[list[str]]:
+        """Up to `max` minimal justifications for `query`."""
+        ...
+
+def prepare(path: str) -> PreparedOntology:
+    """Load the ontology at `path` and precompute its justification state."""
+    ...
+
+def prepare_bytes(data: bytes, *, format: str) -> PreparedOntology:
+    """Like `prepare`, from in-memory bytes (`format`: "ofn"|"owx"|"rdf-xml"|"omn")."""
+    ...
+
 def debug(path: str) -> Diagnosis:
     """One-call ontology diagnosis: consistency + root/derived unsat +
     per-root justifications + repairs."""

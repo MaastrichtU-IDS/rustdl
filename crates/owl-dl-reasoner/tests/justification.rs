@@ -6,8 +6,8 @@ use horned_owl::io::ofn::reader::read as read_ofn;
 use horned_owl::model::RcStr;
 use horned_owl::ontology::set::SetOntology;
 use owl_dl_reasoner::justify::{
-    Entailment, Justification, entails, find_all_justifications, find_one_justification,
-    logical_axioms, ontology_from,
+    Entailment, Justification, PreparedJustifier, entails, find_all_justifications,
+    find_one_justification, logical_axioms, ontology_from,
 };
 use std::io::Cursor;
 
@@ -987,5 +987,54 @@ fn justify_disjoint_data_properties_range_excludes_probe_not_entailed() {
     assert!(
         find_one_justification(&o, &q).unwrap().is_none(),
         "range clash on probe must not be mistaken for disjointness entailment"
+    );
+}
+
+#[test]
+fn prepared_justifier_matches_the_one_shot_functions() {
+    // The prepared and one-shot paths share the search but attach the fragment
+    // separately (the one-shot path classifies lazily, only when entailed), so
+    // pin that they agree — axioms, fragment, and the not-entailed verdict.
+    let o = onto(
+        "Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))\n\
+                  SubClassOf(:A :B) SubClassOf(:B :C) SubClassOf(:A :D) SubClassOf(:D :C)",
+    );
+    let entailed = Entailment::SubClassOf {
+        sub: "http://t/A".into(),
+        sup: "http://t/C".into(),
+    };
+    let not_entailed = Entailment::SubClassOf {
+        sub: "http://t/C".into(),
+        sup: "http://t/A".into(),
+    };
+    let prepared = PreparedJustifier::prepare(&o);
+
+    let one = prepared.find_one(&entailed).unwrap().expect("entailed");
+    let cold = find_one_justification(&o, &entailed)
+        .unwrap()
+        .expect("entailed");
+    assert_eq!(one.axioms, cold.axioms, "same justification");
+    assert_eq!(one.fragment, cold.fragment, "same fragment");
+    assert_eq!(one.minimal_guaranteed, cold.minimal_guaranteed);
+
+    let all_prepared = prepared.find_all(&entailed, 10).unwrap();
+    let all_cold = find_all_justifications(&o, &entailed, 10).unwrap();
+    assert_eq!(
+        all_prepared.len(),
+        all_cold.len(),
+        "same justification count"
+    );
+    for (p, c) in all_prepared.iter().zip(&all_cold) {
+        assert_eq!(p.axioms, c.axioms);
+        assert_eq!(p.fragment, c.fragment);
+    }
+
+    assert!(prepared.find_one(&not_entailed).unwrap().is_none());
+    assert!(find_one_justification(&o, &not_entailed).unwrap().is_none());
+    assert!(prepared.find_all(&not_entailed, 10).unwrap().is_empty());
+    assert!(
+        find_all_justifications(&o, &not_entailed, 10)
+            .unwrap()
+            .is_empty()
     );
 }

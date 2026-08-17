@@ -83,6 +83,60 @@ So this is **not** a DNF rescue. What it is:
 * **An explanation** of why the timeout-configuration sweep found nothing: it was tuning
   knobs that cannot allocate.
 
+## PRIOR ART: this defect was already found one phase upstream, fixed, and MEASURED OUT
+
+`unsat_probe_cap` (`classify.rs:2808`, `RUSTDL_UNSAT_PROBE_MS`) documents the SAME defect at
+the `unsat_probe` stage, in the same terms:
+
+> "`unsat_probe` runs one satisfiability probe per class … so the phase costs `n × per_pair`
+> and then `tier_walk`, the phase that actually computes the hierarchy, never runs. Measured on
+> `ore_ont_934` (108 classes): `unsat_probe` = 103,541 ms, `tier_walk` = 0, and classify DNFs."
+
+And its verdict:
+
+> "**MEASURED NEGATIVE RESULT — this flag rescues NOTHING. Default OFF.** The mechanism works
+> exactly as designed and buys nothing … `tier_walk` from 0 ms to 73,309 ms — the phase really
+> is unblocked, and it decides 27 subsumptions it previously never reached. The ontology still
+> DNFs, because `tier_walk` at ≥50 ms/pair cannot finish either."
+
+**So starvation-unblocking has already been built once and measured to rescue nothing**, because
+the starved consumer cannot finish even when handed the whole budget. That prior result predicts
+the outcome of the analogous fix here, and the prediction held (below).
+
+## ATTEMPTED FIX, AND WHY IT WAS REVERTED
+
+Implemented `accelerator_share_deadline`: with a global budget and no explicit
+`RUSTDL_LABEL_CACHE_TOTAL_MS`, cap the label phase at **half the remaining budget** — the
+accelerator-versus-consumer rule, the same mechanism as `prep_bounding_active`.
+
+It did exactly what it was designed to do and did not achieve the goal:
+
+| `ore_ont_11311`, global 60 s | label_cache_build | unsat_probe | tier_walk | pruned |
+|---|---|---|---|---|
+| before | 58,139 ms | 1 ms | 8 ms | 0 |
+| **with the half-share** | **29,043 ms** | **29,043 ms** | 6 ms | **0** |
+
+The freed 29 s went straight to `unsat_probe`; `tier_walk` still got 6 ms and the cache was
+still never consulted. **Fixing one greedy phase hands the budget to the next.** A pairwise
+split cannot fix a chain — it needs a reservation for the output-producing phase across ALL
+preceding phases, which is a scheduling redesign, not a local cap.
+
+**Reverted.** Keeping an ineffective cap would add a constant, change behaviour under budgets,
+and deliver nothing measurable.
+
+## What remains TRUE and unaddressed
+
+The waste is real even though unblocking does not rescue:
+
+* **26 of 45** sampled budget-recovered ontologies spend **~55 s to return a hierarchy that is
+  byte-identical to `--saturation-only`**, which produces it in a median of **2.01 s** (~27×).
+  Verified per-ontology by output hash: `ore_ont_9944` 50×, `ore_ont_3080` 275×;
+  `ore_ont_5438` differs, so it is not universal.
+* The right shape is therefore **not** "share the budget" but "**do not start accelerators that
+  cannot pay for themselves, and return the degraded answer now**". That needs a predictor for
+  "can this cache complete", which is unavailable a priori — the same circularity that killed
+  the certification line.
+
 ## Candidate fix, and its trap
 
 The obvious move — make `RUSTDL_LABEL_CACHE_TOTAL_MS` default to a fraction of the global

@@ -21,6 +21,18 @@ one-shot query costs no more than before). `rustdl report` now prepares once and
 reuses it across all roots instead of re-deriving per root. The
 `PreparedOntology` Python object is unsendable — use it from the creating thread.
 
+### Fixed — justification output was not reproducible run-to-run
+
+`SetOntology` is backed by a `HashSet` whose hasher std seeds per PROCESS, so
+`logical_axioms` yielded the ontology's axioms in a different order on every run.
+`QuickXplain` and the HST follow their input order, so the same query reported the
+same justification's axioms in a different order each run — and where several
+minimal justifications exist it could return a different (equally valid) one, or a
+different subset of them under a `max` cap. `localized_candidates` now returns the
+search input in a canonical, content-derived order, making `justify`,
+`justify --all`, `repair`, `report` and the Python surface byte-reproducible.
+Selection and ordering only — the axiom *sets* are unchanged.
+
 ## [0.4.17] - 2026-08-10
 
 ### Fixed — `classify` reported `consistent: true` on inconsistent ontologies

@@ -81,6 +81,60 @@ than discarding: omitting entailed seed facts can only make a model MORE permiss
 label sets ⇒ *fewer* refutations ⇒ pairs get tested rather than pruned. That is
 completeness-neutral-or-better and FP-safe; the only exposure is wall.
 
+## FOLLOW-UP (same day): the candidate is instance-level, and my mechanism story was WRONG
+
+Three further measurements, in order.
+
+**1. The seed's effect on the target population is LARGE and goes BOTH ways.** Same per-class
+budget (300 ms), counting classes that end in `NoVerdict`:
+
+| | `SAT_SEED=1` | `SAT_SEED=0` |
+|---|---|---|
+| `ore_ont_11311` | 341 timeouts / phase 231.3 s | **480** / 263.5 s |
+| `ore_ont_9944` | **1,065** timeouts / phase **583.3 s** | **64** / **107.2 s** |
+
+On `9944` the seed *causes* 16× more timeouts and a **5.4× longer phase**; on `11311` it
+*prevents* 139. Both reproducible. **The earlier six-ontology table measured the wrong
+population** — all easy, all completing, where the phase is not the problem. The seed-site
+comment says why it exists: it lets hard classes' `sat` calls terminate inside the deadline
+(wine had ~4,638 label-cache misses). It does that on `11311` and the opposite on `9944`.
+
+**2. It does NOT rescue the DNF, because the seed and the BUDGET are entangled.** `ore_ont_9944`
+DNFs at a 300 s cap under every combination tried — `SAT_SEED` ∈ {0,1} × label budget ∈
+{default, 300 ms, 1000 ms}. With `--pair-timeout-ms 5` and 8,008 classes the adaptive rule sets
+the per-class budget to the **30 s ceiling** (`clamp(8008 × 5, 50, 30_000)`), so even 64
+timing-out classes cost half an hour. This is the same coupling as the 18×
+`ore_ont_15010` starvation defect, approached from the other side.
+
+**3. The role-richness mechanism is REFUTED.** Hypothesis, pre-registered before measuring:
+`exists_seed` derives ∃-facts through chains / transitivity / inverses and each entry becomes a
+per-class clause feeding `enumerate_matches`, so role-rich ontologies should pay more. Tested
+on a role-stratified sample of **completers** (the first attempt drew from the DNF tail and
+`ore_ont_3575` DNF'd in both arms, yielding no delta):
+
+| ontology | roles | SEED=1 | SEED=0 | seed cost |
+|---|---|---|---|---|
+| `ore_ont_9151` | 188 | 29,982 ms | 26,821 ms | +12% |
+| `ore_ont_7532` | 156 | 858 ms | 624 ms | +38% |
+| `ore_ont_1509` | 180 | 1,930 ms | 1,987 ms | −3% |
+| `ore_ont_8911` | 177 | 10,060 ms | 10,061 ms | −0% |
+| 4 more | 133–140 | | | −3% … +1% |
+
+**Median seed cost −0%**, Pearson r = +0.202 (n=8, meaningless). These carry **6–8× more role
+machinery than `9944`** (188 vs 22) and show **no effect** — if richness drove it they would
+show it more, not less. The mechanism is wrong.
+
+A further confound worth recording: only **8 of 38** sampled completers had a measurable label
+phase at all, and **none** were role-poor — because role-poor usually means pure-EL, and
+pure-EL takes the saturation fast path and never builds a label cache. "Role-poor" and "has the
+phase under test" are anti-correlated **by construction**, so this design cannot produce the
+contrast it needs.
+
+**Status: one strong instance-level finding, no structural predictor.** `SAT_SEED=0` is worth
+knowing about as a per-instance escape hatch on `9944`-like inputs, and it is NOT a default
+change and NOT a rule. Three test designs failed before this conclusion (DNF-tail sample,
+pure-EL confound, refuted mechanism) — recorded so the next attempt starts past them.
+
 ## Where this leaves item 3
 
 **The candidate is "skip the closure seed in `classify_labels` while keeping it in the per-pair

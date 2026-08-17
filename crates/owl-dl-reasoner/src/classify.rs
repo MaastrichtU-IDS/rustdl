@@ -847,7 +847,7 @@ pub fn classify_with_global_deadline<A: ForIRI>(
 ) -> Result<Classification, ReasonError> {
     let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    classify_top_down_internal(&internal, None, Some(budget_origin(t0) + budget))
+    classify_top_down_internal(&internal, None, Some(budget_origin(t0, budget) + budget))
 }
 
 /// Where a global budget's clock starts.
@@ -859,11 +859,140 @@ pub fn classify_with_global_deadline<A: ForIRI>(
 /// is what the caller asked for; conversion is still not INTERRUPTIBLE (a known
 /// residual), but it no longer silently extends the promise. Flag off ⇒ the
 /// pre-existing origin, exactly.
-fn budget_origin(call_instant: Instant) -> Instant {
-    if crate::prep_deadline_enabled() {
+fn budget_origin(call_instant: Instant, budget: std::time::Duration) -> Instant {
+    if prep_bounding_active(call_instant, budget) {
         call_instant
     } else {
         Instant::now()
+    }
+}
+
+/// Whether prep (conversion / saturation) should be held to the caller's global
+/// budget on THIS run.
+///
+/// `prep_deadline_enabled()` alone was not enough, and the failure was measured.
+/// Charging prep against the budget is right when the budget can still be met,
+/// but when it is ALREADY exhausted by work that cannot be interrupted the
+/// result is the worst of both: `ore_ont_7192` at a 3 s budget paid its full
+/// ~18 s of parse + conversion and returned **0 rows**, where the unbounded-prep
+/// path returned all **50,753**. Nothing is served by spending the wall and then
+/// reporting nothing.
+///
+/// **Why prep cannot simply be interrupted.** The dominant cost is horned-owl
+/// PARSING, which is external and finishes before rustdl is entered at all:
+/// measured parse share of pre-deadline cost is **54–67%** (`ore_ont_7192`
+/// 10.4 s parse / 7.6 s convert; `10926` 12.7 / 10.6; `2574` 2.8 / 1.4). So even
+/// a fully interruptible `convert_ontology` could not honour a budget smaller
+/// than the parse, and the run would still return nothing — just sooner.
+///
+/// So: honour the budget while it is still meetable, and fall back to
+/// unbounded prep once it is not. That makes the bounded path **never worse than
+/// the unbounded one** — identical behaviour in the blown-budget case, and the
+/// measured wall saving (−34.7% over 45 ontologies at a 20 s budget, row counts
+/// identical on all 45) everywhere else.
+fn prep_bounding_active(call_instant: Instant, budget: std::time::Duration) -> bool {
+    crate::prep_deadline_enabled() && Instant::now() < call_instant + budget
+}
+
+#[cfg(test)]
+mod prep_bounding_tests {
+    use super::prep_bounding_active;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Serialises the env mutation below; these tests must not race each other.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard(Option<std::ffi::OsString>);
+
+    impl EnvGuard {
+        #[allow(unsafe_code)]
+        fn set(value: Option<&str>) -> Self {
+            let prior = std::env::var_os("RUSTDL_PREP_DEADLINE");
+            // SAFETY: every mutation of this variable in this module happens
+            // while ENV_MUTEX is held by the caller, so there is no concurrent
+            // access.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var("RUSTDL_PREP_DEADLINE", v),
+                    None => std::env::remove_var("RUSTDL_PREP_DEADLINE"),
+                }
+            }
+            Self(prior)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: as above — the caller still holds ENV_MUTEX.
+            unsafe {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("RUSTDL_PREP_DEADLINE", v),
+                    None => std::env::remove_var("RUSTDL_PREP_DEADLINE"),
+                }
+            }
+        }
+    }
+
+    /// Budget still meetable ⇒ bound prep. This is what buys the measured
+    /// −37.4% wall at a generous budget.
+    #[test]
+    fn bounds_prep_while_the_budget_is_meetable() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = EnvGuard::set(Some("1"));
+        assert!(prep_bounding_active(
+            Instant::now(),
+            Duration::from_secs(60)
+        ));
+    }
+
+    /// THE FIX. A budget already consumed by uninterruptible parse + conversion
+    /// must fall back to UNBOUNDED prep. Without this, `ore_ont_7192` at a 3 s
+    /// budget paid its full ~18 s of prep and returned 0 rows instead of 50,753.
+    #[test]
+    fn falls_back_once_the_budget_is_already_blown() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = EnvGuard::set(Some("1"));
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(30))
+            .expect("monotonic clock is well past 30s since boot");
+        assert!(
+            !prep_bounding_active(long_ago, Duration::from_secs(3)),
+            "a blown budget must NOT bound prep: bounding it spends the whole \
+             prep wall and then reports nothing"
+        );
+    }
+
+    /// `=0` reverts regardless of remaining budget.
+    #[test]
+    fn flag_off_never_bounds_prep() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = EnvGuard::set(Some("0"));
+        assert!(!prep_bounding_active(
+            Instant::now(),
+            Duration::from_secs(60)
+        ));
+    }
+
+    /// Default is ON since the 2026-08-17 flip, so an UNSET var must bound a
+    /// meetable budget. Pins the default against silent reversion.
+    #[test]
+    fn default_is_on() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = EnvGuard::set(None);
+        assert!(prep_bounding_active(
+            Instant::now(),
+            Duration::from_secs(60)
+        ));
     }
 }
 
@@ -888,7 +1017,7 @@ pub fn classify_with_budget<A: ForIRI>(
 ) -> Result<Classification, ReasonError> {
     let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    let global_deadline = global_budget.map(|b| budget_origin(t0) + b);
+    let global_deadline = global_budget.map(|b| budget_origin(t0, b) + b);
     classify_top_down_internal(&internal, per_pair_timeout, global_deadline)
 }
 
@@ -2894,10 +3023,14 @@ fn classify_top_down_internal_impl(
     // deadline and the PARTIAL closure is read off as a sound, explicitly
     // INCOMPLETE hierarchy. See `crate::prep_deadline_enabled` for the measured
     // motivation (77 of 252 DNF ontologies burned ≥ 10 s against a 1 ms budget).
-    let prep_deadline = if crate::prep_deadline_enabled() {
-        global_deadline
-    } else {
-        None
+    // Gated on the SAME predicate as `budget_origin`, and it must be: bounding
+    // saturation against a budget that uninterruptible parse+conversion has
+    // already consumed yields an instantly-abandoned fixpoint and a near-empty
+    // hierarchy, having paid the full prep wall. Once the budget is blown, run
+    // the fixpoint unbounded — see `prep_bounding_active`.
+    let prep_deadline = match global_deadline {
+        Some(gd) if crate::prep_deadline_enabled() && Instant::now() < gd => Some(gd),
+        _ => None,
     };
     let t_saturate = Instant::now();
     let (closure, sat_aborted) = match prep_deadline {

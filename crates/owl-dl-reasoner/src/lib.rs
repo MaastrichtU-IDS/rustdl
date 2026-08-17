@@ -2371,8 +2371,23 @@ pub fn classify_inconsistency_enabled() -> bool {
 /// possible check, so an ontology whose *conversion* is the DNF is still
 /// unbounded. Only the two phases named above are covered.
 #[must_use]
+/// **DEFAULT ON since 2026-08-17** (`=0` reverts). It shipped default-OFF because
+/// bounding prep against an already-blown budget was strictly harmful:
+/// `ore_ont_7192` at a 3 s budget paid its full ~18 s of parse + conversion and
+/// returned **0 rows**, where unbounded prep returned all **50,753**. That is
+/// fixed by `classify::prep_bounding_active`, which falls back to unbounded prep
+/// once the budget can no longer be met — so the bounded path is now never worse
+/// than the unbounded one.
+///
+/// Measured after the fix, 45 ontologies, row counts identical in every arm:
+/// at a 20 s budget wall **65.8 s → 41.2 s (−37.4%)**; at a 3 s budget
+/// 57.8 s → 61.7 s with **0 row differences** (was 1 total loss).
+///
+/// **Inert at defaults**: `--global-timeout-ms` defaults to `0`, and with no
+/// global budget there is no deadline to bound prep against. So this only
+/// affects callers that set a budget.
 pub fn prep_deadline_enabled() -> bool {
-    std::env::var_os("RUSTDL_PREP_DEADLINE").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_PREP_DEADLINE").is_none_or(|v| v != "0")
 }
 
 /// Wall-clock budget, in milliseconds, for the `ABox`-saturation half of the

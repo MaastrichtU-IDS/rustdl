@@ -255,17 +255,34 @@ fn from_internal_is_bounded_too() {
 
     let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
     let h = classify_with_budget(&onto, None, Some(Duration::ZERO)).expect("zero-budget classify");
+
+    // CONTRACT CHANGED 2026-08-17 (`classify::prep_bounding_active`). This
+    // previously asserted `prep_timed_out`, i.e. that a ZERO budget aborts
+    // inside `from_internal`. It no longer does, deliberately: prep is bounded
+    // only while the budget is still MEETABLE, and a zero budget never is. The
+    // motivation is measured — bounding prep against an already-blown budget
+    // made `ore_ont_7192` at a 3 s budget pay its full ~18 s of uninterruptible
+    // parse + conversion and then return 0 rows, where the fallback returns all
+    // 50,753.
+    //
+    // What must still hold is the part that always mattered: the result is a
+    // SOUND, EXPLICITLY INCOMPLETE partial answer, and it is the full EL closure
+    // because saturation ran to completion. Only the phase that reports the
+    // truncation moved (from `prep_timed_out` to the pair deadline).
     assert!(
-        h.stats().prep_timed_out,
-        "a ZERO budget on an out-of-fragment ontology must abort in `from_internal` \
-         (saturation is too small to hit the pop stride, so this is the only path left)"
+        !h.stats().prep_timed_out,
+        "a ZERO budget is unmeetable, so prep must NOT be bounded — bounding it \
+         spends the whole prep wall and then reports nothing"
     );
-    assert!(h.stats().timed_out_pairs > 0, "must be flagged incomplete");
+    assert!(
+        h.stats().timed_out_pairs > 0,
+        "must still be flagged incomplete"
+    );
     assert_eq!(
         edges(&h),
         full_el_edges,
-        "saturation COMPLETED here, so the degraded answer must be the full EL \
-         closure — a mismatch means the wrong phase aborted"
+        "saturation ran unbounded here, so the degraded answer must be the full \
+         EL closure — a mismatch means something other than the pair deadline cut it"
     );
 }
 

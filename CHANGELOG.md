@@ -6,6 +6,21 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+### Changed — repair/laconic reuse the prepared justification state
+
+`find_repairs` derived the logical-axiom split **twice** per call (once inside
+`find_all_justifications`, once again to verify candidate repairs), and
+`find_all_laconic_justifications` re-split the whole ontology once per regular
+justification. Both now take the split from one `PreparedJustifier`. New
+`find_repairs_prepared(&PreparedJustifier, q, max)` lets a batch caller reuse it
+across queries too, and `rustdl report` uses it — one prepared justifier now serves
+both the justify and the repair half of every root, where it previously re-derived
+per root and per half. Results are identical (`report` output byte-identical on the
+multi-root fixtures; a canary pins prepared repairs to the one-shot ones). No wall
+change is claimed: on ontologies small enough for `report`'s per-root loop to be
+reachable locally, this work is dominated by the entailment checks in repair
+verification, and interleaved timing is flat.
+
 ### Added — `PreparedOntology`: reuse justification state across queries
 
 `justify`/`justify_all` reload and re-derive per-ontology state (parse,

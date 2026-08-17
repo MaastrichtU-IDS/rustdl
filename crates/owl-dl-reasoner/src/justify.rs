@@ -1170,6 +1170,17 @@ impl<A: ForIRI> PreparedJustifier<A> {
         }
     }
 
+    /// The non-logical background (declarations, imports, ontology metadata) —
+    /// never part of a justification, always part of the reasoned-over ontology.
+    pub(crate) fn background(&self) -> &[Component<A>] {
+        &self.fixed
+    }
+
+    /// Every logical axiom: the candidate pool a justification is drawn from.
+    pub(crate) fn logical(&self) -> &[Component<A>] {
+        &self.all_candidates
+    }
+
     /// One minimal justification for `q` (`None` if not entailed), reusing the
     /// prepared state.
     ///

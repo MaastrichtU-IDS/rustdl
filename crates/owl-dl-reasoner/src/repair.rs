@@ -10,7 +10,7 @@ use horned_owl::model::{Component, ForIRI};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
-use crate::justify::{Entailment, entails, find_all_justifications, logical_axioms, ontology_from};
+use crate::justify::{Entailment, PreparedJustifier, entails, ontology_from};
 
 /// Cap on justifications discovered for repair (independent of the user-facing
 /// `max` on repairs). Generous so the hitting sets are computed over as complete a
@@ -40,13 +40,34 @@ pub struct Repairs<A: ForIRI> {
 }
 
 /// Compute verified minimal repairs for `q` in `onto`.
+///
+/// Repairing several entailments of the SAME ontology? Prepare once and call
+/// [`find_repairs_prepared`] instead — this entry point derives the per-ontology
+/// state (axiom split + fragment) on every call.
 pub fn find_repairs<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
     max: usize,
 ) -> Result<Repairs<A>, ReasonError> {
+    find_repairs_prepared(&PreparedJustifier::prepare(onto), q, max)
+}
+
+/// [`find_repairs`] over prepared per-ontology state, reused across queries.
+///
+/// Also cheaper for a single query than [`find_repairs`] used to be: the
+/// logical-axiom split happened TWICE per call (once inside
+/// `find_all_justifications`, once here for repair verification) and is now
+/// computed once, by [`PreparedJustifier::prepare`].
+///
+/// # Errors
+/// Propagates [`ReasonError`].
+pub fn find_repairs_prepared<A: ForIRI>(
+    prepared: &PreparedJustifier<A>,
+    q: &Entailment,
+    max: usize,
+) -> Result<Repairs<A>, ReasonError> {
     // All justifications (generous internal cap, independent of the repair `max`).
-    let justifications = find_all_justifications(onto, q, REPAIR_JUSTIFICATION_CAP)?;
+    let justifications = prepared.find_all(q, REPAIR_JUSTIFICATION_CAP)?;
     if justifications.is_empty() {
         return Ok(Repairs {
             entailed: false,
@@ -67,7 +88,7 @@ pub fn find_repairs<A: ForIRI>(
     candidates.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
 
     // Verify each candidate by removing it and re-checking the entailment.
-    let (fixed, logical) = logical_axioms(onto);
+    let (fixed, logical) = (prepared.background(), prepared.logical());
     let mut repairs = Vec::new();
     let mut dropped_unverified = 0usize;
     for h in candidates {
@@ -75,7 +96,7 @@ pub fn find_repairs<A: ForIRI>(
             break;
         }
         let kept: Vec<Component<A>> = logical.iter().filter(|a| !h.contains(a)).cloned().collect();
-        let reduced = ontology_from(&fixed, &kept);
+        let reduced = ontology_from(fixed, &kept);
         if entails(&reduced, q)? {
             // An unfound justification survives — not a real repair.
             dropped_unverified += 1;

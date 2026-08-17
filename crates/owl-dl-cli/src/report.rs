@@ -12,9 +12,7 @@ use horned_owl::curie::PrefixMapping;
 use horned_owl::io::omn::AsManchester;
 use horned_owl::model::{Component, RcStr};
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::justify::{
-    Entailment, PreparedJustifier, component_entities, find_one_justification,
-};
+use owl_dl_reasoner::justify::{Entailment, PreparedJustifier, component_entities};
 use std::collections::HashMap;
 
 /// One root unsatisfiable class with its explanation and fixes.
@@ -277,11 +275,15 @@ pub(crate) fn build_report(
     // Inconsistent: one section (justify + repair the inconsistency).
     if !diag.consistent {
         let q = Entailment::Inconsistent;
-        let justification = find_one_justification(onto, &q)
+        // Two queries, one ontology — prepare once.
+        let prepared = PreparedJustifier::prepare(onto);
+        let justification = prepared
+            .find_one(&q)
             .context("justify inconsistency")?
             .map(|j| j.axioms)
             .unwrap_or_default();
-        let rep = owl_dl_reasoner::find_repairs(onto, &q, 10).context("repair inconsistency")?;
+        let rep = owl_dl_reasoner::find_repairs_prepared(&prepared, &q, 10)
+            .context("repair inconsistency")?;
         let repairs = rep.repairs.into_iter().map(|r| r.remove).collect();
         return Ok(Report {
             ontology_path,
@@ -309,19 +311,20 @@ pub(crate) fn build_report(
     let truncated_roots = n_root.saturating_sub(max_roots);
     let mut repairs_complete = true;
     let mut roots = Vec::new();
-    // Every root is justified against the SAME ontology, so the per-ontology
-    // state (axiom split + fragment) is derived once and reused. Built lazily so
-    // a report with no roots to justify doesn't pay for it.
+    // Every root is justified AND repaired against the SAME ontology, so the
+    // per-ontology state (axiom split + fragment) is derived once and reused by
+    // both halves. Built lazily so a report with no roots pays nothing.
     let mut justifier: Option<PreparedJustifier<RcStr>> = None;
     for iri in diag.roots.iter().take(max_roots) {
         let q = Entailment::Unsatisfiable { class: iri.clone() };
-        let justification = justifier
-            .get_or_insert_with(|| PreparedJustifier::prepare(onto))
+        let prepared = justifier.get_or_insert_with(|| PreparedJustifier::prepare(onto));
+        let justification = prepared
             .find_one(&q)
             .context("justify root")?
             .map(|j| j.axioms)
             .unwrap_or_default();
-        let rep = owl_dl_reasoner::find_repairs(onto, &q, 10).context("repair root")?;
+        let rep =
+            owl_dl_reasoner::find_repairs_prepared(prepared, &q, 10).context("repair root")?;
         repairs_complete &= rep.complete;
         let derives = diag.root_derives.get(iri).cloned().unwrap_or_default();
         roots.push(RootEntry {

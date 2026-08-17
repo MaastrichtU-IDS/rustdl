@@ -4,6 +4,19 @@
 dies (`ore_ont_9944` spends its entire 600 s there; `11311` 231 s), given that five mechanisms
 are already refuted against it.
 
+> **READ THIS FIRST — the framing below is incomplete in a way that matters
+> (`docs/2026-08-17-classify-has-no-budget-allocation.md`).** Under a global budget, on both
+> `11311` and `9944`, the label cache spends **58 s and is then consulted ZERO times**
+> (`pruned=0 pass_through=0 misses=0`), because the build exhausts the budget and `tier_walk`
+> aborts in 8 ms. So on these two ontologies the phase is not "expensive but load-bearing" —
+> it is **provably wasted**, and every cost-side measurement below (including the whole
+> `SAT_SEED` investigation) was optimising a computation whose benefit was zero. Making a
+> useless phase 5.4× cheaper leaves it useless.
+>
+> The counters that show this print to **stdout**, and several probes here used
+> `2>&1 >/dev/null | grep`, which greps stderr only — so they were invisible until the user
+> prompted a deeper look.
+
 ## Profile
 
 `samply` on `ore_ont_11311` with a 200 ms per-class label budget (so the run terminates),

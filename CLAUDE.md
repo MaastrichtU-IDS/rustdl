@@ -365,8 +365,12 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   NOTE: the residual wedge-classify cost is `enumerate_matches`/`match_body` (the
   non-Horn fire loop, ~25% self-time) — separate in-flight work, not this.
   Plan: `docs/superpowers/plans/2026-07-23-classify-clauseindex-amortization-plan.md`.
-  **Per-CLASS sibling (2026-08-01, `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, default OFF,
-  `=1` opts in).** That v0.3.39 amortization reached only the per-**pair** oracle.
+  **Per-CLASS sibling (2026-08-01, `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, **DEFAULT ON
+  since 0.4.10**, `=0` reverts — this entry said "default OFF, `=1` opts in" until
+  2026-08-17 and was wrong; so did the function's own doc header, while the comment
+  inside the predicate said ON. Measured on `ore_ont_12698`, `--pair-timeout-ms 1000`,
+  single-thread: unset **5.2 s** / `label_cache_build` 2,028 ms, `=1` 5.7 s / 2,039 ms,
+  `=0` **108.1 s** / 104,237 ms — unset behaves as `=1` and disabling costs ~20×.)** That v0.3.39 amortization reached only the per-**pair** oracle.
   `HyperCache::classify_labels` appends the SP2.1/SP3 seed clauses, which are absent
   from `base_indexes`, so it fell back to `HyperEngine::new` — **a full O(#clauses)
   index rebuild per class**, and since `RUSTDL_SAT_SEED` defaults ON that was the
@@ -384,8 +388,10 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   57–68 timed-out pairs over five runs of ONE binary, and two runs of the SAME binary
   differed by 4 `direct` rows. Compare only at a non-truncating budget (the in-tree
   gate pins `--pair-timeout-ms 1000`); at 1000 ms A vs C is byte-identical, 13 950 rows.
-  Still default OFF pending a broader ORE bake-off — the candidate population is the
-  123-of-199 DNF cluster that stalls at `after_prepared` (the label-cache build).
+  The "pending a broader ORE bake-off" note is **RESOLVED — the flip already happened
+  in 0.4.10**; the candidate population it named (the DNF cluster stalling at
+  `after_prepared`, i.e. the label-cache build) is therefore already covered by the
+  default. Do not re-run that bake-off expecting an un-flipped flag.
   Spec `docs/superpowers/specs/2026-08-01-clauseindex-per-class-adjudication.md`
   (§ OUTCOME), canaries `classify_labels_amortize_tests` in `reasoner/src/lib.rs` +
   `crates/owl-dl-cli/tests/classify_labels_amortize_identity.rs`.

@@ -2087,7 +2087,19 @@ pub(crate) fn classify_amortize_idx_enabled() -> bool {
 }
 
 /// Per-CLASS clause-index amortization for the label cache
-/// (`RUSTDL_CLASSIFY_LABELS_AMORTIZE`, **DEFAULT OFF**).
+/// (`RUSTDL_CLASSIFY_LABELS_AMORTIZE`, **DEFAULT ON since 0.4.10**; `=0` reverts).
+///
+/// **This header read "DEFAULT OFF" until 2026-08-17 and was wrong.** The flip
+/// happened in 0.4.10 and the predicate below has used the default-ON idiom
+/// (`is_none_or(|v| v != "0")`) ever since — as the comment inside it already
+/// said, so the two contradicted each other. Verified by measurement on
+/// `ore_ont_12698` (`--pair-timeout-ms 1000`, single-thread): unset **5.2 s**
+/// (`label_cache_build` 2,028 ms), `=1` **5.7 s** (2,039 ms), `=0` **108.1 s**
+/// (104,237 ms). Unset behaves as `=1`; turning it off costs ~20×.
+///
+/// A stale default in a header is worse than no header: it invites someone to
+/// "flip" what is already flipped, and it mis-attributes any measurement taken
+/// against it.
 ///
 /// `HyperCache::classify_labels` appends the SP2.1 `sat_seed` / SP3
 /// `exists_seed` clauses to the per-class clause vector. Those are absent from

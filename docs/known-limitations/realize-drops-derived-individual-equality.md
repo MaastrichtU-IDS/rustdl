@@ -26,7 +26,7 @@ entailed. Therefore `x : A`, `x : B`, `y : A`, `y : B` all hold.
 |---|---|
 | `rustdl realize` | **`x : A` and `y : B`** — 2 type assertions missing |
 | `rustdl individuals --json` | `same_groups: [["x","y"]]` — **the equality IS derived** |
-| `rustdl realize --json` | has **no `incomplete` field at all** — the miss is silent |
+| `rustdl realize --json` | had **no `incomplete` field at all** — the miss was silent. **A field was added 2026-08-18**, but it reports only CUT PROBES; it does NOT cover this defect, because no probe is cut here — the equality is simply never folded. So this miss remains silent even with the new signal. |
 
 ## The gap is DERIVED vs ASSERTED, isolated by control
 

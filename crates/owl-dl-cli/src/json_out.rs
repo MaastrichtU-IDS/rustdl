@@ -69,6 +69,11 @@ pub(crate) struct IndividualTypesJson {
 #[derive(Serialize)]
 pub(crate) struct RealizeJson {
     pub(crate) schema_version: u32,
+    /// At least one instance probe was CUT rather than refuted, so a reported type
+    /// set may be short. Mirrors `classify --json`'s field of the same name, which
+    /// `realize` lacked entirely until 2026-08-18 — a consumer could not tell a
+    /// complete type set from a truncated one. See `Realization::incomplete`.
+    pub(crate) incomplete: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -236,6 +241,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
     individuals.sort_by(|a, b| a.iri.cmp(&b.iri));
     RealizeJson {
         schema_version: SCHEMA_VERSION,
+        incomplete: r.incomplete(),
         individuals,
         dropped,
     }

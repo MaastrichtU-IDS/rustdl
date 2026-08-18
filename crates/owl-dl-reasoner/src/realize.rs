@@ -37,6 +37,11 @@ use crate::classify::{
 /// the maps together.
 type IndivResult = (Vec<String>, Vec<String>);
 
+/// Same as [`IndivResult`] plus whether any probe for that individual was CUT
+/// (deadline / node-cap / depth bail) rather than refuted — the input to
+/// `Realization::incomplete`.
+type IndivResultReporting = (Vec<String>, Vec<String>, bool);
+
 /// Default per-pair tableau probe deadline (milliseconds) used by the
 /// `{a} ⊓ ¬C` instance-check reduction when `RUSTDL_REALIZE_PAIR_TIMEOUT_MS`
 /// is unset. Restores (with a sane out-of-the-box bound rather than an
@@ -286,15 +291,49 @@ fn instance_check_with_closure(
     pair_deadline: Option<std::time::Instant>,
     base_types: Option<&HashSet<ClassId>>,
 ) -> Result<bool, ReasonError> {
+    instance_check_reporting(
+        internal,
+        closure,
+        prepared,
+        class_id,
+        individual_id,
+        pair_deadline,
+        base_types,
+    )
+    .map(|(is_instance, _truncated)| is_instance)
+}
+
+/// `(is_instance, truncated)` — [`instance_check_with_closure`] plus WHETHER the
+/// negative answer came from a real refutation or from a cut probe.
+///
+/// **Why this exists.** A deadline expiry, a `RUSTDL_MAX_NODES` trip and a
+/// depth-limit bail all collapse to `Ok(false)` = "not an instance". That is a sound
+/// under-approximation, and the comment below has always said so — but the
+/// information was **discarded at the source**, so `Realization` had no way to tell a
+/// consumer that a type set might be short. `realize --json` consequently shipped
+/// with no `incomplete` field at all, unlike `classify --json`.
+///
+/// Same shape as `classify::prep_bounding_decision`: keep the reason, report it, change
+/// no verdict. `truncated` is advisory only — every `false` it accompanies is still a
+/// sound "not proven to be an instance".
+fn instance_check_reporting(
+    internal: &InternalOntology,
+    closure: &Subsumers,
+    prepared: &PreparedOntology,
+    class_id: ClassId,
+    individual_id: IndividualId,
+    pair_deadline: Option<std::time::Instant>,
+    base_types: Option<&HashSet<ClassId>>,
+) -> Result<(bool, bool), ReasonError> {
     for told in told_classes_of(internal, individual_id) {
         if closure.contains(told, class_id) {
-            return Ok(true);
+            return Ok((true, false));
         }
     }
     if let Some(bt) = base_types
         && !bt.contains(&class_id)
     {
-        return Ok(false);
+        return Ok((false, false));
     }
     // KB ⊨ C(a) iff `{a} ⊓ ¬C` is unsatisfiable.
     let build = move |pool: &mut ConceptPool| {
@@ -316,11 +355,15 @@ fn instance_check_with_closure(
         // shortcut-ineligible pairs (e.g. `ore_ont_7988`), which otherwise
         // errored the whole realize on a single depth-limit bail.
         Some(deadline) => match prepared.decide_with_deadline(deadline, build) {
-            Ok(sat) => Ok(!sat.unwrap_or(true)),
-            Err(ReasonError::NoVerdict) => Ok(false),
+            // `sat == None` is a deadline expiry or a node-cap trip: no verdict, so the
+            // sound answer is "not an instance" AND the result is truncated.
+            Ok(sat) => Ok((!sat.unwrap_or(true), sat.is_none())),
+            // Depth-limit bail — also no verdict, also truncated.
+            Err(ReasonError::NoVerdict) => Ok((false, true)),
             Err(e) => Err(e),
         },
-        None => Ok(!prepared.decide(build)?),
+        // No deadline: the probe ran to a verdict, so nothing was truncated.
+        None => Ok((!prepared.decide(build)?, false)),
     }
 }
 
@@ -547,9 +590,32 @@ pub struct Realization {
     /// individual → the most-specific entailed classes (Hasse leaves
     /// of the entailed set under the KB's subclass relation).
     most_specific_types: HashMap<String, Vec<String>>,
+    /// At least one instance probe was CUT — deadline expiry, `RUSTDL_MAX_NODES`
+    /// trip, or depth-limit bail — rather than refuted, so a reported type set may be
+    /// SHORT.
+    ///
+    /// **Why this field exists.** Those three outcomes all collapse to "not an
+    /// instance", which is a sound under-approximation but was previously discarded at
+    /// the source, so `realize --json` shipped with no completeness signal at all
+    /// while `classify --json` has had one for months. A consumer could not
+    /// distinguish "these are all the types" from "some were dropped" — and the
+    /// per-pair budget defaults to 750 ms, so truncation is reachable on real inputs.
+    ///
+    /// Sound in one direction only, like classify's flag: `false` means nothing was
+    /// cut on the path taken; it does NOT certify that no entailment is missed by
+    /// other mechanisms (e.g. the derived-equality gap in
+    /// `docs/known-limitations/realize-drops-derived-individual-equality.md`).
+    incomplete: bool,
 }
 
 impl Realization {
+    /// See [`Self::incomplete`] — `true` iff at least one instance probe was cut
+    /// rather than refuted, so a type set may be short.
+    #[must_use]
+    pub fn incomplete(&self) -> bool {
+        self.incomplete
+    }
+
     #[must_use]
     pub fn individuals(&self) -> &[String] {
         &self.individuals
@@ -697,6 +763,8 @@ pub fn realize_saturation_only_internal(
         individuals: named_individual_iris,
         entailed_types,
         most_specific_types,
+        // Saturation-only path: closure lookups only, no probe to cut.
+        incomplete: false,
     })
 }
 
@@ -860,6 +928,8 @@ pub(crate) fn realize_via_saturation_internal(
         individuals: named_individual_iris,
         entailed_types,
         most_specific_types,
+        // Saturation path: no tableau probe runs, so nothing can be cut.
+        incomplete: false,
     })
 }
 
@@ -1012,7 +1082,7 @@ pub(crate) fn realize_tableau_internal(
     // (each builds a fresh tableau context per class probe via
     // `prepared.decide`). Parallelise the outer loop with rayon; the
     // hierarchy / closure / prepared snapshot is shared read-only.
-    let per_individual: Result<Vec<IndivResult>, ReasonError> = individual_iris
+    let per_individual: Result<Vec<IndivResultReporting>, ReasonError> = individual_iris
         .par_iter()
         .enumerate()
         .map(|(idx, _iri)| {
@@ -1020,11 +1090,13 @@ pub(crate) fn realize_tableau_internal(
                 IndividualId::new(u32::try_from(idx).expect("individual count fits in u32"));
             let base_types = base_model.as_ref().and_then(|m| m.get(idx));
             let mut types: Vec<&str> = Vec::new();
+            // Any cut probe for this individual makes its type set possibly short.
+            let mut truncated = false;
             for (class_idx, class_iri) in &satisfiable {
                 let class_id = ClassId::new(u32::try_from(*class_idx).expect("class fits in u32"));
                 let pair_deadline = pair_deadline_ms
                     .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
-                if instance_check_with_closure(
+                let (is_instance, was_cut) = instance_check_reporting(
                     internal,
                     &closure,
                     &prepared,
@@ -1032,7 +1104,9 @@ pub(crate) fn realize_tableau_internal(
                     individual_id,
                     pair_deadline,
                     base_types,
-                )? {
+                )?;
+                truncated |= was_cut;
+                if is_instance {
                     types.push(class_iri);
                 }
             }
@@ -1049,17 +1123,20 @@ pub(crate) fn realize_tableau_internal(
                 .map(|s| (*s).to_owned())
                 .collect();
             let types_owned: Vec<String> = types.into_iter().map(str::to_owned).collect();
-            Ok((types_owned, leaves))
+            Ok((types_owned, leaves, truncated))
         })
         .collect();
     let per_individual = per_individual?;
     let mut entailed_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut most_specific_types: HashMap<String, Vec<String>> = HashMap::new();
     let mut named_individual_iris: Vec<String> = Vec::new();
-    for (iri, (types_owned, leaves)) in individual_iris.iter().zip(per_individual) {
+    // Any cut probe anywhere makes the whole realization possibly short.
+    let mut incomplete = false;
+    for (iri, (types_owned, leaves, truncated)) in individual_iris.iter().zip(per_individual) {
         if iri.starts_with(owl_dl_core::convert::ANON_IRI_PREFIX) {
             continue;
         }
+        incomplete |= truncated;
         named_individual_iris.push(iri.clone());
         entailed_types.insert(iri.clone(), types_owned);
         most_specific_types.insert(iri.clone(), leaves);
@@ -1069,6 +1146,7 @@ pub(crate) fn realize_tableau_internal(
         individuals: named_individual_iris,
         entailed_types,
         most_specific_types,
+        incomplete,
     })
 }
 

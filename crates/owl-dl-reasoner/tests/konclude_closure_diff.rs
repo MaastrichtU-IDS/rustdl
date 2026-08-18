@@ -445,7 +445,14 @@ fn corpus_closure_matches_konclude() {
 // ── consistency checks ────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "Phase A1 corpus regression — family is HermiT/Konclude-inconsistent; checks rustdl's abox_check detects it (stretch: may not close without functional-merge work). Needs family.ofn."]
+// IGNORED FOR FIXTURE AVAILABILITY ONLY — `family.ofn` is gitignored
+// (`./scripts/fetch-real-ontologies.sh`). It is NOT ignored for failing: verified
+// 2026-08-18, rustdl reports `is_consistent=false` in ~4 s, matching the oracle. The
+// former reason said "stretch: may not close without functional-merge work", which was
+// stale — it closed via `abox_saturation` (2026-06-20) + `RUSTDL_CLASSIFY_INCONSISTENCY`
+// (v0.4.8). Found by sweeping `--ignored` for tests that silently started passing; see
+// `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
+#[ignore = "needs gitignored ontologies/real/family.ofn; PASSES when present (verified 2026-08-18)"]
 fn family_inconsistency_detected() {
     let path = Path::new("../../ontologies/real/family.ofn");
     if !path.exists() {
@@ -469,7 +476,11 @@ fn family_inconsistency_detected() {
 }
 
 #[test]
-#[ignore = "Phase A1 corpus regression — family-stripped is HermiT/Konclude-inconsistent (no data axioms); checks rustdl's abox_check detects it (stretch). Needs family-stripped.ofn."]
+// UNVERIFIED, not passing: `family-stripped.ofn` is absent, and the skip-if-absent
+// guard below means this test passes VACUOUSLY — its green says nothing about the
+// engine. Distinguished from its `family.ofn` sibling (which genuinely passes) only by
+// reading the `[fp0]` marker, which is why that marker exists.
+#[ignore = "needs ontologies/real/family-stripped.ofn (ABSENT); passes VACUOUSLY via the skip guard — read the [fp0] marker, not the test result"]
 fn family_stripped_inconsistency_detected() {
     let path = Path::new("../../ontologies/real/family-stripped.ofn");
     if !path.exists() {

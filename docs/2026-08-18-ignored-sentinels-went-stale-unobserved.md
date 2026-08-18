@@ -65,6 +65,99 @@ for failing is a claim about the engine, and nothing re-checks it.** Its passing
 so the prose built on top of it goes stale silently — and here that prose was the reason a
 one-line fix went unwritten for five weeks.
 
-Cheap mitigation, not yet adopted: run `cargo test -- --ignored` periodically and treat a
-**pass** as a failure to triage. Every `#[ignore] = "known limitation"` in this tree is a
-falsifiable assertion, and 80 of them are currently unchecked.
+Cheap mitigation: run `cargo test -- --ignored` periodically and treat a **pass** as a failure
+to triage. Every `#[ignore] = "known limitation"` is a falsifiable assertion about the engine,
+and nothing re-checks it.
+
+**Census, counted rather than estimated** (a first draft of this paragraph said "80 of them are
+currently unchecked", taken from the suite's runtime `ignored=` line — wrong, and wrong in the
+alarming direction):
+
+| | count |
+|---|---|
+| `#[ignore]` **attribute sites** in `crates/` | **67** |
+| …ignored for FIXTURE availability or COST (gitignored corpus, `--nocapture` probes, release-only timings) | 50 |
+| …whose reason already says **"PASSES via …"** — deliberately ignored *and* known to pass | 6 |
+| …remaining: genuine falsifiable "this fails" claims | **~11** |
+
+A grep for lines *containing* `#[ignore` returns 97, inflated by prose in doc comments —
+including text added by this very document. The attribute-site count requires anchoring the
+pattern to the start of the line.
+
+So the sweep is cheap **because the falsifiable population is ~11, not ~80**, and two of those
+eleven were the sentinels above. Two caveats when reading a pass:
+
+1. **A pass is a signal to triage, not a licence to un-`#[ignore]`.** Attribute it to an engine
+   first — sentinel 1 passed via a pre-check, not the calculus its file claimed to isolate.
+2. **The 50 fixture/cost ignores carry no claim**, so their passing means nothing. Separate them
+   out before counting, or the signal drowns.
+
+---
+
+## The sweep, run rather than recommended (2026-08-18)
+
+`cargo test --release --workspace --exclude owl-dl-py --no-fail-fast -- --ignored`.
+
+**Coverage: 78 ran — 64 passed, 14 failed.**
+
+### The first attempt silently covered 5 of 78
+
+Without `--no-fail-fast`, cargo stops remaining test binaries after one fails. One ignored test
+failed early, so the sweep reported **4 passes out of 5 tests run** and looked like a complete
+result. Reading "4 stale claims" off it would have been a fabricated finding. It was caught only
+by checking the count against the expected 78 — the *"prove the instrument fires, by a numeric
+criterion declared in advance"* rule, applied to a sweep of my own design.
+
+**Anyone repeating this must pass `--no-fail-fast`.**
+
+### Most passes carry no claim, and one is VACUOUS
+
+Of the 64 passes, the large majority are the fixture/cost category — corpus closure gates
+(galen, sio, wine, pizza, ro, sulo, notgalen, alehif, bibtex, ore_*), `anytime_*` sweeps,
+`*_probe`/`*_report` diagnostics, and the six already documented as "PASSES via …". Their
+passing is the expected state.
+
+Worse than uninformative: **`family_stripped_inconsistency_detected` passes VACUOUSLY.** Its
+fixture is absent and the test's skip-if-absent guard returns early, so it is green while
+verifying nothing. Its sibling `family_inconsistency_detected` genuinely passes. The two are
+distinguishable **only** by reading the `[fp0] … VERIFIED / NOT VERIFIED` marker, not the test
+result:
+
+```
+[fp0] family-stripped (inconsistency): NOT VERIFIED (fixture absent: …)   → ok   ← vacuous
+[fp0] family (inconsistency): VERIFIED (is_consistent=false, oracle: false) → ok   ← real
+```
+
+That is the whole justification for the `[fp0]` marker convention, demonstrated.
+
+### The one real stale claim found
+
+`family_inconsistency_detected` was `#[ignore]`d with *"stretch: may not close without
+functional-merge work"*. **It closes** — `is_consistent=false` in ~4 s, oracle-matching. It shut
+via `abox_saturation` (2026-06-20) and `RUSTDL_CLASSIFY_INCONSISTENCY` (v0.4.8), **not** the
+functional-merge work its reason predicted. Two `CLAUDE.md` claims went stale with it:
+
+* the SP1 note that *"full `family.ofn` remains a sound MISS … so `family*_inconsistency_detected`
+  stay `#[ignore]`d"* — it stays ignored, but for FIXTURE availability, an entirely different
+  reason;
+* the Phase A1 note that family *"still timeout"*.
+
+Both corrected. The test keeps its `#[ignore]` (the fixture is gitignored) with a reason that now
+says so.
+
+### The 14 failures are the healthy case
+
+Claims still true. Mostly report-style probes that assert nothing runnable
+(`bjgap_histogram`, `find_hard_pairs`, `ore_10019_backjump_precision_report`) plus genuine
+documented residuals (`ddmin_core_residual_divergence`,
+`nested_existential_poisoned_role_via_chain`). One informative pair:
+`family_core_detected_by_saturation` **fails** while `full_family_detected_by_saturation`
+**passes** — consistent with the ddmin core being inconsistent via the *wedge* route, which
+`abox_saturation` does not reach.
+
+### Net
+
+One genuine stale claim (plus the two `CLAUDE.md` sentences resting on it), one vacuous-pass
+hazard documented, and the two sentinels that started this. **The sweep is worth repeating after
+any engine-behaviour change**, and it costs one command — but only with `--no-fail-fast`, and
+only if each pass is attributed before being believed.

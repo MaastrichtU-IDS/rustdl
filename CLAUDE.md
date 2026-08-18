@@ -437,9 +437,18 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   over-fire is a `match_body`-re-verified no-op, never a false clash).
   **Closes the family *calculus* gap**: the 15-axiom ddmin core
   `docs/family-mech4-ddmin-core.ofn` is now `inconsistent` (Konclude
-  oracle parity); **full `family.ofn` remains a sound MISS — that is a
-  *scale* stall (transitive closure + disjunctive depth), deferred to
-  SP2**, so `family*_inconsistency_detected` stay `#[ignore]`d.
+  oracle parity); full `family.ofn` was then a sound MISS — a *scale* stall
+  (transitive closure + disjunctive depth) deferred to SP2.
+  **SUPERSEDED 2026-08-18: `family.ofn` IS detected.** The
+  `family_inconsistency_detected` gate reports
+  `[fp0] family (inconsistency): VERIFIED (is_consistent=false)` in ~4 s
+  — closed by `abox_saturation` (2026-06-20, indexed 2026-07-23) and
+  `RUSTDL_CLASSIFY_INCONSISTENCY` (v0.4.8), not by SP2. It stays
+  `#[ignore]`d **only because `family.ofn` is gitignored**, which is a
+  different reason from the one recorded here for weeks. `family-stripped`
+  is still unverified — its fixture is ABSENT, and that test's
+  skip-if-absent guard makes it **pass VACUOUSLY**, so its green is not
+  evidence of anything.
   FP=0/MISSED=0 re-verified corpus-wide (galen/notgalen/sio/wine/
   ore-10908/ore-15672/alehif/ro/pizza/bibtex). A bake-off rejected
   "Variant M" (symmetric edge materialization): it fails the family-core
@@ -818,11 +827,15 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   ro, sulo, galen, notgalen). Env gate `RUSTDL_ABOX_CHECK=0` reverts
   to pre-A1 tableau-only behaviour. GALEN classify wall unaffected
   (~0.58 s, within noise of `=0`) via `has_abox_axioms()` skip of
-  `PreparedOntology` build on ABox-free inputs. **Stretch goal
-  not met**: family / family-stripped (both HermiT/Konclude-
-  inconsistent in <1 s) still timeout — their clash needs functional-
-  role-merge of `∃hasSex.Female ⊓ ∃hasSex.Male`, beyond P7's range
-  augmentation. Next scoping target documented at
+  `PreparedOntology` build on ABox-free inputs. Stretch goal not met *at
+  A1*: family / family-stripped (both HermiT/Konclude-inconsistent in
+  <1 s) timed out — their clash needs functional-role-merge of
+  `∃hasSex.Female ⊓ ∃hasSex.Male`, beyond P7's range augmentation.
+  **RESOLVED for `family.ofn` (verified 2026-08-18, ~4 s) — by
+  `abox_saturation` + `RUSTDL_CLASSIFY_INCONSISTENCY`, not by extending
+  A1's pre-check patterns.** Do not cite "family still timeouts" as a
+  current A1 limitation; `family-stripped` remains untested for want of
+  a fixture, NOT measured-and-failing. Next scoping target documented at
   `docs/abox-consistency-check-handoff.md`. Spec:
   `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
 
@@ -1461,8 +1474,12 @@ sentinel to an engine before believing it.**
 Both are now live (sentinel 2's assertion flipped, as it instructed), plus a canary pinning the
 discriminating experiment. This is the sibling of [[sabotage-your-own-guard-tests]]: that one is
 "your guard may not guard"; this one is "your `#[ignore]` may be a stale claim". Cheap
-mitigation, **not yet adopted**: run `cargo test -- --ignored` periodically and triage every
-**pass** as a failure. See `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
+mitigation: run `cargo test -- --ignored` and triage every **pass** as a failure. **Counted:
+67 `#[ignore]` attribute sites, of which 50 are fixture/cost and 6 already say "PASSES via …",
+leaving ~11 falsifiable "this fails" claims** — the sweep is cheap because that population is
+~11, not the ~80 the suite's runtime `ignored=` line suggests (a grep for lines *containing*
+`#[ignore` returns 97, inflated by prose; anchor the pattern to the line start). See
+`docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
 
 ### Behaviour changes shipped 2026-08-17/18
 

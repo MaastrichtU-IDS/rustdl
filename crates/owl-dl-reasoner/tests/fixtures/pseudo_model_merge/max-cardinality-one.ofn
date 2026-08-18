@@ -1,0 +1,12 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/max1>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:Owner))
+Declaration(ObjectProperty(:r))
+Declaration(NamedIndividual(:x)) Declaration(NamedIndividual(:y)) Declaration(NamedIndividual(:z))
+SubClassOf(:Owner ObjectMaxCardinality(1 :r))
+ClassAssertion(:Owner :x)
+ClassAssertion(:A :y)
+ClassAssertion(:B :z)
+ObjectPropertyAssertion(:r :x :y)
+ObjectPropertyAssertion(:r :x :z)
+)

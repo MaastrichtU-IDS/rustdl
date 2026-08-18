@@ -1,6 +1,6 @@
 # `realize` ignores DERIVED individual equality, silently
 
-**Found:** 2026-08-18 · **Status:** open, not fixed · **Severity:** missed entailments with **no
+**Found:** 2026-08-18 · **Status:** FUNCTIONAL half FIXED 2026-08-18 (option A — the gate now refuses a functional/inverse-functional role together with an `ObjectPropertyAssertion`, so the tableau realizes it); INVERSE-FUNCTIONAL half still open · **Severity:** missed entailments with **no
 incompleteness signal**, and two surfaces of one binary contradicting each other.
 
 Found by following up the open question left by

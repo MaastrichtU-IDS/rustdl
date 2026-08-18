@@ -87,13 +87,16 @@ fn derived_equality_should_share_types() {
     );
 }
 
-/// FUNCTIONAL-forced equality on the DEFAULT (saturation) path — same defect as the
-/// inverse-functional case above, which is why the saturation path is the single
-/// highest-value fix: it is wrong for both constructs.
+/// FUNCTIONAL-forced equality on the DEFAULT path. **FIXED 2026-08-18** by option A of
+/// `docs/superpowers/specs/2026-08-18-realize-derived-equality-design.md`:
+/// `realize_saturation_eligible` now refuses an ontology carrying a functional /
+/// inverse-functional role together with any `ObjectPropertyAssertion`, exactly as it
+/// already refused `SameIndividual`, so the tableau — which DOES fold
+/// functional-forced equality — realizes it.
 ///
-/// `Functional(r) + r(x,y) + r(x,z) ⊨ y = z`, so `y` and `z` must share types.
+/// Was `y : A` and `z : B`; now both individuals carry both types.
+/// `Functional(r) + r(x,y) + r(x,z) ⊨ y = z`.
 #[test]
-#[ignore = "known limitation: realize drops DERIVED individual equality (see docs/known-limitations/realize-drops-derived-individual-equality.md)"]
 fn derived_functional_equality_should_share_types() {
     let t = types_of("functional.ofn");
     let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();

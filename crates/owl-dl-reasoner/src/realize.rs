@@ -741,6 +741,47 @@ fn realize_saturation_eligible(internal: &InternalOntology) -> bool {
     if !tbox_ok {
         return false;
     }
+    // A cardinality-style role characteristic can FORCE two named individuals to be
+    // equal, and this fast path has no equality folding whatsoever — so it would
+    // report each individual's own types and silently omit its twin's.
+    //
+    // Measured before this guard existed
+    // (`docs/known-limitations/realize-drops-derived-individual-equality.md`):
+    // `Functional(r) + r(x,y) + r(x,z) ⊨ y = z` gave `y : A` and `z : B` instead of
+    // both types for both, while `rustdl individuals` on the SAME file derived
+    // `same_groups: [["y","z"]]` — two surfaces of one binary disagreeing, with no
+    // `incomplete` field in `realize --json` to signal it.
+    //
+    // Handled exactly as `SameIndividual` already is, three lines below: refuse the
+    // ontology and let the tableau path realize it, since the tableau DOES fold
+    // functional-forced equality (verified: it returns both types for both
+    // individuals). This is the whole mechanism behind the working asserted case.
+    //
+    // RESIDUAL, deliberate: the tableau does NOT fold INVERSE-functional-forced
+    // equality, so those ontologies stay incomplete — but now consistently on both
+    // paths instead of differing between them. That is a separate gap in a different
+    // engine (`RUSTDL_INVERSE_FUNC_MERGE` is default-ON in `owl-dl-tableau` yet does
+    // not reach these probes) and is tracked in the limitation doc rather than
+    // blocking this fix.
+    //
+    // Narrow by design: the characteristic alone is harmless without ground edges to
+    // merge, so this only fires when the ontology ALSO has an
+    // `ObjectPropertyAssertion`. Ontologies with a functional role and no ABox edges
+    // keep the fast path.
+    let has_merge_forcing_characteristic = internal.axioms.iter().any(|ax| {
+        matches!(
+            ax,
+            Axiom::FunctionalRole(_) | Axiom::InverseFunctionalRole(_)
+        )
+    });
+    if has_merge_forcing_characteristic
+        && internal
+            .axioms
+            .iter()
+            .any(|ax| matches!(ax, Axiom::ObjectPropertyAssertion { .. }))
+    {
+        return false;
+    }
     internal.axioms.iter().all(|ax| match ax {
         Axiom::ClassAssertion { class, .. } => class_body_realize_safe(*class, &internal.concepts),
         Axiom::ObjectPropertyAssertion { role, .. } => !role.is_inverse(),

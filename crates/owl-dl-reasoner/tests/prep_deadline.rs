@@ -196,10 +196,30 @@ fn prep_timeout_is_reported_incomplete() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
     let onto = parse(&chain_ontology(500));
+    let started = std::time::Instant::now();
     let h = classify_with_budget(&onto, None, Some(Duration::from_millis(1)))
         .expect("classify under 1 ms budget");
+    let wall = started.elapsed();
 
-    assert!(h.stats().prep_timed_out, "prep_timed_out must be set");
+    // This canary failed once on macOS CI (2026-08-17, run 32038310446) and did
+    // not reproduce locally: not under load, not with the fixture shrunk 500 -> 40
+    // (it still overran), and not through a cached-flag race (`prep_deadline_enabled`
+    // reads the env live). `prep_bounding_active` is evaluated ~2 lines after the
+    // `t0` it compares against, so an unmeetable-budget skip does not explain it
+    // either. So report what would DISCRIMINATE the remaining candidates instead of
+    // asserting bare: a sub-1 ms wall means the fixture got too cheap to overrun the
+    // budget, while a wall far above 1 ms means prep ran long and the flag/phase
+    // simply did not fire — a real defect, and a different one.
+    assert!(
+        h.stats().prep_timed_out,
+        "prep_timed_out must be set — classify wall was {wall:?} against a 1 ms \
+         budget (< 1 ms ⇒ fixture too cheap to overrun it; >> 1 ms ⇒ prep overran \
+         but the signal did not fire), pure_el_mode={}, fragment={}, \
+         timed_out_pairs={}",
+        h.stats().pure_el_mode,
+        h.stats().fragment,
+        h.stats().timed_out_pairs
+    );
     assert!(
         h.stats().timed_out_pairs > 0,
         "timed_out_pairs must be bumped — it is what drives `\"incomplete\": true` \

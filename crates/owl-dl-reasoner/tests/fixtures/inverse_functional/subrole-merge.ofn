@@ -1,0 +1,11 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/ifp2>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:t))
+InverseFunctionalObjectProperty(:r)
+SubObjectPropertyOf(:s :r)
+SubObjectPropertyOf(:t :r)
+SubClassOf(:A ObjectIntersectionOf(ObjectSomeValuesFrom(:s :C) ObjectSomeValuesFrom(:t :C)))
+SubClassOf(:C :D)
+SubClassOf(ObjectSomeValuesFrom(:s :D) :B)
+)

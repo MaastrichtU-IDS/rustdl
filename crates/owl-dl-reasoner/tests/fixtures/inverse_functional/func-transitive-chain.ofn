@@ -1,0 +1,12 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/ifp3>
+Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:E))
+Declaration(ObjectProperty(:r))
+InverseFunctionalObjectProperty(:r)
+FunctionalObjectProperty(:r)
+TransitiveObjectProperty(:r)
+SubClassOf(:A ObjectSomeValuesFrom(:r :B))
+SubClassOf(:B ObjectSomeValuesFrom(:r :C))
+SubClassOf(:C :D)
+SubClassOf(ObjectSomeValuesFrom(:r :D) :E)
+)

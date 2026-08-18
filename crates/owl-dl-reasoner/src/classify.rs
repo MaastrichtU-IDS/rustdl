@@ -2243,12 +2243,46 @@ fn is_saturator_axiom(
                 }
         }
         Axiom::EquivalentObjectProperties(roles) => roles.iter().all(|r| !r.is_inverse()),
-        // The saturator fully processes these role axioms: transitivity +
-        // length-2 chains (CR-chain), CR9 hierarchy, and the Phase-2
-        // functional / inverse-functional witness-merge.
-        Axiom::TransitiveRole(role)
-        | Axiom::FunctionalRole(role)
-        | Axiom::InverseFunctionalRole(role) => !role.is_inverse(),
+        // `TransitiveRole` and `FunctionalRole` ARE processed by the saturator
+        // (transitivity + length-2 chains / CR-chain, CR9 hierarchy, and the
+        // Phase-2 functional witness-merge).
+        //
+        // `InverseFunctionalRole` is DIFFERENT and the distinction matters: the
+        // saturator NEVER READS IT — `grep Axiom::InverseFunctionalRole
+        // crates/owl-dl-saturation` finds nothing. Admitting it anyway is sound AND
+        // complete, but for a structural reason rather than because a rule consumes
+        // it, and the previous version of this comment claimed the latter ("the
+        // Phase-2 functional / inverse-functional witness-merge"), which reads as a
+        // textbook D10 defect (gate certifies COMPLETE while the engine drops the
+        // axiom) and cost an investigation on 2026-08-18 to clear.
+        //
+        // WHY DROPPING IT IS COMPLETE HERE. Inverse-functionality constrains
+        // PREDECESSORS: at most one `r`-predecessor per node. This fragment admits
+        // no nominals, no `ABox` assertions (`ClassAssertion` /
+        // `ObjectPropertyAssertion` are absent from this match) and no inverse role
+        // USE, so the canonical model is a TREE — every `∃`-witness is created by
+        // exactly one parent and therefore has exactly one predecessor. The
+        // constraint is satisfied by construction and entails nothing extra.
+        //
+        // THE CONDITION IS LOAD-BEARING, NOT DECORATIVE. Two `r`-edges into one node
+        // require identity forcing, which needs nominals or an `ABox` — both
+        // excluded. **If this fragment is ever widened to nominals or `ABox`
+        // assertions, this arm becomes a real D10 defect** and either the saturator
+        // must consume inverse-functionality or this arm must be removed.
+        //
+        // Adjudicated empirically, not just argued: three probes in the fragment
+        // where inverse-functionality could plausibly bite (shared filler; two
+        // sub-roles of one inverse-functional role into one filler; inverse-functional
+        // + functional + transitive on a chain) give closures IDENTICAL to Konclude.
+        // Pinned by `inverse_functional_inert.rs`.
+        Axiom::TransitiveRole(role) | Axiom::FunctionalRole(role) => !role.is_inverse(),
+        // Deliberately a SEPARATE arm with an identical body, not merged into the one
+        // above: the two are admitted for different reasons (that one because the
+        // saturator implements the rule, this one because the rule is vacuous in a
+        // tree model) and merging them is what let the misleading comment above
+        // survive. `match_same_arms` is allowed here for that reason.
+        #[allow(clippy::match_same_arms)]
+        Axiom::InverseFunctionalRole(role) => !role.is_inverse(),
         // D10 gate tightening (Bug B): same restriction as `is_el_axiom` — only
         // `Atomic`, `Bot`, and `Top` fillers are handled by the engine; see the
         // comment on `is_el_axiom`'s Domain/Range arms above.

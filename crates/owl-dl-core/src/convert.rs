@@ -2498,6 +2498,25 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
     out.axioms.extend(edges);
 }
 
+/// Whether `InverseFunctionalRole(r)` also derives `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
+/// (`RUSTDL_INVERSE_FUNC_MAX`, **default OFF**).
+///
+/// **Logically equivalent, so FP-safe:** `InverseFunctional(r)` ⟺ `Functional(r⁻)` ⟺
+/// `⊤ ⊑ ≤1 r⁻`, and the `∃r⁻.⊤` guard only makes it vacuous where there are no
+/// `r⁻`-successors. The GCI is entailed, so it can add entailments but never
+/// manufacture one.
+///
+/// **Default OFF pending measurement, not because of doubt about the semantics.** It
+/// emits axioms into every ontology carrying an inverse-functional role, which (a) can
+/// change classify output — soundly, by finding more — and (b) interacts with the
+/// fragment gates, since a `Max` is normally disqualifying and only the exact derived
+/// shape is whitelisted (`classify::is_derived_functional_max`). Both need a corpus
+/// sweep before this becomes a default.
+#[must_use]
+pub fn inverse_functional_max_enabled() -> bool {
+    std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_some_and(|v| v == "1")
+}
+
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional
 /// object property.
 ///
@@ -2511,11 +2530,22 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 /// spurious ones (the engines' merge is sound). The original `FunctionalRole`
 /// axiom is left in place so the saturator's bitset handling is untouched.
 ///
-/// Translates `Axiom::FunctionalRole(R)` only. `Axiom::InverseFunctionalRole`
-/// is deliberately NOT translated: the engine does not perform `≤1 R⁻`
-/// predecessor merges (even explicit ones — verified), so the GCI would be a
-/// silent no-op (deferred sound MISS; see the `#[ignore]`d sentinels in
-/// `functional_enforcement.rs`). NOTE: a `FunctionalObjectProperty(ObjectInverseOf(r))`
+/// Translates `Axiom::FunctionalRole(R)` always, and
+/// `Axiom::InverseFunctionalRole(R)` under `RUSTDL_INVERSE_FUNC_MAX` (default OFF).
+///
+/// **CORRECTED 2026-08-18.** This comment used to say inverse-functionality was
+/// "deliberately NOT translated: the engine does not perform `≤1 R⁻` predecessor
+/// merges (even explicit ones — verified), so the GCI would be a silent no-op."
+/// **That is false, and it was load-bearing** — it is why the inverse GCI went
+/// unwritten for months. `HyperEngine` DOES perform them: `hyper.rs` walks a node's
+/// `preds` and merges `R`-predecessors, guarded by `inverse_func_merge`
+/// (`RUSTDL_INVERSE_FUNC_MERGE`, **default ON** since 2026-07-11). That merge is
+/// triggered by an explicit `≤1` constraint on the node — so the GCI is not a no-op,
+/// it is the *only* thing that supplies the trigger. Its absence is what made
+/// inverse-functional-forced individual equality invisible to `realize`
+/// (`docs/known-limitations/realize-drops-derived-individual-equality.md`).
+///
+/// NOTE: a `FunctionalObjectProperty(ObjectInverseOf(r))`
 /// — inverse-functionality written the other way — converts to
 /// `Axiom::FunctionalRole(R⁻)` and DOES get `∃R⁻.⊤ ⊑ ≤1 R⁻` emitted; that is
 /// sound (correct functional semantics on the inverse role) and routes to the
@@ -2538,6 +2568,15 @@ fn derive_functional_max_cardinality(out: &mut InternalOntology) {
         .iter()
         .filter_map(|ax| match ax {
             Axiom::FunctionalRole(r) => Some(*r),
+            // `InverseFunctional(r)` ⟺ `Functional(r⁻)`, so the analogous derived GCI
+            // is the same bound on the INVERSE role. Without it the wedge has no
+            // `at_most` constraint to enforce, and `HyperEngine`'s
+            // predecessor-walking merge (`hyper.rs`, guarded by
+            // `inverse_func_merge`) is never triggered — which is why
+            // inverse-functional-forced individual equality was invisible to the
+            // `ABox`-seeded witness while the functional case worked.
+            // See `docs/known-limitations/realize-drops-derived-individual-equality.md`.
+            Axiom::InverseFunctionalRole(r) if inverse_functional_max_enabled() => Some(r.flip()),
             _ => None,
         })
         .collect();

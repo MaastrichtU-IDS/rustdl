@@ -1,5 +1,15 @@
 # Fixing `realize`'s dropped derived individual equality — design
 
+> **UPDATE 2026-08-18 (later the same day): the half this spec put OUT OF SCOPE is now also
+> FIXED, and the out-of-scope reasoning was wrong.** "Explicitly out of scope" below says the
+> tableau's inverse-functional gap means "either the flag does not reach the realize probes or
+> the ABox seeding does not apply it" and calls it a second investigation in a different engine.
+> **Neither disjunct was right.** `RUSTDL_INVERSE_FUNC_MERGE` reaches the probes and the seeding
+> is fine; the merge is triggered by an explicit `≤1` constraint, and `convert.rs` emitted that
+> GCI for `FunctionalRole` only — so the shared filler never got the constraint that fires the
+> merge. One missing derived axiom, not a second engine. Shipped behind
+> `RUSTDL_INVERSE_FUNC_MAX` (default OFF); see the known-limitation doc's final section.
+>
 > **OUTCOME 2026-08-18: option A IMPLEMENTED and it is CORPUS-INERT.** The functional case is
 > fixed on the default path (`y : A, B` and `z : A, B`, was `y : A` / `z : B`) and its canary is
 > live. But the guard fires on **0 of 64** ORE ontologies that carry a functional /

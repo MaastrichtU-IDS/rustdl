@@ -154,3 +154,44 @@ fn the_fixtures_are_actually_on_the_saturator_fast_path() {
         );
     }
 }
+
+/// The `RUSTDL_INVERSE_FUNC_MAX` gate arm is FLAG-GATED, and this pins why that is not
+/// redundant.
+///
+/// With the flag off there is no DERIVED `≤1 r⁻` — but a **hand-written** one does not
+/// care about the flag. An ungated arm would therefore newly admit this ontology to the
+/// saturation fast path at the DEFAULT, changing behaviour on a path the flag is
+/// supposed to leave alone. That escaped the corpus spot-check used to claim
+/// "flag-off byte-identical" (pizza/ro/sio have no such shape — the check was inert),
+/// and was caught only by reading the diff.
+#[test]
+fn handwritten_inverse_max_is_admitted_only_under_the_flag() {
+    let src = "\
+Prefix(:=<http://t/>)\n\
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
+Ontology(<http://t/hw>\n\
+Declaration(Class(:A)) Declaration(Class(:B))\n\
+Declaration(ObjectProperty(:r))\n\
+InverseFunctionalObjectProperty(:r)\n\
+SubClassOf(ObjectSomeValuesFrom(ObjectInverseOf(:r) owl:Thing) \
+ObjectMaxCardinality(1 ObjectInverseOf(:r)))\n\
+SubClassOf(:A :B)\n\
+)";
+    let (onto, _): (
+        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+        _,
+    ) = horned_owl::io::ofn::reader::read(
+        &mut std::io::Cursor::new(src.to_string()),
+        horned_owl::io::ParserConfiguration::default(),
+    )
+    .expect("parse");
+    // No env mutation: this asserts the DEFAULT, so it reads the ambient environment
+    // and needs no lock (and must not take one — see the deadlock note in
+    // `realize_derived_same.rs`).
+    assert!(
+        !classify(&onto).expect("classify").stats().pure_el_mode,
+        "at the DEFAULT (flag off) a hand-written ≤1 r⁻ must still be out-of-fragment, \
+         exactly as before this change. If it is admitted, the gate arm lost its flag \
+         guard and flag-off is no longer byte-identical to pre-change."
+    );
+}

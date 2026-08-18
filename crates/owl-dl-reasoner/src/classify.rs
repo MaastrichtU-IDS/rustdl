@@ -2112,14 +2112,22 @@ fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool
             _ => None,
         })
         .collect();
+    // Collected as a SET (not just a presence check) because
+    // `is_derived_inverse_functional_max` needs to ask whether a specific role is
+    // inverse-functional, to recognise the `RUSTDL_INVERSE_FUNC_MAX` derived GCI.
+    let inverse_functional_roles: HashSet<Role> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::InverseFunctionalRole(r) => Some(*r),
+            _ => None,
+        })
+        .collect();
     // Disjointness is admitted only when there is no functional / inverse-
     // functional role: the disjoint×functional-merge interaction is unproven
     // (a later increment), so disjoint+functional falls to the hybrid path.
     let has_cardinality_role = functional_roles.iter().next().is_some()
-        || internal
-            .axioms
-            .iter()
-            .any(|ax| matches!(ax, Axiom::InverseFunctionalRole(_)));
+        || inverse_functional_roles.iter().next().is_some();
     let disjoint_ok = !has_cardinality_role;
     let bare = BareRoleDecls::analyze(internal);
     internal
@@ -2131,6 +2139,7 @@ fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool
                 ax,
                 &internal.concepts,
                 &functional_roles,
+                &inverse_functional_roles,
                 disjoint_ok,
                 &bare,
             )
@@ -2162,11 +2171,16 @@ fn tainted_classes(internal: &InternalOntology, num_classes: usize) -> Vec<bool>
             _ => None,
         })
         .collect();
+    let inverse_functional_roles: HashSet<Role> = internal
+        .axioms
+        .iter()
+        .filter_map(|ax| match ax {
+            Axiom::InverseFunctionalRole(r) => Some(*r),
+            _ => None,
+        })
+        .collect();
     let has_cardinality_role = functional_roles.iter().next().is_some()
-        || internal
-            .axioms
-            .iter()
-            .any(|ax| matches!(ax, Axiom::InverseFunctionalRole(_)));
+        || inverse_functional_roles.iter().next().is_some();
     let disjoint_ok = !has_cardinality_role;
     let bare = BareRoleDecls::analyze(internal);
     let mut tainted = vec![false; num_classes];
@@ -2176,6 +2190,7 @@ fn tainted_classes(internal: &InternalOntology, num_classes: usize) -> Vec<bool>
             ax,
             &internal.concepts,
             &functional_roles,
+            &inverse_functional_roles,
             disjoint_ok,
             &bare,
         ) {
@@ -2226,10 +2241,37 @@ fn is_derived_functional_max(
     )
 }
 
+/// As [`is_derived_functional_max`] but for the INVERSE-functional derivation
+/// (`RUSTDL_INVERSE_FUNC_MAX`): `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤` emitted from
+/// `InverseFunctionalRole(r)`, so the `Max`'s role is the INVERSE of a declared
+/// inverse-functional role.
+///
+/// Recognising it keeps ontologies carrying an inverse-functional role on the
+/// saturation fast path. **Sound for the same reason the bare
+/// `InverseFunctionalRole` admission is** (see the long note on that arm): in this
+/// fragment there are no nominals, no `ABox` and no inverse role *use*, so the
+/// canonical model is a tree, every witness has exactly one predecessor, and an
+/// at-most-one bound on `r⁻` is satisfied by construction. The saturator dropping it
+/// costs nothing *there*; the derived GCI exists for the WEDGE, which does enforce it
+/// and needs it to trigger the predecessor-walking merge.
+fn is_derived_inverse_functional_max(
+    c: ConceptId,
+    pool: &ConceptPool,
+    inverse_functional_roles: &HashSet<Role>,
+) -> bool {
+    matches!(
+        pool.get(c),
+        ConceptExpr::Max(1, role, filler)
+            if matches!(pool.get(*filler), ConceptExpr::Top)
+                && inverse_functional_roles.contains(&role.flip())
+    )
+}
+
 fn is_saturator_axiom(
     ax: &Axiom,
     pool: &ConceptPool,
     functional_roles: &HashSet<Role>,
+    inverse_functional_roles: &HashSet<Role>,
     disjoint_ok: bool,
     bare: &BareRoleDecls,
 ) -> bool {
@@ -2259,6 +2301,34 @@ fn is_saturator_axiom(
                     ConceptExpr::Some(role, filler)
                         if matches!(pool.get(*filler), ConceptExpr::Top)
                             && functional_roles.contains(role)
+                ) =>
+        {
+            true
+        }
+        // Same, for the INVERSE-functional derivation `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
+        // (`RUSTDL_INVERSE_FUNC_MAX`, default OFF). Without this arm, enabling that
+        // flag would push every inverse-functional-bearing ontology off the fast
+        // path — a large silent perf regression for a flag whose purpose is a
+        // narrow realize fix. Sound for the reason given on
+        // `is_derived_inverse_functional_max`.
+        //
+        // GATED ON THE FLAG, and the gating is not redundant. With the flag off no
+        // DERIVED `≤1 r⁻` exists, but a HAND-WRITTEN one does not care about the flag —
+        // so an ungated arm would newly admit `InverseFunctionalRole(r)` +
+        // user-written `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤` to the fast path at the DEFAULT, a
+        // behaviour change on a path this flag is supposed to leave untouched. The
+        // guard makes flag-off byte-identical to pre-change by construction rather
+        // than by corpus spot-check — the spot-check (pizza/ro/sio) is INERT here,
+        // none of them has that shape. Pinned by
+        // `handwritten_inverse_max_is_admitted_only_under_the_flag`.
+        Axiom::SubClassOf { sub, sup }
+            if owl_dl_core::convert::inverse_functional_max_enabled()
+                && is_derived_inverse_functional_max(*sup, pool, inverse_functional_roles)
+                && matches!(
+                    pool.get(*sub),
+                    ConceptExpr::Some(role, filler)
+                        if matches!(pool.get(*filler), ConceptExpr::Top)
+                            && inverse_functional_roles.contains(&role.flip())
                 ) =>
         {
             true

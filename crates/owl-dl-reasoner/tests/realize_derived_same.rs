@@ -23,7 +23,46 @@ static ENV_MUTEX: Mutex<()> = Mutex::new(());
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// Realize a fixture WITHOUT touching env.
+///
+/// **Deliberately does not take `ENV_MUTEX`**, because two tests in this file
+/// (`tableau_path_does_handle_functional_equality`, `pseudo_model_prunes_entailed_type`)
+/// take the lock themselves and then call this. `std::sync::Mutex` is NOT reentrant, so
+/// locking here deadlocks the whole test binary — which is exactly what happened when
+/// this function briefly delegated to the locking variant below.
 fn types_of(fixture: &str) -> BTreeMap<String, BTreeSet<String>> {
+    types_of_impl(fixture)
+}
+
+/// As [`types_of`] but sets `RUSTDL_INVERSE_FUNC_MAX` explicitly.
+///
+/// **Holds `ENV_MUTEX` for the whole realize**, because it mutates process-global env.
+/// Call this only from a test that does NOT already hold the lock (see above).
+fn types_of_with_inverse_func_max(
+    fixture: &str,
+    inverse_func_max: bool,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let _guard = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: single-threaded within this guard; the only reader is the `realize` below.
+    #[allow(unsafe_code)]
+    unsafe {
+        if inverse_func_max {
+            std::env::set_var("RUSTDL_INVERSE_FUNC_MAX", "1");
+        } else {
+            std::env::remove_var("RUSTDL_INVERSE_FUNC_MAX");
+        }
+    }
+    let out = types_of_impl(fixture);
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("RUSTDL_INVERSE_FUNC_MAX");
+    }
+    out
+}
+
+fn types_of_impl(fixture: &str) -> BTreeMap<String, BTreeSet<String>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/realize_derived_same")
         .join(fixture);
@@ -67,20 +106,20 @@ fn asserted_equality_shares_types() {
     );
 }
 
-/// KNOWN LIMITATION — asserts the CORRECT behaviour, currently fails.
+/// CLOSED 2026-08-18 by `RUSTDL_INVERSE_FUNC_MAX` — was `#[ignore]`d for failing.
 ///
-/// `InverseFunctional(r) + r(x,z) + r(y,z) ⊨ x = y`, and `rustdl individuals` derives
-/// exactly that, so `realize` must give both individuals both types. It does not.
-/// Remove the `#[ignore]` when
-/// `docs/known-limitations/realize-drops-derived-individual-equality.md` is closed.
+/// `InverseFunctional(r) + r(x,z) + r(y,z) ⊨ x = y`, so `realize` must give both
+/// individuals both types. The fix emits the entailed `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤` GCI in
+/// `convert.rs`, which is what triggers the wedge's predecessor-walking merge
+/// (`hyper.rs`, `RUSTDL_INVERSE_FUNC_MERGE`) — that merge was already implemented and
+/// default-ON, but nothing ever gave node `z` the `≤1` constraint that fires it.
 ///
-/// A fix must cover BOTH realize paths: `RUSTDL_REALIZE_SATURATION=1` and `=0` are
-/// equally wrong today, so folding `SaturationResult.derived_same` into the saturation
-/// path alone would leave this failing under the flag.
+/// **The flag is default OFF**, so this test sets it. See
+/// `is_derived_inverse_functional_max` for why the fast path is not lost, and the
+/// known-limitation doc for the sweep this default awaits.
 #[test]
-#[ignore = "known limitation: realize drops DERIVED individual equality (see docs/known-limitations/realize-drops-derived-individual-equality.md)"]
 fn derived_equality_should_share_types() {
-    let t = types_of("inverse-functional.ofn");
+    let t = types_of_with_inverse_func_max("inverse-functional.ofn", true);
     let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();
     assert!(
         t.get("x").is_some_and(|s| both.is_subset(s)),
@@ -196,5 +235,25 @@ fn pseudo_model_prunes_entailed_type() {
         "the DEFAULT still prunes the entailed type; if it no longer does, the prune was \
          fixed and both this test and the falsification note in `realize.rs` should be \
          retired"
+    );
+}
+
+/// The flag is provably load-bearing: with it OFF (the default), the same fixture
+/// still loses the types. Without this control, `derived_equality_should_share_types`
+/// would keep passing if the flag were silently made a no-op, and the fix's whole
+/// mechanism could rot unnoticed.
+///
+/// **Delete this test when the flag is flipped default-ON** — at that point it asserts
+/// the bug, not the guard.
+#[test]
+fn default_off_still_drops_derived_inverse_functional_equality() {
+    let t = types_of_with_inverse_func_max("inverse-functional.ofn", false);
+    let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();
+    assert!(
+        !t.get("x").is_some_and(|s| both.is_subset(s)),
+        "RUSTDL_INVERSE_FUNC_MAX is default OFF, so this SHOULD still be incomplete. \
+         If it now passes, the flag became a no-op or was flipped ON — in the latter \
+         case delete this test; in the former, the fix has rotted. got {:?}",
+        t.get("x")
     );
 }

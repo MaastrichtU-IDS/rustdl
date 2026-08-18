@@ -1,6 +1,10 @@
 # `realize` ignores DERIVED individual equality, silently
 
-**Found:** 2026-08-18 · **Status:** FUNCTIONAL half FIXED 2026-08-18 (option A — the gate now refuses a functional/inverse-functional role together with an `ObjectPropertyAssertion`, so the tableau realizes it); INVERSE-FUNCTIONAL half still open · **Severity:** missed entailments with **no
+**Found:** 2026-08-18 · **Status:** **BOTH halves now FIXED (2026-08-18).** Functional half by
+option A (the gate refuses a functional/inverse-functional role together with an
+`ObjectPropertyAssertion`, so the tableau realizes it, and the tableau folds functional
+merges). Inverse-functional half by `RUSTDL_INVERSE_FUNC_MAX` — **default OFF pending a
+corpus sweep**, see the section at the end. · **Severity:** missed entailments with **no
 incompleteness signal**, and two surfaces of one binary contradicting each other.
 
 Found by following up the open question left by
@@ -123,3 +127,74 @@ CLI path here is classification, not realization. The entailment is nonetheless 
 `InverseFunctional(r) + r(x,z) + r(y,z) ⊨ x = y` is definitional, and **rustdl's own
 `individuals` query already derives it**, so the reasoner contradicts itself without needing an
 external oracle.
+
+---
+
+## THE INVERSE-FUNCTIONAL HALF IS FIXED — and the mechanism was one missing axiom
+
+**Date:** 2026-08-18 · Flag `RUSTDL_INVERSE_FUNC_MAX`, **default OFF**.
+
+| | `x` | `y` |
+|---|---|---|
+| default (flag OFF) | `A` | `B` |
+| **`RUSTDL_INVERSE_FUNC_MAX=1`** | **`A`, `B`** | **`A`, `B`** |
+
+### What was actually missing
+
+The section above says the tableau path misses inverse-functional merges and calls that "a
+second, independent gap in a different engine". **That framing was wrong in a useful way: the
+merge was already implemented and default-ON.** `hyper.rs` walks a node's `preds` and merges
+`r`-predecessors under `RUSTDL_INVERSE_FUNC_MERGE` — but it is triggered by `node.at_most`, i.e.
+by an explicit `≤1` constraint on the node. Nothing ever put one there.
+
+`convert.rs::derive_functional_max_cardinality` emits `∃r.⊤ ⊑ ≤1 r.⊤` for
+`FunctionalRole(r)` and **had no inverse-functional counterpart**, so in the reproducer node
+`z` — the shared filler, the node whose predecessors must merge — never acquired the `≤1 r⁻`
+constraint that fires the merge it needed. The fix emits the missing GCI:
+
+```
+InverseFunctionalRole(r)  ⟹  ∃r⁻.⊤ ⊑ ≤1 r⁻.⊤
+```
+
+which is the *definition* of inverse-functionality, so it is entailed and cannot introduce a
+false positive. **This is the "two engines" reading corrected: one engine, one absent input.**
+
+### Why the fast path is not lost
+
+A derived `≤1` is an unrecognised `Max` to `saturator_complete_fragment`, which would have
+pushed **every** inverse-functional-bearing ontology off the saturation fast path — a large
+silent perf regression from a flag whose purpose is a narrow realize fix. So the gate learned
+the new shape (`is_derived_inverse_functional_max`), exactly as it already knew the functional
+one. Verified: all three `inverse_functional/` fixtures report `# mode: pure EL` at **both**
+flag settings.
+
+The soundness argument for admitting it is the same one the FP-critical audit established for
+the bare `InverseFunctionalRole` admission (`docs/2026-08-18-fp-critical-audit.md` §1): in that
+fragment there are no nominals, no `ABox` and no inverse role *use*, so the canonical model is a
+tree, every witness has exactly one predecessor, and an at-most-one bound on `r⁻` holds by
+construction. The saturator dropping it costs nothing there; the GCI exists for the **wedge**,
+which does enforce it.
+
+### Evidence
+
+* **The canary is retired** — `derived_equality_should_share_types` was `#[ignore]`d *for
+  failing* and now runs and passes with the flag set.
+* **A negative control pins the flag load-bearing** —
+  `default_off_still_drops_derived_inverse_functional_equality` asserts the default is *still*
+  incomplete, so the fix cannot silently become a no-op. It carries an instruction to delete
+  itself when the default flips.
+* **Closures identical ON vs OFF** on the three `inverse_functional/` fixtures, `pizza`, `ro`
+  and `sio` — the direction of risk here is FP (the change ADDS a constraint), so this was
+  checked rather than assumed.
+
+### Why it ships default OFF
+
+The change emits an axiom into **every** ontology carrying an inverse-functional role, and the
+wedge then enforces a `≤1` it previously did not. That is a behavioural change on a broad
+population, and this repo's own record is explicit that a 12-ontology benchmark is not a
+population — a flag flipped on one took four ontologies from ~5 s to DNF. **A flip needs the
+two-arm ORE sweep plus a ΔMISSED arm.** Neither has been run.
+
+Note the flip is *also* what would let the shipped `RUSTDL_PSEUDO_MODEL` default recover its
+falsified soundness-by-construction argument, since the witness would then apply
+inverse-functional merges. That makes the sweep worth running, not a reason to skip it.

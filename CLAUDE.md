@@ -1428,8 +1428,8 @@ Concrete instances, all corrected:
 | `ore_ont_10019` dense-SROIQ over-branching target | now classifies in **2.3 s**; the diagnosed-but-unbuilt fix has no target |
 | "inverse blocks 71% of the DNF tail" | true as a *fast-path blocker* count; an inverse-capable engine reaches **13%** — the biggest single lever is **cardinality (+44)** |
 
-**Guardrail now in place:** **42 distinct** boolean `RUSTDL_*` flag defaults are pinned
-behaviourally — 30 in `crates/owl-dl-reasoner/tests/flag_defaults.rs` (the public accessors)
+**Guardrail now in place:** **43 distinct** boolean `RUSTDL_*` flag defaults are pinned
+behaviourally — 31 in `crates/owl-dl-reasoner/tests/flag_defaults.rs` (the public accessors)
 and 13 in `internal_flag_defaults` in `lib.rs` (the `pub(crate)` ones), overlapping on exactly
 one: `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, which is the flag that actually drifted and is therefore
 pinned from both sides.
@@ -1441,6 +1441,28 @@ A default change now requires editing the table in the same commit. **Do not aud
 parsing doc comments** — that was tried and was wrong four times running (historical
 "was default-ON" narrative, `pub(crate) fn`, `remove_var` inside `#[cfg(test)]`, and defaults
 stated in `//` not `///`).
+
+### AN `#[ignore]`d TEST IS AN UNCHECKED CLAIM ABOUT THE ENGINE (2026-08-18)
+
+Two `#[ignore]`d sentinels in `functional_enforcement.rs` existed *to trip when an engine gap
+closed*, each carrying an explicit instruction for that moment. **The gap closed on 2026-07-11
+(`RUSTDL_INVERSE_FUNC_MERGE`) and nothing noticed for five weeks**, because an `#[ignore]`d test
+that starts passing emits exactly what a still-failing one does: nothing. The comment block they
+anchored asserted the engine "does not perform the `≤1 R⁻` predecessor merge, so emitting
+`∃R⁻.⊤ ⊑ ≤1 R⁻` would be a silent no-op" — **false, and it is why that axiom went unwritten**,
+which is the whole of the `realize` derived-equality defect.
+
+Second-order, and the more useful half: sentinel 1 passes at the default via `abox_saturation`,
+**not** via the calculus its file header claims to isolate — `RUSTDL_ABOX_CHECK=0` disables the
+A1 pre-check but not `abox_saturation` (default ON since 2026-06-20). Un-`#[ignore]`ing it on
+"it passes now" would have recorded coverage it does not provide. **Attribute a newly-passing
+sentinel to an engine before believing it.**
+
+Both are now live (sentinel 2's assertion flipped, as it instructed), plus a canary pinning the
+discriminating experiment. This is the sibling of [[sabotage-your-own-guard-tests]]: that one is
+"your guard may not guard"; this one is "your `#[ignore]` may be a stale claim". Cheap
+mitigation, **not yet adopted**: run `cargo test -- --ignored` periodically and triage every
+**pass** as a failure. See `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
 
 ### Behaviour changes shipped 2026-08-17/18
 
@@ -1454,7 +1476,23 @@ stated in `//` not `///`).
 
 ### Open, with evidence
 
-* **`realize` drops DERIVED individual equality, and the root cause FALSIFIES a shipped
+* **`realize`'s dropped derived equality is now CLOSED on both halves — the second half by ONE
+  MISSING AXIOM, not the "second engine" the spec predicted.** The functional half shipped
+  earlier (gate refuses functional-ish role + `ObjectPropertyAssertion`, so the tableau folds it).
+  The inverse-functional half: `hyper.rs`'s predecessor-walking merge (`RUSTDL_INVERSE_FUNC_MERGE`,
+  default ON) was **already implemented and reachable** — it is triggered by an explicit `≤1`
+  constraint, and `convert.rs::derive_functional_max_cardinality` emitted `∃r.⊤ ⊑ ≤1 r.⊤` for
+  `FunctionalRole` **only**, so the shared filler never got the constraint that fires the merge it
+  needed. `RUSTDL_INVERSE_FUNC_MAX` (**default OFF**) emits the inverse counterpart; the fixture
+  goes `x:A`/`y:B` → `x:A,B`/`y:A,B`, its `#[ignore]`d canary is retired, and a negative control
+  pins the flag load-bearing. The gate learned the new shape
+  (`is_derived_inverse_functional_max`) so the fast path is NOT lost — all three
+  `inverse_functional/` fixtures stay `# mode: pure EL` at both settings, closures identical on
+  them plus pizza/ro/sio. **OFF because it emits an axiom into every inverse-functional-bearing
+  ontology**: a flip needs the two-arm ORE sweep + a ΔMISSED arm, per this file's own record that
+  a 12-ontology benchmark is not a population. Flipping it is also what would let
+  `RUSTDL_PSEUDO_MODEL` recover the soundness-by-construction argument falsified below.
+* **`realize` dropped DERIVED individual equality, and the root cause FALSIFIES a shipped
   soundness claim** — `docs/known-limitations/realize-drops-derived-individual-equality.md`.
   The residual is **the pseudo-model prune, not the tableau**: `rustdl justify … instance x B`
   PROVES the merged membership (4-axiom minimal justification), `RUSTDL_PSEUDO_MODEL=0` returns

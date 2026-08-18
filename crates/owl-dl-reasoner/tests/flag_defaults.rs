@@ -102,6 +102,16 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::inverse_func_merge_enabled,
             true,
         ),
+        // OFF, and the OFF-ness is the load-bearing part: `=1` emits an entailed
+        // `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤` GCI into EVERY ontology carrying an inverse-functional role,
+        // which fixes realize's dropped derived equality but changes wedge behaviour on a
+        // broad population. A flip requires the two-arm ORE sweep + a ΔMISSED arm; neither
+        // has been run. See docs/known-limitations/realize-drops-derived-individual-equality.md.
+        (
+            "RUSTDL_INVERSE_FUNC_MAX",
+            owl_dl_core::convert::inverse_functional_max_enabled,
+            false,
+        ),
         // ── owl-dl-reasoner ──────────────────────────────────────────────
         (
             "RUSTDL_ABOX_CHECK",

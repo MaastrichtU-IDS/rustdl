@@ -86,3 +86,53 @@ fn derived_equality_should_share_types() {
         t.get("y")
     );
 }
+
+/// FUNCTIONAL-forced equality on the DEFAULT (saturation) path — same defect as the
+/// inverse-functional case above, which is why the saturation path is the single
+/// highest-value fix: it is wrong for both constructs.
+///
+/// `Functional(r) + r(x,y) + r(x,z) ⊨ y = z`, so `y` and `z` must share types.
+#[test]
+#[ignore = "known limitation: realize drops DERIVED individual equality (see docs/known-limitations/realize-drops-derived-individual-equality.md)"]
+fn derived_functional_equality_should_share_types() {
+    let t = types_of("functional.ofn");
+    let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();
+    for i in ["y", "z"] {
+        assert!(
+            t.get(i).is_some_and(|s| both.is_subset(s)),
+            "y = z is entailed by functionality, so {i} must have both types, got {:?}",
+            t.get(i)
+        );
+    }
+}
+
+/// The ASYMMETRY between the two engines, pinned as a fact rather than left in prose:
+/// the TABLEAU path handles functional-forced equality correctly. This is what makes
+/// `RUSTDL_REALIZE_SATURATION=0` a usable workaround for the functional case and NOT
+/// for the inverse-functional one.
+///
+/// Runs (not ignored) because it asserts behaviour that is correct today. If it ever
+/// fails, the tableau has regressed and the functional workaround is gone.
+#[test]
+fn tableau_path_does_handle_functional_equality() {
+    // SAFETY: single-threaded within this test; no other test in this file reads the var.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUSTDL_REALIZE_SATURATION", "0");
+    }
+    let t = types_of("functional.ofn");
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("RUSTDL_REALIZE_SATURATION");
+    }
+    let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();
+    for i in ["y", "z"] {
+        assert!(
+            t.get(i).is_some_and(|s| both.is_subset(s)),
+            "the TABLEAU realize path does fold functional-forced equality today; {i} should \
+             have both types, got {:?}. If this fails, the only workaround for the functional \
+             case has regressed.",
+            t.get(i)
+        );
+    }
+}

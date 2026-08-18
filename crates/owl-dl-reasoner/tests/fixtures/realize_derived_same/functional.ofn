@@ -1,0 +1,11 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/fnc>
+Declaration(Class(:A)) Declaration(Class(:B))
+Declaration(ObjectProperty(:r))
+Declaration(NamedIndividual(:x)) Declaration(NamedIndividual(:y)) Declaration(NamedIndividual(:z))
+FunctionalObjectProperty(:r)
+ClassAssertion(:A :y)
+ClassAssertion(:B :z)
+ObjectPropertyAssertion(:r :x :y)
+ObjectPropertyAssertion(:r :x :z)
+)

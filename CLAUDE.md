@@ -1454,13 +1454,18 @@ stated in `//` not `///`).
 
 ### Open, with evidence
 
-* **`realize` drops DERIVED individual equality** —
-  `docs/known-limitations/realize-drops-derived-individual-equality.md`. TWO gaps in different
-  engines: the saturation path dropped both functional and inverse-functional forced equalities
-  (functional now fixed above); the **tableau folds functional but NOT inverse-functional**, so
-  `RUSTDL_INVERSE_FUNC_MERGE` is default-ON in `owl-dl-tableau` yet does not reach the realize
-  probes. That last is the named, unexplained item. Workaround for the functional case only:
-  `RUSTDL_REALIZE_SATURATION=0`.
+* **`realize` drops DERIVED individual equality, and the root cause FALSIFIES a shipped
+  soundness claim** — `docs/known-limitations/realize-drops-derived-individual-equality.md`.
+  The residual is **the pseudo-model prune, not the tableau**: `rustdl justify … instance x B`
+  PROVES the merged membership (4-axiom minimal justification), `RUSTDL_PSEUDO_MODEL=0` returns
+  it, and the default prunes it. `RUSTDL_INVERSE_FUNC_MERGE` is a red herring.
+  **`RUSTDL_PSEUDO_MODEL` (default ON) is documented as "sound by construction — an entailed
+  type is in every model, hence in the witness, hence never pruned". That argument needs the
+  witness to BE a model, and it is not on an inverse-functional `ABox`: the witness applies
+  FUNCTIONAL merges but not INVERSE-functional ones.** Subtractive, so FP=0 is intact — but the
+  falsified clause is the stated basis for shipping default-ON *without* the ORE
+  verdict-identity bake-off, so **that bake-off is now load-bearing, not optional**. Fix belongs
+  in the `ABox`-seeded wedge consistency completion; workaround `RUSTDL_PSEUDO_MODEL=0`.
 * **The label cache is consulted ZERO times under a global budget** on `ore_ont_11311`/`9944`:
   58 s of build then `pruned=0 pass_through=0 misses=0`, with `tier_walk` aborting in 8 ms
   (`docs/2026-08-17-classify-has-no-budget-allocation.md`). Classify phases consume the deadline

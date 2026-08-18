@@ -100,6 +100,40 @@ const DEFAULT_PSEUDO_MODEL_WITNESS_MS: u64 = 1000;
 /// witness, hence never pruned) and on the same direction as the shipped
 /// default-ON Phase-7 label heuristic.
 ///
+/// # THAT SOUNDNESS-BY-CONSTRUCTION ARGUMENT IS FALSIFIED (2026-08-18)
+///
+/// The argument needs the witness to BE a model of the KB. It is not, on
+/// inverse-functional `ABox`es — the witness applies FUNCTIONAL merges but not
+/// INVERSE-functional ones, so an entailed type can be absent from it and therefore
+/// pruned.
+///
+/// Reproducer (`tests/fixtures/realize_derived_same/inverse-functional.ofn`):
+/// `InverseFunctional(r)`, `r(x,z)`, `r(y,z)` ⊨ `x = y`, with `x : A` and `y : B`.
+///
+/// | | result |
+/// |---|---|
+/// | `RUSTDL_PSEUDO_MODEL=1` (default) | `x : A`, `y : B` — **entailed types PRUNED** |
+/// | `RUSTDL_PSEUDO_MODEL=0` | `x : A, B` and `y : A, B` — correct |
+/// | `rustdl justify … instance x B` | proves it, 4-axiom minimal justification |
+///
+/// So the engine derives the entailment; this prune discards it. The FUNCTIONAL
+/// analogue (`Functional(r)`, `r(x,y)`, `r(x,z)` ⊨ `y = z`) is CORRECT at the default,
+/// which is what localises the gap to inverse-functional merging in the witness build.
+///
+/// **Direction of harm:** subtractive, so FP=0 is intact — this costs entailments, not
+/// soundness. But the "sound by construction" clause above is the stated basis for
+/// shipping this default-ON *without* the ORE verdict-identity bake-off that the same
+/// paragraph calls "the recommended CI/Linux confirmation". That basis does not hold in
+/// general, so the bake-off is now load-bearing rather than optional.
+///
+/// **Fix belongs in the witness build**, not here: the `ABox`-seeded wedge consistency
+/// completion must apply inverse-functional merges, as it already does functional ones.
+/// Until then `RUSTDL_PSEUDO_MODEL=0` is the workaround. Pinned by
+/// `pseudo_model_prunes_entailed_type` in
+/// `crates/owl-dl-reasoner/tests/realize_derived_same.rs`;
+/// `docs/known-limitations/realize-drops-derived-individual-equality.md` carries the
+/// full record.
+///
 /// **Coupling to [`crate::PreparedOntology::realize_base_model_types`]:** it
 /// returns `None` whenever the `ABox`-seeded wedge consistency cache is
 /// unavailable — i.e. when `RUSTDL_WEDGE_CONSISTENCY=0`, or the input has no

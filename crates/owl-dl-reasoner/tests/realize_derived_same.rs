@@ -13,6 +13,13 @@
 //! equality is written down — it passes today and must keep passing.
 
 use owl_dl_reasoner::realize;
+use std::sync::Mutex;
+
+/// Serialises the env-mutating tests below. Cargo runs tests in one binary
+/// CONCURRENTLY, and an earlier version of the sibling `realize_incomplete_signal.rs`
+/// lost a debugging cycle to exactly this: one test set a budget var mid-realize in
+/// another and the failure pointed at the wrong cause.
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -118,6 +125,9 @@ fn derived_functional_equality_should_share_types() {
 /// fails, the tableau has regressed and the functional workaround is gone.
 #[test]
 fn tableau_path_does_handle_functional_equality() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: single-threaded within this test; no other test in this file reads the var.
     #[allow(unsafe_code)]
     unsafe {
@@ -138,4 +148,53 @@ fn tableau_path_does_handle_functional_equality() {
             t.get(i)
         );
     }
+}
+
+/// ROOT CAUSE of the inverse-functional half: the **pseudo-model prune**, not the
+/// tableau. `RUSTDL_PSEUDO_MODEL=0` returns the correct answer, and
+/// `rustdl justify … instance x B` proves the membership with a 4-axiom minimal
+/// justification — so the engine derives it and this prune discards it.
+///
+/// This **falsifies the prune's documented "sound by construction" argument**
+/// (`realize.rs`: *"an entailed type is in every model, hence in the witness, hence
+/// never pruned"*). That needs the witness to BE a model; on an inverse-functional
+/// `ABox` it is not, because the witness build applies FUNCTIONAL merges but not
+/// INVERSE-functional ones.
+///
+/// Subtractive, so FP=0 is intact — but the falsified clause is the stated basis for
+/// shipping `RUSTDL_PSEUDO_MODEL` default-ON without the ORE bake-off, so that
+/// bake-off is now load-bearing.
+#[test]
+fn pseudo_model_prunes_entailed_type() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: guarded by ENV_MUTEX; restored below.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("RUSTDL_PSEUDO_MODEL", "0");
+    }
+    let with_prune_off = types_of("inverse-functional.ofn");
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::remove_var("RUSTDL_PSEUDO_MODEL");
+    }
+    let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();
+    for i in ["x", "y"] {
+        assert!(
+            with_prune_off.get(i).is_some_and(|s| both.is_subset(s)),
+            "with the pseudo-model prune OFF the entailed merge must be reported for {i}, \
+             got {:?}. If this fails the root cause has moved and the attribution in \
+             `realize.rs` needs re-checking.",
+            with_prune_off.get(i)
+        );
+    }
+    // And the default really is worse — otherwise this test proves nothing.
+    let with_prune_on = types_of("inverse-functional.ofn");
+    assert!(
+        !with_prune_on.get("x").is_some_and(|s| both.is_subset(s)),
+        "the DEFAULT still prunes the entailed type; if it no longer does, the prune was \
+         fixed and both this test and the falsification note in `realize.rs` should be \
+         retired"
+    );
 }

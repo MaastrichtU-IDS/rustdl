@@ -140,6 +140,18 @@ rustdl.repair("broken.omn", ["unsat", "urn:pizza#CheeseyVegetableTopping"], 10)
 # every minimal repair, each verified by removal
 ```
 
+Justifying several entailments of the same ontology? `prepare()` does the
+per-ontology work (parse, axiom split, fragment classification) once and hands back
+an object you can query repeatedly — same answers, setup paid once:
+
+```python
+onto = rustdl.prepare("broken.omn")
+onto.justify(["unsat", "urn:pizza#CheeseyVegetableTopping"])   # == rustdl.justify(...)
+onto.justify_all(["unsat", "urn:pizza#CheeseyVegetableTopping"], max=10)
+```
+
+Use it from the thread that created it — the object is deliberately single-threaded.
+
 The same workflow is available on the command line, including a richer
 `justify --laconic` (which pinpoints the responsible *part* of each axiom) and a
 self-contained HTML report:

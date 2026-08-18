@@ -10,10 +10,7 @@ use horned_owl::model::{ClassExpression, Component, ForIRI, SubClassOf};
 use horned_owl::ontology::set::SetOntology;
 
 use crate::ReasonError;
-use crate::justify::{
-    Entailment, Justification, find_all_justifications, find_one_justification, logical_axioms,
-    quickxplain,
-};
+use crate::justify::{Entailment, Justification, PreparedJustifier, quickxplain};
 
 /// Decompose a superclass expression into top-level fragments whose CONJUNCTION
 /// is EQUIVALENT to the original (so the fragment set, as a whole, preserves every
@@ -109,15 +106,18 @@ fn weaken<A: ForIRI>(axiom: &Component<A>) -> Vec<Component<A>> {
 /// the background entail `q` on its own, collapsing the result to `∅`. This mirrors
 /// how `find_one_justification` itself calls `quickxplain` (fixed = non-logical,
 /// candidates = the axioms under consideration).
+///
+/// `background` comes from the caller's [`PreparedJustifier`] rather than a fresh
+/// `logical_axioms(onto)` — this runs once per regular justification, so deriving
+/// the split here made `find_all_laconic_justifications` re-split the whole
+/// ontology N times.
 fn laconic_from<A: ForIRI>(
-    onto: &SetOntology<A>,
+    background: &[Component<A>],
     q: &Entailment,
     j_axioms: &[Component<A>],
     fragment: crate::classify::FragmentClassification,
     minimal_guaranteed: bool,
 ) -> Result<Justification<A>, ReasonError> {
-    let (background, _logical) = logical_axioms(onto);
-
     // candidates = the union of the weakenings of the justification's axioms.
     let candidates: Vec<Component<A>> = j_axioms
         .iter()
@@ -134,7 +134,7 @@ fn laconic_from<A: ForIRI>(
     #[cfg(debug_assertions)]
     {
         let still_entails =
-            crate::justify::entails(&crate::justify::ontology_from(&background, &candidates), q)?;
+            crate::justify::entails(&crate::justify::ontology_from(background, &candidates), q)?;
         debug_assert!(
             still_entails,
             "laconic candidate set must still entail q — a weakening operator is not \
@@ -142,7 +142,7 @@ fn laconic_from<A: ForIRI>(
         );
     }
 
-    let laconic = quickxplain(&background, &candidates, q)?;
+    let laconic = quickxplain(background, &candidates, q)?;
     Ok(Justification {
         axioms: laconic,
         fragment,
@@ -158,11 +158,12 @@ pub fn find_laconic_justification<A: ForIRI>(
     onto: &SetOntology<A>,
     q: &Entailment,
 ) -> Result<Option<Justification<A>>, ReasonError> {
-    let Some(j) = find_one_justification(onto, q)? else {
+    let prepared = PreparedJustifier::prepare(onto);
+    let Some(j) = prepared.find_one(q)? else {
         return Ok(None);
     };
     Ok(Some(laconic_from(
-        onto,
+        prepared.background(),
         q,
         &j.axioms,
         j.fragment,
@@ -180,11 +181,18 @@ pub fn find_all_laconic_justifications<A: ForIRI>(
     q: &Entailment,
     max: usize,
 ) -> Result<Vec<Justification<A>>, ReasonError> {
-    let regular = find_all_justifications(onto, q, max)?;
+    let prepared = PreparedJustifier::prepare(onto);
+    let regular = prepared.find_all(q, max)?;
     let mut out = Vec::new();
     let mut seen: HashSet<BTreeSet<Component<A>>> = HashSet::new();
     for j in regular {
-        let lac = laconic_from(onto, q, &j.axioms, j.fragment, j.minimal_guaranteed)?;
+        let lac = laconic_from(
+            prepared.background(),
+            q,
+            &j.axioms,
+            j.fragment,
+            j.minimal_guaranteed,
+        )?;
         let key: BTreeSet<Component<A>> = lac.axioms.iter().cloned().collect();
         if seen.insert(key) {
             out.push(lac);

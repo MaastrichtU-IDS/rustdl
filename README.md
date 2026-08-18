@@ -101,7 +101,17 @@ rustdl.classify("ontology.ofn", per_pair_timeout_ms=0, global_timeout_ms=0)   # 
 
 rustdl.is_consistent("ontology.ofn")   # -> bool
 rustdl.debug("ontology.ofn")           # consistency + root/derived unsat + justifications + repairs
+
+# justify one entailment, or many against the same ontology (prepare once, reuse):
+rustdl.justify("ontology.ofn", ["unsat", "http://ex.org/Bad"])   # -> list[str] (Manchester)
+onto = rustdl.prepare("ontology.ofn")            # parse + per-ontology justification state
+onto.justify(["subclass", sub, sup])             # same result, without re-deriving it
+onto.justify_all(["unsat", cls], max=10)         # up to `max` minimal justifications
 ```
+
+`prepare` pays the per-ontology setup once — use it whenever you justify more than
+one entailment of the same ontology (the returned object is single-threaded: use it
+from the thread that created it).
 
 More surface — inferred property assertions, subproperty axioms, existential
 successors, `justify`/`repair` — in the end-to-end

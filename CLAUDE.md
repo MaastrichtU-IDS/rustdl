@@ -1116,6 +1116,26 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   roots/derived + per-root justification + repairs); presentation-only over the
   shipped reasoner output, read-only, no external resources. See
   `docs/superpowers/specs/2026-06-21-html-report-design.md`.
+
+> **JUSTIFY/REPORT OUTPUT WAS NOT RUN-TO-RUN REPRODUCIBLE BEFORE 2026-08-17 (#59).
+> Any byte-comparison of these surfaces recorded before that commit compared
+> noise.** `SetOntology` is `SetIndex(HashSet<AnnotatedComponent>)` and std seeds
+> `RandomState` per PROCESS, so `logical_axioms` yielded a different axiom order on
+> every run; `extract_bot_module` preserves that order and QuickXplain/HST walk their
+> input in order. Five runs of ONE unchanged binary produced **five different**
+> `report` files on `pizza.ofn`, and on a fixture with four independent derivations of
+> `A ⊑ C`, ten runs of `justify` returned **four different justifications** — each
+> valid and minimal, so this was never an FP, but the answer moved. `localized_candidates`
+> now sorts the search input (`canonical_order`), which stabilizes **selection**, not
+> just display: same justification, same order, same subset under a `max` cap.
+> Pinned by `justification_axioms_come_back_in_canonical_order`.
+>
+> Two consequences. (1) Byte comparison of `justify`/`justify --all`/`repair`/`report`
+> is now a valid A/B method — before, only comparing the axiom SETS was.
+> (2) A pre-#59 binary is still nondeterministic, so when one arm of a comparison is
+> old, compare sets. This is unrelated to the `--pair-timeout-ms` classify
+> nondeterminism documented under `owl-dl-tableau` — that one is budget-induced and
+> still live; this one was hash-order-induced and is closed.
   **Manchester (`.omn`) input** is wired (2026-06-22): the CLI (`detect_format`
   content-sniff: Manchester's colon-form `Prefix:`/`Class:`/… vs OFN's paren
   `Prefix(`; + extension fallback) and Python (`load.rs` extension /

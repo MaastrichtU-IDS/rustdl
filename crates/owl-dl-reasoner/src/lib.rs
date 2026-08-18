@@ -90,7 +90,7 @@ pub use realize::{
     is_instance_of_saturation_only, is_instance_of_saturation_only_internal, realize,
     realize_internal, realize_saturation_only, realize_saturation_only_internal,
 };
-pub use repair::{Repair, Repairs, find_repairs};
+pub use repair::{Repair, Repairs, find_repairs, find_repairs_prepared};
 
 /// Run the standalone `ABox` consequence-based saturator on `ontology` and return
 /// `true` iff a disjoint-class clash was detected under named-only semantics.

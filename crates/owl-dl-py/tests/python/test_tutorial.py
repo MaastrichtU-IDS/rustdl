@@ -85,6 +85,17 @@ def test_step4_debug_partitions_root_and_derived(tmp_path):
     json.loads(json.dumps(d.to_dict()))
 
 
+def test_step5_prepare_matches_the_one_shot_calls(tmp_path):
+    # The tutorial claims `prepare()` gives the same answers as the one-shot
+    # functions, setup paid once. Mirror both snippets so the claim can't drift.
+    p = _write(tmp_path, BROKEN, "broken.omn")
+    onto = rustdl.prepare(p)
+    assert onto.justify(["unsat", ROOT]) == rustdl.justify(p, ["unsat", ROOT])
+    assert onto.justify_all(["unsat", ROOT], max=10) == rustdl.justify_all(
+        p, ["unsat", ROOT], 10
+    )
+
+
 def test_step6_fix_and_recheck(tmp_path):
     p = _write(tmp_path, FIXED, "fixed.omn")
     d = rustdl.debug(p)

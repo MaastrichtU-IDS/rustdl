@@ -2,8 +2,10 @@
 
 use horned_owl::model::{Build, ClassExpression as CE, DeclareClass, MutableOntology, SubClassOf};
 use horned_owl::ontology::set::SetOntology;
-use owl_dl_reasoner::find_repairs;
-use owl_dl_reasoner::justify::{Entailment, entails, logical_axioms, ontology_from};
+use owl_dl_reasoner::justify::{
+    Entailment, PreparedJustifier, entails, logical_axioms, ontology_from,
+};
+use owl_dl_reasoner::{find_repairs, find_repairs_prepared};
 
 // X unsat via TWO independent justifications:
 //   J1 = { X ⊑ A, X ⊑ B }   (A,B disjoint)
@@ -136,4 +138,55 @@ fn read_ofn_fixture(p: &std::path::Path) -> SetOntology<Rc> {
     let (o, _): (SetOntology<Rc>, _) =
         read_ofn(&mut reader, ParserConfiguration::default()).expect("parse ofn");
     o
+}
+
+// `find_repairs` delegates to `find_repairs_prepared`, and `report` calls the
+// prepared form directly with a justifier it also justifies from — so pin that the
+// two entry points agree on every field, including the not-entailed verdict.
+#[test]
+fn prepared_repairs_match_the_one_shot_function() {
+    let b = Build::new_rc();
+    let cls = |iri: &str| CE::Class(b.class(iri));
+    let mut o = SetOntology::new();
+    for c in ["urn:X", "urn:A", "urn:B", "urn:C"] {
+        o.insert(DeclareClass(b.class(c)));
+    }
+    o.insert(horned_owl::model::DisjointClasses(vec![
+        cls("urn:A"),
+        cls("urn:B"),
+    ]));
+    o.insert(SubClassOf {
+        sub: cls("urn:X"),
+        sup: cls("urn:A"),
+    });
+    o.insert(SubClassOf {
+        sub: cls("urn:X"),
+        sup: cls("urn:B"),
+    });
+
+    let prepared = PreparedJustifier::prepare(&o);
+    for (label, q) in [
+        (
+            "entailed",
+            Entailment::Unsatisfiable {
+                class: "urn:X".to_string(),
+            },
+        ),
+        (
+            "not entailed",
+            Entailment::Unsatisfiable {
+                class: "urn:C".to_string(),
+            },
+        ),
+    ] {
+        let cold = find_repairs(&o, &q, 10).expect("repair");
+        let warm = find_repairs_prepared(&prepared, &q, 10).expect("prepared repair");
+        assert_eq!(cold.entailed, warm.entailed, "{label}: entailed");
+        assert_eq!(cold.complete, warm.complete, "{label}: complete");
+        assert_eq!(
+            cold.dropped_unverified, warm.dropped_unverified,
+            "{label}: dropped_unverified"
+        );
+        assert_eq!(cold.repairs, warm.repairs, "{label}: repairs");
+    }
 }

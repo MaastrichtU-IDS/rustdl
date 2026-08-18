@@ -1,0 +1,11 @@
+Prefix(:=<http://t/>)
+Ontology(<http://t/ifr>
+Declaration(Class(:A)) Declaration(Class(:B))
+Declaration(ObjectProperty(:r))
+Declaration(NamedIndividual(:x)) Declaration(NamedIndividual(:y)) Declaration(NamedIndividual(:z))
+InverseFunctionalObjectProperty(:r)
+ClassAssertion(:A :x)
+ClassAssertion(:B :y)
+ObjectPropertyAssertion(:r :x :z)
+ObjectPropertyAssertion(:r :y :z)
+)

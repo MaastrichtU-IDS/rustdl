@@ -5,9 +5,9 @@
 optional when the shortcut's *sound by construction* clause was falsified
 (`docs/known-limitations/realize-drops-derived-individual-equality.md`).
 
-**Result: the defect is REACHABLE on the real corpus — 1 of 19 usable ontologies loses types
-at the default — and the prune is worth 64% of realize wall. Both halves are real; neither
-side wins outright.**
+**Result: the defect is REACHABLE on the real corpus and HERMIT-CONFIRMED — 1 of 19 usable
+ontologies loses a genuinely entailed type at the default — and the prune is worth 64% of
+realize wall. Both halves are real; neither side wins outright.**
 
 ## Method
 
@@ -51,6 +51,56 @@ OFF : a32071928c → sqdsq, zqedzbx
 Two individuals (`a32071928c`, `a72192307c`) each lose the type `sqdsq` at the default. So the
 behaviour IS subtractive, and this is a **real corpus instance** of the defect rather than only
 the synthetic fixture.
+
+### ADJUDICATED BY HERMIT (2026-08-18): the default MISSES a genuinely entailed type
+
+`robot reason --reasoner hermit --axiom-generators ClassAssertion --include-indirect true`
+on `ore_ont_10009` returns:
+
+```
+ClassAssertion(<sqdsq> <a32071928c>)
+ClassAssertion(<zqedzbx> <a32071928c>)
+```
+
+**So `sqdsq` IS entailed, `RUSTDL_PSEUDO_MODEL=0` is correct, and the DEFAULT drops it.** This
+settles the fork left open below: it is a MISS, not the prune masking an over-report. FP=0 is
+untouched; a genuine entailment is lost.
+
+Both arms are also **deterministic** — three runs each produce identical hashes
+(`60260a56…` ON, `94750757…` OFF) — so this is a fixed behavioural difference, not witness
+nondeterminism. That was worth ruling out first, since the witness is one arbitrary `Sat`
+completion.
+
+### MECHANISM STILL UNIDENTIFIED — three hypotheses refuted
+
+Ablation over `ore_ont_10009` (each construct class removed, testing whether the ON-vs-OFF
+difference survives; ~50 s per check):
+
+| construct | verdict |
+|---|---|
+| `ObjectPropertyAssertion` (44) | **NECESSARY** — difference lost when removed |
+| `DataPropertyAssertion` | **NECESSARY** — difference lost when removed |
+| `DataMaxCardinality` (18), `DataExactCardinality` (14), `ObjectMaxCardinality` (12) | all removable, difference survives |
+| `Declaration` | removable |
+| `EquivalentClasses`, `DataHasValue`, `DataSomeValuesFrom`, `FunctionalDataProperty`, `DisjointClasses`, `InverseObjectProperties` | **absent from the ontology** |
+
+Three mechanism hypotheses, each tested by a synthetic fixture and each **refuted**:
+
+1. **`≤n`-forced merges** — a `≤1` fixture (`fixtures/pseudo_model_merge/max-cardinality-one.ofn`)
+   is CORRECT in both arms, and the ablation shows cardinality is removable here anyway.
+2. **Data-property-driven** — the data-restriction constructs that could give a positive type
+   (`DataHasValue`, `DataSomeValuesFrom`, `FunctionalDataProperty`) are all **absent**.
+3. **Disjunctive-domain over-report** — `ObjectPropertyDomain(r, A ⊔ B)` with `x : A` and
+   `r(x,y)` is CORRECT in both arms; and HermiT above refutes the over-report reading outright.
+
+With **no `EquivalentClasses` anywhere**, the only route to a non-asserted type is property
+domain/range — and the individual's edges carry *disjunctive* domains
+(`ObjectPropertyDomain(sqndsqgy, zqedzbx ⊔ sqdsq)`), which is suggestive but did not reproduce
+in isolation. **Whoever continues should run ddmin, not another hypothesis.** The predicate is
+`/tmp/red/check.sh`-shaped (difference present ⇒ exit 0) and costs ~50 s per check, so a full
+reduction is hours — but three cheap guesses have now failed, and the constraints above
+(ObjectPropertyAssertion + DataPropertyAssertion both necessary, no defined classes) narrow it
+considerably.
 
 ### How far the claim can be pushed, and where it stops
 

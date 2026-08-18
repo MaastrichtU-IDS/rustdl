@@ -1,0 +1,1265 @@
+Prefix(:=<http://owl.cs.man.ac.uk/dlapproximated/464f5889-3ca0-41d4-89ec-3d2b9c91057b_onto.rdf.owl.xml#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Prefix(rdf:=<http://www.w3.org/1999/02/22-rdf-syntax-ns#>)
+Prefix(xml:=<http://www.w3.org/XML/1998/namespace>)
+Prefix(xsd:=<http://www.w3.org/2001/XMLSchema#>)
+Prefix(rdfs:=<http://www.w3.org/2000/01/rdf-schema#>)
+
+
+Ontology(<http://owl.cs.man.ac.uk/dlapproximated/464f5889-3ca0-41d4-89ec-3d2b9c91057b_onto.rdf.owl.xml>
+
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#azzauhuie>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dscdscg>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#scds>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdcsqhyz>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#wxsdxqsdh>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#xsqlknk>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadazxn>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzaudbd>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdzqzai>))
+Declaration(Class(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>))
+Declaration(Class(<http://xmlns.com/foaf/0.1/Organization>))
+Declaration(Class(<http://xmlns.com/foaf/0.1/Person>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#PrSGUs>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#TfniY>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#YuEma>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajj>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzbn>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hsgiuyza>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdnsbh>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zandsbh>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn>))
+Declaration(ObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzqnd>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#asndzsd>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsazdjz>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsq>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndbsqx>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndsz>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqnhza>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbgz>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzandzah>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznadzh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzsndzah>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdqz>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdxsndxsqg>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqbdzg>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdnbs>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqkxndc>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#szdnzak>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadsznad>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzqbsdg>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzdzh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnzsdh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsznbadzagh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzbh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzdzd>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdszh>))
+Declaration(DataProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz>))
+Declaration(DataProperty(<http://purl.org/dc/elements/1.1/contributor>))
+Declaration(DataProperty(<http://purl.org/dc/elements/1.1/creator>))
+Declaration(DataProperty(<http://purl.org/dc/elements/1.1/date>))
+Declaration(DataProperty(<http://purl.org/dc/elements/1.1/description>))
+Declaration(DataProperty(<http://xmlns.com/foaf/0.1/firstName>))
+Declaration(DataProperty(<http://xmlns.com/foaf/0.1/name>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619>))
+Declaration(NamedIndividual(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04>))
+############################
+#   Object Properties
+############################
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>)
+
+TransitiveObjectProperty(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>)
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#PrSGUs> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#PrSGUs>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#PrSGUs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#PrSGUs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#TfniY> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#TfniY>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#TfniY> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#TfniY> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#YuEma> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#YuEma>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#YuEma> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#YuEma> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajj> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajj>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzbn> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzbn>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzbn> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#scds> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx>))
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzbn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadazxn>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hsgiuyza> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hsgiuyza>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hsgiuyza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hsgiuyza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd> owl:Thing)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>))
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdnsbh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdnsbh>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdnsbh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdnsbh> <http://xmlns.com/foaf/0.1/Organization>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb>))
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb> <http://xmlns.com/foaf/0.1/Organization>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>)
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>))
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>)
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>)
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zandsbh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zandsbh>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zandsbh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zandsbh> owl:Thing)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#EzGNplyLBiS>)
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq>)
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn>)
+
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>))
+ObjectPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>)
+
+# Object Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzqnd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzqnd>)
+
+SubObjectPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzqnd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga>)
+ObjectPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzqnd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dscdscg>)
+
+
+############################
+#   Data Properties
+############################
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#asndzsd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#asndzsd>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#asndzsd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsazdjz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsazdjz>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsazdjz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsazdjz> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsq>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsq> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndbsqx> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndbsqx>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndbsqx> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndbsqx> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndsz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndsz>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndsz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqndsz> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqnhza> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqnhza>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqnhza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqnhza> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza>)
+
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza>)
+
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbgz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbgz>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbgz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbgz> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzandzah> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzandzah>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzandzah> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzandzah> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznadzh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznadzh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznadzh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzsndzah> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzsndzah>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzsndzah> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzsndzah> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq> xsd:nonNegativeInteger)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh>)
+
+SubDataPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd>)
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdqz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdqz>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdqz> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#wxsdxqsdh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzaudbd>))
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdqz> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs>))
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdxsndxsqg> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdxsndxsqg>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdxsndxsqg> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdxsndxsqg> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqbdzg> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqbdzg>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqbdzg> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdcsqhyz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx>))
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqbdzg> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdnbs> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdnbs>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdnbs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdnbs> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqkxndc> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqkxndc>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqkxndc> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqkxndc> xsd:language)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj> xsd:nonNegativeInteger)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn>)
+
+SubDataPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd>)
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn> ObjectUnionOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>))
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#szdnzak> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#szdnzak>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#szdnzak> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#szdnzak> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadsznad> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadsznad>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadsznad> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadsznad> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzqbsdg> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzqbsdg>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzqbsdg> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzqbsdg> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzdzh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzdzh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzdzh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzdzh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnzsdh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnzsdh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnzsdh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsznbadzagh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsznbadzagh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsznbadzagh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsznbadzagh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzbh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzbh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzbh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzbh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzdzd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzdzd>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzdzd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzdzd> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdszh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdszh>)
+
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdszh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdszh> xsd:string)
+
+# Data Property: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz>)
+
+SubDataPropertyOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzezd>)
+DataPropertyDomain(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+DataPropertyRange(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz> xsd:nonNegativeInteger)
+
+
+
+############################
+#   Classes
+############################
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#azzauhuie> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#azzauhuie>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#azzauhuie> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#azzauhuie> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zandsbh>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnbyz>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdsq> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hsgiuyza>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dscdscg> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dscdscg>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dscdscg> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsazdjz>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnzsdh>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#asndzsd>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznadzh>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#ndsbzh>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> <http://xmlns.com/foaf/0.1/Organization>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#YuEma> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> DataAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> xsd:string))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> DataAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> xsd:string))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> DataAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdxsndxsqg> xsd:string))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdnbs>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> DataAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> xsd:string))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> DataAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh> xsd:string))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> DataAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> xsd:string))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#scds> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#scds>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#scds> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdcsqhyz> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdcsqhyz>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdcsqhyz> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dqzdxdcsqj>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sbqgzga>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#TfniY> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dcsqdcsqd>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqxsqkd> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#iNi4b8XV> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzqndbzq>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq> ObjectMinCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#wxsdxqsdh> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#wxsdxqsdh>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#wxsdxqsdh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#xsqlknk> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#xsqlknk>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#xsqlknk> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadazxn> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadazxn>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadazxn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszbnz>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdsqddz>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zsbdgz>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzbn>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#PrSGUs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajj>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdndvb>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzaudbd> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzaudbd>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzaudbd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsnbsqd>)
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza> ObjectExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza> DataMinCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zeadza> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln>))
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdzqzai> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdzqzai>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqdzqzai> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdazsx>)
+
+# Class: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx>)
+
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> ObjectAllValuesFrom(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sdnsbh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> ObjectMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> DataExactCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza>))
+SubClassOf(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> DataMaxCardinality(1 <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn>))
+
+
+############################
+#   Named Individuals
+############################
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf>)
+DataPropertyAssertion(<http://purl.org/dc/elements/1.1/contributor> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf> "Antoine Zimmermann <antoine.zimmermann@inrialpes.fr>")
+DataPropertyAssertion(<http://purl.org/dc/elements/1.1/contributor> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf> "J�r�me Euzenat")
+DataPropertyAssertion(<http://purl.org/dc/elements/1.1/creator> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf> "Nick Knouf <nknouf@mit.edu>")
+DataPropertyAssertion(<http://purl.org/dc/elements/1.1/date> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf> "08/06/2005")
+DataPropertyAssertion(<http://purl.org/dc/elements/1.1/description> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf> "Bibliographic references in OWL")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373> "Meyer")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373> "John-Jules")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a04570373> "John-Jules Meyer")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576> _:genid2147483648)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576> "Proceedings of the SemPGrid 04 Workshop")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210> "Montesi")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210> "Danilo")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a066600210> "Danilo Montesi")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337> "Hoek")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337> "Wiebe")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a086379337> "Wiebe Hoek")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135> "Eijk")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135> "Rogier")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a093016135> "Rogier Eijk")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajndsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723> _:genid2147483649)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723> "Object-Oriented Data Modeling")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952> _:genid2147483650)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952> "Ontology Mapping - An Integrated Approach")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsznbadzagh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11065952> "http://www.aifb.uni-karlsruhe.de/WBS/meh/publications/ehrig04ontology_ESWS04.pdf")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777> "Parent")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777> "Christine")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a11090777> "Christine Parent")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Organization> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767> _:genid2147483651)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767> "Springer-Verlag")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786> "Menken")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786> "Maarten")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a139477786> "Maarten Menken")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#wxsdxqsdh> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454> _:genid2147483652)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454> _:genid2147483653)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454> "{QOM} - Quick Ontology Mapping")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a140583454> "submitted to the ISWC 04")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474> "JWS")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474> "Journal of Web Semantics")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360> "Schmidt")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360> "R.")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a250331360> "R. Schmidt")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611> "Aberer")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611> "Karl")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a29105611> "Karl Aberer")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947> "Siebes")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947> "Ronny")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a3105947> "Ronny Siebes")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928> _:genid2147483654)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928> "Proceedings of the First European Semantic Web Symposium")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c> _:genid2147483655)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c> _:genid2147483656)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c> "ESWS")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c> "European Semantic Web Symposium")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a32071928c> "1")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610> "Hauswirth")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610> "Manfred")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a337716610> "Manfred Hauswirth")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121> "IJIS")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121> "International journal of intelligent system")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672> "Despotovic")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672> "Z.")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a39510672> "Z. Despotovic")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276> "Spaccapietra")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276> "Stefano")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276> "Stefano Spaccapietra")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b> "Papazoglou")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b> "Mike")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276b> "Mike Papazoglou")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c> "Tari")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c> "Zahir")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a431956276c> "Zahir Tari")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633> "Broekstra")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633> "Jeen")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a43836633> "Jeen Broekstra")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789> _:genid2147483657)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a439508789> "Measuring Similarity between Ontologies")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzayue> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390> _:genid2147483658)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390> _:genid2147483659)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a362042121>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390> _:genid2147483660)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a456080390> "On dynamically generated ontology translators in agent communication")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807> "Anaby-Tavor")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807> "Ateret")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a467748807> "Ateret Anaby-Tavor")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642> _:genid2147483661)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642> _:genid2147483662)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a475526642> "Binary Codes capable of correcting deletions, insertions, and reversals")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212> "Schnizler")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212> "Bj�rn")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a48552212> "Bj�rn Schnizler")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321> _:genid2147483663)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321> _:genid2147483664)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a492378321> "{P-Grid}: A Self-organizing Structured P2P System")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328> "Boer")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328> "Frank")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a572406328> "Frank Boer")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#deqdxcsqcsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824> _:genid2147483665)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zassdzadb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a060097576>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a64263824> "Bibster - A Semantics-Based Bibliographic Peer-to-Peer System")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a674639524> "ACM SIGMOD Record")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601> "Datta")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601> "A.")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70955601> "A. Datta")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a70981683> "Cybernetics and Control Theory")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986> "Staab")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986> "Steffen")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71003986> "Steffen Staab")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038> "Ehrig")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038> "Marc")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a712561038> "Marc Ehrig")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#vccfsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzajj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377> _:genid2147483666)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sznsbq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a108048723>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377> _:genid2147483667)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a71568377> "Database integration: the key to data interoperability")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zajdhqs> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdqssqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sddnsnqdb> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a131020767>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307> _:genid2147483668)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadzjadns> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307> "Proc. Of the 13th Int. Conference on Knowledge Engineering and Management (EKAW-2002)")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c> _:genid2147483669)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c> "EKAW")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c> "Int. Conference on Knowledge Engineering and Management")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnzkzn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a72192307c> "13")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404> "Levenshtein")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404> "I. V.")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a74993404> "I. V. Levenshtein")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306> "Sure")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306> "York")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a79573306> "York Sure")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267> _:genid2147483670)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a246119474>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267> _:genid2147483671)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a80299267> "Start making sense: The Chatty Web approach for global semantic agreements")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#hazdn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsopq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqdsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923> _:genid2147483672)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sxqsnbvsq> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zand> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923> _:genid2147483673)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dznbaln> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923> "A Framework for Modeling and Evaluating Automatic Semantic Reconciliation")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdsnsqdv> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a846015923> "to appear")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505> "M�dche")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505> "Alexander")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85228505> "Alexander M�dche")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#izxnquo> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zauio> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Organization> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzd> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488> _:genid2147483674)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a85849488> "The MIT Press")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047> "Punceva")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047> "M.")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a885257047> "M. Punceva")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022> "Gal")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022> "Avigdor")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a900366022> "Avigdor Gal")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qsdsquj> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a906774044> "VLDB Journal")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054> "van Harmelen")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054> "Frank")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a944339054> "Frank van Harmelen")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498> "Haase")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498> "Peter")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a94533498> "Peter Haase")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218> "Mika")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218> "Peter")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a958684218> "Peter Mika")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439> "Trombetta")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439> "Alberto")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a971541439> "Alberto Trombetta")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619>)
+
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619>)
+ClassAssertion(<http://xmlns.com/foaf/0.1/Person> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619>)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#lastName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619> "Cudr�-Mauroux")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/firstName> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619> "Philippe")
+DataPropertyAssertion(<http://xmlns.com/foaf/0.1/name> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#a98078619> "Philippe Cudr�-Mauroux")
+
+# Individual: <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04> (<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04>)
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zqedzbx> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04>)
+ClassAssertion(owl:Thing <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04>)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqndsqgy> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04> _:genid2147483675)
+ObjectPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdjznzn> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04> _:genid2147483676)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dszabdza> <http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#spg04> "SemPGrid 04 Workshop")
+
+
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483648)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483649)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483650)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> _:genid2147483651)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483652)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483653)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483654)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483655)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> _:genid2147483656)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483657)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dnqsb> _:genid2147483658)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483659)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483660)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483661)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483662)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483663)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483664)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483665)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483666)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483667)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483668)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483669)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483670)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483671)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483672)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483673)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> _:genid2147483674)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dzshyuua> _:genid2147483675)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#qzddj> _:genid2147483676)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483677)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483678)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483679)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483680)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483681)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483682)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483683)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483684)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483685)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483686)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483687)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483688)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483689)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483690)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483691)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483692)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483693)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483694)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483695)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483696)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483697)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483698)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483699)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483700)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483701)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483702)
+ClassAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#dsqdbz> _:genid2147483703)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> _:genid2147483651 "DE")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> _:genid2147483651 "Heidelberg")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> _:genid2147483656 "GR")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> _:genid2147483656 "Heraklion")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#mkalnshsq> _:genid2147483658 "607"^^xsd:nonNegativeInteger)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#sqnhdbdj> _:genid2147483658 "587"^^xsd:nonNegativeInteger)
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> _:genid2147483674 "US")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh> _:genid2147483674 "MA")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> _:genid2147483674 "Cambridge")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zadszabnds> _:genid2147483676 "US")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdnzadh> _:genid2147483676 "NY")
+DataPropertyAssertion(<http://oaei.ontologymatching.org/2006/benchmarks/201/onto.rdf#zdzndh> _:genid2147483676 "New-York")
+)

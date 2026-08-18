@@ -1481,6 +1481,21 @@ leaving ~11 falsifiable "this fails" claims** — the sweep is cheap because tha
 `#[ignore` returns 97, inflated by prose; anchor the pattern to the line start). See
 `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
 
+### RE-VERIFICATION PASS 2026-08-18: of 12 named targets, 2 still fail
+
+`docs/2026-08-18-named-target-reverification.md`. Re-measured the 12 most-cited `ore_ont_*` at
+the default, single-thread, 120 s: only **`ore_ont_11311` and `ore_ont_9944`** are genuinely
+unfinished. `5368` completes in 85.6 s (the 27 GB DNF framing is stale), `1508` 112.9 s, `9347`
+5.6 s, `10019` 2.3 s, `16847` 0.4 s. **One known-limitation doc RETIRED** — the small-pair-timeout
+label-cache starvation, gone on both its censused instances (`15010` 103.98 → 6.19 s, `15108`
+200 → 45.40 s), **cause unattributed**, with both DEFAULT arms reproducing their recorded walls
+as the control and `pruned=9268` confirming it at the mechanism.
+
+**The near-miss is the transferable part:** I first read `15010` at 6.00 s against the *103.98 s*
+in the doc's title and nearly declared it closed — but 103.98 s is the `--pair-timeout-ms 1` arm
+and the doc's *default* arm is 5.65 s, so 6.00 s was a **match**. **Read the conditions recorded
+WITH a number before calling it non-reproducing.**
+
 ### Behaviour changes shipped 2026-08-17/18
 
 | change | effect |
@@ -1624,8 +1639,12 @@ pair the probe with a case where Konclude *does* report the relation.
   bind, and halving breaks a healthy ontology), `DIV_WINDOW` (null), `RUSTDL_MAX_NODES` (does not
   bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), `label_cache_timeout_ms`
 (~~**dead code**~~ — **THIS ENTRY IS WRONG, corrected 2026-08-06.** `RUSTDL_LABEL_CACHE_TIMEOUT_MS`
-is live and load-bearing: it "always wins" by construction (`lib.rs:2728-2730`), and setting it
-to `30000` takes `ore_ont_15010` from **103.98 s to 5.64 s for byte-identical output**. The
+is live by construction — it "always wins" (`lib.rs:2728-2730`). **The 18× evidence once cited
+here is RETIRED (re-measured 2026-08-18): `ore_ont_15010` at `--pair-timeout-ms 1` is now
+6.19 s, not 103.98 s, and `ore_ont_15108` 45.40 s, not 200 s — both censused instances gone,
+cause UNATTRIBUTED, with the DEFAULT arms reproducing their recorded walls as the control.**
+The "dead code" label stays wrong for the *code* reason above; what expired is the pathology it
+rescued, not the rebuttal. A flag with no currently-known pathology is not dead code. The
 adaptive rule that consumes it couples the label-cache budget to `--pair-timeout-ms`, so a
 *small* per-pair budget starves the cache — see
 `docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md`. A "dead code"

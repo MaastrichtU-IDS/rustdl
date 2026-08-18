@@ -1,7 +1,44 @@
 # A small `--pair-timeout-ms` starves the label-cache budget, costing up to 18× for identical output
 
-**Found:** 2026-08-06 · **Status:** open, **deliberately not fixed** — see § Why not fixed
-**Workaround:** `RUSTDL_LABEL_CACHE_TIMEOUT_MS=30000` (restores the fast behaviour exactly)
+**Found:** 2026-08-06 · **Status: CLOSED 2026-08-18 on both censused instances — cause
+UNATTRIBUTED.** It was never fixed deliberately; re-measurement found the coupling gone.
+**Workaround (no longer needed):** `RUSTDL_LABEL_CACHE_TIMEOUT_MS=30000`
+
+> ## RETIRED BY RE-MEASUREMENT (2026-08-18)
+>
+> Both censused instances, single-threaded, current `main` (`0c1df06`):
+>
+> | ontology | arm | recorded | now |
+> |---|---|---:|---:|
+> | `ore_ont_15010` | default | 5.65 s | **5.99 s** |
+> | | `--pair-timeout-ms 1` | **103.98 s** | **6.19 s** |
+> | | `pt=1` + override | 5.64 s | 5.95 s |
+> | `ore_ont_15108` | default | 44.65 s | **44.20 s** |
+> | | `--pair-timeout-ms 1` | **200 s** | **45.40 s** |
+> | | `pt=1` + override | — | 41.99 s |
+>
+> **The control is what makes this a retirement rather than a measurement difference:** both
+> DEFAULT arms reproduce their recorded values (5.65→5.99, 44.65→44.20), so neither ontology
+> merely got faster and neither host nor binary is confounding it. Only the *pathological* arm
+> moved. The 18× and 4.5× couplings are gone; the override now makes no measurable difference.
+>
+> **Confirmed at the mechanism, not just the wall.** The defect was that a small per-pair budget
+> starves the per-class build so the 96–100% pruning is lost. At `--pair-timeout-ms 1`
+> `ore_ont_15010` now reports `# label heuristic: pruned=9268 pass_through=6 misses=751` — the
+> cache is consulted and prunes heavily in exactly the regime that used to starve it.
+>
+> **Cause NOT attributed.** Nothing here was fixed on purpose. Something in v0.4.12–v0.4.19 or
+> the 2026-08-17/18 work (`RUSTDL_PREP_DEADLINE` default-ON is a candidate) dissolved it. Do not
+> invent a mechanism — the same "cured incidentally, unattributed" pattern as `ore_ont_10019`.
+>
+> **Scope, stated precisely:** closed on the **two instances this document censused**. The
+> original census covered the 40 slowest completers; claiming the whole class is empty would
+> need that census re-run. What is retired is this document's evidence, not a proof of absence.
+>
+> **DO NOT let this revive the "dead code" label on `RUSTDL_LABEL_CACHE_TIMEOUT_MS`.** That
+> label was wrong for a *code* reason which still holds — the override always wins by
+> construction (`lib.rs:2728-2730`). What has gone stale is the 18× *evidence* used to rebut it,
+> not the rebuttal. A flag with no currently-known pathology to rescue is not dead code.
 
 ## The defect
 

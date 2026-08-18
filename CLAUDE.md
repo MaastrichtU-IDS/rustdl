@@ -1148,6 +1148,25 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
 
 ## Soundness contract (important)
 
+> **Two silent fallbacks were made OBSERVABLE on 2026-08-18, and one remains silent.** Sound
+> under-approximations are pervasive here, which is correct — but several were also
+> *invisible*, and an invisible sound-MISS is indistinguishable from a complete answer:
+>
+> * `ClassificationStats::prep_unbounded_budget_spent` — a global budget was set and prep was
+>   left UNBOUNDED because the budget was already spent. Distinct from `prep_timed_out`
+>   (abandoned ⇒ incomplete); this one means prep ran to completion unbudgeted. Its absence
+>   cost PRs #61 and #62, each chasing the same host-speed canary flake.
+> * `Realization::incomplete` / `realize --json` `incomplete` — at least one instance probe was
+>   CUT (deadline / `RUSTDL_MAX_NODES` / depth bail) rather than refuted. `realize` previously
+>   had NO completeness signal at all. Reports cut probes ONLY.
+> * **Still silent:** `realize` dropping DERIVED individual equality. No probe is cut, so the
+>   new field does not cover it —
+>   `docs/known-limitations/realize-drops-derived-individual-equality.md`.
+>
+> When adding a sound under-approximation, ask whether a caller can *tell*. If not, add the
+> signal in the same change.
+
+
 Everything is **sound** — no false-positive subsumptions on any measured
 ontology (FP=0 vs Konclude). Completeness is the subtle part:
 
@@ -1390,6 +1409,99 @@ matters most is an unsound *positive*. See `docs/handoff-2026-06-03-snapshot-cac
 current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
+
+## State of play — 2026-08-18 (read this first)
+
+**The dominant finding of the 2026-08-17/18 sessions is about this file, not the code: the
+design record has drifted ahead of the engine, consistently in the OPTIMISTIC direction.**
+Five separate proposals during those sessions targeted work that was **already shipped**, and
+three named open targets had **already evaporated**. Before planning against anything below,
+re-verify it against current `main` — that check retired more work than it cost, every time.
+
+Concrete instances, all corrected:
+
+| stale claim | reality |
+|---|---|
+| `RUSTDL_CLASSIFY_LABELS_AMORTIZE` "default OFF, bake-off pending" | **default ON since 0.4.10**; `=0` is ~20× slower (`ore_ont_12698` `label_cache_build` 2,028 → 104,237 ms). The bake-off it called pending had already happened. |
+| `label_cache_timeout_ms` listed as "dead code" in the constant audit | live and load-bearing at 18× (already corrected 2026-08-06) |
+| CB arc "8 in-fragment DNF targets" | all 8 complete on v0.4.6 |
+| `ore_ont_10019` dense-SROIQ over-branching target | now classifies in **2.3 s**; the diagnosed-but-unbuilt fix has no target |
+| "inverse blocks 71% of the DNF tail" | true as a *fast-path blocker* count; an inverse-capable engine reaches **13%** — the biggest single lever is **cardinality (+44)** |
+
+**Guardrail now in place:** **42 distinct** boolean `RUSTDL_*` flag defaults are pinned
+behaviourally — 30 in `crates/owl-dl-reasoner/tests/flag_defaults.rs` (the public accessors)
+and 13 in `internal_flag_defaults` in `lib.rs` (the `pub(crate)` ones), overlapping on exactly
+one: `RUSTDL_CLASSIFY_LABELS_AMORTIZE`, which is the flag that actually drifted and is therefore
+pinned from both sides.
+>
+> Counted, not remembered. An earlier draft of this paragraph said "45", then "29 flags across
+> 30 rows because `ANYWHERE_BLOCKING` appears twice" — both wrong, corrected only by running the
+> count. That is the failure mode this whole section documents, reproduced while writing it.
+A default change now requires editing the table in the same commit. **Do not audit defaults by
+parsing doc comments** — that was tried and was wrong four times running (historical
+"was default-ON" narrative, `pub(crate) fn`, `remove_var` inside `#[cfg(test)]`, and defaults
+stated in `//` not `///`).
+
+### Behaviour changes shipped 2026-08-17/18
+
+| change | effect |
+|---|---|
+| `--global-timeout-ms` charges parse time (`global_budget_after_parse`) | the flag meant "N ms of *reasoning*"; parse was free. `ore_ont_7192` 72 s → 55 s, rows identical. Inert at the default `0`. |
+| **`RUSTDL_PREP_DEADLINE` flipped default-ON** behind `prep_bounding_active` | bounds prep only while the budget is still MEETABLE, falling back to unbounded once it is not — so the bounded path is never worse than the unbounded one. −37.4% wall at a 20 s budget over 45 ontologies, **0 row changes**. It shipped OFF because bounding an already-spent budget made `ore_ont_7192` pay ~18 s and return **0 rows** where unbounded returned 50,753. |
+| `realize_saturation_eligible` refuses functional/inverse-functional + `ObjectPropertyAssertion` | the fast path has no equality folding, so a forced `x = y` silently dropped the twin's types. Functional case now correct. **CORPUS-INERT** — fires on 0 of 64 qualifying ORE ontologies; do not cite as a corpus win. |
+| `ClassificationStats::prep_unbounded_budget_spent` (new) | the prep fallback above was unobservable, which cost PRs #61 and #62 chasing the same host-speed canary flake twice |
+| `Realization::incomplete` + `realize --json` `incomplete` (new) | realize had **no** completeness signal while classify has had one for months. Reports CUT probes only — it does NOT cover the derived-equality gap, where nothing is cut. |
+
+### Open, with evidence
+
+* **`realize` drops DERIVED individual equality** —
+  `docs/known-limitations/realize-drops-derived-individual-equality.md`. TWO gaps in different
+  engines: the saturation path dropped both functional and inverse-functional forced equalities
+  (functional now fixed above); the **tableau folds functional but NOT inverse-functional**, so
+  `RUSTDL_INVERSE_FUNC_MERGE` is default-ON in `owl-dl-tableau` yet does not reach the realize
+  probes. That last is the named, unexplained item. Workaround for the functional case only:
+  `RUSTDL_REALIZE_SATURATION=0`.
+* **The label cache is consulted ZERO times under a global budget** on `ore_ont_11311`/`9944`:
+  58 s of build then `pruned=0 pass_through=0 misses=0`, with `tier_walk` aborting in 8 ms
+  (`docs/2026-08-17-classify-has-no-budget-allocation.md`). Classify phases consume the deadline
+  greedily in sequence with **no allocation**, so whichever runs first starves the rest — which
+  is why the timeout sweep found the DNF tail budget-invariant. Capping one phase just hands the
+  budget to `unsat_probe` (1 ms → 47 s). **Starvation-unblocking is already a MEASURED NEGATIVE
+  (`unsat_probe_cap`): it rescues nothing, because the starved consumer cannot finish either.**
+
+### Measured out 2026-08-16/18 — do not re-propose without new evidence
+
+* **The shipped timeout defaults are already optimal for complete classifications.** Complete
+  results plateau from `--pair-timeout-ms 5`; the DNF tail moves by **2 ontologies across a
+  1000× budget range**. `--global-timeout-ms` can never *increase* the complete count (a firing
+  deadline yields `incomplete` by construction).
+* **Learned/adaptive cap tuning: both concrete formulations refuted.** Skipping predicted-failed
+  label builds has no usable operating point (AUC 0.73, but skipping `|closure|>25` sacrifices
+  1,253 successes to save 110 s); cheapest-first ordering is unreliable (+1,374 on one ontology,
+  −605 on another). **AUC above chance is not evidence of a usable rule.**
+* **CB: no cheap fragment.** Coverage of the 141-DNF tail — Horn-ELHI **17**, +role chars 22,
+  +`Or`/`Not` 45, +`All` 46, **+`Min`/`Max` 90**, +nominals 101, +`Self`/DKey 125. Market grows
+  with how much of SROIQ you implement; cardinality is the big step and its obvious lever
+  (second-maximal) already measured **3× worse**. Horn-ELHI's market is **16 distinct
+  ontologies** → DEFERRED. Gate + census live as dead code (`cb_eli_eligible`,
+  `RUSTDL_CB_ELI_PROBE`) so re-sizing costs one command.
+* **The label cache reproduces the saturation closure exactly** on 100% of completed classes on
+  the DNF cases — but six mechanisms are now refuted against replacing it, and a certifier is a
+  fragment gate needing a PROOF, not a benchmark.
+
+### FP-critical audit (2026-08-18): no defect
+
+`docs/2026-08-18-fp-critical-audit.md`. `InverseFunctionalRole` is admitted by
+`saturator_complete_fragment` and **never read** by the saturator — sound because the fragment
+excludes nominals, `ABox` and inverse role *use*, so the canonical model is a tree and every
+witness has one predecessor. Verified against Konclude on three probes; the arm's comment
+claimed a witness-merge that does not exist and is corrected. Bare-declaration observability
+(`RUSTDL_FRAGMENT_BARE_DECL`, 44 ORE ontologies) is correct via a downward closure and is now
+canaried. DKey bucket keying has **no drift**: 13 buckets, all in mutual-exclusivity matrices,
+and re-pointing `parse_float_dkey_iri` at the double tag (the historical v0.4.6–v0.4.9 FP) fails
+both.
+
+---
 
 ## State of play — v0.4.13 (2026-08-03)
 

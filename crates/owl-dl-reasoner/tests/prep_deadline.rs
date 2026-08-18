@@ -142,9 +142,18 @@ fn small_budget_is_honoured_on_prep_bound_ontology() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let onto = parse(&chain_ontology(500));
-    let budget = Some(Duration::from_millis(1));
+    // 250 ms, NOT 1 ms, for the reason spelled out on
+    // `prep_timeout_is_reported_incomplete`: `classify_with_budget` evaluates
+    // `prep_bounding_active(t0, budget)` AFTER `convert_ontology`, so a budget below
+    // conversion cost reads as already-blown and prep is left unbounded. This test
+    // asserts `prep_timed_out` with the flag ON and `on_wall * 2 < off_wall`, and BOTH
+    // fail in that case (unbounded ⇒ flag never set, and ON == OFF). Conversion of this
+    // fixture is sub-ms on a fast host and >1 ms on the macOS CI runner, so 1 ms made
+    // this canary host-speed-dependent exactly like its sibling — it simply had not
+    // been the one to fail yet.
+    let budget = Some(Duration::from_millis(250));
 
-    // Flag OFF — the pre-change behaviour: the 1 ms budget bounds only the
+    // Flag OFF — the pre-change behaviour: the budget bounds only the
     // search, so the whole Θ(k²) saturation still runs.
     let off_wall = {
         let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "0");
@@ -166,9 +175,10 @@ fn small_budget_is_honoured_on_prep_bound_ontology() {
         let w = t.elapsed();
         assert!(
             h.stats().prep_timed_out,
-            "flag ON under a 1 ms budget must abandon prep on this fixture \
-             (if this fires, either the fixture became too cheap to overrun \
-             1 ms, or the deadline no longer reaches the prep phases)"
+            "flag ON under the budget must abandon prep on this fixture (if this \
+             fires: the fixture became too cheap to overrun the budget, or the budget \
+             dropped below conversion cost so prep was left unbounded, or the deadline \
+             no longer reaches the prep phases)"
         );
         w
     };
@@ -338,6 +348,11 @@ fn prep_timeout_hierarchy_is_a_subset_of_the_complete_one() {
         edges(&classify(&onto).expect("unbounded classify"))
     };
     let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
+    // NOTE: 1 ms is left as-is here on purpose. This test only asserts bounded ⊆ full,
+    // which holds trivially if the budget lands below conversion cost and prep runs
+    // unbounded (bounded == full) — so it cannot FAIL for that reason, it just stops
+    // testing anything. Raising it would change what the FP check covers; the honest
+    // record is that this canary is vacuous on a host where conversion exceeds 1 ms.
     let bounded =
         edges(&classify_with_budget(&onto, None, Some(Duration::from_millis(1))).expect("bounded"));
 

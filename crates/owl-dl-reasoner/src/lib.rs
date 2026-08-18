@@ -12290,3 +12290,144 @@ mod tableau_iterative_deepening_tests {
         assert!(!ctx.deadline_reached(), "clear must reset the sticky flag");
     }
 }
+
+/// Behavioural pin on the defaults of the CRATE-INTERNAL boolean flags.
+///
+/// The public accessors are pinned from an integration test
+/// (`tests/flag_defaults.rs`, which explains why a behavioural table beats parsing
+/// doc comments). These 13 are `pub(crate)`, so they are unreachable from there —
+/// yet they include the flag that actually drifted
+/// (`RUSTDL_CLASSIFY_LABELS_AMORTIZE`, documented OFF while shipping ON for two
+/// weeks) and `RUSTDL_ITERATIVE_DEEPENING`, whose default-ON flip carried 16 ORE
+/// recoveries. Leaving them unguarded would protect the accessible half and miss
+/// the half where the known incident happened.
+///
+/// To change a default: flip the code and this table in the same commit.
+#[cfg(test)]
+mod internal_flag_defaults {
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct Unset(&'static str, Option<std::ffi::OsString>);
+
+    impl Unset {
+        #[allow(unsafe_code)]
+        fn new(k: &'static str) -> Self {
+            let prior = std::env::var_os(k);
+            // SAFETY: every mutation here happens while ENV_MUTEX is held.
+            unsafe { std::env::remove_var(k) };
+            Self(k, prior)
+        }
+    }
+
+    impl Drop for Unset {
+        #[allow(unsafe_code)]
+        fn drop(&mut self) {
+            // SAFETY: as above.
+            unsafe {
+                match self.1.take() {
+                    Some(v) => std::env::set_var(self.0, v),
+                    None => std::env::remove_var(self.0),
+                }
+            }
+        }
+    }
+
+    /// `(env var, accessor, expected default when unset)`.
+    type Row = (&'static str, fn() -> bool, bool);
+
+    fn table() -> Vec<Row> {
+        vec![
+            (
+                "RUSTDL_ADAPTIVE_BUDGET",
+                super::adaptive_budget_enabled as fn() -> bool,
+                true,
+            ),
+            (
+                "RUSTDL_BOUND_DIVERGED_TAIL",
+                super::bound_diverged_tail_enabled,
+                false,
+            ),
+            (
+                "RUSTDL_CLASSIFY_AMORTIZE_IDX",
+                super::classify_amortize_idx_enabled,
+                true,
+            ),
+            (
+                "RUSTDL_CLASSIFY_BACKFOLD",
+                super::classify_backfold_enabled,
+                true,
+            ),
+            (
+                "RUSTDL_CLASSIFY_DEFINED_SWEEP",
+                super::classify_defined_sweep_enabled,
+                false,
+            ),
+            // The 2026-08-17 incident: documented OFF, shipping ON since 0.4.10.
+            (
+                "RUSTDL_CLASSIFY_LABELS_AMORTIZE",
+                super::classify_labels_amortize_enabled,
+                true,
+            ),
+            (
+                "RUSTDL_CLASSIFY_SAME_TIER",
+                super::classify_same_tier_enabled,
+                false,
+            ),
+            (
+                "RUSTDL_FRAGMENT_BARE_DECL",
+                super::fragment_bare_decl_enabled,
+                true,
+            ),
+            (
+                "RUSTDL_HYPER_INCREMENTAL_FIXPOINT",
+                super::incremental_fixpoint_enabled,
+                true,
+            ),
+            // Default-ON flip carried 16 ORE recoveries; replaced a fixed depth cap.
+            (
+                "RUSTDL_ITERATIVE_DEEPENING",
+                super::iterative_deepening_enabled,
+                true,
+            ),
+            (
+                "RUSTDL_SEMANTIC_BRANCHING",
+                super::semantic_branching_enabled,
+                false,
+            ),
+            (
+                "RUSTDL_TABLEAU_EA_STATS",
+                super::tableau_early_abandon_stats_enabled,
+                false,
+            ),
+            (
+                "RUSTDL_TABLEAU_ITERATIVE_DEEPENING",
+                super::tableau_iterative_deepening_enabled,
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn internal_bool_flag_defaults_are_pinned() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut drift = Vec::new();
+        for (key, accessor, want) in table() {
+            let _g = Unset::new(key);
+            let got = accessor();
+            if got != want {
+                drift.push(format!("  {key}: expected default {want}, got {got}"));
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "{} crate-internal flag default(s) drifted:\n{}\n(flip the code back, or update \
+             the table in `internal_flag_defaults` in the same commit)",
+            drift.len(),
+            drift.join("\n")
+        );
+    }
+}

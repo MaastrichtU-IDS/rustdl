@@ -404,3 +404,75 @@ fn untimed_classify_is_unaffected_by_the_flag() {
         "timed-out pairs"
     );
 }
+
+// ── The signal whose absence caused #61 and #62 ───────────────────────────────
+//
+// Both PRs fixed a canary in this file that silently stopped testing anything on a
+// host whose `convert_ontology` outran a 1 ms budget: `prep_bounding_active` is
+// evaluated AFTER conversion, so such a budget reads as already-spent and prep is
+// left unbounded — correct behaviour (an unmeetable budget should not abandon prep
+// and return nothing) but, until now, invisible. Both presented as host-speed
+// flakes with nothing pointing at the cause.
+//
+// `ClassificationStats::prep_unbounded_budget_spent` reports that fallback. These
+// tests pin it in all three states so the next occurrence names itself.
+
+/// A budget far BELOW conversion cost ⇒ prep left unbounded ⇒ the flag is set.
+/// This is precisely the state in which the two fixed canaries were vacuous.
+#[test]
+fn unmeetable_budget_reports_the_unbounded_fallback() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let onto = parse(&chain_ontology(500));
+    let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
+    let h = classify_with_budget(&onto, None, Some(Duration::from_nanos(1)))
+        .expect("classify under an unmeetable budget");
+    assert!(
+        h.stats().prep_unbounded_budget_spent,
+        "a 1 ns budget cannot survive `convert_ontology`, so prep must be left \
+         unbounded AND that must be reported — this is the exact state in which the \
+         #61/#62 canaries silently tested nothing"
+    );
+    assert!(
+        !h.stats().prep_timed_out,
+        "prep ran to completion (unbudgeted), so this is NOT a prep timeout — the two \
+         signals must not be conflated"
+    );
+}
+
+/// A budget comfortably above conversion cost ⇒ prep IS bounded ⇒ flag clear.
+/// Without this control the test above would pass with the flag hard-wired true.
+#[test]
+fn meetable_budget_does_not_report_the_fallback() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let onto = parse(&chain_ontology(500));
+    let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
+    let h = classify_with_budget(&onto, None, Some(Duration::from_millis(250)))
+        .expect("classify under a meetable budget");
+    assert!(
+        !h.stats().prep_unbounded_budget_spent,
+        "250 ms is >10x conversion cost for this fixture (the margin #61/#62 settled \
+         on), so prep must be bounded and the fallback flag clear"
+    );
+}
+
+/// No global budget ⇒ nothing to bound against ⇒ flag clear. Distinguishes
+/// "unbounded because the budget was spent" from "unbounded because none was asked
+/// for", which is the distinction that makes the signal actionable.
+#[test]
+fn absent_budget_is_not_reported_as_a_spent_budget() {
+    let _lock = ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let onto = parse(&chain_ontology(200));
+    let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
+    let h = classify_with_budget(&onto, None, None).expect("unbudgeted classify");
+    assert!(
+        !h.stats().prep_unbounded_budget_spent,
+        "no global budget was set, so the fallback did not fire; reporting it here \
+         would make the signal useless for diagnosing a spent budget"
+    );
+}

@@ -505,6 +505,22 @@ pub struct ClassificationStats {
     /// `completeness_guaranteed()` is false and `classify --json` reports
     /// `"incomplete": true`. See [`crate::prep_deadline_enabled`].
     pub prep_timed_out: bool,
+    /// A global budget was set but prep (conversion / saturation) was left
+    /// **UNBOUNDED**, because the budget was already spent by the time prep bounding
+    /// was decided.
+    ///
+    /// This is the deliberate fallback in [`prep_bounding_active`] — a budget that
+    /// cannot be met should not cause prep to be abandoned and nothing returned. But
+    /// until now the fallback was **unobservable**, and that cost two PRs: #61 and #62
+    /// each fixed a `prep_deadline.rs` canary that silently stopped testing anything
+    /// on a host whose `convert_ontology` outran a 1 ms budget. Both presented as
+    /// host-speed-dependent flakes with no signal pointing at the cause.
+    ///
+    /// `false` when no global budget was set (there is nothing to bound against) and
+    /// when the budget was honoured. Diagnostic only — it changes no verdict, and
+    /// unlike [`Self::prep_timed_out`] it does NOT imply incompleteness: prep ran to
+    /// completion, it simply ran unbudgeted.
+    pub prep_unbounded_budget_spent: bool,
 }
 
 impl Classification {
@@ -891,7 +907,23 @@ fn budget_origin(call_instant: Instant, budget: std::time::Duration) -> Instant 
 /// measured wall saving (−34.7% over 45 ontologies at a 20 s budget, row counts
 /// identical on all 45) everywhere else.
 fn prep_bounding_active(call_instant: Instant, budget: std::time::Duration) -> bool {
-    crate::prep_deadline_enabled() && Instant::now() < call_instant + budget
+    prep_bounding_decision(call_instant, budget).0
+}
+
+/// `(bound_prep, budget_already_spent)` — the same decision as
+/// [`prep_bounding_active`] plus WHY, so the fallback can be reported in
+/// [`ClassificationStats::prep_unbounded_budget_spent`] instead of being invisible.
+///
+/// `budget_already_spent` is true only in the case that matters: the flag is on, so
+/// the caller asked for bounded prep, and the budget was gone before the decision
+/// point. Flag-off is not reported — that is the caller switching the feature off,
+/// not a budget that could not be met.
+fn prep_bounding_decision(call_instant: Instant, budget: std::time::Duration) -> (bool, bool) {
+    if !crate::prep_deadline_enabled() {
+        return (false, false);
+    }
+    let within = Instant::now() < call_instant + budget;
+    (within, !within)
 }
 
 #[cfg(test)]
@@ -1017,8 +1049,21 @@ pub fn classify_with_budget<A: ForIRI>(
 ) -> Result<Classification, ReasonError> {
     let t0 = Instant::now();
     let internal = convert_ontology(ontology)?;
-    let global_deadline = global_budget.map(|b| budget_origin(t0, b) + b);
-    classify_top_down_internal(&internal, per_pair_timeout, global_deadline)
+    // Decide prep bounding ONCE and keep the reason, so the fallback is reportable.
+    // Note the decision point is AFTER `convert_ontology` — that is exactly why a
+    // budget smaller than conversion cost reads as already-spent, which is the
+    // mechanism behind the #61/#62 canary flakes.
+    let (global_deadline, budget_spent) = match global_budget {
+        Some(b) => {
+            let (bound, spent) = prep_bounding_decision(t0, b);
+            let origin = if bound { t0 } else { Instant::now() };
+            (Some(origin + b), spent)
+        }
+        None => (None, false),
+    };
+    let mut c = classify_top_down_internal(&internal, per_pair_timeout, global_deadline)?;
+    c.stats.prep_unbounded_budget_spent = budget_spent;
+    Ok(c)
 }
 
 /// Naive `n²` pair-sweep classifier. Kept for benchmarking and

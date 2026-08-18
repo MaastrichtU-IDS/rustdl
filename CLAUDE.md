@@ -1509,6 +1509,24 @@ leaving ~11 falsifiable "this fails" claims** — the sweep is cheap because tha
   ontology**: a flip needs the two-arm ORE sweep + a ΔMISSED arm, per this file's own record that
   a 12-ontology benchmark is not a population. Flipping it is also what would let
   `RUSTDL_PSEUDO_MODEL` recover the soundness-by-construction argument falsified below.
+  **THE FLIP SWEEP IS DONE (2026-08-18) AND THE ANSWER IS STAY OFF — but it is NOT inert.**
+  Frame = the **109 of 1,920** ORE ontologies carrying `InverseFunctionalObjectProperty` (the flag
+  is inert by construction elsewhere; a grep *superset*, so it cannot miss one). Classify:
+  **89 IDENTICAL, 16 both-DNF, 1 rows-differ, 3 REGRESSED** — `ore_ont_9662` 2.26 s, `7532`
+  2.82 s, `9786` 7.43 s all → **DNF at 120 s**, re-run sequentially on an idle host at double the
+  cap, OFF walls reproducing within 0.04 s (so not the concurrency confound), and still unfinished
+  at 120 s (so not slowdowns). Realize: **0 gains** over 22 usable of 53 — corpus-invisible, like
+  its functional sibling's 0-of-64. **But the one row-difference is a real completeness gain**:
+  `ore_ont_13859` closure 6253 → 6270, **+17 gained / 0 lost, all 17 confirmed by Konclude's
+  transitive closure**. So this is a **performance-blocked completeness gain**, not a dead end;
+  wall over the 90 both-completed is flat (85.3 vs 84.9 s), the cost being concentrated in three
+  ontologies. Mechanism is a **HYPOTHESIS, unmeasured** — the GCI puts an `at_most` on `r⁻` at
+  every node with an `r⁻`-successor, plausibly re-creating the cost class that made galen a
+  6.6-min DNF before the merge was made incremental. A retry costs <1 h (109 ontologies) and
+  should first confirm that mechanism, then narrow the trigger to where a merge is *consumable*
+  (the `RUSTDL_DKEY_MERGING_GATE` pattern). Until then **`RUSTDL_PSEUDO_MODEL`'s soundness-by-
+  construction argument stays falsified**, since restoring it requires this flag ON. See
+  `docs/2026-08-18-inverse-func-max-sweep.md`.
 * **`realize` dropped DERIVED individual equality, and the root cause FALSIFIES a shipped
   soundness claim** — `docs/known-limitations/realize-drops-derived-individual-equality.md`.
   The residual is **the pseudo-model prune, not the tableau**: `rustdl justify … instance x B`

@@ -196,26 +196,42 @@ fn prep_timeout_is_reported_incomplete() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _flag = SetEnvGuard::set("RUSTDL_PREP_DEADLINE", "1");
     let onto = parse(&chain_ontology(500));
+
+    // BUDGET SIZING IS LOAD-BEARING — it was 1 ms and that made this canary
+    // HOST-SPEED-DEPENDENT (failed on macOS CI 2026-08-17 run 32038310446 and
+    // 2026-08-18 run 32122945274, passed on re-run, passed everywhere locally).
+    //
+    // `classify_with_budget` takes `t0` BEFORE `convert_ontology` and only then
+    // evaluates `prep_bounding_active(t0, budget)`, so the elapsed time at that gate
+    // INCLUDES the whole conversion. A budget smaller than conversion cost therefore
+    // reads as already-blown and prep is deliberately left unbounded (see
+    // `classify::budget_origin` and docs/2026-08-17-prep-deadline-default-decision.md)
+    // — the classify then runs to completion and reports COMPLETE, which is what the
+    // CI failures showed: a 20.3 s wall under a 1 ms budget with timed_out_pairs=0.
+    // Conversion of this fixture is sub-millisecond on a fast host and >1 ms on the
+    // macOS runner, which is the entire flake.
+    //
+    // Proof of the mechanism, reproducible on any host: set the budget BELOW local
+    // conversion cost (`Duration::from_micros(1)`) and this test fails with exactly
+    // the CI signature — a multi-second wall, pure_el_mode=true, timed_out_pairs=0.
+    //
+    // So the budget must sit comfortably ABOVE conversion (~ms, host-dependent) and
+    // far BELOW prep (~10-20 s unbounded on this fixture). 250 ms gives both margins
+    // by more than an order of magnitude in each direction.
+    let budget = Duration::from_millis(250);
     let started = std::time::Instant::now();
-    let h = classify_with_budget(&onto, None, Some(Duration::from_millis(1)))
-        .expect("classify under 1 ms budget");
+    let h = classify_with_budget(&onto, None, Some(budget)).expect("classify under budget");
     let wall = started.elapsed();
 
-    // This canary failed once on macOS CI (2026-08-17, run 32038310446) and did
-    // not reproduce locally: not under load, not with the fixture shrunk 500 -> 40
-    // (it still overran), and not through a cached-flag race (`prep_deadline_enabled`
-    // reads the env live). `prep_bounding_active` is evaluated ~2 lines after the
-    // `t0` it compares against, so an unmeetable-budget skip does not explain it
-    // either. So report what would DISCRIMINATE the remaining candidates instead of
-    // asserting bare: a sub-1 ms wall means the fixture got too cheap to overrun the
-    // budget, while a wall far above 1 ms means prep ran long and the flag/phase
-    // simply did not fire — a real defect, and a different one.
+    // Kept self-diagnosing: on failure, say which side of the budget the wall fell on,
+    // because the two sides are different bugs.
     assert!(
         h.stats().prep_timed_out,
-        "prep_timed_out must be set — classify wall was {wall:?} against a 1 ms \
-         budget (< 1 ms ⇒ fixture too cheap to overrun it; >> 1 ms ⇒ prep overran \
-         but the signal did not fire), pure_el_mode={}, fragment={}, \
-         timed_out_pairs={}",
+        "prep_timed_out must be set — classify wall was {wall:?} against a {budget:?} \
+         budget (wall < budget ⇒ the fixture got too cheap to overrun it; wall >> \
+         budget ⇒ prep overran but the signal did not fire, e.g. conversion alone \
+         exceeded the budget so `prep_bounding_active` declined to bound prep), \
+         pure_el_mode={}, fragment={}, timed_out_pairs={}",
         h.stats().pure_el_mode,
         h.stats().fragment,
         h.stats().timed_out_pairs

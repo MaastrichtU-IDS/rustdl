@@ -376,7 +376,20 @@ impl<A: ForIRI> IncrementalSession<A> {
         } else {
             // Off the saturator's complete fragment the closure is only a
             // sound oracle, so fall back to the full hybrid classifier.
-            classify::classify_internal(&self.internal)?
+            //
+            // This MUST be the same entry point as the public
+            // [`crate::classify`] — i.e. the TOP-DOWN walk, not the `n²` pair
+            // sweep that `classify_internal` (and its public alias
+            // `classify_n2`) runs. The two are not verdict-equivalent off the
+            // EL fragment: on `bench-corpus/paper5.ofn` the sweep reports 37
+            // subsumptions and the top-down walk 20, because the top-down
+            // label heuristic prunes pairs the sweep probes. A session that
+            // answered from the sweep would give a user DIFFERENT answers from
+            // the ones `classify` gives them, purely for having edited their
+            // way to the axiom set — which is exactly what
+            // `tests/incremental_identity_gate.rs` exists to forbid. (It is
+            // also the slower of the two by ~2× on real inputs.)
+            classify::classify_top_down_internal(&self.internal, None, None)?
         };
         Ok(full.restricted_sorted(&self.live_class_iris()))
     }

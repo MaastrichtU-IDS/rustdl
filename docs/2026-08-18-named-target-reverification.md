@@ -1,4 +1,4 @@
-# Re-verifying every named open target: 1 limitation retired, 2 claims hold
+# Re-verifying every named open target: 2 claims hold, 1 "retirement" later REFUTED
 
 **Date:** 2026-08-18 · Run because this session's dominant finding is that the design record
 drifts **optimistically** — five proposals aimed at already-shipped work, three named targets
@@ -71,3 +71,21 @@ same-shaped mistake would have produced a confident, wrong "closed".
 * `ore_ont_11311` / `9944` remain the real open target, and CLAUDE.md's budget-allocation finding
   about them stands — with its own recorded caveat that starvation-unblocking is already a
   measured negative (`unsat_probe_cap`), because the starved consumer cannot finish either.
+
+---
+
+## CORRECTION (2026-08-19): the retirement above was TOO BROAD
+
+Re-running the limitation's **own census** found the starvation class has **5 members** in the
+40-slowest frame, up from the "~2 known" recorded — and the aggregate wall trade-off **inverted**
+(1377 → 1625 s under `pt=1`, where the original measured 1499 → 1267 s).
+
+Both facts are true at once and the distinction is the whole lesson:
+
+* the two **named** instances genuinely stopped reproducing (measured, twice, with controls);
+* the **class** is not empty — it has different, more numerous members.
+
+**Retiring a document's named examples is not retiring its defect.** The scope line above said
+"what is retired is the document's evidence, not a proof of absence" — correct, but the headline
+still read CLOSED, and a reader would have taken the defect as gone. Full data and the
+pre-registered analysis: `docs/2026-08-19-label-cache-starvation-census.md`.

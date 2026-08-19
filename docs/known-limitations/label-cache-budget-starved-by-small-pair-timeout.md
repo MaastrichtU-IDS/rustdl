@@ -1,10 +1,93 @@
 # A small `--pair-timeout-ms` starves the label-cache budget, costing up to 18× for identical output
 
-**Found:** 2026-08-06 · **Status: CLOSED 2026-08-18 on both censused instances — cause
-UNATTRIBUTED.** It was never fixed deliberately; re-measurement found the coupling gone.
-**Workaround (no longer needed):** `RUSTDL_LABEL_CACHE_TIMEOUT_MS=30000`
+**Found:** 2026-08-06 · **Status: OPEN and WORSE THAN RECORDED (census re-run 2026-08-19).**
+The two originally-named instances no longer reproduce, but the class has **5 members in the
+40-slowest frame** — up from "~2 known" — and the aggregate trade-off that justified
+*deliberately not fixed* has **INVERTED**.
+**Workaround:** `RUSTDL_LABEL_CACHE_TIMEOUT_MS=30000`
 
-> ## RETIRED BY RE-MEASUREMENT (2026-08-18)
+> ## CENSUS RE-RUN 2026-08-19 — THE 2026-08-18 "CLOSED" HEADLINE WAS WRONG
+>
+> An earlier edit of this file (same session) marked the defect CLOSED because both *named*
+> instances stopped reproducing. **That inference was too broad, and re-running this document's
+> own census refutes it.** Membership CHANGED; prevalence went UP.
+>
+> Frame: the 40 slowest v0.4.19 completers (`wall > 0.5 s`), single-threaded, three arms —
+> **A** default, **B** `--pair-timeout-ms 1`, **C** `--pair-timeout-ms 1` + a forced
+> `RUSTDL_LABEL_CACHE_TIMEOUT_MS=50` (the floor) as a **positive control**. Thresholds and the
+> verdict rule were **pre-registered** at this document's own 1.5×.
+>
+> | | recorded 2026-08-06 | census 2026-08-19 |
+> |---|---:|---:|
+> | `pt=1` ≥1.5× **SLOWER** | **1** | **5** |
+> | `pt=1` ≥1.5× faster | 12 | 3 |
+> | within 1.5× | 27 | 32 |
+> | aggregate wall | 1499.5 → **1267.0 s** (net *faster*) | 1377.3 → **1624.8 s** (net **+18% SLOWER**) |
+>
+> ### The 5 live members — all byte-identical output
+>
+> | ontology | default | `pt=1` | ratio | arm C | rows |
+> |---|---:|---:|---:|---:|---|
+> | `ore_ont_14272` | 21.76 s | 73.26 s | **3.37×** | 3.37× | identical (835) |
+> | `ore_ont_4827` | 37.14 s | 123.26 s | **3.32×** | 3.32× | identical (1006) |
+> | `ore_ont_9864` | 24.53 s | 79.53 s | **3.24×** | 3.24× | identical (904) |
+> | `ore_ont_8429` | 29.50 s | 90.50 s | **3.07×** | 3.07× | identical (1001) |
+> | `ore_ont_6923` | 38.36 s | 102.93 s | **2.68×** | 2.69× | identical (1038) |
+>
+> **Every arm-B ratio matches its arm-C ratio to within 0.01×.** That is mechanistic proof rather
+> than correlation: for these five, `--pair-timeout-ms 1` starves the per-class build *exactly as
+> completely* as pinning the budget to the 50 ms floor. The coupling this document describes is
+> intact and biting.
+>
+> ### The instrument is validated, so the numbers above are trustworthy
+>
+> Arm C fires on **12 of 40**, five of them to outright DNF at a 240 s cap (`15491` 8.96×,
+> `9151` 7.43×, `9299` 6.81×, `5617` 7.20×, `15066` 6.74×). A null in arm B would therefore have
+> been meaningful — and arm B is not null. Without this control, "5 members" and "0 members"
+> would have been indistinguishable from a blind instrument.
+>
+> ### Why the two ORIGINAL instances dropped out — and why that is not a fix
+>
+> `ore_ont_15108` is arm-B **flat (1.01×)** yet arm-C **2.10×**: the cache is still load-bearing
+> there, but a small per-pair budget no longer starves it. `ore_ont_15010` is no longer in the
+> 40-slowest frame at all (5.98 s). Six more behave the same way — arm-C-only members (`5617`,
+> `15066`, `9151`, `9299`, `13071`, `15491`).
+>
+> So the population split: on **7** ontologies the coupling has broken while the cache still
+> matters, and on **5** it has not. **Nothing was fixed; the membership moved.**
+>
+> ### THE COST/BENEFIT THAT JUSTIFIED "NOT FIXED" HAS INVERTED
+>
+> § Why not fixed rests on "the pathology is ~2 ontologies against 12 large wins in the same
+> sample", with the aggregate wall *improving* under `pt=1`. Both halves are now false: 5 against
+> 3, and the aggregate is **18% worse**. That does not by itself make raising
+> `LABEL_CACHE_FLOOR_MS` correct — the per-class `n × F` objection in that section still stands —
+> but the empirical argument for inaction is gone and the section needs re-deciding on current
+> numbers.
+>
+> ### A guess of mine, refuted
+>
+> I predicted the original's "12 large wins" were partly **truncation** — `--pair-timeout-ms 1`
+> is a sound under-approximation, so a faster arm may simply have given up. **Wrong:** all 3
+> faster members have **identical row counts** (`9429` 2706, `934` 107, `4796` 203), so they are
+> clean wins. Only 2 ontologies change output at all under `pt=1`, and both are ~flat in wall
+> (`15066` 8986 → 8952 rows, `9151` 11478 → 11477) — i.e. incompleteness and the wall pathology
+> are **disjoint** phenomena here, not two faces of one.
+>
+> Raw data: `docs/benchmarks/data-2026-08-19-label-cache-starvation-census40.tsv`
+>
+> ### Threats to validity
+>
+> * Frame drawn from the **v0.4.19** sweep, not the 2026-08-06 one, so the two censuses do not
+>   cover identical ontology sets. The comparison is of *rates and aggregates*, not paired.
+> * All 40 files are content-distinct, but `ore_ont_10689` and `ore_ont_868` return identically
+>   981,144 rows, which suggests **logical** duplication a content hash cannot detect — effective
+>   *n* may be slightly below 40.
+> * Arm-C DNFs are censored at 240 s, so those ratios are **lower bounds**.
+
+> ## (SUPERSEDED by the census above — kept because its per-instance measurements are correct)
+>
+> ## Re-measurement of the two NAMED instances (2026-08-18)
 >
 > Both censused instances, single-threaded, current `main` (`0c1df06`):
 >

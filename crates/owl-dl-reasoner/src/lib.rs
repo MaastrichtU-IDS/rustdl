@@ -2875,8 +2875,27 @@ pub fn label_cache_timeout_ms() -> u64 {
 /// See `docs/2026-08-19-label-cache-probe.md`.
 pub(crate) const LABEL_CACHE_PROBE_MS: u64 = 1000;
 
-/// Escalation probe for the per-class label-cache budget. **Default OFF** pending the
-/// corpus sweep — it changes the budget on every small-`n` ontology.
+/// Escalation probe for the per-class label-cache budget. **DEFAULT OFF** (`=1` enables) —
+/// held off by a MEASURED ship-vs-ship dead heat, not by doubt about the mechanism.
+///
+/// Over the 509 ORE ontologies the probe's guard admits, shipped-default vs proposed-default
+/// (both at default env): **502 identical, 0 `ok → DNF`, 0 answer changes**, one real win
+/// (`ore_ont_5107` **6.65 s → 1.76 s, 3.78×**), **0 losses** — and **aggregate 233.7 → 234.0 s,
+/// net +0.01 s**. The single win is *exactly* cancelled by the probe's distributed cost, so
+/// defaulting it on buys nothing corpus-wide while adding machinery. As an opt-in it is a real
+/// 3.78× fix for a real pathology.
+///
+/// (A within-binary sweep — `unset` vs `=0` on the proposed build — reported +6.82 s and looked
+/// much better. That baseline is the 12.90 s `=0` path on that build, not the 6.65 s users have,
+/// so it overstated the case. The ship-vs-ship comparison is the one that decides a default.)
+///
+/// The probe also needed a second fix to be trustworthy at all: the escalation decision was
+/// MARGINAL — it
+/// hinged on one class finishing inside the 1000 ms retry, and instrumentation showed
+/// that class failing in one build and succeeding in another from identical source, so
+/// the benefit was a coin flip. The retry now decides at **2×** the budget it applies
+/// (`decide_dur` in `classify.rs`), which is decisive because a uniform 800 ms budget
+/// already makes every class of the win case succeed.
 ///
 /// Rationale and the measurements that rule out the obvious alternative (a floor) are on
 /// the call site in `classify.rs` and in `docs/2026-08-19-label-cache-probe.md`.

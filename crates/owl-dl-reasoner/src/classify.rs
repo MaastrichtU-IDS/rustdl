@@ -3449,8 +3449,17 @@ fn classify_top_down_internal_impl(
                 None => cache_ms,
                 Some(i) => {
                     let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
+                    // DECIDE with a budget strictly larger than the one we would APPLY.
+                    // The decision was otherwise marginal: measured, the deciding class on
+                    // `ore_ont_5107` failed its 1000 ms retry in one build and succeeded in
+                    // another, from identical source — so escalation was a coin flip and the
+                    // probe's benefit was not reproducible. A uniform 800 ms budget makes
+                    // every class of that ontology succeed, so the class is far from needing
+                    // 1000 ms; deciding at 2× removes the knife-edge without changing what
+                    // gets applied on success.
+                    let decide_dur = probe_dur.saturating_mul(2);
                     let rescued = prepared
-                        .classify_labels(id, effective_deadline(global_deadline, Some(probe_dur)));
+                        .classify_labels(id, effective_deadline(global_deadline, Some(decide_dur)));
                     let rescued_nv = matches!(rescued, crate::LabelOracle::NoVerdict);
                     if !rescued_nv {
                         // Escalating, and this class is now decided — carry it over too.

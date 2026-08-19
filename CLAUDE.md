@@ -1689,11 +1689,32 @@ INDEPENDENTLY.
     slower on the ON-default ones). Ruled out by measurement: host drift (interleaved A/B, pinned
     control reproducing 6.65 s), build nondeterminism (byte-identical rebuilds), a stale artifact
     (forced reasoner recompile), file corruption (constants + guard verified), a second call site
-    (one, grepped), and flag semantics. What remains is **codegen** in `classify_internal` — this
-    tree has documented env-flag hot-loop sensitivity of that shape — and **I did not localise it
-    further; the mechanism is NOT asserted.** So the flag stays OFF: the probe is a verified
-    opt-in, but *making it the default* is what regresses. A future attempt must first reproduce
-    the 2× on a smaller unit than `classify_internal`, or diff the generated code for that block.
+    (one, grepped), and flag semantics. **THE "CODEGEN" DIAGNOSIS WAS WRONG AND
+    IS RETRACTED.** Instrumentation showed the probe was *running and failing to escalate* — a
+    functional bug in my decision rule, not a compiler artifact. Both builds scan the same 7
+    classes and both hit a failing class at i=42; they differ only in whether that ONE class
+    finishes inside the 1000 ms retry, so **escalation was a coin flip**. The counters had said so
+    all along (slow builds report `pruned=710 misses=19`, *identical to not probing*; fast ones
+    `pruned=729 misses=0`). **Fixed** by deciding at **2×** the budget applied — decisive because
+    a *uniform* 800 ms budget already makes every class of the win case succeed, so the deciding
+    class was never short of budget. Both predicate shapes now escalate reproducibly.
+    **Method rule earned here: when two wall measurements of the SAME source disagree, print what
+    the code DID rather than theorising about why it was slow.** Three causal stories in this one
+    thread had to be withdrawn ("5 live starvation members", "no fix warranted", "codegen 2×").
+    **Known wart:** on the fixed binary `=0` gives 12.90 s on `ore_ont_5107` vs 6.65 s shipped —
+    that ontology's OFF path has measured 6.63/6.65/8.47/12.90 s across near-identical builds, so
+    **`=0` is a FUNCTIONAL revert, not a performance one.**
+    **FLIP SETTLED BY SHIP-VS-SHIP: a measured DEAD HEAT, so DEFAULT OFF.** Over the same 509
+    frame, shipped-default vs proposed-default (both at default env): 502 identical, **0 ok→DNF,
+    0 answer changes**, one win (`ore_ont_5107` **6.65 → 1.76 s, 3.78×**), 0 losses, **aggregate
+    233.7 → 234.0 s = net +0.01 s** — the single win exactly cancelled by distributed probe cost.
+    **A net-zero aggregate does not justify a default change plus new machinery**; as an opt-in it
+    is a real 3.78× fix and is now deterministic. **The within-binary sweep (`unset` vs `=0`) said
+    +6.82 s and was INFLATED BY CONSTRUCTION** — its baseline is the 12.90 s `=0` path on the new
+    build, not the 6.65 s users have. *Measuring a flag's effect and measuring the ship delta are
+    different questions; only the second decides a default.* **Residual: the `pt=1` scope arm was
+    not re-run on the fixed binary** (a small per-pair budget widens the guard from n<200 to
+    n<1000, +321 ontologies); it does not gate an OFF default but would gate any future flip.
     See `docs/2026-08-19-label-cache-probe.md`.
   * **The frame error worth carrying: a population selected on "SLOWEST" cannot see a defect
     whose precondition is "SMALL".** My "no fix warranted" verdict came from the 40-slowest

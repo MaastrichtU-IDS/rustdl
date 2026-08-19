@@ -124,7 +124,14 @@ Raw data: `docs/benchmarks/data-2026-08-19-label-cache-probe-19.tsv`,
 
 ---
 
-## The flip sweep PASSED — and the flip is BLOCKED anyway, by a codegen effect
+## The flip sweep PASSED, the flip first FAILED, and my "codegen" diagnosis was WRONG
+
+> **RETRACTED, then fixed (same day).** This section originally concluded the flip was blocked
+> by "a codegen effect" that I could characterise but not explain. **Instrumentation refuted
+> that.** The probe was *running and failing to escalate* — a functional bug in my own decision
+> rule, not a compiler artifact. See § THE REAL MECHANISM below. The sweep data in this section
+> is accurate; the diagnosis was not, and it is the third causal story in this thread I had to
+> withdraw.
 
 **Date:** 2026-08-19 (later). The two-arm sweep cleared the probe behaviourally. Flipping the
 default nonetheless makes `ore_ont_5107` **2× slower on a code path whose runtime behaviour is
@@ -196,3 +203,84 @@ independent ones already failed identically.
 
 Raw data: `docs/benchmarks/data-2026-08-19-probe-sweep-default-509.tsv`,
 `…-probe-sweep-pt1-321.tsv`
+
+
+---
+
+## THE REAL MECHANISM: the escalation decision was MARGINAL (fixed)
+
+I stopped inferring from walls and printed what the probe actually did. Both builds, `=1`,
+identical instrumented source:
+
+```
+PROBEDBG gate enabled=true ovr_none=true cache_ms=245 n=49
+PROBEDBG scan_ok i=0 … i=36          (7 classes decided at the small budget)
+build A: PROBEDBG final cache_ms=245  reuse=7   <- retry FAILED, no escalation
+build B: PROBEDBG final cache_ms=1000 reuse=8   <- retry SUCCEEDED, escalated
+```
+
+Both scan the same 7 classes successfully and both hit a failing class at **i=42**. They differ
+only in whether that one class finishes inside the 1000 ms retry. **The escalation decision was a
+coin flip**, which is why the same source produced 1.13 s in one build and 14.5 s in another, and
+why every wall-based story I told about it contradicted the next one.
+
+The counters said the same thing all along and I read them too late: the slow builds report
+`pruned=710 misses=19` — *identical to not probing at all* — while the fast ones report
+`pruned=729 misses=0`.
+
+**Fix:** decide at **2× the budget that gets applied** (`decide_dur = probe_dur * 2`). This is
+decisive rather than arbitrary: a *uniform* 800 ms budget already makes every class of the win
+case succeed (`misses=0`, 0.81 s), so the deciding class needs far less than the 1000 ms it was
+being given — the failure was a knife-edge, not a shortfall. After the fix **both** predicate
+shapes escalate reproducibly (`final cache_ms=1000`).
+
+### What this cost, and the lesson
+
+Three wrong causal stories in one thread — "5 live starvation members", "no fix warranted", "a
+codegen 2×" — each plausible, each refuted by a measurement I could have run first. The
+instrumentation that settled it took one build cycle. **When two wall measurements of the same
+source disagree, print what the code DID; do not theorise about why it was slow.**
+
+### Known wart, recorded rather than smoothed over
+
+On the fixed binary `RUSTDL_LABEL_CACHE_PROBE=0` gives **12.90 s** on `ore_ont_5107` where
+today's shipped default gives **6.65 s**. That ontology's OFF-path wall has now measured 6.63,
+6.65, 8.47 and 12.90 s across builds of near-identical source — it is layout-sensitive in a way I
+never localised. **So `=0` is a FUNCTIONAL revert, not a performance one.** Anyone relying on the
+escape hatch to restore current walls should know that.
+
+
+---
+
+## THE FLIP DECISION, settled by ship-vs-ship: a measured DEAD HEAT
+
+Two sweeps over the same 509-ontology frame, and they disagree — which is the point.
+
+| comparison | what it answers | result |
+|---|---|---|
+| **within-binary** (`unset` vs `=0`, proposed build) | does the flag do what it claims? | 502 identical, 0 regressions, 1 win 7.33×, **net +6.82 s** |
+| **ship-vs-ship** (shipped default vs proposed default, both at default env) | **is a user better off?** | 502 identical, 0 regressions, 1 win **3.78×**, **net +0.01 s** |
+
+The within-binary number is inflated **by construction**: its baseline is the 12.90 s `=0` path on
+the proposed build, not the 6.65 s users actually have. Measuring the flag's effect and measuring
+the ship delta are different questions, and only the second decides a default.
+
+Ship-vs-ship, in full: `ore_ont_5107` **6.65 s → 1.76 s (3.78×)**, cost **4.88 s** spread over the
+rest, gain **4.89 s**. **The single win is exactly cancelled.** No `ok → DNF`, no answer changes,
+no ontology ≥1.5× slower.
+
+**Decision: DEFAULT OFF.** A net-zero aggregate does not justify changing a default and carrying
+new machinery (probe, strided scan, result reuse, 2× decision budget). As an **opt-in** it is a
+genuine 3.78× fix for a genuine pathology, and it is now *deterministic*, which it was not before.
+
+This supersedes the earlier "blocked by codegen" reasoning entirely: the flip is not blocked, it is
+**not worth it**, and that is a measurement rather than a mystery.
+
+### Residual, stated plainly
+
+* **The `pt=1` scope arm was not re-run on the fixed binary.** A small per-pair budget widens the
+  guard from `n < 200` to `n < 1000`, so 321 more ontologies come into scope there. It was clean on
+  the pre-fix binary; the 2× decision budget changes its cost. Since the flag ships OFF this does
+  not gate anything, but **it would gate any future flip.**
+* The `=0` performance wart above stands (functional revert, not a performance one).
+* The probe's benefit rests on **one ontology in 509**. That is the honest size of the target.

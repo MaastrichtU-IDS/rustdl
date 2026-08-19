@@ -9,6 +9,7 @@
 //! `DataMax`) land in Phase 3 alongside the minimal datatype slice.
 
 use hashbrown::HashMap;
+use smallvec::{SmallVec, smallvec};
 
 /// Index of a named class (e.g. `Person`). Interning of class IRIs to
 /// [`ClassId`]s lives outside this module — see the upcoming vocabulary
@@ -175,6 +176,70 @@ pub enum ConceptExpr {
     All(Role, ConceptId),
     Min(u32, Role, ConceptId),
     Max(u32, Role, ConceptId),
+}
+
+impl ConceptExpr {
+    /// The [`ConceptId`]s this expression directly references.
+    ///
+    /// Exhaustive by design: **no wildcard arm**. Adding a `ConceptExpr`
+    /// variant must be a compile error here, because a silently unvisited
+    /// variant would drop entities from the live signature
+    /// ([`crate::signature`]) and resurrect the phantom-entity bug that
+    /// signature filtering exists to prevent - and it would surface as a
+    /// wrong reported class list, not as a test failure.
+    pub fn child_concepts(&self) -> SmallVec<[ConceptId; 4]> {
+        match self {
+            Self::Top
+            | Self::Bot
+            | Self::Atomic(_)
+            | Self::Nominal(_)
+            | Self::SelfRestriction(_) => SmallVec::new(),
+            Self::Not(c)
+            | Self::Some(_, c)
+            | Self::All(_, c)
+            | Self::Min(_, _, c)
+            | Self::Max(_, _, c) => smallvec![*c],
+            Self::And(cs) | Self::Or(cs) => cs.iter().copied().collect(),
+        }
+    }
+
+    /// The [`RoleId`]s this expression directly references, regardless of
+    /// inverse polarity. Exhaustive by design - see [`Self::child_concepts`].
+    pub fn child_roles(&self) -> SmallVec<[RoleId; 1]> {
+        match self {
+            Self::Top
+            | Self::Bot
+            | Self::Atomic(_)
+            | Self::Nominal(_)
+            | Self::Not(_)
+            | Self::And(_)
+            | Self::Or(_) => SmallVec::new(),
+            Self::SelfRestriction(r)
+            | Self::Some(r, _)
+            | Self::All(r, _)
+            | Self::Min(_, r, _)
+            | Self::Max(_, r, _) => smallvec![r.role_id()],
+        }
+    }
+
+    /// The [`IndividualId`]s this expression directly references.
+    /// Exhaustive by design - see [`Self::child_concepts`].
+    pub fn child_individuals(&self) -> SmallVec<[IndividualId; 1]> {
+        match self {
+            Self::Nominal(i) => smallvec![*i],
+            Self::Top
+            | Self::Bot
+            | Self::Atomic(_)
+            | Self::SelfRestriction(_)
+            | Self::Not(_)
+            | Self::And(_)
+            | Self::Or(_)
+            | Self::Some(..)
+            | Self::All(..)
+            | Self::Min(..)
+            | Self::Max(..) => SmallVec::new(),
+        }
+    }
 }
 
 /// Interning arena for [`ConceptExpr`].

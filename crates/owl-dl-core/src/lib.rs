@@ -22,6 +22,7 @@ pub mod normalize;
 pub mod ontology;
 pub mod residual_trigger;
 pub mod role_hierarchy;
+pub mod signature;
 pub mod told;
 pub mod transform;
 pub mod vocab;

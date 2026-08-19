@@ -16,6 +16,11 @@ Bookkeeping* (ISWC 2013); KM (`bio-ontology-research-group/kobayashi-marust`)
 ## Revision history
 
 - **v1 (2026-08-18)** — initial design.
+- **v2.1 (2026-08-19)** — bail-out repriced from class-count to estimated repair cost;
+  invalidation moved behind a policy seam so the ELK-vs-DRed choice is a swap, not a rewrite;
+  new P0 edit-locality measurement that decides that choice before P2 is written. Corrected
+  v2's claim that the §5a axiom index was a partial DRed — it is `rule → axiom`, not
+  `fact → support`, so it is shared infrastructure rather than a cheap precision upgrade.
 - **v2 (2026-08-19)** — reworked after review. §3 gained the derived-axiom overlay (v1 was
   **unsound on delete**); §5's mark-closure gained three missing dependency channels and the
   global-state repair contract; §6 now enumerates through `entails()` rather than raw rows;
@@ -293,17 +298,37 @@ on** — the mode §5 rejects on memory grounds. The design therefore needs a ch
 rule→axiom index carrying **indices only**, no `Inference` records. This is a small structure
 (one `usize` per compiled rule) and it is a prerequisite for deletion, not an optimization.
 
-Note this also re-prices the DRed alternative: axiom-index-only provenance is a middle option
-between no bookkeeping and full `ProofTrace` DRed, and it gets most of DRed's invalidation
-precision at a fraction of the memory. If §5's context marking proves too coarse in P2, this
-index — already built — is the upgrade path, and it is cheaper than the full-`ProofTrace` DRed
-that v1 named as the fallback.
+**This index is NOT a partial DRed** — a correction to an earlier reading. It holds
+`rule → axiom index`; fact-level DRed needs `fact → supporting premises`, which is a different
+map and is exactly `ProofTrace.steps` (`proof.rs:141`), whose memory is what rules it out at
+SNOMED scale. So there is no cheap precision upgrade waiting here: this index is infrastructure
+both algorithms require for rule removal, not a down-payment on DRed.
 
-**Bail-out.** If `|marked| > RUSTDL_INC_REBUILD_FRACTION × num_classes` (default `0.30`),
-discard the marking and full-rebuild. This is what bounds the worst case at roughly today's
-cost plus one marking pass. On densely connected TBoxes (GALEN is the expected case) this
-will fire often; the evaluation reports the firing rate per ontology as a headline number
+**Invalidation lives behind a policy seam.** Because ELK-style marking and DRed share their
+entire substrate — this index, fact tombstoning, `seen_facts` eviction, context repair — the
+only thing that differs is the policy deciding *what* to invalidate (a context set vs a support
+set). P1 builds the substrate and puts the policy behind one trait, so switching later is a swap
+rather than a rewrite. The choice between the two therefore does not have to be made correctly
+today; it is made by the P0 measurement below.
+
+**Bail-out, priced in COST not COUNT.** A raw class-count fraction is the wrong currency:
+marking a wide cone of leaf classes with near-empty contexts is far cheaper than marking a
+handful of dense root contexts, so a count threshold fires backwards in exactly the cases that
+matter. The threshold compares **estimated repair cost** against **rebuild cost**:
+
+```
+repair_cost  ≈ Σ_{c ∈ marked} (subsumers_count(c) + facts_by_sub[c].len())
+rebuild_cost ≈ Σ_{c ∈ all}    (subsumers_count(c) + facts_by_sub[c].len())
+bail out iff repair_cost > RUSTDL_INC_REBUILD_FRACTION × rebuild_cost   (default 0.30)
+```
+
+Both sums are available from retained state at marking time, so the estimate is O(|marked|),
+not a second pass over the ontology. This bounds the worst case at roughly today's cost plus
+one marking pass, and the evaluation reports the firing rate per ontology as a headline number
 rather than burying it.
+
+**Expect this to fire often on dense TBoxes, and know the number before building P2** — see
+the P0 edit-locality measurement in *Phasing*.
 
 **Documented alternative, not chosen.** `proof.rs` already ships a truth-maintenance table
 (`steps: HashMap<DerivedFact, Inference>`, `crates/owl-dl-saturation/src/proof.rs:141`)
@@ -587,10 +612,12 @@ performance is its tail, not its mean.
 
 ## Phasing
 
-Every phase is gated on the identity gate (gate 1) for the functionality it ships.
+Every phase is gated on the identity gate (gate 1) for the functionality it ships. P0 is a
+measurement, not an engine phase, and runs concurrently with P1.
 
 | Phase | Content | Ships |
 |---|---|---|
+| **P0** | **Edit-locality measurement.** No incremental code: diff real GO authoring history (per-commit, not release-to-release — closer to interactive edits) and, for each delete, compute the marked set's *cost* fraction from an existing batch `Classification` (the marked set is approximately the descendant cone of the touched classes, plus the §5 channels). Output: the distribution of `repair_cost / rebuild_cost` over real edits. | The number that decides P2's algorithm. p50 comfortably < 0.30 ⇒ ELK-style marking is right and leaf-edit deletion is the honest pitch; p50 above ⇒ deletion needs fact-support invalidation, and the §5a policy seam gets its second implementation. Cheap (a scripting job against existing machinery) and **does not block P1**, which is addition-only. |
 | **P1** | Id headroom (8 allocator maps), `convert_delta` + derived-axiom overlay, entity refcounts, axiom tombstoning, always-on rule→axiom index, session skeleton, addition-only saturation; **full rebuild on any delete** | A working session with real speedup on additions. **Exit criterion:** a single-axiom addition on galen completes in ≤ 2× the measured 5.8 ms floor (≤ ~12 ms). If not, the retained-state design is not paying off and is re-examined before P2 builds deletion on it. |
 | **P2** | ELK-style context invalidation for deletion + bail-out | Symmetric add/remove |
 | **P3** | Tableau monotonicity retention + sticky incompleteness | Hybrid (non-EL) ontologies benefit |
@@ -619,7 +646,11 @@ because the CLI protocol is how external reasoners get driven comparably.
    the zero-tableau `classify_pure_el` path) was available locally. That is simultaneously the
    feature's best case and the floor's hardest test. Measure before fixing the evaluation's
    headline claims.
-5. **Is the 0.30 bail-out a fig leaf?** With the §5 subsumption channel added, a delete above
-   the leaves marks descendant cones, so on GALEN/SNOMED shapes deletion reuse may be near
-   zero and P2's honest value proposition becomes *leaf-edit* deletion. The authoring-trace
-   scripts decide whether that is enough; if not, §5a's axiom-index provenance is the answer.
+5. **Is the 0.30 bail-out a fig leaf? — now owned by P0, not left open.** The over-marking is
+   caused by an *optimization*, not the logic: Phase 2d eagerly materializes inherited ∃-facts
+   into every subclass (`lib.rs:1364`, `:951-1017`), whereas textbook ELK propagates between
+   contexts along ∃-edges. That trade bought batch speed and is what makes deletion expensive,
+   so de-materializing it is rejected — it would regress the batch path that currently works.
+   Whether it *matters* is an empirical question about where real authoring edits land, which
+   P0 answers before P2 is written. Recorded here as resolved-by-measurement rather than as a
+   standing design doubt.

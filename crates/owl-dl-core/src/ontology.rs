@@ -124,9 +124,10 @@ impl InternalOntology {
     /// Call after code paths that push straight into `axioms`.
     pub fn sync_liveness(&mut self) {
         let n = self.axioms.len();
-        if self.live.len() < n {
+        let old_len = self.live.len();
+        if old_len < n {
             self.live.grow(n);
-            for i in 0..n {
+            for i in old_len..n {
                 self.live.insert(i);
             }
         }

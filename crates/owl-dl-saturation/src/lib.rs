@@ -258,6 +258,10 @@ pub fn saturate_for_realize(
                 let n_b = tseitin.introduce_nominal(*object);
                 rules.push_existential_fact(n_a, role.role_id(), n_b);
                 if let Some(ranges) = effective_ranges.get(&role.role_id()) {
+                    // MULTI-SOURCE: attributed to this ObjectPropertyAssertion,
+                    // but `rng` comes from an ObjectPropertyRange axiom. Deleting
+                    // THAT axiom invalidates `N_b ⊑ rng` without matching its
+                    // provenance. See the `ElRules` doc, case 3.
                     for &rng in ranges {
                         rules.push_atomic_subsumption(n_b, rng);
                     }
@@ -267,6 +271,7 @@ pub fn saturate_for_realize(
         }
     }
     rules.clear_axiom();
+    rules.debug_assert_provenance_parity();
 
     let nominal_by_ind = tseitin.nominal_by_ind.clone();
     let num_total_classes = tseitin.next_id as usize;
@@ -2281,6 +2286,45 @@ pub const NO_AXIOM: u32 = u32::MAX;
 /// [`NO_AXIOM`] when it has none. The provenance is built unconditionally (it
 /// is one `u32` push per compiled rule) — unlike [`proof::ProofTrace`], which
 /// carries the same mapping only under `record_proofs`.
+///
+/// # INVARIANT A CONSUMER MUST RESPECT: provenance is not complete
+///
+/// `axiom_of_*[i]` names **a** responsible axiom, not **all** of them. A `u32`
+/// is a scalar; four lowering shapes emit a rule that is *jointly* entailed by
+/// two or more axioms, and only one of them gets named. Therefore:
+///
+/// > **Deleting an axiom that a rule does not name may still invalidate that
+/// > rule.** Removing exactly the rules whose provenance equals the deleted
+/// > axiom is *necessary but not sufficient*.
+///
+/// Getting this wrong is not a missed optimisation — it retains a consequence
+/// whose support is gone, i.e. a **false positive**, the failure mode this
+/// index exists to prevent. A deletion phase must either handle the four shapes
+/// below explicitly or fall back to a full recompile when a deleted axiom is of
+/// a co-contributing kind (`ClassAssertion`, `ObjectPropertyDomain`,
+/// `ObjectPropertyRange`).
+///
+/// The four sites are marked `// MULTI-SOURCE:` in this file — `grep -n
+/// 'MULTI-SOURCE'` is the authoritative list. As of this writing:
+///
+/// 1. **`OneOf` common-subsumer** (`collect_el_rules`, `seed_for`): `X ⊑ C` is
+///    attributed to the `X ⊑ ObjectOneOf(a₁…aₙ)` axiom, but `C` is the
+///    intersection of the asserted types of *every* member, gathered from every
+///    `ClassAssertion` in the ontology. Deleting any member's `ClassAssertion`
+///    can invalidate `X ⊑ C` while leaving it compiled.
+/// 2. **`X ⊑ ∃R.Self` domain/range heads** (`lower_sub_class_of`): attributed to
+///    the `SubClassOf`, co-derived from `ObjectPropertyDomain(R,_)` /
+///    `ObjectPropertyRange(R,_)`.
+/// 3. **`ABox` edge range seeding** (`saturate_for_realize`): `N_b ⊑ Rng` is
+///    attributed to the `ObjectPropertyAssertion`, co-derived from the
+///    `ObjectPropertyRange` axiom that put `Rng` in `effective_ranges`.
+/// 4. **Range-folded existential targets** (`lower_sub_class_of` via
+///    `atomic_existential_rhs`): the fact is attributed to the `SubClassOf`, but
+///    its Tseitin target has the role's `effective_ranges` folded into the body,
+///    so an `ObjectPropertyRange` axiom co-determines the target id.
+///
+/// Tseitin/synthetic clauses are a *different* case and are handled soundly: see
+/// [`NO_AXIOM`].
 #[derive(Debug, Default, Clone)]
 pub struct ElRules {
     /// Direct named-to-named `A ⊑ B` facts.
@@ -2360,8 +2404,9 @@ pub struct ElRules {
     /// Source axiom of `directly_unsat[i]`, or [`NO_AXIOM`]. Same length.
     ///
     /// Load-bearing for deletion: a `C ⊑ ⊥` rule left behind after its
-    /// `SubClassOf(C, Bot)` (or `DisjointClasses`-derived) axiom is removed
-    /// keeps `C` permanently flagged unsatisfiable — a false positive.
+    /// `SubClassOf(C, Bot)` axiom is removed keeps `C` permanently flagged
+    /// unsatisfiable — a false positive. (`DisjointClasses` does NOT reach this
+    /// vector; it lowers to `disjoint_pairs`. There is exactly one push site.)
     pub axiom_of_directly_unsat: Vec<u32>,
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
@@ -2465,6 +2510,47 @@ impl ElRules {
         let ax = self.axiom_slot();
         self.directly_unsat.push(c);
         self.axiom_of_directly_unsat.push(ax);
+    }
+
+    /// Every rule vector must be exactly as long as its `axiom_of_*` twin.
+    ///
+    /// The `push_*` helpers above maintain this, but all six rule vectors are
+    /// `pub`, so an in-crate `rules.atomic_subsumptions.push(...)` that bypasses
+    /// them compiles fine and silently desynchronizes the index — after which
+    /// `axiom_of_x[i]` describes a *different* rule than `x[i]`, i.e. provenance
+    /// pointing at the wrong axiom. Called at every point where rule collection
+    /// is finished. Free in release.
+    fn debug_assert_provenance_parity(&self) {
+        debug_assert_eq!(
+            self.atomic_subsumptions.len(),
+            self.axiom_of_atomic_sub.len(),
+            "atomic_subsumptions provenance desync — a push bypassed push_atomic_subsumption"
+        );
+        debug_assert_eq!(
+            self.conjunctive_triggers.len(),
+            self.axiom_of_conjunctive_trigger.len(),
+            "conjunctive_triggers provenance desync — a push bypassed push_conjunctive_trigger"
+        );
+        debug_assert_eq!(
+            self.existential_facts.len(),
+            self.axiom_of_existential_fact.len(),
+            "existential_facts provenance desync — a push bypassed push_existential_fact"
+        );
+        debug_assert_eq!(
+            self.existential_triggers.len(),
+            self.axiom_of_existential_trigger.len(),
+            "existential_triggers provenance desync — a push bypassed push_existential_trigger"
+        );
+        debug_assert_eq!(
+            self.disjoint_pairs.len(),
+            self.axiom_of_disjoint_pair.len(),
+            "disjoint_pairs provenance desync — a push bypassed push_disjoint_pair"
+        );
+        debug_assert_eq!(
+            self.directly_unsat.len(),
+            self.axiom_of_directly_unsat.len(),
+            "directly_unsat provenance desync — a push bypassed push_directly_unsat"
+        );
     }
 
     /// True if `r` is declared `FunctionalObjectProperty`.
@@ -3460,6 +3546,12 @@ fn collect_el_rules(
                 }
             }
             if let Some(common) = common {
+                // MULTI-SOURCE: attributed to the `X ⊑ ObjectOneOf(…)` axiom the
+                // caller is lowering, but every `sup` here is an intersection over
+                // the asserted types of ALL members, gathered from every
+                // ClassAssertion in the ontology. Deleting a member's
+                // ClassAssertion invalidates `X ⊑ sup` without matching its
+                // provenance. See the `ElRules` doc, case 1.
                 for sup in common {
                     rules.push_atomic_subsumption(*x, sup);
                 }
@@ -3484,6 +3576,7 @@ fn collect_el_rules(
         rules.clear_axiom();
     }
 
+    rules.debug_assert_provenance_parity();
     (rules, tseitin, total_classes)
 }
 
@@ -3567,6 +3660,10 @@ fn lower_sub_class_of(
                     .flatten()
                     .copied()
                     .collect();
+                // MULTI-SOURCE: attributed to this SubClassOf, but every `head`
+                // comes from an ObjectPropertyDomain/Range axiom on `r`. Deleting
+                // THAT axiom invalidates `sub ⊑ head` without matching its
+                // provenance. See the `ElRules` doc, case 2.
                 for head in heads {
                     rules.push_atomic_subsumption(*sub_id, head);
                 }
@@ -3612,6 +3709,11 @@ fn lower_sub_class_of(
             // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
             // synthetic atomic if the body is a compound And, OR if
             // r has a range constraint that needs to be folded in.
+            // MULTI-SOURCE: attributed to this SubClassOf, but `atomic_existential_rhs`
+            // folds the role's `effective_ranges` into the Tseitin body, so an
+            // ObjectPropertyRange axiom co-determines `target`. Deleting THAT axiom
+            // invalidates the fact without matching its provenance. Applies to the
+            // `And`-operand loop below too. See the `ElRules` doc, case 4.
             if let Some((role, target)) =
                 atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
             {
@@ -3621,6 +3723,7 @@ fn lower_sub_class_of(
             // operand of a top-level And on the right.
             if let ConceptExpr::And(operands) = pool.get(sup) {
                 for op in operands {
+                    // MULTI-SOURCE: see the marker above — same range folding.
                     if let Some((role, target)) =
                         atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges)
                     {

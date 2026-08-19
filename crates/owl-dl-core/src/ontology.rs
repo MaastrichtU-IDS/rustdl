@@ -103,6 +103,10 @@ pub struct InternalOntology {
     pub vocabulary: Vocabulary,
     pub concepts: ConceptPool,
     pub axioms: Vec<Axiom>,
+    /// Bit `i` set iff `axioms[i]` is active. NEVER shrink `axioms` —
+    /// `ProofTrace`'s provenance vectors and `justify`/`repair` key on
+    /// these indices. Removal clears a bit; the slot stays addressable.
+    pub live: fixedbitset::FixedBitSet,
 }
 
 impl InternalOntology {
@@ -114,5 +118,48 @@ impl InternalOntology {
     #[must_use]
     pub fn num_axioms(&self) -> usize {
         self.axioms.len()
+    }
+
+    /// Bring `live` up to `axioms.len()`, marking any un-tracked tail live.
+    /// Call after code paths that push straight into `axioms`.
+    pub fn sync_liveness(&mut self) {
+        let n = self.axioms.len();
+        if self.live.len() < n {
+            self.live.grow(n);
+            for i in 0..n {
+                self.live.insert(i);
+            }
+        }
+    }
+
+    pub fn push_live_axiom(&mut self, ax: Axiom) -> usize {
+        let idx = self.axioms.len();
+        self.axioms.push(ax);
+        self.live.grow(idx + 1);
+        self.live.insert(idx);
+        idx
+    }
+
+    /// Returns true iff this call transitioned the axiom live -> dead.
+    pub fn kill_axiom(&mut self, idx: usize) -> bool {
+        if idx < self.live.len() && self.live.contains(idx) {
+            self.live.set(idx, false);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn live_axiom_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.live.ones()
+    }
+
+    pub fn live_axioms(&self) -> impl Iterator<Item = (usize, &Axiom)> + '_ {
+        self.live.ones().map(move |i| (i, &self.axioms[i]))
+    }
+
+    #[must_use]
+    pub fn num_live_axioms(&self) -> usize {
+        self.live.count_ones(..)
     }
 }

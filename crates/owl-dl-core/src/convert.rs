@@ -2201,6 +2201,7 @@ pub fn convert_ontology<A: ForIRI>(
     // `docs/superpowers/specs/2026-06-15-functional-role-enforcement-design.md`.
     derive_functional_max_cardinality(&mut out);
     out.axioms.sort();
+    out.sync_liveness();
     Ok(out)
 }
 

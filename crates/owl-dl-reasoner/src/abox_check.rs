@@ -625,6 +625,7 @@ mod tests {
             vocabulary: Vocabulary::default(),
             concepts: ConceptPool::default(),
             axioms: Vec::new(),
+            live: fixedbitset::FixedBitSet::default(),
         };
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");

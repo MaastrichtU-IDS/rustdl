@@ -61,16 +61,21 @@ use crate::{
 };
 
 /// What one [`SaturationState::apply_additions`] call did.
-///
-/// `marked_contexts` is the number of distinct classes whose state the
-/// incremental path had to revisit — the contexts a new rule could fire on.
-/// It is the denominator of the reuse rate the evaluation reports. On a
-/// rebuild every class is a marked context by definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeltaOutcome {
     /// True iff the engine was thrown away and rebuilt from scratch.
     pub rebuilt: bool,
-    /// Distinct classes revisited (all of them, on a rebuild).
+    /// Distinct classes this call revisited: every class the splice enqueued a
+    /// consequence for, **plus** every class that gained a subsumer, an
+    /// existential fact, or an unsatisfiability flag while the fixpoint
+    /// drained. It therefore measures the resumed run's real work, not just
+    /// the splice's opening move.
+    ///
+    /// The universe is `WorklistEngine::num_total_classes` — user classes,
+    /// reserved slack gap and synthetics alike — because the splice marks
+    /// synthetic ids too. On a rebuild the value is exactly that total: every
+    /// context was derived from nothing. Both arms are in the same units, so
+    /// `1 - marked_contexts / total` is a reuse rate that does not overstate.
     pub marked_contexts: usize,
 }
 
@@ -222,21 +227,34 @@ impl SaturationState {
             new_total: u_total,
             old_tops,
         };
+        // Hand the splice's marks to the engine and let the drain keep
+        // extending them, so `marked_contexts` covers the fixpoint too.
         let marked = self.splice_and_retrigger(&delta, &span);
+        self.engine.touched_contexts = Some(marked);
         self.engine.run();
+        let marked_contexts = self
+            .engine
+            .touched_contexts
+            .take()
+            .map_or(0, |touched| touched.len());
         self.static_rules = u_rules;
         DeltaOutcome {
             rebuilt: false,
-            marked_contexts: marked,
+            marked_contexts,
         }
     }
 
     /// Throw the engine away and saturate `internal` from scratch.
+    ///
+    /// Every context is derived from nothing, so `marked_contexts` is the whole
+    /// class universe — the same universe the incremental arm counts in (see
+    /// [`DeltaOutcome::marked_contexts`]); reporting `num_classes()` here would
+    /// leave the two arms in different units and flatter the reuse rate.
     fn rebuild(&mut self, internal: &InternalOntology, slack: usize) -> DeltaOutcome {
         *self = Self::build(internal, slack);
         DeltaOutcome {
             rebuilt: true,
-            marked_contexts: internal.vocabulary.num_classes(),
+            marked_contexts: self.engine.num_total_classes,
         }
     }
 
@@ -265,24 +283,29 @@ impl SaturationState {
             while e.disjoints_by_class.len() < needed {
                 e.disjoints_by_class.push(Vec::new());
             }
+            // A body that was already introduced is memoized, so `by_body`
+            // can only have grown when `next_id` did — i.e. inside this guard.
+            // Walking the whole map unconditionally would cost O(|bodies|) on
+            // every revision, which is exactly what this path exists to avoid.
+            for (body, &synthetic) in &alloc.by_body {
+                e.atomic_content_of
+                    .entry(synthetic)
+                    .or_insert_with(|| body.iter().copied().collect());
+            }
             e.num_total_classes = needed;
-        }
-        for (body, &synthetic) in &alloc.by_body {
-            e.atomic_content_of
-                .entry(synthetic)
-                .or_insert_with(|| body.iter().copied().collect());
         }
     }
 
     /// Install the new rules, index them, seed the new classes and fire every
-    /// new rule against the closure that already exists. Returns the number of
-    /// distinct classes marked.
+    /// new rule against the closure that already exists. Returns the classes
+    /// marked so far; the caller hands the set to the engine so the fixpoint
+    /// keeps extending it.
     ///
     /// Firing has to be explicit: `process_subsumer` returns immediately when
     /// `record_subsumer` reports the edge was already known, so re-pushing an
     /// existing `(C, D)` does NOT re-run the rules keyed on `D`.
     #[allow(clippy::too_many_lines)]
-    fn splice_and_retrigger(&mut self, delta: &RuleDelta, span: &DeltaSpan) -> usize {
+    fn splice_and_retrigger(&mut self, delta: &RuleDelta, span: &DeltaSpan) -> HashSet<ClassId> {
         let mut marked: HashSet<ClassId> = HashSet::new();
 
         // --- Reflexivity for the ids that did not exist before. Mirrors the
@@ -403,7 +426,7 @@ impl SaturationState {
         // (they carry provenance forward from the union compile rather than
         // from a `current_axiom` cursor), so check the parity explicitly.
         self.engine.rules.debug_assert_provenance_parity();
-        marked.len()
+        marked
     }
 }
 
@@ -516,23 +539,86 @@ fn rule_delta(base: &ElRules, new: &ElRules) -> Option<RuleDelta> {
 /// These are consulted directly by the worklist rules and have no incremental
 /// re-trigger path, so a delta that touches one forces a rebuild.
 fn structurally_compatible(base: &ElRules, new: &ElRules) -> bool {
-    base.role_domains == new.role_domains
-        && norm(&base.role_ranges) == norm(&new.role_ranges)
-        && base.chain_axioms == new.chain_axioms
-        && base.functional_roles == new.functional_roles
-        && base.functional_supers_of == new.functional_supers_of
-        && base.disjunctions_by_class == new.disjunctions_by_class
-        && norm(&base.abox_nominal_reach) == norm(&new.abox_nominal_reach)
-        && norm(&base.forall_key_targets) == norm(&new.forall_key_targets)
-        && base.nominal_to_ind == new.nominal_to_ind
-        && base.max1_key_by_role == new.max1_key_by_role
-        && base.max1_role_by_key == new.max1_role_by_key
+    // EXHAUSTIVE DESTRUCTURE, NO `..` — deliberate. The claim above is
+    // "everything that is not one of the six spliceable vectors is checked
+    // here", and nothing but the compiler can hold a claim like that. Add a
+    // twelfth structural field to `ElRules` with a `..` in this pattern and it
+    // is silently un-gated: the engine keeps the previous revision's value and
+    // the spliced closure quietly diverges from from-scratch. With no `..`, the
+    // same mistake is a build error. Bind the spliceable vectors and their
+    // provenance twins to `_`; they are handled by `rule_delta`.
+    let ElRules {
+        // --- spliceable: diffed and installed by `rule_delta` ---
+        atomic_subsumptions: _,
+        conjunctive_triggers: _,
+        existential_facts: _,
+        existential_triggers: _,
+        disjoint_pairs: _,
+        directly_unsat: _,
+        axiom_of_atomic_sub: _,
+        axiom_of_conjunctive_trigger: _,
+        axiom_of_existential_fact: _,
+        axiom_of_existential_trigger: _,
+        axiom_of_disjoint_pair: _,
+        axiom_of_directly_unsat: _,
+        // --- lowering-time cursor, never read after collection ---
+        current_axiom: _,
+        // --- structural: must match, or rebuild ---
+        top_subsumers: b_tops,
+        abox_nominal_reach: b_abox,
+        forall_key_targets: b_forall,
+        nominal_to_ind: b_nominal,
+        max1_key_by_role: b_max1_key,
+        max1_role_by_key: b_max1_role,
+        role_domains: b_domains,
+        role_ranges: b_ranges,
+        chain_axioms: b_chains,
+        functional_roles: b_func,
+        functional_supers_of: b_func_supers,
+        disjunctions_by_class: b_disj,
+    } = base;
+    let ElRules {
+        atomic_subsumptions: _,
+        conjunctive_triggers: _,
+        existential_facts: _,
+        existential_triggers: _,
+        disjoint_pairs: _,
+        directly_unsat: _,
+        axiom_of_atomic_sub: _,
+        axiom_of_conjunctive_trigger: _,
+        axiom_of_existential_fact: _,
+        axiom_of_existential_trigger: _,
+        axiom_of_disjoint_pair: _,
+        axiom_of_directly_unsat: _,
+        current_axiom: _,
+        top_subsumers: n_tops,
+        abox_nominal_reach: n_abox,
+        forall_key_targets: n_forall,
+        nominal_to_ind: n_nominal,
+        max1_key_by_role: n_max1_key,
+        max1_role_by_key: n_max1_role,
+        role_domains: n_domains,
+        role_ranges: n_ranges,
+        chain_axioms: n_chains,
+        functional_roles: n_func,
+        functional_supers_of: n_func_supers,
+        disjunctions_by_class: n_disj,
+    } = new;
+
+    norm(b_domains) == norm(n_domains)
+        && norm(b_ranges) == norm(n_ranges)
+        && b_chains == n_chains
+        && b_func == n_func
+        && b_func_supers == n_func_supers
+        && b_disj == n_disj
+        && norm(b_abox) == norm(n_abox)
+        && norm(b_forall) == norm(n_forall)
+        && b_nominal == n_nominal
+        && b_max1_key == n_max1_key
+        && b_max1_role == n_max1_role
         // The broadcast list may only grow; a shrink means an axiom re-lowered
         // differently, which is a rebuild.
-        && base
-            .top_subsumers
-            .iter()
-            .all(|c| new.top_subsumers.contains(c))
+        && b_tops.iter().all(|c| n_tops.contains(c))
 }
 
 /// Order-insensitive view of a map-of-list field, so an incidental difference

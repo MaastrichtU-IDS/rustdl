@@ -16,6 +16,20 @@ fn incremental_addition_equals_from_scratch() {
         let outcome = st.apply_additions(&union, &added);
         assert!(!outcome.rebuilt, "a pure addition must not force a rebuild");
 
+        // Identity alone does NOT distinguish a resumed engine from one that
+        // quietly threw itself away, re-saturated, and reported
+        // `rebuilt: false` — that impostor passes every closure assertion in
+        // this file. `marked_contexts` counts the classes the fixpoint
+        // actually revisited (see `DeltaOutcome`), so a re-saturation would
+        // mark essentially the whole vocabulary. These deltas touch a handful.
+        let n = union.vocabulary.num_classes();
+        assert!(
+            outcome.marked_contexts < n / 2,
+            "{fixture}: {} of {n} contexts revisited — that is a re-saturation, \
+             not a resumption",
+            outcome.marked_contexts
+        );
+
         let incremental = closure_as_iri_pairs(&union, st.subsumers());
         let from_scratch = closure_as_iri_pairs(&union, &saturate(&union));
         assert_eq!(from_scratch, incremental, "fixture {fixture}");
@@ -30,6 +44,11 @@ fn addition_introducing_a_new_class_fits_in_slack() {
     assert!(
         !outcome.rebuilt,
         "a new named class must fit in slack, not force a rebuild"
+    );
+    assert!(
+        outcome.marked_contexts < union.vocabulary.num_classes() / 2,
+        "interning two classes must not revisit half the ontology ({} contexts)",
+        outcome.marked_contexts
     );
     assert_eq!(
         closure_as_iri_pairs(&union, &saturate(&union)),
@@ -238,12 +257,13 @@ fn new_existential_trigger_fires_on_an_already_derived_fact() {
     assert_entails(&union, &st, "A", "W");
 }
 
-/// A delta that introduces a Tseitin synthetic `F ≡ M ⊓ N` on BOTH sides needs
-/// `F ⊑ F` seeded, exactly as `WorklistEngine::seed` does for the static
-/// synthetics — otherwise `F ∉ subsumers(F)` and the `∃r.F ⊑ V` trigger never
-/// matches the `(A, r, F)` fact.
+/// A delta whose Tseitin synthetic `F ≡ M ⊓ N` appears on BOTH sides: the
+/// engine has to grow past `F`'s id, install the `(A, r, F)` existential fact,
+/// and let the `∃r.F ⊑ V` trigger match it. (It does NOT pin the explicit
+/// reflexive-row seed for `F` — a Tseitin conjunction re-derives `F ⊑ F`
+/// through its own `{M,N} → F` definitional trigger. See the report's M4 row.)
 #[test]
-fn a_new_tseitin_synthetic_gets_its_reflexive_row() {
+fn a_two_sided_tseitin_synthetic_in_the_delta_stays_complete() {
     let (union, st) = retrigger_case(
         "Prefix(:=<http://rustdl.test/rt#>)\n\
          Ontology(<http://rustdl.test/d>\n\

@@ -438,6 +438,14 @@ struct WorklistEngine {
     /// synthetics). The seeder iterates only this range for
     /// reflexive `C ⊑ C` so synthetic classes get their reflexivity
     /// implicitly via the rules that introduce them.
+    /// When `Some`, every class this engine *revisits* while draining the
+    /// worklists is recorded here — a class is revisited when it gains a
+    /// subsumer, an existential fact, or an unsatisfiability flag. Left `None`
+    /// on the from-scratch path (one perfectly-predicted branch per processed
+    /// item); [`state::SaturationState::apply_additions`] switches it on for
+    /// the duration of the resumed drain so `DeltaOutcome::marked_contexts`
+    /// measures the fixpoint's real work rather than only the splice's.
+    touched_contexts: Option<HashSet<ClassId>>,
     num_user_classes: usize,
     /// First synthetic class id — i.e. `num_user_classes + slack`.
     /// Equal to `num_user_classes` when no id headroom was reserved
@@ -582,6 +590,7 @@ impl WorklistEngine {
             conjunctive_by_body,
             existential_triggers_by_body,
             disjoints_by_class,
+            touched_contexts: None,
             num_user_classes,
             synth_base,
             num_total_classes,
@@ -1082,6 +1091,9 @@ impl WorklistEngine {
         if !self.record_subsumer(c, d) {
             return;
         }
+        if let Some(t) = self.touched_contexts.as_mut() {
+            t.insert(c);
+        }
         // Cluster-B path (b), ≤1-driven symmetric direction: if D is a
         // `MaxKey(1, R)` marker (C now known `⊑ ≤1 R`), every existing
         // `∃R.{a}` fact of C forces the unique R-filler to `a` — seed
@@ -1507,6 +1519,9 @@ impl WorklistEngine {
     #[allow(clippy::too_many_lines)]
     fn process_fact(&mut self, idx: usize) {
         let fact = self.facts[idx];
+        if let Some(t) = self.touched_contexts.as_mut() {
+            t.insert(fact.sub);
+        }
         // Nominal/ABox transitive propagation: if `fact` is
         // `X ⊑ ∃R.{a}` (target is a NomKey) and `R` is transitive with
         // `a R⁺ b` in the ABox, derive `X ⊑ ∃R.{b}`. Sound: `X R a`,
@@ -1999,6 +2014,9 @@ impl WorklistEngine {
         if self.subsumers.unsatisfiable.put(ci) {
             // already flagged
             return;
+        }
+        if let Some(t) = self.touched_contexts.as_mut() {
+            t.insert(c);
         }
         // Every class with c as a subsumer is also unsat.
         let dependents = self.subs_of_class(c);

@@ -1663,7 +1663,16 @@ INDEPENDENTLY.
     (done) does not protect against mis-attribution (not done).
   The aggregate `pt=1` inversion is real and stands (1377 → 1625 s, +18%, vs the original's
   1499 → 1267 s), but it is now attributable to the NEW defect, not to starvation. See
-  `docs/2026-08-19-label-cache-starvation-census.md` § THE ATTRIBUTION WAS WRONG. The
+  `docs/2026-08-19-label-cache-starvation-census.md` § THE ATTRIBUTION WAS WRONG.
+  * **A FIX IS NOT WARRANTED, and that is measured.** At the DEFAULT per-pair budget, granting
+    every class the 30 s ceiling helps **0 of 40** slowest completers at ≥1.5× (best 1.24×) and
+    costs **2.3% aggregate wall (1403 → 1436 s)**. So the `n × F` objection to a floor is now a
+    NUMBER, not a projection, and the original "why not fixed" decision is vindicated — on
+    different grounds than it argued (it reasoned from `pt=1`; the binding case is the default).
+    **Honest residual:** the frame is the 40 SLOWEST, which skews to large `n`, and the budget is
+    `clamp(n × 5 ms, 50, 30000)` — so a **small-`n` ontology with an expensive build would be
+    floored at 50 ms and this frame cannot see it.** Untested; select on LOW CLASS COUNT × slow
+    wall to probe it. See `docs/2026-08-19-label-cache-fix-not-warranted.md`. The
 adaptive rule that consumes it couples the label-cache budget to `--pair-timeout-ms`, so a
 *small* per-pair budget starves the cache — see
 `docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md`. A "dead code"

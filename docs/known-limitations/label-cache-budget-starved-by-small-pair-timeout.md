@@ -1,6 +1,10 @@
 # A small `--pair-timeout-ms` starves the label-cache budget, costing up to 18× for identical output
 
-**Found:** 2026-08-06 · **Status: the COUPLING is real; its TRIGGER does not fire (2026-08-19).**
+**Found:** 2026-08-06 · **Status: NOT WORTH FIXING — verified by measurement, not by argument
+(2026-08-19).** At the DEFAULT `--pair-timeout-ms`, granting every class the 30 s ceiling helps
+**0 of 40** slowest completers at ≥1.5× and costs **2.3% aggregate wall**. The `n × F` objection
+below is now a measured number rather than a projection. **The COUPLING is real; its TRIGGER does
+not fire.**
 Forcing the 50 ms floor takes `ore_ont_15108` 43.1 s → **DNF**, and fires on 12 of 40 slowest
 completers — so the cache is load-bearing. But a small `--pair-timeout-ms` no longer triggers it
 on that frame (`15108` moves 1.13× at `pt=1`). **An intermediate version of this header claimed

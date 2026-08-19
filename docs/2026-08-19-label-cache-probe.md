@@ -71,7 +71,7 @@ the win case, so it is also the cheapest probe that captures it.
 | | |
 |---|---|
 | aggregate | 196.2 s → **193.2 s (+1.5%)** |
-| wins ≥1.5× | **1** (`ore_ont_5107` 6.65 → 1.92 s, 3.46×) |
+| wins ≥1.5× | **1** (`ore_ont_5107` 6.65 → **1.14 s, 5.82×** with reuse; 1.92 s / 3.46× without) |
 | losses ≤0.8× | **0** (worst `ore_ont_9540` 0.88×, vs **2.1× under naive escalation**) |
 | row differences | **0** |
 
@@ -89,10 +89,21 @@ and the escalated probe is never paid.
 
 * **The +1.5% IS the one win.** The other 18 are within run-to-run noise. The defensible claim is
   "converts one 6.65 s ontology to 1.92 s and is neutral elsewhere", not "1.5% faster".
-* **The win shrank from 8.26× to 3.46% because the probe's builds are thrown away.** The scan
-  constructs up to 8 classes that the `par_iter` then rebuilds. **Caching those results into the
-  main loop is the obvious next optimisation** and would recover most of the overhead; not done
-  here because it restructures a hot loop.
+* **Probe-result REUSE is now implemented** (the optimisation this section originally listed as
+  future work). The scan's builds were being discarded and redone by the `par_iter`. Reusing them
+  takes `ore_ont_5107` from **1.92 s to 1.14 s — 3.46× → 5.82×**.
+  * **Sound because a VERDICT is budget-independent**: `Sat`/`Unsat` is a completed wedge
+    computation, so raising the deadline cannot change it. A `NoVerdict` means only "did not
+    finish" and is deliberately **not** carried over; the escalation arm re-runs exactly that
+    class. Observably checked by **0 row differences** across all 39 ontologies — a stale verdict
+    would change the hierarchy.
+  * **It does NOT improve the aggregate, and I am not claiming it does.** 19-population goes
+    +1.5% → +1.3%, which is *indistinguishable*: the win saves 0.78 s out of 196 s (0.4%), below
+    run-to-run variance. Fast 20 goes −2.3% → −0.5%, likewise noise. **The reuse improves one
+    ontology and is invisible in aggregate.**
+  * Residual gap to the 8.26× unconditional ceiling (~0.33 s) is the escalated probe build plus
+    the non-reusable scan class. That is **intrinsic to probing** — you cannot learn that a bigger
+    budget helps without spending one — not a further optimisation.
 * **Default OFF.** It changes the budget on every small-`n` ontology, and this repo's record has a
   12-ontology benchmark hiding four `ok → DNF` regressions. A flip needs the full-corpus two-arm
   sweep.

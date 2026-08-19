@@ -3396,6 +3396,9 @@ fn classify_top_down_internal_impl(
         // Bad-case cost is the strided scan plus ONE escalated build — bounded, and
         // independent of `n`, which is the objection that kills raising
         // `LABEL_CACHE_FLOOR_MS`.
+        // Results the probe already computed, reused by the build loop below instead of
+        // being recomputed. Empty unless the probe runs.
+        let mut probe_reuse: Vec<(usize, crate::LabelOracle)> = Vec::new();
         let cache_ms = if crate::label_cache_probe_enabled()
             && crate::label_cache_env_override().is_none()
             && cache_ms != 0
@@ -3422,27 +3425,38 @@ fn classify_top_down_internal_impl(
             // is biased exactly against what it is looking for.
             let scan = n.min(crate::LABEL_CACHE_PROBE_SCAN);
             let stride = (n / scan).max(1);
-            let failing = (0..scan).map(|k| (k * stride).min(n - 1)).find(|&i| {
+            // REUSE what the scan builds, so the probe is not duplicated work — that
+            // duplication is why the measured win was 3.46× instead of the 8.26× an
+            // unconditional escalation achieves. **Sound because a VERDICT is a real
+            // answer, independent of the budget that produced it**: raising the budget
+            // cannot turn `Sat` into `Unsat`. A `NoVerdict` means only "did not finish",
+            // so it is NOT carried over — the escalation arm re-runs that class.
+            let mut failing: Option<usize> = None;
+            for k in 0..scan {
+                let i = (k * stride).min(n - 1);
                 let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
-                matches!(
-                    prepared
-                        .classify_labels(id, effective_deadline(global_deadline, Some(small_dur))),
-                    crate::LabelOracle::NoVerdict
-                )
-            });
+                let r = prepared
+                    .classify_labels(id, effective_deadline(global_deadline, Some(small_dur)));
+                if matches!(r, crate::LabelOracle::NoVerdict) {
+                    failing = Some(i);
+                    break;
+                }
+                probe_reuse.push((i, r));
+            }
             match failing {
                 // Nothing fails at the current budget within the scan window, so there is
                 // no evidence a larger one would buy anything. Keep the cheap budget.
                 None => cache_ms,
                 Some(i) => {
                     let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
-                    if matches!(
-                        prepared.classify_labels(
-                            id,
-                            effective_deadline(global_deadline, Some(probe_dur))
-                        ),
-                        crate::LabelOracle::NoVerdict
-                    ) {
+                    let rescued = prepared
+                        .classify_labels(id, effective_deadline(global_deadline, Some(probe_dur)));
+                    let rescued_nv = matches!(rescued, crate::LabelOracle::NoVerdict);
+                    if !rescued_nv {
+                        // Escalating, and this class is now decided — carry it over too.
+                        probe_reuse.push((i, rescued));
+                    }
+                    if rescued_nv {
                         // Fails at BOTH budgets — the `9540` shape. Escalating would spend
                         // `n ×` the bigger budget and convert nothing.
                         cache_ms
@@ -3472,9 +3486,25 @@ fn classify_top_down_internal_impl(
             }
             None => global_deadline,
         };
+        // Sparse index into the probe's results: `None` for the vast majority.
+        let reuse: Vec<Option<crate::LabelOracle>> = if probe_reuse.is_empty() {
+            Vec::new()
+        } else {
+            let mut v = vec![None; n];
+            for (i, r) in probe_reuse {
+                v[i] = Some(r);
+            }
+            v
+        };
         (0..n)
             .into_par_iter()
             .map(|i| {
+                // Already decided by the escalation probe, at a budget whose VERDICT is
+                // valid here — skip the rebuild. See the probe block for why a verdict
+                // carries over and a `NoVerdict` does not.
+                if let Some(Some(r)) = reuse.get(i) {
+                    return r.clone();
+                }
                 // Skip entirely once the global deadline has passed: there is no
                 // point paying for a per-class wedge call that will instant-timeout
                 // anyway. `NoVerdict` is sound — it makes the unsat-probe and

@@ -107,6 +107,18 @@ pub struct InternalOntology {
     /// `ProofTrace`'s provenance vectors and `justify`/`repair` key on
     /// these indices. Removal clears a bit; the slot stays addressable.
     pub live: fixedbitset::FixedBitSet,
+    /// Bit `i` set iff `axioms[i]` was produced by one of the whole-ontology
+    /// derivation passes rather than by lowering a source component.
+    ///
+    /// SOUNDNESS: the derivation passes are fixpoints over the ENTIRE axiom
+    /// set, so a derived axiom retained across a retraction is a false
+    /// positive (e.g. a `C ⊑ ⊥` that outlives the `Functional(dp)` that
+    /// produced it). [`crate::delta::refresh_derived`] recomputes the whole
+    /// derived overlay at every commit and retracts what no longer follows;
+    /// this bitset is what tells it which axioms it owns. Never set for an
+    /// axiom that came from the user's ontology — those are retracted only
+    /// by an explicit delta.
+    pub derived: fixedbitset::FixedBitSet,
 }
 
 impl InternalOntology {
@@ -162,5 +174,25 @@ impl InternalOntology {
     #[must_use]
     pub fn num_live_axioms(&self) -> usize {
         self.live.count_ones(..)
+    }
+
+    /// Append an axiom owned by the derivation overlay (live + `derived`).
+    pub fn push_derived_axiom(&mut self, ax: Axiom) -> usize {
+        let idx = self.push_live_axiom(ax);
+        self.derived.grow(idx + 1);
+        self.derived.insert(idx);
+        idx
+    }
+
+    /// True iff `axioms[idx]` is owned by the derivation overlay.
+    #[must_use]
+    pub fn is_derived(&self, idx: usize) -> bool {
+        self.derived.contains(idx)
+    }
+
+    /// Live axiom indices the derivation overlay does NOT own — i.e. the
+    /// axioms the passes must be re-run over.
+    pub fn live_user_axiom_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.live.ones().filter(move |i| !self.derived.contains(*i))
     }
 }

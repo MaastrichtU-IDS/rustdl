@@ -2102,6 +2102,45 @@ pub fn convert_ontology<A: ForIRI>(
             out.axioms.push(axiom);
         }
     }
+    // The whole-ontology derivation passes, extracted so that
+    // `delta::refresh_derived` can re-run EXACTLY the same passes over the
+    // live axiom set at every incremental commit. See
+    // [`run_derivation_passes`] for why that is soundness-critical.
+    let full = run_derivation_passes(&mut out, src);
+    let user = std::mem::replace(&mut out.axioms, full);
+    out.axioms.sort();
+    out.sync_liveness();
+    mark_derived_axioms(&mut out, &user);
+    Ok(out)
+}
+
+/// Run the whole-ontology derivation passes over `out.axioms` and return the
+/// resulting FULL axiom list, leaving `out.axioms` restored to its entry
+/// value. Anything the passes interned (concepts, auxiliary roles) stays in
+/// `out`.
+///
+/// `out.axioms` on entry must hold ONLY user axioms (lowered source
+/// components), because every pass here is a fixpoint over the WHOLE axiom
+/// set: feeding a previous revision's derived axioms back in would let them
+/// bootstrap themselves and survive the retraction of their premises.
+///
+/// SOUNDNESS: this is why `delta::refresh_derived` exists. Deleting
+/// `Functional(dp)` must retract the `C ⊑ ⊥` that `derive_data_axioms`
+/// produced from it; an append-only delta would keep reporting `C`
+/// unsatisfiable — a false positive. Re-running the passes wholesale costs
+/// ~7.6 % of a saturation-only classify on galen and the share falls with
+/// size (`docs/2026-08-19-incremental-lowering-floor-findings.md`).
+///
+/// Returns the full list rather than just the additions because two of the
+/// passes (`split_disjunctive_antecedents`, `decompose_long_chains`) REWRITE
+/// entries instead of appending, so the output is not a superset of the
+/// input and `convert_ontology` must be handed the list verbatim to keep its
+/// observable behaviour unchanged.
+pub(crate) fn run_derivation_passes<A: ForIRI>(
+    out: &mut InternalOntology,
+    src: &SetOntology<A>,
+) -> Vec<Axiom> {
+    let user = out.axioms.clone();
     // Phase D4 (2026-06-03): scan for data-axiom patterns the main
     // conversion dropped (DeclareDataProperty, DataMin/Max, Functional,
     // DataPropertyDomain, SubDataPropertyOf, DataSome) and emit derived
@@ -2138,7 +2177,7 @@ pub fn convert_ontology<A: ForIRI>(
     // classes never appear in the reported class list (filtered by
     // `DKEY_IRI_PREFIX` in the reasoner), so these edges add no output
     // noise — they only relay through the existential machinery.
-    seed_dkey_subsumptions(&mut out);
+    seed_dkey_subsumptions(out);
     // Disjunctive data-property domains: for `DataPropertyDomain(dp,
     // D₁ ⊔ … ⊔ Dₙ)` (all atomic) and each class `C` using `dp`, emit the
     // bare disjunctive GCI `C ⊑ (D₁ ⊔ … ⊔ Dₙ)`. Sound (`C ⊑ ∃dp.⊤ ⊑ ⊔Dᵢ`).
@@ -2164,16 +2203,16 @@ pub fn convert_ontology<A: ForIRI>(
     // — `(D₁ ⊔ … ⊔ Dₙ) ⊑ C ≡ ⋀ Dᵢ ⊑ C` (sound equivalence). Runs first so
     // both the EL saturator (which drops union-LHS) and the disjunction-
     // existential / told-table passes below see the atomic-LHS form.
-    crate::disjunctive_antecedent::split_disjunctive_antecedents(&mut out);
+    crate::disjunctive_antecedent::split_disjunctive_antecedents(out);
     // Derive `X ⊑ ∃R.C` from `X ⊑ ∃R.(D₁ ⊔ … ⊔ Dₙ)` when the disjuncts
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully
     // populated IR.
-    crate::disjunction_existential::derive_disjunction_existentials(&mut out);
+    crate::disjunction_existential::derive_disjunction_existentials(out);
     // SP-A: forced-disjunct over atomic disjunctions. Runs AFTER
     // derive_disjunction_existentials so it sees the common-subsumer axioms that
     // pass adds (richer told tables ⟹ more forcings). Sound; atomic-only.
-    crate::approx_saturation::derive_forced_disjuncts(&mut out);
+    crate::approx_saturation::derive_forced_disjuncts(out);
     // HF3: decompose role chains longer than 2 legs into a cascade of
     // 2-leg chains using fresh auxiliary roles, so both the wedge
     // clausifier (which only encodes 2-leg chains) and the main tableau
@@ -2181,7 +2220,7 @@ pub fn convert_ontology<A: ForIRI>(
     // vocabulary is fully populated; allocates aux roles IN the vocabulary
     // so `num_roles()` grows and `build_role_hierarchy` / the engine stay
     // consistent. Sound + additive — see `decompose_long_chains`.
-    decompose_long_chains(&mut out);
+    decompose_long_chains(out);
     // Functional object-property ENFORCEMENT for the tableau + hypertableau
     // wedge. `FunctionalRole(R)` is read by the EL saturator's bitset
     // machinery (classify), but the wedge clausifier DROPS it and the main
@@ -2199,10 +2238,34 @@ pub fn convert_ontology<A: ForIRI>(
     // no-op. Inverse-functional enforcement is a documented sound MISS pending
     // an engine fix to inverse-role predecessor merging. See
     // `docs/superpowers/specs/2026-06-15-functional-role-enforcement-design.md`.
-    derive_functional_max_cardinality(&mut out);
-    out.axioms.sort();
-    out.sync_liveness();
-    Ok(out)
+    derive_functional_max_cardinality(out);
+    std::mem::replace(&mut out.axioms, user)
+}
+
+/// Mark every axiom of the (already sorted) `out.axioms` that is not
+/// accounted for by the `user` baseline as derived.
+///
+/// Both sides are compared as MULTISETS so a derived axiom that duplicates a
+/// user axiom leaves exactly one slot marked derived — over-marking would let
+/// `refresh_derived` retract a user axiom, under-marking would leave a derived
+/// axiom un-retractable.
+fn mark_derived_axioms(out: &mut InternalOntology, user: &[Axiom]) {
+    let mut baseline: Vec<&Axiom> = user.iter().collect();
+    baseline.sort();
+    out.derived.grow(out.axioms.len());
+    let mut j = 0usize;
+    for i in 0..out.axioms.len() {
+        // A pass may DROP a user axiom (union-LHS split, long-chain
+        // decomposition); skip past any baseline entry that is gone.
+        while j < baseline.len() && *baseline[j] < out.axioms[i] {
+            j += 1;
+        }
+        if j < baseline.len() && *baseline[j] == out.axioms[i] {
+            j += 1;
+        } else {
+            out.derived.insert(i);
+        }
+    }
 }
 
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional

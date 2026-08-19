@@ -121,3 +121,78 @@ one day before catching it.
 
 Raw data: `docs/benchmarks/data-2026-08-19-label-cache-probe-19.tsv`,
 `…-probe-fast20.tsv`, `…-label-cache-default-reachability.tsv`
+
+---
+
+## The flip sweep PASSED — and the flip is BLOCKED anyway, by a codegen effect
+
+**Date:** 2026-08-19 (later). The two-arm sweep cleared the probe behaviourally. Flipping the
+default nonetheless makes `ore_ont_5107` **2× slower on a code path whose runtime behaviour is
+unchanged**, so the flag stays OFF.
+
+### The sweep itself: clean, 830 ontologies
+
+The probe fires only when `cache_ms = clamp(n × per_pair, 50, 30000) < 1000`. At the default 5 ms
+per-pair that is `n < 200`; under `--pair-timeout-ms 1` it widens to `n < 1000`. **Both scopes were
+swept** — the second exists because the first frame cannot see it, the same frame error that
+already cost this investigation twice.
+
+| frame | n | ok→DNF | hash diffs | effect |
+|---|---:|---:|---:|---|
+| default config, <200 classes | 509 | **0** | **0** | 502 identical, 7 both-DNF, **net +3.71 s** |
+| `--pair-timeout-ms 1`, 200–1000 classes | 321 | **0** | **0** | 308 identical, 13 both-DNF, **flat** |
+| ≥200 classes at default | ~1,100 | — | — | structurally inert; byte-identical on 3 up to 981k classes |
+
+Quantisation matters in reading the first frame: 424 of 502 have both arms **under 0.10 s**, where
+a 10 ms timer cannot resolve them — the 26 apparent "2.00× wins" were all 0.02 s → 0.01 s, one
+tick. Among the **78 resolvable**: **1 win** (`ore_ont_5107` 8.47 → 1.13 s, 7.50×), **0 losses**,
+total gain 8.50 s against total cost 4.79 s.
+
+### Why the flip is blocked
+
+Flipping `label_cache_probe_enabled()` to default-ON costs **2×** — and it does so **with the
+probe still disabled**, which means it is not a semantic effect:
+
+| binary (source differs by ONE predicate line) | `=0` | `=1` | unset |
+|---|---:|---:|---:|
+| `a296cdf` (default OFF) | **6.65 s** | **1.13 s** | 6.67 s |
+| + `is_none_or(\|v\| v != "0")` | **12.90 s** | 14.54 s | 14.55 s |
+| + `!is_some_and(\|v\| v == "0")` | **12.91 s** | 14.54 s | 14.55 s |
+
+At `=0` **all three return `false`**, so the executed path is identical — yet the wall doubles.
+And the probe's effect *inverts*: on `a296cdf` enabling it is 5.9× faster; on the flipped builds
+enabling it is *slower*.
+
+Ruled out, each by measurement:
+
+* **Host drift / contention** — interleaved A/B at the same moment, load 2.3 on 32 cores, and the
+  pre-probe pinned binary reproduces its historical 6.65 s throughout.
+* **Build nondeterminism** — rebuilt twice, **byte-identical** md5 each time.
+* **A stale artifact** — the first rebuild compiled only `owl-dl-cli`; forcing `owl-dl-reasoner`
+  to recompile changed nothing. (This is the documented "silently reuses a stale binary" hazard,
+  and it did mislead one intermediate measurement.)
+* **File corruption** — a `sed` I ran used `|` as delimiter on a pattern containing `|v|`; checked,
+  and the constants and guard are intact, `git diff` covers only the two intended files.
+* **A second call site** — grep confirms one engine call site (`classify.rs:3402`) and one test.
+* **Flag semantics** — both formulations are correct at `=0`/`=1`, and both are slow.
+
+What remains is **codegen**: the predicate is called from the label-cache block of
+`classify_internal`, a very large function, and perturbing it evidently shifts an inlining or
+layout decision. This codebase has documented env-flag hot-loop sensitivity of exactly this shape
+(`docs/benchmarks/2026-08-11-env-flag-hot-loop-fix.md`). **I could not localise it further, and I
+am not asserting the mechanism.**
+
+### Disposition
+
+**Flag stays OFF.** The probe is verified as an opt-in (`=1`: `ore_ont_5107` 6.65 → 1.13 s) and the
+sweep says it is answer-preserving at scale, but the *act of making it the default* triggers a 2×
+regression through a mechanism I cannot explain. Shipping that would trade a one-ontology win for a
+corpus-wide unknown.
+
+**What a future attempt should do first:** reproduce the 2× on a smaller unit than
+`classify_internal` (or diff the generated assembly for the label-cache block between the two
+builds). Until the codegen effect is understood, no formulation of the flip is safe — two
+independent ones already failed identically.
+
+Raw data: `docs/benchmarks/data-2026-08-19-probe-sweep-default-509.tsv`,
+`…-probe-sweep-pt1-321.tsv`

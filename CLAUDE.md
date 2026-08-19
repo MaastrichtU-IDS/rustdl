@@ -1675,7 +1675,26 @@ INDEPENDENTLY.
     0.88× (vs **2.1× under naive escalation**), aggregate +1.5% over 19 addressable, **−2.3%
     (~50 ms) over 20 fast**, **0 row diffs across 39**. Three simpler fixes were refuted by
     measurement first (flat floor; "does a build succeed" probe; head-scan instead of strided).
-    OFF pending a full-corpus sweep. See `docs/2026-08-19-label-cache-probe.md`.
+    **THE FLIP SWEEP RAN AND PASSED — AND THE FLIP IS BLOCKED ANYWAY (2026-08-19).** Two-arm,
+    **830** ontologies, **0 ok→DNF and 0 answer changes**: the 509 with <200 classes at the
+    default (net +3.71 s; among the 78 *resolvable* rows — 424 have both arms under 0.10 s where a
+    10 ms timer cannot resolve them, and the 26 apparent "2.00× wins" were one tick — **1 win, 0
+    losses**) plus the 321 with 200–1000 classes under `--pair-timeout-ms 1` (**flat**; that
+    budget widens the guard, so it is a separate scope the first frame could not see). Above the
+    guard, no probe code runs.
+    **But flipping the default costs 2× WITH THE PROBE STILL DISABLED**: `ore_ont_5107` 6.65 s →
+    12.90 s at `=0`, where every formulation returns `false` and the executed path is identical.
+    **Two independent formulations** (`is_none_or(|v| v != "0")` and `!is_some_and(|v| v == "0")`)
+    are slow identically, and the probe's effect *inverts* (5.9× faster on the OFF-default build,
+    slower on the ON-default ones). Ruled out by measurement: host drift (interleaved A/B, pinned
+    control reproducing 6.65 s), build nondeterminism (byte-identical rebuilds), a stale artifact
+    (forced reasoner recompile), file corruption (constants + guard verified), a second call site
+    (one, grepped), and flag semantics. What remains is **codegen** in `classify_internal` — this
+    tree has documented env-flag hot-loop sensitivity of that shape — and **I did not localise it
+    further; the mechanism is NOT asserted.** So the flag stays OFF: the probe is a verified
+    opt-in, but *making it the default* is what regresses. A future attempt must first reproduce
+    the 2× on a smaller unit than `classify_internal`, or diff the generated code for that block.
+    See `docs/2026-08-19-label-cache-probe.md`.
   * **The frame error worth carrying: a population selected on "SLOWEST" cannot see a defect
     whose precondition is "SMALL".** My "no fix warranted" verdict came from the 40-slowest
     frame; re-selecting on low class count × slow wall found the defect immediately. I made that

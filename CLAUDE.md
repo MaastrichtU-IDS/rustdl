@@ -1487,9 +1487,11 @@ leaving ~11 falsifiable "this fails" claims** — the sweep is cheap because tha
 the default, single-thread, 120 s: only **`ore_ont_11311` and `ore_ont_9944`** are genuinely
 unfinished. `5368` completes in 85.6 s (the 27 GB DNF framing is stale), `1508` 112.9 s, `9347`
 5.6 s, `10019` 2.3 s, `16847` 0.4 s. The small-pair-timeout label-cache starvation stopped reproducing on
-both its *named* instances (`15010` 103.98 → 6.19 s, `15108` 200 → 45.40 s) and I recorded it
-RETIRED — **then the census re-run REFUTED that: the class has 5 members and the aggregate
-trade-off inverted. Membership moved; nothing was fixed.** See the entry above.
+both its *named* instances and I recorded it RETIRED; the census then appeared to refute that with
+"5 members"; a 2×2 then showed those 5 are **a different defect entirely** (cache-insensitive).
+Net: the documented trigger does not fire, the cache is still load-bearing, and there is a NEW
+unexplained `pt`-sensitivity. **Three readings in one day — see the entry above for the one that
+survived measurement.**
 
 **The near-miss is the transferable part:** I first read `15010` at 6.00 s against the *103.98 s*
 in the doc's title and nearly declared it closed — but 103.98 s is the `--pair-timeout-ms 1` arm
@@ -1639,20 +1641,29 @@ pair the probe with a case where Konclude *does* report the relation.
   bind, and halving breaks a healthy ontology), `DIV_WINDOW` (null), `RUSTDL_MAX_NODES` (does not
   bind), `ID_SHALLOW_BUDGET_DIVISOR` (flat over 16×), `label_cache_timeout_ms`
 (~~**dead code**~~ — **THIS ENTRY IS WRONG, corrected 2026-08-06.** `RUSTDL_LABEL_CACHE_TIMEOUT_MS`
-is live by construction — it "always wins" (`lib.rs:2728-2730`) — **and the starvation pathology
-it rescues is OPEN AND WORSE THAN RECORDED.** The two originally-named instances stopped
-reproducing (`ore_ont_15010` 103.98 → 6.19 s, `15108` 200 → 45.40 s), and I briefly recorded that
-as CLOSED on 2026-08-18. **Re-running the document's own census refuted that**: membership
-*changed*, prevalence went UP. Over the 40 slowest v0.4.19 completers, `--pair-timeout-ms 1` is
-≥1.5× **slower on 5** (`14272` 3.37×, `4827` 3.32×, `9864` 3.24×, `8429` 3.07×, `6923` 2.68×) —
-**all byte-identical output** — against 3 faster, and the **aggregate wall INVERTED: 1377 → 1625 s
-(+18%), where the original recorded 1499 → 1267 s (net faster)**. So the empirical argument in
-that doc's "why not fixed" (~2 pathological vs 12 wins) **no longer holds** and needs
-re-deciding; the per-class `n × F` objection to simply raising the floor still does.
-Mechanistically proven, not correlated: each of the 5 has an arm-C (forced 50 ms floor) ratio
-matching its arm-B ratio to within 0.01×, i.e. `pt=1` starves them exactly as completely as
-pinning the floor. **Instrument validated** — the forced arm fires on 12 of 40 with 5 DNFs, so
-the 5 is not a blind zero. See `docs/2026-08-19-label-cache-starvation-census.md`. The
+is live by construction — it "always wins" (`lib.rs:2728-2730`) — **and the pathology it rescues is REAL but its
+recorded TRIGGER does not fire.** This entry went through two wrong versions in one day; the
+measurement that settled it was a 2×2 varying `--pair-timeout-ms` and the cache budget
+INDEPENDENTLY.
+  * The cache **is** load-bearing: forcing the 50 ms floor takes `ore_ont_15108` from 43.1 s to
+    **DNF at 240 s**, and fires on **12 of 40** slowest completers (5 to DNF).
+  * Its documented trigger — a small `--pair-timeout-ms` — **does not fire on that frame**. Where
+    `n` is large, `n × per_pair` is already a sufficient budget (`15108` moves only 1.13× at
+    `pt=1`).
+  * **The 5 ontologies I first published as "live starvation members" are NOT starvation** —
+    `14272`, `9864`, `6923`, `4827`, `8429` are `pt`-sensitive and cache-INSENSITIVE: at `pt=1`
+    they are 2.7–3.4× slower for byte-identical output **at every cache budget including the
+    default's own 30 s** (`14272` 73.3 s at 30 000 ms vs 21.9 s at default). That is a **NEW,
+    separately-caused defect, cause unknown** — plausibly the tier walk losing prunable verdicts;
+    untested.
+  * **Why I got it wrong:** I read the agreement between arm B (`pt=1`, `n×per_pair` budget) and
+    arm C (`pt=1`, forced 50 ms) as mechanism. Both hold `pt=1` FIXED, so their agreement shows
+    only that the cache budget is irrelevant in both. **A control validates an INSTRUMENT; only
+    varying the suspected cause independently ATTRIBUTES an effect.** Pre-registering the analysis
+    (done) does not protect against mis-attribution (not done).
+  The aggregate `pt=1` inversion is real and stands (1377 → 1625 s, +18%, vs the original's
+  1499 → 1267 s), but it is now attributable to the NEW defect, not to starvation. See
+  `docs/2026-08-19-label-cache-starvation-census.md` § THE ATTRIBUTION WAS WRONG. The
 adaptive rule that consumes it couples the label-cache budget to `--pair-timeout-ms`, so a
 *small* per-pair budget starves the cache — see
 `docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md`. A "dead code"

@@ -1,4 +1,11 @@
-# The 40-slowest-completer starvation census: 5 live members, and the trade-off has inverted
+# The 40-slowest census: the 5 slowdowns are REAL but are NOT starvation — I mis-attributed them
+
+> **CORRECTION, same day, by my own follow-up measurement.** This document originally called the
+> 5 arm-B slowdowns "live starvation members" and called the arm-B/arm-C ratio agreement
+> "mechanism, not correlation". **Both claims are wrong and are retracted below** (§ THE
+> ATTRIBUTION WAS WRONG). The 5 slowdowns are real and reproduce; their *cause* is not the
+> label-cache budget. Everything in the tables is accurate as measurement; the causal label on it
+> was not.
 
 **Date:** 2026-08-19 · Re-runs the census in
 `docs/known-limitations/label-cache-budget-starved-by-small-pair-timeout.md`, to settle whether
@@ -44,9 +51,11 @@ instrument" would have looked identical. Thresholds (1.5×) and the verdict rule
 | `ore_ont_8429` | 29.50 s | 90.50 s | **3.07×** | 3.07× | identical (1001) |
 | `ore_ont_6923` | 38.36 s | 102.93 s | **2.68×** | 2.69× | identical (1038) |
 
-**Arm B ≡ arm C to within 0.01× on all five.** That is mechanism, not correlation: for these
-ontologies `--pair-timeout-ms 1` starves the per-class build *exactly as completely* as pinning
-the budget to the 50 ms floor. Same wall, same output, same ratio as the forced case.
+**Arm B ≡ arm C to within 0.01× on all five.** I read that as mechanism. **It is neither
+mechanism nor correlation — it is an artefact of my design.** Both arms hold `--pair-timeout-ms 1`
+FIXED and vary only the cache budget, so their agreement says exactly one thing: *the cache budget
+is irrelevant in both*. I had no cell varying the cache budget at a fixed default `pt`, which is
+the only cell that could test the claim. See § THE ATTRIBUTION WAS WRONG.
 
 ### The instrument fires, so the 5 is not a blind count
 
@@ -102,3 +111,61 @@ document's evidence, not a proof of absence") was right, and the headline contra
 document states a prevalence, re-run the census that produced it before touching the status line.
 
 Raw data: `docs/benchmarks/data-2026-08-19-label-cache-starvation-census40.tsv`
+
+
+---
+
+## THE ATTRIBUTION WAS WRONG (corrected same day)
+
+Running the missing cells — a proper 2×2 varying `--pair-timeout-ms` and
+`RUSTDL_LABEL_CACHE_TIMEOUT_MS` **independently** — refutes the starvation label on the 5:
+
+| ontology | pt=def | pt=1 | pt=def + cache 50 ms | pt=1 + cache 30 s |
+|---|---:|---:|---:|---:|
+| `ore_ont_14272` | 21.9 s | **73.3 s** | 21.8 s | 73.3 s |
+| `ore_ont_9864` | 24.4 s | **79.6 s** | 24.5 s | 79.4 s |
+| `ore_ont_15108` | 43.1 s | 48.8 s | **240.0 s (DNF)** | 45.2 s |
+
+And a budget sweep at `pt=1` on two of the five — **every** cache budget from `n×1 ms` through
+1500 / 3000 / 5000 to **30 000 ms** (the very budget the default gets):
+
+| ontology | n×1 | 1500 | 3000 | 5000 | 30000 | default |
+|---|---:|---:|---:|---:|---:|---:|
+| `ore_ont_14272` | 73.3 | 73.3 | 73.3 | 73.3 | **73.2** | **21.9** |
+| `ore_ont_6923` | 103.4 | 103.1 | 103.3 | 103.3 | **103.0** | **38.4** |
+
+**Granting the default's own 30 s budget leaves them fully slow.** The label-cache budget cannot
+be the cause.
+
+### The two phenomena are disjoint, and live in different ontologies
+
+* **`14272`, `9864`, `6923`, `4827`, `8429` — `pt`-sensitive, cache-INSENSITIVE.** A small
+  per-pair budget costs 2.7–3.4× for byte-identical output, through a route that is **not** the
+  label cache. **Cause unknown**; a plausible untested candidate is the tier walk losing prunable
+  verdicts and probing far more pairs, each cheap. **This is a NEW, previously unrecorded defect.**
+* **`15108` (and the 6 other arm-C-only members) — cache-sensitive, `pt`-INSENSITIVE.** Starving
+  the cache takes it 43 s → DNF (≥5.6×), but `pt=1` barely moves it (1.13×). **This is the
+  documented defect, and it is real** — what has changed is that `pt=1` no longer *triggers* it,
+  because where `n` is large `n × 1 ms` is already a sufficient budget.
+
+### So the limitation's status, stated correctly
+
+The coupling this document describes is **real and demonstrable** (`15108`: 43 s → DNF when
+starved). Its recorded *trigger* — a small `--pair-timeout-ms` — **does not fire on this frame**.
+My "5 live members" conflated two defects; the prevalence of the documented one on this frame is
+**0 via its own trigger**, while the cache remains load-bearing on 12 of 40.
+
+Whether it is reachable **at the default** is the question that decides if a fix is warranted, and
+is measured separately (§ default-reachability, `docs/…`).
+
+### Why I got it wrong, mechanically
+
+Arm C was built as a *positive control for the instrument* — and it works as that. I then also
+read it as a *test of mechanism*, which it is not: it shares `pt=1` with arm B. A control that
+holds the suspected cause fixed cannot discriminate that cause. The 2×2 was one command away and I
+did not run it before writing a causal claim into this document, `CLAUDE.md`, and a commit
+message.
+
+**The rule:** a control validates an instrument; only varying the suspected cause *independently*
+attributes an effect. Pre-registering the analysis (which I did) does not protect against
+mis-attribution (which I did not).

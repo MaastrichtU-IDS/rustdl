@@ -1,9 +1,11 @@
 # A small `--pair-timeout-ms` starves the label-cache budget, costing up to 18× for identical output
 
-**Found:** 2026-08-06 · **Status: OPEN and WORSE THAN RECORDED (census re-run 2026-08-19).**
-The two originally-named instances no longer reproduce, but the class has **5 members in the
-40-slowest frame** — up from "~2 known" — and the aggregate trade-off that justified
-*deliberately not fixed* has **INVERTED**.
+**Found:** 2026-08-06 · **Status: the COUPLING is real; its TRIGGER does not fire (2026-08-19).**
+Forcing the 50 ms floor takes `ore_ont_15108` 43.1 s → **DNF**, and fires on 12 of 40 slowest
+completers — so the cache is load-bearing. But a small `--pair-timeout-ms` no longer triggers it
+on that frame (`15108` moves 1.13× at `pt=1`). **An intermediate version of this header claimed
+"5 members"; those 5 are a DIFFERENT, cache-INSENSITIVE defect** — see
+`docs/2026-08-19-label-cache-starvation-census.md` § THE ATTRIBUTION WAS WRONG.
 **Workaround:** `RUSTDL_LABEL_CACHE_TIMEOUT_MS=30000`
 
 > ## CENSUS RE-RUN 2026-08-19 — THE 2026-08-18 "CLOSED" HEADLINE WAS WRONG

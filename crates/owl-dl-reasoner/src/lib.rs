@@ -46,6 +46,7 @@ mod class_expr_query;
 mod classify;
 pub mod diagnose;
 mod disjointness;
+pub mod incremental;
 mod individuals;
 pub mod justify;
 pub mod laconic;
@@ -71,6 +72,7 @@ pub use diagnose::{DerivedClass, Diagnosis, diagnose};
 pub use disjointness::{
     Disjointness, disjoint_classes, disjoint_data_properties, disjoint_object_properties,
 };
+pub use incremental::{AxiomDelta, IncrementalSession, Revision, SessionStats};
 pub use individuals::{
     DifferentIndividuals, SameIndividuals, different_individuals, same_individuals,
 };
@@ -3717,6 +3719,13 @@ pub enum ReasonError {
     /// enumerating (e.g. property assertions) is meaningless.
     #[error("ontology is inconsistent; every assertion is trivially entailed")]
     Inconsistent,
+
+    /// An [`crate::incremental::AxiomDelta`] asked to retract a component that
+    /// the session's current revision does not contain. The transaction is
+    /// rejected whole (spec §7, fail-closed): nothing is mutated and the
+    /// revision counter does not advance.
+    #[error("delta retracts an axiom that is not in the current revision: {0}")]
+    AxiomNotPresent(String),
 }
 
 /// Decide whether `class_iri` is satisfiable in the ontology.

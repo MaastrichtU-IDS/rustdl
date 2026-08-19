@@ -500,6 +500,69 @@ impl Classification {
             .collect()
     }
 
+    /// Re-key this classification onto `keep`, with the reported classes
+    /// sorted BY IRI. Used by [`crate::incremental::IncrementalSession`].
+    ///
+    /// Two reasons a session cannot report the raw classification (spec §4a,
+    /// §F1):
+    ///
+    /// * **Filter.** Entity ids are append-only and never recycled, so after a
+    ///   retraction the vocabulary still names a class no live axiom mentions.
+    ///   `keep` is the Task 2 live signature projected onto IRIs; anything
+    ///   outside it is a phantom.
+    /// * **Order.** A session's ids are a function of its revision history,
+    ///   not of the final axiom set, so insertion order is not comparable with
+    ///   a from-scratch run's. IRI order is.
+    ///
+    /// SOUNDNESS (the elided-row contract): an unsatisfiable subject's row is
+    /// NOT materialized here either — it is left empty and
+    /// [`Self::entails`] reintroduces `⊥ ⊑ *`, exactly as every other builder
+    /// does. Only SATISFIABLE rows are copied, and by the `entails` invariant
+    /// those contain only satisfiable supers.
+    pub(crate) fn restricted_sorted(&self, keep: &HashSet<String>) -> Self {
+        let mut classes: Vec<String> = self
+            .classes
+            .iter()
+            .filter(|iri| keep.contains(*iri))
+            .cloned()
+            .collect();
+        classes.sort();
+        let index: HashMap<String, usize> = classes
+            .iter()
+            .enumerate()
+            .map(|(i, iri)| (iri.clone(), i))
+            .collect();
+
+        let mut entailed = EntailmentMatrix::new(classes.len());
+        let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
+        for (new_i, iri) in classes.iter().enumerate() {
+            let Some(&old_i) = self.index.get(iri) else {
+                continue;
+            };
+            if self.unsatisfiable_idxs.contains(&old_i) {
+                unsatisfiable_idxs.insert(new_i);
+                continue; // row elided — see the soundness note above
+            }
+            entailed.insert(new_i, new_i); // reflexive
+            for old_j in self.entailed.row_ascending(old_i) {
+                if let Some(&new_j) = self
+                    .classes
+                    .get(old_j)
+                    .and_then(|sup| index.get(sup.as_str()))
+                {
+                    entailed.insert(new_i, new_j);
+                }
+            }
+        }
+        Self {
+            classes,
+            index,
+            entailed,
+            unsatisfiable_idxs,
+            stats: self.stats.clone(),
+        }
+    }
+
     /// Per-call instrumentation for this classification: how many
     /// subsumption queries each engine handled, and how many
     /// unsatisfiable classes each engine flagged.
@@ -722,6 +785,30 @@ pub(crate) fn classify_saturation_only_internal(
         .collect();
     let closure = saturate(internal);
     Ok(classify_pure_el(internal, &classes, &index, &closure))
+}
+
+/// Build a [`Classification`] from a closure that has ALREADY been computed —
+/// the [`crate::incremental::IncrementalSession`] entry point.
+///
+/// A session keeps a `SaturationState` alive across revisions; re-running
+/// [`saturate`] here would throw that work away, which is the whole point of
+/// the session. The caller is responsible for the fragment gate: the closure
+/// is a *complete* oracle only where [`is_pure_el`] holds (the session falls
+/// back to [`classify_internal`] otherwise).
+///
+/// Classes come back in vocabulary-id order, DKey-filtered — a session must
+/// re-key them through [`Classification::restricted_sorted`] before reporting.
+pub(crate) fn classify_from_closure(
+    internal: &InternalOntology,
+    closure: &owl_dl_saturation::Subsumers,
+) -> Classification {
+    let classes: Vec<String> = reportable_class_iris(internal);
+    let index: HashMap<String, usize> = classes
+        .iter()
+        .enumerate()
+        .map(|(i, iri)| (iri.clone(), i))
+        .collect();
+    classify_pure_el(internal, &classes, &index, closure)
 }
 
 /// Internal entry point. Useful for tests that hand-build an

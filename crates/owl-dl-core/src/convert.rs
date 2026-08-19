@@ -2092,9 +2092,38 @@ pub fn convert_component<A: ForIRI>(
 pub fn convert_ontology<A: ForIRI>(
     src: &SetOntology<A>,
 ) -> Result<InternalOntology, ConversionError> {
+    convert_ontology_seeded(src, Vocabulary::default(), ConceptPool::default())
+}
+
+/// Like [`convert_ontology`], but lowers into an EXISTING vocabulary and
+/// concept pool instead of empty ones, so every entity id already handed out
+/// stays valid.
+///
+/// This is the retraction path of an incremental session. P1 routes every
+/// delete to a full re-lowering of the post-delta mirror; doing that against a
+/// fresh vocabulary would renumber every class between revisions. Ids are
+/// append-only and never recycled (`vocab.rs`), so the returned ontology's
+/// vocabulary can still name an entity that NO live axiom mentions — reporting
+/// MUST therefore be filtered through [`crate::signature::compute`]. See spec
+/// §4a.
+///
+/// The seeded pool is a pure memo: a concept interned for an axiom that is now
+/// gone costs an id and nothing else.
+///
+/// # Errors
+/// Same as [`convert_ontology`].
+pub fn convert_ontology_seeded<A: ForIRI>(
+    src: &SetOntology<A>,
+    vocabulary: Vocabulary,
+    concepts: ConceptPool,
+) -> Result<InternalOntology, ConversionError> {
     let mut components: Vec<&AnnotatedComponent<A>> = src.iter().collect();
     components.sort();
-    let mut out = InternalOntology::new();
+    let mut out = InternalOntology {
+        vocabulary,
+        concepts,
+        ..InternalOntology::new()
+    };
     for ac in components {
         if let Some(axiom) =
             convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts)?

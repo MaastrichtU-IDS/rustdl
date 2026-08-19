@@ -198,3 +198,134 @@ fn refresh_derived_is_a_no_op_on_an_unchanged_ontology() {
         assert_eq!(before, axiom_strings(&internal), "{name}: live set changed");
     }
 }
+
+/// `refresh_derived` over an unchanged mirror must be a no-op for the two
+/// REWRITING passes too. `split_disjunctive_antecedents` CONSUMES
+/// `(A ⊔ B) ⊑ C` and emits `A ⊑ C`, `B ⊑ C` in its place, so the original is
+/// absent from `axioms` entirely: if the pass input is reconstructed from the
+/// post-pass state it cannot reproduce those two, and the reconcile deletes
+/// them. `bench-corpus` carries neither construct, so this case has to be
+/// synthetic.
+#[test]
+fn refresh_derived_is_a_no_op_on_a_union_lhs_axiom() {
+    let b = Build::new_rc();
+    let mut o: SetOntology<RcStr> = SetOntology::new_rc();
+    o.insert(horned_owl::model::SubClassOf {
+        sub: horned_owl::model::ClassExpression::ObjectUnionOf(vec![
+            b.class("http://x/A").into(),
+            b.class("http://x/B").into(),
+        ]),
+        sup: b.class("http://x/C").into(),
+    });
+
+    let mut internal = convert_ontology(&o).unwrap();
+    let before = axiom_strings(&internal);
+    assert!(!before.is_empty(), "fixture must lower to something");
+
+    let diff = delta::refresh_derived(&mut internal, &o);
+    assert!(
+        diff.killed.is_empty(),
+        "union-LHS split must not be retracted"
+    );
+    assert!(
+        diff.added.is_empty(),
+        "union-LHS split must not be duplicated"
+    );
+    assert_eq!(before, axiom_strings(&internal));
+}
+
+/// Same, for `decompose_long_chains`: it CONSUMES `r1 ∘ r2 ∘ r3 ⊑ s` and emits
+/// a 2-leg cascade through a fresh auxiliary role.
+#[test]
+fn refresh_derived_is_a_no_op_on_a_long_role_chain() {
+    let b = Build::new_rc();
+    let mut o: SetOntology<RcStr> = SetOntology::new_rc();
+    o.insert(horned_owl::model::SubObjectPropertyOf {
+        sub: horned_owl::model::SubObjectPropertyExpression::ObjectPropertyChain(vec![
+            b.object_property("http://x/r1").into(),
+            b.object_property("http://x/r2").into(),
+            b.object_property("http://x/r3").into(),
+        ]),
+        sup: b.object_property("http://x/s").into(),
+    });
+
+    let mut internal = convert_ontology(&o).unwrap();
+    let before = axiom_strings(&internal);
+    assert!(!before.is_empty(), "fixture must lower to something");
+
+    let diff = delta::refresh_derived(&mut internal, &o);
+    assert!(
+        diff.killed.is_empty(),
+        "chain cascade must not be retracted"
+    );
+    assert!(
+        diff.added.is_empty(),
+        "chain cascade must not be duplicated"
+    );
+    assert_eq!(before, axiom_strings(&internal));
+}
+
+/// `derive_data_axioms` reads the MIRROR's source components, not the IR. A
+/// caller that retracts a user axiom in the IR but passes a mirror that still
+/// carries the component gets the stale `C ⊑ ⊥` re-derived - the false
+/// positive this module exists to prevent, reintroduced from the caller side.
+/// Only a debug assertion stands between us and that, so pin that it fires.
+#[test]
+#[should_panic(expected = "mirror and IR baseline disagree")]
+fn refresh_derived_rejects_a_stale_mirror() {
+    let b = Build::new_rc();
+    let dp = b.data_property("http://x/dp");
+    let mut with: SetOntology<RcStr> = SetOntology::new_rc();
+    with.insert(horned_owl::model::FunctionalDataProperty(dp.clone()));
+    with.insert(horned_owl::model::SubClassOf {
+        sub: b.class("http://x/C").into(),
+        sup: horned_owl::model::ClassExpression::DataMinCardinality {
+            n: 2,
+            dp: dp.clone(),
+            dr: b
+                .datatype("http://www.w3.org/2001/XMLSchema#integer")
+                .into(),
+        },
+    });
+
+    let mut internal = convert_ontology(&with).unwrap();
+    let dp_role = internal.vocabulary.role_id("http://x/dp").unwrap();
+    let func_idx = internal
+        .live_axioms()
+        .find(|(_, ax)| {
+            matches!(ax, owl_dl_core::Axiom::FunctionalRole(owl_dl_core::Role::Named(r))
+                if *r == dp_role)
+        })
+        .map(|(i, _)| i)
+        .unwrap();
+    assert!(internal.kill_axiom(func_idx));
+
+    // The mirror still contains FunctionalDataProperty(dp) - a desync.
+    delta::refresh_derived(&mut internal, &with);
+}
+
+/// A user axiom CONSUMED by a rewriting pass has no index in `axioms`, so it
+/// cannot be retracted through `kill_axiom` - only by dropping it from the
+/// `user_axioms` baseline, which needs a source-level retraction API that is
+/// Task 7's job. Until then the hazard must be LOUD, not silent: pin that the
+/// mirror guard catches the desync instead of letting the passes re-derive
+/// `A ⊑ C`, `B ⊑ C` from a premise the user already removed.
+#[test]
+#[should_panic(expected = "mirror and IR baseline disagree")]
+fn retracting_a_consumed_original_is_caught_not_silently_ignored() {
+    let b = Build::new_rc();
+    let ax = horned_owl::model::SubClassOf {
+        sub: horned_owl::model::ClassExpression::ObjectUnionOf(vec![
+            b.class("http://x/A").into(),
+            b.class("http://x/B").into(),
+        ]),
+        sup: b.class("http://x/C").into(),
+    };
+    let mut o: SetOntology<RcStr> = SetOntology::new_rc();
+    o.insert(ax.clone());
+
+    let mut internal = convert_ontology(&o).unwrap();
+    let mut without = o.clone();
+    without.take(&Component::from(ax).into());
+    delta::refresh_derived(&mut internal, &without);
+}

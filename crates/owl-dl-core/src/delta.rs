@@ -18,6 +18,12 @@ use crate::ontology::Axiom;
 /// Returns the new axiom indices. Does not touch derived axioms - call
 /// [`refresh_derived`] afterwards, in the same commit.
 ///
+/// `_mirror` is unused: lowering a component needs only the vocabulary and the
+/// concept pool. It is accepted for signature symmetry with
+/// [`refresh_derived`] (which genuinely needs it) so a caller threads one
+/// mirror through the whole commit and cannot pass a different ontology to the
+/// two halves.
+///
 /// # Errors
 /// Propagates the lowering error for any unsupported component.
 pub fn convert_delta<A: ForIRI>(
@@ -32,7 +38,9 @@ pub fn convert_delta<A: ForIRI>(
             &mut internal.vocabulary,
             &mut internal.concepts,
         )? {
-            out.push(internal.push_live_axiom(axiom));
+            // push_USER_axiom: also records it in the pre-pass baseline the
+            // derivation passes re-run over.
+            out.push(internal.push_user_axiom(axiom));
         }
     }
     Ok(out)
@@ -68,13 +76,18 @@ pub fn refresh_derived<A: ForIRI>(
     internal: &mut InternalOntology,
     mirror: &SetOntology<A>,
 ) -> DerivedDiff {
-    // 1. The live USER axioms - the only input the passes may see. Feeding a
-    //    previous revision's derived axioms back in would let them bootstrap
-    //    themselves and survive the retraction of their premises.
-    let user: Vec<Axiom> = internal
-        .live_user_axiom_indices()
-        .map(|i| internal.axioms[i].clone())
-        .collect();
+    debug_assert_baseline_matches_mirror(internal, mirror);
+
+    // 1. The PRE-pass user baseline - the only input the passes may see.
+    //    Feeding a previous revision's derived axioms back in would let them
+    //    bootstrap themselves and survive the retraction of their premises.
+    //
+    //    NOT `live ∧ ¬derived`: `split_disjunctive_antecedents` and
+    //    `decompose_long_chains` CONSUME their input, so an axiom they
+    //    rewrote is in neither set, and the passes could not reproduce the
+    //    replacements they emitted - which are marked `derived`, so step 3
+    //    would retract them and silently delete real axiom content.
+    let user: Vec<Axiom> = internal.user_axioms.clone();
 
     // 2. Re-run the passes over exactly those. `run_derivation_passes` returns
     //    the FULL post-pass list and restores `internal.axioms`, so everything
@@ -96,7 +109,7 @@ pub fn refresh_derived<A: ForIRI>(
     let stale: Vec<usize> = internal
         .live
         .ones()
-        .filter(|i| internal.derived.contains(*i))
+        .filter(|i| internal.is_derived(*i))
         .collect();
     let mut buckets: HashMap<&Axiom, Vec<usize>> = HashMap::new();
     for &i in &stale {
@@ -147,4 +160,60 @@ fn multiset_difference(mut full: Vec<Axiom>, baseline: &[Axiom]) -> Vec<Axiom> {
         }
     }
     out
+}
+
+/// Debug-only guard on the invariant every soundness claim here rests on: the
+/// `mirror` handed to [`refresh_derived`] describes the SAME ontology as
+/// `internal.user_axioms`.
+///
+/// Two of the passes (`derive_data_axioms`, `derive_data_domain_unions`) read
+/// the mirror's source components rather than the IR. So a caller that kills
+/// `Functional(dp)` in the IR but passes a mirror still containing the
+/// component gets the stale `C ⊑ ⊥` RE-DERIVED - the exact false positive this
+/// module exists to prevent, reintroduced from the caller side, and invisible
+/// to every test that does not compare against a from-scratch run.
+///
+/// Re-lowers the mirror into a scratch copy of the vocabulary/pool (so no ids
+/// are allocated in `internal`) and compares axiom multisets. O(|mirror|) and
+/// compiled out of release builds.
+#[allow(clippy::needless_pass_by_ref_mut)] // signature parity with the cfg'd-in arm
+fn debug_assert_baseline_matches_mirror<A: ForIRI>(
+    internal: &InternalOntology,
+    mirror: &SetOntology<A>,
+) {
+    #[cfg(debug_assertions)]
+    {
+        let mut vocab = internal.vocabulary.clone();
+        let mut pool = internal.concepts.clone();
+        let mut from_mirror: Vec<Axiom> = Vec::new();
+        for ac in mirror {
+            match convert_component(&ac.component, &mut vocab, &mut pool) {
+                Ok(Some(ax)) => from_mirror.push(ax),
+                Ok(None) => {}
+                // A component the mirror cannot lower would have failed
+                // `convert_ontology` too; nothing to compare against.
+                Err(_) => return,
+            }
+        }
+        from_mirror.sort();
+        let mut baseline = internal.user_axioms.clone();
+        baseline.sort();
+        assert_eq!(
+            from_mirror.len(),
+            baseline.len(),
+            "refresh_derived: mirror and IR baseline disagree ({} lowered from the mirror vs {} \
+             in user_axioms). The mirror must be the ontology AFTER the delta - passing a stale \
+             one re-derives axioms whose premises were retracted.",
+            from_mirror.len(),
+            baseline.len()
+        );
+        assert!(
+            from_mirror == baseline,
+            "refresh_derived: mirror and IR baseline describe different ontologies"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (internal, mirror);
+    }
 }

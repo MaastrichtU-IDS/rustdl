@@ -2111,6 +2111,11 @@ pub fn convert_ontology<A: ForIRI>(
     out.axioms.sort();
     out.sync_liveness();
     mark_derived_axioms(&mut out, &user);
+    // Persist the PRE-pass baseline. `live ∧ ¬derived` is not a substitute:
+    // the rewriting passes consume their input, so an axiom they replaced is
+    // in neither set and its replacements would be retracted on the very
+    // first `refresh_derived`. See `InternalOntology::user_axioms`.
+    out.user_axioms = user;
     Ok(out)
 }
 

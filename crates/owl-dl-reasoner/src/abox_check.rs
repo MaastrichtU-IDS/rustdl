@@ -625,7 +625,10 @@ mod tests {
             vocabulary: Vocabulary::default(),
             concepts: ConceptPool::default(),
             axioms: Vec::new(),
-            live: fixedbitset::FixedBitSet::default(),
+            // `..Default::default()` rather than an exhaustive literal: this is
+            // a "tiniest ontology" fixture, so a new liveness/provenance field
+            // in owl-dl-core should not break the build here.
+            ..Default::default()
         };
         let prepared =
             crate::PreparedOntology::from_internal(internal).expect("empty ontology prepares");

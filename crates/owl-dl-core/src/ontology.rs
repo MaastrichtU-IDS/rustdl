@@ -119,6 +119,24 @@ pub struct InternalOntology {
     /// axiom that came from the user's ontology — those are retracted only
     /// by an explicit delta.
     pub derived: fixedbitset::FixedBitSet,
+    /// The lowered user axioms **as they were BEFORE** the derivation passes
+    /// ran — the exact input [`crate::delta::refresh_derived`] must re-run
+    /// them over.
+    ///
+    /// This cannot be reconstructed from `axioms`. Two passes CONSUME their
+    /// input: `split_disjunctive_antecedents` replaces `(A ⊔ B) ⊑ C` with
+    /// `A ⊑ C`, `B ⊑ C`, and `decompose_long_chains` replaces an n-leg chain
+    /// with a 2-leg cascade. The original is then absent from `axioms`
+    /// altogether, so `live ∧ ¬derived` is strictly smaller than the real
+    /// baseline and re-running the passes over it would fail to reproduce the
+    /// replacements — which are marked `derived`, and so would be retracted.
+    /// That deletes real axiom content on the first commit of any session.
+    ///
+    /// Kept in sync by `push_live_axiom`'s callers: `convert_ontology` seeds
+    /// it, `delta::convert_delta` appends to it, and [`Self::kill_axiom`]
+    /// removes from it. Its ORDER is stable across commits, which also keeps
+    /// `decompose_long_chains`' index-derived auxiliary role IRIs stable.
+    pub user_axioms: Vec<Axiom>,
 }
 
 impl InternalOntology {
@@ -154,9 +172,23 @@ impl InternalOntology {
     }
 
     /// Returns true iff this call transitioned the axiom live -> dead.
+    ///
+    /// Killing a USER axiom also drops one occurrence of it from
+    /// [`Self::user_axioms`]. That is not bookkeeping — it is the soundness
+    /// step: `refresh_derived` re-runs the derivation passes over that
+    /// baseline, so an entry left behind after its axiom was retracted would
+    /// re-derive the very consequences the retraction was meant to remove
+    /// (delete `Functional(dp)`, get `C ⊑ ⊥` back). One occurrence, not all:
+    /// the baseline is a multiset and the caller killed one slot.
     pub fn kill_axiom(&mut self, idx: usize) -> bool {
         if idx < self.live.len() && self.live.contains(idx) {
             self.live.set(idx, false);
+            if !self.derived.contains(idx) {
+                let ax = &self.axioms[idx];
+                if let Some(pos) = self.user_axioms.iter().position(|u| u == ax) {
+                    self.user_axioms.remove(pos);
+                }
+            }
             true
         } else {
             false
@@ -176,6 +208,13 @@ impl InternalOntology {
         self.live.count_ones(..)
     }
 
+    /// Append a USER axiom: live, not derived, and recorded in the
+    /// [`Self::user_axioms`] baseline the derivation passes re-run over.
+    pub fn push_user_axiom(&mut self, ax: Axiom) -> usize {
+        self.user_axioms.push(ax.clone());
+        self.push_live_axiom(ax)
+    }
+
     /// Append an axiom owned by the derivation overlay (live + `derived`).
     pub fn push_derived_axiom(&mut self, ax: Axiom) -> usize {
         let idx = self.push_live_axiom(ax);
@@ -188,11 +227,5 @@ impl InternalOntology {
     #[must_use]
     pub fn is_derived(&self, idx: usize) -> bool {
         self.derived.contains(idx)
-    }
-
-    /// Live axiom indices the derivation overlay does NOT own — i.e. the
-    /// axioms the passes must be re-run over.
-    pub fn live_user_axiom_indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.live.ones().filter(move |i| !self.derived.contains(*i))
     }
 }

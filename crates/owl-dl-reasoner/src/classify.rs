@@ -400,7 +400,12 @@ pub struct ClassificationStats {
 }
 
 impl Classification {
-    /// Every declared class IRI in insertion order.
+    /// Every declared class IRI. Insertion (vocabulary-id) order for a
+    /// classification built by [`classify`] and friends; IRI order for
+    /// one that came back from [`Self::restricted_sorted`], i.e. every
+    /// result an [`crate::incremental::IncrementalSession`] hands out
+    /// (its ids are a function of its revision history, so id order
+    /// would not be comparable across sessions).
     #[must_use]
     pub fn classes(&self) -> &[String] {
         &self.classes
@@ -413,8 +418,13 @@ impl Classification {
     /// unsatisfiable `j` when filling a satisfiable row `i`. An
     /// unsatisfiable `i` subsumes everything (⊥ ⊑ *); its row is NOT
     /// materialized, so the short-circuit below is the ONLY place that
-    /// fact is reintroduced. Every accessor MUST route through here —
-    /// no accessor may touch a raw row.
+    /// fact is reintroduced. Every accessor MUST route through here for
+    /// its ANSWER; a raw row may be read only for a subject already
+    /// proven satisfiable — that is, behind an
+    /// `unsatisfiable_idxs.contains(&i)` guard that took the other
+    /// branch, as [`Self::equivalent_classes`],
+    /// [`Self::direct_subsumers`] and [`Self::restricted_sorted`] do.
+    /// Reading a row without that guard silently loses ⊥ ⊑ *.
     fn entails(&self, i: usize, j: usize) -> bool {
         self.unsatisfiable_idxs.contains(&i) || self.entailed.row_contains(i, j)
     }

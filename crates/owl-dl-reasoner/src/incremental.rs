@@ -53,6 +53,21 @@ use crate::{ReasonError, classify};
 /// of 64 unused ids in the engine's per-class vectors.
 const INITIAL_SLACK: usize = 64;
 
+/// Panic message for the lowering calls that run PAST the commit point.
+///
+/// Everything `apply` lowers after it has touched the mirror is a subset of
+/// what `stage` already lowered successfully against a scratch vocabulary:
+/// `commit_addition` re-lowers exactly `staged.added_components`, and
+/// `relower` lowers the post-delta mirror, i.e. components that lowered on an
+/// earlier revision minus the retracted ones plus those same staged additions.
+/// A failure here is therefore not a rejectable delta — the mirror has already
+/// moved and §7's "previous revision, completely unmutated" no longer exists
+/// to return to. It is a bug in `stage`, which must lower exactly what the
+/// commit lowers.
+const STAGED_LOWERING_CANNOT_FAIL: &str = "IncrementalSession: a component that lowered during staging failed to lower during the \
+     commit. The mirror is already mutated, so this cannot be reported as a rejected delta \
+     (spec §7) - `stage` and the commit must lower exactly the same components.";
+
 /// A monotonically increasing revision counter. Advances **only** on a
 /// committed [`IncrementalSession::apply`]; a rejected delta leaves it where
 /// it was.
@@ -195,10 +210,13 @@ impl<A: ForIRI> IncrementalSession<A> {
     /// of the vocabulary, so an unsupported construct also aborts before any
     /// mutation.
     ///
-    /// Adding a component the mirror already has, or removing and re-adding
-    /// the same component, is a no-op for that component rather than a
-    /// duplicate — the mirror is a set and `user_axioms` must stay in step
-    /// with it.
+    /// The mirror is a set and `user_axioms` must stay a multiset-equal image
+    /// of it, so a component is never inserted twice: adding one the mirror
+    /// already has is a no-op. Naming the same component in BOTH halves of a
+    /// delta nets to KEEPING it, whichever order the caller wrote them in —
+    /// the commit removes and then re-inserts, so the component survives. (It
+    /// still counts as a logical retraction for routing, so such a delta
+    /// rebuilds; the result is correct, just not cheap.)
     ///
     /// # Errors
     /// [`ReasonError::AxiomNotPresent`] if a removal names an axiom that is
@@ -207,8 +225,13 @@ impl<A: ForIRI> IncrementalSession<A> {
     pub fn apply(&mut self, delta: &AxiomDelta<A>) -> Result<Revision, ReasonError> {
         let staged = self.stage(delta)?;
 
-        // ---- commit: from here on nothing may fail for a reason staging
-        // ---- did not already rule out.
+        // ======================= COMMIT POINT (spec §7) =======================
+        // The mirror is mutated on the next line. NOTHING below may be
+        // fallible: there is no previous revision left to return to, so a `?`
+        // here would leave the session half-committed at a revision that never
+        // happened. Every callee below therefore returns `()`, not `Result` —
+        // adding a fallible step means changing a signature, which is visible
+        // in review rather than silent. See STAGED_LOWERING_CANNOT_FAIL.
         for ac in &delta.removed {
             self.mirror.remove(ac);
         }
@@ -218,12 +241,12 @@ impl<A: ForIRI> IncrementalSession<A> {
 
         let dir = staged.direction();
         if staged.removed_axioms.is_empty() {
-            self.commit_addition(&staged)?;
+            self.commit_addition(&staged);
         } else {
             // P1: a retraction is not expressible against the retained engine,
             // and a tombstone is invisible to it (see the module docs), so the
             // whole mirror is re-lowered.
-            self.relower(staged.vocabulary, staged.concepts)?;
+            self.relower(staged.vocabulary, staged.concepts);
             self.stats.rebuilds += 1;
             self.classification = None;
         }
@@ -289,10 +312,13 @@ impl<A: ForIRI> IncrementalSession<A> {
     // -- internals ---------------------------------------------------------
 
     /// Absorb a delta that retracts nothing.
-    fn commit_addition(&mut self, staged: &Staged<A>) -> Result<(), ReasonError> {
+    ///
+    /// Infallible on purpose — it runs past the commit point. See
+    /// [`STAGED_LOWERING_CANNOT_FAIL`].
+    fn commit_addition(&mut self, staged: &Staged<A>) {
         let mut new_idxs =
             convert_delta(&mut self.internal, &self.mirror, &staged.added_components)
-                .map_err(ReasonError::Conversion)?;
+                .expect(STAGED_LOWERING_CANNOT_FAIL);
         // Requirement of `convert_delta`: the derived overlay is recomputed in
         // the SAME commit. The passes are whole-ontology fixpoints, so an
         // overlay left over from the previous revision is stale by
@@ -306,17 +332,17 @@ impl<A: ForIRI> IncrementalSession<A> {
             self.relower(
                 self.internal.vocabulary.clone(),
                 self.internal.concepts.clone(),
-            )?;
+            );
             self.stats.rebuilds += 1;
             self.classification = None;
-            return Ok(());
+            return;
         }
 
         if staged.logically_empty() && diff.added.is_empty() {
             // Spec §10: an annotation edit (or a re-declaration of a known
             // entity) commits a revision with ZERO invalidation — the engine
             // is not touched and the cached classification stays valid.
-            return Ok(());
+            return;
         }
 
         new_idxs.extend(diff.added);
@@ -327,19 +353,17 @@ impl<A: ForIRI> IncrementalSession<A> {
             self.stats.additions_reused += 1;
         }
         self.classification = None;
-        Ok(())
     }
 
     /// Re-lower the whole post-delta mirror into `vocabulary`/`concepts` and
     /// rebuild the engine over the result. Ids survive; dead axioms do not.
-    fn relower(
-        &mut self,
-        vocabulary: Vocabulary,
-        concepts: ConceptPool,
-    ) -> Result<(), ReasonError> {
-        self.internal = convert_ontology_seeded(&self.mirror, vocabulary, concepts)?;
+    ///
+    /// Infallible on purpose — it runs past the commit point. See
+    /// [`STAGED_LOWERING_CANNOT_FAIL`].
+    fn relower(&mut self, vocabulary: Vocabulary, concepts: ConceptPool) {
+        self.internal = convert_ontology_seeded(&self.mirror, vocabulary, concepts)
+            .expect(STAGED_LOWERING_CANNOT_FAIL);
         self.saturation = SaturationState::build(&self.internal, self.saturation.slack());
-        Ok(())
     }
 
     fn recompute_classification(&self) -> Result<Classification, ReasonError> {

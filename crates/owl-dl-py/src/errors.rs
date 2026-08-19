@@ -77,5 +77,11 @@ pub(crate) fn reason_error_to_py(err: ReasonError) -> PyErr {
         ReasonError::Inconsistent => {
             RustdlError::new_err("ontology is inconsistent; every assertion is trivially entailed")
         }
+        // Raised only by `IncrementalSession::apply` (spec §7, fail-closed).
+        // Not reachable from the current pyo3 surface, which has no session
+        // binding; mapped anyway so the match stays exhaustive.
+        ReasonError::AxiomNotPresent(axiom) => RustdlError::new_err(format!(
+            "delta retracts an axiom that is not in the current revision: {axiom}"
+        )),
     }
 }

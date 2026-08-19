@@ -98,6 +98,14 @@ fn removal_forces_a_rebuild_but_stays_correct_in_p1() {
 
     assert_eq!(session.stats().rebuilds, 1, "P1 rebuilds on any delete");
     assert!(!session.is_subclass_of("http://x/A", "http://x/B").unwrap());
+    // NOTE for the reader: the assertion above holds for the WEAKER reason
+    // that A and B left the live signature with the only axiom that mentioned
+    // them, so `is_subclass` answers `false` from a missing index rather than
+    // from a retracted entailment. The strong version of this test — a
+    // retraction whose premise is really gone while its entities are still
+    // reported — is
+    // `deleting_a_union_lhs_premise_retracts_its_rewritten_consequence`.
+    assert!(session.classify().unwrap().classes().is_empty());
 }
 
 #[test]
@@ -444,5 +452,57 @@ fn an_addition_that_changes_the_derived_overlay_is_picked_up() {
             .unwrap()
             .unsatisfiable_classes()
             .contains(&"http://x/C")
+    );
+}
+
+#[test]
+fn an_addition_that_breaks_consistency_is_not_answered_from_the_cache() {
+    // Spec §10, the NEGATIVE direction — the half of the retention rule that is
+    // observable. `consistent` does NOT survive an addition, so the cached
+    // `Some(true)` must be dropped at commit and the verdict recomputed.
+    //
+    // This is the only cached value in the session that can be flatly WRONG.
+    // Mutation: `self.consistency = retain_consistency(self.consistency,
+    // Direction::Empty)` in `apply` (i.e. always retain) — or any
+    // `Staged::direction()` that reports `Empty`/`Retraction` for a pure
+    // addition — and the session keeps answering `true` for a KB that now has
+    // no model at all.
+    let b = Build::new_rc();
+    let mut base: SetOntology<RcStr> = SetOntology::new_rc();
+    base.insert(horned_owl::model::ClassAssertion {
+        ce: b.class("http://x/C").into(),
+        i: b.named_individual("http://x/a").into(),
+    });
+    base.insert(horned_owl::model::ClassAssertion {
+        ce: b.class("http://x/D").into(),
+        i: b.named_individual("http://x/a").into(),
+    });
+
+    let mut session = IncrementalSession::new(&base).unwrap();
+    assert!(
+        session.is_consistent().unwrap(),
+        "fixture guard: C(a) ∧ D(a) alone has a model"
+    );
+
+    let disjoint = horned_owl::model::DisjointClasses(vec![
+        b.class("http://x/C").into(),
+        b.class("http://x/D").into(),
+    ]);
+    session
+        .apply(&AxiomDelta {
+            added: vec![disjoint.clone().into()],
+            removed: vec![],
+        })
+        .unwrap();
+
+    let mut union = base.clone();
+    union.insert(disjoint);
+    assert!(
+        !owl_dl_reasoner::is_consistent(&union).unwrap(),
+        "fixture guard: the from-scratch run must call the union inconsistent"
+    );
+    assert!(
+        !session.is_consistent().unwrap(),
+        "a delete-only retention rule must not survive an addition"
     );
 }

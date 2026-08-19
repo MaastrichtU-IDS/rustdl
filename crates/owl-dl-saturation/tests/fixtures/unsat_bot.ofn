@@ -1,0 +1,10 @@
+Prefix(:=<http://example.org/unsat#>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://example.org/unsat>
+  Declaration(Class(:A))
+  Declaration(Class(:B))
+  Declaration(Class(:C))
+  SubClassOf(:A owl:Nothing)
+  SubClassOf(:B :C)
+  SubClassOf(:C owl:Nothing)
+)

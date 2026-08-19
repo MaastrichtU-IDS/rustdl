@@ -34,12 +34,66 @@ fn every_compiled_rule_maps_to_a_live_source_axiom_or_the_synthetic_sentinel() {
         rules.disjoint_pairs.len(),
         rules.axiom_of_disjoint_pair.len()
     );
+    assert_eq!(
+        rules.directly_unsat.len(),
+        rules.axiom_of_directly_unsat.len()
+    );
 
     for &a in &rules.axiom_of_atomic_sub {
         if a != u32::MAX {
             let idx = a as usize;
             assert!(idx < internal.axioms.len(), "axiom index out of range");
             assert!(internal.live.contains(idx), "rule points at a dead axiom");
+        }
+    }
+}
+
+/// A `C ⊑ ⊥` rule that outlives its axiom keeps `C` permanently flagged
+/// unsatisfiable — a false positive, the one failure mode this project treats as
+/// unacceptable. So `directly_unsat` must be attributable too, and the attributed
+/// axiom must really be the `SubClassOf(C, owl:Nothing)` that produced it.
+#[test]
+fn directly_unsat_rules_name_the_subclass_of_bot_axiom_they_came_from() {
+    let internal = load_fixture("unsat_bot.ofn");
+    let rules = owl_dl_saturation::collect_el_rules_for_test(&internal);
+
+    assert_eq!(
+        rules.directly_unsat.len(),
+        rules.axiom_of_directly_unsat.len()
+    );
+    assert!(
+        !rules.directly_unsat.is_empty(),
+        "fixture must exercise the `C ⊑ ⊥` lowering"
+    );
+
+    for (&c, &a) in rules
+        .directly_unsat
+        .iter()
+        .zip(rules.axiom_of_directly_unsat.iter())
+    {
+        assert_ne!(
+            a,
+            u32::MAX,
+            "a told `C ⊑ ⊥` always has a source axiom — never the synthetic sentinel"
+        );
+        let idx = a as usize;
+        assert!(idx < internal.axioms.len(), "axiom index out of range");
+        assert!(internal.live.contains(idx), "rule points at a dead axiom");
+        // The named axiom must be the very `SubClassOf(sub, Bot)` that produced
+        // this rule — provenance pointing at the WRONG axiom is worse than none.
+        match &internal.axioms[idx] {
+            owl_dl_core::Axiom::SubClassOf { sub, sup } => {
+                assert!(
+                    matches!(internal.concepts.get(*sup), owl_dl_core::ConceptExpr::Bot),
+                    "attributed axiom is not a `... ⊑ ⊥`"
+                );
+                assert_eq!(
+                    *internal.concepts.get(*sub),
+                    owl_dl_core::ConceptExpr::Atomic(c),
+                    "attributed axiom names a different subclass"
+                );
+            }
+            other => panic!("attributed axiom is not a SubClassOf: {other:?}"),
         }
     }
 }

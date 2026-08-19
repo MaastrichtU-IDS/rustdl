@@ -2356,7 +2356,13 @@ pub struct ElRules {
     /// Phase D4 (2026-06-03): added to support the data-axiom
     /// preprocessing pass's emitted `C ⊑ Bot` axioms (Functional + ≥n
     /// clash; `DataMin` > `DataMax` clash).
-    directly_unsat: Vec<ClassId>,
+    pub directly_unsat: Vec<ClassId>,
+    /// Source axiom of `directly_unsat[i]`, or [`NO_AXIOM`]. Same length.
+    ///
+    /// Load-bearing for deletion: a `C ⊑ ⊥` rule left behind after its
+    /// `SubClassOf(C, Bot)` (or `DisjointClasses`-derived) axiom is removed
+    /// keeps `C` permanently flagged unsatisfiable — a false positive.
+    pub axiom_of_directly_unsat: Vec<u32>,
     /// Per-role domain classes: `role_domains[r]` holds the atomic
     /// classes `C` such that any `r`-source belongs to `C`. Lowered
     /// from `ObjectPropertyDomain(r, C)` with named `r` and atomic
@@ -2453,6 +2459,12 @@ impl ElRules {
         let ax = self.axiom_slot();
         self.disjoint_pairs.push((a, b));
         self.axiom_of_disjoint_pair.push(ax);
+    }
+
+    fn push_directly_unsat(&mut self, c: ClassId) {
+        let ax = self.axiom_slot();
+        self.directly_unsat.push(c);
+        self.axiom_of_directly_unsat.push(ax);
     }
 
     /// True if `r` is declared `FunctionalObjectProperty`.
@@ -3083,6 +3095,11 @@ fn collect_el_rules_with_provenance(
             &disjoint_pair_axiom,
             "disjoint_pair",
         );
+        both(
+            &rules.axiom_of_directly_unsat,
+            &directly_unsat_axiom,
+            "directly_unsat",
+        );
     }
 
     let trace = ProofTrace {
@@ -3517,7 +3534,7 @@ fn lower_sub_class_of(
             // DataMax) wouldn't be picked up. See
             // `crates/owl-dl-core/src/data_axioms.rs`.
             if matches!(pool.get(sup), ConceptExpr::Bot) {
-                rules.directly_unsat.push(*sub_id);
+                rules.push_directly_unsat(*sub_id);
                 return;
             }
             for atomic_sup in atomic_operands_on_right(sup, pool) {

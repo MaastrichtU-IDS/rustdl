@@ -5670,6 +5670,7 @@ pub fn prove_entailment<A: horned_owl::model::ForIRI>(
 
     let cfg = SaturateConfig {
         record_proofs: true,
+        slack: 0,
     };
     let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
 
@@ -5728,6 +5729,7 @@ pub fn prove_entailment_rcstr(
 
     let cfg = SaturateConfig {
         record_proofs: true,
+        slack: 0,
     };
     let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
 

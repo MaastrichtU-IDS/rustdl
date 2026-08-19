@@ -85,12 +85,27 @@ pub struct SaturateConfig {
     /// environment variable (default OFF). Setting this to `true` overrides
     /// the env var (e.g. for the `rustdl prove` subcommand).
     pub record_proofs: bool,
+    /// Reserved id headroom above the user vocabulary.
+    ///
+    /// Synthetic class ids (Tseitin conjunctions, existential markers, nominal
+    /// keys, …) normally start at `vocabulary.num_classes()`. With `slack = k`
+    /// they start at `vocabulary.num_classes() + k` instead, leaving `k`
+    /// **unallocated** ids in between. Nothing is ever allocated in that gap by
+    /// this crate — it exists so an incremental session can intern up to `k`
+    /// new named classes across revisions without colliding with (and thereby
+    /// invalidating) retained synthetics.
+    ///
+    /// Semantically invisible: `slack` only moves synthetic ids further up the
+    /// id space, so the closure over the user vocabulary is unchanged.
+    /// Defaults to `0`, which is byte-identical to the pre-slack behaviour.
+    pub slack: usize,
 }
 
 impl Default for SaturateConfig {
     fn default() -> Self {
         Self {
             record_proofs: proof_enabled(),
+            slack: 0,
         }
     }
 }
@@ -107,6 +122,24 @@ impl Default for SaturateConfig {
 #[must_use]
 pub fn saturate(internal: &InternalOntology) -> Subsumers {
     saturate_with_config(internal, &SaturateConfig::default()).0
+}
+
+/// Like [`saturate`] but reserves `slack` unallocated class ids above the user
+/// vocabulary before the first synthetic is handed out.
+///
+/// Semantically invisible — the closure over the user vocabulary is identical
+/// for every `slack` (see `tests/slack_identity.rs`); only the synthetic ids
+/// move. `slack = 0` is exactly [`saturate`].
+#[must_use]
+pub fn saturate_with_slack(internal: &InternalOntology, slack: usize) -> Subsumers {
+    saturate_with_config(
+        internal,
+        &SaturateConfig {
+            slack,
+            ..SaturateConfig::default()
+        },
+    )
+    .0
 }
 
 /// Like [`saturate`] but also returns every derived existential fact
@@ -129,9 +162,10 @@ pub fn saturate_with_exists_facts(
     let n = internal.vocabulary.num_classes();
     let role_super_map = build_role_super(internal);
     let (rules, tseitin, num_total_classes, maybe_trace) =
-        collect_el_rules_with_provenance(internal, &role_super_map, false);
+        collect_el_rules_with_provenance(internal, &role_super_map, false, n);
     let role_super = freeze_role_super(&role_super_map);
     let mut engine = WorklistEngine::new(
+        n,
         n,
         num_total_classes,
         rules,
@@ -181,7 +215,7 @@ pub fn saturate_for_realize(
     let n = internal.vocabulary.num_classes();
     let role_super_map = build_role_super(internal);
     let (mut rules, mut tseitin, _old_total, _trace) =
-        collect_el_rules_with_provenance(internal, &role_super_map, false);
+        collect_el_rules_with_provenance(internal, &role_super_map, false, n);
 
     // Effective (super-role-closed) ranges: `Range(s)` applies to every `r ⊑ s`,
     // because an `r`-successor is also an `s`-successor.
@@ -245,6 +279,7 @@ pub fn saturate_for_realize(
     let role_super = freeze_role_super(&role_super_map);
     let mut engine = WorklistEngine::new(
         n,
+        n,
         num_total_classes,
         rules,
         tseitin,
@@ -271,12 +306,18 @@ pub fn saturate_with_config(
     cfg: &SaturateConfig,
 ) -> (Subsumers, Option<ProofTrace>) {
     let n = internal.vocabulary.num_classes();
+    // Synthetics start `slack` ids above the user vocabulary; the ids in
+    // `[n, synth_base)` stay unallocated (see `SaturateConfig::slack`).
+    let synth_base = n
+        .checked_add(cfg.slack)
+        .expect("num_classes + slack overflows usize");
     let role_super_map = build_role_super(internal);
     let (rules, tseitin, num_total_classes, maybe_trace) =
-        collect_el_rules_with_provenance(internal, &role_super_map, cfg.record_proofs);
+        collect_el_rules_with_provenance(internal, &role_super_map, cfg.record_proofs, synth_base);
     let role_super = freeze_role_super(&role_super_map);
     let mut engine = WorklistEngine::new(
         n,
+        synth_base,
         num_total_classes,
         rules,
         tseitin,
@@ -312,7 +353,7 @@ pub(crate) fn build_run_engine_with_reserved(
     let n = internal.vocabulary.num_classes();
     let role_super_map = build_role_super(internal);
     let (rules, mut tseitin, num_total_classes, maybe_trace) =
-        collect_el_rules_with_provenance(internal, &role_super_map, false);
+        collect_el_rules_with_provenance(internal, &role_super_map, false, n);
     let role_super = freeze_role_super(&role_super_map);
     // Reserve one id above the static Tseitin universe for the seed query class X.
     // Bumping next_id ensures runtime synthetics start above X (no aliasing).
@@ -322,6 +363,7 @@ pub(crate) fn build_run_engine_with_reserved(
         .checked_add(1)
         .expect("synthetic id overflow");
     let mut engine = WorklistEngine::new(
+        n,
         n,
         num_total_classes + 1, // size all per-class Vecs/bitsets to include X
         rules,
@@ -397,8 +439,14 @@ struct WorklistEngine {
     /// reflexive `C ⊑ C` so synthetic classes get their reflexivity
     /// implicitly via the rules that introduce them.
     num_user_classes: usize,
-    /// Total class-id universe size (user + Tseitin). Used to size
-    /// the bitsets.
+    /// First synthetic class id — i.e. `num_user_classes + slack`.
+    /// Equal to `num_user_classes` when no id headroom was reserved
+    /// (see `SaturateConfig::slack`). The ids in
+    /// `[num_user_classes, synth_base)` are **unallocated**: nothing
+    /// denotes them, so the seeder must never emit rows for them.
+    synth_base: usize,
+    /// Total class-id universe size (user + slack gap + Tseitin). Used
+    /// to size the bitsets.
     num_total_classes: usize,
     /// Runtime Tseitin allocator for synthetic class IDs introduced
     /// by the Phase 2a functional-role witness-merge rule. Seeded
@@ -468,6 +516,7 @@ impl WorklistEngine {
     #[allow(clippy::too_many_arguments)]
     fn new(
         num_user_classes: usize,
+        synth_base: usize,
         num_total_classes: usize,
         rules: ElRules,
         tseitin: TseitinAllocator,
@@ -534,6 +583,7 @@ impl WorklistEngine {
             existential_triggers_by_body,
             disjoints_by_class,
             num_user_classes,
+            synth_base,
             num_total_classes,
             tseitin_runtime: tseitin,
             merged_atom_sets: HashMap::new(),
@@ -692,7 +742,13 @@ impl WorklistEngine {
         // still derives `F ⊑ F` for them via told rules. Push them
         // up-front to keep behaviour matched with the previous
         // HashSet implementation.
-        for i in self.num_user_classes..self.num_total_classes {
+        //
+        // Start at `synth_base`, NOT at `num_user_classes`: with reserved id
+        // headroom the ids in `[num_user_classes, synth_base)` are unallocated
+        // and denote nothing, so seeding them would create phantom reflexive
+        // rows across the gap. When `slack == 0` the two are equal and this is
+        // the pre-slack range exactly.
+        for i in self.synth_base..self.num_total_classes {
             let id = ClassId::new(u32::try_from(i).expect("class count fits in u32"));
             self.todo_subsumer.push_back((id, id));
         }
@@ -2370,9 +2426,10 @@ struct ExistentialTrigger {
 /// Together those clauses define `F ≡ B₁ ⊓ … ⊓ Bₙ`, so the existing
 /// CR5 propagation over `∃r.F` produces exactly the same closure as
 /// it would on `∃r.(B₁ ⊓ … ⊓ Bₙ)`. Synthetic class ids start at
-/// `num_original_classes` and never collide with user-declared
-/// class ids; they don't leak into the public `Subsumers` API
-/// because callers iterate over `0..num_classes` only.
+/// `synth_base` (= `num_classes + slack`, so plain `num_classes`
+/// unless id headroom was reserved) and never collide with
+/// user-declared class ids; they don't leak into the public
+/// `Subsumers` API because callers iterate over `0..num_classes` only.
 #[derive(Debug, Clone)]
 struct TseitinAllocator {
     next_id: u32,
@@ -2431,9 +2488,11 @@ struct TseitinAllocator {
 }
 
 impl TseitinAllocator {
-    fn new(num_original_classes: usize) -> Self {
+    /// `synth_base` is the first id handed out — `num_classes + slack`
+    /// (plain `num_classes` when no headroom is reserved).
+    fn new(synth_base: usize) -> Self {
         Self {
-            next_id: u32::try_from(num_original_classes).expect("class count fits in u32"),
+            next_id: u32::try_from(synth_base).expect("class count fits in u32"),
             by_body: HashMap::new(),
             by_existential: HashMap::new(),
             by_union_existential: HashMap::new(),
@@ -2635,8 +2694,9 @@ fn collect_el_rules_with_provenance(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
     record_proofs: bool,
+    synth_base: usize,
 ) -> (ElRules, TseitinAllocator, usize, Option<ProofTrace>) {
-    let (rules, tseitin, total_classes) = collect_el_rules(internal, role_super);
+    let (rules, tseitin, total_classes) = collect_el_rules(internal, role_super, synth_base);
     if !record_proofs {
         return (rules, tseitin, total_classes, None);
     }
@@ -2734,7 +2794,6 @@ fn collect_el_rules_with_provenance(
     // Because lower_sub_class_of processes axioms in source order and appends
     // to the rule Vecs, the range [before..after] for each axiom is
     // monotonically increasing. We track cursors per Vec.
-    let num_classes = internal.vocabulary.num_classes();
     // `tseitin.next_id` is used only to verify total_classes; no action needed here.
     let mut atomic_cur = 0usize;
     let mut conj_cur = 0usize;
@@ -2752,7 +2811,9 @@ fn collect_el_rules_with_provenance(
     {
         use std::collections::HashMap as SMap;
         let mut mini_rules = ElRules::default();
-        let mut mini_tseitin = TseitinAllocator::new(num_classes);
+        // Same base as the real allocator, so the mini-simulation's synthetic
+        // ids line up with the ones the provenance tables describe.
+        let mut mini_tseitin = TseitinAllocator::new(synth_base);
         // Pass 1 mini: just range (needed for effective_ranges).
         for ax in &internal.axioms {
             if let Axiom::ObjectPropertyRange { role, range } = ax
@@ -2926,9 +2987,10 @@ fn collect_el_rules_with_provenance(
 fn collect_el_rules(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
+    synth_base: usize,
 ) -> (ElRules, TseitinAllocator, usize) {
     let mut rules = ElRules::default();
-    let mut tseitin = TseitinAllocator::new(internal.vocabulary.num_classes());
+    let mut tseitin = TseitinAllocator::new(synth_base);
     // Pass 1: metadata that the SubClassOf lowering needs to see — in
     // particular `role_ranges`, used below to fold range constraints
     // into RHS existential bodies via Tseitin synthetics.
@@ -4330,6 +4392,51 @@ Ontology(<http://rustdl.test/oo>\n\
             subs.contains(class(&internal, "X"), class(&internal, "C")),
             "X ≡ {{a,b}} + a:C + b:C ⟹ X ⊑ C (oneof-subsumer)"
         );
+    }
+
+    /// Reserved id headroom (`SaturateConfig::slack`) must (a) shift the whole
+    /// synthetic universe up by exactly `slack`, and (b) leave the reserved gap
+    /// `[num_classes, num_classes + slack)` completely unallocated — no rows, not
+    /// even the reflexive `C ⊑ C` the seeder emits for real synthetics.
+    ///
+    /// `tests/slack_identity.rs` can only see the *user* projection of the
+    /// closure, so it cannot observe phantom rows inside the gap; this test can.
+    #[test]
+    fn slack_shifts_synthetics_and_leaves_the_gap_empty() {
+        // A compound existential body forces at least one Tseitin synthetic.
+        let internal = parse_internal(&format!(
+            "{HEADER}\
+Ontology(<http://rustdl.test/slack>\n\
+    Declaration(Class(:A)) Declaration(Class(:B)) Declaration(Class(:C))\n\
+    Declaration(Class(:D)) Declaration(ObjectProperty(:r))\n\
+    SubClassOf(:A ObjectSomeValuesFrom(:r ObjectIntersectionOf(:B :C)))\n\
+    SubClassOf(ObjectSomeValuesFrom(:r :B) :D)\n\
+)\n"
+        ));
+        let n = internal.vocabulary.num_classes();
+        let role_super = build_role_super(&internal);
+        let (_r0, _t0, total_no_slack) = collect_el_rules(&internal, &role_super, n);
+        assert!(
+            total_no_slack > n,
+            "fixture must allocate at least one synthetic"
+        );
+
+        const SLACK: usize = 64;
+        let (_r1, _t1, total_with_slack) = collect_el_rules(&internal, &role_super, n + SLACK);
+        assert_eq!(
+            total_with_slack,
+            total_no_slack + SLACK,
+            "slack must shift the synthetic universe by exactly `slack`"
+        );
+
+        let subs = saturate_with_slack(&internal, SLACK);
+        for i in n..(n + SLACK) {
+            let gap = ClassId::new(u32::try_from(i).expect("fits u32"));
+            assert!(
+                subs.subsumers_of(gap).is_empty(),
+                "reserved id {i} is unallocated but got a subsumer row"
+            );
+        }
     }
 
     /// ONEOF-SUBSUMER cascade: a told subclass of the enumerated class inherits the
@@ -6063,9 +6170,10 @@ Ontology(<http://rustdl.test/p2d/test>
         // and can inspect its internal facts_by_sub + counter.
         let n = internal.vocabulary.num_classes();
         let role_super_map = build_role_super(&internal);
-        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super_map);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super_map, n);
         let role_super = freeze_role_super(&role_super_map);
         let mut engine = WorklistEngine::new(
+            n,
             n,
             num_total_classes,
             rules,
@@ -6168,9 +6276,10 @@ Ontology(<http://rustdl.test/p2c_counter/test>
         // engine and can inspect its private counter.
         let n = internal.vocabulary.num_classes();
         let role_super_map = build_role_super(&internal);
-        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super_map);
+        let (rules, tseitin, num_total_classes) = collect_el_rules(&internal, &role_super_map, n);
         let role_super = freeze_role_super(&role_super_map);
         let mut engine = WorklistEngine::new(
+            n,
             n,
             num_total_classes,
             rules,
@@ -6222,7 +6331,8 @@ Ontology(<http://rustdl.test/p2a/funcrole>
             read(&mut reader, ParserConfiguration::default()).expect("parses");
         let internal = convert_ontology(&set_onto).expect("lowers");
         let role_super = crate::build_role_super(&internal);
-        let (rules, _tseitin, _num_total) = crate::collect_el_rules(&internal, &role_super);
+        let (rules, _tseitin, _num_total) =
+            crate::collect_el_rules(&internal, &role_super, internal.vocabulary.num_classes());
 
         let id = |iri: &str| internal.vocabulary.role_id(iri).expect("role declared");
         let rf = id("http://rustdl.test/p2a/r_func");
@@ -6513,6 +6623,7 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let pizza = class(&internal, "Pizza");
@@ -6575,6 +6686,7 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let niece = class(&internal, "Niece");
@@ -6614,6 +6726,7 @@ Ontology(<http://rustdl.test/test>\n\
         // With proof recording ON.
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (with_proof, _) = saturate_with_config(&internal, &cfg);
         // Both closures must be identical.
@@ -6647,6 +6760,7 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let a = class(&internal, "A");
@@ -6680,6 +6794,7 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (_subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let trace = maybe_trace.expect("trace must be Some");
@@ -6714,6 +6829,7 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let a = class(&internal, "A");
@@ -6775,6 +6891,7 @@ Ontology(<http://rustdl.test/test>\n\
 
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let trace = maybe_trace.expect("trace must be Some");
@@ -6880,6 +6997,7 @@ Ontology(<http://rustdl.test/test>\n\
 
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let trace = maybe_trace.expect("trace must be Some");
@@ -6984,6 +7102,7 @@ Ontology(<http://rustdl.test/test>\n\
 
         let cfg = SaturateConfig {
             record_proofs: true,
+            slack: 0,
         };
         let (subs, maybe_trace) = saturate_with_config(&internal, &cfg);
         let trace = maybe_trace.expect("trace must be Some");

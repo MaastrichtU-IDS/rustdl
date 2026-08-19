@@ -4,8 +4,17 @@
 `docs/2026-08-19-label-cache-starvation-census.md`: should the per-class label-cache budget be
 given a floor (with bounded abandonment to answer the `n × F` objection)?
 
-**No. On the 40 slowest completers, granting every class the maximum budget helps ZERO ontologies
-at the ≥1.5× threshold and costs 2.3% aggregate wall. There is nothing to fix at the default.**
+**No — a FLOOR is not the fix, and that conclusion holds. But "nothing to fix" was WRONG: the
+residual this document flagged as untested is non-empty, and a selective fix now exists
+(`docs/2026-08-19-label-cache-probe.md`, `ore_ont_5107` 6.65 s → 1.92 s).**
+
+> **SUPERSEDED IN PART, same day.** Everything below about the FLOOR is correct and now
+> better-evidenced (on the small-`n` population a generous budget costs **112%** aggregate and
+> takes one ontology `ok → DNF` with total row loss). What was wrong was the scope: this
+> document's frame is the 40 **slowest** completers, and the defect's precondition is **small
+> `n`** — so the frame structurally could not see it. Re-selecting on **low class count × slow
+> wall** found 19 candidates and one genuine 8.26× starvation instance. **A population selected
+> on "slowest" cannot see a defect whose precondition is "small".**
 
 ## The decisive experiment
 
@@ -58,7 +67,8 @@ This frame is **the 40 slowest completers**, which skews toward large `n`. The d
 
 **A small-`n` ontology with an expensive label build would therefore get ~50 ms and be starved —
 and this frame cannot see it**, because such an ontology is unlikely to be among the 40 slowest.
-Whether that population is non-empty is **untested**. That is the probe to run if anyone revisits
+**NOW TESTED, and non-empty: 19 candidates, of which `ore_ont_5107` is starved 8.26×.** The probe
+that fixes it is `docs/2026-08-19-label-cache-probe.md`. That is the probe to run if anyone revisits
 this: select on *low class count* and *slow wall*, not on wall alone.
 
 I am not claiming the class is empty. I am claiming it is empty **on the frame that the

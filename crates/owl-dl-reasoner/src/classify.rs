@@ -3375,6 +3375,85 @@ fn classify_top_down_internal_impl(
         // [1s,30s]; env RUSTDL_LABEL_CACHE_TIMEOUT_MS overrides (0 = unbounded).
         let cache_ms =
             crate::adaptive_label_cache_ms(n, per_pair_timeout, crate::label_cache_env_override());
+        // ESCALATION PROBE (`RUSTDL_LABEL_CACHE_PROBE`, default OFF).
+        //
+        // `cache_ms` is `clamp(n × per_pair, 50, 30_000)`, so a SMALL-`n` ontology gets a
+        // small budget regardless of what its builds actually need. Measured: with 49
+        // classes and a 245 ms budget `ore_ont_5107` takes 6.68 s; at 1000 ms its builds
+        // succeed and it takes **0.81 s** (8.2×). But raising the budget unconditionally
+        // is decisively wrong — `ore_ont_9540` (50 classes) burns the whole budget on
+        // every class and gains nothing, so it degrades monotonically: 8.91 s → 18.69 s
+        // at 1000 ms → **120 s and 0 rows at 30 000 ms**. Over 19 such ontologies a
+        // generous budget costs **112% aggregate wall** and takes one from `ok` to DNF.
+        //
+        // No single budget serves both (trade curve: `5107` needs >=1000 ms, `9540` is
+        // harmed monotonically by any increase), so this probes a DISCRIMINATOR instead.
+        // The discriminator is NOT "does a build succeed at the bigger budget" — that
+        // question was tried and is refuted below. It is "does a bigger budget RESCUE a
+        // build that FAILED at the small one". See the block below for the mechanism and
+        // `docs/2026-08-19-label-cache-probe.md` for the three refuted alternatives.
+        //
+        // Bad-case cost is the strided scan plus ONE escalated build — bounded, and
+        // independent of `n`, which is the objection that kills raising
+        // `LABEL_CACHE_FLOOR_MS`.
+        let cache_ms = if crate::label_cache_probe_enabled()
+            && crate::label_cache_env_override().is_none()
+            && cache_ms != 0
+            && cache_ms < crate::LABEL_CACHE_PROBE_MS
+            && n > 1
+        {
+            // DIFFERENTIAL probe. "Does a build succeed at the bigger budget?" is the
+            // WRONG question — measured, it escalates `ore_ont_9540` (its class 0
+            // succeeds at BOTH budgets while 340 others fail at both) and costs it 2.1×.
+            // The right question is whether a bigger budget rescues a build that FAILED
+            // at the small one. Counters make the difference plain: at 250 ms vs 1000 ms
+            // `9540` is `misses=340` → `misses=340` (identical — the budget converts
+            // nothing), while `5107` is `misses=19` → `misses=0`.
+            //
+            // So: scan for a class that FAILS at the current budget, then retry that one
+            // at the escalated budget. Escalate only if the retry succeeds. Bad-case cost
+            // is the scan (budget the run would pay anyway) plus ONE escalated build.
+            let small_dur = std::time::Duration::from_millis(cache_ms);
+            let probe_dur = std::time::Duration::from_millis(crate::LABEL_CACHE_PROBE_MS);
+            // STRIDED sample, not the first k. Measured: scanning classes 0..8 finds no
+            // failing build on `ore_ont_5107` even though 19 of its 49 classes fail, so the
+            // head-scan declined to escalate and lost the whole 8.2× win. Class indices are
+            // not randomly ordered — the early ones are the cheap ones — so a head sample
+            // is biased exactly against what it is looking for.
+            let scan = n.min(crate::LABEL_CACHE_PROBE_SCAN);
+            let stride = (n / scan).max(1);
+            let failing = (0..scan).map(|k| (k * stride).min(n - 1)).find(|&i| {
+                let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
+                matches!(
+                    prepared
+                        .classify_labels(id, effective_deadline(global_deadline, Some(small_dur))),
+                    crate::LabelOracle::NoVerdict
+                )
+            });
+            match failing {
+                // Nothing fails at the current budget within the scan window, so there is
+                // no evidence a larger one would buy anything. Keep the cheap budget.
+                None => cache_ms,
+                Some(i) => {
+                    let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
+                    if matches!(
+                        prepared.classify_labels(
+                            id,
+                            effective_deadline(global_deadline, Some(probe_dur))
+                        ),
+                        crate::LabelOracle::NoVerdict
+                    ) {
+                        // Fails at BOTH budgets — the `9540` shape. Escalating would spend
+                        // `n ×` the bigger budget and convert nothing.
+                        cache_ms
+                    } else {
+                        crate::LABEL_CACHE_PROBE_MS
+                    }
+                }
+            }
+        } else {
+            cache_ms
+        };
         let per_class_cache_dur = if cache_ms == 0 {
             None
         } else {

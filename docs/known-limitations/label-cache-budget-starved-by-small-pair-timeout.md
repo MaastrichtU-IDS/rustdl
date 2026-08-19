@@ -1,7 +1,14 @@
 # A small `--pair-timeout-ms` starves the label-cache budget, costing up to 18× for identical output
 
-**Found:** 2026-08-06 · **Status: NOT WORTH FIXING — verified by measurement, not by argument
-(2026-08-19).** At the DEFAULT `--pair-timeout-ms`, granting every class the 30 s ceiling helps
+**Found:** 2026-08-06 · **Status: FIX EXISTS, default OFF (2026-08-19) —
+`RUSTDL_LABEL_CACHE_PROBE`, see `docs/2026-08-19-label-cache-probe.md`.** A FLOOR remains the
+wrong fix (measured: 112% aggregate cost on the small-`n` population, one `ok → DNF` with total
+row loss). The working fix is a **differential escalation probe**: retry a class that FAILED at
+the current budget at 1000 ms, and escalate only if that rescues it — bad-case cost is one
+escalated build, independent of `n`. `ore_ont_5107` 6.65 s → 1.92 s (3.46×), guard case
+`ore_ont_9540` 0.88× (vs 2.1× under naive escalation), 0 row diffs over 39 ontologies.
+**Prior status line said "NOT WORTH FIXING", from a frame that could not see the defect
+(40-slowest vs a small-`n` precondition).** At the DEFAULT `--pair-timeout-ms`, granting every class the 30 s ceiling helps
 **0 of 40** slowest completers at ≥1.5× and costs **2.3% aggregate wall**. The `n × F` objection
 below is now a measured number rather than a projection. **The COUPLING is real; its TRIGGER does
 not fire.**

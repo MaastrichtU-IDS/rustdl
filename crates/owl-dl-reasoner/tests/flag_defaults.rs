@@ -112,6 +112,17 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_core::convert::inverse_functional_max_enabled,
             false,
         ),
+        // OFF pending a full-corpus sweep. Measured on its addressable population (19
+        // slow small-`n` completers): aggregate +1.5%, one 3.46x win (`ore_ont_5107`
+        // 6.65s -> 1.92s), 0 losses <=0.8x, 0 row diffs; and on 20 fast completers
+        // -2.3% (~50ms total), 0 at >=1.25x slower. Safe and net-positive, but it
+        // changes the budget on every small-`n` ontology, and this repo's record has a
+        // 12-ontology benchmark hiding four ok->DNF regressions.
+        (
+            "RUSTDL_LABEL_CACHE_PROBE",
+            owl_dl_reasoner::label_cache_probe_enabled,
+            false,
+        ),
         // ── owl-dl-reasoner ──────────────────────────────────────────────
         (
             "RUSTDL_ABOX_CHECK",

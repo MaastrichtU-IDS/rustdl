@@ -2866,6 +2866,29 @@ pub fn label_cache_timeout_ms() -> u64 {
 // vs the break-even ~137ms ⟹ ~890ms total, −42%). 50ms is a small absolute minimum
 // for degenerate near-zero budgets. Inactive at the default 1000ms cap (n×1000 ≥ 1000
 // for any n ≥ 1 ⟹ the floor never binds there) ⟹ no default-path change.
+/// Budget the escalation probe grants (`RUSTDL_LABEL_CACHE_PROBE`).
+///
+/// 1000 ms is not arbitrary: it is the measured knee of the win case. `ore_ont_5107`
+/// (49 classes, 245 ms budget) sits at 6.68 s at 500 ms and drops to **0.81 s at
+/// 1000 ms**, then plateaus — so 1000 ms is the smallest value that captures the win,
+/// which also makes it the cheapest possible probe in the losing case.
+/// See `docs/2026-08-19-label-cache-probe.md`.
+pub(crate) const LABEL_CACHE_PROBE_MS: u64 = 1000;
+
+/// Escalation probe for the per-class label-cache budget. **Default OFF** pending the
+/// corpus sweep — it changes the budget on every small-`n` ontology.
+///
+/// Rationale and the measurements that rule out the obvious alternative (a floor) are on
+/// the call site in `classify.rs` and in `docs/2026-08-19-label-cache-probe.md`.
+#[must_use]
+pub fn label_cache_probe_enabled() -> bool {
+    std::env::var_os("RUSTDL_LABEL_CACHE_PROBE").is_some_and(|v| v == "1")
+}
+
+/// How many classes the differential probe scans for a build that fails at the current
+/// budget. Bounded so the scan cannot become an `n`-proportional cost itself.
+pub(crate) const LABEL_CACHE_PROBE_SCAN: usize = 8;
+
 pub(crate) const LABEL_CACHE_FLOOR_MS: u64 = 50;
 pub(crate) const LABEL_CACHE_CEILING_MS: u64 = 30_000;
 

@@ -1664,7 +1664,23 @@ INDEPENDENTLY.
   The aggregate `pt=1` inversion is real and stands (1377 → 1625 s, +18%, vs the original's
   1499 → 1267 s), but it is now attributable to the NEW defect, not to starvation. See
   `docs/2026-08-19-label-cache-starvation-census.md` § THE ATTRIBUTION WAS WRONG.
-  * **A FIX IS NOT WARRANTED, and that is measured.** At the DEFAULT per-pair budget, granting
+  * **A FIX EXISTS: `RUSTDL_LABEL_CACHE_PROBE` (default OFF).** A FLOOR is the wrong fix —
+    measured on the small-`n` population it costs **112% aggregate** and takes `ore_ont_9540`
+    from 8.92 s/40 rows to **200 s/0 rows**. The working shape is a **differential escalation
+    probe**: strided-scan ≤8 classes at the current budget for one that FAILS, retry that one at
+    1000 ms, escalate only if the retry succeeds — bad-case cost is one escalated build,
+    **independent of `n`**, which is the objection that kills a floor. The discriminator came
+    from the counters: at 250 ms vs 1000 ms `9540` is `misses=340 → 340` (converts nothing)
+    while `5107` is `misses=19 → 0`. **`ore_ont_5107` 6.65 → 1.92 s (3.46×)**, guard `9540`
+    0.88× (vs **2.1× under naive escalation**), aggregate +1.5% over 19 addressable, **−2.3%
+    (~50 ms) over 20 fast**, **0 row diffs across 39**. Three simpler fixes were refuted by
+    measurement first (flat floor; "does a build succeed" probe; head-scan instead of strided).
+    OFF pending a full-corpus sweep. See `docs/2026-08-19-label-cache-probe.md`.
+  * **The frame error worth carrying: a population selected on "SLOWEST" cannot see a defect
+    whose precondition is "SMALL".** My "no fix warranted" verdict came from the 40-slowest
+    frame; re-selecting on low class count × slow wall found the defect immediately. I made that
+    mistake twice in one day.
+  * **Superseded — "A FIX IS NOT WARRANTED" (kept for the floor half, which stands).** At the DEFAULT per-pair budget, granting
     every class the 30 s ceiling helps **0 of 40** slowest completers at ≥1.5× (best 1.24×) and
     costs **2.3% aggregate wall (1403 → 1436 s)**. So the `n × F` objection to a floor is now a
     NUMBER, not a projection, and the original "why not fixed" decision is vindicated — on

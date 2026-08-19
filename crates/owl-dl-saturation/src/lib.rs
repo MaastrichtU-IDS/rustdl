@@ -62,6 +62,7 @@
 
 pub mod proof;
 pub mod seed_sat;
+pub mod state;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -3225,8 +3226,35 @@ fn collect_el_rules(
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
     synth_base: usize,
 ) -> (ElRules, TseitinAllocator, usize) {
+    collect_el_rules_seeded(internal, role_super, TseitinAllocator::new(synth_base))
+}
+
+/// [`collect_el_rules`] with a **pre-seeded** synthetic-class allocator.
+///
+/// The plain entry point starts from an empty [`TseitinAllocator`] based at
+/// `synth_base`. An incremental re-lowering (see [`state::SaturationState`])
+/// must instead continue from the allocator a previous revision left behind, so
+/// that
+///
+/// * every body the previous revision already Tseitin-introduced hits the memo
+///   and comes back with the SAME synthetic id - otherwise `∃r.F` compiled now
+///   would name a different class than the `∃r.F ⊑ X` trigger compiled before,
+///   and the trigger would silently stop firing; and
+/// * every id this call allocates is above `next_id`, i.e. above every RUNTIME
+///   synthetic the engine minted while saturating - otherwise a fresh static
+///   synthetic would alias a live runtime one.
+///
+/// A memoized body emits no definitional clauses on the second call, so the
+/// rule vectors this returns are NOT a superset of the previous revision's;
+/// they are missing exactly the definitional clauses already installed in the
+/// engine. `state::rule_delta` relies on that and is the only caller.
+fn collect_el_rules_seeded(
+    internal: &InternalOntology,
+    role_super: &HashMap<RoleId, HashSet<RoleId>>,
+    tseitin: TseitinAllocator,
+) -> (ElRules, TseitinAllocator, usize) {
     let mut rules = ElRules::default();
-    let mut tseitin = TseitinAllocator::new(synth_base);
+    let mut tseitin = tseitin;
     // Pass 1: metadata that the SubClassOf lowering needs to see — in
     // particular `role_ranges`, used below to fold range constraints
     // into RHS existential bodies via Tseitin synthetics.

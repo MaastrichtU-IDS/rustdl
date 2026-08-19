@@ -1,0 +1,16 @@
+# A *delta document* applied on top of `sulo.ofn` by
+# `tests/common/mod.rs::load_fixture_pair`.
+#
+# It mentions two class IRIs absent from sulo, so lowering it through
+# `convert_delta` interns two FRESH ClassIds directly above sulo's user
+# vocabulary - i.e. into the reserved slack gap. That is the whole point of the
+# fixture: `SaturationState::apply_additions` must absorb the new classes
+# without rebuilding, which is only possible while they fit under `synth_base`.
+Prefix(:=<http://rustdl.test/new#>)
+Prefix(sulo:=<https://w3id.org/sulo/>)
+Ontology(<http://rustdl.test/sulo-new-class>
+Declaration(Class(:Widget))
+Declaration(Class(:Gadget))
+SubClassOf(:Widget sulo:Object)
+SubClassOf(:Gadget ObjectIntersectionOf(:Widget ObjectSomeValuesFrom(sulo:hasPart sulo:Quality)))
+)

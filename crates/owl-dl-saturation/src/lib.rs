@@ -240,14 +240,13 @@ pub fn saturate_for_realize(
         tseitin.introduce_nominal(IndividualId::new(u32::try_from(i).expect("fits u32")));
     }
 
-    for ax in &internal.axioms {
+    for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+        rules.set_axiom(ax_idx);
         match ax {
             Axiom::ClassAssertion { class, individual } => {
                 let nom = tseitin.introduce_nominal(*individual);
                 for sup in atomic_operands_on_right(*class, &internal.concepts) {
-                    rules
-                        .atomic_subsumptions
-                        .push(AtomicSubsumption { sub: nom, sup });
+                    rules.push_atomic_subsumption(nom, sup);
                 }
             }
             Axiom::ObjectPropertyAssertion {
@@ -257,22 +256,17 @@ pub fn saturate_for_realize(
             } if !role.is_inverse() => {
                 let n_a = tseitin.introduce_nominal(*subject);
                 let n_b = tseitin.introduce_nominal(*object);
-                rules.existential_facts.push(ExistentialFact {
-                    sub: n_a,
-                    role: role.role_id(),
-                    target: n_b,
-                });
+                rules.push_existential_fact(n_a, role.role_id(), n_b);
                 if let Some(ranges) = effective_ranges.get(&role.role_id()) {
                     for &rng in ranges {
-                        rules
-                            .atomic_subsumptions
-                            .push(AtomicSubsumption { sub: n_b, sup: rng });
+                        rules.push_atomic_subsumption(n_b, rng);
                     }
                 }
             }
             _ => {}
         }
     }
+    rules.clear_axiom();
 
     let nominal_by_ind = tseitin.nominal_by_ind.clone();
     let num_total_classes = tseitin.next_id as usize;
@@ -2266,28 +2260,64 @@ impl Subsumers {
     }
 }
 
+/// Sentinel stored in the `axiom_of_*` provenance vectors for a compiled rule
+/// with **no single source axiom** — a Tseitin/synthetic definitional clause
+/// (`F ≡ B₁ ⊓ … ⊓ Bₙ`, `∃R.B ⊑ M`, …) or a runtime-introduced synthetic.
+///
+/// Such a clause is memoized by body and therefore shared by *every* axiom that
+/// mentions that body, so attributing it to the axiom that happened to
+/// introduce it first would be wrong: deleting that axiom would strip a clause
+/// other, still-live axioms depend on. The sentinel means "not owned by any
+/// axiom, never delete on an axiom removal" — the conservative direction
+/// (retaining a synthetic definition is inert: its head is a synthetic class
+/// whose only subsumers are the body atoms the class already carries).
+pub const NO_AXIOM: u32 = u32::MAX;
+
+/// The compiled EL rule set.
+///
+/// Every rule vector listed as `pub` below is shadowed by a parallel
+/// `axiom_of_*: Vec<u32>` of **exactly the same length**, giving the index into
+/// `InternalOntology::axioms` of the axiom the rule was lowered from, or
+/// [`NO_AXIOM`] when it has none. The provenance is built unconditionally (it
+/// is one `u32` push per compiled rule) — unlike [`proof::ProofTrace`], which
+/// carries the same mapping only under `record_proofs`.
 #[derive(Debug, Default, Clone)]
-struct ElRules {
+pub struct ElRules {
     /// Direct named-to-named `A ⊑ B` facts.
-    atomic_subsumptions: Vec<AtomicSubsumption>,
+    pub atomic_subsumptions: Vec<AtomicSubsumption>,
     /// Atomic subsumers of `⊤` (from `SubClassOf(owl:Thing, C)` / `⊤ ⊑ C⊓…`).
     /// Every named class ⊑ each of these (C is Top-equivalent). Broadcast to all
     /// classes in `seed`; empty unless the ontology has a `⊤ ⊑ NamedClass` axiom.
     top_subsumers: Vec<ClassId>,
     /// Conjunctive triggers: when a class accumulates every `body`
     /// among its subsumers, it gains `head`.
-    conjunctive_triggers: Vec<ConjunctiveTrigger>,
+    pub conjunctive_triggers: Vec<ConjunctiveTrigger>,
     /// Existential facts from `SubClassOf(sub, ∃role.target)` over
     /// atomic-named-atomic shapes. Read as "every `sub`-instance has
     /// some `role`-successor whose subsumers include `target`."
-    existential_facts: Vec<ExistentialFact>,
+    pub existential_facts: Vec<ExistentialFact>,
     /// Existential triggers from `SubClassOf(∃role.body, head)` over
     /// atomic-named-atomic shapes. Read as "any class with an
     /// existential `role`-successor in `body` is also in `head`."
-    existential_triggers: Vec<ExistentialTrigger>,
+    pub existential_triggers: Vec<ExistentialTrigger>,
     /// Pairwise disjoint atomic-class pairs, decomposed from n-ary
     /// `DisjointClasses` axioms. Read as `A ⊓ B ⊑ ⊥`.
-    disjoint_pairs: Vec<(ClassId, ClassId)>,
+    pub disjoint_pairs: Vec<(ClassId, ClassId)>,
+    /// Source axiom of `atomic_subsumptions[i]`, or [`NO_AXIOM`]. Same length.
+    pub axiom_of_atomic_sub: Vec<u32>,
+    /// Source axiom of `conjunctive_triggers[i]`, or [`NO_AXIOM`]. Same length.
+    pub axiom_of_conjunctive_trigger: Vec<u32>,
+    /// Source axiom of `existential_facts[i]`, or [`NO_AXIOM`]. Same length.
+    pub axiom_of_existential_fact: Vec<u32>,
+    /// Source axiom of `existential_triggers[i]`, or [`NO_AXIOM`]. Same length.
+    pub axiom_of_existential_trigger: Vec<u32>,
+    /// Source axiom of `disjoint_pairs[i]`, or [`NO_AXIOM`]. Same length.
+    pub axiom_of_disjoint_pair: Vec<u32>,
+    /// Index of the axiom currently being lowered, consulted by the `push_*`
+    /// helpers to fill the `axiom_of_*` vectors. `None` (the default) means the
+    /// pushes happening now are synthetic and get [`NO_AXIOM`] — that is the
+    /// state outside the axiom loops, and inside [`ElRules::push_synthetic`].
+    current_axiom: Option<u32>,
     /// Nominal-reasoning support (wine region cluster). For a
     /// **transitive** role `R` and a nominal-key class `NomKey(a)`
     /// (synthetic stand-in for the singleton `{a}`),
@@ -2365,6 +2395,66 @@ struct ElRules {
 }
 
 impl ElRules {
+    /// The provenance slot every `push_*` below stamps onto its rule.
+    fn axiom_slot(&self) -> u32 {
+        self.current_axiom.unwrap_or(NO_AXIOM)
+    }
+
+    /// Mark the axiom whose lowering is about to run. Rules pushed until the
+    /// matching [`ElRules::clear_axiom`] are attributed to `ax_idx`.
+    fn set_axiom(&mut self, ax_idx: usize) {
+        self.current_axiom = Some(u32::try_from(ax_idx).expect("axiom index fits in u32"));
+    }
+
+    /// Leave the axiom-lowering scope: subsequent pushes get [`NO_AXIOM`].
+    fn clear_axiom(&mut self) {
+        self.current_axiom = None;
+    }
+
+    /// Run `f` with provenance suppressed, so every rule it pushes carries
+    /// [`NO_AXIOM`]. Used by the Tseitin allocator: its definitional clauses
+    /// are memoized per body and shared across axioms, so they belong to none.
+    fn push_synthetic<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.current_axiom.take();
+        let out = f(self);
+        self.current_axiom = saved;
+        out
+    }
+
+    fn push_atomic_subsumption(&mut self, sub: ClassId, sup: ClassId) {
+        let ax = self.axiom_slot();
+        self.atomic_subsumptions
+            .push(AtomicSubsumption { sub, sup });
+        self.axiom_of_atomic_sub.push(ax);
+    }
+
+    fn push_conjunctive_trigger(&mut self, bodies: Vec<ClassId>, head: ClassId) {
+        let ax = self.axiom_slot();
+        self.conjunctive_triggers
+            .push(ConjunctiveTrigger { bodies, head });
+        self.axiom_of_conjunctive_trigger.push(ax);
+    }
+
+    fn push_existential_fact(&mut self, sub: ClassId, role: RoleId, target: ClassId) {
+        let ax = self.axiom_slot();
+        self.existential_facts
+            .push(ExistentialFact { sub, role, target });
+        self.axiom_of_existential_fact.push(ax);
+    }
+
+    fn push_existential_trigger(&mut self, role: RoleId, body: ClassId, head: ClassId) {
+        let ax = self.axiom_slot();
+        self.existential_triggers
+            .push(ExistentialTrigger { role, body, head });
+        self.axiom_of_existential_trigger.push(ax);
+    }
+
+    fn push_disjoint_pair(&mut self, a: ClassId, b: ClassId) {
+        let ax = self.axiom_slot();
+        self.disjoint_pairs.push((a, b));
+        self.axiom_of_disjoint_pair.push(ax);
+    }
+
     /// True if `r` is declared `FunctionalObjectProperty`.
     fn is_functional(&self, r: RoleId) -> bool {
         let i = r.index() as usize;
@@ -2384,26 +2474,26 @@ impl ElRules {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct AtomicSubsumption {
+pub struct AtomicSubsumption {
     sub: ClassId,
     sup: ClassId,
 }
 
 #[derive(Debug, Clone)]
-struct ConjunctiveTrigger {
+pub struct ConjunctiveTrigger {
     bodies: Vec<ClassId>,
     head: ClassId,
 }
 
 #[derive(Debug, Copy, Clone)]
-struct ExistentialFact {
+pub struct ExistentialFact {
     sub: ClassId,
     role: RoleId,
     target: ClassId,
 }
 
 #[derive(Debug, Copy, Clone)]
-struct ExistentialTrigger {
+pub struct ExistentialTrigger {
     role: RoleId,
     body: ClassId,
     head: ClassId,
@@ -2575,15 +2665,11 @@ impl TseitinAllocator {
         }
         let synthetic = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
-        for &b in &body {
-            rules.atomic_subsumptions.push(AtomicSubsumption {
-                sub: synthetic,
-                sup: b,
-            });
-        }
-        rules.conjunctive_triggers.push(ConjunctiveTrigger {
-            bodies: body.clone(),
-            head: synthetic,
+        rules.push_synthetic(|rules| {
+            for &b in &body {
+                rules.push_atomic_subsumption(synthetic, b);
+            }
+            rules.push_conjunctive_trigger(body.clone(), synthetic);
         });
         self.by_body.insert(body, synthetic);
         synthetic
@@ -2604,11 +2690,7 @@ impl TseitinAllocator {
         }
         let marker = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
-        rules.existential_triggers.push(ExistentialTrigger {
-            role,
-            body,
-            head: marker,
-        });
+        rules.push_synthetic(|rules| rules.push_existential_trigger(role, body, marker));
         self.by_existential.insert((role, body), marker);
         marker
     }
@@ -2639,13 +2721,11 @@ impl TseitinAllocator {
         }
         let marker = ClassId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("synthetic id overflow");
-        for &body in &body_ids {
-            rules.existential_triggers.push(ExistentialTrigger {
-                role,
-                body,
-                head: marker,
-            });
-        }
+        rules.push_synthetic(|rules| {
+            for &body in &body_ids {
+                rules.push_existential_trigger(role, body, marker);
+            }
+        });
         self.by_union_existential.insert((role, body_ids), marker);
         marker
     }
@@ -2678,11 +2758,7 @@ impl TseitinAllocator {
         rules: &mut ElRules,
     ) -> ClassId {
         let marker = self.introduce_existential_marker(role, body, rules);
-        rules.existential_facts.push(ExistentialFact {
-            sub: marker,
-            role,
-            target: body,
-        });
+        rules.push_synthetic(|rules| rules.push_existential_fact(marker, role, body));
         marker
     }
 }
@@ -2965,6 +3041,50 @@ fn collect_el_rules_with_provenance(
         );
     }
 
+    // Cross-check the two provenance paths so they cannot silently drift.
+    // `ElRules`' always-on vectors are stamped by the REAL lowering; the tables
+    // above are recovered by re-simulating it into `mini_rules`. They must agree
+    // wherever BOTH claim a source axiom. They legitimately disagree on
+    // "unknown": the always-on vectors use `NO_AXIOM` for Tseitin definitional
+    // clauses (which the re-simulation attributes to the introducing axiom), and
+    // the tables leave `None` for the post-Pass-2 seeding passes (nominal typing,
+    // OneOf common-subsumer, ForallAtomicKey monotonicity) that the
+    // re-simulation does not model.
+    #[cfg(debug_assertions)]
+    {
+        let both = |mine: &[u32], theirs: &[Option<usize>], what: &str| {
+            assert_eq!(mine.len(), theirs.len(), "{what}: provenance length drift");
+            for (i, (&m, t)) in mine.iter().zip(theirs.iter()).enumerate() {
+                if m != NO_AXIOM
+                    && let Some(t) = *t
+                {
+                    assert_eq!(m as usize, t, "{what}[{i}]: provenance paths disagree");
+                }
+            }
+        };
+        both(&rules.axiom_of_atomic_sub, &atomic_sub_axiom, "atomic_sub");
+        both(
+            &rules.axiom_of_conjunctive_trigger,
+            &conjunctive_trigger_axiom,
+            "conjunctive_trigger",
+        );
+        both(
+            &rules.axiom_of_existential_fact,
+            &existential_fact_axiom,
+            "existential_fact",
+        );
+        both(
+            &rules.axiom_of_existential_trigger,
+            &existential_trigger_axiom,
+            "existential_trigger",
+        );
+        both(
+            &rules.axiom_of_disjoint_pair,
+            &disjoint_pair_axiom,
+            "disjoint_pair",
+        );
+    }
+
     let trace = ProofTrace {
         steps: HashMap::new(),
         synthetic_defs,
@@ -2984,6 +3104,19 @@ fn collect_el_rules_with_provenance(
     (rules, tseitin, total_classes, Some(trace))
 }
 
+/// Test-only accessor for the compiled rule set, including the always-on
+/// `axiom_of_*` provenance vectors.
+///
+/// Uses the default synthetic base (`vocabulary.num_classes()`, i.e. zero
+/// slack) and the ontology's own role hierarchy — exactly what [`saturate`]
+/// does — so the returned [`ElRules`] is the one the engine would run.
+#[doc(hidden)]
+#[must_use]
+pub fn collect_el_rules_for_test(internal: &InternalOntology) -> ElRules {
+    let role_super = build_role_super(internal);
+    collect_el_rules(internal, &role_super, internal.vocabulary.num_classes()).0
+}
+
 fn collect_el_rules(
     internal: &InternalOntology,
     role_super: &HashMap<RoleId, HashSet<RoleId>>,
@@ -2994,7 +3127,8 @@ fn collect_el_rules(
     // Pass 1: metadata that the SubClassOf lowering needs to see — in
     // particular `role_ranges`, used below to fold range constraints
     // into RHS existential bodies via Tseitin synthetics.
-    for ax in &internal.axioms {
+    for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+        rules.set_axiom(ax_idx);
         match ax {
             Axiom::DisjointClasses(members) => {
                 let atomics: Vec<ClassId> = members
@@ -3006,7 +3140,7 @@ fn collect_el_rules(
                     .collect();
                 for i in 0..atomics.len() {
                     for j in (i + 1)..atomics.len() {
-                        rules.disjoint_pairs.push((atomics[i], atomics[j]));
+                        rules.push_disjoint_pair(atomics[i], atomics[j]);
                     }
                 }
             }
@@ -3051,6 +3185,7 @@ fn collect_el_rules(
             _ => {}
         }
     }
+    rules.clear_axiom();
     // Build `effective_ranges[r]` = ⋃ { role_ranges[s] : r ⊑ s } using
     // the role-super closure. A range on a super-role applies to every
     // sub-role's successors (the witness of an r-existential is also
@@ -3070,7 +3205,8 @@ fn collect_el_rules(
     // Pass 2: lower SubClassOf / EquivalentClasses with effective_ranges
     // available so RHS existential bodies can be Tseitin-folded with
     // their role's range constraint.
-    for ax in &internal.axioms {
+    for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+        rules.set_axiom(ax_idx);
         match ax {
             Axiom::SubClassOf { sub, sup } => {
                 lower_sub_class_of(
@@ -3107,6 +3243,7 @@ fn collect_el_rules(
             _ => {}
         }
     }
+    rules.clear_axiom();
 
     // Nominal/ABox transitive propagation (wine region cluster).
     // Allocates NomKeys for ABox individuals, so it must run before
@@ -3163,7 +3300,7 @@ fn collect_el_rules(
             .iter()
             .map(|s| (s.sub, s.sup))
             .collect();
-        let mut edges: Vec<AtomicSubsumption> = Vec::new();
+        let mut edges: Vec<(ClassId, ClassId)> = Vec::new();
         for (k, l) in told_direct {
             if k == l {
                 continue;
@@ -3172,11 +3309,16 @@ fn collect_el_rules(
                 if kk == k
                     && let Some(&lc) = keys.get(&(r, l))
                 {
-                    edges.push(AtomicSubsumption { sub: kc, sup: lc });
+                    edges.push((kc, lc));
                 }
             }
         }
-        rules.atomic_subsumptions.extend(edges);
+        // Derived from the *whole* told-subsumption relation plus the key
+        // universe, not from any one axiom ⟹ NO_AXIOM (`current_axiom` is
+        // already cleared here).
+        for (sub, sup) in edges {
+            rules.push_atomic_subsumption(sub, sup);
+        }
     }
 
     let total_classes = tseitin.next_id as usize;
@@ -3220,15 +3362,15 @@ fn collect_el_rules(
     // closure inherits via the atomic-subsumption fixpoint. Pure completeness gain
     // (closes DMOP 31→0; corpus FP=0/MISSED=0 byte-identical).
     if std::env::var_os("RUSTDL_NOMINAL_TYPING").is_none_or(|v| v != "0" && !v.is_empty()) {
-        for ax in &internal.axioms {
+        for (ax_idx, ax) in internal.axioms.iter().enumerate() {
             if let Axiom::ClassAssertion { class, individual } = ax
                 && let Some(&nomkey) = tseitin.nominal_by_ind.get(individual)
             {
+                rules.set_axiom(ax_idx);
                 for sup in atomic_operands_on_right(*class, &internal.concepts) {
-                    rules
-                        .atomic_subsumptions
-                        .push(AtomicSubsumption { sub: nomkey, sup });
+                    rules.push_atomic_subsumption(nomkey, sup);
                 }
+                rules.clear_axiom();
             }
         }
     }
@@ -3302,13 +3444,12 @@ fn collect_el_rules(
             }
             if let Some(common) = common {
                 for sup in common {
-                    rules
-                        .atomic_subsumptions
-                        .push(AtomicSubsumption { sub: *x, sup });
+                    rules.push_atomic_subsumption(*x, sup);
                 }
             }
         };
-        for ax in &internal.axioms {
+        for (ax_idx, ax) in internal.axioms.iter().enumerate() {
+            rules.set_axiom(ax_idx);
             match ax {
                 Axiom::SubClassOf { sub, sup } => seed_for(*sub, *sup, &mut rules),
                 Axiom::EquivalentClasses(members) => {
@@ -3323,6 +3464,7 @@ fn collect_el_rules(
                 _ => {}
             }
         }
+        rules.clear_axiom();
     }
 
     (rules, tseitin, total_classes)
@@ -3379,10 +3521,7 @@ fn lower_sub_class_of(
                 return;
             }
             for atomic_sup in atomic_operands_on_right(sup, pool) {
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: atomic_sup,
-                });
+                rules.push_atomic_subsumption(*sub_id, atomic_sup);
             }
             // `X ⊑ ∃R.Self` (ObjectHasSelf): X is both source and target of an
             // R-edge to itself ⟹ `X ⊑ domain(R) ⊓ range(R)`. Without this the
@@ -3412,10 +3551,7 @@ fn lower_sub_class_of(
                     .copied()
                     .collect();
                 for head in heads {
-                    rules.atomic_subsumptions.push(AtomicSubsumption {
-                        sub: *sub_id,
-                        sup: head,
-                    });
+                    rules.push_atomic_subsumption(*sub_id, head);
                 }
             }
             // Cluster-C lever: a told unqualified `≤n R` (top-level or an And
@@ -3425,10 +3561,7 @@ fn lower_sub_class_of(
             // conjunct soundly (fires only when an identical told `≤n R` holds).
             for (n, role) in unqualified_max_operands_on_right(sup, pool) {
                 let key = tseitin.introduce_max_key(n, role);
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: key,
-                });
+                rules.push_atomic_subsumption(*sub_id, key);
             }
             // Cluster-B lever: a told `∀R.OneOf(S)` (top-level or And operand)
             // seeds `sub ⊑ ForallKey(R,S)` — the same opaque key a defined
@@ -3436,10 +3569,7 @@ fn lower_sub_class_of(
             // is a genuine told (or subsumption-propagated) fact, exact-`S` match.
             for (role, members) in forall_oneof_operands_on_right(sup, pool) {
                 let key = tseitin.introduce_forall_key(role, members);
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: key,
-                });
+                rules.push_atomic_subsumption(*sub_id, key);
             }
             // SP-B2b: a told `∀R.Atomic(K)` (top-level or And operand) seeds
             // `sub ⊑ ForallAtomicKey(R,K)` — the same opaque key a defined class's
@@ -3447,10 +3577,7 @@ fn lower_sub_class_of(
             // give `∀R.K ⊑ ∀R.L` for told `K ⊑ L`.
             for (role, k) in forall_atomic_operands_on_right(sup, pool) {
                 let key = tseitin.introduce_forall_atomic_key(role, k);
-                rules.atomic_subsumptions.push(AtomicSubsumption {
-                    sub: *sub_id,
-                    sup: key,
-                });
+                rules.push_atomic_subsumption(*sub_id, key);
             }
             // `Atomic(X) ⊑ ¬Atomic(Y)` (directly, or as an operand of a
             // top-level `And` on the right) means `X ⊓ Y ⊑ ⊥`, i.e.
@@ -3463,7 +3590,7 @@ fn lower_sub_class_of(
             // monotonic: `X ⊑ ¬Y ⟺ disjoint(X, Y)`, so this only ever
             // adds a genuine clash, never a false subsumption.
             for y in not_atomic_operands_on_right(sup, pool) {
-                rules.disjoint_pairs.push((*sub_id, y));
+                rules.push_disjoint_pair(*sub_id, y);
             }
             // Atomic ⊑ ∃r.Y: existential fact. Tseitin introduces a
             // synthetic atomic if the body is a compound And, OR if
@@ -3471,11 +3598,7 @@ fn lower_sub_class_of(
             if let Some((role, target)) =
                 atomic_existential_rhs(sup, pool, rules, tseitin, effective_ranges)
             {
-                rules.existential_facts.push(ExistentialFact {
-                    sub: *sub_id,
-                    role,
-                    target,
-                });
+                rules.push_existential_fact(*sub_id, role, target);
             }
             // Atomic ⊑ (∃r.Y₁ ⊓ ∃r.Y₂ ⊓ …): pick up each existential
             // operand of a top-level And on the right.
@@ -3484,11 +3607,7 @@ fn lower_sub_class_of(
                     if let Some((role, target)) =
                         atomic_existential_rhs(*op, pool, rules, tseitin, effective_ranges)
                     {
-                        rules.existential_facts.push(ExistentialFact {
-                            sub: *sub_id,
-                            role,
-                            target,
-                        });
+                        rules.push_existential_fact(*sub_id, role, target);
                     }
                 }
             }
@@ -3573,10 +3692,7 @@ fn lower_sub_class_of(
             // the right (or atomic operand of an `And` on the right)
             // becomes a head of the conjunctive trigger.
             for head in atomic_operands_on_right(sup, pool) {
-                rules.conjunctive_triggers.push(ConjunctiveTrigger {
-                    bodies: bodies.clone(),
-                    head,
-                });
+                rules.push_conjunctive_trigger(bodies.clone(), head);
             }
             // Phase 2b.5: a non-atomic `∃R.B` on the right (or as an
             // operand of an `And` on the right) also produces a trigger.
@@ -3616,10 +3732,7 @@ fn lower_sub_class_of(
                 // one-way marker would not complete: Y gains M but never
                 // gets the R-witness needed for downstream triggers.
                 let marker = tseitin.introduce_equivalent_existential_marker(role, body_id, rules);
-                rules.conjunctive_triggers.push(ConjunctiveTrigger {
-                    bodies: bodies.clone(),
-                    head: marker,
-                });
+                rules.push_conjunctive_trigger(bodies.clone(), marker);
             }
         }
         ConceptExpr::Some(role, body) => {
@@ -3659,11 +3772,7 @@ fn lower_sub_class_of(
             };
             for head in atomic_operands_on_right(sup, pool) {
                 for &body_id in &body_ids {
-                    rules.existential_triggers.push(ExistentialTrigger {
-                        role: role.role_id(),
-                        body: body_id,
-                        head,
-                    });
+                    rules.push_existential_trigger(role.role_id(), body_id, head);
                 }
             }
             // Compound-existential CONSEQUENT: `∃r.B ⊑ ∃s.D` (or `∃r.B ⊑ (… ⊓ ∃s.D)`).
@@ -3701,11 +3810,7 @@ fn lower_sub_class_of(
                 let marker =
                     tseitin.introduce_equivalent_existential_marker(s_role, s_body_id, rules);
                 for &body_id in &body_ids {
-                    rules.existential_triggers.push(ExistentialTrigger {
-                        role: role.role_id(),
-                        body: body_id,
-                        head: marker,
-                    });
+                    rules.push_existential_trigger(role.role_id(), body_id, marker);
                 }
             }
         }

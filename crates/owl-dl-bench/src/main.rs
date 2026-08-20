@@ -1047,6 +1047,15 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize, pair_timeout_ms: Option<u
 }
 
 #[cfg(test)]
+// `percentile` does no arithmetic on the samples: it computes an integer rank
+// and returns `sorted[rank - 1]` VERBATIM. So every expectation below is a
+// bit-exact copy of a value the test itself put into the slice, and exact
+// equality is the contract — the assertion is "you returned the element I
+// picked", not "you computed something close to it". An epsilon here would be
+// strictly weaker and would quietly tolerate the one change the tests exist to
+// forbid: an interpolating percentile, which reports a latency no run took.
+// (`percentile_of_empty_is_nan` uses `is_nan`, not a comparison.)
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::percentile;
 

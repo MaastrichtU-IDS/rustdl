@@ -174,6 +174,21 @@
               org.protege.editor.owl.*,
               org.semanticweb.owlapi.*,
               org.osgi.framework,
+              <!-- Ranges pinned by hand, NOT left to bnd (issue #63). bnd infers them
+                   from the build classpath, where owlapi-distribution supplies guava
+                   33.0.0-jre and slf4j 2.x; it therefore wrote [33.0,34) and [2.0,3).
+                   Protégé 5.6.x actually exports com.google.common.collect 18.0.0
+                   (bundles/guava.jar) and org.slf4j 1.7.36 (bundles/slf4j-api.jar),
+                   so those ranges left the bundle unresolvable in a stock install.
+                   Both imports come from the embedded telemetry jar's
+                   TelemetryXMLWriter, which only needs Lists.newArrayList(Iterable),
+                   LoggerFactory.getLogger and Logger.error — available since guava 2
+                   and slf4j 1.0 — so the lower bounds are safe. Upper bounds keep the
+                   compile-time major, so a future Protégé on guava 34 / slf4j 3 would
+                   need them raised (the verify-bundle-contents guard below pins
+                   both clauses so that stays a deliberate, tested change). -->
+              com.google.common.collect;version="[18.0,34)",
+              org.slf4j;version="[1.7,3)",
               *
             </Import-Package>
             <!-- Deliberately NOT embedded (unlike gson/owlexplanation/telemetry above): the
@@ -256,6 +271,40 @@
                     <resourcecount when="greater" count="0">
                       <fileset dir="${project.build.directory}/jar-check" includes="protege-proof-justification-*.jar"/>
                     </resourcecount>
+                  </condition>
+                </fail>
+                <!-- Issue #63: the bundle must resolve against a *stock* Protégé.
+                     bnd derives Import-Package ranges from the build classpath, which
+                     is not what Protégé ships: owlapi-distribution drags in guava
+                     33.0.0-jre and slf4j 2.x, so bnd generated [33.0,34) and [2.0,3).
+                     Every Protégé 5.6.x bundles/ dir instead exports
+                     com.google.common.collect 18.0.0 and org.slf4j 1.7.36, so those
+                     generated ranges made the plugin unresolvable on 5.6.6/5.6.8/5.6.9
+                     alike (BundleException at startup, plugin silently absent).
+                     Both imports trace to one embedded class, telemetry's
+                     TelemetryXMLWriter, whose entire usage is
+                     Lists.newArrayList(Iterable), LoggerFactory.getLogger and
+                     Logger.error — all present in guava 18.0 and slf4j 1.7. Hence the
+                     hand-pinned ranges in Import-Package above; this guard fails the
+                     build if they are ever dropped and bnd regenerates them.
+                     Manifest headers wrap at 72 chars, so unfold before matching. -->
+                <loadfile property="bundle.manifest"
+                          srcFile="${project.build.directory}/jar-check/META-INF/MANIFEST.MF">
+                  <filterchain>
+                    <tokenfilter>
+                      <filetokenizer/>
+                      <replaceregex pattern="\r?\n " replace="" flags="gs"/>
+                    </tokenfilter>
+                  </filterchain>
+                </loadfile>
+                <fail message="Import-Package must accept the guava Protégé ships (18.0.0) - expected com.google.common.collect;version=&quot;[18.0,34)&quot;">
+                  <condition>
+                    <not><contains string="${bundle.manifest}" substring="com.google.common.collect;version=&quot;[18.0,34)&quot;"/></not>
+                  </condition>
+                </fail>
+                <fail message="Import-Package must accept the slf4j Protégé ships (1.7.36) - expected org.slf4j;version=&quot;[1.7,3)&quot;">
+                  <condition>
+                    <not><contains string="${bundle.manifest}" substring="org.slf4j;version=&quot;[1.7,3)&quot;"/></not>
                   </condition>
                 </fail>
                 <fail message="rustdl proof-service extension missing from plugin.xml">

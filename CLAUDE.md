@@ -1481,6 +1481,30 @@ leaving ~11 falsifiable "this fails" claims** — the sweep is cheap because tha
 `#[ignore` returns 97, inflated by prose; anchor the pattern to the line start). See
 `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
 
+### DNF TAIL RE-CENSUS 2026-08-20: 143, and the 55% bucket is MEASURED OUT
+
+`docs/benchmarks/2026-08-20-tail143-recensus.md`. Tail is **143** (141 DNF + 2 reject), from 257
+(Aug 1) and 164 (Aug 12). Partition on current `main`: `label_cache_build` **78 (55%)**,
+all-phases-zero **42 (29%)**, `tier_walk` 13, `prepare` 8, `sweeps`/`saturate` 2.
+
+* **`label_cache_build` is dominant by WALL and measured out as a LEVER.** All 78 report
+  `pruned=0` — the cache is built then consulted **zero** times — for a median **17.3 s** of a
+  20 s budget. Disabling it (`RUSTDL_LABEL_HEURISTIC=0`) over 78×2 arms: **76 BOTH_DNF, 2
+  rescued** (`ore_ont_10109`, `6333`), **0 ontologies lost rows**, aggregate wall **flat
+  (+0.8%)** — the freed time is absorbed by the next phase, *confirming* the `unsat_probe_cap`
+  negative. Prize is **2 ontologies, not 78**.
+* **PARSER TRAP, and it probably corrupts the 2026-08-12 census too:** on the **pure-EL path every
+  phase in `# wall breakdown ms:` is `0`**, so a "largest phase" parser silently buckets those as
+  `no-banner` (36 of 164 there; 42 here). Handle the all-zero case explicitly.
+* **The `incomplete` counter counts pairs ATTEMPTED AND CUT, not pairs REMAINING.** I read 31
+  ontologies reporting "1 class pair" as *one pair short of complete* — false: raising the budget
+  20 s → 60 s takes `ore_ont_11196` from inc=1 to **inc=15,042** with row count unchanged. **A
+  small `incomplete` is not evidence of near-completeness.**
+* Genuinely un-attacked reasoning stalls ≈ **29** (`tier_walk` 13 + `prepare` 8 + 8 zero-output
+  stalls); the rest is large-ontology scale (20k–190k classes). **Next step is to read ONE failing
+  ontology, not another population** — both historical tail wins came from a single instance, and
+  three population studies here have now been retracted or bounded, two of them in that document.
+
 ### RE-VERIFICATION PASS 2026-08-18: of 12 named targets, 2 still fail
 
 `docs/2026-08-18-named-target-reverification.md`. Re-measured the 12 most-cited `ore_ont_*` at

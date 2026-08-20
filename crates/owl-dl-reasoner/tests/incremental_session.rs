@@ -506,3 +506,138 @@ fn an_addition_that_breaks_consistency_is_not_answered_from_the_cache() {
         "a delete-only retention rule must not survive an addition"
     );
 }
+
+#[test]
+fn retracting_a_component_that_lowers_to_nothing_drops_the_inconsistent_verdict() {
+    // WHOLE-BRANCH REVIEW C1 — the Task 4 / Task 7 seam.
+    //
+    // `derive_data_axioms` reads the horned-owl SOURCE mirror, so a component
+    // the IR never sees can still put `⊤ ⊑ ⊥` in the derived overlay. Here a
+    // LANGUAGE-TAGGED `DataPropertyAssertion` is rejected by
+    // `exact_string_literal`, so `convert_component` returns `Ok(None)` and
+    // `Staged::removed_axioms` is EMPTY — yet `literal_family` maps it to
+    // `DtFamily::LangString`, which disagrees with the recorded
+    // `DataPropertyRange(xsd:integer)` and makes the base KB inconsistent.
+    //
+    // Retracting it therefore makes the KB CONSISTENT while `direction()`
+    // reports `Empty`, and `retain_consistency(Some(false), Empty)` keeps the
+    // stale `false`. "Inconsistent" is the maximally-entailing answer, so a
+    // stale one is a FALSE POSITIVE — the one thing this reasoner may never do.
+    //
+    // Mutation: derive `Direction` from what `convert_component` LOWERED
+    // (`removed_axioms` / `added_axioms`) instead of from what moved in the
+    // MIRROR, and the last assertion sees `false` for a KB with a model.
+    let b = Build::new_rc();
+    let dpa = horned_owl::model::DataPropertyAssertion {
+        dp: b.data_property("http://x/dp"),
+        from: horned_owl::model::Individual::Named(b.named_individual("http://x/a")),
+        to: horned_owl::model::Literal::Language {
+            literal: "hello".to_string(),
+            lang: "en".to_string(),
+        },
+    };
+    let mut base: SetOntology<RcStr> = SetOntology::new_rc();
+    base.insert(horned_owl::model::DataPropertyRange {
+        dp: b.data_property("http://x/dp"),
+        dr: horned_owl::model::DataRange::Datatype(horned_owl::model::Datatype(
+            b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+        )),
+    });
+    base.insert(dpa.clone());
+    base.insert(horned_owl::model::ClassAssertion {
+        ce: b.class("http://x/C").into(),
+        i: b.named_individual("http://x/a").into(),
+    });
+
+    assert!(
+        !owl_dl_reasoner::is_consistent(&base).unwrap(),
+        "fixture guard: a langString value under an xsd:integer range is a data-range violation"
+    );
+
+    let mut session = IncrementalSession::new(&base).unwrap();
+    assert!(
+        !session.is_consistent().unwrap(),
+        "fixture guard: the session must agree, and CACHE `Some(false)`"
+    );
+
+    session
+        .apply(&AxiomDelta {
+            added: vec![],
+            removed: vec![dpa.clone().into()],
+        })
+        .unwrap();
+
+    let mut after = base.clone();
+    after.remove(&dpa.into());
+    assert!(
+        owl_dl_reasoner::is_consistent(&after).unwrap(),
+        "fixture guard: without the offending assertion the KB has a model"
+    );
+    assert!(
+        session.is_consistent().unwrap(),
+        "STALE `inconsistent` retained across a retraction the IR never saw — false positive"
+    );
+}
+
+#[test]
+fn adding_a_component_that_lowers_to_nothing_drops_the_consistent_verdict() {
+    // WHOLE-BRANCH REVIEW C1, the mirror image — the MISS direction of the same
+    // seam. The langString `DataPropertyAssertion` lowers to nothing on the way
+    // IN too, so `added_axioms` was empty, `additions_are_inert()` was true and
+    // `retain_consistency(Some(true), Empty)` kept a `consistent` verdict for a
+    // KB the derived overlay had just closed with `⊤ ⊑ ⊥`.
+    //
+    // Not a false positive, so not the Critical — but the same defect, and the
+    // reason `additions_are_inert()` now treats "lowered to nothing" as NOT
+    // inert rather than adding one more shape to an allowlist.
+    //
+    // Mutation: `additions_are_inert()` over the `Some(_)` lowerings only
+    // (`.flatten()`), and the session keeps answering `true`.
+    let b = Build::new_rc();
+    let dpa = horned_owl::model::DataPropertyAssertion {
+        dp: b.data_property("http://x/dp"),
+        from: horned_owl::model::Individual::Named(b.named_individual("http://x/a")),
+        to: horned_owl::model::Literal::Language {
+            literal: "hello".to_string(),
+            lang: "en".to_string(),
+        },
+    };
+    let mut base: SetOntology<RcStr> = SetOntology::new_rc();
+    base.insert(horned_owl::model::DataPropertyRange {
+        dp: b.data_property("http://x/dp"),
+        dr: horned_owl::model::DataRange::Datatype(horned_owl::model::Datatype(
+            b.iri("http://www.w3.org/2001/XMLSchema#integer"),
+        )),
+    });
+    base.insert(horned_owl::model::ClassAssertion {
+        ce: b.class("http://x/C").into(),
+        i: b.named_individual("http://x/a").into(),
+    });
+
+    let mut union = base.clone();
+    union.insert(dpa.clone());
+    assert!(
+        owl_dl_reasoner::is_consistent(&base).unwrap(),
+        "fixture guard: the range alone has a model"
+    );
+    assert!(
+        !owl_dl_reasoner::is_consistent(&union).unwrap(),
+        "fixture guard: adding the langString value violates the xsd:integer range"
+    );
+
+    let mut session = IncrementalSession::new(&base).unwrap();
+    assert!(
+        session.is_consistent().unwrap(),
+        "fixture guard: the session must agree, and CACHE `Some(true)`"
+    );
+    session
+        .apply(&AxiomDelta {
+            added: vec![dpa.into()],
+            removed: vec![],
+        })
+        .unwrap();
+    assert!(
+        !session.is_consistent().unwrap(),
+        "STALE `consistent` retained across an addition the IR never saw"
+    );
+}

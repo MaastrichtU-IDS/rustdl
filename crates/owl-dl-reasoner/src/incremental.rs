@@ -128,8 +128,9 @@ pub struct SessionStats {
 /// the consistency-verdict retention (spec §10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
-    /// Zero logical axioms either way: an annotation edit, or a declaration of
-    /// an entity that is already in the signature.
+    /// The mirror lost nothing and gained nothing but re-declarations of
+    /// entities already in the signature. See [`Staged::additions_are_inert`]
+    /// for why this is read off the mirror and not off the lowering.
     Empty,
     Addition,
     Retraction,
@@ -146,6 +147,14 @@ enum Direction {
 ///
 /// Derived axioms do not enter the argument: they are entailed by the user
 /// axioms, so they cannot change which interpretations are models.
+///
+/// That is also why `dir` MUST be read off the horned-owl mirror rather than
+/// off what the delta lowered to. The monotonicity above is a property of the
+/// ONTOLOGY's axiom set; a delta that shrinks the ontology while lowering to
+/// nothing is still a retraction, and calling it [`Direction::Empty`] retains
+/// a verdict the shrunken KB no longer supports. See
+/// [`Staged::additions_are_inert`] and the C1 regression tests in
+/// `tests/incremental_session.rs`.
 fn retain_consistency(prev: Option<bool>, dir: Direction) -> Option<bool> {
     match (prev, dir) {
         (v, Direction::Empty) => v,
@@ -489,16 +498,22 @@ impl<A: ForIRI> IncrementalSession<A> {
         // --- `user_axioms` a strict superset of the mirror, which
         // --- `refresh_derived` reads as a different ontology.
         let mut added_components: Vec<AnnotatedComponent<A>> = Vec::new();
-        let mut added_axioms: Vec<Axiom> = Vec::new();
+        let mut added_lowered: Vec<Option<Axiom>> = Vec::new();
         let mut seen_added: HashSet<AnnotatedComponent<A>> = HashSet::new();
         for ac in &delta.added {
             let present = self.mirror.i().contains(ac) && !removed_components.contains(ac);
             if present || !seen_added.insert(ac.clone()) {
                 continue;
             }
-            if let Some(ax) = convert_component(&ac.component, &mut vocabulary, &mut concepts)? {
-                added_axioms.push(ax);
-            }
+            // Kept PER COMPONENT, `None` included: `Staged::direction` has to
+            // tell "this component added nothing to the mirror" from "this
+            // component added something the IR does not represent". A flat
+            // `Vec<Axiom>` erases exactly that distinction — see C1.
+            added_lowered.push(convert_component(
+                &ac.component,
+                &mut vocabulary,
+                &mut concepts,
+            )?);
             added_components.push(ac.clone());
         }
 
@@ -507,8 +522,9 @@ impl<A: ForIRI> IncrementalSession<A> {
             vocabulary,
             concepts,
             added_components,
-            added_axioms,
+            added_lowered,
             removed_axioms,
+            mirror_shrank: !delta.removed.is_empty(),
             signature,
         })
     }
@@ -520,33 +536,72 @@ struct Staged<A: ForIRI> {
     concepts: ConceptPool,
     /// `delta.added` minus the components the mirror already had.
     added_components: Vec<AnnotatedComponent<A>>,
-    /// What those components lower to. Shorter than `added_components`
-    /// whenever a component carries no logical content.
-    added_axioms: Vec<Axiom>,
+    /// What each of `added_components` lowered to, POSITIONALLY — `None` for a
+    /// component `convert_component` dropped. Same length as
+    /// `added_components`; see the push site for why the `None`s are kept.
+    added_lowered: Vec<Option<Axiom>>,
     /// What `delta.removed` lowers to, each one confirmed present in the
-    /// pre-pass baseline.
+    /// pre-pass baseline. Shorter than `delta.removed` whenever a retracted
+    /// component lowered to nothing.
     removed_axioms: Vec<Axiom>,
+    /// Whether the MIRROR loses a component. Every entry of `delta.removed` is
+    /// confirmed present before this is set, so a non-empty `removed` always
+    /// shrinks the mirror — whether or not it shrinks `internal`.
+    mirror_shrank: bool,
     /// The live signature of the PRE-delta revision — used to recognise a
     /// declaration that re-declares an entity the ontology already has.
     signature: owl_dl_core::signature::LiveSignature,
 }
 
 impl<A: ForIRI> Staged<A> {
-    /// True iff nothing this delta adds changes the logical content: every
-    /// component either lowered to nothing (annotations, imports, ontology
-    /// metadata) or re-declares an entity that is already in the signature.
+    /// True iff nothing this delta adds can change the ontology's models.
+    ///
+    /// **Judged on the MIRROR, not on the lowering** (whole-branch review C1).
+    /// A component is inert only when it lowered to a re-declaration of an
+    /// entity the signature already has; a component that lowered to NOTHING
+    /// is *not* inert. That is the opposite of the obvious reading, and it is
+    /// the whole point: `run_derivation_passes` hands the horned-owl SOURCE
+    /// mirror to `derive_data_axioms`, so a component `convert_component`
+    /// dropped can still put axioms — up to `⊤ ⊑ ⊥` — into the derived
+    /// overlay. Treating "lowered to nothing" as "changes nothing" made
+    /// `is_consistent()` retain a verdict across a delta that flipped it.
+    ///
+    /// Deciding this on the mirror is what makes the rule un-defeatable: the
+    /// monotonicity argument in [`retain_consistency`] is about the ONTOLOGY's
+    /// axiom set, so reading the direction off the ontology needs no claim
+    /// whatsoever about which component kinds lower to what. Any per-kind
+    /// allowlist would have to be re-audited every time a derivation pass
+    /// learns to read a new component — silently, with a false positive as the
+    /// failure mode. The cost is that an annotation edit no longer retains the
+    /// consistency verdict; it is recomputed on demand, which is slower and
+    /// never wrong.
     fn additions_are_inert(&self) -> bool {
-        self.added_axioms
-            .iter()
-            .all(|ax| is_known_declaration(ax, &self.signature))
+        self.added_lowered.iter().all(|ax| {
+            ax.as_ref()
+                .is_some_and(|a| is_known_declaration(a, &self.signature))
+        })
     }
 
+    /// True iff this delta leaves `internal` logically where it was, so the
+    /// cached [`Classification`] survives the commit.
+    ///
+    /// Deliberately the *lowering*-level question, not the mirror-level one
+    /// [`Self::additions_are_inert`] answers, and sound for a different
+    /// reason: its only caller conjoins it with `diff.killed.is_empty()` and
+    /// `diff.added.is_empty()`, i.e. with a direct check that the derived
+    /// overlay did not move. A dropped component therefore cannot slip an
+    /// axiom past this the way it can past `direction()`.
     fn logically_empty(&self) -> bool {
-        self.removed_axioms.is_empty() && self.additions_are_inert()
+        self.removed_axioms.is_empty()
+            && self
+                .added_lowered
+                .iter()
+                .flatten()
+                .all(|ax| is_known_declaration(ax, &self.signature))
     }
 
     fn direction(&self) -> Direction {
-        match (!self.additions_are_inert(), !self.removed_axioms.is_empty()) {
+        match (!self.additions_are_inert(), self.mirror_shrank) {
             (false, false) => Direction::Empty,
             (true, false) => Direction::Addition,
             (false, true) => Direction::Retraction,

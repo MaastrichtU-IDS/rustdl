@@ -83,21 +83,25 @@ const FIXTURES: &[Fixture] = &[
         name: "el-partonomy.ofn",
         pure_el_in_session: true,
         heavy: false,
+        slow_consistency: false,
     },
     Fixture {
         name: "derived-overlay.ofn",
         pure_el_in_session: false,
         heavy: false,
+        slow_consistency: false,
     },
     Fixture {
         name: "paper5.ofn",
         pure_el_in_session: false,
         heavy: false,
+        slow_consistency: true,
     },
     Fixture {
         name: "pair_08.ofn",
         pure_el_in_session: false,
         heavy: true,
+        slow_consistency: false,
     },
 ];
 
@@ -128,6 +132,25 @@ struct Fixture {
     /// `RUSTDL_GATE_FULL=1` removes every bound. See [`HEAVY_STEPS`] and
     /// [`HEAVY_ROUND_TRIP_AXIOMS`].
     heavy: bool,
+    /// True iff a BUDGET-FREE `is_consistent` over this fixture is too slow to
+    /// run at every revision, so [`assert_revision`]'s consistency comparison
+    /// is skipped unless `RUSTDL_GATE_FULL=1`.
+    ///
+    /// Only `paper5.ofn` is: it is the one `OutOfFragment` fixture, so
+    /// `is_consistent` runs the unbounded hybrid tableau — **10.1 s per call,
+    /// measured**, against <1 ms for every other fixture. At two calls a
+    /// revision (session + from-scratch oracle) × 3 seeds × ~25 revisions that
+    /// is ~25 minutes of debug wall for one `#[test]`, which would in practice
+    /// get the whole gate skipped.
+    ///
+    /// The consistency assertion is NOT weakened by this on the axis it was
+    /// added for: `retain_consistency` is a function of `Direction` alone, so
+    /// every fixture exercises the same retention rule, and the C1 seam itself
+    /// (a component that lowers to nothing) needs data axioms, which the
+    /// dedicated regression tests in `tests/incremental_session.rs` cover
+    /// directly. What is lost here is only the OUT-OF-FRAGMENT consistency
+    /// path, and `RUSTDL_GATE_FULL=1` restores it.
+    slow_consistency: bool,
 }
 
 /// Seeds. Every assertion names its seed, so a red run replays verbatim.
@@ -364,6 +387,7 @@ fn assert_revision(
     seed: u64,
     where_: &str,
     pure_el_in_session: bool,
+    current: Option<&horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>>,
     expected: &owl_dl_reasoner::Classification,
     session: &mut IncrementalSession<horned_owl::model::RcStr>,
 ) {
@@ -388,6 +412,29 @@ fn assert_revision(
         verdict(got),
         "fixture {fixture} seed {seed} diverged {where_}"
     );
+    // The CONSISTENCY verdict, which nothing above reaches: `classify()` is
+    // recomputed from `internal`, but `is_consistent()` can answer from a
+    // cache that `apply` decided to RETAIN, and the retention rule is the one
+    // piece of the session that can be flatly wrong rather than merely stale.
+    // Whole-branch review C1 was exactly that — a `Some(false)` kept across a
+    // delta that made the KB consistent — and it survived this whole file
+    // because the file never asked the question.
+    //
+    // Deliberately compared against a from-scratch run rather than against a
+    // constant: the point is the session/`classify` identity contract, not
+    // which way any fixture happens to fall.
+    //
+    // Mutation: `retain_consistency(prev, _) = prev` (always retain), or a
+    // `Staged::direction()` that reports `Empty` for a delta that moved the
+    // mirror.
+    if let Some(current) = current {
+        assert_eq!(
+            owl_dl_reasoner::is_consistent(current).unwrap(),
+            session.is_consistent().unwrap(),
+            "fixture {fixture} seed {seed} {where_}: the session's CONSISTENCY verdict \
+             disagrees with a from-scratch run over the same axiom set"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -401,8 +448,10 @@ fn addition_script_matches_from_scratch_at_every_revision() {
         name: fixture,
         pure_el_in_session,
         heavy,
+        slow_consistency,
     } in FIXTURES
     {
+        let check_consistency = !slow_consistency || gate_full();
         let max_steps = steps(heavy);
         let full = load_ofn(fixture);
         for &seed in SEEDS {
@@ -420,6 +469,7 @@ fn addition_script_matches_from_scratch_at_every_revision() {
                 seed,
                 "at revision 0 (the base split)",
                 pure_el_in_session,
+                check_consistency.then_some(&current),
                 &owl_dl_reasoner::classify(&current).unwrap(),
                 &mut session,
             );
@@ -448,6 +498,7 @@ fn addition_script_matches_from_scratch_at_every_revision() {
                     seed,
                     &format!("at revision {rev}"),
                     pure_el_in_session,
+                    check_consistency.then_some(&current),
                     &expected,
                     &mut session,
                 );
@@ -474,6 +525,7 @@ fn addition_script_matches_from_scratch_at_every_revision() {
                     seed,
                     &format!("at the terminal revision {rev}"),
                     pure_el_in_session,
+                    check_consistency.then_some(&current),
                     &expected,
                     &mut session,
                 );
@@ -523,8 +575,100 @@ fn addition_script_matches_from_scratch_at_every_revision() {
                     session.stats()
                 );
             }
+
+            if check_consistency {
+                assert_consistency_round_trip(fixture, seed, &mut current, &mut session);
+            }
         }
     }
+}
+
+/// The ANTI-VACUITY half of [`assert_revision`]'s consistency assertion, and
+/// the whole-branch-review-C1 net.
+///
+/// Every gate fixture is CONSISTENT at every revision of the addition script,
+/// so the comparison in `assert_revision` cannot fail for a retention bug: a
+/// session that retained `Some(true)` unconditionally would agree with the
+/// oracle at every step. Measured — `retain_consistency(prev, _) = prev` walks
+/// straight through the whole file.
+///
+/// So drive the session out of consistency and back. Three fresh components
+/// (`gateI` in two disjoint classes) make ANY consistent ontology inconsistent,
+/// and retracting them restores it, which exercises both retention directions
+/// against a from-scratch oracle on a real fixture:
+///
+///  * `Some(true)` must NOT survive the addition — mutation:
+///    `retain_consistency(prev, _) = prev`, or a `direction()` that reports
+///    `Empty`/`Retraction` for an addition. Both make the first assertion see
+///    a stale `true`.
+///  * `Some(false)` must NOT survive the retraction — same two mutations, and
+///    the second assertion sees a stale `false`, which is the FALSE-POSITIVE
+///    direction (`inconsistent` entails everything).
+fn assert_consistency_round_trip(
+    fixture: &str,
+    seed: u64,
+    current: &mut horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
+    session: &mut IncrementalSession<horned_owl::model::RcStr>,
+) {
+    let b = horned_owl::model::Build::new_rc();
+    let clash: Vec<horned_owl::model::AnnotatedComponent<horned_owl::model::RcStr>> = vec![
+        horned_owl::model::ClassAssertion {
+            ce: b.class("http://rustdl.test/gate#C").into(),
+            i: b.named_individual("http://rustdl.test/gate#i").into(),
+        }
+        .into(),
+        horned_owl::model::ClassAssertion {
+            ce: b.class("http://rustdl.test/gate#D").into(),
+            i: b.named_individual("http://rustdl.test/gate#i").into(),
+        }
+        .into(),
+        horned_owl::model::DisjointClasses(vec![
+            b.class("http://rustdl.test/gate#C").into(),
+            b.class("http://rustdl.test/gate#D").into(),
+        ])
+        .into(),
+    ];
+
+    assert!(
+        session.is_consistent().unwrap(),
+        "{fixture} seed {seed}: fixture guard — the script must END consistent, or the          round trip below proves nothing"
+    );
+
+    session
+        .apply(&AxiomDelta {
+            added: clash.clone(),
+            removed: vec![],
+        })
+        .unwrap();
+    for ac in &clash {
+        current.insert(ac.clone());
+    }
+    assert!(
+        !owl_dl_reasoner::is_consistent(current).unwrap(),
+        "{fixture} seed {seed}: fixture guard — the from-scratch run must call the          clash-extended ontology inconsistent"
+    );
+    assert!(
+        !session.is_consistent().unwrap(),
+        "{fixture} seed {seed}: a CONSISTENT verdict survived an addition that removed          every model"
+    );
+
+    session
+        .apply(&AxiomDelta {
+            added: vec![],
+            removed: clash.clone(),
+        })
+        .unwrap();
+    for ac in &clash {
+        current.remove(ac);
+    }
+    assert!(
+        owl_dl_reasoner::is_consistent(current).unwrap(),
+        "{fixture} seed {seed}: fixture guard — retracting the clash must restore a model"
+    );
+    assert!(
+        session.is_consistent().unwrap(),
+        "{fixture} seed {seed}: an INCONSISTENT verdict survived the retraction that          restored a model — a false positive, the one answer this reasoner may never give"
+    );
 }
 
 // ---------------------------------------------------------------------------

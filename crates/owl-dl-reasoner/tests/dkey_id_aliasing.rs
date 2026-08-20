@@ -333,11 +333,21 @@ fn classify_top_down_agrees_with_direct_query() {
 /// defect. It is also cheap enough to run on a real corpus file, which the
 /// `is_subclass_of` cross-check is NOT (its n² of fresh tableau probes is
 /// minutes of work on pizza).
-fn assert_inert_declarations_are_inert(label: &str, bare: &SetOntology<RcStr>) {
+///
+/// `classifier` is a parameter so the same property can be pinned on whichever
+/// entry point is actually runnable in the profile CI uses — see
+/// `inert_declarations_do_not_change_the_hierarchy_pizza_saturation_only`.
+fn assert_inert_declarations_are_inert(
+    label: &str,
+    bare: &SetOntology<RcStr>,
+    classifier: fn(
+        &SetOntology<RcStr>,
+    ) -> Result<owl_dl_reasoner::Classification, owl_dl_reasoner::ReasonError>,
+) {
     let declared = with_all_classes_declared(bare);
 
-    let bare_cls = owl_dl_reasoner::classify(bare).expect("classify bare");
-    let declared_cls = owl_dl_reasoner::classify(&declared).expect("classify declared");
+    let bare_cls = classifier(bare).expect("classify bare");
+    let declared_cls = classifier(&declared).expect("classify declared");
 
     let mut bare_names: Vec<String> = bare_cls.classes().iter().map(|s| (*s).clone()).collect();
     let mut declared_names: Vec<String> = declared_cls
@@ -390,17 +400,35 @@ fn assert_inert_declarations_are_inert(label: &str, bare: &SetOntology<RcStr>) {
 
 #[test]
 fn inert_declarations_do_not_change_the_hierarchy_el() {
-    assert_inert_declarations_are_inert("EL", &parse(EL_BODY));
+    assert_inert_declarations_are_inert("EL", &parse(EL_BODY), owl_dl_reasoner::classify);
 }
 
 #[test]
 fn inert_declarations_do_not_change_the_hierarchy_hybrid() {
-    assert_inert_declarations_are_inert("hybrid", &parse(HYBRID_BODY));
+    assert_inert_declarations_are_inert("hybrid", &parse(HYBRID_BODY), owl_dl_reasoner::classify);
 }
 
 #[test]
 fn inert_declarations_do_not_change_the_hierarchy_unsat() {
-    assert_inert_declarations_are_inert("unsat", &parse(UNSAT_BODY));
+    assert_inert_declarations_are_inert("unsat", &parse(UNSAT_BODY), owl_dl_reasoner::classify);
+}
+
+/// Same three fixtures through `classify_saturation_only`, i.e. through
+/// `classify_pure_el` specifically — the function the round-2 unsat-projection
+/// false positive lived in.
+#[test]
+fn inert_declarations_do_not_change_the_saturation_only_hierarchy() {
+    for (label, body) in [
+        ("sat/EL", EL_BODY),
+        ("sat/hybrid", HYBRID_BODY),
+        ("sat/unsat", UNSAT_BODY),
+    ] {
+        assert_inert_declarations_are_inert(
+            label,
+            &parse(body),
+            owl_dl_reasoner::classify_saturation_only,
+        );
+    }
 }
 
 /// The corpus oracle — a LATENT-HAZARD CANARY, not a reproducer. Read this
@@ -451,7 +479,36 @@ fn inert_declarations_do_not_change_the_hierarchy_unsat() {
               owl-dl-tableau/src/hyper.rs:3677 (inverse_func_merge); runs in --release"
 )]
 fn inert_declarations_do_not_change_the_hierarchy_pizza() {
-    assert_inert_declarations_are_inert("pizza", &corpus("pizza.ofn"));
+    assert_inert_declarations_are_inert("pizza", &corpus("pizza.ofn"), owl_dl_reasoner::classify);
+}
+
+/// The corpus canary that ACTUALLY RUNS IN CI.
+///
+/// `.github/workflows/ci.yml` runs `cargo test --workspace --all-targets
+/// --exclude owl-dl-py` — **debug only, no release job**. So the `classify`
+/// variant above, gated off under `debug_assertions` to dodge the pre-existing
+/// `hyper.rs:3677` assert, never executes in CI: its "becomes a live oracle the
+/// day pizza gains an edge" promise would be empty as configured.
+///
+/// `classify_saturation_only` fixes that. It does not reach the hypertableau,
+/// so it does not trip that assert, and it runs over the same 92-class pizza
+/// file in ~0.04 s in debug. Better still, it routes straight through
+/// `classify_pure_el` — the exact function the round-2 unsat-projection false
+/// positive lived in — so this is the corpus-level guard on the more recently
+/// broken path, in the profile CI actually builds.
+///
+/// Sound to compare for equality even though `classify_saturation_only` is a
+/// documented under-approximation: the property asserted is not "the hierarchy
+/// is complete" but "adding semantically inert axioms does not change whatever
+/// this entry point reports". An under-approximation must still be STABLE under
+/// an inert change.
+#[test]
+fn inert_declarations_do_not_change_the_hierarchy_pizza_saturation_only() {
+    assert_inert_declarations_are_inert(
+        "pizza/saturation_only",
+        &corpus("pizza.ofn"),
+        owl_dl_reasoner::classify_saturation_only,
+    );
 }
 
 /// The unsatisfiable set must name the class that is ACTUALLY `⊑ ⊥`.

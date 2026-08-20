@@ -2518,7 +2518,8 @@ pub fn inverse_functional_max_enabled() -> bool {
 }
 
 /// Skip a `DKey` disjointness component wholesale when every one of its pairs is provably
-/// droppable (`RUSTDL_DKEY_GROUP_SKIP`, **default OFF** pending measurement).
+/// droppable (`RUSTDL_DKEY_GROUP_SKIP`, **DEFAULT ON** since 2026-08-21, `=0` reverts —
+/// swept jointly with `RUSTDL_DKEY_STR_SIZE_INDEX`; see that flag for the numbers).
 ///
 /// The drop condition is component-level, not per-pair, so the O(k²) walk can be replaced
 /// by an O(k) test. Measured waste it ENUMERATES AWAY: `ore_ont_10929` 248,465,112
@@ -2534,15 +2535,21 @@ pub fn inverse_functional_max_enabled() -> bool {
 ///
 /// See `docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`.
 /// Size-indexed `xsd:string` subsumption seeding (`RUSTDL_DKEY_STR_SIZE_INDEX`,
-/// **default OFF** pending measurement). EXACT — see `seed_str_bucket_indexed`.
+/// **DEFAULT ON**, `=0` reverts). EXACT — see `seed_str_bucket_indexed`.
+///
+/// Flipped on a two-arm sweep over the **651** data-property-bearing ORE ontologies:
+/// **614 identical, 0 `ok → DNF`, 0 answer changes**, **3 DNF→ok recoveries**
+/// (`ore_ont_10929` 4.89 s, `15635` 7.62 s, `10517` 48.30 s), 9 wins up to 7.8×, 2 losses
+/// worth +0.24 s and +0.15 s, aggregate **+1.8%**. Inert without data-property axioms
+/// (25/25 non-bearing ontologies byte-identical).
 #[must_use]
 pub fn dkey_str_size_index_enabled() -> bool {
-    std::env::var_os("RUSTDL_DKEY_STR_SIZE_INDEX").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_DKEY_STR_SIZE_INDEX").is_none_or(|v| v != "0")
 }
 
 #[must_use]
 pub fn dkey_group_skip_enabled() -> bool {
-    std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_none_or(|v| v != "0")
 }
 
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional
@@ -3758,7 +3765,18 @@ fn seed_disjoint_bucket<R>(
     // reason — with the split off nothing is droppable and the skip must not fire. Under
     // `emit_order` (default ON) a pair spanning two components is still enumerated in the
     // OTHER component, so skipping one cannot drop an axiom that was consumable elsewhere.
-    let group_skip = dkey_group_skip_enabled() && split;
+    // GATED ON `emit_order` TOO, and that is a CORRECTNESS precondition, not tidiness.
+    //
+    // The skip is equivalent to the per-pair path only because a pair spanning two
+    // components is still enumerated in the OTHER component. That holds under
+    // `emit_order` (declining only LOOKS, it does not claim the pair). With `emit_order`
+    // OFF, declining SPENDS the pair — so eliding a group changes WHICH component spends
+    // it, and the skip stops being behaviour-preserving: it incidentally repairs the
+    // ordering defect that `RUSTDL_DKEY_EMIT_ORDER` exists to fix, which four in-tree
+    // canaries detect (`dkey_emit_order.rs`, `dkey_flag_defaults.rs`). Those canaries
+    // found this; the comment above previously ASSERTED the `emit_order` dependency
+    // without enforcing it.
+    let group_skip = dkey_group_skip_enabled() && split && emit_order;
     for (&c, group) in &groups {
         if group_skip && !comp.collapse_comps.contains(&c) {
             // PARTITION, rather than an all-or-nothing test. `droppable` needs BOTH keys of

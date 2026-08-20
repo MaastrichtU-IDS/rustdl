@@ -1530,7 +1530,23 @@ there is nothing to skip. So the split is measured, not predicted: **2 futile-en
 fixed, ~6 materialising members still needing the PARKED oracle** — whose set is therefore ~6,
 close to the spec's original "~4", and **its parking decision stands.** Only the STRING bucket is
 specialised; the other six remain O(k²) and the cardinality argument does NOT transfer to interval
-ranges. See `docs/benchmarks/2026-08-20-dkey-string-seeding-oksquared.md`.
+ranges. **BOTH FLAGS NOW DEFAULT ON (2026-08-21), `=0` reverts** — flipped on a two-arm sweep over the
+**651** data-property-bearing ORE ontologies: **614 IDENTICAL, 0 `ok→DNF`, 0 answer changes**,
+**3 DNF→ok recoveries** (`ore_ont_10929` 4.89 s, `15635` 7.62 s, `10517` 48.30 s — `10517` was NOT
+in the grep-selected frame, so the sweep found what the census missed), 9 wins up to 7.8×, 2 losses
+worth **+0.24 s and +0.15 s absolute**, aggregate **+1.8%**; inertness verified on 25/25
+non-bearing ontologies. **Tail 143 → 140.**
+**THE FLIP EXPOSED A FLAW IN THE SKIP'S OWN CORRECTNESS ARGUMENT.** It failed the suite in two
+waves: first two `dkey_emit_order.rs` negative controls, which I misread as precondition drift and
+"fixed" by editing them; then two more in `dkey_flag_defaults.rs`. **Four independent tests
+objecting is the codebase reporting a defect, not stale assumptions.** The skip is equivalent only
+because a pair spanning two components is still enumerated in the OTHER component — true under
+`emit_order` (declining only LOOKS), false with it off (declining SPENDS), where the skip
+incidentally repairs the defect `RUSTDL_DKEY_EMIT_ORDER` exists to fix. I had written that
+dependency into the comment and **not enforced it in the condition**; adding `&& emit_order` makes
+all nine canaries pass with the test files **reverted untouched** — the tell that the fault was
+mine. **Lesson: when a test fails, suspect the CODE before the test's assumptions.**
+See `docs/benchmarks/2026-08-20-dkey-string-seeding-oksquared.md`.
 **Superseded — "IT IS NOT THE FIX: 77 s of 96 s remains"** vs the 2.6 s `DATA_PROPERTIES=0` reaches. The skip
 touches only the DISJOINTNESS loop; the leading suspect for the residual is **`seed_bucket`, the
 SUBSUMPTION seeding**, which walks **k² ORDERED pairs** (~3.6 × 10⁹ at 60,323 distinct string keys,

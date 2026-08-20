@@ -2533,6 +2533,13 @@ pub fn inverse_functional_max_enabled() -> bool {
 /// measurement — probe the two seeding calls before touching the loop.
 ///
 /// See `docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`.
+/// Size-indexed `xsd:string` subsumption seeding (`RUSTDL_DKEY_STR_SIZE_INDEX`,
+/// **default OFF** pending measurement). EXACT — see `seed_str_bucket_indexed`.
+#[must_use]
+pub fn dkey_str_size_index_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_STR_SIZE_INDEX").is_some_and(|v| v == "1")
+}
+
 #[must_use]
 pub fn dkey_group_skip_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_some_and(|v| v == "1")
@@ -2789,7 +2796,11 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_bucket(out, &dec_dkeys, OrdRange::subset);
     seed_bucket(out, &date_dkeys, OrdRange::subset);
     seed_bucket(out, &dt_dkeys, OrdRange::subset);
-    seed_bucket(out, &str_dkeys, StrSet::subset);
+    if dkey_str_size_index_enabled() {
+        seed_str_bucket_indexed(out, &str_dkeys);
+    } else {
+        seed_bucket(out, &str_dkeys, StrSet::subset);
+    }
     // Numeric-oneof `⊑`: `DKey(S1) ⊑ DKey(S2)` iff `S1 ⊆ S2` (exact set
     // inclusion — every member of `S1` is a member of `S2`, so any value in
     // `S1` is in `S2`). Empty when the flag is off ⟹ these are no-ops.
@@ -3805,6 +3816,65 @@ fn seed_disjoint_bucket<R>(
         let dropped = deferred.difference(&emitted).count();
         DKEY_SPLIT_TOTAL.fetch_add(emitted.len() + dropped, Ordering::Relaxed);
         DKEY_SPLIT_WOULD_DROP.fetch_add(dropped, Ordering::Relaxed);
+    }
+}
+
+/// Size-indexed `xsd:string` subsumption seeding — EXACT, not an approximation.
+///
+/// `seed_bucket` is `O(k²)` in the bucket, and for strings that is the dominant cost of
+/// conversion on data-heavy inputs: measured on `ore_ont_10929` the string bucket holds
+/// **57,342** keys, so the walk is ~3.29 × 10⁹ ordered pairs and takes **73.9 s** of that
+/// ontology's ~94 s `convert_ms` (the disjointness seeding is the other 20.5 s).
+///
+/// **Every one of those tests is provably futile there**, and the exactness argument is the
+/// call site's own: distinct keys imply a STRICT subset, because equal ranges share one
+/// `ClassId`. So for two distinct `Set`s, `a ⊆ b` requires `|a| < |b|` — and every string
+/// key minted from a `DataPropertyAssertion` is a SINGLETON, so no `Set ⊆ Set` edge can
+/// exist at all.
+///
+/// This enumerates only what can succeed:
+/// * `Set ⊆ Top` for every finite set and every `Top` (`(_, Top) => true`);
+/// * `Top ⊆ Set` never (`(Top, Set) => false`);
+/// * `Set(a) ⊆ Set(b)` only across strictly increasing cardinalities.
+///
+/// Emission ORDER differs from `seed_bucket`, which is immaterial — `out.axioms` is sorted
+/// downstream.
+fn seed_str_bucket_indexed(out: &mut InternalOntology, keys: &[(ClassId, StrSet)]) {
+    use std::collections::BTreeMap;
+    let mut tops: Vec<ClassId> = Vec::new();
+    // cardinality -> keys of that size
+    let mut by_size: BTreeMap<usize, Vec<(ClassId, &std::collections::BTreeSet<String>)>> =
+        BTreeMap::new();
+    for (cid, r) in keys {
+        match r {
+            StrSet::Top => tops.push(*cid),
+            StrSet::Set(set) => by_size.entry(set.len()).or_default().push((*cid, set)),
+        }
+    }
+    // Every finite set is below every `Top`.
+    for group in by_size.values() {
+        for &(sub_cid, _) in group {
+            for &top_cid in &tops {
+                let sub = out.concepts.atomic(sub_cid);
+                let sup = out.concepts.atomic(top_cid);
+                out.axioms.push(Axiom::SubClassOf { sub, sup });
+            }
+        }
+    }
+    // `Set ⊆ Set` only STRICTLY upward in cardinality.
+    let sizes: Vec<usize> = by_size.keys().copied().collect();
+    for (i, &m) in sizes.iter().enumerate() {
+        for &n in &sizes[i + 1..] {
+            for &(sub_cid, sub_set) in &by_size[&m] {
+                for &(sup_cid, sup_set) in &by_size[&n] {
+                    if sub_set.is_subset(sup_set) {
+                        let sub = out.concepts.atomic(sub_cid);
+                        let sup = out.concepts.atomic(sup_cid);
+                        out.axioms.push(Axiom::SubClassOf { sub, sup });
+                    }
+                }
+            }
+        }
     }
 }
 

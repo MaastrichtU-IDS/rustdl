@@ -1,0 +1,13 @@
+=== total conversion wall, both fixes OFF vs both ON ===
+  ONT                     OFF         ON  SPEEDUP  RULES
+  ore_ont_10929        102.5s       3.9s    26.3x  identical(57355)
+  ore_ont_15635        125.9s       7.3s    17.2x  identical(54248)
+  ore_ont_2504         235.0s     238.6s     1.0x  identical(68761866)
+  ore_ont_4141         134.7s     129.9s     1.0x  identical(42738529)
+  ore_ont_1833          39.1s      37.0s     1.1x  identical(14030936)
+  ore_ont_5368          52.9s      50.6s     1.0x  identical(18620251)
+  ore_ont_4572         300.2s     301.6s     1.0x  identical()
+  ore_ont_8445         301.1s     301.5s     1.0x  identical()
+  ore_ont_9347           6.9s       0.6s    11.5x  identical(113)
+
+[exited with code 0]

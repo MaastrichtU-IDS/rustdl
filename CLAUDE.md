@@ -1512,7 +1512,26 @@ value-only × value-only, skippable in O(k) instead of O(k²). `10929` 96.5→77
 DIFFER even on `9347` where the gate skips entirely; curated classify identical; suite 1685/0). A
 first attempt requiring the WHOLE group value-only **did not fire** (96.5→94.2 s) — one broadcast
 key forming no disjoint pair defeats it at a 100% drop rate.
-**IT IS NOT THE FIX: 77 s of 96 s remains** vs the 2.6 s `DATA_PROPERTIES=0` reaches. The skip
+**THE RESIDUAL IS NOW MEASURED AND FIXED — `RUSTDL_DKEY_STR_SIZE_INDEX` (default OFF).** A
+timing probe (as the prior entry instructed, rather than trusting its own arithmetic) split the
+two seeding groups on `ore_ont_10929`: **`subsumption_ms` 73,872 vs `disjointness_ms` 20,484**,
+string bucket **57,342** keys, every other bucket **0**. So `seed_bucket`'s O(k²) string walk —
+~3.29 × 10⁹ ordered pairs — owned 78% of conversion. **All of it provably futile:**
+`Set(a) ⊆ Set(b)` between distinct keys needs `|a| < |b|` (equal ranges share one `ClassId`) and
+every string DKey from a `DataPropertyAssertion` is a SINGLETON. `seed_str_bucket_indexed`
+enumerates only `Set ⊆ Top` plus strictly-increasing cardinalities — **exact, not approximate**.
+`subsumption_ms` **72,192 → 9 (8,000×)**; with both flags, `ore_ont_10929` **128.9 → 3.8 s
+(33.9×)**, `15635` **127.2 → 7.2 s (17.7×)**, `9347` 11.5×, rules identical throughout, curated
+classify identical, suite 1685/0.
+**BUT IT FIXES 3 OF 9, AND THAT IS THE SCOPE.** The other six are FLAT because they materialise
+**14–68 M** concept rules (`2504` 68.7 M, `4141` 42.7 M, `5368` 18.6 M, `1833` 14.0 M; `4572` and
+`8445` still time out) — these flags remove *futile* work, and where axioms are genuinely emitted
+there is nothing to skip. So the split is measured, not predicted: **2 futile-enumeration members
+fixed, ~6 materialising members still needing the PARKED oracle** — whose set is therefore ~6,
+close to the spec's original "~4", and **its parking decision stands.** Only the STRING bucket is
+specialised; the other six remain O(k²) and the cardinality argument does NOT transfer to interval
+ranges. See `docs/benchmarks/2026-08-20-dkey-string-seeding-oksquared.md`.
+**Superseded — "IT IS NOT THE FIX: 77 s of 96 s remains"** vs the 2.6 s `DATA_PROPERTIES=0` reaches. The skip
 touches only the DISJOINTNESS loop; the leading suspect for the residual is **`seed_bucket`, the
 SUBSUMPTION seeding**, which walks **k² ORDERED pairs** (~3.6 × 10⁹ at 60,323 distinct string keys,
 ~26 ns each ≈ the residual). **That is arithmetic, not a measurement — probe the two seeding calls

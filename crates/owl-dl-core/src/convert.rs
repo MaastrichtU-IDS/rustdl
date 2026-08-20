@@ -2521,9 +2521,18 @@ pub fn inverse_functional_max_enabled() -> bool {
 /// droppable (`RUSTDL_DKEY_GROUP_SKIP`, **default OFF** pending measurement).
 ///
 /// The drop condition is component-level, not per-pair, so the O(k²) walk can be replaced
-/// by an O(k) test. Measured waste it removes: `ore_ont_10929` 248,465,112 pair-visits at a
-/// 100% drop rate, `ore_ont_15635` 294,744,041 — the entire conversion cost of two DNF-tail
-/// members. See `docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`.
+/// by an O(k) test. Measured waste it ENUMERATES AWAY: `ore_ont_10929` 248,465,112
+/// pair-visits at a 100% drop rate, `ore_ont_15635` 294,744,041.
+///
+/// **PARTIAL — it does not remove those ontologies' conversion cost.** Measured
+/// `ore_ont_10929` 96.5 s → 77.5 s (1.24×) and `ore_ont_15635` 92.2 s → 67.4 s (1.37×),
+/// against the 2.6 s that `RUSTDL_DATA_PROPERTIES=0` reaches — so ~77 s of 96 s remains.
+/// This touches only the DISJOINTNESS loop; the leading suspect for the residual is
+/// `seed_bucket`'s SUBSUMPTION seeding, which walks k² ORDERED pairs (~3.6 × 10⁹ at that
+/// ontology's 60,323 distinct string keys). That attribution is arithmetic, not a
+/// measurement — probe the two seeding calls before touching the loop.
+///
+/// See `docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`.
 #[must_use]
 pub fn dkey_group_skip_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_some_and(|v| v == "1")

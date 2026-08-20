@@ -164,7 +164,17 @@ fn re_adding_the_premise_re_derives_the_retracted_axiom() {
 /// so only `bench-corpus/` is usable here.
 #[test]
 fn refresh_derived_is_a_no_op_on_an_unchanged_ontology() {
-    for name in ["pizza", "mie", "paper5"] {
+    // `(fixture, does it have a derived overlay at all?)`. MEASURED, not
+    // guessed: pizza 22 of 327 axioms, mie 69 of 994, paper5 0 of 94.
+    //
+    // The flag is what stops this test from passing vacuously. Every
+    // assertion below is trivially satisfied by an EMPTY overlay - there is
+    // nothing to re-derive and nothing to retract - so without pinning which
+    // fixtures actually carry one, the whole test could decay into three
+    // no-ops and stay green. Pinned as an equality rather than a `> 0` so it
+    // also fires if paper5 ever GAINS an overlay, at which point it starts
+    // carrying real weight and the comment above goes stale.
+    for (name, has_overlay) in [("pizza", true), ("mie", true), ("paper5", false)] {
         let path = format!(
             "{}/../../bench-corpus/{name}.ofn",
             env!("CARGO_MANIFEST_DIR")
@@ -182,6 +192,12 @@ fn refresh_derived_is_a_no_op_on_an_unchanged_ontology() {
         assert!(
             derived < internal.axioms.len(),
             "{name}: everything marked derived - the user baseline is wrong"
+        );
+        assert_eq!(
+            derived > 0,
+            has_overlay,
+            "{name}: derived-overlay presence changed ({derived} derived) - see the \
+             comment on this loop"
         );
 
         let diff = delta::refresh_derived(&mut internal, &set);
@@ -272,6 +288,10 @@ fn refresh_derived_is_a_no_op_on_a_long_role_chain() {
 /// Only a debug assertion stands between us and that, so pin that it fires.
 #[test]
 #[should_panic(expected = "mirror and IR baseline disagree")]
+// The guard it pins is a `debug_assert!`, so in a `--release` test build
+// `refresh_derived` returns normally and `should_panic` FAILS. Skip there
+// rather than let a release run go red on a test that cannot hold.
+#[cfg_attr(not(debug_assertions), ignore = "guard is a debug_assert")]
 fn refresh_derived_rejects_a_stale_mirror() {
     let b = Build::new_rc();
     let dp = b.data_property("http://x/dp");
@@ -312,6 +332,10 @@ fn refresh_derived_rejects_a_stale_mirror() {
 /// `A ⊑ C`, `B ⊑ C` from a premise the user already removed.
 #[test]
 #[should_panic(expected = "mirror and IR baseline disagree")]
+// The guard it pins is a `debug_assert!`, so in a `--release` test build
+// `refresh_derived` returns normally and `should_panic` FAILS. Skip there
+// rather than let a release run go red on a test that cannot hold.
+#[cfg_attr(not(debug_assertions), ignore = "guard is a debug_assert")]
 fn retracting_a_consumed_original_is_caught_not_silently_ignored() {
     let b = Build::new_rc();
     let ax = horned_owl::model::SubClassOf {

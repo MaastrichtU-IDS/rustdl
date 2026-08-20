@@ -631,7 +631,8 @@ fn assert_consistency_round_trip(
 
     assert!(
         session.is_consistent().unwrap(),
-        "{fixture} seed {seed}: fixture guard — the script must END consistent, or the          round trip below proves nothing"
+        "{fixture} seed {seed}: fixture guard — the script must END consistent, or\
+         the round trip below proves nothing"
     );
 
     session
@@ -645,11 +646,13 @@ fn assert_consistency_round_trip(
     }
     assert!(
         !owl_dl_reasoner::is_consistent(current).unwrap(),
-        "{fixture} seed {seed}: fixture guard — the from-scratch run must call the          clash-extended ontology inconsistent"
+        "{fixture} seed {seed}: fixture guard — the from-scratch run must call\
+         the clash-extended ontology inconsistent"
     );
     assert!(
         !session.is_consistent().unwrap(),
-        "{fixture} seed {seed}: a CONSISTENT verdict survived an addition that removed          every model"
+        "{fixture} seed {seed}: a CONSISTENT verdict survived an addition that\
+         removed every model"
     );
 
     session
@@ -667,13 +670,32 @@ fn assert_consistency_round_trip(
     );
     assert!(
         session.is_consistent().unwrap(),
-        "{fixture} seed {seed}: an INCONSISTENT verdict survived the retraction that          restored a model — a false positive, the one answer this reasoner may never give"
+        "{fixture} seed {seed}: an INCONSISTENT verdict survived the retraction\
+         that restored a model — a false positive, the one answer this reasoner\
+         may never give"
     );
 }
 
 // ---------------------------------------------------------------------------
 // Gate 2 — round trip
 // ---------------------------------------------------------------------------
+/// Gate 2's copy of the guard [`assert_revision`] carries for Gate 1.
+///
+/// The gate runs [`budget_free`], but the `defined_sups` same-tier sweep in
+/// `classify_top_down_internal` has a HARD-CODED 200 ms wall with no env
+/// override, and `paper5.ofn` is the one fixture that reaches it. On a
+/// contended host that budget fires, the two sides of every comparison below
+/// stop being functions of the algorithm, and the gate reports "the session
+/// diverged" for what is really "a budget fired" — the most expensive possible
+/// way to spend a debugging afternoon.
+fn assert_no_budget_fired(fixture: &str, where_: &str, c: &owl_dl_reasoner::Classification) {
+    assert_eq!(
+        c.stats().timed_out_pairs,
+        0,
+        "{fixture}: a budget fired {where_} — the round-trip comparison is not \
+         reproducible, and any divergence it reports is noise"
+    );
+}
 
 #[test]
 fn round_trip_add_then_remove_returns_to_the_original() {
@@ -708,7 +730,11 @@ fn round_trip_add_then_remove_returns_to_the_original() {
         let rest: Vec<_> = every_third.into_iter().take(cap).collect::<Vec<_>>();
 
         let mut session = IncrementalSession::new(&base).unwrap();
-        let before = verdict(session.classify().unwrap());
+        let before = {
+            let c = session.classify().unwrap();
+            assert_no_budget_fired(fixture, "at revision 0", c);
+            verdict(c)
+        };
 
         // The mid-point is `base + rest`, computed independently of the
         // session — NOT `full`, which is only the same thing when `cap` did
@@ -719,7 +745,11 @@ fn round_trip_add_then_remove_returns_to_the_original() {
         }
         // Fixture guard: the round trip must actually MOVE the verdict, or a
         // do-nothing implementation would pass.
-        let mid_expected = verdict(&owl_dl_reasoner::classify(&mid).unwrap());
+        let mid_expected = {
+            let c = owl_dl_reasoner::classify(&mid).unwrap();
+            assert_no_budget_fired(fixture, "in the from-scratch mid-point run", &c);
+            verdict(&c)
+        };
         assert_ne!(
             before, mid_expected,
             "{fixture}: the round-tripped axioms change nothing — this gate would be vacuous"
@@ -733,9 +763,11 @@ fn round_trip_add_then_remove_returns_to_the_original() {
                 })
                 .unwrap();
         }
+        let mid_got = session.classify().unwrap();
+        assert_no_budget_fired(fixture, "in the session at the mid-point", mid_got);
         assert_eq!(
             mid_expected,
-            verdict(session.classify().unwrap()),
+            verdict(mid_got),
             "{fixture}: the session did not reach the mid-point verdict"
         );
 
@@ -747,16 +779,20 @@ fn round_trip_add_then_remove_returns_to_the_original() {
                 })
                 .unwrap();
         }
+        let restored = session.classify().unwrap();
+        assert_no_budget_fired(fixture, "in the session after the retractions", restored);
         assert_eq!(
             before,
-            verdict(session.classify().unwrap()),
+            verdict(restored),
             "{fixture}: add-then-remove did not return to the original verdict"
         );
         // ... and it agrees with a from-scratch run over the restored set,
         // which `before` alone does not prove (both sides could be equally
         // wrong, e.g. if `before` were itself read from a stale cache).
+        let base_expected = owl_dl_reasoner::classify(&base).unwrap();
+        assert_no_budget_fired(fixture, "in the from-scratch restored run", &base_expected);
         assert_eq!(
-            verdict(&owl_dl_reasoner::classify(&base).unwrap()),
+            verdict(&base_expected),
             verdict(session.classify().unwrap()),
             "{fixture}: the restored session disagrees with from-scratch"
         );

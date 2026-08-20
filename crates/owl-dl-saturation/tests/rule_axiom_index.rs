@@ -10,7 +10,7 @@ mod common;
 use common::load_fixture;
 
 #[test]
-fn every_compiled_rule_maps_to_a_live_source_axiom_or_the_synthetic_sentinel() {
+fn every_compiled_rule_maps_to_a_source_axiom_or_the_synthetic_sentinel() {
     let internal = load_fixture("pizza.ofn");
     let rules = owl_dl_saturation::collect_el_rules_for_test(&internal);
 
@@ -39,13 +39,63 @@ fn every_compiled_rule_maps_to_a_live_source_axiom_or_the_synthetic_sentinel() {
         rules.axiom_of_directly_unsat.len()
     );
 
+    // NOTE there is deliberately no `internal.live.contains(idx)` here. It read
+    // as a liveness check but could not fail — nothing in this test kills an
+    // axiom — and the invariant it looked like it was pinning is the OPPOSITE
+    // of the truth, which the next test pins for real.
     for &a in &rules.axiom_of_atomic_sub {
         if a != u32::MAX {
             let idx = a as usize;
             assert!(idx < internal.axioms.len(), "axiom index out of range");
-            assert!(internal.live.contains(idx), "rule points at a dead axiom");
         }
     }
+}
+
+/// **`collect_el_rules` does not consult `InternalOntology::live`.**
+///
+/// This is the fact `IncrementalSession` is built on, stated from the
+/// saturation side: a retracted axiom that is merely TOMBSTONED (live bit
+/// cleared, still in `axioms`) keeps compiling rules and keeps firing — a
+/// silent false positive in release, where the session's `debug_assert` is
+/// gone. It is why every retraction re-lowers the whole mirror through
+/// `convert_ontology_seeded` instead of clearing a bit, and why the rule→axiom
+/// provenance above cannot be read as "this rule is live".
+///
+/// Asserted as an equality in BOTH directions on purpose: if `collect_el_rules`
+/// ever learns to skip dead axioms, this test goes red and the re-lower-on-
+/// retraction machinery can be revisited — an over-caution, not a defect.
+#[test]
+fn a_tombstoned_axiom_still_compiles_its_rules() {
+    let mut internal = load_fixture("pizza.ofn");
+    let before = owl_dl_saturation::collect_el_rules_for_test(&internal);
+    assert!(
+        !before.atomic_subsumptions.is_empty(),
+        "fixture must compile at least one atomic-subsumption rule"
+    );
+
+    let victim = before
+        .axiom_of_atomic_sub
+        .iter()
+        .copied()
+        .find(|&a| a != u32::MAX)
+        .expect("at least one rule must carry real axiom provenance") as usize;
+    assert!(
+        internal.kill_axiom(victim),
+        "the victim must have been live before this test killed it"
+    );
+    assert!(!internal.live.contains(victim));
+
+    let after = owl_dl_saturation::collect_el_rules_for_test(&internal);
+    assert_eq!(
+        before.atomic_subsumptions.len(),
+        after.atomic_subsumptions.len(),
+        "killing an axiom changed the compiled rule set — saturation now reads \
+         `live`, and the session no longer has to re-lower on a retraction"
+    );
+    assert_eq!(
+        before.axiom_of_atomic_sub, after.axiom_of_atomic_sub,
+        "the provenance table moved even though `axioms` did not"
+    );
 }
 
 /// A `C ⊑ ⊥` rule that outlives its axiom keeps `C` permanently flagged
@@ -78,7 +128,6 @@ fn directly_unsat_rules_name_the_subclass_of_bot_axiom_they_came_from() {
         );
         let idx = a as usize;
         assert!(idx < internal.axioms.len(), "axiom index out of range");
-        assert!(internal.live.contains(idx), "rule points at a dead axiom");
         // The named axiom must be the very `SubClassOf(sub, Bot)` that produced
         // this rule — provenance pointing at the WRONG axiom is worse than none.
         match &internal.axioms[idx] {

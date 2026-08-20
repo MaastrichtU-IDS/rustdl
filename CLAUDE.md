@@ -1481,6 +1481,33 @@ leaving ~11 falsifiable "this fails" claims** — the sweep is cheap because tha
 `#[ignore` returns 97, inflated by prose; anchor the pattern to the line start). See
 `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md`.
 
+### THE PARKED DKey RESIDUAL CLASS OWNS 8 OF THE DNF TAIL (2026-08-20) — UNPARK CASE
+
+`docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`. Found by reading ONE ontology,
+not a population. **`ore_ont_10929` is a DNF with 12 CLASSES**: `tbox-stats` (parse+convert only)
+is 97.6 s of which `convert_ms` **96,461** — 99% conversion, ~0% reasoning, on ~244k `ABox`
+assertions (110,802 `DataPropertyAssertion`, **60,323 distinct literals**).
+`RUSTDL_DATA_PROPERTIES=0` → **2.6 s, `convert_ms` 1,480, rules 57,355→12 (36×)**. The merging gate
+changes nothing (it **correctly declines** — 2 `FunctionalDataProperty` + 25 `DataPropertyRange`
+make the component merge-inducing), and `RUSTDL_BOUNDED_DKEY_DISJOINT=0` is *worse* (203 s).
+
+**Measured, not grepped** (candidates selected by grep, then each measured both arms): **8 tail
+members are conversion-bound**, aggregate **1,182 s → 14 s (82×)** — `8445` 275×, `4141` 223×,
+**`5368` 194×** (the 27 GB DNF the spec named "the strongest candidate" for unparking), `4572`
+125×, `2504` 103×, `1833` 59×, `10929` 36×, `15635` 19×. `4572` and `8445` do not finish
+conversion at 300 s. `ore_ont_5548` carries the signature but converts in 0.7 s — a **false
+member**, so the set is 8 not 9.
+
+**This moves the parked decision.** `RUSTDL_DKEY_MERGING_GATE`'s spec parked Lever 2 (on-demand
+disjointness oracle) at "~4 ontologies … poor work-to-reward", revisiting "if one of the four is
+independently needed (`5368`)". The set is **8 in the tail (~6%)** and includes `5368`.
+**Caveats that must travel with it:** (1) **82× is a CEILING, not the lever's value** —
+`DATA_PROPERTIES=0` deletes the semantics (same distinction as `RUSTDL_ABOX_CHECK=0`; quote the
+fraction, never the bound); (2) the cost is isolated to the data path **as a whole**, NOT to
+seeding specifically — separate seeding from DKey interning/lowering before designing; (3) **price
+the cheap option first** — merge-inducing ≠ all C(k,2) pairs consumable, so a tighter
+consumability test may capture most of the win with no new side-table hooks.
+
 ### DNF TAIL RE-CENSUS 2026-08-20: 143, and the 55% bucket is MEASURED OUT
 
 `docs/benchmarks/2026-08-20-tail143-recensus.md`. Tail is **143** (141 DNF + 2 reject), from 257

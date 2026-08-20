@@ -2513,7 +2513,11 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 /// shape is whitelisted (`classify::is_derived_functional_max`). Both need a corpus
 /// sweep before this becomes a default.
 #[must_use]
-/// Skip a DKey disjointness component wholesale when every one of its pairs is provably
+pub fn inverse_functional_max_enabled() -> bool {
+    std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_some_and(|v| v == "1")
+}
+
+/// Skip a `DKey` disjointness component wholesale when every one of its pairs is provably
 /// droppable (`RUSTDL_DKEY_GROUP_SKIP`, **default OFF** pending measurement).
 ///
 /// The drop condition is component-level, not per-pair, so the O(k²) walk can be replaced
@@ -2523,10 +2527,6 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 #[must_use]
 pub fn dkey_group_skip_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_some_and(|v| v == "1")
-}
-
-pub fn inverse_functional_max_enabled() -> bool {
-    std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_some_and(|v| v == "1")
 }
 
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional

@@ -167,6 +167,31 @@ enum Command {
         #[arg(long, default_value = "5")]
         iters: usize,
     },
+    /// Measure per-revision latency of an `IncrementalSession` under a
+    /// stream of single-axiom class additions (the P1 exit criterion).
+    ///
+    /// Builds a session over `FILE`, then applies `--revisions` deltas, each
+    /// adding one fresh synthetic leaf `SubClassOf(<gen:i>, <anchor>)`, and
+    /// times `apply` + `classify` per revision. Prints p50/p95/max plus the
+    /// session's reuse counters.
+    ///
+    /// FILE is a path argument on purpose: the measurement corpus is
+    /// gitignored (fetched, not vendored), so this is a measurement tool, not
+    /// a CI test. A missing file is a hard error.
+    IncrementalLatency {
+        /// Path to the OWL ontology (OFN / OWX / RDF-XML, content-sniffed).
+        file: PathBuf,
+        /// Number of single-axiom revisions to apply and time.
+        #[arg(long, default_value_t = 100)]
+        revisions: usize,
+        /// Repetitions of each from-scratch baseline classify. The reported
+        /// baseline is the median. `0` skips the baselines entirely.
+        #[arg(long, default_value_t = 3)]
+        baseline_repeats: usize,
+        /// Print one line per revision (ms, and whether it rebuilt).
+        #[arg(long)]
+        per_revision: bool,
+    },
     /// Run the authoritative reasoner×ontology performance matrix.
     Matrix {
         #[arg(long, default_value = "curated")]
@@ -306,6 +331,215 @@ fn run_classify_repeated(ontology: &SetOntology<RcStr>, repeats: usize) -> Resul
     Ok(())
 }
 
+/// Percentile of an already-sorted slice, nearest-rank (no interpolation).
+///
+/// `p` is in `[0, 1]`. Nearest-rank is deliberate: these are latency samples,
+/// and an interpolated p95 invents a number no revision actually took.
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return f64::NAN;
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let rank = ((p * sorted.len() as f64).ceil() as usize).max(1);
+    sorted[rank.min(sorted.len()) - 1]
+}
+
+/// Median wall of `repeats` runs of `f`, in milliseconds. `None` when
+/// `repeats == 0`.
+fn median_ms<F: FnMut() -> Result<()>>(repeats: usize, mut f: F) -> Result<Option<f64>> {
+    if repeats == 0 {
+        return Ok(None);
+    }
+    let mut samples = Vec::with_capacity(repeats);
+    for _ in 0..repeats {
+        let t = Instant::now();
+        f()?;
+        samples.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    samples.sort_by(f64::total_cmp);
+    Ok(Some(samples[samples.len() / 2]))
+}
+
+/// The P1 exit-criterion measurement: per-revision latency of an
+/// `IncrementalSession` under single-axiom class additions.
+///
+/// Each revision adds `SubClassOf(<urn:rustdl-bench-gen:i>, <anchor>)` where
+/// `anchor` is an existing reported class. Class axioms on purpose: the
+/// session rebuilds unconditionally on any property-axiom addition and on any
+/// removal (P1 is addition-only), so a property delta would time the rebuild
+/// path and measure nothing about retention.
+fn run_incremental_latency(
+    path: &Path,
+    revisions: usize,
+    baseline_repeats: usize,
+    per_revision: bool,
+) -> Result<()> {
+    use horned_owl::model::{Build, SubClassOf};
+    use owl_dl_reasoner::incremental::{AxiomDelta, IncrementalSession};
+
+    anyhow::ensure!(
+        path.is_file(),
+        "ontology not found: {}\n\
+         `incremental-latency` takes a PATH to a measurement corpus file. The corpus is \
+         gitignored (fetched by xtask / scripts/fetch-real-ontologies.sh, not vendored), so \
+         nothing here ships a fixture for you. Point this at a local ontology, e.g. \
+         `ontologies/external/galen.ofn`.",
+        path.display()
+    );
+    anyhow::ensure!(revisions >= 1, "need at least 1 revision to time");
+
+    let onto = parse_ofn(path)?;
+    println!("file: {}", path.display());
+    println!("revisions: {revisions}");
+
+    // --- from-scratch baselines, same host, same run -----------------------
+    // `classify` is what a user pays today for one edit. `classify_saturation_only`
+    // is the honest denominator for an EL-fragment session (see
+    // docs/2026-08-19-incremental-lowering-floor-findings.md § "Read the
+    // sat-only column").
+    let full_ms = median_ms(baseline_repeats, || {
+        classify(&onto).context("baseline classify")?;
+        Ok(())
+    })?;
+    let sat_ms = median_ms(baseline_repeats, || {
+        owl_dl_reasoner::classify_saturation_only(&onto).context("baseline saturation-only")?;
+        Ok(())
+    })?;
+    if let Some(ms) = full_ms {
+        println!("baseline classify (from scratch, median of {baseline_repeats}): {ms:.2} ms");
+    }
+    if let Some(ms) = sat_ms {
+        println!(
+            "baseline saturation-only (from scratch, median of {baseline_repeats}): {ms:.2} ms"
+        );
+    }
+
+    // --- session construction ---------------------------------------------
+    let t = Instant::now();
+    let mut session = IncrementalSession::new(&onto).context("building the session")?;
+    let build_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let t = Instant::now();
+    let first = session.classify().context("initial classify")?;
+    let initial_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let num_classes = first.classes().len();
+    let anchor = first
+        .classes()
+        .iter()
+        .find(|iri| !iri.starts_with("urn:rustdl-dkey"))
+        .cloned()
+        .context("ontology reports no classes to hang a synthetic leaf under")?;
+    println!("classes: {num_classes}");
+    println!("anchor: {anchor}");
+    println!("session build: {build_ms:.2} ms");
+    println!("initial classify: {initial_ms:.2} ms");
+
+    // --- the measurement ---------------------------------------------------
+    let build = Build::new_rc();
+    let sup = build.class(anchor.as_str());
+    let mut totals = Vec::with_capacity(revisions);
+    let mut applies = Vec::with_capacity(revisions);
+    let mut classifies = Vec::with_capacity(revisions);
+    let mut rebuilt_at = Vec::new();
+    let mut prev_rebuilds = session.stats().rebuilds;
+
+    for i in 0..revisions {
+        let axiom = SubClassOf {
+            sub: build
+                .class(format!("urn:rustdl-bench-gen:{i}").as_str())
+                .into(),
+            sup: sup.clone().into(),
+        };
+        let delta = AxiomDelta {
+            added: vec![axiom.into()],
+            removed: vec![],
+        };
+        let t = Instant::now();
+        session
+            .apply(&delta)
+            .with_context(|| format!("applying revision {i}"))?;
+        let apply_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        session
+            .classify()
+            .with_context(|| format!("classifying revision {i}"))?;
+        let classify_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        let rebuilds = session.stats().rebuilds;
+        let rebuilt = rebuilds > prev_rebuilds;
+        if rebuilt {
+            rebuilt_at.push(i);
+        }
+        prev_rebuilds = rebuilds;
+
+        if per_revision {
+            println!(
+                "  rev {i:>5}: total={:>8.2} ms  apply={apply_ms:>7.2}  classify={classify_ms:>8.2}{}",
+                apply_ms + classify_ms,
+                if rebuilt { "  REBUILD" } else { "" }
+            );
+        }
+        totals.push(apply_ms + classify_ms);
+        applies.push(apply_ms);
+        classifies.push(classify_ms);
+    }
+
+    let mut sorted = totals.clone();
+    sorted.sort_by(f64::total_cmp);
+    let p50 = percentile(&sorted, 0.50);
+    let p95 = percentile(&sorted, 0.95);
+    let max = sorted[sorted.len() - 1];
+    let min = sorted[0];
+    applies.sort_by(f64::total_cmp);
+    classifies.sort_by(f64::total_cmp);
+
+    println!("--- per-revision (apply + classify) ---");
+    println!("p50: {p50:.2} ms");
+    println!("p95: {p95:.2} ms");
+    println!("max: {max:.2} ms");
+    println!("min: {min:.2} ms");
+    println!("apply p50:    {:.2} ms", percentile(&applies, 0.50));
+    println!("classify p50: {:.2} ms", percentile(&classifies, 0.50));
+
+    let s = session.stats();
+    println!("--- session stats ---");
+    println!("revisions:         {}", s.revisions);
+    println!("rebuilds:          {}", s.rebuilds);
+    println!("additions_reused:  {}", s.additions_reused);
+    println!("closure_answered:  {}", s.closure_answered);
+    if !rebuilt_at.is_empty() {
+        let shown: Vec<String> = rebuilt_at
+            .iter()
+            .take(20)
+            .map(ToString::to_string)
+            .collect();
+        println!(
+            "rebuilt at revisions: {}{}",
+            shown.join(","),
+            if rebuilt_at.len() > 20 { ", ..." } else { "" }
+        );
+    }
+
+    // --- verdict ------------------------------------------------------------
+    // The P1 exit criterion: ≤ 2× the measured 5.8 ms galen lowering floor.
+    const BAR_MS: f64 = 12.0;
+    println!("--- verdict ---");
+    if let Some(ms) = full_ms {
+        println!("speedup vs from-scratch classify:        {:.2}x", ms / p50);
+    }
+    if let Some(ms) = sat_ms {
+        println!("speedup vs from-scratch saturation-only: {:.2}x", ms / p50);
+    }
+    println!(
+        "p50 {p50:.2} ms vs the {BAR_MS:.0} ms bar: {}",
+        if p50 <= BAR_MS { "PASS" } else { "FAIL" }
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -370,6 +604,12 @@ fn run(cli: Cli) -> Result<()> {
         } => run_corpus(&dir, quiet, repeats, pair_timeout_ms)?,
         #[cfg(feature = "whelk-compare")]
         Command::CompareWhelk { file, iters } => run_compare_whelk(&file, iters)?,
+        Command::IncrementalLatency {
+            file,
+            revisions,
+            baseline_repeats,
+            per_revision,
+        } => run_incremental_latency(&file, revisions, baseline_repeats, per_revision)?,
         Command::Matrix {
             tier,
             out,

@@ -1612,13 +1612,22 @@ fn classify_pure_el(
         stats.inconsistent = true;
     }
 
-    // Pass 1 — identify unsatisfiable classes (O(n) via the closure bitset).
-    // Build the unsatisfiable bitset directly for O(1) per-bit membership test
-    // in the subsumption read-off below.
+    // Pass 1 — identify unsatisfiable classes (O(n) closure lookups).
+    //
+    // MUST go through `Subsumers::is_unsatisfiable`, which takes a `ClassId`.
+    // The raw `Subsumers::unsatisfiable_bitset()` is CLASS-ID indexed ("bit `i`
+    // set iff `class_i ⊑ ⊥`"), so probing it with a report position `i` made a
+    // satisfiable class inherit a neighbour's `⊥` flag — and because
+    // `Classification::entails` short-circuits on `unsatisfiable_idxs` to
+    // supply `⊥ ⊑ *`, that one mis-indexed bit turned EVERY pair involving the
+    // class into a false positive (and `unsatisfiable_classes()` named the
+    // wrong class). See `tests/dkey_id_aliasing.rs::UNSAT_BODY`. This is the
+    // same report-position/`ClassId` conflation as the rest of this file, but
+    // spelled with no cast at all — which is why the source-level guard in that
+    // test file did not see it.
     let mut unsatisfiable_idxs: HashSet<usize> = HashSet::new();
-    let unsat_bs = closure.unsatisfiable_bitset();
     for i in 0..n {
-        if i < unsat_bs.len() && unsat_bs.contains(i) {
+        if closure.is_unsatisfiable(reported.class_id(i)) {
             unsatisfiable_idxs.insert(i);
             stats.saturation_unsat_hits += 1;
         }

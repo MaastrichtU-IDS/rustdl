@@ -192,6 +192,35 @@ enum Command {
         #[arg(long)]
         per_revision: bool,
     },
+    /// Write a synthetic **pure-EL** ontology to a file.
+    ///
+    /// This is the positive control for `incremental-latency`: as of
+    /// 2026-08-20 every ontology in the local corpus classifies `hybrid`, so
+    /// nothing real exercises the session's retained-closure reuse path
+    /// (`classify::is_pure_el` ⟹ `classify_from_closure`). The shape here is
+    /// inside `is_pure_el` by construction — atomic `SubClassOf`, one
+    /// `ObjectSomeValuesFrom` over a forward role, no functional / inverse /
+    /// disjoint / cardinality / nominal axioms — so a session over it reports
+    /// `closure_answered > 0`.
+    ///
+    /// A balanced binary tree, NOT the `synthetic-el` chain: the chain's
+    /// closure is quadratic in depth and a 2000-class chain does not finish a
+    /// 100-revision run in ten minutes, while the tree's is `O(n log n)`.
+    ///
+    /// Shape: `Declaration(Class(:Ci))` for i in 0..N; `SubClassOf(:Ci :C{i/2})`
+    /// for i in 1..N; and `SubClassOf(:Ci ObjectSomeValuesFrom(:partOf
+    /// :C{i/2}))` on every `--edge-every`-th i.
+    EmitSyntheticEl {
+        /// Destination path for the generated `.ofn`.
+        out: PathBuf,
+        /// Number of named classes.
+        #[arg(long, default_value_t = 400)]
+        classes: usize,
+        /// Emit an `ObjectSomeValuesFrom` edge on every n-th class. Larger ⟹
+        /// sparser existential structure. `0` ⟹ no existentials at all.
+        #[arg(long, default_value_t = 7)]
+        edge_every: usize,
+    },
     /// Run the authoritative reasoner×ontology performance matrix.
     Matrix {
         #[arg(long, default_value = "curated")]
@@ -271,6 +300,39 @@ fn synthetic_el_ontology(num_classes: usize, _anchors: usize) -> String {
         s,
         "    SubClassOf(ObjectSomeValuesFrom(:partOf :C{last}) :Anchor)"
     );
+    s.push_str(")\n");
+    s
+}
+
+/// Generate a synthetic **pure-EL** balanced binary tree — the positive
+/// control for `incremental-latency`. See `Command::EmitSyntheticEl` for why
+/// this exists and why it is a tree rather than the `synthetic_el_ontology`
+/// chain.
+///
+/// Every axiom form emitted here is admitted by `classify::is_el_axiom`, so
+/// `is_pure_el` holds and an `IncrementalSession` over the result answers
+/// from its retained closure.
+fn synthetic_pure_el_ontology(num_classes: usize, edge_every: usize) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    s.push_str("Prefix(:=<http://bench.test/>)\n");
+    s.push_str("Ontology(<http://bench.test/synth-pure-el>\n");
+    s.push_str("Declaration(ObjectProperty(:partOf))\n");
+    for i in 0..num_classes {
+        let _ = writeln!(s, "Declaration(Class(:C{i}))");
+    }
+    for i in 1..num_classes {
+        let _ = writeln!(s, "SubClassOf(:C{i} :C{})", i / 2);
+    }
+    if edge_every > 0 {
+        for i in (1..num_classes).step_by(edge_every) {
+            let _ = writeln!(
+                s,
+                "SubClassOf(:C{i} ObjectSomeValuesFrom(:partOf :C{}))",
+                i / 2
+            );
+        }
+    }
     s.push_str(")\n");
     s
 }
@@ -610,6 +672,20 @@ fn run(cli: Cli) -> Result<()> {
             baseline_repeats,
             per_revision,
         } => run_incremental_latency(&file, revisions, baseline_repeats, per_revision)?,
+        Command::EmitSyntheticEl {
+            out,
+            classes,
+            edge_every,
+        } => {
+            anyhow::ensure!(classes >= 2, "need at least 2 classes");
+            let src = synthetic_pure_el_ontology(classes, edge_every);
+            std::fs::write(&out, src.as_bytes())
+                .with_context(|| format!("writing {}", out.display()))?;
+            println!(
+                "wrote {} ({classes} classes, edge_every={edge_every})",
+                out.display()
+            );
+        }
         Command::Matrix {
             tier,
             out,
@@ -968,4 +1044,60 @@ fn run_corpus(dir: &Path, quiet: bool, repeats: usize, pair_timeout_ms: Option<u
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percentile;
+
+    /// Every headline number in `docs/2026-08-19-incremental-p1-latency.md`
+    /// passes through `percentile`, so its contract is pinned here.
+    ///
+    /// **Nearest-rank, no interpolation** — deliberate. These are latency
+    /// samples; an interpolated p95 reports a duration no revision actually
+    /// took. `p50` on an even-length sample is therefore the LOWER median, not
+    /// the mean of the middle two.
+    #[test]
+    fn percentile_is_nearest_rank() {
+        let s = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(percentile(&s, 0.5), 2.0, "even n ⇒ lower median");
+        let s3 = [1.0, 2.0, 3.0];
+        assert_eq!(percentile(&s3, 0.5), 2.0, "odd n ⇒ true median");
+    }
+
+    /// p0 is the min and p1 is the max — the two ends must not fall off the
+    /// slice. `rank` is `ceil(p*len)` clamped into `[1, len]`, so `p = 0.0`
+    /// would otherwise index rank 0.
+    #[test]
+    fn percentile_clamps_both_ends() {
+        let s = [5.0, 6.0, 7.0];
+        assert_eq!(percentile(&s, 0.0), 5.0);
+        assert_eq!(percentile(&s, 1.0), 7.0);
+        // Out-of-range p must saturate rather than panic.
+        assert_eq!(percentile(&s, -1.0), 5.0);
+        assert_eq!(percentile(&s, 2.0), 7.0);
+    }
+
+    /// The exact shape of the galen runs: 100 samples, p95 = the 95th
+    /// smallest, max = the 100th. An off-by-one here would misreport the tail.
+    #[test]
+    fn percentile_p95_of_100_is_the_95th_smallest() {
+        let s: Vec<f64> = (1..=100).map(f64::from).collect();
+        assert_eq!(percentile(&s, 0.95), 95.0);
+        assert_eq!(percentile(&s, 0.5), 50.0);
+        assert_eq!(percentile(&s, 1.0), 100.0);
+    }
+
+    #[test]
+    fn percentile_of_one_sample_is_that_sample() {
+        let s = [42.0];
+        assert_eq!(percentile(&s, 0.0), 42.0);
+        assert_eq!(percentile(&s, 0.5), 42.0);
+        assert_eq!(percentile(&s, 0.95), 42.0);
+    }
+
+    #[test]
+    fn percentile_of_empty_is_nan() {
+        assert!(percentile(&[], 0.5).is_nan());
+    }
 }

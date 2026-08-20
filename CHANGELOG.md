@@ -6,6 +6,48 @@ All notable changes to rustdl are documented here. Format is based on
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-08-20
+
+Packaging-only release. The reasoner is byte-identical to v0.4.19 — no Rust
+source changed; `Cargo.toml`'s version bump is the only non-plugin diff. Cut from
+the v0.4.19 tag rather than from `main` precisely so that no unreleased reasoner
+change rides along with the plugin fix.
+
+### Fixed — the Protégé plugin could not load in any Protégé 5.6.x
+
+Since v0.4.5 the plugin failed to resolve at startup with a `BundleException` and
+never appeared in the reasoner menu:
+
+```
+missing requirement osgi.wiring.package;
+(&(osgi.wiring.package=com.google.common.collect)
+  (version>=33.0.0)(!(version>=34.0.0)))
+```
+
+bnd derives `Import-Package` version ranges from the *build* classpath, where
+`owlapi-distribution` supplies guava 33.0.0-jre and slf4j 2.x. Protégé pins guava
+to 18.0 in `protege-parent`, so its `bundles/` directory exports
+`com.google.common.collect` at **18.0.0** and `org.slf4j` at **1.7.36** —
+identical in 5.6.6, 5.6.8 and 5.6.9. The generated `[33.0,34)` and `[2.0,3)`
+ranges could never resolve there. Felix reports only the first unresolved
+requirement, so guava was masking an identical slf4j failure behind it.
+
+Both imports trace to a single embedded class, telemetry's `TelemetryXMLWriter`,
+whose entire usage is `Lists.newArrayList(Iterable)`, `LoggerFactory.getLogger`
+and `Logger.error` — all present in guava 18.0 and slf4j 1.7.36. The ranges are
+now pinned by hand to what Protégé actually ships. Embedding a private guava was
+rejected: it would add ~3 MB and stand a rival class space beside the one
+`owlapi-osgidistribution` imports, whose exported packages carry
+`uses:="com.google.common..."` constraints.
+
+`verify-bundle-contents` now unfolds the built `MANIFEST.MF` and fails the build
+if either clause goes missing, so a future regeneration of these imports cannot
+silently ship a bundle no Protégé can resolve.
+
+Affected releases: **v0.4.5 through v0.4.19** are unloadable on every Protégé
+5.6.x. v0.4.4 was the last working plugin. Fixes #63.
+
+
 ## [0.4.17] - 2026-08-10
 
 ### Fixed — `classify` reported `consistent: true` on inconsistent ontologies

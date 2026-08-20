@@ -32,27 +32,131 @@ use crate::{PreparedOntology, ReasonError};
 /// pairwise subsumption check returned from the parallel work loop.
 type PairResult = (usize, usize, bool, bool, bool);
 
-/// Collect the IRIs of every *reportable* named class, in vocabulary
-/// interning order. Excludes the synthetic `DKey(range)` filler classes
+// ─── BEGIN report-position ↔ ClassId conversion boundary ─────────────────
+//
+// Everything between these sentinels is the ONLY code in this file allowed to
+// spell a raw `ClassId::new(...)` or `id.index() as usize`. The
+// `report_positions_are_never_cast_to_class_ids` test in
+// `tests/dkey_id_aliasing.rs` enforces that mechanically — a new raw cast
+// anywhere else in this file is a test failure with a pointer back here.
+
+/// The *reportable* named classes, in vocabulary interning order, together
+/// with the **bijection** between a position in that reported vector and the
+/// internal [`owl_dl_core::ClassId`] it stands for.
+///
+/// The reported vector excludes the synthetic `DKey(range)` filler classes
 /// introduced by the integer-facet data lowering
 /// ([`owl_dl_core::DKEY_IRI_PREFIX`]): they participate in the internal
 /// saturation/tableau reasoning (their told-subsumptions relay datatype
 /// containment through the existential machinery) but are NOT user
 /// classes, so they must never appear in the classified hierarchy, the
 /// unsatisfiable set, or any closure diff.
-fn reportable_class_iris(internal: &InternalOntology) -> Vec<String> {
-    (0..internal.vocabulary.num_classes())
-        .map(|i| {
-            internal
-                .vocabulary
-                .class_iri(owl_dl_core::ClassId::new(
-                    u32::try_from(i).expect("class count fits in u32"),
-                ))
-                .to_owned()
-        })
-        .filter(|iri| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
-        .collect()
+///
+/// # SOUNDNESS: a report position is NOT a `ClassId`
+///
+/// Because `DKey`s are *removed*, report position `i` equals `ClassId::new(i)`
+/// only while every `DKey` id happens to sit above every user class. That
+/// holds for ontologies whose every named class is `Declaration`-ed (all
+/// `DeclareClass` components sort before any axiom, so their ids are handed
+/// out first), and it does NOT hold in general — an undeclared class first
+/// mentioned in an axiom that sorts after a DKey-minting one lands *above*
+/// the `DKey`. Every reported class above such a `DKey` then read its
+/// subsumption row off a neighbour, producing FALSE POSITIVES in the public
+/// `classify()` (see `tests/dkey_id_aliasing.rs`).
+///
+/// So: this type owns the mapping in both directions and is the ONLY
+/// sanctioned way to cross between the two spaces —
+/// [`ReportedClasses::class_id`] and [`ReportedClasses::report_pos`].
+/// Re-deriving either with a raw `ClassId::new(i)` / `id.index() as usize`
+/// re-arms the bug silently; the
+/// `report_positions_are_never_cast_to_class_ids` test in this file rejects
+/// those spellings mechanically.
+struct ReportedClasses {
+    /// Report position → class IRI.
+    iris: Vec<String>,
+    /// Report position → internal class id.
+    ids: Vec<owl_dl_core::ClassId>,
+    /// Internal class-id index → report position; `None` for a `DKey`.
+    /// Length is `vocabulary.num_classes()`, so ids at or beyond that
+    /// (Tseitin / existential-marker synthetics) are out of range entirely.
+    pos_of_id: Vec<Option<u32>>,
 }
+
+impl ReportedClasses {
+    /// Walk the whole class-id space once, recording the reportable classes
+    /// and both directions of the mapping.
+    fn collect(internal: &InternalOntology) -> Self {
+        let num_class_ids = internal.vocabulary.num_classes();
+        let mut iris = Vec::with_capacity(num_class_ids);
+        let mut ids = Vec::with_capacity(num_class_ids);
+        let mut pos_of_id = Vec::with_capacity(num_class_ids);
+        for i in 0..num_class_ids {
+            let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class count fits in u32"));
+            let iri = internal.vocabulary.class_iri(id);
+            if iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX) {
+                pos_of_id.push(None);
+                continue;
+            }
+            pos_of_id.push(Some(
+                u32::try_from(iris.len()).expect("class count fits in u32"),
+            ));
+            iris.push(iri.to_owned());
+            ids.push(id);
+        }
+        Self {
+            iris,
+            ids,
+            pos_of_id,
+        }
+    }
+
+    /// Number of reported classes — the `n` every report-space vector,
+    /// bitset row, and index map is sized by.
+    fn len(&self) -> usize {
+        self.iris.len()
+    }
+
+    /// The reported class IRIs, in report order.
+    fn iris(&self) -> &[String] {
+        &self.iris
+    }
+
+    /// Size of the internal class-id space (reported classes + `DKey`s).
+    /// Ids at or beyond this are Tseitin / existential-marker synthetics.
+    fn num_class_ids(&self) -> usize {
+        self.pos_of_id.len()
+    }
+
+    /// Report position → internal class id.
+    ///
+    /// # Panics
+    /// If `report_pos` is not a valid report position.
+    fn class_id(&self, report_pos: usize) -> owl_dl_core::ClassId {
+        self.ids[report_pos]
+    }
+
+    /// Internal class id → report position. `None` for a `DKey` filler class
+    /// and for any synthetic id beyond the class vocabulary.
+    fn report_pos(&self, id: owl_dl_core::ClassId) -> Option<usize> {
+        self.pos_of_id
+            .get(id.index() as usize)
+            .copied()
+            .flatten()
+            .map(|p| p as usize)
+    }
+
+    /// `true` iff `id` lies past the end of the class vocabulary — a Tseitin
+    /// or existential-marker synthetic. Callers walking an ASCENDING id
+    /// sequence (e.g. `Subsumers::subsumers_of`) may stop at the first such
+    /// id. This is an id-space vs id-space comparison; it is NOT a substitute
+    /// for [`ReportedClasses::report_pos`], because a `DKey` id may sit
+    /// anywhere *inside* the vocabulary.
+    fn beyond_vocabulary(&self, id: owl_dl_core::ClassId) -> bool {
+        id.index() as usize >= self.num_class_ids()
+    }
+}
+
+// ─── END report-position ↔ ClassId conversion boundary ───────────────────
 
 /// Row-major subsumption matrix backing [`Classification::entails`].
 ///
@@ -276,11 +380,17 @@ pub struct ClassificationStats {
     /// entailment matrix — sound (never reports a false positive),
     /// but may under-report subsumption.
     pub timed_out_pairs: usize,
-    /// The `(sub, sup)` class-index pairs whose subsumption probe timed out
-    /// (defaulted to "not subsumed"). Parallel to `timed_out_pairs` (the
-    /// count); this is the *set*, used to verify the anytime calibration
-    /// claim (every miss is a flagged-undecided pair). Populated at the same
-    /// sites that bump `timed_out_pairs`.
+    /// The `(sub, sup)` pairs whose subsumption probe timed out (defaulted to
+    /// "not subsumed"). Parallel to `timed_out_pairs` (the count); this is the
+    /// *set*, used to verify the anytime calibration claim (every miss is a
+    /// flagged-undecided pair). Populated at the same sites that bump
+    /// `timed_out_pairs`.
+    ///
+    /// Indices are **report positions** — positions in
+    /// [`Classification::classes`], which is what
+    /// [`Classification::undecided_pairs`] indexes with them. They are NOT
+    /// `owl_dl_core::ClassId` indices: the two spaces differ whenever a
+    /// synthetic `DKey` id sits below a user class (see `ReportedClasses`).
     pub timed_out_pair_ids: Vec<(u32, u32)>,
     /// Subsumptions recovered by the defined-SUB sweep: a union-defined
     /// `C ≡ D₁ ⊔ … ⊔ Dₙ` ⊑ a primitive sup `X` where every `Dᵢ ⊑ X` holds
@@ -714,14 +824,15 @@ pub fn classify_saturation_only<A: ForIRI>(
 pub(crate) fn classify_saturation_only_internal(
     internal: &InternalOntology,
 ) -> Result<Classification, ReasonError> {
-    let classes: Vec<String> = reportable_class_iris(internal);
-    let index: HashMap<String, usize> = classes
+    let reported = ReportedClasses::collect(internal);
+    let index: HashMap<String, usize> = reported
+        .iris()
         .iter()
         .enumerate()
         .map(|(i, iri)| (iri.clone(), i))
         .collect();
     let closure = saturate(internal);
-    Ok(classify_pure_el(internal, &classes, &index, &closure))
+    Ok(classify_pure_el(internal, &reported, &index, &closure))
 }
 
 /// Internal entry point. Useful for tests that hand-build an
@@ -741,8 +852,11 @@ pub(crate) fn classify_internal_with_timeout(
 ) -> Result<Classification, ReasonError> {
     // Snapshot the class IRIs before we clone the ontology into each
     // subsumption call. Order is the vocabulary's interning order.
-    let classes: Vec<String> = reportable_class_iris(internal);
-    let n = classes.len();
+    // `reported` also carries the report-position ↔ `ClassId` bijection —
+    // the two are NOT interchangeable (see `ReportedClasses`).
+    let reported = ReportedClasses::collect(internal);
+    let classes: Vec<String> = reported.iris().to_vec();
+    let n = reported.len();
     let index: HashMap<String, usize> = classes
         .iter()
         .enumerate()
@@ -796,7 +910,7 @@ pub(crate) fn classify_internal_with_timeout(
                 ));
             }
         }
-        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+        return Ok(classify_pure_el(internal, &reported, &index, &closure));
     }
 
     // Prepare the tableau-side pipeline once. Every subsequent
@@ -819,8 +933,7 @@ pub(crate) fn classify_internal_with_timeout(
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
-            let class_id =
-                owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+            let class_id = reported.class_id(i);
             if closure.is_unsatisfiable(class_id) {
                 Ok((i, false, true))
             } else if let Some(timeout) = per_pair_timeout {
@@ -879,10 +992,8 @@ pub(crate) fn classify_internal_with_timeout(
     let pair_results: Result<Vec<PairResult>, ReasonError> = work
         .par_iter()
         .map(|&(i, j)| {
-            let sub_class =
-                owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
-            let super_class =
-                owl_dl_core::ClassId::new(u32::try_from(j).expect("class index fits in u32"));
+            let sub_class = reported.class_id(i);
+            let super_class = reported.class_id(j);
             if closure.contains(sub_class, super_class) {
                 // (i, j, entailed, used_saturation, timed_out)
                 return Ok((i, j, true, true, false));
@@ -949,11 +1060,11 @@ pub(crate) fn classify_internal_with_timeout(
 /// lookups, with no tableau calls. Sets `stats.pure_el_mode = true`.
 fn classify_pure_el(
     internal: &InternalOntology,
-    classes: &[String],
+    reported: &ReportedClasses,
     index: &HashMap<String, usize>,
     closure: &owl_dl_saturation::Subsumers,
 ) -> Classification {
-    let n = classes.len();
+    let n = reported.len();
     let mut stats = ClassificationStats {
         pure_el_mode: true,
         fragment: analyze_fragment(internal),
@@ -983,19 +1094,23 @@ fn classify_pure_el(
     //   matching the original counter semantics.
     let mut entailed = EntailmentMatrix::new(n);
     for i in 0..n {
-        let class_id =
-            owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        let class_id = reported.class_id(i);
         if unsatisfiable_idxs.contains(&i) {
             continue; // row elided
         }
         entailed.insert(i, i); // reflexive
-        // `subsumers_of` is ascending by id (as `FixedBitSet::ones()` was), so
-        // the `>= n` break still terminates at the first synthetic id.
+        // `subsumers_of` is ascending by id, so once we pass the end of the
+        // class vocabulary every remaining id is a Tseitin / existential-marker
+        // synthetic and we can stop. Within the vocabulary a DKey id may sit
+        // ANYWHERE (including below user classes), so DKeys are skipped
+        // individually via `report_pos` — never by an id-vs-`n` comparison.
         for j_id in closure.subsumers_of(class_id) {
-            let j = j_id.index() as usize;
-            if j >= n {
-                break; // synthetic Tseitin/DKey id — outside user vocabulary
+            if reported.beyond_vocabulary(j_id) {
+                break; // synthetic Tseitin id — outside the class vocabulary
             }
+            let Some(j) = reported.report_pos(j_id) else {
+                continue; // DKey filler class — never reported
+            };
             if j == i || unsatisfiable_idxs.contains(&j) {
                 continue; // reflexive already set; unsat-j skipped per original
             }
@@ -1005,7 +1120,7 @@ fn classify_pure_el(
     }
     let _ = internal; // closure was built from this; nothing more to read
     Classification {
-        classes: classes.to_vec(),
+        classes: reported.iris().to_vec(),
         index: index.clone(),
         entailed,
         unsatisfiable_idxs,
@@ -1463,8 +1578,11 @@ pub(crate) fn classify_top_down_internal(
     // Phase 2a recon: top-level classify wall, used to derive
     // tier_walk_wall_ms = total - (label_cache + snapshot_build + replay).
     let classify_start = std::time::Instant::now();
-    let classes: Vec<String> = reportable_class_iris(internal);
-    let n = classes.len();
+    // `reported` carries the report-position ↔ `ClassId` bijection — the two
+    // are NOT interchangeable (see `ReportedClasses`).
+    let reported = ReportedClasses::collect(internal);
+    let classes: Vec<String> = reported.iris().to_vec();
+    let n = reported.len();
     let index: HashMap<String, usize> = classes
         .iter()
         .enumerate()
@@ -1540,7 +1658,7 @@ pub(crate) fn classify_top_down_internal(
                 ));
             }
         }
-        return Ok(classify_pure_el(internal, &classes, &index, &closure));
+        return Ok(classify_pure_el(internal, &reported, &index, &closure));
     }
 
     let prepared = PreparedOntology::from_internal(internal.clone())?;
@@ -1609,8 +1727,7 @@ pub(crate) fn classify_top_down_internal(
                 if global_deadline.is_some_and(|gd| Instant::now() >= gd) {
                     return crate::LabelOracle::NoVerdict;
                 }
-                let class_id =
-                    owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+                let class_id = reported.class_id(i);
                 // Effective deadline: earlier of the global deadline and the
                 // per-class cache budget. When global_deadline is None, this
                 // reproduces the pre-fix behaviour exactly.
@@ -1627,8 +1744,7 @@ pub(crate) fn classify_top_down_internal(
     let unsat_probe_results: Result<Vec<(usize, bool, bool)>, ReasonError> = (0..n)
         .into_par_iter()
         .map(|i| {
-            let class_id =
-                owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+            let class_id = reported.class_id(i);
             if closure.is_unsatisfiable(class_id) {
                 return Ok((i, false, true));
             }
@@ -1712,7 +1828,7 @@ pub(crate) fn classify_top_down_internal(
     // key fn O(n log n) times; pre-computing avoids repeated allocations.
     let subsumer_counts: Vec<usize> = (0..n)
         .map(|i| {
-            let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+            let id = reported.class_id(i);
             closure.subsumers_count(id)
         })
         .collect();
@@ -1765,9 +1881,7 @@ pub(crate) fn classify_top_down_internal(
             std::collections::HashSet::new()
         } else {
             (0..n)
-                .map(|i| {
-                    owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"))
-                })
+                .map(|i| reported.class_id(i))
                 .filter(|&c| {
                     prepared.data_counting_classes.contains(&c)
                         || closure
@@ -1792,6 +1906,7 @@ pub(crate) fn classify_top_down_internal(
                 let mut local_stats = ClassificationStats::default();
                 let parents = find_direct_parents_top_down(
                     c,
+                    &reported,
                     &closure,
                     &prepared,
                     &direct_supers,
@@ -1878,8 +1993,11 @@ pub(crate) fn classify_top_down_internal(
                     for c in ids {
                         if let owl_dl_core::ir::ConceptExpr::Atomic(cls) = internal.concepts.get(*c)
                         {
-                            let i = cls.index() as usize;
-                            if i < n && !unsatisfiable_idxs.contains(&i) {
+                            // `report_pos` is `None` for a DKey filler — a DKey
+                            // is never a reportable sup, so skipping is correct.
+                            if let Some(i) = reported.report_pos(*cls)
+                                && !unsatisfiable_idxs.contains(&i)
+                            {
                                 set.insert(i);
                             }
                         }
@@ -1903,8 +2021,9 @@ pub(crate) fn classify_top_down_internal(
         for oracle in &label_cache {
             if let crate::LabelOracle::Sat { labels, .. } = oracle {
                 for &sup_id in labels {
-                    let i = sup_id.index() as usize;
-                    if i < n && !unsatisfiable_idxs.contains(&i) {
+                    if let Some(i) = reported.report_pos(sup_id)
+                        && !unsatisfiable_idxs.contains(&i)
+                    {
                         set.insert(i);
                     }
                 }
@@ -1953,8 +2072,7 @@ pub(crate) fn classify_top_down_internal(
             break;
         }
         let sup_verify = defined_verify_mode && defined_set.contains(&sup);
-        let sup_id =
-            owl_dl_core::ClassId::new(u32::try_from(sup).expect("class index fits in u32"));
+        let sup_id = reported.class_id(sup);
         // Parallel test of candidate subs. Skip pairs already known via
         // closure or the existing direct-supers transitive closure.
         let already_known: std::collections::HashSet<usize> = {
@@ -1972,18 +2090,14 @@ pub(crate) fn classify_top_down_internal(
             .filter(|&cand| cand != sup && !unsatisfiable_idxs.contains(&cand))
             .filter(|&cand| !already_known.contains(&cand))
             .filter(|&cand| {
-                let cand_id = owl_dl_core::ClassId::new(
-                    u32::try_from(cand).expect("class index fits in u32"),
-                );
+                let cand_id = reported.class_id(cand);
                 !closure.contains(cand_id, sup_id)
             })
             .collect();
         let probe_results: Vec<(usize, bool, ClassificationStats)> = candidates
             .par_iter()
             .map(|&cand| {
-                let cand_id = owl_dl_core::ClassId::new(
-                    u32::try_from(cand).expect("class index fits in u32"),
-                );
+                let cand_id = reported.class_id(cand);
                 let mut local_stats = ClassificationStats::default();
                 // Phase 7 label-heuristic gate — same logic as the tier
                 // walk's `find_direct_parents_top_down` inner loop.
@@ -2009,6 +2123,7 @@ pub(crate) fn classify_top_down_internal(
                     local_stats.label_cache_misses += 1;
                     subsumes_via_tableau(
                         &prepared,
+                        &reported,
                         cand_id,
                         sup_id,
                         Some(sweep_budget),
@@ -2029,6 +2144,7 @@ pub(crate) fn classify_top_down_internal(
                                 local_stats.label_cache_pass_through += 1;
                                 subsumes_via_tableau(
                                     &prepared,
+                                    &reported,
                                     cand_id,
                                     sup_id,
                                     Some(sweep_budget),
@@ -2055,6 +2171,7 @@ pub(crate) fn classify_top_down_internal(
                             local_stats.label_cache_misses += 1;
                             subsumes_via_tableau(
                                 &prepared,
+                                &reported,
                                 cand_id,
                                 sup_id,
                                 Some(sweep_budget),
@@ -2134,12 +2251,15 @@ pub(crate) fn classify_top_down_internal(
         let mut disjuncts: Option<Vec<usize>> = None;
         for cid in ids {
             match internal.concepts.get(*cid) {
-                owl_dl_core::ir::ConceptExpr::Atomic(cls) => name = Some(cls.index() as usize),
+                // `report_pos` is `None` for a DKey filler; a `None` here (or in
+                // any disjunct below) drops the axiom from the sweep, which only
+                // ever omits a recovery — sound.
+                owl_dl_core::ir::ConceptExpr::Atomic(cls) => name = reported.report_pos(*cls),
                 owl_dl_core::ir::ConceptExpr::Or(ds) => {
                     let atoms: Option<Vec<usize>> = ds
                         .iter()
                         .map(|d| match internal.concepts.get(*d) {
-                            owl_dl_core::ir::ConceptExpr::Atomic(dc) => Some(dc.index() as usize),
+                            owl_dl_core::ir::ConceptExpr::Atomic(dc) => reported.report_pos(*dc),
                             _ => None,
                         })
                         .collect();
@@ -2153,32 +2273,29 @@ pub(crate) fn classify_top_down_internal(
         let (Some(c), Some(ds)) = (name, disjuncts) else {
             continue;
         };
-        if c >= n || ds.is_empty() || unsatisfiable_idxs.contains(&c) {
+        if ds.is_empty() || unsatisfiable_idxs.contains(&c) {
             continue;
         }
         // Candidate sups = intersection of the disjuncts' closure-subsumers.
         let mut cand: Option<std::collections::HashSet<usize>> = None;
         for &d in &ds {
-            let d_id =
-                owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
+            let d_id = reported.class_id(d);
             let subs: std::collections::HashSet<usize> = closure
                 .subsumers_of(d_id)
                 .into_iter()
-                .map(|s| s.index() as usize)
-                .filter(|&j| j < n)
+                .filter_map(|s| reported.report_pos(s))
                 .collect();
             cand = Some(match cand {
                 None => subs,
                 Some(prev) => prev.intersection(&subs).copied().collect(),
             });
         }
-        let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+        let c_id = reported.class_id(c);
         for x in cand.unwrap_or_default() {
             if x == c || unsatisfiable_idxs.contains(&x) {
                 continue;
             }
-            let x_id =
-                owl_dl_core::ClassId::new(u32::try_from(x).expect("class index fits in u32"));
+            let x_id = reported.class_id(x);
             // Skip subsumptions already on `C`'s closure ray (the entailment
             // matrix seeds those) or already recorded.
             if closure.contains(c_id, x_id) || direct_supers[c].contains(&x) {
@@ -2204,7 +2321,7 @@ pub(crate) fn classify_top_down_internal(
     inject_backfold_derived_sups(
         &label_cache,
         &closure,
-        n,
+        &reported,
         &mut direct_supers,
         &mut direct_children,
         &mut stats,
@@ -2234,10 +2351,9 @@ pub(crate) fn classify_top_down_internal(
         }
         entailed.insert(i, i);
         // Closure seed.
-        let i_id = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        let i_id = reported.class_id(i);
         for j_id in closure.subsumers_of(i_id) {
-            let j = j_id.index() as usize;
-            if j < n {
+            if let Some(j) = reported.report_pos(j_id) {
                 entailed.insert(i, j);
             }
         }
@@ -2309,7 +2425,7 @@ pub(crate) fn classify_top_down_internal(
 fn inject_backfold_derived_sups(
     label_cache: &[crate::LabelOracle],
     closure: &owl_dl_saturation::Subsumers,
-    n: usize,
+    reported: &ReportedClasses,
     direct_supers: &mut [Vec<usize>],
     direct_children: &mut [Vec<usize>],
     stats: &mut ClassificationStats,
@@ -2317,10 +2433,12 @@ fn inject_backfold_derived_sups(
     if !crate::classify_backfold_enabled() {
         return;
     }
+    let n = direct_supers.len();
     for (c, oracle) in label_cache.iter().enumerate() {
-        // Defensive: `direct_supers`/`direct_children` are indexed by class id in
-        // `0..n`; the loop should never see `c >= n` (label_cache.len() == n), but
-        // guard so a broken invariant is a skip, never an index panic.
+        // Defensive: `direct_supers`/`direct_children` are report-position
+        // indexed over `0..n`; the loop should never see `c >= n`
+        // (label_cache.len() == n), but guard so a broken invariant is a skip,
+        // never an index panic.
         if c >= n {
             continue;
         }
@@ -2330,10 +2448,14 @@ fn inject_backfold_derived_sups(
         if derived_sups.is_empty() {
             continue;
         }
-        let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+        let c_id = reported.class_id(c);
         for &d_id in derived_sups {
-            let d = d_id.index() as usize;
-            if d >= n || d == c {
+            // `derived_sups` are `ClassId`s: a DKey (or synthetic) has no report
+            // position and is never an injectable sup.
+            let Some(d) = reported.report_pos(d_id) else {
+                continue;
+            };
+            if d == c {
                 continue;
             }
             if closure.contains(c_id, d_id) || direct_supers[c].contains(&d) {
@@ -2359,6 +2481,7 @@ fn inject_backfold_derived_sups(
 #[allow(clippy::too_many_arguments)]
 fn find_direct_parents_top_down(
     c: usize,
+    reported: &ReportedClasses,
     closure: &owl_dl_saturation::Subsumers,
     prepared: &PreparedOntology,
     direct_supers: &[Vec<usize>],
@@ -2370,7 +2493,7 @@ fn find_direct_parents_top_down(
     counting_relevant: &std::collections::HashSet<owl_dl_core::ClassId>,
     stats: &mut ClassificationStats,
 ) -> Result<Vec<usize>, ReasonError> {
-    let c_id = owl_dl_core::ClassId::new(u32::try_from(c).expect("class index fits in u32"));
+    let c_id = reported.class_id(c);
     let n = direct_supers.len();
     // Global-deadline fast-exit BEFORE cloning `top_level`: under a tight budget
     // most classes stay unplaced/top-level, so `top_level` can be ~n; cloning it
@@ -2416,7 +2539,7 @@ fn find_direct_parents_top_down(
             ));
             break;
         }
-        let d_id = owl_dl_core::ClassId::new(u32::try_from(d).expect("class index fits in u32"));
+        let d_id = reported.class_id(d);
         let subsumed = if closure.contains(c_id, d_id) {
             stats.saturation_subsumption_hits += 1;
             true
@@ -2431,6 +2554,7 @@ fn find_direct_parents_top_down(
                         stats.label_cache_pass_through += 1;
                         subsumes_via_tableau(
                             prepared,
+                            reported,
                             c_id,
                             d_id,
                             per_pair_timeout,
@@ -2456,6 +2580,7 @@ fn find_direct_parents_top_down(
                     stats.label_cache_misses += 1;
                     subsumes_via_tableau(
                         prepared,
+                        reported,
                         c_id,
                         d_id,
                         per_pair_timeout,
@@ -2488,14 +2613,8 @@ fn find_direct_parents_top_down(
         .filter(|&d| {
             !accepted.iter().any(|&e| {
                 e != d
-                    && (closure.contains(
-                        owl_dl_core::ClassId::new(
-                            u32::try_from(e).expect("class index fits in u32"),
-                        ),
-                        owl_dl_core::ClassId::new(
-                            u32::try_from(d).expect("class index fits in u32"),
-                        ),
-                    ) || direct_supers[e].contains(&d))
+                    && (closure.contains(reported.class_id(e), reported.class_id(d))
+                        || direct_supers[e].contains(&d))
             })
         })
         .collect();
@@ -2526,6 +2645,41 @@ fn record_fallthrough_outcome(
     }
 }
 
+/// Records an undecided (timed-out) pair in **report-position** space.
+///
+/// `subsumes_via_tableau` works in `ClassId` space, but
+/// [`ClassificationStats::timed_out_pair_ids`] is read back by
+/// [`Classification::undecided_pairs`] as indices into
+/// `Classification::classes`. Pushing raw `ClassId` indices there mislabels
+/// (or panics on) the reported pair as soon as a `DKey` id sits below a user
+/// class.
+///
+/// # Panics
+///
+/// Both ids always originate from `ReportedClasses::class_id`, which only ever
+/// yields reportable classes, so `report_pos` is `Some` by construction.
+/// Panicking rather than skipping keeps the anytime invariant
+/// `undecided_pairs().len() == timed_out_pairs` (asserted by
+/// `undecided_pairs_reports_timed_out_subsumptions`) exact — a silent skip
+/// here would break it.
+fn push_undecided_pair(
+    stats: &mut ClassificationStats,
+    reported: &ReportedClasses,
+    sub: owl_dl_core::ClassId,
+    sup: owl_dl_core::ClassId,
+) {
+    let i = reported
+        .report_pos(sub)
+        .expect("undecided sub is a reportable class");
+    let j = reported
+        .report_pos(sup)
+        .expect("undecided sup is a reportable class");
+    stats.timed_out_pair_ids.push((
+        u32::try_from(i).expect("class index fits in u32"),
+        u32::try_from(j).expect("class index fits in u32"),
+    ));
+}
+
 /// Helper: ask the tableau whether `sub ⊑ sup`. Counts the call in
 /// `stats`, honours `per_pair_timeout`, returns:
 /// - `Ok(Some(true))` — subsumption holds
@@ -2534,6 +2688,7 @@ fn record_fallthrough_outcome(
 #[allow(clippy::too_many_arguments)]
 fn subsumes_via_tableau(
     prepared: &PreparedOntology,
+    reported: &ReportedClasses,
     sub: owl_dl_core::ClassId,
     sup: owl_dl_core::ClassId,
     per_pair_timeout: Option<std::time::Duration>,
@@ -2670,7 +2825,7 @@ fn subsumes_via_tableau(
             // timed-out pair so the INCOMPLETE banner stays honest.
             stats.diverged_tail_skips += 1;
             stats.timed_out_pairs += 1;
-            stats.timed_out_pair_ids.push((sub.index(), sup.index()));
+            push_undecided_pair(stats, reported, sub, sup);
             return Ok(None);
         }
         _ => {}
@@ -2739,7 +2894,7 @@ fn subsumes_via_tableau(
                 }
                 Ok(None) | Err(crate::ReasonError::NoVerdict) => {
                     stats.timed_out_pairs += 1;
-                    stats.timed_out_pair_ids.push((sub.index(), sup.index()));
+                    push_undecided_pair(stats, reported, sub, sup);
                     record_fallthrough_outcome(stats, stall_fallthrough, stall_diverged, None);
                     Ok(None)
                 }
@@ -2981,6 +3136,9 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
         let closure = owl_dl_saturation::saturate(&internal);
+        // Declarations only, no DKeys: report position == class id here, which
+        // is exactly why these unit tests can index by `id.index()`.
+        let reported = ReportedClasses::collect(&internal);
         let iri = |s: &str| format!("http://rustdl.test/{s}");
         let a = internal.vocabulary.class_id(&iri("A")).expect("A id");
         let c = internal.vocabulary.class_id(&iri("C")).expect("C id");
@@ -3003,7 +3161,7 @@ Ontology(<http://rustdl.test/test>\n\
         inject_backfold_derived_sups(
             &label_cache,
             &closure,
-            n,
+            &reported,
             &mut direct_supers,
             &mut direct_children,
             &mut stats,
@@ -3017,7 +3175,7 @@ Ontology(<http://rustdl.test/test>\n\
         inject_backfold_derived_sups(
             &label_cache,
             &closure,
-            n,
+            &reported,
             &mut direct_supers,
             &mut direct_children,
             &mut stats,
@@ -3047,6 +3205,9 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
         let closure = owl_dl_saturation::saturate(&internal);
+        // Declarations only, no DKeys: report position == class id here, which
+        // is exactly why these unit tests can index by `id.index()`.
+        let reported = ReportedClasses::collect(&internal);
         let iri = |s: &str| format!("http://rustdl.test/{s}");
         let a = internal.vocabulary.class_id(&iri("A")).expect("A id");
         let c = internal.vocabulary.class_id(&iri("C")).expect("C id");
@@ -3068,7 +3229,7 @@ Ontology(<http://rustdl.test/test>\n\
         inject_backfold_derived_sups(
             &label_cache,
             &closure,
-            n,
+            &reported,
             &mut direct_supers,
             &mut direct_children,
             &mut stats,
@@ -3094,6 +3255,9 @@ Ontology(<http://rustdl.test/test>\n\
         ));
         let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
         let closure = owl_dl_saturation::saturate(&internal);
+        // Declarations only, no DKeys: report position == class id here, which
+        // is exactly why these unit tests can index by `id.index()`.
+        let reported = ReportedClasses::collect(&internal);
         let iri = |s: &str| format!("http://rustdl.test/{s}");
         let a = internal.vocabulary.class_id(&iri("A")).expect("A id");
         let c = internal.vocabulary.class_id(&iri("C")).expect("C id");
@@ -3117,7 +3281,7 @@ Ontology(<http://rustdl.test/test>\n\
         inject_backfold_derived_sups(
             &label_cache,
             &closure,
-            n,
+            &reported,
             &mut direct_supers,
             &mut direct_children,
             &mut stats,

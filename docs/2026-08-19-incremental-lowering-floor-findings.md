@@ -1,5 +1,16 @@
 # Incremental reasoning: the per-revision lowering floor — spike findings
 
+
+> **Provenance caveat (added 2026-08-20).** rustdl is developed on two machines. Every number in
+> this document was measured on **Apple M5 Max / 128 GB** against `ontologies/external/galen.ofn`
+> at **sha256 `4b3f900883a9b59c…`** (1,241,952 bytes; 2,748 classes; 207 `InverseObjectProperties`).
+> That file declares **no ontology IRI and no versionIRI**, and it is **not** fetched by
+> `scripts/fetch-real-ontologies.sh` — so it cannot be identified across machines by anything but
+> its hash. Do not compare these figures to measurements from another host or another galen copy
+> without first confirming the hash matches. See
+> `docs/known-limitations/galen-off-the-fast-path.md`.
+
+
 **Date:** 2026-08-19
 **Spike question:** the Fable design review's objection B1 requires an incremental session
 to re-run the whole-ontology derived-axiom passes (`derive_data_axioms`,

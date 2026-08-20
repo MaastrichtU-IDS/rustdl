@@ -1,5 +1,16 @@
 # P1 exit criterion: measured per-revision latency of `IncrementalSession`
 
+
+> **Provenance caveat (added 2026-08-20).** rustdl is developed on two machines. Every number in
+> this document was measured on **Apple M5 Max / 128 GB** against `ontologies/external/galen.ofn`
+> at **sha256 `4b3f900883a9b59c…`** (1,241,952 bytes; 2,748 classes; 207 `InverseObjectProperties`).
+> That file declares **no ontology IRI and no versionIRI**, and it is **not** fetched by
+> `scripts/fetch-real-ontologies.sh` — so it cannot be identified across machines by anything but
+> its hash. Do not compare these figures to measurements from another host or another galen copy
+> without first confirming the hash matches. See
+> `docs/known-limitations/galen-off-the-fast-path.md`.
+
+
 **Date:** 2026-08-20
 **Task:** 9 of `docs/superpowers/plans/2026-08-19-incremental-reasoning-p1.md`
 **Criterion under test:** on galen, a single-axiom addition must complete in **≤ 2× the measured

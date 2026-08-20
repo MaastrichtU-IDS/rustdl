@@ -1,4 +1,9 @@
-# PERFORMANCE REGRESSION: galen no longer classifies on the saturation fast path, and three docs say it does
+# galen is off the saturation fast path on this machine, and the in-repo claims about it are unreliable
+
+> **Title corrected 2026-08-20.** This was filed as "PERFORMANCE REGRESSION". That framing is not
+> supportable: the baseline it regresses against has no recorded host and the local galen has no
+> ontology IRI, no versionIRI, and no entry in the corpus fetch script. See the provenance warning
+> below. What is solid is the fragment analysis and the documentation defects, not a slowdown.
 
 **Date:** 2026-08-20
 **Severity:** galen costs **874 ms** on the hybrid path, against **77 ms** for the
@@ -13,6 +18,63 @@ documentation is the thing to correct is the owner's call (see "Two readings" be
 **Found by:** Task 9 of `docs/superpowers/plans/2026-08-19-incremental-reasoning-p1.md` (the P1
 exit-criterion measurement), sharpened by its reviewer. See
 [`../2026-08-19-incremental-p1-latency.md`](../2026-08-19-incremental-p1-latency.md).
+
+## PROVENANCE WARNING — added by the controller after review
+
+**This finding compares numbers that may not be comparable, and the local galen has no provenance.**
+
+rustdl is developed on **two different machines**, and the ~0.5 s figure in `classify.rs:1276` was
+not recorded with a host or a file identity. Everything below therefore has to be read as
+machine-and-file-specific until that is fixed.
+
+What the local galen actually is:
+
+| property | value |
+|---|---|
+| path | `ontologies/external/galen.ofn` (gitignored, **not** vendored) |
+| sha256 (first 16) | `4b3f900883a9b59c` |
+| size | 1,241,952 bytes / 17,329 lines |
+| **Ontology IRI** | **NONE — the file declares a bare `Ontology(` with no IRI** |
+| versionIRI | none |
+| in `scripts/fetch-real-ontologies.sh`? | **NO** — unlike sio, sulo, family, pizza, ro, go-basic |
+| classes | 2,748 |
+| `InverseObjectProperties` | 207 |
+| `FunctionalObjectProperty` | 150 |
+
+Measurement host: Apple M5 Max, 128 GB.
+
+**Consequences, in order of importance:**
+
+1. **The local galen is unidentifiable.** No ontology IRI, no version IRI, not fetched by the
+   corpus script, in a gitignored directory. The only handle on it is a sha256 of a file that
+   exists on one machine. There is no way to confirm the other machine has the same bytes.
+2. **The regression claim is not supportable across machines.** A ~0.5 s figure on an unrecorded
+   host cannot be compared to 874 ms on an M5 Max. Different silicon alone can account for a
+   large part of that, and this document should not be read as evidence of a slowdown.
+3. **The most likely explanation is not a regression at all.** The fragment argument here rests on
+   *this* file having 207 `InverseObjectProperties`, which `is_saturator_axiom` rejects. If the
+   other machine's galen is a different serialisation or a different GALEN release **without**
+   those axioms, it would genuinely be in the saturator fragment and genuinely classify on the
+   fast path — and both observations would be correct about different files. That hypothesis fits
+   every fact here and requires no regression.
+
+**What survives regardless of provenance**, because it is a property of the code and not of a
+timing comparison:
+
+- `is_saturator_axiom` (`classify.rs:1346-1428`) has no `InverseObjectProperties` arm; the comment
+  at `:1423-1427` names it as excluded.
+- The file at sha256 `4b3f9008…` has 207 of them, so **that file** cannot take the fast path.
+- `classify.rs:1252` cites a test `galen_notgalen_in_saturator_fragment` that **does not exist
+  anywhere in `crates/`** (grepped). That is a documentation defect independent of any timing.
+- `CLAUDE.md` lists inverse-role use as a fallback trigger eight lines above its own
+  galen-keeps-the-fast-path claim, so the document contradicts itself.
+
+**Required before this finding can be escalated further:**
+
+1. Add galen to `scripts/fetch-real-ontologies.sh` with a source URL, as every other corpus
+   ontology already has — or record where the local copy came from.
+2. Re-measure on both machines against a file with a recorded sha256.
+3. Only then decide whether there is a regression, a two-different-files situation, or nothing.
 
 ## What the repo claims
 

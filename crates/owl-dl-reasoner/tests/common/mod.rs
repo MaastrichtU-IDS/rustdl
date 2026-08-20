@@ -21,8 +21,8 @@ use owl_dl_reasoner::Classification;
 const FIXTURE_ROOTS: &[&str] = &[
     "tests/fixtures",
     "tests/fixtures/incremental",
+    "tests/fixtures/phase2b",
     "../../bench-corpus",
-    "../owl-dl-saturation/tests/fixtures",
 ];
 
 // ---------------------------------------------------------------------------
@@ -122,9 +122,15 @@ pub(crate) fn load_ofn(name: &str) -> SetOntology<RcStr> {
 /// suite is derived from this ordering, not from the raw iteration order, or
 /// "seed 42" would name a different script on every invocation and a failure
 /// would not be reproducible.
+///
+/// The order is `AnnotatedComponent`'s derived `Ord` — the same total order
+/// `convert_ontology` sorts by (`convert.rs:2121`), and a real stability
+/// contract. (An earlier version keyed on `format!("{ac:?}")`; `Debug` output
+/// is not a contract, so a horned-owl `Debug` tweak could have silently
+/// reshuffled every script in this suite.)
 pub(crate) fn canonical_components(o: &SetOntology<RcStr>) -> Vec<AnnotatedComponent<RcStr>> {
     let mut v: Vec<AnnotatedComponent<RcStr>> = o.into_iter().cloned().collect();
-    v.sort_by_cached_key(|ac| format!("{ac:?}"));
+    v.sort();
     v
 }
 

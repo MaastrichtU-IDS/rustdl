@@ -104,6 +104,24 @@ pub struct SessionStats {
     /// Commits absorbed by [`SaturationState::apply_additions`] without a
     /// rebuild.
     pub additions_reused: u64,
+    /// Classifications ANSWERED from the retained saturation closure
+    /// ([`classify::classify_from_closure`]) rather than by re-running the
+    /// hybrid classifier over the whole ontology.
+    ///
+    /// This is the only externally visible difference between "the session
+    /// reused its engine" and "the session silently re-derived everything and
+    /// happened to get the same answer". The two produce a bit-identical
+    /// [`Classification`] — same `stats().fragment`, same `pure_el_mode`, same
+    /// counters — because `classify_top_down_internal`'s own pure-EL early
+    /// return calls the SAME `classify_pure_el`, with a freshly saturated
+    /// closure that Task 6 guarantees equals the retained one. So no identity
+    /// gate can tell them apart from the `Classification` alone; this counter
+    /// is what lets `tests/incremental_identity_gate.rs` assert that the reuse
+    /// path was actually taken.
+    ///
+    /// Counts recomputations only: a `classify()` served from the session's
+    /// own cache does not bump it.
+    pub closure_answered: u64,
 }
 
 /// What a committed delta did to the *logical* content of the ontology. Drives
@@ -323,6 +341,32 @@ impl<A: ForIRI> IncrementalSession<A> {
         // the SAME commit. The passes are whole-ontology fixpoints, so an
         // overlay left over from the previous revision is stale by
         // construction.
+        //
+        // THE SESSION'S LOWERING IS NOT `convert_ontology(mirror)`, AND IS NOT
+        // REQUIRED TO BE. `refresh_derived` restores `internal.axioms` from
+        // the parked baseline before re-running the passes, so after an
+        // incremental add a CONSUMING pass's input survives alongside its
+        // output: `(A ⊔ B) ⊑ C` stays in `internal.axioms` next to the
+        // `A ⊑ C` / `B ⊑ C` that `split_disjunctive_antecedents` emitted,
+        // where a from-scratch lowering holds only the splits. That is
+        // deliberate and sound — the contract is that the session's ANSWERS
+        // are IRI-identical to `classify()`, never that its IR is. A GCI and
+        // the conjunction of its splits have exactly the same models, so
+        // retaining both adds and removes nothing. (Observable side effect:
+        // the retained union GCI can push the session OUT of the EL fragment
+        // on an input that classifies pure-EL from scratch — see
+        // `tests/fixtures/incremental/derived-overlay.ofn` and
+        // `Fixture::pure_el_in_session` in the identity gate. Different path,
+        // same answer.)
+        //
+        // THIS ARGUMENT IS SPECIFIC TO STRENGTH-PRESERVING REWRITES. If a
+        // future consuming pass performs a WEAKENING rewrite — emitting
+        // something strictly implied by, rather than equivalent to, its input
+        // — then keeping the strong original here would make the session
+        // entail more than `classify()` does, and the identity gate would go
+        // red with the session as the FALSE-POSITIVE side. A new consuming
+        // pass must therefore be checked for equivalence, not just for
+        // soundness.
         let diff = refresh_derived(&mut self.internal, &self.mirror);
 
         if !diff.killed.is_empty() {
@@ -366,8 +410,13 @@ impl<A: ForIRI> IncrementalSession<A> {
         self.saturation = SaturationState::build(&self.internal, self.saturation.slack());
     }
 
-    fn recompute_classification(&self) -> Result<Classification, ReasonError> {
+    fn recompute_classification(&mut self) -> Result<Classification, ReasonError> {
         let full = if classify::is_pure_el(&self.internal) {
+            // Bumped INSIDE the branch on purpose: reading `is_pure_el` again
+            // at the call site would keep counting even if this arm were
+            // deleted, which is precisely the mutation the counter exists to
+            // catch.
+            self.stats.closure_answered += 1;
             // The retained engine's closure IS the answer on this fragment —
             // that is what the session exists for. `is_pure_el` also excludes
             // every ABox axiom, so the ABox inconsistency pre-check that

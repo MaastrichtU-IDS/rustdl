@@ -2513,6 +2513,18 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 /// shape is whitelisted (`classify::is_derived_functional_max`). Both need a corpus
 /// sweep before this becomes a default.
 #[must_use]
+/// Skip a DKey disjointness component wholesale when every one of its pairs is provably
+/// droppable (`RUSTDL_DKEY_GROUP_SKIP`, **default OFF** pending measurement).
+///
+/// The drop condition is component-level, not per-pair, so the O(k²) walk can be replaced
+/// by an O(k) test. Measured waste it removes: `ore_ont_10929` 248,465,112 pair-visits at a
+/// 100% drop rate, `ore_ont_15635` 294,744,041 — the entire conversion cost of two DNF-tail
+/// members. See `docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`.
+#[must_use]
+pub fn dkey_group_skip_enabled() -> bool {
+    std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_some_and(|v| v == "1")
+}
+
 pub fn inverse_functional_max_enabled() -> bool {
     std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_some_and(|v| v == "1")
 }
@@ -3706,7 +3718,61 @@ fn seed_disjoint_bucket<R>(
         let b = concepts.atomic(*b_cid);
         axioms.push(Axiom::DisjointClasses(vec![a, b]));
     };
+    // COMPONENT-LEVEL SKIP (`RUSTDL_DKEY_GROUP_SKIP`, default OFF).
+    //
+    // `droppable` above is `!collapse_comps.contains(c) && value_only(a) && value_only(b)`.
+    // The first conjunct is a property of the COMPONENT, and `value_only` is a property of
+    // ONE key in that component — none of it is per-PAIR. So when a component has no
+    // collapse role and EVERY key in it is value-only there, every one of its C(k,2) pairs
+    // is droppable, and the whole group can be skipped in O(k) instead of enumerated in
+    // O(k²).
+    //
+    // Measured: this is the entire cost of two DNF-tail members. `ore_ont_10929` enumerates
+    // **248,465,112** pairs and drops **100%** of them; `ore_ont_15635` **294,744,041**, also
+    // 100%. That is ~543 M pair-visits at ~0.39 µs each — `ore_ont_10929` spends 96 s of a
+    // 97.6 s `tbox-stats` inside conversion, with **12 classes** to reason about.
+    // See `docs/benchmarks/2026-08-20-dkey-residual-class-unpark-case.md`.
+    //
+    // EQUIVALENT to the per-pair path when `split` is on: a skipped pair would have hit the
+    // `split && droppable` early-return anyway. It is gated on `split` for exactly that
+    // reason — with the split off nothing is droppable and the skip must not fire. Under
+    // `emit_order` (default ON) a pair spanning two components is still enumerated in the
+    // OTHER component, so skipping one cannot drop an axiom that was consumable elsewhere.
+    let group_skip = dkey_group_skip_enabled() && split;
     for (&c, group) in &groups {
+        if group_skip && !comp.collapse_comps.contains(&c) {
+            // PARTITION, rather than an all-or-nothing test. `droppable` needs BOTH keys of
+            // a pair value-only, so the droppable block is exactly value-only × value-only.
+            // Requiring the WHOLE group to be value-only was measured to never fire (95.5 s
+            // → 94.2 s on `ore_ont_10929`): a single broadcast key that forms no disjoint
+            // pair defeats it while the drop rate is still 100%. So skip the vo×vo block and
+            // still enumerate anything touching a broadcast key.
+            let (vo, rest): (Vec<usize>, Vec<usize>) = group.iter().partition(|&&idx| {
+                let (cid, _) = &keys[idx];
+                !comp.broadcast_in.get(cid).is_some_and(|v| v.contains(&c))
+            });
+            if !vo.is_empty() {
+                for (i, &a_idx) in rest.iter().enumerate() {
+                    for &b_idx in &rest[i + 1..] {
+                        try_emit(a_idx, b_idx, Some(c));
+                    }
+                    for &b_idx in &vo {
+                        try_emit(a_idx, b_idx, Some(c));
+                    }
+                }
+                // vo × vo is entirely droppable — skipped, O(|rest|·k) instead of O(k²).
+                continue;
+            }
+            if false {
+                // Every pair here is droppable; do not pay O(k²) to rediscover that.
+                //
+                // STATS CONSEQUENCE, deliberate: `RUSTDL_DKEY_SPLIT_STATS` counters
+                // UNDERCOUNT when this fires, because tallying the skipped pairs would
+                // require the very enumeration the skip exists to avoid. So compare
+                // `dkey_pairs_total` only between runs with the same setting of this flag.
+                continue;
+            }
+        }
         for (i, &a_idx) in group.iter().enumerate() {
             for &b_idx in &group[i + 1..] {
                 try_emit(a_idx, b_idx, Some(c));

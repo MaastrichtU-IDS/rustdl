@@ -1498,6 +1498,26 @@ members are conversion-bound**, aggregate **1,182 s → 14 s (82×)** — `8445`
 conversion at 300 s. `ore_ont_5548` carries the signature but converts in 0.7 s — a **false
 member**, so the set is 8 not 9.
 
+**SUB-CLASSES, and this CORRECTS the "8" above.** Pair profile (`RUSTDL_DKEY_SPLIT_STATS=1`):
+**2 members are 100% wasted enumeration** (`15635` 294,744,041 pairs, `10929` 248,465,112 — all
+dropped) and **4 genuinely materialise** axioms (`2504` 68.7 M / 98 dropped, `4141` 42.7 M / 6,
+`5368` 18.6 M / 0, `1833` 14.0 M / 0), with `8445`/`4572` not finishing enumeration at 300 s. Only
+the materialising ones are ORACLE cases, so **the oracle's set is ~4–6 — essentially the spec's
+original "~4", and its work-to-reward parking judgement STANDS.** My "8 in the tail" conflated two
+defects.
+**PARTIAL FIX BUILT — `RUSTDL_DKEY_GROUP_SKIP` (default OFF):** the droppable block is exactly
+value-only × value-only, skippable in O(k) instead of O(k²). `10929` 96.5→77.5 s (1.24×), `15635`
+92.2→67.4 s (1.37×), `5368` unaffected as predicted; verdict-preserving (`tbox-stats` identical
+6/6 **with timing stripped** — `convert_ms` is in that output, so raw hashes report a spurious
+DIFFER even on `9347` where the gate skips entirely; curated classify identical; suite 1685/0). A
+first attempt requiring the WHOLE group value-only **did not fire** (96.5→94.2 s) — one broadcast
+key forming no disjoint pair defeats it at a 100% drop rate.
+**IT IS NOT THE FIX: 77 s of 96 s remains** vs the 2.6 s `DATA_PROPERTIES=0` reaches. The skip
+touches only the DISJOINTNESS loop; the leading suspect for the residual is **`seed_bucket`, the
+SUBSUMPTION seeding**, which walks **k² ORDERED pairs** (~3.6 × 10⁹ at 60,323 distinct string keys,
+~26 ns each ≈ the residual). **That is arithmetic, not a measurement — probe the two seeding calls
+before touching the loop.**
+
 **This moves the parked decision.** `RUSTDL_DKEY_MERGING_GATE`'s spec parked Lever 2 (on-demand
 disjointness oracle) at "~4 ontologies … poor work-to-reward", revisiting "if one of the four is
 independently needed (`5368`)". The set is **8 in the tail (~6%)** and includes `5368`.

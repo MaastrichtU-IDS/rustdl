@@ -97,3 +97,61 @@ gate any decision to build the oracle.
 
 Encouraging note carried over from the spec: *"no consumer iterates the full pair set, so an oracle
 stays architecturally feasible."*
+
+
+---
+
+## SUB-CLASSES, and a CORRECTION to the unpark case above
+
+Pair-enumeration profile (`RUSTDL_DKEY_SPLIT_STATS=1`), which splits the 8 into two defects
+needing two different fixes:
+
+| ontology | pairs enumerated | dropped | sub-class |
+|---|---:|---:|---|
+| `ore_ont_15635` | 294,744,041 | **100%** | pure wasted enumeration |
+| `ore_ont_10929` | 248,465,112 | **100%** | pure wasted enumeration |
+| `ore_ont_2504` | 68,672,720 | 98 (0%) | axioms genuinely materialised |
+| `ore_ont_4141` | 42,723,215 | 6 (0%) | materialised |
+| `ore_ont_5368` | 18,608,050 | 0 | materialised |
+| `ore_ont_1833` | 14,022,825 | 0 | materialised |
+| `ore_ont_8445`, `ore_ont_4572` | did not finish enumerating at 300 s | — | unknown |
+
+**This CORRECTS the unpark case above.** I wrote that the oracle's addressable set had moved from
+"~4" to **8**. It has not: only the **4 materialising** members (plus at most the 2 unknowns) are
+oracle cases — the other 2 are wasted enumeration, fixable without any new architecture. **The
+oracle's set is ~4–6, i.e. essentially the spec's original estimate, and the spec's
+work-to-reward parking judgement stands.** My "8 in the tail (~6%)" conflated two defects.
+
+## PARTIAL FIX BUILT: `RUSTDL_DKEY_GROUP_SKIP` (default OFF)
+
+`droppable` is `!collapse_comps.contains(c) && value_only(a) && value_only(b)` — the first conjunct
+is a property of the COMPONENT and `value_only` of ONE key, so the droppable block is exactly
+value-only × value-only and can be skipped in O(k) rather than enumerated in O(k²).
+
+| ontology | skip=0 | skip=1 | rules |
+|---|---:|---:|---|
+| `ore_ont_10929` | 96.5 s | **77.5 s** (1.24×) | identical |
+| `ore_ont_15635` | 92.2 s | **67.4 s** (1.37×) | identical |
+| `ore_ont_5368` | 38.6 s | 40.5 s | identical (0%-droppable, correctly unaffected) |
+
+Verdict-preserving: `tbox-stats` byte-identical across both settings on 6/6 measurable members
+**once timing fields are stripped** (`convert_ms` is in that output — comparing raw hashes reports
+a spurious DIFFER on all of them, including `ore_ont_9347` where the gate skips entirely, which is
+the tell); curated `classify` identical on pizza/ro/sio; suite 1685/0.
+
+**A first attempt did not fire at all** (96.5 → 94.2 s): it required the WHOLE group to be
+value-only, and a single broadcast key that forms no disjoint pair defeats that while the drop rate
+is still 100%. The partition version is what works.
+
+### It is NOT the fix, and the residual is NAMED not guessed
+
+1.24–1.37× against the 36× that `RUSTDL_DATA_PROPERTIES=0` achieves — **77 s of 96 s remains.** The
+skip touches only the DISJOINTNESS loop. The leading suspect for the residual is **`seed_bucket`,
+the DKey SUBSUMPTION seeding**, which walks **k² ORDERED pairs**: at ~60,323 distinct string keys
+that is ~3.6 × 10⁹ subset tests, and at ~26 ns each it accounts for the remaining wall almost
+exactly. For strings those tests are near-all-futile (a singleton subsets another only if equal),
+so a hash-keyed pass should make it O(k).
+
+**That attribution is arithmetic, not a measurement.** Confirm it with a timing probe around the
+two seeding calls before touching the loop — the pattern of building against a plausible story
+cost three retractions elsewhere today.

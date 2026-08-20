@@ -25,7 +25,8 @@ until the next `git clean -fdx`.
 
 ## The result, stated plainly
 
-**The machinery works; the feature delivers no end-to-end speedup on any locally available ontology.**
+**The machinery works. It delivered no speedup on any ontology available *at the time*; GO-basic
+(fetched 2026-08-20) shows 2.14× — see the RESOLVED section below.**
 
 - `apply` p50 on galen = **4.63 ms**, *below* the measured 5.8 ms lowering floor, 99/100 additions reused.
 - `classify` p50 = **882 ms**, because reuse is gated on `is_pure_el`.
@@ -41,13 +42,33 @@ subsumptions the hybrid finds, so galen's complete classification is not computa
 closure P1 retains — ≤12 ms was unreachable on galen *by construction*. But the FAIL still earned
 its keep: it surfaced that `classify` is whole-ontology on every path except `is_pure_el`.
 
-## The single most valuable next measurement
+## RESOLVED: GO-basic measured — P1 is worth keeping
 
-**Fetch GO-basic and re-measure.** It is ~52k classes, pure EL, and **already in
-`scripts/fetch-real-ontologies.sh`** (`http://purl.obolibrary.org/obo/go/go-basic.obo`). It is the
-one ontology that would show whether P1 is worth anything, and it needs no acquisition work.
+**Superseded 2026-08-20.** This section previously said P1's value was unmeasured. It has now been
+measured: `docs/2026-08-20-go-basic-incremental-measurement.md`.
 
-Until then P1's value is **unmeasured**, not proven absent.
+GO-basic (51,986 classes, 19× galen, ontology IRI `http://purl.obolibrary.org/obo/go.owl`, `.ofn`
+sha256 `786e9e6913fb01a8…`) reports **pure EL with `tableau=0`**. So `closure_answered = 0` across
+the eight local ontologies was a property of the **corpus**, not of the `is_pure_el` gate.
+
+| metric | value |
+|---|---|
+| from-scratch classify | 549.49 ms |
+| per-revision p50 | 256.85 ms (`apply` 177.37 + `classify` 79.40) |
+| **`closure_answered`** | **101** — first non-zero on any real ontology |
+| additions reused | 99 / 100 |
+| **speedup vs from-scratch** | **2.14×** (KM publishes 4.90× for comparison) |
+
+**And a correction to `docs/2026-08-19-incremental-lowering-floor-findings.md`:** the lowering
+floor's share does **not** keep falling with size. 41.5 % (101 classes) → 7.6 % (2,748) → **34.6 %
+(51,986)** — the trend inverts. The extrapolated **~13× galen ceiling must not be quoted as a target
+at scale**; the real ceiling at GO scale is **~2.9×**, and the measured 1.99× against
+saturation-only is ≈69 % of it.
+
+Cause: `apply` re-lowers the whole union and re-runs all four derivation passes, both
+O(|ontology|). On galen that is 4.63 ms against an 882 ms classify and vanishes; on GO-basic it is
+177 ms against a 79 ms classify and **dominates**. The bottleneck has inverted, which also
+invalidates the floor doc's advice to deprioritise incrementalising the derivation passes.
 
 ## P2 prerequisites (blocking)
 
@@ -64,9 +85,12 @@ Until then P1's value is **unmeasured**, not proven absent.
    **A deletion phase that assumes provenance is complete ships a false positive.**
 3. **`NO_AXIOM` on Tseitin clauses means deletion retains them.** Argued inert; must be re-checked
    when `apply_delta` lands.
-4. **P0 (edit-locality measurement) still un-run.** The spec defers P2's algorithm choice to it.
-   `INITIAL_SLACK = 64` should be sized against its output — measured cost today: one rebuild at
-   revision 64, `apply` spiking 4.63 → 75.8 ms (amortized negligible, since slack doubles).
+4. **The optimisation target has moved (new, 2026-08-20).** Closure reuse is already working; the
+   dominant cost at scale is `apply`'s O(|ontology|) re-lowering plus the four derivation passes.
+   Further speedup must come from making those sub-linear, not from the closure.
+5. **P0 (edit-locality measurement) still un-run.** The spec defers P2's algorithm choice to it.
+   `INITIAL_SLACK = 64` should be sized against its output. Demonstrably too small for a 52k-class
+   ontology: it exhausts in 64 edits and costs a full rebuild (the 445.97 ms p-max on GO-basic).
 
 ## Pre-existing production defects found by this work
 

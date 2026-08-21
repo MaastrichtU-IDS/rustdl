@@ -1423,6 +1423,113 @@ current engine state, characterized MISSED, open levers, and dead-ends;
 `docs/model-caching-plan.md` / `docs/moms-plan.md` explain why model caching is
 a deliberately un-integrated Phase-1 stub.
 
+## State of play — 2026-08-22 (read this first)
+
+**A real O(n²) shipped in the front end, and the tail now partitions by MECHANISM rather than by
+phase.** The mechanism partition is the more useful half: it tells you, before you profile anything,
+whether an optimisation can possibly pay.
+
+### THE TAIL PARTITIONS BY MECHANISM — check this BEFORE profiling
+
+| mechanism | count | can optimisation pay? |
+|---|---:|---|
+| **deadline-bound** (`tier_walk` 13 + `label_cache_build` 78) | ~91 | **NO** — `wall = #units × deadline`; a faster engine does more work per unit |
+| **genuinely stalled** | ~26 of the 43-member frame | **NO** — needs a calculus/pruning change |
+| **conversion-bound** | ~7 distinct | **YES, 1:1** — no budget bounds conversion |
+| genuine scale | 11 | not a defect |
+
+**`tier_walk` is DEADLINE-BOUND, and this RETRACTS a same-day claim of mine that the trail
+conversion "addresses ~46% of the wall directly".** Wall vs `--pair-timeout-ms` 1/2/5/10 on
+`ore_ont_10460` is 18.6 / 36.1 / 88.6 / 176.1 s — `wall/pt` **constant at 17.6–18.6 across a 10×
+range**, rows fixed at 588. Every probed pair burns its whole budget and concludes nothing, so a 2×
+faster engine performs 2× the branches in the same 5 ms and the wall does not move. `perf`'s 46%
+allocator share is a real *profile* observation that does not convert into wall. `DIV_WINDOW` is
+also null here (500→50 moves the wall **1%**), which qualifies the "lower `DIV_WINDOW` gains more"
+note elsewhere in this file.
+
+**The rule earned: a profile tells you where time GOES, not whether removing it SAVES anything.**
+Under a deadline, freed capacity is immediately spent. Check `wall/budget` across two budgets — two
+commands — before costing out any hot frame. `label_cache_build` qualifies on its own recorded
+numbers (median **17.3 s of a 20 s budget**, `pruned=0` on all 78), which independently explains why
+disabling that phase left aggregate wall flat (+0.8%).
+
+### SHIPPED: `build_told_tables` was O(n²) in MEMSET traffic
+
+A per-class BFS allocated a fresh `vec![false; n]` **every iteration** — n allocations of n bytes, so
+the closure build cost O(n²) in *zeroing alone*, regardless of graph sparsity. ~963 GB of memset on a
+981k-class ontology; `perf` on `tbox-stats` (parse+convert, **no reasoning**) attributed **69.74%** of
+self-time to `__memset_avx2_unaligned_erms`.
+
+**Confirmed by FIT, not inspection:** `convert_ms / n²` is constant to within **3.6%** across six
+ontologies spanning a 1.34× range of n. It is quadratic in the **CLASS COUNT**, not file size —
+which is why the corpus's *largest* file (557 MB) converted **fastest**. That inversion made the
+bucket look incoherent until the fit explained it.
+
+**The fix is exact:** `ups` receives a node exactly when that node is marked visited, so clearing
+the `ups` entries restores the buffer in O(|ups|). Output identical by construction. **Unflagged** —
+it is a behaviour-identical buffer reuse, not a policy change.
+
+Measured: conversion **5.0–6.2×**; classify **330 → 176 s (1.87×)** over six large ontologies.
+Two-arm 1,920-ontology sweep: **0 regressions, 0 output diffs**, and the win is **broader than the
+six** (`ore_ont_2121` 1.82×, `11395` 1.46×, `3377` 1.49×). Recovery count **carries its cap**: ~3
+recoveries **at a 60 s cap** — three slow-family members were already under the cap pre-fix and
+contribute zero recoveries despite being 1.6–1.9× faster. **This does NOT move the 140 tail figure**,
+which was censused at a different budget.
+
+**`RoleHierarchyBuilder::build` had the identical defect** and got the identical fix — but
+**PRECAUTIONARY, with NO measured win**: n there is the ROLE count, ORE max 11,312 (median 24), so
+~13 ms. Sized before applying so it cannot be mis-sold. **`classify.rs` already carried the canonical
+fix** for this pattern (generation counter) with a comment naming the hazard — *"fatal on 55k-class
+onts"* — so it was known and fixed in one place while two others kept it. **Grep for `vec![false; n]`
+inside a loop when touching any closure builder.**
+
+### The parse/front-end stage is CLOSED as a lever
+
+`locality-stats` over all **1,920**: **1,903 OK, 16 TIMEOUT, 1 FAIL**. The historical "23% of ORE
+rejected on the anon-individuals gap" is gone with nothing at scale replacing it. The single failure
+is a `horned-owl` **grammar** gap (SWRL `BuiltInAtom` with `Variable` data args — `DArg` won't take a
+variable); since SWRL is dropped gracefully at conversion, merely *parsing* it would let that
+ontology classify. One grammar rule, one recovery — recorded, not queued.
+
+**The useful by-product: `locality-stats` is a cheap CONVERSION-BOUND detector.** It runs
+parse+convert with no reasoning, so a timeout localises the wall to *before* reasoning — strictly
+sharper than the phase banner, which is only emitted *after* conversion and therefore shows a
+conversion-bound ontology as "all phases zero". Of the 16: **4 are DKey** (`2504`, `4141`, `4572`,
+`8445` — exactly the members v0.4.21 did not help) and **12 are NOT** (zero data-property
+assertions, flag-insensitive). `10929`/`15635` are **absent**, the cheapest confirmation v0.4.21
+works.
+
+### MEASURED: budget is not a lever for 65% of the non-label-cache tail
+
+Re-ran the 43 non-`label_cache_build` members at a **300 s global budget** (15× the census):
+**26 of 40 measurable members produce BYTE-IDENTICAL output** (rows *and* unsat *and* equivalence
+membership). `ore_ont_15074` stalls at **1,155 rows**, so this is not about size.
+
+**THE FIRST VERSION OF THIS ANALYSIS WAS CONFOUNDED — direct-vs-closure, 4th recorded instance.**
+`direct_subsumptions` is the **Hasse** relation and is *restructured*, not extended, as reasoning
+progresses: proving a class unsat **elides** its rows, proving classes equivalent **collapses** them.
+`ore_ont_8475` reads 4,164,366 rows / 0 unsat at 20 s and **262,344 rows / 1 unsat** at 300 s — a 16×
+*drop* because the longer run proves a class unsatisfiable. **The 300 s answer is MORE correct with
+FEWER rows**, and I had flagged that as a possible defect. Repairing it (compare rows + unsat +
+equiv) kept the count at 26 but changed the **membership** for **12 of them**. **The right number
+for the wrong reason is still wrong** — re-run, don't rationalise a plausible-looking total.
+
+### Instrument discipline (three failures in one session, all caught pre-publication)
+
+1. **`grep -c` exits 1 on a zero count**, so `n=$(grep -c pat f || echo 0)` prints the count *and*
+   appends a spurious line. Hit twice, the second time after it had been pointed out.
+2. **Counted a JSON key that does not exist** — rows live in `direct_subsumptions` as 2-element
+   arrays, so `grep -c '"sub"'` returned 0 for *every* ontology. Fixed by self-testing against
+   pizza = 181.
+3. **Compared an unbudgeted run against a budgeted census.** The budget is what *causes* partial
+   emission, so an ontology read as "19,240 rows → nothing". Fixed by calibrating at the census's
+   **own** 20 s budget first (reproduced 19,239 vs 19,240).
+
+**Calibrate against a known value — and against the BASELINE's conditions — before interpreting any
+sweep.** Also: `incomplete` is **not** a completion test (pizza itself reports `true`).
+
+---
+
 ## State of play — 2026-08-18 (read this first)
 
 **The dominant finding of the 2026-08-17/18 sessions is about this file, not the code: the

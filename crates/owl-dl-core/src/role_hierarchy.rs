@@ -70,9 +70,22 @@ impl RoleHierarchyBuilder {
         let mut super_closure: Vec<Box<[RoleId]>> = Vec::with_capacity(n);
         let mut sub_closure: Vec<Vec<RoleId>> = vec![Vec::new(); n];
 
+        // `visited`/`queue` are hoisted and reused, as in `told::build_told_tables`.
+        // This loop had the identical O(n^2)-memset shape (`vec![false; n]` zeroed n
+        // times); reuse is exact because `ups` receives a role exactly when that role
+        // is marked visited, so clearing the `ups` entries restores the buffer in
+        // O(|ups|).
+        //
+        // PRECAUTIONARY, with NO measured corpus win: n here is the ROLE count, whose
+        // ORE maximum is 11,312 (median 24, mean 98) — about 128 MB of zeroing, ~13 ms.
+        // Applied because it is the same defect class as the told-table quadratic (which
+        // WAS worth 6.2x) and the transformation is output-identical, not because a
+        // measurement asked for it. It would bite an ontology with ~100k roles.
+        let mut visited = vec![false; n];
+        let mut queue: VecDeque<u32> = VecDeque::new();
+
         for r in 0..n_u32 {
-            let mut visited = vec![false; n];
-            let mut queue: VecDeque<u32> = VecDeque::new();
+            queue.clear();
             queue.push_back(r);
             let mut ups: Vec<RoleId> = Vec::new();
             while let Some(curr) = queue.pop_front() {
@@ -85,6 +98,10 @@ impl RoleHierarchyBuilder {
                 for &sup in &self.direct_super[curr_idx] {
                     queue.push_back(sup.index());
                 }
+            }
+            // Restore the shared buffer before `ups` is moved into `super_closure`.
+            for &u in &ups {
+                visited[u.index() as usize] = false;
             }
             ups.sort_unstable();
             for &sup in &ups {

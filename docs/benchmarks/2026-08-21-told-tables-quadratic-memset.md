@@ -96,7 +96,29 @@ deadline will absorb the saving.** Deadline-bound phases (`tier_walk` 13, `label
 * Suite **1655/0/78** over the six affected crates. (`owl-dl-py`'s lib test fails to LINK with
   `undefined symbol: PyObject_GetAttr` — pre-existing pyo3, unrelated to a change in
   `owl-dl-core`.)
-* Full two-arm 1,920-ontology sweep: **in flight** at time of commit.
+* **Full two-arm 1,920-ontology sweep: PASS** (60 s cap, single-thread, P=6,
+  `data-2026-08-22-told-hoist-sweep-1920.tsv`):
+
+  | | |
+  |---|---|
+  | both ok | **1,780 — identical 1,780, DIFFER 0** |
+  | DNF → ok | 1 (`ore_ont_10689`, 44.7 s) |
+  | **ok → DNF** | **0** |
+  | both DNF | 139 |
+  | aggregate wall (both-ok) | 3,272 → 3,102 s (**−5.2%**) |
+
+  **Zero output differences across 1,780 completing ontologies** is the load-bearing line: it is
+  what lets byte-identity stand in for a MISSED net (identical output cannot have lost a row).
+  `both DNF = 139` also independently corroborates the ~140 tail census.
+
+  **The win is BROADER than the six targeted members** — `ore_ont_2121` 1.82×, `11395` 1.46×,
+  `3377` 1.49×, `14042` 1.42×, `11110` 1.39×, none of which were in the target set. That follows
+  from the cost being quadratic in class count, and only a full-population sweep surfaces it.
+
+  Method note: the sweep was interrupted near the end and topped up, which appended 26 duplicate
+  rows (1,946 raw). Deduplicated to exactly 1,920 before tallying — the committed dataset is the
+  deduplicated one. An undetected duplicate would have inflated both the identical count and the
+  aggregate wall.
 
 ## Corpus note: the ORE population contains near-duplicates
 

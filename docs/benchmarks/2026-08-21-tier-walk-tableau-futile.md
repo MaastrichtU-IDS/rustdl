@@ -232,3 +232,70 @@ is the default accelerator for every classify. A trail rewrite is a large change
 correctness-critical code whose payoff here is on provably-futile work. It should be gated exactly
 as the release process requires — and the honest framing is "makes a futile phase cheaper", not
 "fixes the tail".
+
+---
+
+## CORRECTION: the workload is DEADLINE-BOUND, so a faster engine does NOT reduce wall
+
+The section above concluded the trail conversion "addresses ~46% of the wall directly."
+**That is wrong, and this section retracts it.**
+
+Two measurements, both cheap, both of which I should have run before writing that:
+
+**1. `DIV_WINDOW` is not the binding constraint.** Made env-tunable and swept on
+`ore_ont_10460`:
+
+| `DIV_WINDOW` | 500 | 200 | 100 | 50 |
+|---|---:|---:|---:|---:|
+| wall | 88.6 s | 88.1 s | 88.0 s | 87.8 s |
+| rows | 588 | 588 | 588 | 588 |
+
+A 10× reduction in the divergence window moves the wall **1%**. So `is_diverging` is not what
+terminates these pairs — which also qualifies the record's "lower `DIV_WINDOW` gains more" for this
+workload.
+
+**2. The per-pair DEADLINE is what terminates them.** Wall against per-pair budget:
+
+| `--pair-timeout-ms` | 1 | 2 | 5 | 10 |
+|---|---:|---:|---:|---:|
+| wall | 18.6 s | 36.1 s | 88.6 s | 176.1 s |
+| **wall / pt** | **18.6** | **18.1** | **17.7** | **17.6** |
+| rows | 588 | 588 | 588 | 588 |
+
+**`wall / pt` is constant across a 10× range.** The workload is exactly
+`wall = #pairs × per-pair-deadline`: every probed pair burns its entire budget and concludes
+nothing, at any budget.
+
+### Why that kills the trail lever *for this workload*
+
+If each pair spends its whole deadline regardless, a 2×-faster engine performs 2× the branches in
+the same 5 ms and the wall does not move. The 46% allocator share is a real *profile* observation —
+it is simply not convertible into wall here. **Engine speed is irrelevant to a deadline-bound
+phase.**
+
+The only two levers that touch `wall = #pairs × deadline` are:
+
+* **fewer pairs** — which is the pruning/certifier problem, already blocked above; or
+* **a smaller deadline** — already the shipped default (5 ms), and the record establishes the
+  timeout defaults are corpus-optimal, with a *smaller* per-pair budget carrying its own
+  documented starvation coupling.
+
+Note in passing that `--pair-timeout-ms 1` gives **18.6 s with identical 588 rows** on this
+ontology — 4.8× for free *here* — but that is a corpus-wide default already measured out, not a
+finding.
+
+### Net position after the correction
+
+* The tableau phase is futile on 11 of 13 (**stands**).
+* An unconditional skip is unsound; no construct profile separates the 2 contributors (**stands**).
+* The adaptive early-cut already fires and is not a gap (**stands**).
+* **The trail conversion would not reduce wall on this bucket (NEW — retracts the prior section).**
+  It may still be worth doing for branch-bound workloads elsewhere; it is not a tail lever.
+
+**So this bucket has no available lever that does not require the certifier.** That is the honest
+end state, and it is a stronger negative than the previous section implied.
+
+**Method note.** The retracted claim came from reading a profile and inferring a wall saving
+without checking whether the phase was deadline-bound. A profile tells you where time *goes*, not
+whether removing it *saves* anything — under a deadline, freed capacity is immediately spent. The
+check was two commands.

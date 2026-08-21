@@ -89,3 +89,51 @@ counterexamples that any proposed gate must exclude, and they are cheap to test 
 **Next step for whoever continues:** characterise what distinguishes `10517`/`8388` from the other
 eleven. If the distinguishing feature is structural and cheaply detectable, it is a gate; if it is
 not, this stays a documented negative. Do NOT propose the skip without it.
+
+---
+
+## OUTCOME: no gate is available, and the plan's kill criterion applies
+
+The plan's next step was to characterise what distinguishes the 2 contributors from the 11 futile
+members, with the stated rule: *"Structural and cheaply detectable → that's the gate. Otherwise
+this stays a documented negative."*
+
+**There is no separator.** Construct profiles of the 2 vs the 11:
+
+| construct | in the 2 contributors | in the 11 futile |
+|---|---|---|
+| `ObjectAllValuesFrom` | **0 / 2** | present in **4 / 11** |
+| `DisjointUnion` | 0 / 2 | present in 2 / 11 |
+| `ObjectSomeValuesFrom` | 2 / 2 | 10 / 11 |
+| `ObjectUnionOf` | 2 / 2 | 10 / 11 |
+| `EquivalentClasses` | 2 / 2 | 11 / 11 |
+| `DisjointClasses` | 2 / 2 | 10 / 11 |
+| cardinality / nominals / inverse / functional | present in ≤1 of 2 | present in 1–8 of 11 |
+
+Every construct in the contributors is also in most of the futile ones, and `∀` — the obvious
+candidate for "needs a tableau" — is **absent from both contributors** while present in four futile
+members. So the discriminator is not the construct profile. **No cheap static gate exists on this
+evidence, and per the plan this is now a documented negative rather than a fix.**
+
+## The number that reframes it
+
+| | |
+|---|---|
+| tableau-phase cost across the 13 | **1,578 s** |
+| entailments it produced | **16** (`10517` +6 rows, `8388` +10 closure pairs) |
+| **cost per extra entailment** | **≈99 s** |
+| members where it produced nothing | **11 of 13** |
+| speedup if skipped | **89×** |
+
+Those 16 are also proportionally negligible where they occur — 6 of 1,140 rows, and 10 of 162,718
+closure pairs (0.006%).
+
+So this is not a correctness question but a **cost/benefit** one, and rustdl already exposes the
+choice: `--saturation-only` is a documented sound under-approximation, and classify already
+reports an `incomplete` signal. On this bucket, that flag is **89× faster and on 11 of 13 loses
+nothing at all**.
+
+**Actionable conclusion, no engine change:** the honest deliverable here is guidance, not a gate —
+on `tier_walk`-bound ontologies, `--saturation-only` buys 89× for a ~0.006% completeness risk that
+is *zero* on 11 of the 13 measured. An automatic switch remains blocked on the certifier problem,
+and the 2 contributors are the counterexamples any future gate must exclude.

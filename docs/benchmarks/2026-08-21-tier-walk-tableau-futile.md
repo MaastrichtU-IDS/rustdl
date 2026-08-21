@@ -137,3 +137,64 @@ nothing at all**.
 on `tier_walk`-bound ontologies, `--saturation-only` buys 89× for a ~0.006% completeness risk that
 is *zero* on 11 of the 13 measured. An automatic switch remains blocked on the certifier problem,
 and the 2 contributors are the counterexamples any future gate must exclude.
+
+---
+
+## PROFILE (2026-08-21, once `perf` was usable): 46% of the time is the ALLOCATOR
+
+`perf` had to be installed first — `/usr/bin/perf` is a dispatcher keyed on `uname -r`, the host
+had `linux-tools` for 5.15.0-190 while booted into 5.15.0-97, and `command -v perf` succeeds
+regardless. (The versioned binary under `/usr/lib/linux-tools/<ver>/perf` also works unprivileged.)
+
+`ore_ont_10460`, 88.6 s, single-thread, 199 Hz:
+
+| frames | share |
+|---|---:|
+| **allocator + memmove** (`_int_malloc` 11.4, `_int_free` 8.3, `malloc` 7.7, `cfree` 4.2, `malloc_consolidate` 3.4, `unlink_chunk` 3.0, `realloc` 2.9, memmove 5.3) | **≈46%** |
+| `[vdso]` — almost certainly `clock_gettime`, i.e. deadline polling | 5.6% |
+| reasoning (`is_blocked` 5.4, `save` 4.9, `solve` 4.0, `apply_concept_rules` 2.9, `apply_role_rules` 1.7, …) | ≈28% |
+
+**Not `match_body`.** That frame dominates the pizza-style workload (26%) and the record's
+wedge-classify note, but on this workload the allocator does.
+
+### Root cause: one FULL-GRAPH CLONE per branch
+
+`HyperEngine::save` (`hyper.rs:3268`) deep-clones the whole state on every branch —
+`nodes`, `representative`, `neq`, `block_index`, `origin`, and the worklist. The wedge is
+**copy-on-branch**, where the main tableau is **trail-based** (`TableauTrail`, log-and-undo via
+`Checkpoint`). `hyper-sat` on this ontology:
+
+| | |
+|---|---:|
+| total branches | **4,632,278** |
+| `node_clones` | **4,632,278** (exactly 1:1) |
+| `match_attempts` | 160,127,802 |
+| `is_blocked` calls | 173,912,436 |
+| classes: sat / **unsat** / stalled | 557 / **0** / 44 |
+
+**The CLI already names the fix:** `# node_clones: … (save/restore — trail target)`.
+
+### Two further facts the probe settles
+
+* **`unsat = 0` across all 601 classes.** The wedge never proves a single subsumption here, which
+  is the same fact as the banner's `subsumption: saturation=2085 tableau=0` — now confirmed from
+  the engine's own side.
+* **Branching is MERGE-driven, not disjunctive.** Per stalled class: `disj=36,828` vs
+  `merge=119,520` — merges are ~76% of branches. And every stalled class ends at `depth=256`
+  (the cap) with `restores` **exactly equal to** `branches`, which is precisely the
+  `is_diverging` signature `RUSTDL_ADAPTIVE_BUDGET` exists to early-cut
+  (`restores≈branches` at saturated depth). It is nonetheless burning the full 5 s per class, so
+  either the probe path does not enable that cut or the window never triggers — **worth checking
+  before anything else is built.**
+
+### What this changes about the earlier conclusion
+
+The "documented negative" above stands for the *skip* — that still needs a certifier. But the
+profile opens a **second, soundness-free lever the earlier analysis missed**: the futile work is
+also grossly inefficient. Converting the wedge's `save`/`restore` from copy-on-branch to a trail
+is a pure performance change with identical search semantics — no fragment gate, no proof, no
+completeness risk. On this ontology it addresses ~46% of the wall directly.
+
+**Caveat that must travel with it:** making futile work 2× faster leaves it futile. The value is
+that several of these 13 sit just outside a 60 s cap, so a ~2× could convert DNFs into
+completions — that is a measurement to make, not a claim to assert.

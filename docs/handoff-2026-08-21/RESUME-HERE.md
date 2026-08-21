@@ -22,48 +22,65 @@ unsatisfiable.
 **Consequence: `origin/main` has NO live false positive from this site. Earlier claims that it
 did are retracted.**
 
-## OPEN QUESTION — check this first
+## RESOLVED (2026-08-21) — the question that was open here
 
-`fix/dkey-id-aliasing-on-main` @ `002c7e8` contains a commit titled *"two NEW
-report-position/ClassId conflations in main's code"*. Its "offender 1" is **exactly** the
-probe-end-only change now shown to be unsound in isolation.
+The question was whether `fix/dkey-id-aliasing-on-main` @ `002c7e8` changed only the probe end
+(→ regression) or both ends. **Answer: both ends. That branch does NOT carry a regression.**
 
-**Verify whether `002c7e8` changed only the probe end or both ends.** If only the probe end,
-that branch carries a regression and must not merge as-is. The correct fix changes producers
-and consumers **together** — that is `ReportedClasses`' job.
+Checked directly:
 
-```sh
-git show 002c7e8 -- crates/owl-dl-reasoner/src/classify.rs | grep -n -B4 -A8 'unsatisfiable_idxs'
+* At `5af44c4` (the parent of `002c7e8`), all three producers already store **report
+  positions** — `reported.class_id(i)` over `0..n` at `:1404`, `:1647`, `:3701` — because this
+  branch's `9cc380c` and `ac721de` converted them.
+* `002c7e8` then converts the consumer: `reported.report_pos(*c).is_some_and(|pos| …)` at
+  `:1754`. Same index space on both sides.
+* No raw `ClassId::new(i)` mint survives outside the `ReportedClasses` conversion boundary
+  (`:94`); the remaining ones `002c7e8` fixes are diagnostic-only.
+
+So the unsoundness described below is real **only when the probe-end hunk is applied to stock
+`main` in isolation** — which is what was nearly done, and what `probe-fix-was-wrong.md`
+records. On the branch, the two halves are inseparable but correct together.
+
+**Residual task:** `002c7e8`'s *commit message* still asserts the retracted "LIVE AT DEFAULT
+SETTINGS on main" claim, as did two sections of `rebase-onto-main.md` (now corrected). The
+message needs a `git commit --amend` before that branch merges — a prepared replacement is
+described in the session log; the amend itself was not performed here.
+
+## Verification gap on the hotfix branch — CLOSED (2026-08-21)
+
+The implementer's final test run had been **cut short by the laptop sleeping**, last reporting
+79 binaries green with ~30 still to run. **Both gates have since been run to completion on the
+same tree and both pass:**
+
 ```
-
-## Verification gap on the hotfix branch (2026-08-21)
-
-The implementer's final test run was **cut short by the laptop sleeping**. Its last report was
-**79 binaries green, zero failures, ~30 still to run**. The commit itself is intact and the tree
-is clean, but the crate suite was never seen to complete.
-
-`31b3cf6` is doc-only plus a new test file, so the risk is low — but **re-run before trusting it**:
-
-```sh
 RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-reasoner
+  → exit 0 — 110/110 binaries, 987 passed, 0 failed, 73 ignored
 RUSTUP_TOOLCHAIN=stable cargo clippy -p owl-dl-reasoner --lib --tests -- -D warnings
+  → exit 0 — 0 warnings (fresh check of owl-dl-reasoner v0.4.21, 1m14s)
 ```
 
-Note the two new tests in `classify_dkey_alias_consistency.rs` include `fixture_actually_aliases`,
-a non-vacuity guard: if it fires, the fixture stopped exercising the hazard (likely a horned-owl
-component-`Ord` change reshuffling the interning order) and needs a **real fixture repair**, not a
-relaxed assertion.
+The branch was then rebased onto `origin/main` (`31b3cf6` → `37f3eb5`). The rebase pulled in
+docs/benchmarks commits only; `git diff 31b3cf6 37f3eb5 -- crates/` is **empty**, so the green
+run above applies unchanged to the rebased tree and does not need repeating.
+
+The two new tests in `classify_dkey_alias_consistency.rs` both passed, including
+`fixture_actually_aliases` — the non-vacuity guard. It **did not fire**, so the fixture still
+interns the DKey below the used-but-undeclared classes and the canary is exercising the real
+hazard rather than a reshuffled no-op. (Had it fired, the fix would be a **real fixture repair**
+— likely a horned-owl component-`Ord` change reshuffling intern order — never a relaxed
+assertion.)
 
 ## Branch inventory
 
 | branch | tip | ahead of origin/main | state |
 |---|---|---|---|
-| `fix/classify-consistency-probe-aliasing` | `31b3cf6` | 1 | doc fix + 199-line regression canary. No behaviour change. **Verification INCOMPLETE — see below.** |
-| `fix/dkey-id-aliasing-on-main` | `002c7e8` | 5 | DKey fix rebased onto main, 1702 tests green — **but see OPEN QUESTION.** |
+| `fix/classify-consistency-probe-aliasing` | `37f3eb5` | 1 | doc fix + 199-line regression canary. No behaviour change. Rebased onto `origin/main`; **verification COMPLETE — 110/110 binaries, 987 passed, clippy clean.** Ready to push. |
+| `fix/dkey-id-aliasing-on-main` | `002c7e8` | 5 | DKey fix rebased onto main, 1702 tests green. **Open question resolved — coherent, both ends move together.** Blocked only on the owner decisions below + a commit-message amend. |
 | `fix/dkey-id-aliasing` | `0cc64ac` | 17 | original DKey fix on the old `#48` base. Superseded by the above; keep as reference. Safety tag `premerge-dkey`. |
 | `feat/incremental-reasoning-p1` | `8f317dc` | 39 | P1 incremental reasoning, complete + reviewed. Needs the same rebase off unmerged `#48`. |
 
-`origin/main` is `b796bec`. Local `main` is 390 commits behind — `git pull` it before anything.
+`origin/main` was `b796bec` at handoff time and is `1b30182` as of this update (eight further
+`measure:`/`plan:` commits, all under `docs/`). Local `main` is ~390 commits behind — `git pull` it before anything.
 `feat/complex-class-expression-queries-48` was **never merged**; both DKey branches and P1
 originally forked from it.
 

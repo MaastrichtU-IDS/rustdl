@@ -182,11 +182,16 @@ The third producer (1511, `classify_pure_el`) never calls the probe; it assemble
    `fix/dkey-id-aliasing-on-main`, there is nothing here to ship but the doc and the
    canary. That may be worth landing anyway — the canary blocks a change that is
    currently sitting in a brief as "the minimal fix".
-3. **`fix/dkey-id-aliasing-on-main` (`002c7e8`) needs re-checking against this.** If
-   its `ReportedClasses` conversion changes `probe_says_inconsistent` to a report
-   position without simultaneously converting all three producers to store report
-   positions, it ships this false positive. I did not read that branch. The new canary
-   should be cherry-picked onto it and run.
+3. **~~`fix/dkey-id-aliasing-on-main` (`002c7e8`) needs re-checking against this.~~
+   CHECKED (2026-08-21) — it is clean.** The concern was that if its `ReportedClasses`
+   conversion changed `probe_says_inconsistent` to a report position without
+   simultaneously converting all three producers, it would ship this false positive. It
+   converts both. At `5af44c4` (parent of `002c7e8`) the producers already read
+   `reported.class_id(i)` over `0..n` at `:1404`, `:1647`, `:3701` — converted by
+   `9cc380c`/`ac721de` — and `002c7e8` then moves the consumer to
+   `reported.report_pos(*c)` at `:1754`. Same index space on both sides, so that branch
+   carries no regression from this site. Cherry-picking the canary onto it is still
+   worthwhile as a permanent guard, but is no longer needed to answer the question.
 4. **Fixture fragility.** The reproducer depends on horned-owl's derived component
    `Ord` (empirically the `SubClassOf` superclass expression dominates the ordering,
    with `Class` sorting before `DataSomeValuesFrom`). A horned-owl bump could reshuffle

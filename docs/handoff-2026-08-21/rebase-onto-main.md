@@ -74,7 +74,7 @@ the whole file. Three hardenings, because a guard that can fail silently is the 
 * verified by sabotage: reintroducing the escalation-probe defect at line 3588 now fails
   it. **The old scanner could not see line 3588 at all.**
 
-### Offender 1 — `probe_says_inconsistent`: LIVE AT DEFAULT, AND A FALSE POSITIVE. Fixed.
+### Offender 1 — `probe_says_inconsistent`: the CONSUMER END of this branch's own producer conversion. Fixed.
 
 `crates/owl-dl-reasoner/src/classify.rs`, layer (1) of the gated consistency probe:
 
@@ -82,14 +82,30 @@ the whole file. Three hardenings, because a guard that can fail silently is the 
 && unsatisfiable_idxs.contains(&(c.index() as usize))   // c: ClassId; the set is REPORT-indexed
 ```
 
-`RUSTDL_CLASSIFY_CONSISTENCY_PROBE` **defaults ON** (`is_none_or(|v| v != "0")`), so this is
-not latent. With a DKey below a user class, a satisfiable asserted class reads a stranger's
-⊥ bit; the probe returns `true`; classify returns `classify_inconsistent`, which marks
-**every** class unsatisfiable; `Classification::entails` then short-circuits `⊥ ⊑ *` for all
-of them. **Every pair in the ontology becomes an entailment that does not hold.** Same
-severity and same mechanism as defect (b), reached by a third spelling.
+> **RETRACTED (2026-08-21, verified):** this section previously read "LIVE AT DEFAULT, AND A
+> FALSE POSITIVE" **on `main`**. That is wrong and is withdrawn. On stock `main` all three
+> producers of `unsatisfiable_idxs` store RAW `ClassId`s — `classify.rs:1291` mints
+> `ClassId::new(i)`, `:1507` reads the `ClassId`-indexed `unsatisfiable_bitset()`, `:3647`
+> does the same — so main's `contains(&(c.index() as usize))` is **exact**, and the `< n` clip
+> can only cause a miss, never a false positive. **`origin/main` has no live false positive
+> from this site.** See `probe-fix-was-wrong.md` for the isolated-on-main experiment.
 
-Reproduced, not inferred — new fixture `CONSISTENCY_PROBE_BODY`, id layout
+`RUSTDL_CLASSIFY_CONSISTENCY_PROBE` **defaults ON** (`is_none_or(|v| v != "0")`), so once the
+producers move, this is not latent. And they do move: this branch's `9cc380c` and `ac721de`
+convert all three producers to report positions (`reported.class_id(i)` over `0..n`). At
+`5af44c4` — the parent of this commit — the producers are report-indexed while the probe still
+compares `c.index()`, and *that* is the false positive. With a DKey below a user class, a
+satisfiable asserted class reads a stranger's ⊥ bit; the probe returns `true`; classify returns
+`classify_inconsistent`, which marks **every** class unsatisfiable; `Classification::entails`
+then short-circuits `⊥ ⊑ *` for all of them. **Every pair in the ontology becomes an entailment
+that does not hold.** Same severity and same mechanism as defect (b), reached by a third
+spelling — but reached only *on this branch*, not on `main`.
+
+**The two ends are therefore inseparable.** This hunk applied alone to `main` *introduces* the
+defect it appears to fix; `9cc380c`/`ac721de` applied without it leave the defect live. Neither
+half may be cherry-picked.
+
+Reproduced at `5af44c4`, not inferred — new fixture `CONSISTENCY_PROBE_BODY`, id layout
 `DKey=0, Aaa=1/pos0, Ccc=2/pos1, Fff=3/pos2, Eee=4/pos3(⊥), Bbb=5/pos4, Ddd=6/pos5`, so
 `Fff`'s ClassId (3) collides with `Eee`'s report position (3):
 
@@ -219,13 +235,19 @@ Not run (owned by you, per the brief): `cargo test --workspace`,
    the codebase's own `[[sabotage-your-own-guard-tests]]` doctrine paying out: **the coverage
    floor I added matters more than the brace matching.**
 
-2. **`probe_says_inconsistent` is default-ON and produces false positives on `main` today.**
-   It needs (a) a DKey below a user class, (b) ≥1 unsatisfiable class, and (c) a
-   `ClassAssertion` whose class's ClassId collides with an unsat class's report position — so
-   it is narrow, and the curated corpus almost certainly does not hit it (the corpus is
-   documented as inert for the DKey area). But the trigger is a **used-but-undeclared class**,
-   which is legal OWL and common in the wild, and the blast radius is the entire hierarchy.
-   Worth a release note independent of this branch.
+2. **~~`probe_says_inconsistent` is default-ON and produces false positives on `main`
+   today.~~ RETRACTED — see Offender 1.** `main` is sound at this site; the false positive
+   exists only between `9cc380c`/`ac721de` and this commit, i.e. inside this branch. **No
+   release note is owed**, and the earlier instruction to write one is withdrawn.
+
+   What remains true is the *shape* of the hazard, which is why the canary in
+   `crates/owl-dl-reasoner/tests/classify_dkey_alias_consistency.rs` is worth keeping: it needs
+   (a) a DKey below a user class, (b) ≥1 unsatisfiable class, and (c) a `ClassAssertion` whose
+   class's ClassId collides with an unsat class's report position — narrow enough that the
+   curated corpus almost certainly does not hit it (the corpus is documented as inert for the
+   DKey area), but the trigger is a **used-but-undeclared class**, which is legal OWL and common
+   in the wild, and the blast radius is the entire hierarchy. That is the reason to fix the index
+   spaces at both ends rather than to trust the narrowness.
 
 3. **`classify_prep_timeout` argues for the sharper lesson from this rebase.** The riskiest
    thing was not any conflict — it was the caller git merged *cleanly*. The type system caught

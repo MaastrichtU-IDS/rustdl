@@ -177,9 +177,28 @@ pub fn build_told_tables(ontology: &InternalOntology) -> ToldTables {
     let mut super_closure: Vec<Box<[ClassId]>> = Vec::with_capacity(n);
     let mut sub_closure_acc: Vec<Vec<ClassId>> = vec![Vec::new(); n];
 
+    // `visited` and `queue` are HOISTED and reused across the per-class BFS.
+    //
+    // They were allocated fresh inside this loop, which made the closure build
+    // O(n^2) in *memset traffic* alone: `vec![false; n]` zeroes n bytes, n times.
+    // On `ore_ont_9674` (981,148 classes) that is ~963 GB of zeroing, and a perf
+    // profile attributed **69.7%** of `tbox-stats` self-time to
+    // `__memset_avx2_unaligned_erms` with `build_told_tables` the top rustdl frame.
+    // The quadratic was confirmed by fit rather than by inspection alone: across
+    // six large ontologies spanning a 1.34x range of n, `convert_ms / n^2` is
+    // constant to within 3.6% (55,462-57,519). It is quadratic in the CLASS COUNT,
+    // not the file size, which is why the corpus's *largest* file converted
+    // fastest.
+    //
+    // Reuse is exact, not approximate: `ups` receives a node exactly when that
+    // node is marked visited, so clearing the `ups` entries restores `visited` to
+    // all-false in O(|ups|) rather than O(n). The BFS is otherwise untouched, so
+    // the tables are byte-identical.
+    let mut visited = vec![false; n];
+    let mut queue: VecDeque<u32> = VecDeque::new();
+
     for c in 0..n_u32 {
-        let mut visited = vec![false; n];
-        let mut queue: VecDeque<u32> = VecDeque::new();
+        queue.clear();
         queue.push_back(c);
         let mut ups: Vec<ClassId> = Vec::new();
         while let Some(curr) = queue.pop_front() {
@@ -192,6 +211,11 @@ pub fn build_told_tables(ontology: &InternalOntology) -> ToldTables {
             for &sup in &direct_super[curr_idx] {
                 queue.push_back(sup.index());
             }
+        }
+        // Restore the shared buffer for the next class. MUST happen before `ups`
+        // is moved into `super_closure` below.
+        for &u in &ups {
+            visited[u.index() as usize] = false;
         }
         ups.sort_unstable();
         for &sup in &ups {

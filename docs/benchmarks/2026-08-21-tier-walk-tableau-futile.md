@@ -198,3 +198,37 @@ completeness risk. On this ontology it addresses ~46% of the wall directly.
 **Caveat that must travel with it:** making futile work 2× faster leaves it futile. The value is
 that several of these 13 sit just outside a 60 s cap, so a ~2× could convert DNFs into
 completions — that is a measurement to make, not a claim to assert.
+
+### CHECKED: the adaptive early-cut is NOT the gap — it already fires
+
+The previous section flagged "either the probe path does not enable that cut or the window never
+triggers — worth checking before anything else is built." Checked, and it is the former:
+
+* `adaptive_budget` defaults to **`false`** in `HyperEngine`'s constructors and is enabled by
+  `with_adaptive_budget()`, called from `owl-dl-reasoner/src/lib.rs:1145` behind
+  `adaptive_budget_enabled()`. **Classify enables it; the `hyper-sat` diagnostic does not** — which
+  is the whole reason the probe shows 156,000 branches and a saturated depth per stalled class.
+* In classify the cut demonstrably fires: `tier_walk` 17,943 ms over 6,936 incomplete pairs is
+  **2.59 ms per pair against a 5 ms cap**, i.e. pairs are being cut *before* the cap. And
+  6,936 pairs × the ~500-branch `DIV_WINDOW` ≈ 3.47 M branches, the same order as the probe's
+  4.63 M `node_clones`.
+
+**So the branch COUNT is already minimised.** What remains is the per-branch cost: ~500 branches
+per pair, each deep-cloning the whole graph. That is why `DIV_WINDOW` was recorded as "lower gains
+more" — each branch is expensive in itself.
+
+### Therefore: the trail conversion is the lever, and it is now well-founded
+
+The two findings compose rather than compete. The early-cut bounds how many branches happen; the
+copy-on-branch `save` makes each one cost an allocation of the entire state. Attacking the second
+is the only remaining move that needs no soundness argument.
+
+**Estimated effect, stated as an estimate:** removing ~46% would take `ore_ont_10460`'s `tier_walk`
+from 17.9 s to ~10 s and its unbounded wall from 88.6 s to ~48 s. Several of the 13 sit just
+outside a 60 s cap, so this could convert DNFs into completions — **to be measured, not assumed.**
+
+**Scope warning for whoever builds it:** `save`/`restore` is in the wedge's hot loop and the wedge
+is the default accelerator for every classify. A trail rewrite is a large change to
+correctness-critical code whose payoff here is on provably-futile work. It should be gated exactly
+as the release process requires — and the honest framing is "makes a futile phase cheaper", not
+"fixes the tail".

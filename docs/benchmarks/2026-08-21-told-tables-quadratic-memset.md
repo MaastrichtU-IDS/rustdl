@@ -54,7 +54,26 @@ otherwise untouched, so the tables are byte-identical by construction. `queue` i
 | `16008` | 30,913 → 6,148 ms (5.0×) | 55.7 → 24.5 s |
 | `14459` | — | 68.0 → 27.6 s (**2.46×**) |
 
-Aggregate classify over the six: **458 → 250 s (1.83×)**.
+**Full A/B with answer identity, all six, single-thread, 300 s cap**
+(`data-2026-08-21-told-hoist-ab-identity.tsv`):
+
+| ont | pre | post | speedup | rows pre = post |
+|---|---:|---:|---:|---|
+| `10689` | 62.3 s | 31.1 s | **2.00×** | 981,144 = 981,144 |
+| `868` | 63.4 s | 32.6 s | 1.94× | 981,144 = 981,144 |
+| `9674` | 61.9 s | 32.6 s | 1.90× | 981,144 = 981,144 |
+| `8486` | 52.7 s | 28.4 s | 1.86× | 903,613 = 903,613 |
+| `14459` | 49.5 s | 27.1 s | 1.83× | 847,755 = 847,755 |
+| `16008` | 40.4 s | 25.1 s | 1.61× | 733,098 = 733,098 |
+
+Aggregate **330.2 → 176.5 s (1.87×)**, **6/6 byte-identical** output.
+
+An earlier arm of this same measurement reported the walls as 458 → 250 s. Both are real; they
+were taken under different background load (a 43-ontology convergence run was in flight for the
+first). The **ratio** is stable at 1.83-1.87x across both, which is why the ratio is quoted rather
+than the absolute walls. The first arm also reported `rows=-1` on *both* sides — an inline-python
+extractor breaking on large JSON, not a reasoning failure; the identity numbers above come from
+the file-based re-run.
 
 ## Why this bucket was worth attacking when `tier_walk` was not
 

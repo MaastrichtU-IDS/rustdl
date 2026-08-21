@@ -299,3 +299,22 @@ end state, and it is a stronger negative than the previous section implied.
 without checking whether the phase was deadline-bound. A profile tells you where time *goes*, not
 whether removing it *saves* anything — under a deadline, freed capacity is immediately spent. The
 check was two commands.
+
+### The deadline-bound finding GENERALISES — it is not a `tier_walk` fact
+
+Anything that burns a per-pair or per-class budget **to exhaustion** is immune to engine
+speed-ups by the same arithmetic. Two buckets of the current tail qualify on their own recorded
+numbers:
+
+* **`tier_walk` (13)** — measured above.
+* **`label_cache_build` (78)** — the census records a median **17.3 s of a 20 s budget** with
+  `pruned=0` on all 78. A phase that consumes its whole budget and prunes nothing is
+  deadline-bound by definition, so profiling it and costing out the hot frame will *also* fail to
+  convert into wall. Consistent with the already-measured negative there: disabling the phase
+  outright over 78×2 arms rescued **2** ontologies and left the aggregate wall **flat (+0.8%)** —
+  the freed time was absorbed by the next phase.
+
+**So the general rule for this tail: before costing out any hot frame, check whether the phase is
+budget-bound.** If `wall / budget` is constant across budgets, the frame's cost is irrelevant and
+the only levers are *fewer units of work* or *a smaller budget*. This is cheap to check — two runs
+at different budgets — and it invalidates a profile-derived estimate outright.

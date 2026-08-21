@@ -130,3 +130,43 @@ comment names the hazard outright — *"the O(n²) `vec![false; n]`-per-class al
 > would look. Not rewritten, because `main` is shared and force-pushing it to fix attribution is
 > the more expensive error. Recorded here instead — and the general fix is to stage explicit paths
 > rather than `git add -A` when a measurement and a code change are in flight together.
+
+## Sabotage: the clears ARE guarded (run, not assumed)
+
+Per [[sabotage-your-own-guard-tests]], the correctness argument ("`ups` *is* the visited set") was
+not taken on faith. Deleting each clear loop and re-running:
+
+| sabotage | result |
+|---|---|
+| drop the clear in `role_hierarchy.rs` | **FAILS** `role_hierarchy::tests::linear_chain`, `::equivalence_cycle` |
+| drop the clear in `told.rs` | **FAILS** `told::tests::sub_class_of_chain_closes_transitively`, `::equivalent_classes_creates_bidirectional_subsumption`, `::disjoint_union_contributes_both_subsumption_and_disjointness`, `::equivalence_with_complex_member_only_uses_atomic_pairs` |
+
+So the buffer reuse is covered by pre-existing tests in both files — a stale `visited` entry
+shrinks the closure and is caught immediately. Ordering was also verified by reading the patched
+regions: `visited` is read only inside the BFS, and after the clear only `ups` is touched (sort,
+`sub_closure` push, move into `super_closure`). Nothing reads `visited` between the clear and the
+next iteration.
+
+## Why no MISSED net was run, stated explicitly
+
+This record is emphatic that the FP=0 net is **FP-shaped** and a sweep is **outcome-shaped**, and
+that neither can see a lost entailment — which is why the corpus MISSED net exists for exactly this
+kind of change.
+
+It is not needed here, and the reason is specific: **byte-identity subsumes ΔMISSED for an
+output-identical transformation.** Identical `classify --json` output cannot have lost a row. The
+identity evidence is 298/298 (and rising) in the two-arm sweep, 6/6 on the slow family with exact
+row counts, 6/6 curated, and `MISSED=0` in the FP=0 net. Had the change altered *any* output, the
+MISSED net would be mandatory.
+
+## Recovery count, with its cap attached
+
+The two-arm sweep runs at a **60 s cap**, and the recovery count only means anything with that
+stated. `ore_ont_10689` goes DNF → 44.7 s. The other slow-family members were *already* under 60 s
+before the fix (`8486` 52.7 s, `14459` 49.5 s, `16008` 40.4 s), so they appear as both-ok identical
+and contribute **zero** recoveries despite being 1.6–1.9× faster.
+
+**So the honest headline is "≈3 recoveries at a 60 s cap, plus 1.87× on six large ontologies" — NOT
+a reduction in the tail count.** The 140-member tail was censused at a different budget; moving that
+number would require re-running the census on the post binary, which has not been done. Quote the
+cap with the count, as the v0.4.21 record does.

@@ -36,11 +36,29 @@ and consumers **together** — that is `ReportedClasses`' job.
 git show 002c7e8 -- crates/owl-dl-reasoner/src/classify.rs | grep -n -B4 -A8 'unsatisfiable_idxs'
 ```
 
+## Verification gap on the hotfix branch (2026-08-21)
+
+The implementer's final test run was **cut short by the laptop sleeping**. Its last report was
+**79 binaries green, zero failures, ~30 still to run**. The commit itself is intact and the tree
+is clean, but the crate suite was never seen to complete.
+
+`31b3cf6` is doc-only plus a new test file, so the risk is low — but **re-run before trusting it**:
+
+```sh
+RUSTUP_TOOLCHAIN=stable cargo test -p owl-dl-reasoner
+RUSTUP_TOOLCHAIN=stable cargo clippy -p owl-dl-reasoner --lib --tests -- -D warnings
+```
+
+Note the two new tests in `classify_dkey_alias_consistency.rs` include `fixture_actually_aliases`,
+a non-vacuity guard: if it fires, the fixture stopped exercising the hazard (likely a horned-owl
+component-`Ord` change reshuffling the interning order) and needs a **real fixture repair**, not a
+relaxed assertion.
+
 ## Branch inventory
 
 | branch | tip | ahead of origin/main | state |
 |---|---|---|---|
-| `fix/classify-consistency-probe-aliasing` | `31b3cf6` | 1 | doc fix + 199-line regression canary. **Safe.** No behaviour change. |
+| `fix/classify-consistency-probe-aliasing` | `31b3cf6` | 1 | doc fix + 199-line regression canary. No behaviour change. **Verification INCOMPLETE — see below.** |
 | `fix/dkey-id-aliasing-on-main` | `002c7e8` | 5 | DKey fix rebased onto main, 1702 tests green — **but see OPEN QUESTION.** |
 | `fix/dkey-id-aliasing` | `0cc64ac` | 17 | original DKey fix on the old `#48` base. Superseded by the above; keep as reference. Safety tag `premerge-dkey`. |
 | `feat/incremental-reasoning-p1` | `8f317dc` | 39 | P1 incremental reasoning, complete + reviewed. Needs the same rebase off unmerged `#48`. |

@@ -90,6 +90,45 @@ SubClassOf(:Ccc :Ddd)
 SubClassOf(:Ddd :Eee)
 ";
 
+/// The `probe_says_inconsistent` fixture — a THIRD conflation shape, found while
+/// rebasing this fix onto `main` (2026-08-21).
+///
+/// `classify`'s gated consistency probe (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`,
+/// **default ON**) walks the asserted `ClassAssertion`s and asks whether the
+/// asserted class is one classify already proved unsatisfiable. It asked with a
+/// raw `ClassId` against `unsatisfiable_idxs`, which is REPORT-indexed. On a
+/// `DKey`-below-a-user-class layout the two disagree, a satisfiable class
+/// inherits a stranger's `⊥`, and the probe answers "the KB is inconsistent" —
+/// which returns `classify_inconsistent`, i.e. EVERY class unsatisfiable and
+/// therefore (via the `entails` short-circuit) EVERY pair a false positive.
+///
+/// The layout this fixture pins, and why each line is load-bearing:
+///
+/// | id | report pos | class |
+/// |----|-----------|-------|
+/// | 0  | —         | `DKey` (minted by the first axiom) |
+/// | 1  | 0         | `Aaa` |
+/// | 2  | 1         | `Ccc` |
+/// | 3  | 2         | **`Fff`** — satisfiable, and the ASSERTED class |
+/// | 4  | 3         | **`Eee`** — the only unsatisfiable class |
+/// | 5  | 4         | `Bbb` |
+/// | 6  | 5         | `Ddd` |
+///
+/// `Fff`'s `ClassId` is 3 and `Eee`'s REPORT POSITION is 3, so the misread hits.
+/// The `ObjectUnionOf` keeps the ontology off the pure-EL fast path (the probe
+/// runs only on the hybrid path); `Eee ⊑ ⊥` satisfies the probe's admission gate
+/// (it declines outright on an empty unsat set); and the `ClassAssertion` is what
+/// the misread loop iterates.
+///
+/// Ground truth: the KB is CONSISTENT and `Eee` is the ONLY unsatisfiable class.
+const CONSISTENCY_PROBE_BODY: &str = r"
+SubClassOf(ObjectSomeValuesFrom(:op DataSomeValuesFrom(:dp xsd:integer)) :Aaa)
+SubClassOf(:Bbb ObjectUnionOf(:Ccc :Ddd))
+SubClassOf(:Eee owl:Nothing)
+SubClassOf(:Ccc :Fff)
+ClassAssertion(:Fff :ind)
+";
+
 /// Add `Declaration(Class(C))` for every class the ontology already mentions.
 ///
 /// Semantically inert (OWL 2 treats a used class as declared), but it moves
@@ -149,6 +188,94 @@ fn dkey_sits_below_a_user_class(onto: &SetOntology<RcStr>) -> bool {
     ) {
         (Some(first_dkey), Some(last_user)) => first_dkey < last_user,
         _ => false,
+    }
+}
+
+/// NON-VACUITY GUARD for [`CONSISTENCY_PROBE_BODY`], kept separate from the
+/// oracle below so a layout drift is reported as a layout failure rather than as
+/// a soundness pass. If interning order ever changes, the oracle would still be
+/// GREEN while testing nothing — this is what fails instead.
+#[test]
+fn consistency_probe_fixture_really_aliases_the_asserted_class() {
+    let onto = parse(CONSISTENCY_PROBE_BODY);
+    let internal = owl_dl_core::convert::convert_ontology(&onto).expect("convert");
+    let mut report_pos_of = std::collections::HashMap::new();
+    let mut id_of = std::collections::HashMap::new();
+    let mut pos = 0usize;
+    for i in 0..internal.vocabulary.num_classes() {
+        let iri = internal
+            .vocabulary
+            .class_iri(owl_dl_core::ClassId::new(u32::try_from(i).unwrap()))
+            .to_string();
+        if iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX) {
+            continue;
+        }
+        id_of.insert(iri.clone(), i);
+        report_pos_of.insert(iri, pos);
+        pos += 1;
+    }
+    let asserted_id = id_of["http://t/Fff"];
+    let unsat_pos = report_pos_of["http://t/Eee"];
+    assert_ne!(
+        "http://t/Fff", "http://t/Eee",
+        "the aliased pair must be two DIFFERENT classes"
+    );
+    assert_eq!(
+        asserted_id, unsat_pos,
+        "fixture no longer aliases: the asserted class `Fff` has ClassId \
+         {asserted_id} and the unsatisfiable class `Eee` has report position \
+         {unsat_pos}. They must COINCIDE for the consistency probe's misread to \
+         be observable — see CONSISTENCY_PROBE_BODY for the required layout."
+    );
+    assert!(
+        dkey_sits_below_a_user_class(&onto),
+        "fixture puts every DKey above every user class, so report position and \
+         ClassId agree and the hazard cannot fire"
+    );
+}
+
+/// SOUNDNESS ORACLE: the gated consistency probe must not turn one aliased bit
+/// into "the whole KB is inconsistent".
+///
+/// Before the fix this returned all SIX classes as unsatisfiable on both hybrid
+/// entry points — and an unsatisfiable class subsumes everything, so that is
+/// every pair in the ontology reported as an entailment that does not hold.
+#[test]
+fn consistency_probe_does_not_invent_an_inconsistency() {
+    let onto = parse(CONSISTENCY_PROBE_BODY);
+    let expected = vec!["http://t/Eee"];
+    let variants: Vec<(&str, owl_dl_reasoner::Classification)> = vec![
+        (
+            "classify",
+            owl_dl_reasoner::classify(&onto).expect("classify"),
+        ),
+        (
+            "classify_n2",
+            owl_dl_reasoner::classify_n2(&onto).expect("classify_n2"),
+        ),
+        (
+            "classify_top_down",
+            owl_dl_reasoner::classify_top_down_with_timeout(&onto, Duration::from_secs(5))
+                .expect("classify_top_down"),
+        ),
+    ];
+    for (name, cls) in &variants {
+        let mut unsat = cls.unsatisfiable_classes();
+        unsat.sort_unstable();
+        assert_eq!(
+            unsat, expected,
+            "[{name}] the consistency probe read the report-indexed unsat set \
+             with a raw ClassId and declared the KB inconsistent, so every class \
+             is now ⊥ and every pair is a false positive"
+        );
+        assert!(
+            !cls.stats().inconsistent,
+            "[{name}] KB reported inconsistent; it is consistent (only `Eee` is ⊥)"
+        );
+        assert!(
+            !cls.is_subclass("http://t/Aaa", "http://t/Ddd"),
+            "[{name}] false positive Aaa ⊑ Ddd — no such entailment holds"
+        );
     }
 }
 
@@ -620,13 +747,43 @@ fn report_positions_are_never_cast_to_class_ids() {
     const BEGIN: &str = "BEGIN report-position ↔ ClassId conversion boundary";
     const END: &str = "END report-position ↔ ClassId conversion boundary";
     let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/classify.rs"));
-    let production = src
-        .split_once("\n#[cfg(test)]")
-        .map_or(src, |(before, _)| before);
+
+    // Skip `#[cfg(test)]` modules WITHOUT truncating the file.
+    //
+    // This used to be `src.split_once("\n#[cfg(test)]")`, which stops at the
+    // FIRST test module. classify.rs has an inline one at ~line 1039, so the
+    // scan silently covered 1,038 of 6,800 lines and passed vacuously — it
+    // missed two real report-position/`ClassId` conflations that were sitting
+    // in plain sight further down. A scanner that can go blind without failing
+    // is worse than no scanner, so the coverage floor below is asserted too.
+    let total_lines = src.lines().count();
+    let mut scanned_lines = 0usize;
+    let mut skipping_test_mod = false;
 
     let mut inside_boundary = false;
     let mut offenders: Vec<String> = Vec::new();
-    for (lineno, line) in production.lines().enumerate() {
+    for (lineno, line) in src.lines().enumerate() {
+        // Both test modules in this file are top level, so their closing brace
+        // is a `}` in column 0. An INDENTED `#[cfg(test)]` would break that
+        // assumption, so fail loudly rather than guess.
+        if skipping_test_mod {
+            if line == "}" {
+                skipping_test_mod = false;
+            }
+            continue;
+        }
+        if line == "#[cfg(test)]" {
+            skipping_test_mod = true;
+            continue;
+        }
+        assert!(
+            line.trim_start() != "#[cfg(test)]",
+            "classify.rs:{}: indented `#[cfg(test)]` — this scanner only knows \
+             how to skip TOP-LEVEL test modules (it finds their end by a `}}` in \
+             column 0). Teach it the nested case before landing this.",
+            lineno + 1
+        );
+        scanned_lines += 1;
         if line.contains(BEGIN) {
             inside_boundary = true;
             continue;
@@ -660,5 +817,14 @@ fn report_positions_are_never_cast_to_class_ids() {
          or move the code inside the boundary sentinels if it genuinely \
          operates in id space.\n{}",
         offenders.join("\n")
+    );
+
+    // COVERAGE FLOOR — the guard on the guard. If a future edit makes the
+    // skip logic swallow the file again, this fails instead of passing empty.
+    assert!(
+        scanned_lines * 100 >= total_lines * 60,
+        "the conversion scan covered only {scanned_lines} of {total_lines} \
+         lines of classify.rs — it has gone (partly) blind. Fix the \
+         `#[cfg(test)]` skip before trusting a green result here."
     );
 }

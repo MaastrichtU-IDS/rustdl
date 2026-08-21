@@ -1513,7 +1513,14 @@ fn classify_internal_with_timeout_impl(
         }
     }
     let _ = satisfiable; // currently informational only
-    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &mut stats) {
+    if probe_says_inconsistent(
+        internal,
+        &prepared,
+        &reported,
+        &unsatisfiable_idxs,
+        n,
+        &mut stats,
+    ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {
@@ -1708,6 +1715,7 @@ fn classify_pure_el(
 fn probe_says_inconsistent(
     internal: &InternalOntology,
     prepared: &PreparedOntology,
+    reported: &ReportedClasses,
     unsatisfiable_idxs: &HashSet<usize>,
     n_classes: usize,
     stats: &mut ClassificationStats,
@@ -1742,7 +1750,9 @@ fn probe_says_inconsistent(
     for ax in &internal.axioms {
         if let owl_dl_core::Axiom::ClassAssertion { class, .. } = ax
             && let owl_dl_core::ir::ConceptExpr::Atomic(c) = internal.concepts.get(*class)
-            && unsatisfiable_idxs.contains(&(c.index() as usize))
+            && reported
+                .report_pos(*c)
+                .is_some_and(|pos| unsatisfiable_idxs.contains(&pos))
         {
             return true;
         }
@@ -2286,7 +2296,7 @@ fn saturator_complete_fragment_impl(internal: &InternalOntology, skip_abox: bool
 /// nothing. The prelude (functional roles, `disjoint_ok`, bare declarations) is
 /// copied from [`saturator_complete_fragment_impl`] deliberately so the taint
 /// and the real gate cannot disagree about what "out of fragment" means.
-fn tainted_classes(internal: &InternalOntology, num_classes: usize) -> Vec<bool> {
+fn tainted_classes(internal: &InternalOntology, num_class_ids: usize) -> Vec<bool> {
     let functional_roles: HashSet<Role> = internal
         .axioms
         .iter()
@@ -2307,7 +2317,7 @@ fn tainted_classes(internal: &InternalOntology, num_classes: usize) -> Vec<bool>
         || inverse_functional_roles.iter().next().is_some();
     let disjoint_ok = !has_cardinality_role;
     let bare = BareRoleDecls::analyze(internal);
-    let mut tainted = vec![false; num_classes];
+    let mut tainted = vec![false; num_class_ids];
     let mut buf: Vec<owl_dl_core::ClassId> = Vec::new();
     for ax in &internal.axioms {
         if is_saturator_axiom(
@@ -2322,11 +2332,18 @@ fn tainted_classes(internal: &InternalOntology, num_classes: usize) -> Vec<bool>
         }
         buf.clear();
         owl_dl_core::locality::collect_classes_in_axiom(ax, &internal.concepts, &mut buf);
+        // ─── BEGIN report-position ↔ ClassId conversion boundary ─────────
+        // Pure id space on both sides: `collect_classes_in_axiom` yields
+        // `ClassId`s and `tainted` is sized by the CLASS-ID space (the caller
+        // passes `ReportedClasses::num_class_ids`, not the report count — it
+        // used to pass the report count `n`, which silently dropped every id
+        // above it and marked the wrong slot for any `DKey`).
         for c in &buf {
             if let Some(slot) = tainted.get_mut(c.index() as usize) {
                 *slot = true;
             }
         }
+        // ─── END report-position ↔ ClassId conversion boundary ───────────
     }
     tainted
 }
@@ -3128,6 +3145,12 @@ fn unsat_probe_budget(per_pair: Option<std::time::Duration>) -> Option<std::time
 ///
 /// Format, one line per class: `<idx> sat <label-idx>...` / `<idx> unsat` /
 /// `<idx> noverdict`, then a `#closure` section with `<idx> <subsumer-idx>...`.
+///
+/// INDEX SPACES (they differ — see `ReportedClasses`). The `<idx>` of the
+/// `#labels`, `#times` and `#closure` sections is a REPORT POSITION; every
+/// `<label-idx>` / `<subsumer-idx>` and the `#tainted` index are raw `ClassId`
+/// indices. A `DKey` in the vocabulary makes the two disagree, so do not join
+/// the sections on the bare number.
 /// Failure to write is reported and otherwise ignored — a diagnostic must not
 /// abort a classify.
 fn dump_label_cache(
@@ -3135,6 +3158,7 @@ fn dump_label_cache(
     closure: &owl_dl_saturation::Subsumers,
     times: &[std::sync::atomic::AtomicU64],
     tainted: &[bool],
+    reported: &ReportedClasses,
     n: usize,
     path: &std::path::Path,
 ) {
@@ -3176,7 +3200,7 @@ fn dump_label_cache(
     }
     out.push_str("#closure\n");
     for i in 0..n {
-        let cid = owl_dl_core::ClassId::new(u32::try_from(i).expect("class index fits in u32"));
+        let cid = reported.class_id(i);
         let mut ids: Vec<u32> = closure
             .subsumers_of(cid)
             .into_iter()
@@ -3561,7 +3585,7 @@ fn classify_top_down_internal_impl(
             let mut failing: Option<usize> = None;
             for k in 0..scan {
                 let i = (k * stride).min(n - 1);
-                let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
+                let id = reported.class_id(i);
                 let r = prepared
                     .classify_labels(id, effective_deadline(global_deadline, Some(small_dur)));
                 if matches!(r, crate::LabelOracle::NoVerdict) {
@@ -3575,7 +3599,7 @@ fn classify_top_down_internal_impl(
                 // no evidence a larger one would buy anything. Keep the cheap budget.
                 None => cache_ms,
                 Some(i) => {
-                    let id = owl_dl_core::ClassId::new(u32::try_from(i).expect("fits u32"));
+                    let id = reported.class_id(i);
                     // DECIDE with a budget strictly larger than the one we would APPLY.
                     // The decision was otherwise marginal: measured, the deciding class on
                     // `ore_ont_5107` failed its 1000 ms retry in one build and succeeded in
@@ -3686,7 +3710,8 @@ fn classify_top_down_internal_impl(
             &label_cache,
             &closure,
             &label_times,
-            &tainted_classes(internal, n),
+            &tainted_classes(internal, reported.num_class_ids()),
+            &reported,
             n,
             std::path::Path::new(&path),
         );
@@ -4388,7 +4413,14 @@ fn classify_top_down_internal_impl(
         .saturating_sub(stats.sweep_wall_ms)
         .saturating_sub(stats.matrix_wall_ms);
 
-    if probe_says_inconsistent(internal, &prepared, &unsatisfiable_idxs, n, &mut stats) {
+    if probe_says_inconsistent(
+        internal,
+        &prepared,
+        &reported,
+        &unsatisfiable_idxs,
+        n,
+        &mut stats,
+    ) {
         return Ok(classify_inconsistent(classes, index, stats.fragment));
     }
     Ok(Classification {
@@ -4767,7 +4799,13 @@ fn subsumes_via_tableau(
     let wedge_start = Instant::now();
     let verdict = prepared.hyper_decide(sub, sup, hyper_deadline);
     let wedge_elapsed_ms = u64::try_from(wedge_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // ─── BEGIN report-position ↔ ClassId conversion boundary ─────────────
+    // Genuinely id space, and it never leaves it: `pairs_per_sub` is a
+    // diagnostic histogram keyed by raw `ClassId` index whose keys are only
+    // ever summed/merged (`owl-dl-cli` reports quantiles of the VALUES and
+    // never maps a key back to a class). No report position is involved.
     *stats.pairs_per_sub.entry(sub.index()).or_insert(0) += 1;
+    // ─── END report-position ↔ ClassId conversion boundary ───────────────
     let bucket = match wedge_elapsed_ms {
         0 => 0,
         1 => 1,

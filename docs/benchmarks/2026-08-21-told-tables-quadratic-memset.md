@@ -104,3 +104,29 @@ deadline will absorb the saving.** Deadline-bound phases (`tier_walk` 13, `label
 `10926` / `12898`. **Bucket counts over-count distinct ontologies** — the "12 non-DKey
 conversion-bound" are ~7 distinct. Worth deduplicating before quoting any bucket size as a
 population.
+
+## Sibling instance in `role_hierarchy.rs`, and a commit-hygiene correction
+
+Sweeping the tree for the antipattern (`vec![false; n]` allocated inside a loop over n) found
+`RoleHierarchyBuilder::build` with the **identical** defect — same per-iteration allocation, same
+BFS, same `ups` invariant — and the same exact fix applies.
+
+**It carries NO measured corpus win, and is not claimed to.** `n` there is the ROLE count, whose
+ORE maximum is 11,312 (median 24, mean 98) — ~128 MB of zeroing, about 13 ms. It was sized *before*
+being applied, specifically so it would not be mis-sold as a sibling of the 6.2× told win. Applied
+because it is the same defect class with an output-identical transformation, and it would bite an
+ontology with ~100k roles.
+
+The same sweep turned up something more useful: **`crates/owl-dl-reasoner/src/classify.rs` already
+carries the canonical in-tree fix for this exact pattern**, using a generation counter, and its
+comment names the hazard outright — *"the O(n²) `vec![false; n]`-per-class allocation (fatal on
+55k-class onts)"*. So the pattern was known and fixed in **one** place while two others kept it.
+**When touching any closure builder here, grep for `vec![false; n]` inside a loop.**
+
+> **COMMIT HYGIENE — the `role_hierarchy.rs` change is in the WRONG COMMIT.** A `git add -A` for
+> the convergence measurement swept it into **`6905aae`**, whose subject is
+> `measure: 60% of the non-label-cache tail is genuinely STALLED, not slow`. Twenty lines of code
+> therefore live inside a measurement-only commit, where nobody bisecting a performance change
+> would look. Not rewritten, because `main` is shared and force-pushing it to fix attribution is
+> the more expensive error. Recorded here instead — and the general fix is to stage explicit paths
+> rather than `git add -A` when a measurement and a code change are in flight together.

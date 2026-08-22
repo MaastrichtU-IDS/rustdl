@@ -1767,8 +1767,27 @@ WITH a number before calling it non-reproducing.**
   witness to BE a model, and it is not on an inverse-functional `ABox`: the witness applies
   FUNCTIONAL merges but not INVERSE-functional ones.** Subtractive, so FP=0 is intact — but the
   falsified clause is the stated basis for shipping default-ON *without* the ORE
-  verdict-identity bake-off, so **that bake-off is now load-bearing, not optional**. Fix belongs
-  in the `ABox`-seeded wedge consistency completion; workaround `RUSTDL_PSEUDO_MODEL=0`.
+  verdict-identity bake-off, so **that bake-off is now load-bearing, not optional**.
+  **THE BAKE-OFF RAN (2026-08-22) AND BOTH THE MECHANISM AND THE FIX ABOVE ARE WRONG.**
+  1,144 ABox-bearing ORE ontologies, two arms: **495 comparable, 8 losing entailed types, 17
+  (individual, type) pairs of 8.41M**, 0 gains. **The predictor was backwards** — the 73-ontology
+  frame chosen *because* the clause names inverse-functional merging lost **0**; all 17 came from
+  the frame labelled lower-risk. **And the fix is not "apply the missing merges"**:
+  `seeded_individual_labels` already resolves through the union-find, and `ore_ont_3892`
+  (real-world, Semantic Web Dog Food) loses 3 types with **zero** cardinality/functional
+  constructs — 21 `ObjectUnionOf` + 171 `DisjointClasses`, losing `<org> : Group` by **case
+  analysis**. The real invariant that fails: a `Sat` completion is a **PRE-MODEL**, its labels
+  only what one branch was forced to derive, a strict subset of what is entailed. A label-complete
+  witness (intersect over completions) is the only general fix and is materially more expensive —
+  the mirror of the FP-unsound `RUSTDL_SNAPSHOT_CAPTURE` trap. **Shipped instead:
+  `witness_prune_active` in `realize --json`**, because the loss was SILENT (`incomplete` stays
+  `false` — no probe is cut, the prune never asks). **Default stays ON**: 17 pairs in 8.41M
+  against a prune the OFF arm shows is load-bearing for tractability (OFF fails to finish on 563
+  vs ON's 326; 2.4x more completions on the high-risk subset). **The `RUSTDL_PSEUDO_MODEL=0`
+  workaround is weaker than advertised** — intractable on 37 of 54 consistent high-risk
+  ontologies even at a 600 s cap. See
+  `docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md` and
+  `docs/known-limitations/realize-drops-derived-individual-equality.md`.
 * **The label cache is consulted ZERO times under a global budget** on `ore_ont_11311`/`9944`:
   58 s of build then `pruned=0 pass_through=0 misses=0`, with `tier_walk` aborting in 8 ms
   (`docs/2026-08-17-classify-has-no-budget-allocation.md`). Classify phases consume the deadline

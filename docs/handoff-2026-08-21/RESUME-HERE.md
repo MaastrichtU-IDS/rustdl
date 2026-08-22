@@ -24,18 +24,18 @@ did are retracted.**
 
 ## RESOLVED (2026-08-21) — the question that was open here
 
-The question was whether `fix/dkey-id-aliasing-on-main` @ `60b2e22` changed only the probe end
+The question was whether `fix/dkey-id-aliasing-on-main` @ `14db978` changed only the probe end
 (→ regression) or both ends. **Answer: both ends. That branch does NOT carry a regression.**
 
 Checked directly:
 
-* At `5af44c4` (the parent of `60b2e22`), all three producers already store **report
+* At `9caf7d8` (the parent of `14db978`), all three producers already store **report
   positions** — `reported.class_id(i)` over `0..n` at `:1404`, `:1647`, `:3701` — because this
-  branch's `9cc380c` and `ac721de` converted them.
-* `60b2e22` then converts the consumer: `reported.report_pos(*c).is_some_and(|pos| …)` at
+  branch's `c8ca8b9` and `94e49c0` converted them.
+* `14db978` then converts the consumer: `reported.report_pos(*c).is_some_and(|pos| …)` at
   `:1754`. Same index space on both sides.
 * No raw `ClassId::new(i)` mint survives outside the `ReportedClasses` conversion boundary
-  (`:94`); the remaining ones `60b2e22` fixes are diagnostic-only.
+  (`:94`); the remaining ones `14db978` fixes are diagnostic-only.
 
 So the unsoundness described below is real **only when the probe-end hunk is applied to stock
 `main` in isolation** — which is what was nearly done, and what `probe-fix-was-wrong.md`
@@ -43,7 +43,7 @@ records. On the branch, the two halves are inseparable but correct together.
 
 **Also corrected:** that commit's *message* had asserted the same retracted "LIVE AT DEFAULT
 SETTINGS on main" claim, as did two sections of `rebase-onto-main.md`. Both are now fixed — the
-commit was amended (`002c7e8` -> `60b2e22`, message-only — verified empty diff at the time;
+commit was amended (`002c7e8` -> `14db978`, message-only — verified empty diff at the time;
 the pre-amend commit is now reachable only via `git reflog`, so don't expect that diff to run),
 and its message now states the corrected framing: item (1) is the consumer end of this branch's
 own producer conversion, not a pre-existing `main` defect.
@@ -77,7 +77,7 @@ assertion.)
 | branch | tip | ahead of origin/main | state |
 |---|---|---|---|
 | `fix/classify-consistency-probe-aliasing` | `37f3eb5` | 1 | doc fix + 199-line regression canary. No behaviour change. Rebased onto `origin/main`; **verification COMPLETE — 110/110 binaries, 987 passed, clippy clean.** Ready to push. |
-| `fix/dkey-id-aliasing-on-main` | `60b2e22` | 5 | DKey fix rebased onto main, 1702 tests green. **Open question resolved — coherent, both ends move together.** Message amended (was `002c7e8`). Blocked only on the owner decisions below. |
+| `fix/dkey-id-aliasing-on-main` | `14db978` | 5 | DKey fix rebased onto main, 1702 tests green. **Open question resolved — coherent, both ends move together.** Message amended (was `002c7e8`). Blocked only on the owner decisions below. |
 | `fix/dkey-id-aliasing` | `0cc64ac` | 17 | original DKey fix on the old `#48` base. Superseded by the above; keep as reference. Safety tag `premerge-dkey`. |
 | `feat/incremental-reasoning-p1` | `8f317dc` | 39 | P1 incremental reasoning, complete + reviewed. Needs the same rebase off unmerged `#48`. |
 
@@ -107,10 +107,14 @@ originally forked from it.
 ## Owner decisions still outstanding
 
 1. ~~Corpus FP=0 / MISSED=0 re-validation for the DKey branch.~~ **DONE 2026-08-22 — PASS.**
-   Ran as a two-arm differential (`b796bec` vs `60b2e22`) rather than against the Konclude
+   Ran as a two-arm differential (`b796bec` vs `14db978`) rather than against the Konclude
    oracle, because `main` is already oracle-validated and the real risk was the
    `ReportedClasses` blast radius. **663/663 data-property-bearing ORE ontologies: 0 DIFFER,
-   0 REGRESSION, 0 RECOVERY**; 828 unique ontologies swept overall. The bearing frame is the
+   0 REGRESSION, 0 RECOVERY**; 828 unique ontologies swept overall. **RE-MEASURED after the
+   rebase onto v0.4.22 — same verdict: 663/663, 634 IDENTICAL, 0 DIFFER / 0 REGRESSION /
+   0 RECOVERY, all 8 NONDET rows adjudicated to contention.** The re-measure is the
+   authoritative one; the first was against the old merge-base and said nothing about the
+   refactor composed with v0.4.22's conversion changes. The bearing frame is the
    only slice where a DKey can exist, hence the only one that can discriminate. All 9 NONDET
    rows adjudicated to nondeterminism present in both arms. Full account, including two
    instrumentation traps worth carrying forward:
@@ -134,7 +138,7 @@ originally forked from it.
    row_ascending}`, `entails`, `direct_subsumers_fast`, `ReportedClasses::class_id`,
    `tainted_classes`. So it is a purely internal, compiler-guided refactor with **no public-API
    or semver impact**. **And it must not go on this branch:** the DKey branch carries a
-   1702-test green run and a corpus differential measured against `60b2e22`; changing the
+   1702-test green run and a corpus differential measured against `14db978`; changing the
    source changes the binary and invalidates both. Keeping it separate also keeps the DKey diff
    reviewable.
 

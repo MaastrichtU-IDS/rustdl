@@ -182,13 +182,13 @@ The third producer (1511, `classify_pure_el`) never calls the probe; it assemble
    `fix/dkey-id-aliasing-on-main`, there is nothing here to ship but the doc and the
    canary. That may be worth landing anyway — the canary blocks a change that is
    currently sitting in a brief as "the minimal fix".
-3. **~~`fix/dkey-id-aliasing-on-main` (`60b2e22`) needs re-checking against this.~~
+3. **~~`fix/dkey-id-aliasing-on-main` (`14db978`) needs re-checking against this.~~
    CHECKED (2026-08-21) — it is clean.** The concern was that if its `ReportedClasses`
    conversion changed `probe_says_inconsistent` to a report position without
    simultaneously converting all three producers, it would ship this false positive. It
-   converts both. At `5af44c4` (parent of `60b2e22`) the producers already read
+   converts both. At `9caf7d8` (parent of `14db978`) the producers already read
    `reported.class_id(i)` over `0..n` at `:1404`, `:1647`, `:3701` — converted by
-   `9cc380c`/`ac721de` — and `60b2e22` then moves the consumer to
+   `c8ca8b9`/`94e49c0` — and `14db978` then moves the consumer to
    `reported.report_pos(*c)` at `:1754`. Same index space on both sides, so that branch
    carries no regression from this site. Cherry-picking the canary onto it is still
    worthwhile as a permanent guard, but is no longer needed to answer the question.

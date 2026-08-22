@@ -1,15 +1,15 @@
 # DKey id-aliasing fix — rebase onto `main` + re-audit
 
 Branch **`fix/dkey-id-aliasing-on-main`**, based on `origin/main` (`b796bec`).
-Final tip **`60b2e22`**. All 4 commits replayed; one additional commit carries the
+Final tip **`14db978`**. All 4 commits replayed; one additional commit carries the
 Part-2 findings.
 
 ```
-60b2e22 fix(classify): finish the probe conversion; one NEW conflation in main's code   <- Part 2
-6bd3904 docs: DKey aliasing resolution — corrected trigger, two defects, follow-ups
-5af44c4 test(classify): corpus canary that actually runs in CI; retire unsatisfiable_bitset
-ac721de fix(classify): unsat projection read a ClassId-indexed bitset with a report position
-9cc380c fix(classify): report positions are not ClassIds — kills classify() false positives
+14db978 fix(classify): finish the probe conversion; one NEW conflation in main's code   <- Part 2
+eddaaed docs: DKey aliasing resolution — corrected trigger, two defects, follow-ups
+9caf7d8 test(classify): corpus canary that actually runs in CI; retire unsatisfiable_bitset
+94e49c0 fix(classify): unsat projection read a ClassId-indexed bitset with a report position
+c8ca8b9 fix(classify): report positions are not ClassIds — kills classify() false positives
 b796bec (origin/main)
 ```
 
@@ -91,9 +91,9 @@ the whole file. Three hardenings, because a guard that can fail silently is the 
 > from this site.** See `probe-fix-was-wrong.md` for the isolated-on-main experiment.
 
 `RUSTDL_CLASSIFY_CONSISTENCY_PROBE` **defaults ON** (`is_none_or(|v| v != "0")`), so once the
-producers move, this is not latent. And they do move: this branch's `9cc380c` and `ac721de`
+producers move, this is not latent. And they do move: this branch's `c8ca8b9` and `94e49c0`
 convert all three producers to report positions (`reported.class_id(i)` over `0..n`). At
-`5af44c4` — the parent of this commit — the producers are report-indexed while the probe still
+`9caf7d8` — the parent of this commit — the producers are report-indexed while the probe still
 compares `c.index()`, and *that* is the false positive. With a DKey below a user class, a
 satisfiable asserted class reads a stranger's ⊥ bit; the probe returns `true`; classify returns
 `classify_inconsistent`, which marks **every** class unsatisfiable; `Classification::entails`
@@ -102,10 +102,10 @@ that does not hold.** Same severity and same mechanism as defect (b), reached by
 spelling — but reached only *on this branch*, not on `main`.
 
 **The two ends are therefore inseparable.** This hunk applied alone to `main` *introduces* the
-defect it appears to fix; `9cc380c`/`ac721de` applied without it leave the defect live. Neither
+defect it appears to fix; `c8ca8b9`/`94e49c0` applied without it leave the defect live. Neither
 half may be cherry-picked.
 
-Reproduced at `5af44c4`, not inferred — new fixture `CONSISTENCY_PROBE_BODY`, id layout
+Reproduced at `9caf7d8`, not inferred — new fixture `CONSISTENCY_PROBE_BODY`, id layout
 `DKey=0, Aaa=1/pos0, Ccc=2/pos1, Fff=3/pos2, Eee=4/pos3(⊥), Bbb=5/pos4, Ddd=6/pos5`, so
 `Fff`'s ClassId (3) collides with `Eee`'s report position (3):
 
@@ -237,7 +237,7 @@ Not run (owned by you, per the brief): `cargo test --workspace`,
 
 2. **~~`probe_says_inconsistent` is default-ON and produces false positives on `main`
    today.~~ RETRACTED — see Offender 1.** `main` is sound at this site; the false positive
-   exists only between `9cc380c`/`ac721de` and this commit, i.e. inside this branch. **No
+   exists only between `c8ca8b9`/`94e49c0` and this commit, i.e. inside this branch. **No
    release note is owed**, and the earlier instruction to write one is withdrawn.
 
    What remains true is the *shape* of the hazard, which is why the canary in
@@ -266,5 +266,5 @@ Not run (owned by you, per the brief): `cargo test --workspace`,
 5. **Unrelated dirty files left untouched:** `crates/owl-dl-py/examples/nesy_loop/{llm,run}.py`
    were already modified in the working tree when I started. Not staged, not committed.
 
-6. **Part-2 fixes are a separate commit** (`60b2e22`) on top of the four replayed ones, so they
+6. **Part-2 fixes are a separate commit** (`14db978`) on top of the four replayed ones, so they
    can be reviewed — or dropped — independently of the rebase itself.

@@ -3,17 +3,62 @@
 **Date:** 2026-08-22 · Closes the corpus gate on `fix/dkey-id-aliasing-on-main`.
 **Result: 663/663 data-property-bearing ORE ontologies, 0 DIFFER, 0 REGRESSION, 0 RECOVERY.**
 
-## Arms
+## Result summary — measured TWICE, same verdict
+
+| | first measurement | **re-measure (authoritative)** |
+|---|---|---|
+| base arm | `b796bec` (old merge-base) | **`9a16697`** = `origin/main` incl. **v0.4.22** |
+| dkey arm | `60b2e22` | **`14db978`** (rebased) |
+| bearing coverage | 663/663 | **663/663** |
+| IDENTICAL | 634 | **634** |
+| BOTH_TIMEOUT | 19 | 20 |
+| NONDET (all adjudicated) | 9 | **8** |
+| BOTH_ERR | 1 | 1 |
+| **DIFFER / REGRESSION / RECOVERY** | 0 / 0 / 0 | **0 / 0 / 0** |
+
+The re-measure exists because `main` gained **v0.4.22** while this was in flight — a real code
+release (`build_told_tables` O(n^2) memset removed, 6.2x conversion; convert sharing told tables
+between passes; `realize` surfacing `witness_prune_active`). The first measurement was against
+the old merge-base, so it said nothing about the refactor **composed with** those changes. It
+now does. The conversion path is exactly where an interaction with index construction would
+show, which is why re-running was not optional.
+
+In the re-measure **all 8 NONDET rows adjudicated to 3/3 identical in both arms with the same
+hash** — every one a contention artifact of the 4-way sweep, none an answer difference. That is
+cleaner than the first pass, where `ore_ont_3281` and `ore_ont_10517` needed deeper attribution;
+`10517` is now simply `BOTH_TIMEOUT`. Integrity checks on the re-measure: 663 unique rows, 0
+missing, 0 duplicates, **0 empty-hash rows**.
+
+Raw data: `docs/benchmarks/data-2026-08-22-dkey-remeasure-on-v0422.tsv` (+ `-nondet-adjudication`).
+
+## Arms (first measurement — superseded, kept for the record)
 
 | arm | commit | what it is |
 |---|---|---|
 | base | `b796bec` | `main` minus the DKey work |
-| dkey | `60b2e22` | `fix/dkey-id-aliasing-on-main` tip |
+| dkey | `60b2e22` | `fix/dkey-id-aliasing-on-main` tip, pre-rebase |
 
-`b796bec` is the merge-base. `origin/main` had advanced 8 commits by the time of the run, all
-of them under `docs/` — so this comparison is behaviourally identical to one against current
-`main`, and it avoids rebasing the branch (which would have rewritten `60b2e22` and re-orphaned
-the handoff doc references).
+`b796bec` is the merge-base. At the time of that run `origin/main` had advanced 8 commits, all
+under `docs/`, so the comparison was behaviourally identical to one against `main` **as it then
+stood** — and it avoided rewriting `60b2e22`. That reasoning expired within the hour: `main`
+then landed v0.4.22 with real code changes, which is what forced the re-measure above. The
+lesson is that "main's lead is docs-only" is a fact with a short shelf life; re-check it at the
+moment of measurement, not before.
+
+### Commit hashes here are rebase-volatile
+
+The rebase onto v0.4.22 rewrote all five commits. Anything citing the pre-rebase hashes maps as:
+
+| pre-rebase | post-rebase | commit |
+|---|---|---|
+| `9cc380c` | `c8ca8b9` | report positions are not ClassIds |
+| `ac721de` | `94e49c0` | unsat projection read a ClassId-indexed bitset |
+| `5af44c4` | `9caf7d8` | corpus canary in CI; retire `unsatisfiable_bitset` |
+| `6bd3904` | `eddaaed` | DKey aliasing resolution (docs) |
+| `002c7e8` -> `60b2e22` | `14db978` | finish the probe conversion |
+
+`002c7e8` -> `60b2e22` was an earlier message-only amend. These references have now been
+refreshed three times; prefer citing a commit by its subject and role over its hash.
 
 Built in two separate worktrees with separate `CARGO_TARGET_DIR`s. Positive rebuild
 confirmation per arm (7 `Compiling owl-dl` lines each, 0 errors) and the binaries were verified
@@ -86,7 +131,27 @@ arm before comparing two arms.* The harness was restructured to run 4 times per 
 reported as a DIFFER. Every one of the 9 NONDETs would have been a confident false finding
 under a 2-run harness.
 
+**4. A broken harness fails IDENTICALLY in both arms, which reads as agreement.** Setting up
+the re-measure, a `sed` double-substitution pointed the sweep at `arms22` instead of `arms2`.
+Both binaries were then missing, every invocation returned non-zero, and every row came back
+`BOTH_ERR` — indistinguishable at a glance from "the arms agree". A 3-ontology smoke test caught
+it on the first row. The harness now **asserts both binaries exist and are executable before
+sweeping**, and has a distinct `ERR_ASYM` bucket so a one-sided error cannot hide inside
+`BOTH_ERR`. Generalised: every "both arms agree" bucket needs a reason it could not have been
+produced by the harness failing to run at all.
+
 ## Raw data
 
-- `docs/benchmarks/data-2026-08-22-dkey-reportedclasses-differential.tsv` — all 914 rows
-- `docs/benchmarks/data-2026-08-22-dkey-nondet-adjudication.tsv` — the serial 3x re-tests
+- `docs/benchmarks/data-2026-08-22-dkey-remeasure-on-v0422.tsv` — re-measure, 663 rows (authoritative)
+- `docs/benchmarks/data-2026-08-22-dkey-remeasure-nondet-adjudication.tsv` — its serial 3x re-tests
+- `docs/benchmarks/data-2026-08-22-dkey-reportedclasses-differential.tsv` — first measurement, 914 rows
+- `docs/benchmarks/data-2026-08-22-dkey-nondet-adjudication.tsv` — its serial 3x re-tests
+
+## Toolchain note
+
+Everything here ran under `RUSTUP_TOOLCHAIN=stable` (clippy 0.1.96), which **overrides**
+`rust-toolchain.toml`'s pinned `1.95.0`. That pin exists specifically to stop clippy/rustfmt
+drift from turning CI red, and the pinned toolchain is not installed locally — which is why the
+handoff instructions reach for `stable`. For the two `doc_markdown` errors seen here it makes no
+difference (CI reproduces them identically on the pin), but the override is the wrong default and
+should not be copied forward.

@@ -33,7 +33,24 @@ use crate::told::{ToldTables, build_told_tables};
 /// as a conjunct of a top-level `And`) and append a derived
 /// `SubClassOf(X, ∃R.C)` for each *minimal* common told-subsumer `C` of
 /// the disjuncts. See the module docs for soundness.
-pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
+/// Returns the `ToldTables` it built **iff `onto` was left unmodified**, so the
+/// next pass can reuse them instead of rebuilding.
+///
+/// `build_told_tables` is not cheap on a large TBox: its axiom scan is O(#axioms)
+/// with a pool lookup per axiom, measured at **3.9 s per call** on `ore_ont_3524`
+/// (2,097,631 axioms), and `convert_ontology` called it here and again in
+/// `derive_forced_disjuncts` immediately afterwards. Where this pass appends
+/// nothing, the second build is provably redundant — verified by fingerprinting
+/// the closure: both calls produced identical tables (`ore_ont_3524`
+/// `1cae6c7a85864700`, `ore_ont_9674` `e30156ebb2b0bd21`).
+///
+/// The `Some` arm is gated on `onto.axioms.len()` being unchanged, which is the
+/// robust detector: EVERY mutation in this function sits inside a loop that
+/// pushes an axiom, so "no axiom appended" is equivalent to "not mutated". A
+/// concept interned without an axiom push could not affect the tables anyway —
+/// interning does not add to `vocabulary`, which is what sizes them.
+pub fn derive_disjunction_existentials(onto: &mut InternalOntology) -> Option<ToldTables> {
+    let axioms_before = onto.axioms.len();
     let told = build_told_tables(onto);
     // Phase 1 (immutable borrow): collect (sub, role, common-class) for
     // `∃R.(union)` supers, and (sub, common-class) for **bare** `(union)`
@@ -101,7 +118,9 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
         }
     }
     if triples.is_empty() && bare.is_empty() && dom_ranges.is_empty() {
-        return;
+        // Nothing to append, so `told` is still valid for the caller's next pass.
+        // This is the common case and the whole point of the return value.
+        return Some(told);
     }
     // Phase 2 (mutable borrow): intern the derived existentials + push.
     for (sub, role, c) in triples {
@@ -131,6 +150,12 @@ pub fn derive_disjunction_existentials(onto: &mut InternalOntology) {
             onto.axioms
                 .push(Axiom::ObjectPropertyDomain { role, domain: cls });
         }
+    }
+
+    if onto.axioms.len() == axioms_before {
+        Some(told)
+    } else {
+        None
     }
 }
 

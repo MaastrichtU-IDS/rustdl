@@ -2278,11 +2278,16 @@ pub fn convert_ontology<A: ForIRI>(
     // share a told-subsumer C (sound under-approximation; feeds the EL
     // saturator a case-split it otherwise drops). Runs on the fully
     // populated IR.
-    crate::disjunction_existential::derive_disjunction_existentials(&mut out);
+    // Pass 1 hands its told tables to pass 2 when it appended nothing, so the
+    // immediately-following rebuild is skipped. Behaviour-identical: the tables are
+    // reused ONLY when the ontology is provably unchanged, and pass 2 rebuilds
+    // otherwise (which is what preserves the intentional dependency noted below —
+    // pass 2 must see pass 1's additions).
+    let reusable_told = crate::disjunction_existential::derive_disjunction_existentials(&mut out);
     // SP-A: forced-disjunct over atomic disjunctions. Runs AFTER
     // derive_disjunction_existentials so it sees the common-subsumer axioms that
     // pass adds (richer told tables ⟹ more forcings). Sound; atomic-only.
-    crate::approx_saturation::derive_forced_disjuncts(&mut out);
+    crate::approx_saturation::derive_forced_disjuncts_with(&mut out, reusable_told);
     // Canonicalize `X ⊑ ¬Y` into `X ⊓ Y ⊑ ⊥` (a logical equivalence). The gates
     // reject `ConceptExpr::Not` outright, so one negated GCI routes an
     // otherwise-EL ontology onto the O(n²) hybrid path; the lowered-⊥ form is

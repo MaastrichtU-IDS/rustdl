@@ -110,3 +110,56 @@ The **1,071 ABox-bearing ontologies WITHOUT `InverseFunctional`** are lower-risk
 falsified clause does not bite there) but, being cheaper, are far more likely to complete in *both*
 arms. That is the frame to run for breadth. It cannot exercise the falsified case — which is exactly
 why it is complementary rather than a substitute.
+
+---
+
+## BREADTH FRAME COMPLETE — 1,071 ABox-bearing ontologies without `InverseFunctional`
+
+The frame the previous section identified as where usable coverage lives. All 1,071 attempted, both
+arms, `realize --json`, 60 s cap, single-thread, P=8.
+
+| | count |
+|---|---:|
+| attempted | 1,071 |
+| **comparable (both arms produced output)** | **478** |
+| ON timeouts | 326 |
+| OFF timeouts | **563** |
+| ON errors (inconsistent-KB refusals) | 29 |
+| **ontologies losing entailed types** | **8** |
+| **total lost (individual, type) pairs** | **17** |
+| ontologies gaining (must be 0) | **0** |
+| aggregate pairs | ON 8,407,895 · OFF 8,407,912 · **delta −17** |
+
+**17 pairs of 8.41 million = 0.0002%.** Losers (`data-2026-08-22-pseudo-model-breadth-losers.tsv`):
+**7 of 8 are OAEI benchmark variants** of one systematically-perturbed reference ontology; the
+eighth, `ore_ont_3892`, is **real-world** (Semantic Web Dog Food) and is the one that matters for
+user impact — and the one that proved the mechanism is case analysis rather than a missing merge
+rule.
+
+**The OFF-arm timeout count is the benefit, restated on a second independent frame.** OFF fails to
+finish on **563** against ON's **326**: the prune is what makes `realize` tractable on 237
+additional ontologies here, consistent with the 2.4× measured on the high-risk subset. It is also
+why coverage is 478 rather than 1,042 — the comparison is limited by the arm being tested against,
+not by the corpus.
+
+### Combined verdict across both frames
+
+| frame | comparable | losers | lost pairs |
+|---|---:|---:|---:|
+| ABox + `InverseFunctional` (73) | 17 | 0 | 0 |
+| ABox, no `InverseFunctional` (1,071) | 478 | 8 | 17 |
+| **total** | **495** | **8** | **17** |
+
+Note the inversion worth flagging: the high-risk frame — selected *because* the falsified clause
+names inverse-functional merging — produced **zero** losses, while the supposedly lower-risk frame
+produced all of them. **The construct the falsified argument named was the wrong predictor.** That is
+the same class of error as this record's standing warning that a shape census sizes a population but
+does not predict an outcome.
+
+### Position
+
+Not "flip the default". The measured cost is 17 pairs in 8.41 M; the measured benefit is that the
+prune is load-bearing for `realize` tractability on hundreds of ontologies. Shipped:
+`witness_prune_active` so the approximation is **observable**, the mechanism documented as case
+analysis over a pre-model, and `RUSTDL_PSEUDO_MODEL=0` recorded as the workaround **with** its own
+measured limitation (intractable on 37 of 54 consistent high-risk ontologies at a 600 s cap).

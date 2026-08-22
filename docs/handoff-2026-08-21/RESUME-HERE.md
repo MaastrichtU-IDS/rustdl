@@ -115,9 +115,21 @@ originally forked from it.
    pinned at 0.4.x" cannot exist, and no workflow runs `cargo publish`. A rename would have
    been no safer: it removes the old symbol identically while keeping the `contains(usize)`
    footgun. See `dkey-fix-report.md` R3.2.
-3. Whether to do the `ReportIdx` newtype. Three defects of this class have now shipped in
-   `classify.rs` and **none** was caught by reading or by a source-level guard — each needed a
-   behavioural oracle or an execution. A newtype would have made all three a compile error.
+3. ~~Whether to do the `ReportIdx` newtype.~~ **DECIDED 2026-08-22: yes, but on a SEPARATE
+   follow-up branch after the DKey branch merges.** Three defects of this class have shipped in
+   `classify.rs` and none was caught by reading or by a source-level guard — each needed a
+   behavioural oracle or an execution. A newtype would have made all three a compile error, so
+   the case for doing it stands.
+
+   Two findings shaped the timing. **It is cheaper than it sounds:** `Classification`'s public
+   API is entirely string-based (`is_subclass(&str, &str)`, `equivalent_classes(&str)`, …), and
+   all eight bare-`usize` boundaries in the file are private — `Matrix::{insert, row_contains,
+   row_ascending}`, `entails`, `direct_subsumers_fast`, `ReportedClasses::class_id`,
+   `tainted_classes`. So it is a purely internal, compiler-guided refactor with **no public-API
+   or semver impact**. **And it must not go on this branch:** the DKey branch carries a
+   1702-test green run and a corpus differential measured against `60b2e22`; changing the
+   source changes the binary and invalidates both. Keeping it separate also keeps the DKey diff
+   reviewable.
 
 ## Process note worth keeping
 

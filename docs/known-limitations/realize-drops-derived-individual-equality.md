@@ -198,3 +198,59 @@ two-arm ORE sweep plus a ΔMISSED arm.** Neither has been run.
 Note the flip is *also* what would let the shipped `RUSTDL_PSEUDO_MODEL` default recover its
 falsified soundness-by-construction argument, since the witness would then apply
 inverse-functional merges. That makes the sweep worth running, not a reason to skip it.
+
+---
+
+## THE MECHANISM IS BROADER THAN INVERSE-FUNCTIONAL: cardinality-induced merges too (2026-08-22)
+
+This document, and the `pseudo_model_enabled` doc comment, localise the falsified
+soundness-by-construction argument to **inverse-functional** merging ("the witness applies FUNCTIONAL
+merges but not INVERSE-functional ones"). **That localisation is too narrow.**
+
+Found by the breadth arm of the pseudo-model bake-off — the frame deliberately chosen because the
+falsified clause was *not* expected to bite there: ABox-bearing ORE ontologies carrying **no**
+`InverseFunctionalObjectProperty`.
+
+| ontology | ON pairs | OFF pairs | lost | `incomplete` (both arms) |
+|---|---:|---:|---:|---|
+| `ore_ont_10009` | 86 | 88 | **2** | **false** |
+| `ore_ont_11533` | 47 | 49 | **2** | **false** |
+
+**Neither ontology contains `InverseFunctionalObjectProperty`, `FunctionalObjectProperty`, or
+`InverseObjectProperties`.** Both contain `ObjectMaxCardinality` (12) and `ObjectExactCardinality`
+(19), plus one `TransitiveObjectProperty`. So the merge the witness fails to apply is
+**cardinality-induced**, not inverse-functional. They are near-duplicates of each other (identical
+construct counts, different md5), so this is **one** pattern seen twice, not two independent ones.
+
+Verified not to be an artifact:
+
+* **Deterministic** — identical loss, identical individuals (`a32071928c`, `a72192307c`) and class
+  (`sqdsq`), across repeated runs of both arms.
+* **Not a deadline effect** — reproduced at `RUSTDL_REALIZE_PAIR_TIMEOUT_MS=10000`, and
+  `incomplete` is `false` on **both** sides, so no probe was cut on either.
+* **Subtractive only** — 0 gained pairs, which is the instrument's own check (a gain would mean the
+  comparison is broken, since the prune can only remove).
+
+### Consequence
+
+**The loss is SILENT.** Both arms report `incomplete: false`, so `Realization::incomplete` does not
+cover this — exactly as this document already warns for the inverse-functional case, and for the
+same reason: no probe is cut, the prune simply never asks.
+
+The fix direction is unchanged and now better motivated: the `ABox`-seeded wedge consistency
+completion must apply the merges that make the witness a model — and that set includes
+**`≤n` / exact-cardinality** merges, not only inverse-functional ones. Restating the general form:
+*any* merge rule the real completion applies but the witness build does not is a source of silently
+pruned entailments.
+
+Correspondingly, **`RUSTDL_PSEUDO_MODEL=0` is a weaker workaround than advertised** — separately
+measured as intractable on 37 of 54 consistent inverse-functional ORE ontologies even at a 600 s cap
+(`docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`).
+
+### Incidental gap found while investigating
+
+`rustdl justify <file> instance I C` cannot resolve an individual that appears only in assertions
+and is never `Declaration(NamedIndividual(...))`-declared: it reports
+`class IRI not in ontology: <the individual>` in either argument order. That blocked confirming the
+lost entailment by justification the way the inverse-functional case was confirmed. Minor, separate,
+unfixed.

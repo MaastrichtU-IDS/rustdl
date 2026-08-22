@@ -1555,13 +1555,14 @@ fn classify_pure_el(
     }
 }
 
-/// Build a `Classification` representing an inconsistent ontology:
-/// every class is unsatisfiable and therefore a subclass of every
-/// other class (the trivial entailment under inconsistency). Mirrors
-/// Konclude's behaviour. Used when the `ABox` consistency pre-check
-/// fires.
 /// Gated wedge-consistency probe for the classify path
-/// (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`, default OFF).
+/// (`RUSTDL_CLASSIFY_CONSISTENCY_PROBE`, **default ON** — `=0` reverts).
+///
+/// ON by house convention (see [`crate::classify_consistency_probe_enabled`],
+/// which uses the default-ON idiom `is_none_or(|v| v != "0")`): a confidently
+/// WRONG consistency verdict is worse than a slow one, so this is not opt-in.
+/// Until 2026-08-21 this line read "default OFF" — a stale doc that invited
+/// readers to conclude that defects on this path could not reach them.
 ///
 /// classify's inconsistency detection misses the wedge-consistency route
 /// `is_consistent` uses. Over all 1,920 ORE ontologies (2026-08-08),
@@ -1615,6 +1616,29 @@ fn probe_says_inconsistent(
     // Sound and exact, not a heuristic: a `ClassAssertion(C, a)` with `C`
     // unsatisfiable has no model. No probe, no budget, no engine call — it reads a set
     // classify has already computed.
+    //
+    // WHY `c.index()` AND NOT A REPORT POSITION (2026-08-21 — do not "fix" this).
+    // `unsatisfiable_idxs` is NAMED as if it held report positions (indices into
+    // `classes`), and its CONSUMERS on `Classification` read it that way. But all
+    // three producers actually store the RAW `ClassId`: each inserts `i` after
+    // deciding satisfiability of `ClassId::new(i)` — see the `class_id` bindings in
+    // the two tableau unsat probes, and `closure.unsatisfiable_bitset()` (a
+    // `ClassId`-indexed bitset) in `classify_pure_el`. So the set is really
+    // `{ i in 0..n : ClassId(i) is unsatisfiable }`.
+    //
+    // `reportable_class_iris` FILTERS OUT `urn:rustdl-dkey:` IRIs, so once a DKey is
+    // interned below a user class the two spaces diverge and that naming is a lie.
+    // Against the producers' actual semantics, `c.index()` is the correct probe:
+    // `c.index() ∈ unsatisfiable_idxs` ⟺ `c.index() < n` and `ClassId(c.index())`
+    // — i.e. `c` ITSELF — is unsatisfiable. Sound; the `< n` clip can only miss.
+    //
+    // Rewriting this to a report position (`index[class_iri(c)]`) would compare a
+    // position against a set of raw ids and INTRODUCE the maximal false positive: a
+    // consistent KB declared inconsistent, making every pair vacuously entailed.
+    // `classify_dkey_alias_consistency.rs` is the canary; it goes RED under exactly
+    // that edit. The real defect is the producers' misnamed index space (tracked on
+    // `fix/dkey-id-aliasing-on-main`, which introduces a `ReportedClasses` type
+    // owning the bijection) — fix BOTH ends together or neither.
     for ax in &internal.axioms {
         if let owl_dl_core::Axiom::ClassAssertion { class, .. } = ax
             && let owl_dl_core::ir::ConceptExpr::Atomic(c) = internal.concepts.get(*class)
@@ -1688,6 +1712,11 @@ fn probe_says_inconsistent(
     )
 }
 
+/// Build a `Classification` representing an inconsistent ontology:
+/// every class is unsatisfiable and therefore a subclass of every
+/// other class (the trivial entailment under inconsistency). Mirrors
+/// Konclude's behaviour. Used when the `ABox` consistency pre-check
+/// fires.
 fn classify_inconsistent(
     classes: Vec<String>,
     index: HashMap<String, usize>,

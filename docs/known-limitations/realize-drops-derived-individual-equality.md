@@ -254,3 +254,41 @@ and is never `Declaration(NamedIndividual(...))`-declared: it reports
 `class IRI not in ontology: <the individual>` in either argument order. That blocked confirming the
 lost entailment by justification the way the inverse-functional case was confirmed. Minor, separate,
 unfixed.
+
+### The fix is NOT "apply the missing merge" — the flaw is deeper (2026-08-22)
+
+The sections above say the fix "belongs in the witness build: the `ABox`-seeded wedge consistency
+completion must apply inverse-functional merges, as it already does functional ones", and the
+cardinality finding above extended that to `≤n` merges. **Both statements assume the witness read
+loses a merge. It does not.**
+
+`HyperEngine::seeded_individual_labels` (`hyper.rs:2561`) already resolves through the union-find
+before reading:
+
+```rust
+let rep = self.resolve(HNode(individual_idx));
+Some(self.nodes[rep.index()].labels.clone())
+```
+
+So a merge that *does* fire is correctly reflected in the witness. The pruned entailments are
+therefore ones the completion **never derived**, not ones it derived and then lost on read.
+
+That relocates the flaw in the soundness-by-construction argument, and makes it more fundamental
+than a missing rule. The argument reads: *"an entailed type is in every model, hence in the witness,
+hence never pruned."* The step that fails is the second one — it conflates **being true in the model**
+with **appearing in the completion's label set**. A `Sat` completion is a *pre-model*: node labels
+contain what the rules were forced to derive along the branch that happened to close, not everything
+true of that node. An entailed membership that holds in every branch by case analysis need not be
+labelled in the single branch the search returned.
+
+**Consequence for anyone planning the fix.** Adding merge rules to the witness build may close
+specific instances (the two observed mechanisms), but it cannot restore the general argument, because
+the gap is between "derived on this branch" and "entailed". Making the prune sound in general would
+require the witness to be label-complete for the individuals it prunes — i.e. an intersection over
+completions, not one completion — which is a different and much more expensive object, and is the
+same reason the FP-unsound `RUSTDL_SNAPSHOT_CAPTURE` trap exists in the opposite direction.
+
+Practical reading, given the measured cost is tiny and the measured benefit is large (see
+`docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`): treat this as a **documented sound
+under-approximation of `realize`**, not as a bug awaiting a small patch. What is genuinely missing is
+**observability** — the loss is silent, with `incomplete: false` on both arms.

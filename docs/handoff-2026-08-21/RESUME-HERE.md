@@ -106,8 +106,15 @@ originally forked from it.
 
 ## Owner decisions still outstanding
 
-1. Corpus FP=0 / MISSED=0 re-validation for the DKey branch. Expect **no** `bench-corpus` delta
-   (measured across three independently built binaries with a diffing sentinel).
+1. ~~Corpus FP=0 / MISSED=0 re-validation for the DKey branch.~~ **DONE 2026-08-22 — PASS.**
+   Ran as a two-arm differential (`b796bec` vs `60b2e22`) rather than against the Konclude
+   oracle, because `main` is already oracle-validated and the real risk was the
+   `ReportedClasses` blast radius. **663/663 data-property-bearing ORE ontologies: 0 DIFFER,
+   0 REGRESSION, 0 RECOVERY**; 828 unique ontologies swept overall. The bearing frame is the
+   only slice where a DKey can exist, hence the only one that can discriminate. All 9 NONDET
+   rows adjudicated to nondeterminism present in both arms. Full account, including two
+   instrumentation traps worth carrying forward:
+   `docs/2026-08-22-dkey-reportedclasses-differential.md`.
 2. ~~`Subsumers::unsatisfiable_bitset()` was **deleted** on the DKey branches — the only
    semver-visible change.~~ **DECIDED 2026-08-22: the deletion stands, no code change.** The
    premise was wrong — `owl-dl-saturation` is published only up to **0.3.0** (as are

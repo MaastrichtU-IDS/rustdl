@@ -712,12 +712,29 @@ A replacement block comment at the removal site records the incident (what the
 mis-indexing did, and the `⊥ ⊑ *` amplification that made one bit unbounded), so
 the next person to want a raw bitset finds the reason it is gone.
 
-**The one semver-visible change in this branch, flagged for the owner:**
-`owl-dl-saturation` has no `publish = false`, so it is publishable and an
-out-of-workspace consumer pinned at 0.4.x would break. I verified nothing in-tree
-references it (source, tests, docs, `owl-dl-py`, `owl-dl-bench`) and that
-`owl-dl-cli`, `owl-dl-tableau` and `owl-dl-core` still compile. If you would
-rather keep the symbol, `unsatisfiable_bitset_by_class_id` is a one-line revert.
+**~~The one semver-visible change in this branch, flagged for the owner:~~ RESOLVED
+2026-08-22 — the deletion stands, and the semver framing below was overstated.**
+`owl-dl-saturation` has no `publish = false`, so it is *publishable*, and the
+concern was that an out-of-workspace consumer pinned at 0.4.x would break. **No
+such consumer can exist.** The sparse index shows `owl-dl-saturation` published at
+0.1.0, 0.2.0, 0.2.1, 0.2.2, **0.3.0 and no further** — as are `owl-dl-core`,
+`owl-dl-reasoner` and `owl-dl-tableau` — while the workspace is at 0.4.21. No
+0.4.x was ever published and no workflow runs `cargo publish` (`release-python.yml`
+goes to PyPI via maturin; `release-cli.yml` ships binaries). Even a future 0.4.x
+publish compares against 0.3.0, where a `0.3 -> 0.4` minor bump is precisely where
+Cargo's 0.x rules permit a breaking removal.
+
+So the tie-break is decided on its merits alone, and deletion wins them: it removes
+a `FixedBitSet` whose `contains(usize)` accepts any index in scope, and drops
+`fixedbitset` from the crate's public API where it was the only occurrence. Nothing
+in-tree references it (source, tests, docs, `owl-dl-py`, `owl-dl-bench`), and
+`owl-dl-cli`, `owl-dl-tableau` and `owl-dl-core` still compile.
+
+Residual exposure is a git-dependency consumer only, which semver does not govern.
+A note for the record: **a rename would NOT have been the safer option** — it
+removes the old symbol identically, so it breaks exactly the same callers while
+keeping the footgun. `unsatisfiable_bitset_by_class_id` remains a one-line revert if
+a git consumer ever turns up needing it.
 
 ## R3.3 Verification (round 3)
 

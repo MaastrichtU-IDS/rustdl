@@ -108,9 +108,13 @@ originally forked from it.
 
 1. Corpus FP=0 / MISSED=0 re-validation for the DKey branch. Expect **no** `bench-corpus` delta
    (measured across three independently built binaries with a diffing sentinel).
-2. `Subsumers::unsatisfiable_bitset()` was **deleted** on the DKey branches — the only
-   semver-visible change. Legal at 0.4.x in a minor bump, not a patch. One-line revert is to
-   rename it `unsatisfiable_bitset_by_class_id` instead.
+2. ~~`Subsumers::unsatisfiable_bitset()` was **deleted** on the DKey branches — the only
+   semver-visible change.~~ **DECIDED 2026-08-22: the deletion stands, no code change.** The
+   premise was wrong — `owl-dl-saturation` is published only up to **0.3.0** (as are
+   `owl-dl-core`/`-reasoner`/`-tableau`) while the workspace is at 0.4.21, so the "consumer
+   pinned at 0.4.x" cannot exist, and no workflow runs `cargo publish`. A rename would have
+   been no safer: it removes the old symbol identically while keeping the `contains(usize)`
+   footgun. See `dkey-fix-report.md` R3.2.
 3. Whether to do the `ReportIdx` newtype. Three defects of this class have now shipped in
    `classify.rs` and **none** was caught by reading or by a source-level guard — each needed a
    behavioural oracle or an execution. A newtype would have made all three a compile error.

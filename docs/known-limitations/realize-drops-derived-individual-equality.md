@@ -292,3 +292,53 @@ Practical reading, given the measured cost is tiny and the measured benefit is l
 `docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`): treat this as a **documented sound
 under-approximation of `realize`**, not as a bug awaiting a small patch. What is genuinely missing is
 **observability** — the loss is silent, with `incomplete: false` on both arms.
+
+### CONFIRMED: the mechanism is CASE ANALYSIS, on a real-world ontology with no merges at all
+
+The previous section argued from code reading that the flaw is not a missing merge rule but the
+gap between *derived on the closing branch* and *entailed*. The breadth arm then produced the
+discriminating instance.
+
+**`ore_ont_3892`** — Semantic Web Dog Food (`data.semanticweb.org`), a real-world ontology, **not**
+an OAEI benchmark variant:
+
+| construct | count |
+|---|---:|
+| `ObjectUnionOf` | 21 |
+| `DisjointClasses` | 171 |
+| `ObjectAllValuesFrom` | 54 |
+| `ObjectMaxCardinality` | **0** |
+| `ObjectExactCardinality` | **0** |
+| `FunctionalObjectProperty` | **0** |
+
+**There is no merge-inducing construct in this ontology, and it still loses 3 entailed types.** So no
+addition of merge rules — inverse-functional, `≤n`, or otherwise — could have fixed it. That settles
+the question the two earlier sections got wrong.
+
+The lost entailments are `deri-nui-galway : Group`, `talis-information-limited : Group`,
+`university-of-manchester-uk : Group` — the covering-disjunction shape. `Group` follows by **case
+analysis** over a union (with disjointness eliminating the alternatives), so it holds in every model
+while the single `Sat` completion commits to one disjunct and labels only that branch's outcome.
+That is the predicted failure mode, observed.
+
+### Final characterisation of the defect
+
+* **Not** a missing merge rule. Three distinct construct profiles produce it: inverse-functional
+  (the original fixture), `≤n`/exact cardinality (the OAEI family), and pure
+  disjunction + disjointness with no merges (`ore_ont_3892`).
+* **The invariant that fails** is "an entailed type appears in the witness". A `Sat` completion is a
+  **pre-model**: its labels are what the rules were forced to derive along one branch, which is a
+  subset of what is entailed whenever the entailment needs case analysis.
+* **Sound** (subtractive — costs entailments, never FP), **deterministic**, and **silent** until
+  `witness_prune_active` (added 2026-08-22).
+* **Measured frequency on ORE:** 7 of 304 comparable ABox-bearing ontologies, 15 pairs of 4.38M.
+  Six are OAEI benchmark variants of one reference ontology; **one is real-world**, which is the
+  member that matters for user impact.
+
+**Correct fix, if ever wanted:** make the witness label-complete for the individuals it prunes —
+i.e. intersect labels over completions rather than trusting one. That is a materially more expensive
+object than the current one-shot witness, and it is the same reason the FP-unsound
+`RUSTDL_SNAPSHOT_CAPTURE` trap exists in the opposite direction. Given the measured cost (15 pairs in
+4.38M) against the measured benefit (2.4x more completions), the shipped position is deliberate:
+keep the prune, document it as a sound under-approximation of `realize`, and report
+`witness_prune_active` so a consumer can tell.

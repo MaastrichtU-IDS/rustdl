@@ -64,3 +64,49 @@ single change that raises coverage, because ON already completes 38 of them.
   Fixed without re-running the reasoner, since both arms' JSON was already on disk.
 * **The gained-pairs column is the instrument's own check.** The prune is subtractive by
   construction, so any gain means the comparison is broken rather than the engine surprising.
+
+---
+
+## COVERAGE EXTENSION FAILED, AND THAT IS THE RESULT
+
+The recommended next step above — re-run only the OFF arm at a larger cap — was run: 38 ontologies,
+**600 s** cap (5× the original), OFF arm only, ON having already completed all 38.
+
+**37 of 38 still time out. The extension converted exactly 1.**
+
+So `RUSTDL_PSEUDO_MODEL=0` is not marginally slow on these ontologies, it is **intractable**, and no
+amount of additional budget makes the comparison obtainable. Final tally on the high-risk subset:
+
+| | count |
+|---|---:|
+| ABox + `InverseFunctional` | 73 |
+| correctly refuse (inconsistent KB, both arms) | 19 |
+| consistent | 54 |
+| ON completes | 38 |
+| OFF completes (120 s → 600 s) | 16 → **17** |
+| **comparable** | **17** |
+| **ontologies losing entailed types** | **0** |
+
+## What this means for the falsified argument
+
+**The obligation cannot be discharged empirically by this route.** A verdict-identity bake-off needs
+both arms, and the arm without the prune does not finish on 37 of 54 consistent high-risk
+ontologies. Running longer does not fix it — that is now measured, not assumed.
+
+Where comparison IS possible the prune costs nothing (17/17, 0 lost pairs). That is real evidence,
+and it is the strongest available on this subset, but it is not the identity result the record asked
+for and should not be quoted as one.
+
+**A caveat the flag's own documentation is missing:** it offers `RUSTDL_PSEUDO_MODEL=0` as "the
+workaround" for the falsified soundness argument. That workaround is **intractable on 37 of these 54
+ontologies at a 600 s cap**. Anyone relying on it to recover the lost inverse-functional entailments
+will simply get no answer on realistic inverse-functional inputs. The fix therefore has to be the
+one the doc already identifies as correct — apply inverse-functional merges in the `ABox`-seeded
+wedge consistency completion, as it already does functional ones — and not the flag.
+
+## Where usable coverage actually lives
+
+The **1,071 ABox-bearing ontologies WITHOUT `InverseFunctional`** are lower-risk by the theory (the
+falsified clause does not bite there) but, being cheaper, are far more likely to complete in *both*
+arms. That is the frame to run for breadth. It cannot exercise the falsified case — which is exactly
+why it is complementary rather than a substitute.

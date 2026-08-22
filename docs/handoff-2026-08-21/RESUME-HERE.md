@@ -24,27 +24,29 @@ did are retracted.**
 
 ## RESOLVED (2026-08-21) — the question that was open here
 
-The question was whether `fix/dkey-id-aliasing-on-main` @ `002c7e8` changed only the probe end
+The question was whether `fix/dkey-id-aliasing-on-main` @ `60b2e22` changed only the probe end
 (→ regression) or both ends. **Answer: both ends. That branch does NOT carry a regression.**
 
 Checked directly:
 
-* At `5af44c4` (the parent of `002c7e8`), all three producers already store **report
+* At `5af44c4` (the parent of `60b2e22`), all three producers already store **report
   positions** — `reported.class_id(i)` over `0..n` at `:1404`, `:1647`, `:3701` — because this
   branch's `9cc380c` and `ac721de` converted them.
-* `002c7e8` then converts the consumer: `reported.report_pos(*c).is_some_and(|pos| …)` at
+* `60b2e22` then converts the consumer: `reported.report_pos(*c).is_some_and(|pos| …)` at
   `:1754`. Same index space on both sides.
 * No raw `ClassId::new(i)` mint survives outside the `ReportedClasses` conversion boundary
-  (`:94`); the remaining ones `002c7e8` fixes are diagnostic-only.
+  (`:94`); the remaining ones `60b2e22` fixes are diagnostic-only.
 
 So the unsoundness described below is real **only when the probe-end hunk is applied to stock
 `main` in isolation** — which is what was nearly done, and what `probe-fix-was-wrong.md`
 records. On the branch, the two halves are inseparable but correct together.
 
-**Residual task:** `002c7e8`'s *commit message* still asserts the retracted "LIVE AT DEFAULT
-SETTINGS on main" claim, as did two sections of `rebase-onto-main.md` (now corrected). The
-message needs a `git commit --amend` before that branch merges — a prepared replacement is
-described in the session log; the amend itself was not performed here.
+**Also corrected:** that commit's *message* had asserted the same retracted "LIVE AT DEFAULT
+SETTINGS on main" claim, as did two sections of `rebase-onto-main.md`. Both are now fixed — the
+commit was amended (`002c7e8` -> `60b2e22`, message-only — verified empty diff at the time;
+the pre-amend commit is now reachable only via `git reflog`, so don't expect that diff to run),
+and its message now states the corrected framing: item (1) is the consumer end of this branch's
+own producer conversion, not a pre-existing `main` defect.
 
 ## Verification gap on the hotfix branch — CLOSED (2026-08-21)
 
@@ -75,7 +77,7 @@ assertion.)
 | branch | tip | ahead of origin/main | state |
 |---|---|---|---|
 | `fix/classify-consistency-probe-aliasing` | `37f3eb5` | 1 | doc fix + 199-line regression canary. No behaviour change. Rebased onto `origin/main`; **verification COMPLETE — 110/110 binaries, 987 passed, clippy clean.** Ready to push. |
-| `fix/dkey-id-aliasing-on-main` | `002c7e8` | 5 | DKey fix rebased onto main, 1702 tests green. **Open question resolved — coherent, both ends move together.** Blocked only on the owner decisions below + a commit-message amend. |
+| `fix/dkey-id-aliasing-on-main` | `60b2e22` | 5 | DKey fix rebased onto main, 1702 tests green. **Open question resolved — coherent, both ends move together.** Message amended (was `002c7e8`). Blocked only on the owner decisions below. |
 | `fix/dkey-id-aliasing` | `0cc64ac` | 17 | original DKey fix on the old `#48` base. Superseded by the above; keep as reference. Safety tag `premerge-dkey`. |
 | `feat/incremental-reasoning-p1` | `8f317dc` | 39 | P1 incremental reasoning, complete + reviewed. Needs the same rebase off unmerged `#48`. |
 

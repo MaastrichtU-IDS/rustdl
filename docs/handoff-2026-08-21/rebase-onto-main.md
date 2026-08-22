@@ -1,11 +1,11 @@
 # DKey id-aliasing fix — rebase onto `main` + re-audit
 
 Branch **`fix/dkey-id-aliasing-on-main`**, based on `origin/main` (`b796bec`).
-Final tip **`002c7e8`**. All 4 commits replayed; one additional commit carries the
+Final tip **`60b2e22`**. All 4 commits replayed; one additional commit carries the
 Part-2 findings.
 
 ```
-002c7e8 fix(classify): two NEW report-position/ClassId conflations in main's code   <- Part 2
+60b2e22 fix(classify): finish the probe conversion; one NEW conflation in main's code   <- Part 2
 6bd3904 docs: DKey aliasing resolution — corrected trigger, two defects, follow-ups
 5af44c4 test(classify): corpus canary that actually runs in CI; retire unsatisfiable_bitset
 ac721de fix(classify): unsat projection read a ClassId-indexed bitset with a report position
@@ -266,5 +266,5 @@ Not run (owned by you, per the brief): `cargo test --workspace`,
 5. **Unrelated dirty files left untouched:** `crates/owl-dl-py/examples/nesy_loop/{llm,run}.py`
    were already modified in the working tree when I started. Not staged, not committed.
 
-6. **Part-2 fixes are a separate commit** (`002c7e8`) on top of the four replayed ones, so they
+6. **Part-2 fixes are a separate commit** (`60b2e22`) on top of the four replayed ones, so they
    can be reviewed — or dropped — independently of the rebase itself.

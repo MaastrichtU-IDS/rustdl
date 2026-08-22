@@ -33,7 +33,7 @@ pub fn derive_forced_disjuncts(onto: &mut InternalOntology) {
 /// is still valid — i.e. the ontology has not been modified since it was built.
 /// See `disjunction_existential::derive_disjunction_existentials` for why: the two
 /// passes run back-to-back in `convert_ontology` and each rebuilt the tables, at
-/// 3.9 s per build on a 2.1M-axiom TBox.
+/// 3.9 s per build on a 2.1M-axiom `TBox`.
 pub fn derive_forced_disjuncts_with(onto: &mut InternalOntology, told: Option<ToldTables>) {
     let told = match told {
         Some(t) => t,

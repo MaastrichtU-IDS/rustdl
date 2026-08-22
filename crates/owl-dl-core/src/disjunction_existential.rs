@@ -36,7 +36,7 @@ use crate::told::{ToldTables, build_told_tables};
 /// Returns the `ToldTables` it built **iff `onto` was left unmodified**, so the
 /// next pass can reuse them instead of rebuilding.
 ///
-/// `build_told_tables` is not cheap on a large TBox: its axiom scan is O(#axioms)
+/// `build_told_tables` is not cheap on a large `TBox`: its axiom scan is O(#axioms)
 /// with a pool lookup per axiom, measured at **3.9 s per call** on `ore_ont_3524`
 /// (2,097,631 axioms), and `convert_ontology` called it here and again in
 /// `derive_forced_disjuncts` immediately afterwards. Where this pass appends

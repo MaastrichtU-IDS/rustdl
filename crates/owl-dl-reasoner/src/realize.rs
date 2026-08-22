@@ -775,6 +775,15 @@ pub fn realize_saturation_only_internal(
     let satisfiable: Vec<(usize, &str)> = class_iris
         .iter()
         .enumerate()
+        // Drop the synthetic `DKey(range)` filler classes of the data lowering. They
+        // live INSIDE the class vocabulary (see `ReportedClasses` in classify.rs), so
+        // the `< num_user_classes` bound does not exclude them and `unsat` does not
+        // either — `ore_ont_16372` reported `urn:rustdl-dkey:f:*:e:*:e` as an entailed
+        // type for 23 individuals, i.e. 23 of 23 type pairs, in `types` AND
+        // `direct_types`. Filtering HERE (after `enumerate`) keeps the index a genuine
+        // `ClassId`, which is the aliasing bug #68 fixed; filtering `class_iris` itself
+        // would reintroduce it.
+        .filter(|(_, iri)| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
         .filter(|(_, iri)| !unsat.contains(iri.as_str()))
         .map(|(i, iri)| (i, iri.as_str()))
         .collect();
@@ -991,6 +1000,10 @@ pub(crate) fn realize_via_saturation_internal(
                     .into_iter()
                     .filter(|c| (c.index() as usize) < num_user_classes)
                     .map(|c| internal.vocabulary.class_iri(c).to_owned())
+                    // Synthetic DKey filler classes are inside the class vocabulary,
+                    // so the bound above does not exclude them — see the note at the
+                    // `satisfiable` builders.
+                    .filter(|iri| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
                     .filter(|iri| !unsat.contains(iri.as_str()))
                     .collect()
             })
@@ -1131,6 +1144,15 @@ pub(crate) fn realize_tableau_internal(
     let satisfiable: Vec<(usize, &str)> = class_iris
         .iter()
         .enumerate()
+        // Drop the synthetic `DKey(range)` filler classes of the data lowering. They
+        // live INSIDE the class vocabulary (see `ReportedClasses` in classify.rs), so
+        // the `< num_user_classes` bound does not exclude them and `unsat` does not
+        // either — `ore_ont_16372` reported `urn:rustdl-dkey:f:*:e:*:e` as an entailed
+        // type for 23 individuals, i.e. 23 of 23 type pairs, in `types` AND
+        // `direct_types`. Filtering HERE (after `enumerate`) keeps the index a genuine
+        // `ClassId`, which is the aliasing bug #68 fixed; filtering `class_iris` itself
+        // would reintroduce it.
+        .filter(|(_, iri)| !iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX))
         .filter(|(_, iri)| !unsat.contains(iri.as_str()))
         .map(|(i, iri)| (i, iri.as_str()))
         .collect();

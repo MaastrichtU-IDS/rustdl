@@ -754,6 +754,13 @@ pub fn realize_saturation_only_internal(
     internal: &InternalOntology,
 ) -> Result<Realization, ReasonError> {
     let hierarchy = classify_saturation_only_internal(internal)?;
+    // Enumerated over the FULL class-id space, so `enumerate()` below yields a
+    // genuine `ClassId` index (the DKey filter that makes `classify`'s report
+    // vector shorter is deliberately NOT applied here — applying it before the
+    // `enumerate` would alias the two spaces, which is the classify.rs bug).
+    // Consequence: `class_iris` DOES contain `urn:rustdl-dkey:` entries and
+    // `unsat` does not remove them, so a `DKey` can reach the candidate-type
+    // probe. Unreproduced; see the note in `realize_via_saturation_internal`.
     let class_iris: Vec<String> = (0..internal.vocabulary.num_classes())
         .map(|i| {
             internal
@@ -959,8 +966,23 @@ pub(crate) fn realize_via_saturation_internal(
             continue;
         }
         // Entailed named types = subsumers of the individual's nominal class,
-        // restricted to declared user classes (synthetic Tseitin / nominal ids
-        // are ≥ num_user_classes) and to satisfiable classes.
+        // restricted to ids inside the class vocabulary (synthetic Tseitin /
+        // nominal ids are ≥ num_user_classes) and to satisfiable classes.
+        //
+        // NOTE what this does NOT do: `num_user_classes` is
+        // `vocabulary.num_classes()`, which COUNTS the synthetic `DKey(range)`
+        // filler classes of the integer-facet data lowering — they live INSIDE
+        // the class vocabulary, not above it (see `ReportedClasses` in
+        // classify.rs). So the `< num_user_classes` bound excludes only
+        // Tseitin/nominal synthetics; a `DKey` subsumer would pass straight
+        // through and be reported as an entailed type with a
+        // `urn:rustdl-dkey:` IRI. No reproducer is known — a `DKey` becomes a
+        // subsumer of a VALUE node reached through a role, not of an
+        // individual's nominal class — and `unsat` does not filter it either.
+        // Left as-is deliberately rather than hardened blind; if you are here
+        // because a `urn:rustdl-dkey:` IRI escaped into `realize` output, the
+        // fix is a `!iri.starts_with(owl_dl_core::DKEY_IRI_PREFIX)` guard here
+        // and at the two `class_iris` builders below.
         let types: Vec<String> = nominal_by_ind
             .get(&ind)
             .map(|&nom| {
@@ -1089,6 +1111,9 @@ pub(crate) fn realize_tableau_internal(
         pair_deadline_ms.map(std::time::Duration::from_millis),
         None,
     )?;
+    // Full class-id space — see the note in `realize_saturation_only_internal`:
+    // `enumerate()` must stay aligned with `ClassId`, so no DKey filter here,
+    // and `class_iris` therefore includes `urn:rustdl-dkey:` entries.
     let class_iris: Vec<String> = (0..internal.vocabulary.num_classes())
         .map(|i| {
             internal

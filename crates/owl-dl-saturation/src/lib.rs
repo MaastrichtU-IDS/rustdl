@@ -2535,12 +2535,25 @@ impl Subsumers {
             .collect()
     }
 
-    /// A reference to the raw unsatisfiable bitset.
-    /// Bit `i` set iff `class_i ⊑ ⊥` according to saturation.
-    #[must_use]
-    pub fn unsatisfiable_bitset(&self) -> &FixedBitSet {
-        &self.unsatisfiable
-    }
+    // REMOVED 2026-08-20: `pub fn unsatisfiable_bitset(&self) -> &FixedBitSet`.
+    //
+    // It handed out a CLASS-ID-indexed bitset as a bare `FixedBitSet`, whose
+    // `contains(usize)` accepts any index the caller has lying around. Its one
+    // caller in this workspace — `classify_pure_el` — probed it with a REPORT
+    // POSITION (which excludes the synthetic `DKey` filler classes, so the two
+    // index spaces diverge as soon as a `DKey` id sits below a user class).
+    // That shipped a false positive: a satisfiable class inherited a
+    // neighbour's `⊥` flag, and because `Classification::entails` reintroduces
+    // `⊥ ⊑ *` for anything flagged unsatisfiable, that one mis-indexed bit made
+    // the class subsume EVERY class in the ontology while hiding the genuinely
+    // unsatisfiable one.
+    //
+    // Nothing in the workspace calls it now. Use the typed accessors instead —
+    // they take/return `ClassId`, so the mistake cannot be spelled:
+    //   * `is_unsatisfiable(c: ClassId) -> bool`   — single membership test
+    //   * `unsatisfiable_classes() -> Vec<ClassId>` — enumeration
+    // Removing it also stops `fixedbitset` leaking into this crate's public
+    // API, where it was the only occurrence.
 
     /// True iff saturation proved `c` is empty in every model (i.e.
     /// `c ⊑ ⊥`).

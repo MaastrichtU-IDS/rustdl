@@ -74,6 +74,11 @@ pub(crate) struct RealizeJson {
     /// `realize` lacked entirely until 2026-08-18 — a consumer could not tell a
     /// complete type set from a truncated one. See `Realization::incomplete`.
     pub(crate) incomplete: bool,
+    /// The pseudo-model witness prune was ACTIVE, so some reported non-memberships were
+    /// SKIPPED rather than refuted by a probe. Distinct from `incomplete` (which reports
+    /// CUT probes) and NOT implied by it: the prune's loss is silent, leaving
+    /// `incomplete: false`. See `Realization::witness_prune_active`.
+    pub(crate) witness_prune_active: bool,
     pub(crate) individuals: Vec<IndividualTypesJson>,
     pub(crate) dropped: BTreeMap<String, u64>,
 }
@@ -242,6 +247,7 @@ pub(crate) fn build_realize_json(r: &Realization, dropped: BTreeMap<String, u64>
     RealizeJson {
         schema_version: SCHEMA_VERSION,
         incomplete: r.incomplete(),
+        witness_prune_active: r.witness_prune_active(),
         individuals,
         dropped,
     }

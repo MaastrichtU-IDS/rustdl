@@ -640,6 +640,30 @@ pub struct Realization {
     /// other mechanisms (e.g. the derived-equality gap in
     /// `docs/known-limitations/realize-drops-derived-individual-equality.md`).
     incomplete: bool,
+    /// The pseudo-model witness prune was ACTIVE for this realization.
+    ///
+    /// Distinct from [`Self::incomplete`], which reports probes that were CUT. This
+    /// reports that a **sound but approximate** shortcut was applied: for each
+    /// (individual, class) pair, `class ∉ witness_types(individual)` returned "not an
+    /// instance" WITHOUT running the probe.
+    ///
+    /// **Why this field exists.** That shortcut's "sound by construction" argument is
+    /// falsified — it conflates *true in the model* with *appearing in the completion's
+    /// label set*, and a `Sat` completion is a pre-model whose labels hold only what the
+    /// closing branch was forced to derive. So the prune can discard a genuinely entailed
+    /// type, and it does so **silently**: `incomplete` stays `false`, because no probe was
+    /// cut — the prune simply never asked. Measured on ORE: 5 of 259 comparable
+    /// ABox-bearing ontologies lose types (10 pairs of 3.92M), all OAEI benchmark
+    /// variants, deterministically.
+    ///
+    /// A per-pair COUNT would be useless here — the prune fires on most non-types, which
+    /// is why it is worth 2.4x more completions — so the honest signal is the boolean
+    /// "this approximation was in play". `false` means every reported non-membership was
+    /// actually refuted by a probe.
+    ///
+    /// See `docs/known-limitations/realize-drops-derived-individual-equality.md` and
+    /// `docs/benchmarks/2026-08-22-pseudo-model-bakeoff.md`.
+    witness_prune_active: bool,
 }
 
 impl Realization {
@@ -648,6 +672,13 @@ impl Realization {
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.incomplete
+    }
+
+    /// See [`Self::witness_prune_active`] — `true` iff the pseudo-model witness prune
+    /// was applied, so some reported non-memberships were skipped rather than refuted.
+    #[must_use]
+    pub fn witness_prune_active(&self) -> bool {
+        self.witness_prune_active
     }
 
     #[must_use]
@@ -799,6 +830,7 @@ pub fn realize_saturation_only_internal(
         most_specific_types,
         // Saturation-only path: closure lookups only, no probe to cut.
         incomplete: false,
+        witness_prune_active: false,
     })
 }
 
@@ -964,6 +996,7 @@ pub(crate) fn realize_via_saturation_internal(
         most_specific_types,
         // Saturation path: no tableau probe runs, so nothing can be cut.
         incomplete: false,
+        witness_prune_active: false,
     })
 }
 
@@ -1181,6 +1214,11 @@ pub(crate) fn realize_tableau_internal(
         entailed_types,
         most_specific_types,
         incomplete,
+        // `base_model.is_some()` is exactly "the prune was in play": it is `None`
+        // whenever the flag is off, the witness build stalled, or there is no
+        // wedge-consistency cache, and in each of those cases every pair took the
+        // unchanged probe path.
+        witness_prune_active: base_model.is_some(),
     })
 }
 

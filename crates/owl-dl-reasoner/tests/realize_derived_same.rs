@@ -48,10 +48,14 @@ fn types_of_with_inverse_func_max(
     // SAFETY: single-threaded within this guard; the only reader is the `realize` below.
     #[allow(unsafe_code)]
     unsafe {
+        // Both arms set EXPLICITLY. `false` used to `remove_var`, which expressed "off"
+        // as "absent" — correct only while the default was OFF. The flip to default-ON
+        // (house idiom `is_none_or(|v| v != "0")`, so absent ENABLES) silently turned that
+        // arm into "on" and the negative control asserted against itself.
         if inverse_func_max {
             std::env::set_var("RUSTDL_INVERSE_FUNC_MAX", "1");
         } else {
-            std::env::remove_var("RUSTDL_INVERSE_FUNC_MAX");
+            std::env::set_var("RUSTDL_INVERSE_FUNC_MAX", "0");
         }
     }
     let out = types_of_impl(fixture);
@@ -228,13 +232,26 @@ fn pseudo_model_prunes_entailed_type() {
             with_prune_off.get(i)
         );
     }
-    // And the default really is worse — otherwise this test proves nothing.
+    // FLIPPED 2026-08-22. `RUSTDL_INVERSE_FUNC_MAX` is now default ON, so the GCI that
+    // triggers the predecessor-walking merge is emitted, the merge fires in the witness
+    // completion too, and the prune no longer discards this entailment.
+    //
+    // The prior assertion here said the default STILL prunes, and instructed that if it
+    // ever stopped, "both this test and the falsification note in `realize.rs` should be
+    // retired". **Only half of that is correct, and the instruction predates the
+    // evidence.** The INVERSE-FUNCTIONAL arm is fixed; the falsification is NOT retired,
+    // because two other mechanisms sustain it at the default — measured 2026-08-22 with
+    // this flag ON: `ore_ont_10009` still loses 2 types (`ObjectMaxCardinality`/
+    // `ObjectExactCardinality`) and `ore_ont_3892` still loses 3 with **no** merge
+    // construct at all (21 `ObjectUnionOf` + 171 `DisjointClasses`, lost by case
+    // analysis). See docs/known-limitations/realize-drops-derived-individual-equality.md.
     let with_prune_on = types_of("inverse-functional.ofn");
     assert!(
-        !with_prune_on.get("x").is_some_and(|s| both.is_subset(s)),
-        "the DEFAULT still prunes the entailed type; if it no longer does, the prune was \
-         fixed and both this test and the falsification note in `realize.rs` should be \
-         retired"
+        with_prune_on.get("x").is_some_and(|s| both.is_subset(s)),
+        "at the DEFAULT the inverse-functional entailment must now be reported — the \
+         RUSTDL_INVERSE_FUNC_MAX flip is what fixes it. If this fails, the flip regressed \
+         or the GCI stopped triggering the merge. got {:?}",
+        with_prune_on.get("x")
     );
 }
 
@@ -243,10 +260,10 @@ fn pseudo_model_prunes_entailed_type() {
 /// would keep passing if the flag were silently made a no-op, and the fix's whole
 /// mechanism could rot unnoticed.
 ///
-/// **Delete this test when the flag is flipped default-ON** — at that point it asserts
-/// the bug, not the guard.
+/// Retargeted 2026-08-22 when the flag flipped default-ON: it now pins that `=0` still
+/// REVERTS, which keeps the mechanism guarded without asserting the bug at the default.
 #[test]
-fn default_off_still_drops_derived_inverse_functional_equality() {
+fn explicit_off_still_drops_derived_inverse_functional_equality() {
     let t = types_of_with_inverse_func_max("inverse-functional.ofn", false);
     let both: BTreeSet<String> = ["A", "B"].iter().map(|s| (*s).to_string()).collect();
     assert!(

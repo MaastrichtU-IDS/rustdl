@@ -2504,7 +2504,7 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 }
 
 /// Whether `InverseFunctionalRole(r)` also derives `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤`
-/// (`RUSTDL_INVERSE_FUNC_MAX`, **default OFF**).
+/// (`RUSTDL_INVERSE_FUNC_MAX`, **default ON since 2026-08-22**, `=0` reverts).
 ///
 /// **Logically equivalent, so FP-safe:** `InverseFunctional(r)` ⟺ `Functional(r⁻)` ⟺
 /// `⊤ ⊑ ≤1 r⁻`, and the `∃r⁻.⊤` guard only makes it vacuous where there are no
@@ -2519,7 +2519,7 @@ fn derive_inverse_pair_functionality(out: &mut InternalOntology) {
 /// sweep before this becomes a default.
 #[must_use]
 pub fn inverse_functional_max_enabled() -> bool {
-    std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_some_and(|v| v == "1")
+    std::env::var_os("RUSTDL_INVERSE_FUNC_MAX").is_none_or(|v| v != "0")
 }
 
 /// Skip a `DKey` disjointness component wholesale when every one of its pairs is provably
@@ -2557,6 +2557,39 @@ pub fn dkey_group_skip_enabled() -> bool {
     std::env::var_os("RUSTDL_DKEY_GROUP_SKIP").is_none_or(|v| v != "0")
 }
 
+/// Is an inverse-functional merge on `r` **consumable** — i.e. could it force two NAMED
+/// individuals to be identified?
+///
+/// The `≤1 r⁻` GCI exists for exactly one purpose: to trigger `hyper.rs`'s
+/// predecessor-walking merge so `realize` stops dropping inverse-functional-forced
+/// individual equality. That merge can only matter where two individuals share an
+/// `r`-successor, which requires `r` (or its inverse) to appear in an
+/// `ObjectPropertyAssertion`. Emitting it anywhere else is pure cost.
+///
+/// **Measured, which is why this gate exists.** The three ontologies that blocked the
+/// default flip — `ore_ont_9662`, `7532`, `9786` — have **8**
+/// `InverseFunctionalObjectProperty` declarations each and **zero**
+/// `ObjectPropertyAssertion`. So the GCI put an `at_most` on eight inverse roles at every
+/// node with such a successor, over 288–484 existentials, for a merge that could never
+/// fire: 1.4→26.4 s (19×), 1.9→89.3 s (47×), 2.3→70.2 s (31×). `ore_ont_13859`, which has
+/// **1** such declaration, showed no slowdown — the cost scales with the count.
+///
+/// **What this gate deliberately forgoes.** `ore_ont_13859`'s gain (+3 direct rows, the
+/// +17-closure figure in the design record) is a TBox-side classify gain and it also has no
+/// `ObjectPropertyAssertion`, so this gate suppresses it too. That is the intended trade:
+/// the flag is a `realize` fix, and the classify-side gain came bundled with a classify-side
+/// cost 19–47× larger on more ontologies. Recovering it needs a separate, TBox-aware
+/// argument — not this flag.
+///
+/// Same shape as `RUSTDL_DKEY_MERGING_GATE`: seed only where the axiom is consumable.
+fn inv_func_merge_consumable(out: &InternalOntology, r: Role) -> bool {
+    let target = r.role_id();
+    out.axioms.iter().any(|ax| match ax {
+        Axiom::ObjectPropertyAssertion { role, .. } => role.role_id() == target,
+        _ => false,
+    })
+}
+
 /// Emit a derived role-triggered `≤1` GCI for every (forward) functional
 /// object property.
 ///
@@ -2571,7 +2604,8 @@ pub fn dkey_group_skip_enabled() -> bool {
 /// axiom is left in place so the saturator's bitset handling is untouched.
 ///
 /// Translates `Axiom::FunctionalRole(R)` always, and
-/// `Axiom::InverseFunctionalRole(R)` under `RUSTDL_INVERSE_FUNC_MAX` (default OFF).
+/// `Axiom::InverseFunctionalRole(R)` under `RUSTDL_INVERSE_FUNC_MAX` (default ON),
+/// gated by `inv_func_merge_consumable`.
 ///
 /// **CORRECTED 2026-08-18.** This comment used to say inverse-functionality was
 /// "deliberately NOT translated: the engine does not perform `≤1 R⁻` predecessor
@@ -2616,7 +2650,11 @@ fn derive_functional_max_cardinality(out: &mut InternalOntology) {
             // inverse-functional-forced individual equality was invisible to the
             // `ABox`-seeded witness while the functional case worked.
             // See `docs/known-limitations/realize-drops-derived-individual-equality.md`.
-            Axiom::InverseFunctionalRole(r) if inverse_functional_max_enabled() => Some(r.flip()),
+            Axiom::InverseFunctionalRole(r)
+                if inverse_functional_max_enabled() && inv_func_merge_consumable(out, *r) =>
+            {
+                Some(r.flip())
+            }
             _ => None,
         })
         .collect();

@@ -165,7 +165,7 @@ fn the_fixtures_are_actually_on_the_saturator_fast_path() {
 /// "flag-off byte-identical" (pizza/ro/sio have no such shape — the check was inert),
 /// and was caught only by reading the diff.
 #[test]
-fn handwritten_inverse_max_is_admitted_only_under_the_flag() {
+fn handwritten_inverse_max_is_admitted_at_the_default() {
     let src = "\
 Prefix(:=<http://t/>)\n\
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)\n\
@@ -188,10 +188,18 @@ SubClassOf(:A :B)\n\
     // No env mutation: this asserts the DEFAULT, so it reads the ambient environment
     // and needs no lock (and must not take one — see the deadlock note in
     // `realize_derived_same.rs`).
+    //
+    // ASSERTION FLIPPED 2026-08-22 with `RUSTDL_INVERSE_FUNC_MAX`'s default. It previously
+    // required this shape to stay OUT of fragment at the default, which was correct while
+    // the flag was OFF; now the gate arm admits the derived `≤1 r⁻` shape, so the fast path
+    // is the correct outcome and losing it would mean the arm stopped recognising it.
+    // The `=0` revert is pinned behaviourally by
+    // `explicit_off_still_drops_derived_inverse_functional_equality` and the default value
+    // itself by `flag_defaults.rs`.
     assert!(
-        !classify(&onto).expect("classify").stats().pure_el_mode,
-        "at the DEFAULT (flag off) a hand-written ≤1 r⁻ must still be out-of-fragment, \
-         exactly as before this change. If it is admitted, the gate arm lost its flag \
-         guard and flag-off is no longer byte-identical to pre-change."
+        classify(&onto).expect("classify").stats().pure_el_mode,
+        "at the DEFAULT (flag ON) a hand-written ≤1 r⁻ must be ADMITTED to the saturator \
+         fast path — `is_derived_inverse_functional_max` exists so the flip does not cost \
+         the fast path. If this fails, that gate arm no longer recognises the shape."
     );
 }

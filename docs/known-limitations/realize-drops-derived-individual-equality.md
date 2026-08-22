@@ -342,3 +342,58 @@ object than the current one-shot witness, and it is the same reason the FP-unsou
 4.38M) against the measured benefit (2.4x more completions), the shipped position is deliberate:
 keep the prune, document it as a sound under-approximation of `realize`, and report
 `witness_prune_active` so a consumer can tell.
+
+
+---
+
+## INVERSE-FUNCTIONAL ARM CLOSED (2026-08-22) — the other two mechanisms STAND
+
+`RUSTDL_INVERSE_FUNC_MAX` is **default ON** as of 2026-08-22, gated by
+`inv_func_merge_consumable`. The GCI is emitted, the predecessor-walking merge fires in the
+witness completion, and the pseudo-model prune no longer discards the inverse-functional
+entailment. The fixture goes `x:[A]`,`y:[B]` → `x:[A,B]`,`y:[A,B]` at the default.
+
+**What unblocked the flip was a consumability gate, not more budget.** The three ontologies
+that blocked it (`ore_ont_9662`, `7532`, `9786`) carry **8**
+`InverseFunctionalObjectProperty` each and **zero** `ObjectPropertyAssertion` — so the GCI
+placed an `at_most` on eight inverse roles across 288–484 existentials for a merge that could
+never fire (19×/47×/31× slowdowns). Emitting only for roles occurring in an
+`ObjectPropertyAssertion` removes all three (1.00× each) while preserving the fix.
+
+Evidence: two-arm sweep over all **109** `InverseFunctional`-bearing ORE ontologies — **99
+IDENTICAL, 0 ok→DNF, 0 DNF→ok**, wall +0.5%, the single DIFFER adjudicated to concurrency
+nondeterminism (four sequential runs byte-identical). ΔMISSED is **subsumed**: identical
+classify output cannot have changed MISSED, and realize over the 73 ABox+`InverseFunctional`
+frame is 39 comparable with **0 gains and 0 losses**.
+
+**Framed honestly: a correctness fix with ZERO measured corpus benefit and zero measured
+cost** — the same basis on which its functional sibling already shipped (recorded as firing on
+0 of 64 qualifying ORE ontologies). Do not cite it as a corpus win. The gate deliberately
+forgoes `ore_ont_13859`'s classify gain, which also has no `ObjectPropertyAssertion`.
+
+### The falsification is NARROWED, not retired
+
+`pseudo_model_prunes_entailed_type` carried an instruction to retire "both this test and the
+falsification note in `realize.rs`" if the default ever stopped pruning. **That instruction
+predates the evidence and only half of it is right.** Measured with the flag ON:
+
+| ontology | mechanism | lost |
+|---|---|---:|
+| `ore_ont_10009` | `ObjectMaxCardinality` / `ObjectExactCardinality` | **2** |
+| `ore_ont_3892` | 21 `ObjectUnionOf` + 171 `DisjointClasses`, **no merge construct** | **3** |
+
+So the general failure — a `Sat` completion is a **pre-model** whose labels miss entailments
+requiring case analysis — is untouched. Only the inverse-functional arm is closed.
+`witness_prune_active` remains the signal, and `ore_ont_3892` remains the discriminator.
+
+**Transferable: a sentinel's own instruction can be stale.** This one was written when
+inverse-functional was believed to be the only mechanism; following it literally would have
+deleted a still-valid falsification.
+
+### A latent trap that default flips create
+
+`types_of_with_inverse_func_max`'s `false` arm expressed "off" as **`remove_var`** — correct
+only while the default was OFF. Under the house idiom (`is_none_or(|v| v != "0")`, absent
+ENABLES) the flip silently turned that arm into "on", so the negative control began asserting
+against itself. Both arms now set the value explicitly. **When flipping any default, grep the
+tests for `remove_var` on that variable.**

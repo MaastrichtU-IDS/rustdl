@@ -102,15 +102,28 @@ fn expected() -> Vec<FlagRow> {
             owl_dl_tableau::inverse_func_merge_enabled,
             true,
         ),
-        // OFF, and the OFF-ness is the load-bearing part: `=1` emits an entailed
-        // `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤` GCI into EVERY ontology carrying an inverse-functional role,
-        // which fixes realize's dropped derived equality but changes wedge behaviour on a
-        // broad population. A flip requires the two-arm ORE sweep + a ΔMISSED arm; neither
-        // has been run. See docs/known-limitations/realize-drops-derived-individual-equality.md.
+        // ON since 2026-08-22. It emits an entailed `∃r⁻.⊤ ⊑ ≤1 r⁻.⊤` GCI so realize stops
+        // dropping inverse-functional-forced individual equality — but now only for roles
+        // that occur in an `ObjectPropertyAssertion` (`inv_func_merge_consumable`), because
+        // that is the only shape in which the merge it triggers can fire.
+        //
+        // The flip's two stated prerequisites are met. Two-arm ORE sweep over all 109
+        // InverseFunctional-bearing ontologies: 99 IDENTICAL, 0 ok->DNF, 0 DNF->ok,
+        // aggregate wall +0.5%; the single DIFFER (`ore_ont_12698`) adjudicated to
+        // concurrency nondeterminism — four sequential runs byte-identical. ΔMISSED is
+        // SUBSUMED rather than skipped: identical classify output cannot have changed
+        // MISSED, and realize over the 73 ABox+InverseFunctional frame is 39 comparable
+        // with 0 gains and 0 losses.
+        //
+        // Honest framing: a correctness fix with ZERO measured corpus benefit and zero
+        // measured cost — the same basis on which its FUNCTIONAL sibling already ships
+        // default-ON (recorded as firing on 0 of 64 qualifying ORE ontologies). Do not
+        // cite it as a corpus win. The gate deliberately forgoes `ore_ont_13859`'s
+        // classify gain, which had no ObjectPropertyAssertion.
         (
             "RUSTDL_INVERSE_FUNC_MAX",
             owl_dl_core::convert::inverse_functional_max_enabled,
-            false,
+            true,
         ),
         // OFF pending a full-corpus sweep. Measured on its addressable population (19
         // slow small-`n` completers): aggregate +1.5%, one 3.46x win (`ore_ont_5107`

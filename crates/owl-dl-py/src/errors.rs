@@ -8,7 +8,7 @@
 //! └── RustdlError                 (base — catches everything from rustdl)
 //!     ├── ParseError              (horned-owl parse failure)
 //!     ├── UnsupportedAxiomError   (HasKey, length-3+ chains, data ranges, ...)
-//!     └── UnknownClassError       (IRI not declared as a class)
+//!     └── UnknownClassError       (IRI not in the ontology: class OR individual)
 //! ```
 
 use owl_dl_core::ConversionError;
@@ -68,6 +68,13 @@ pub(crate) fn reason_error_to_py(err: ReasonError) -> PyErr {
             }
         },
         ReasonError::UnknownClass(iri) => UnknownClassError::new_err(iri),
+        // Mapped to the same Python exception deliberately: it is the "an IRI you passed
+        // is not in the ontology" case, and adding a new public exception class would be
+        // a bigger break for Python consumers than reusing this one. The MESSAGE
+        // discriminates, which is the part that was misleading before.
+        ReasonError::UnknownIndividual(iri) => {
+            UnknownClassError::new_err(format!("individual IRI not in ontology: {iri}"))
+        }
         ReasonError::NoVerdict => {
             RustdlError::new_err("internal: tableau returned NoVerdict (please file a bug)")
         }

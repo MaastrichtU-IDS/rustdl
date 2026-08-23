@@ -5613,6 +5613,17 @@ pub enum ReasonError {
     #[error("class IRI not in ontology: {0}")]
     UnknownClass(String),
 
+    /// The IRI given where an INDIVIDUAL was expected is not an individual in the
+    /// input ontology.
+    ///
+    /// Split out from [`Self::UnknownClass`] on 2026-08-23. A failed individual lookup
+    /// in `is_instance_of_internal` reported `UnknownClass(individual_iri)`, so the
+    /// message read "class IRI not in ontology: <the individual>" — which sent two
+    /// separate diagnosis attempts hunting for an argument-order bug that did not
+    /// exist. An error naming the wrong argument KIND is worse than a generic one.
+    #[error("individual IRI not in ontology: {0}")]
+    UnknownIndividual(String),
+
     /// The tableau hit its internal iteration/recursion cap. Should
     /// not happen for inputs in the implemented fragment; bug
     /// indicator.

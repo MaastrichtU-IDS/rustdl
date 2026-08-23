@@ -215,7 +215,7 @@ pub fn is_instance_of_internal(
     let individual_id = internal
         .vocabulary
         .individual_id(individual_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(individual_iri.to_owned()))?;
+        .ok_or_else(|| ReasonError::UnknownIndividual(individual_iri.to_owned()))?;
     // Fast path: on the saturator-complete fragment answer completely via
     // saturation — `a : C` iff `C` subsumes `a`'s nominal class. Avoids the
     // `{a} ⊓ ¬C` tableau probe that explodes on issue-#35-style inputs.
@@ -279,7 +279,7 @@ pub fn is_instance_of_saturation_only_internal(
     let individual_id = internal
         .vocabulary
         .individual_id(individual_iri)
-        .ok_or_else(|| ReasonError::UnknownClass(individual_iri.to_owned()))?;
+        .ok_or_else(|| ReasonError::UnknownIndividual(individual_iri.to_owned()))?;
     let closure = saturate(internal);
     Ok(instance_check_closure_only(
         internal,

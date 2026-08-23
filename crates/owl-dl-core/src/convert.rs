@@ -2202,7 +2202,36 @@ pub fn convert_ontology<A: ForIRI>(
     src: &SetOntology<A>,
 ) -> Result<InternalOntology, ConversionError> {
     let mut components: Vec<&AnnotatedComponent<A>> = src.iter().collect();
-    components.sort();
+    // `sort_unstable`, not `sort`: the elements come from a `HashSet` so they are
+    // pairwise distinct, which makes stability unobservable — the resulting order is
+    // IDENTICAL. `sort` is a stable driftsort that allocates a scratch buffer; the
+    // unstable pattern-defeating quicksort does not.
+    //
+    // MEASURED NEUTRAL, and kept for the allocation and the note below rather than for
+    // speed: `convert_ms` on `ore_ont_10926` 11,763 → 11,202, `ore_ont_9768` 502 → 506,
+    // `ore_ont_3524` 15,712 → 15,490 — i.e. noise. **Do not cite it as a win.** That the
+    // algorithm swap changes nothing is itself the useful datum: the cost is the
+    // COMPARISONS, not the sort's overhead.
+    //
+    // THE REAL LEVER, unbuilt and NOT free: sort by a cheap precomputed deterministic
+    // key (fixed-seed hash, tie-broken by the full `Ord`), turning O(n log n) deep
+    // recursive comparisons into O(n) hashing plus O(n log n) `u64` compares. The catch
+    // is that it yields a DIFFERENT canonical order, which reassigns
+    // `ClassId`/`RoleId`/`ConceptId` — still canonical, still deterministic, but
+    // observably different downstream wherever ties break by id. Given #59's lesson that
+    // output order is load-bearing for byte-comparison gates, that needs a full
+    // differential before it can ship, not just a wall measurement.
+    //
+    // This comparison is expensive and worth caring about: the derived `Ord` recurses
+    // `Component` → `ClassExpression` → `Rc<str>` and bottoms out in `memcmp`. A
+    // frame-pointer profile of `ore_ont_9768` attributes **7.6%** of the whole run to
+    // `ClassExpression::partial_cmp` reached from precisely this call
+    // (`convert_ontology` → `driftsort_main` → `quicksort` → `partial_cmp`), and 12.34%
+    // on `ore_ont_10926`. Note frame pointers are required to see that: rustc omits them
+    // in release, so a default `--call-graph=fp` profile shows `partial_cmp` recursing
+    // into itself with no caller, and `--call-graph=dwarf` cannot be symbolized here
+    // within a 9-minute budget.
+    components.sort_unstable();
     let mut out = InternalOntology::new();
     for ac in components {
         match convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts) {

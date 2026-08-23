@@ -115,3 +115,61 @@ Do **not** retry `perf report`/`perf script` on this binary as-is. Options, chea
 Parse is worth attacking — `ore_ont_10926` spends **17.3 s** of a 30.5 s front end in parse, told
 tables are 55 ms of it, and parse is **not deadline-bound** so savings convert 1:1 into wall. What
 is missing is only the call site of a comparison that costs more than the parsing itself.
+
+---
+
+## RESOLVED (2026-08-23): the caller is `convert_ontology`'s OWN `components.sort()`
+
+Seven hypotheses about horned-owl were all wrong because **the sort is in rustdl**, not in the
+parser. The caller chain, from a frame-pointer profile of `ore_ont_9768`:
+
+```
+owl_dl_core::convert::convert_ontology
+  core::slice::sort::stable::driftsort_main
+    core::slice::sort::stable::drift::sort
+      core::slice::sort::stable::quicksort::quicksort   (recursing)
+        core::ops::function::FnMut::call_mut
+          <horned_owl::model::Component as PartialOrd>::partial_cmp
+            <horned_owl::model::ClassExpression as PartialOrd>::partial_cmp
+```
+
+`convert.rs:2205` — `components.sort()` over `Vec<&AnnotatedComponent<A>>`, using the **derived
+`Ord`**, which recurses `Component` → `ClassExpression` → `Rc<str>` and bottoms out in `memcmp`.
+That is the 12.34% on `ore_ont_10926` and 7.60% here.
+
+### The technique that found it, after two failed sessions
+
+**Frame pointers.** rustc omits them in release, so a default `--call-graph=fp` profile showed
+`partial_cmp` recursing into itself with **no external caller** — which is exactly what I misread as
+"the caller is unidentifiable". `--call-graph=dwarf` has the information but cannot be symbolized on
+this host inside a 9-minute budget, at any input size, because the cost is per-sample.
+
+```sh
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release -p owl-dl-cli
+perf record -F 199 -g --call-graph=fp -o out.data ./target/release/rustdl locality-stats FILE
+perf report -i out.data --no-children -g graph,2.0,caller --stdio --symbol-filter=SYMBOL
+```
+
+The perf data drops to **0.1 MB** and the report returns in seconds. **Reach for forced frame
+pointers before dwarf** on this codebase; the previous plan ("use a smaller reproducer") could not
+have worked, since shrinking the input does not shrink a per-sample cost.
+
+### Why the sort exists, and why it cannot simply go
+
+It is **load-bearing for determinism**: `SetOntology` is a `HashSet` whose iteration order is
+per-process, so this sort pins the `intern_class`/`intern_role`/`intern_individual` sequence and
+therefore all `ClassId`/`RoleId`/`ConceptId` assignment. Removing it reintroduces the #59 class of
+nondeterminism.
+
+### What was tried, and what remains
+
+`sort` → `sort_unstable` is **behaviour-identical** (elements come from a `HashSet`, so pairwise
+distinct, so stability is unobservable) and **measured NEUTRAL**: `convert_ms` 11,763 → 11,202 /
+502 → 506 / 15,712 → 15,490. Kept for the avoided scratch allocation and the note, **not** as a win.
+Its neutrality is the informative part — the cost is the comparisons, not the sort's overhead.
+
+**The real lever, unbuilt:** sort by a cheap precomputed deterministic key (fixed-seed hash,
+tie-broken by the full `Ord`) — O(n) hashing plus O(n log n) `u64` comparisons instead of O(n log n)
+deep recursive ones. **It is not free:** the resulting canonical order differs, which reassigns
+`ClassId`s — still deterministic, but observably different wherever a downstream tie breaks by id.
+Given #59, that needs a full output differential before it ships, not a wall measurement.

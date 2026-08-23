@@ -72,3 +72,46 @@ Two secondary observations worth keeping:
   reporting*. On a 557 MB file that is a real cost paid on the success path. Worth checking whether
   it can be built lazily.
 * The remaining pest share (~14%) is genuine parsing work and is the floor for any front-end fix.
+
+---
+
+## Session 2 (2026-08-23): two more hypotheses eliminated; the blocker is TOOLING, not knowledge
+
+Followed the recommended next step — reproduce on a smaller input where dwarf symbolization is
+affordable. **The frame is present at mid size**: on `ore_ont_9768` (37 MB),
+`ClassExpression::partial_cmp` is **6.33%** (vs 12.34% on the 557 MB file), with
+`Component::partial_cmp` 3.00% and `ClassExpression::from_pair_unchecked` 3.33% right beside it. So
+the effect is not confined to the giant files.
+
+**Two further hypotheses eliminated (6 and 7; see the list above for 1–5):**
+
+6. **The OFN reader's `ClassExpression` construction does not order.** `ObjectIntersectionOf` /
+   `ObjectUnionOf` operands are built by `inner.into_inner().map(Self::from_pair).collect()` — file
+   order, no `sort`, `dedup`, `binary_search`, `min`/`max` or `BTree*` anywhere in that impl.
+7. **No `ClassExpression` variant uses a sorted container**, which would have made the `collect()`
+   above order implicitly: `ObjectIntersectionOf(Vec<..>)`, `ObjectUnionOf(Vec<..>)`,
+   `ObjectOneOf(Vec<..>)` — all `Vec` (`model.rs:1850/1856/1868`).
+
+**The blocker is `perf` symbolization on this host, and it is tool-independent.** `perf report`
+timed out at a 9-minute budget on 0.7 MB of dwarf data at `-F 99`; `perf script --no-demangle`
+managed only **33 stacks in 500 s**. The rustdl binary is large with no split debug info, so every
+sample costs an expensive DWARF lookup. Reducing input size does not help because the cost is
+per-sample, not per-byte — which is why the "use a smaller reproducer" plan did not work.
+
+### What the next attempt should do differently
+
+Do **not** retry `perf report`/`perf script` on this binary as-is. Options, cheapest first:
+
+1. **Split debug info** — build with `split-debuginfo = "packed"` / `debug = 1` in the release
+   profile and retry; symbolization is the measured bottleneck, so this attacks it directly.
+2. **Temporary instrumentation in the fork.** `horned-owl` is already `[patch]`ed from a local
+   clone, so a counter (or a one-shot `Backtrace::force_capture()`) inside
+   `ClassExpression::partial_cmp` would name the caller in one run. Invasive but decisive, and the
+   patch infrastructure already exists.
+3. A profiler that resolves symbols at capture time rather than at report time.
+
+### Standing conclusion, unchanged
+
+Parse is worth attacking — `ore_ont_10926` spends **17.3 s** of a 30.5 s front end in parse, told
+tables are 55 ms of it, and parse is **not deadline-bound** so savings convert 1:1 into wall. What
+is missing is only the call site of a comparison that costs more than the parsing itself.

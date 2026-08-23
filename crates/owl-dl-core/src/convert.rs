@@ -2173,6 +2173,52 @@ fn drop_label<A: ForIRI>(c: &Component<A>, e: &ConversionError) -> String {
     }
 }
 
+/// Sort `convert_ontology`'s components by a fixed-seed HASH (tie-broken by the full
+/// `Ord`) instead of by the derived `Ord` directly. **Default OFF**, `=1` opts in.
+///
+/// **What it buys.** `components.sort()` is the single hottest frame in the front end on
+/// large inputs — a frame-pointer profile attributes **12.34%** of `ore_ont_10926`'s whole
+/// run and 7.60% of `ore_ont_9768`'s to `ClassExpression::partial_cmp` reached from it,
+/// because the derived `Ord` recurses `Component` → `ClassExpression` → `Rc<str>` and ends
+/// in `memcmp`. Hashing is O(n) and the compares become `u64`.
+///
+/// **Why it is OFF rather than default.** The sort exists to pin determinism —
+/// `SetOntology` is a `HashSet`, so this ordering fixes the
+/// `intern_class`/`intern_role`/`intern_individual` sequence and hence every
+/// `ClassId`/`RoleId`/`ConceptId`. A hash order is equally deterministic but **different**,
+/// so it reassigns those ids. That is observable downstream anywhere a tie breaks by id,
+/// and #59 established that output order is load-bearing for this project's
+/// byte-comparison gates. Two further caveats a flip would have to answer:
+///
+/// * `DefaultHasher` is not guaranteed stable across rustc versions, so ids could shift on
+///   a toolchain bump — today's structural order does not.
+/// * The tiebreak keeps it a total order under collision, but a collision-heavy input pays
+///   the deep compare anyway.
+///
+/// **BOTH WERE MEASURED (2026-08-23). It wins, and it still stays OFF.**
+///
+/// Win, `convert_ms` OFF → ON: `ore_ont_10926` 12,507 → 8,140 (**1.54×**), `ore_ont_9768`
+/// 503 → 450 (1.12×), `ore_ont_9674` 7,887 → 7,637 (1.03×), `ore_ont_3524` 15,483 →
+/// 15,162 (1.02×). The large win is on the comparison-heavy input, as predicted; `3524`
+/// barely moves because its conversion cost is the told-table axiom scan, not this sort.
+///
+/// **Why it stays OFF — the differential found a real effect, not a cosmetic one.** On
+/// `sio` the ANSWERS are identical (direct rows set-equal 1,616 = 1,616 with 0 on either
+/// side; equivalence groups and unsatisfiable sets equal) but the completeness SIGNAL is
+/// not: `incomplete` goes **`false` → `true`**. The reordering changes which pairs are
+/// probed in which order, and one then hits a per-pair deadline that it previously did
+/// not. So this is not "a different but equivalent canonical order" — it perturbs the
+/// search, and the answer set matching on this fixture is luck rather than a guarantee.
+/// A wall measurement alone would have shipped that.
+///
+/// To make it default one would have to show the perturbation cannot lose rows — e.g. a
+/// corpus-scale ΔMISSED arm at a non-truncating budget, plus an argument for why a
+/// deadline-sensitive reordering is acceptable at all. Until then the 1.54× is available
+/// opt-in for conversion-bound batch work where `incomplete` is not being relied on.
+fn convert_hash_sort_enabled() -> bool {
+    std::env::var_os("RUSTDL_CONVERT_HASH_SORT").is_some_and(|v| v == "1")
+}
+
 /// Convert an entire horned-owl [`SetOntology`] into an [`InternalOntology`].
 ///
 /// Issue #43: a component that `convert_component` can't lower no longer
@@ -2231,7 +2277,29 @@ pub fn convert_ontology<A: ForIRI>(
     // in release, so a default `--call-graph=fp` profile shows `partial_cmp` recursing
     // into itself with no caller, and `--call-graph=dwarf` cannot be symbolized here
     // within a 9-minute budget.
-    components.sort_unstable();
+    if convert_hash_sort_enabled() {
+        // Sort by a FIXED-SEED hash, tie-broken by the full `Ord`. Deterministic (the
+        // tiebreak makes it a total order even under hash collision) and far cheaper:
+        // O(n) hashing plus O(n log n) `u64` compares, versus O(n log n) deep recursive
+        // `Component` → `ClassExpression` → `Rc<str>` comparisons.
+        //
+        // `DefaultHasher::new()` is fixed-seed (unlike `RandomState`), so this is stable
+        // run to run. It is NOT guaranteed stable across rustc versions — see the flag's
+        // doc for why that matters and why this is opt-in.
+        let mut keyed: Vec<(u64, &AnnotatedComponent<A>)> = components
+            .iter()
+            .map(|c| {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (*c).hash(&mut h);
+                (h.finish(), *c)
+            })
+            .collect();
+        keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        components = keyed.into_iter().map(|(_, c)| c).collect();
+    } else {
+        components.sort_unstable();
+    }
     let mut out = InternalOntology::new();
     for ac in components {
         match convert_component(&ac.component, &mut out.vocabulary, &mut out.concepts) {

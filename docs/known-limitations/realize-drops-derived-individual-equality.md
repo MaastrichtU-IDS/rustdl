@@ -397,3 +397,63 @@ only while the default was OFF. Under the house idiom (`is_none_or(|v| v != "0")
 ENABLES) the flip silently turned that arm into "on", so the negative control began asserting
 against itself. Both arms now set the value explicitly. **When flipping any default, grep the
 tests for `remove_var` on that variable.**
+
+---
+
+## CORRECTION (2026-08-23): the "cardinality arm" does NOT exist — it is the SAME case-analysis mechanism
+
+I set out to investigate `ore_ont_10009` as a distinct **cardinality-induced** arm, on the grounds
+that it carries `ObjectMaxCardinality` (12) and `ObjectExactCardinality` (19) while `ore_ont_3892`
+carries none. **That attribution was made from construct PRESENCE, not from the derivation, and it
+is wrong.**
+
+**First, the loss is real — now oracle-confirmed.** Konclude's realisation types both
+`a32071928c` and `a72192307c` as `Thing, sqdsq, zqedzbx`. So `sqdsq` is genuinely entailed,
+`RUSTDL_PSEUDO_MODEL=0` is correct, and the default drops it. That check mattered: the prune is
+subtractive, so it cannot *create* a false positive, but the un-pruned path could have carried a
+pre-existing FP that the prune merely masked — in which case ON would have been right and there
+would be no defect. It is not that.
+
+**Second, `ore_ont_10009` has disjunction, and it is directly implicated.** It carries **9
+`ObjectUnionOf`**, and the two individuals' only outgoing edges use properties whose domains are
+*disjunctive*:
+
+```
+ObjectPropertyAssertion(:sqndsqgy :a32071928c _:genid129)
+ObjectPropertyAssertion(:zdjznzn  :a32071928c _:genid128)
+
+ObjectPropertyDomain(:sqndsqgy ObjectUnionOf(:zqedzbx :sqdsq))
+ObjectPropertyDomain(:zdjznzn  ObjectUnionOf(:zqedzbx :sqdsq))
+```
+
+Also relevant: `zqedzbx ⊑ sqdsq` is **NOT** entailed at the class level (rustdl `subclass` → `no`,
+adjudicated by tableau), so the membership cannot be told-closure and must come from the ABox
+structure interacting with these disjunctive domains.
+
+### Revised mechanism count: TWO, not three — and one is closed
+
+| mechanism | status |
+|---|---|
+| inverse-functional merge not applied in the witness | **CLOSED** 2026-08-22 by `RUSTDL_INVERSE_FUNC_MAX` default ON |
+| **case analysis over disjunction** (`ore_ont_3892`, `ore_ont_10009`) | **open** — needs a label-complete witness |
+
+That is a *simplification* of the earlier three-mechanism claim, and it is consistent with the
+general explanation already recorded: a `Sat` completion is a **pre-model** whose labels hold only
+what the closing branch was forced to derive, so entailments requiring case analysis are absent.
+The cardinality constructs in `10009` are incidental.
+
+**Honest residual:** I did not fully derive `10009`'s entailment path — the individual is asserted
+`zqedzbx`, which already satisfies `zqedzbx ⊔ sqdsq`, so some further interaction (plausibly the
+`≤1` bounds on `zdjznzn`/`sqndsqgy` forcing the anonymous witnesses together) is doing the work.
+**What is established is the attribution, not the proof:** disjunction is present and directly on
+the implicated properties, so "cardinality-induced" is not supportable as a separate arm.
+
+**Consequence for planning:** do not open a "cardinality arm" investigation. The one remaining
+mechanism is case analysis, and its fix is the expensive one — intersect labels over completions
+rather than trusting a single `Sat`.
+
+**Method note.** This is the third time in two days that attributing a mechanism from a construct
+census proved wrong (the others: the inverse-functional risk predictor, which found 0 losses in the
+frame chosen *because* it named the construct; and the DKey conversion-bound bucket, where 12 of 16
+members had zero data properties). **A construct census tells you what an ontology CONTAINS, never
+which axiom DID the work.** Trace the derivation, or say the attribution is unconfirmed.

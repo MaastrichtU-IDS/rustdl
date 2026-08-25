@@ -580,6 +580,51 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   (empty map ⇒ byte-identical). **`HasKey` and unsupported axioms no longer
   hard-error** — they degrade. Spec
   `docs/superpowers/specs/2026-07-25-surface-dropped-axioms-design.md`.
+  **Nominal-existential absorption (2026-08-25, #70, `RUSTDL_NOMINAL_EXISTS_ABSORPTION`,
+  default ON, `=0` reverts).** `absorb.rs` rewrites a residual GCI carrying the antecedent
+  `∃R.{a}` — NNF disjunct `∀R.¬{a}` or `≤0 R.{a}` — as
+  `NominalRule { individual: a, conclusion: ∀R⁻.ψ }`, the nominal-keyed sibling of
+  `absorb_domain_residuals`. `∃R.{a} ⊑ ψ ≡ {a} ⊑ ∀R⁻.ψ` is a **logical identity**, so it is
+  sound and completeness-preserving by construction; a differing closure would be a bug, not
+  a trade-off. Scope is narrower than it looks: `clausify_with_stats` builds from
+  `InternalOntology` axioms, NOT the absorbed TBox (the `clause.rs` module doc saying
+  otherwise is stale), so **the wedge cannot be affected** — only the main tableau's rule set.
+  **The bug it closes is worth the read.** `EquivalentClasses(Q, ObjectHasValue(p, b))` plus
+  ONE `ObjectPropertyAssertion` — a two-axiom ontology — ran for hours. The `⊒` half
+  `∃p.{b} ⊑ Q` would not absorb, leaving the residual `⊤ ⊑ ∀p.¬{b} ⊔ Q` at every node, and
+  its `Q` disjunct is *generating*: picking it forces `∃p.{b}`, whose fresh witness is itself
+  nominal, gets the same residual, picks `Q`, generates again. **`is_blocked_anywhere`
+  refuses to block a nominal node** (`owl-dl-tableau/src/lib.rs:1249`) while
+  `is_blocked_ancestor` has no such exclusion, and `decide` turns anywhere-blocking on
+  exactly for the deadline-FREE paths — so on `is_class_satisfiable` nothing ever blocked:
+  **0 blocks in 127,708 `is_blocked` calls**, against 72 blocks and an instant verdict under
+  `RUSTDL_ANYWHERE_BLOCKING=0`. Same residual shape with a **non-nominal** filler blocks 126
+  times and answers in 0 s — that control is what isolates nominality as the cause, not the
+  disjunction.
+  **KNOWN RESIDUAL, and it is a DIFFERENT defect (pre-existing, unfixed):** absorbing the
+  antecedent removes this *shape*, not the blocking asymmetry. A nominal `∃`-cycle with **no
+  residual at all** — `Q ⊑ ∃p.{b}` plus `{b} ⊑ Q` — still grows to `RUSTDL_MAX_NODES` and
+  returns *"tableau bailed out without a verdict"* on both the pre-change and post-change
+  binaries, while `RUSTDL_ANYWHERE_BLOCKING=0` answers `sat`. Pinned as the `#[ignore]`d
+  sentinel `residual_free_nominal_cycle_still_exhausts_the_node_cap` (it asserts the DESIRED
+  verdict, so it trips the moment the gap closes). Fixing it means
+  letting `is_blocked_anywhere` fall back to ancestor scope for a nominal `y`, which is a
+  blocking-semantics change and needs its own 152-ontology-style bake-off — do not ship it on
+  this issue's evidence.
+  **EVIDENCE, with its limits stated.** The pass is **INERT on all 7 curated fixtures**
+  (`tbox-stats` ON vs OFF identical on pizza/ro/sio/sulo/wine/go-basic/family), so a green
+  curated closure-diff here demonstrates inertness, NOT correctness — the same trap
+  `datatype_value_membership.rs` documents for DKey. The real evidence is: (a) a gate scan
+  over the **448** of 1,920 ORE ontologies containing `ObjectHasValue`/`ObjectOneOf` — a
+  genuine superset, since `pool.nominal()` is reachable only from those two lowerings —
+  finding **16 FIRES / 430 INERT / 2 pre-existing failures** (`ore_ont_10860` the known SWRL
+  `BuiltInAtom` grammar gap, `ore_ont_8445` a known conversion timeout; identical rc in both
+  arms); (b) `classify --json` on those **16 byte-identical ON vs OFF, 16/16**, walls flat,
+  including `ore_ont_7775` where residuals go **253 → 0**; (c) 6 unit + 5 integration
+  canaries, of which **4 sabotages were run and all 4 caught** — disabling the pass, dropping
+  `role.flip()`, accepting `≤k` for `k ≥ 1`, and forgetting the individual (the FP guard).
+  Canaries `crates/owl-dl-reasoner/tests/nominal_exists_absorption.rs` +
+  `absorb::tests::nominal_exists_*`.
 
 - **`crates/owl-dl-reasoner`** — public API + orchestrator (`lib.rs`,
   `classify.rs`, `realize.rs`). Every entry point that issues a tableau query

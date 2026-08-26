@@ -151,7 +151,7 @@ pub(crate) fn object_property_values(
         .map_err(reason_error_to_py)
 }
 
-/// Inferred data property values `(subject, property, lexical, datatype)`
+/// Inferred data property values `(subject, property, lexical, datatype, lang)`
 /// over named individuals.
 #[pyfunction]
 #[allow(clippy::type_complexity)]

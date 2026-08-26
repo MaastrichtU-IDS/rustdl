@@ -53,10 +53,12 @@ fn object_values_include_asserted_and_symmetric() {
     assert!(has("http://ex/#b", "http://ex/#r", "http://ex/#a"));
 }
 
-/// A plain `DataPropertyAssertion` must surface as its 4-tuple (subject,
-/// property, lexical, datatype) — `inferred_data_property_values` is a
-/// structural passthrough over `materialize_data_property_assertions` with the
-/// `lang` element dropped.
+/// A plain `DataPropertyAssertion` must surface as its 5-tuple (subject,
+/// property, lexical, datatype, lang) — `inferred_data_property_values` is a
+/// structural passthrough over `materialize_data_property_assertions`,
+/// preserving every element. It used to drop `lang` and then dedup, which
+/// merged rows differing only by tag (issue #72); `lang` is empty here because
+/// the value is typed, not language-tagged.
 #[test]
 fn data_values_include_asserted() {
     let o = onto(

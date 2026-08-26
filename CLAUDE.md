@@ -1049,6 +1049,16 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   commands to 14** — every command that ANSWERS an entailment question — because
   `instances-expr` printed NOTHING on an ontology whose only two axioms were
   dropped while `classify` on the same file reported them.
+  **AND THE PYTHON STUB WENT STALE WITH CI GREEN.** `data_property_values`'
+  hand-written `__init__.pyi` kept declaring a 4-tuple after the runtime returned
+  5, and BOTH python jobs passed: `test_stubs.py` guards `__all__` NAME drift
+  only, stubs are not checked at runtime, and `test_queries.py` read `q[0]`/`q[1]`
+  so it passed at ANY tuple width. Fixed, plus
+  `test_tuple_returning_stubs_match_runtime_arity`, which parses the declared
+  `list[tuple[...]]` arity out of the stub and compares it against a real call
+  (sabotage-verified: reverting the stub to 4 fails it). **A passing pytest job is
+  NOT evidence the Python surface is correct** — check that the assertion depends
+  on the thing you changed.
 
   **Phase D11 (2026-06-09)** — `DataAllValuesFrom` (unblocked by the D10
   Horn-shortcircuit fix; data-`∀` now routes to the complete hybrid

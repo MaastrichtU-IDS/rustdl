@@ -247,6 +247,15 @@ pub fn absorb_roles(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
         absorb_domain_residuals(tbox, pool);
     }
 
+    // Nominal-existential absorption (`RUSTDL_NOMINAL_EXISTS_ABSORPTION`,
+    // default ON since 2026-08-25; `=0` reverts). Runs after domain absorption
+    // so that pass keeps first claim on any residual carrying both shapes; the
+    // two triggers are disjoint by construction (`∀R.⊥` vs `∀R.¬{a}`), so the
+    // order is a stability guarantee rather than a live tie-break.
+    if nominal_exists_absorption_enabled() {
+        absorb_nominal_exists_residuals(tbox, pool);
+    }
+
     // Lazy-unfolding split: precompute the `Or(_)`-shaped residual
     // GCIs so the tableau can defer their materialisation to
     // saturate stable-state instead of asserting them on every
@@ -382,6 +391,129 @@ fn absorb_domain_residuals(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
             role: role.flip(),
             guard: None,
             target_label,
+        });
+    }
+    tbox.residual_gcis = kept;
+}
+
+/// `RUSTDL_NOMINAL_EXISTS_ABSORPTION` — nominal-existential absorption
+/// ([`absorb_nominal_exists_residuals`]). **Default ON**; `=0` reverts to the
+/// pre-2026-08-25 behaviour where `∃R.{a} ⊑ ψ` stayed an untriggered residual.
+///
+/// Closes issue #70: `EquivalentClasses(Q, ObjectHasValue(p, b))` left the
+/// residual `⊤ ⊑ ∀p.¬{b} ⊔ Q`, whose `Q` disjunct is *generating* — picking it
+/// forces `∃p.{b}`, whose fresh witness is itself nominal, gets the residual,
+/// picks `Q`, and generates again. On the deadline-free query paths
+/// (`is_class_satisfiable`, `is_consistent`, un-timed `realize`) the main
+/// tableau runs anywhere-blocking, and `is_blocked_anywhere` refuses to block a
+/// nominal node — so nothing ever cut the cycle and a two-axiom ontology ran for
+/// hours. Absorbing the antecedent removes the residual, so the branch point
+/// never exists.
+#[must_use]
+pub fn nominal_exists_absorption_enabled() -> bool {
+    // Default-ON idiom (see the house convention): an EMPTY value enables.
+    std::env::var_os("RUSTDL_NOMINAL_EXISTS_ABSORPTION").is_none_or(|v| v != "0")
+}
+
+/// Recognise a **nominal-existential-absorbable** disjunct and return the role
+/// and individual of the antecedent it contributes.
+///
+/// A residual body `d₁ ⊔ … ⊔ dₙ` stands for `⊤ ⊑ d₁ ⊔ … ⊔ dₙ`, so a disjunct
+/// `dᵢ` contributes the *antecedent* `¬dᵢ`. Two NNF shapes give the
+/// nominal-filler existential antecedent `∃R.{a}`:
+///
+/// | disjunct | antecedent |
+/// |---|---|
+/// | `∀R.¬{a}`   | `∃R.{a}` |
+/// | `≤0 R.{a}`  | `∃R.{a}` |
+///
+/// # Soundness boundaries — the whole risk lives here
+///
+/// - **`Max(k, R, {a})` with `k ≥ 1` is rejected.** Its antecedent is
+///   `≥ k+1 R.{a}`, which needs `k+1` distinct successors; the rule emitted
+///   below fires off a single edge, so absorbing it would be **strictly too
+///   strong — UNSOUND**. (`{a}` is a singleton, so such a shape is
+///   unsatisfiable in the antecedent anyway; rejecting it is the conservative
+///   reading and costs nothing.)
+/// - **`∀R.D` with `D` not a negated nominal is rejected** — that is either the
+///   unqualified domain antecedent (handled by [`as_domain_trigger`]) or a
+///   genuinely qualified one needing a filler check.
+fn as_nominal_exists_trigger(cid: ConceptId, pool: &ConceptPool) -> Option<(Role, IndividualId)> {
+    match pool.get(cid) {
+        // `∀R.¬{a}` = `¬∃R.{a}`.
+        ConceptExpr::All(role, inner) => match pool.get(*inner) {
+            ConceptExpr::Not(negated) => match pool.get(*negated) {
+                ConceptExpr::Nominal(i) => Some((*role, *i)),
+                _ => None,
+            },
+            _ => None,
+        },
+        // `≤0 R.{a}` = `¬∃R.{a}`. `k ≥ 1` must NOT match.
+        ConceptExpr::Max(0, role, filler) => match pool.get(*filler) {
+            ConceptExpr::Nominal(i) => Some((*role, *i)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Nominal-existential absorption: rewrite every residual GCI carrying a
+/// nominal-existential antecedent as a [`NominalRule`], so it is triggered by
+/// the individual it names instead of being re-applied at every node.
+///
+/// `⊤ ⊑ ¬∃R.{a} ⊔ ψ` ≡ `∃R.{a} ⊑ ψ` ≡ `{a} ⊑ ∀R⁻.ψ`, and a `NominalRule`
+/// carrying the conclusion `∀R⁻.ψ` is exactly that: the tableau attaches it to
+/// whatever node bears the `Nominal(a)` label, and the `∀`-rule then propagates
+/// `ψ` back across the R-edge to the R-**predecessor** — the node the axiom
+/// constrains. Hence `role.flip()`, the same move [`absorb_domain_residuals`]
+/// makes for its unguarded `RoleRule`. (When `R` is itself `Role::Inverse(r)`
+/// the flip yields `Role::Named(r)`, which is correct: `∃r⁻.{a} ⊑ ψ`
+/// constrains r-edge *targets*.)
+///
+/// This is a **logical identity**, so it is sound and completeness-preserving
+/// by construction; a differing closure would be a bug, not a trade-off. Note
+/// the equivalence needs no assumption about `{a}` beyond it being a nominal:
+/// it is plain quantifier duality, valid for any filler. Restricting to
+/// nominals is what makes the *rule form* available — a `NominalRule` needs an
+/// individual to key on.
+///
+/// Sub-role propagation is handled by the tableau's `edge_satisfies`, so an
+/// `s`-edge with `s ⊑ r` fires an `r`-keyed rule as it should.
+///
+/// An empty `ψ` cannot reach here: the body would then be the singleton
+/// `∀R.¬{a}`, which the bare-`All` residual rewrite earlier in [`absorb_roles`]
+/// already claims as an unguarded `RoleRule` — the same axiom in a different
+/// triggered form. Pinned by
+/// `nominal_exists_bot_consequent_is_claimed_by_bare_all_rewrite`. Were it ever
+/// to arrive, [`ConceptPool::or`] would normalise it to `⊥`, giving
+/// `{a} ⊑ ∀R⁻.⊥`, which is the intended reading anyway.
+fn absorb_nominal_exists_residuals(tbox: &mut AbsorbedTBox, pool: &mut ConceptPool) {
+    let mut kept = Vec::with_capacity(tbox.residual_gcis.len());
+    for gci in std::mem::take(&mut tbox.residual_gcis) {
+        // A non-`Or` body is its own singleton disjunct set — the same
+        // convention `absorb_gci` and `absorb_domain_residuals` use.
+        let disjuncts: Vec<ConceptId> = match pool.get(gci) {
+            ConceptExpr::Or(args) => args.to_vec(),
+            _ => vec![gci],
+        };
+        let found = disjuncts
+            .iter()
+            .enumerate()
+            .find_map(|(i, &d)| as_nominal_exists_trigger(d, pool).map(|t| (i, t)));
+        let Some((pos, (role, individual))) = found else {
+            kept.push(gci);
+            continue;
+        };
+        let rest: Vec<ConceptId> = disjuncts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| (i != pos).then_some(c))
+            .collect();
+        let psi = pool.or(rest);
+        let conclusion = pool.all(role.flip(), psi);
+        tbox.nominal_rules.push(NominalRule {
+            individual,
+            conclusion,
         });
     }
     tbox.residual_gcis = kept;
@@ -1118,6 +1250,137 @@ mod tests {
         assert_eq!(t.nominal_rules.len(), 1);
         assert_eq!(t.nominal_rules[0].individual, ind);
         assert_eq!(t.nominal_rules[0].conclusion, b);
+    }
+
+    // ---- Nominal-existential absorption (issue #70) ----
+    //
+    // These are the ENTIRE safety net for `RUSTDL_NOMINAL_EXISTS_ABSORPTION`:
+    // the curated corpus is INERT for this pass (it fires on 0 of the 7 curated
+    // fixtures), so a green closure-diff there shows non-regression only.
+
+    /// The issue-#70 shape. `∃r.{a} ⊑ B` must leave NO residual GCI — the
+    /// residual is what made the completion graph grow without bound.
+    #[test]
+    fn nominal_exists_antecedent_absorbs_to_nominal_rule() {
+        let mut o = fresh(&["B"]);
+        let b = atom(&mut o, "B");
+        let ind = o.vocabulary.intern_individual("a");
+        let nom = o.concepts.nominal(ind);
+        let r = Role::named(RoleId::new(0));
+        let sub = o.concepts.some(r, nom);
+        o.axioms.push(Axiom::SubClassOf { sub, sup: b });
+        let t = run(&mut o);
+        assert!(
+            t.residual_gcis.is_empty(),
+            "residual survived: {:?}",
+            t.residual_gcis
+        );
+        assert_eq!(t.nominal_rules.len(), 1);
+        assert_eq!(t.nominal_rules[0].individual, ind);
+        // `{a} ⊑ ∀r⁻.B` — the flip is what points the propagation back at the
+        // r-PREDECESSOR, i.e. the node the axiom constrains.
+        let expected = o.concepts.all(r.flip(), b);
+        assert_eq!(t.nominal_rules[0].conclusion, expected);
+    }
+
+    /// `∃r⁻.{a} ⊑ B` — an already-inverse role flips back to the named form.
+    #[test]
+    fn nominal_exists_inverse_role_flips_to_named() {
+        let mut o = fresh(&["B"]);
+        let b = atom(&mut o, "B");
+        let ind = o.vocabulary.intern_individual("a");
+        let nom = o.concepts.nominal(ind);
+        let r_inv = Role::Inverse(RoleId::new(0));
+        let sub = o.concepts.some(r_inv, nom);
+        o.axioms.push(Axiom::SubClassOf { sub, sup: b });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty());
+        assert_eq!(t.nominal_rules.len(), 1);
+        let expected = o.concepts.all(Role::named(RoleId::new(0)), b);
+        assert_eq!(t.nominal_rules[0].conclusion, expected);
+    }
+
+    /// PRECEDENCE: `∃r.{a} ⊑ ⊥` never reaches this pass. Its GCI body
+    /// `∀r.¬{a} ⊔ ⊥` normalises to the singleton `∀r.¬{a}`, which the
+    /// pre-existing bare-`All` residual rewrite in [`absorb_roles`] claims first
+    /// as an unguarded `RoleRule`. That is the same axiom (`⊤ ⊑ ∀r.¬{a}`) in a
+    /// different triggered form, so the outcome that matters — no residual GCI —
+    /// holds either way. Pinned so a future reordering of `absorb_roles` cannot
+    /// silently change which pass owns this shape.
+    #[test]
+    fn nominal_exists_bot_consequent_is_claimed_by_bare_all_rewrite() {
+        let mut o = fresh(&[]);
+        let bot = o.concepts.bot();
+        let ind = o.vocabulary.intern_individual("a");
+        let nom = o.concepts.nominal(ind);
+        let r = Role::named(RoleId::new(0));
+        let sub = o.concepts.some(r, nom);
+        o.axioms.push(Axiom::SubClassOf { sub, sup: bot });
+        let t = run(&mut o);
+        assert!(t.residual_gcis.is_empty());
+        assert!(t.nominal_rules.is_empty(), "claimed by the wrong pass");
+        assert_eq!(t.role_rules.len(), 1);
+        assert_eq!(t.role_rules[0].role, r);
+        assert!(t.role_rules[0].guard.is_none());
+        let nom_again = o.concepts.nominal(ind);
+        let expected = o.concepts.not(nom_again);
+        assert_eq!(t.role_rules[0].target_label, expected);
+    }
+
+    /// NEGATIVE CONTROL, and the one that carries the soundness argument:
+    /// `≤k r.{a}` with `k ≥ 1` has antecedent `≥ k+1 r.{a}`, which needs more
+    /// than one successor. The emitted rule fires off a SINGLE edge, so
+    /// matching it would be strictly too strong — unsound.
+    #[test]
+    fn nominal_exists_rejects_max_cardinality_above_zero() {
+        let mut o = fresh(&[]);
+        let ind = o.vocabulary.intern_individual("a");
+        let nom = o.concepts.nominal(ind);
+        let r = Role::named(RoleId::new(0));
+        let zero = o.concepts.max(0, r, nom);
+        let one = o.concepts.max(1, r, nom);
+        assert!(as_nominal_exists_trigger(zero, &o.concepts).is_some());
+        assert!(as_nominal_exists_trigger(one, &o.concepts).is_none());
+    }
+
+    /// NEGATIVE CONTROL: `∀r.¬A` (a negated ATOM, not a nominal) is not this
+    /// pass's shape — absorbing it would need a class-keyed guard the
+    /// `NominalRule` form cannot express.
+    #[test]
+    fn nominal_exists_rejects_non_nominal_filler() {
+        let mut o = fresh(&["A"]);
+        let a = atom(&mut o, "A");
+        let not_a = o.concepts.not(a);
+        let r = Role::named(RoleId::new(0));
+        let all_not_a = o.concepts.all(r, not_a);
+        assert!(as_nominal_exists_trigger(all_not_a, &o.concepts).is_none());
+        // And `∀r.⊥` stays DOMAIN absorption's shape, not this one — the two
+        // triggers must not overlap or the ordering in `absorb_roles` would be
+        // a live tie-break rather than a stability guarantee.
+        let bot = o.concepts.bot();
+        let all_bot = o.concepts.all(r, bot);
+        assert!(as_nominal_exists_trigger(all_bot, &o.concepts).is_none());
+        assert!(as_domain_trigger(all_bot, &o.concepts).is_some());
+        assert!(as_domain_trigger(all_not_a, &o.concepts).is_none());
+    }
+
+    /// A multi-member `ObjectOneOf` filler must NOT be absorbed: `∃r.({a} ⊔ {b})`
+    /// NNFs its negation to `∀r.(¬{a} ⊓ ¬{b})`, whose inner is a conjunction,
+    /// not a bare negated nominal. Absorbing per-member would be unsound.
+    #[test]
+    fn nominal_exists_rejects_multi_member_one_of() {
+        let mut o = fresh(&[]);
+        let ia = o.vocabulary.intern_individual("a");
+        let ib = o.vocabulary.intern_individual("b");
+        let na = o.concepts.nominal(ia);
+        let nb = o.concepts.nominal(ib);
+        let one_of = o.concepts.or([na, nb]);
+        let r = Role::named(RoleId::new(0));
+        let negated = o.concepts.not(one_of);
+        let all_negated = o.concepts.all(r, negated);
+        // Pre-NNF the inner `Not(Or(..))` is not a `Not(Nominal)`, and post-NNF
+        // it becomes a conjunction — neither matches.
+        assert!(as_nominal_exists_trigger(all_negated, &o.concepts).is_none());
     }
 
     #[test]

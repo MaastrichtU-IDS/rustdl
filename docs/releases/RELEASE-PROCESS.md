@@ -1,5 +1,12 @@
 # Release process
 
+> **Setting this up on another machine?** `owl-reasoner-harness/docs/SETUP-ON-A-NEW-MACHINE.md`
+> covers provisioning, which nothing here does: the ORE corpus source (Zenodo DOI
+> 10.5281/zenodo.18578, `ore2015_sample.zip`, md5 `109f04cf8f124eb551d33c100e549730`, unzipping to
+> **1,920** `.owl` files), peer-reasoner acquisition and its `Binaries/Konclude` trap, the pin-and-
+> verify two-arm procedure, and what each metric means with its attached trap. Until 2026-08-26 that
+> information existed only in an uncommitted file on one host.
+
 Every gate here exists because omitting it shipped, or nearly shipped, a wrong number.
 Cross-references name the incident.
 

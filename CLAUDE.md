@@ -1049,6 +1049,28 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   commands to 14** — every command that ANSWERS an entailment question — because
   `instances-expr` printed NOTHING on an ontology whose only two axioms were
   dropped while `classify` on the same file reported them.
+  **FULL TWO-ARM ORE SWEEP (2026-08-26): 1,920 ontologies, 0 regressions, 0 answer
+  changes.** Pinned binaries, both arms per ontology, 60 s cap, single-thread, **arm
+  order ALTERNATED by index** so the ~3.4% page-cache phantom the #70 sweep hit cancels
+  by construction: **1,764 IDENTICAL / 123 BOTH_FAIL / 33 DIFFER / 0 REGRESSED / 0
+  RECOVERED**, and over the identical set **24,922,547 `direct_subsumptions`, 204,090
+  `unsatisfiable`, 407,829 `equivalent_groups` — diff 0 on every one**. Wall flat
+  (aggregate −1.81%; the order split brackets it, AFTER-led +0.88% vs BEFORE-led
+  −3.60%, so the positional term still dominates and the sign is not meaningful).
+  **All 33 DIFFERs adjudicated: 27 differ ONLY in the `dropped` reporting block** — the
+  intended effect, a langString axiom that used to be discarded now converts — 5 do not
+  reproduce, 1 is noise. **Zero entailments lost, zero gained.**
+  **THE HEADLINE IS THAT NOTHING MOVED**: langString axioms now enter the KB on 27 real
+  ORE ontologies and NO answer changes, because those values participate in no
+  subsumption there. That is precisely why the corpus could never have validated this
+  fix, and why the Konclude ∪ HermiT adjudication is the evidence that counts — the same
+  inertness `datatype_value_membership.rs` warns about, demonstrated at corpus scale.
+  **TWO RUNS CANNOT ESTABLISH STABILITY on a budget-truncated ontology.** `ore_ont_1508`
+  flagged as LOSING entailments; a 2-run same-binary control said "self-consistent,
+  byte-identical" and I reported that — **the THIRD run refuted it** (13928, 13928,
+  **13926**), while AFTER was stable at 13928 across three. Run at least three, and note
+  the ontology has ZERO language literals, so the change is provably inert on it — the
+  inertness argument is what makes the noise reading safe rather than convenient.
   **AND THE PYTHON STUB WENT STALE WITH CI GREEN.** `data_property_values`'
   hand-written `__init__.pyi` kept declaring a 4-tuple after the runtime returned
   5, and BOTH python jobs passed: `test_stubs.py` guards `__all__` NAME drift

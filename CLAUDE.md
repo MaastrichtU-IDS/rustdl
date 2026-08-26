@@ -666,6 +666,35 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   galen 28007, ore-10080 32356, sio 8904, wine 653, ore-10908 6001, pizza 499, ro 158,
   ore-15672 142, sulo 51, bibtex 16, all FP=0/MISSED=0. The 2 failures are the hard-fail on
   absent `alehif-test` / `notgalen`, not diffs.
+  **FULL TWO-ARM ORE SWEEP (2026-08-26): 1,920 ontologies, 0 regressions.** Pinned binaries
+  (`BEFORE` 7451647e from `main` @ f1ab66b, `AFTER` 6ccfc745), both arms per ontology, 60 s
+  cap, single-thread: **1,796 IDENTICAL / 122 BOTH_FAIL / 2 DIFFER / 0 REGRESSED / 0
+  RECOVERED**, and over the identical set **25,761,815 `direct_subsumptions`, 209,269
+  `unsatisfiable`, 473,220 `equivalent_groups`, 51 inconsistent KBs — diff 0 on every one**.
+  All 5 flagged rows across this and the reversed control adjudicate clean, and in all 5 the
+  pass is INERT; the 16 where it DOES fire are byte-identical.
+  **THE WALL FIGURE FROM THE FORWARD SWEEP IS AN ARTIFACT — do not quote −3.90%.** Arm order
+  was fixed (BEFORE first), so AFTER read a page-cache-warm file. The tell was the ≤1 s bucket
+  reading **−8.10%**, which adding a pass cannot cause. An order-REVERSED control over 633
+  ontologies flips the sign almost exactly (**forward −3.40%, reversed +3.41%**): whichever arm
+  runs SECOND is ~3.4% faster. Order-balanced, each arm once per slot: **2699.7 s vs 2695.2 s
+  = −0.17%, i.e. flat**, with 0 ontologies >1 s more than 1.5× slower. **Interleave or balance
+  arm order in any wall comparison here; a fixed order buys a ~3.4% phantom.**
+  **`incomplete` IS A TIMING FLAG, NOT OUTPUT — it breaks byte-comparison of `classify --json`.**
+  Two runs of ONE unchanged binary on `ore_ont_10807` differ *only* at `"incomplete": false`
+  vs `true`, with all 946 `direct_subsumptions` identical **as a set and in order**, same unsat,
+  same equivalence groups. It reports whether any pair was CUT by the 5 ms default per-pair
+  deadline, so on any ontology with a pair near that deadline it is a coin flip. Byte-identity
+  still IMPLIES content-identity (so an `IDENTICAL` verdict is sound), but a `DIFFER` is a
+  CANDIDATE, not a finding: adjudicate it by (1) does the pass fire at all (`tbox-stats` ON vs
+  OFF) and (2) is the binary self-consistent across repeats. Compare content as `consistent` +
+  `unsatisfiable` + `equivalent_groups` + `direct_subsumptions`, with `incomplete` reported
+  separately.
+  **Run adjudication repeats on an IDLE host.** Two ontologies first read as
+  "binary disagrees with itself" purely because the repeats were competing with the still-running
+  sweep; idle, both are self-consistent and the arms agree. The nondeterminism is real but
+  LOAD-DEPENDENT — its clean instance is `ore_ont_1508`, the ontology this file already cites
+  for it.
 
 - **`crates/owl-dl-reasoner`** — public API + orchestrator (`lib.rs`,
   `classify.rs`, `realize.rs`). Every entry point that issues a tableau query

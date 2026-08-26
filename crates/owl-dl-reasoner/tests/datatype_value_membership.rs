@@ -735,6 +735,15 @@ fn language_tagged_oneof_member_drops_enumeration() {
     // A DataOneOf with a language-tagged member is NOT all-exact-string →
     // the whole enumeration drops → no subsumption even for the plain
     // member that would otherwise match.
+    //
+    // Still exactly true after issue #72 added the `lang:` bucket, and the
+    // reason is worth stating so this does not read as "langString is
+    // unsupported": a MIXED enumeration now fails BOTH parsers —
+    // `parse_string_range` rejects the tagged member, `parse_lang_range`
+    // rejects the untagged one — so it drops for the same all-or-nothing
+    // reason, not for want of a langString bucket. The pure-langString case
+    // is `lang_value_in_oneof_subsumes`; the mixed case's sibling canary is
+    // `lang_mixed_oneof_drops_whole_enumeration`.
     let c = classify(
         r#"    Declaration(Class(:C))
     Declaration(Class(:D))
@@ -1547,5 +1556,154 @@ fn int_oneof_wrong_property_not_subsumed() {
     assert!(
         !c.is_subclass(C, D),
         "∃g.{{1}} ⊄ ∃h.{{1,2}}: wrong property must NOT subsume"
+    );
+}
+
+// ── Issue #72 (2026-08-26): rdf:langString value membership ──────────────
+//
+// A language-tagged literal's identity is the PAIR (lexical form, tag), and
+// `rdf:langString` is a DIFFERENT datatype from `xsd:string`. Before this,
+// `exact_string_literal` rejected `Literal::Language` and nothing else picked
+// it up, so a langString `DataHasValue` failed conversion outright and was
+// DROPPED — no membership was derivable by any route.
+//
+// NEGATIVES-FIRST, as above: the new `lang:` bucket is new FP surface, and
+// the curated corpus is inert for it (see this file's header). These are the
+// entire safety net.
+
+/// POSITIVE: same lexical form AND same tag ⇒ member of the enumeration.
+#[test]
+fn lang_value_in_oneof_subsumes() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@fr))
+    EquivalentClasses(:D DataSomeValuesFrom(:g DataOneOf("bonjour"@fr "hallo"@de)))
+"#,
+    );
+    assert!(c.is_subclass(C, D), r#""bonjour"@fr ∈ {{@fr, @de}}"#);
+}
+
+/// NEGATIVE — DIFFERENT TAG, SAME LEXICAL FORM. The whole point of the pair
+/// key: `"bonjour"@de` is a different literal from `"bonjour"@fr`.
+#[test]
+fn lang_same_lexical_different_tag_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@de))
+    EquivalentClasses(:D DataSomeValuesFrom(:g DataOneOf("bonjour"@fr)))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        r#""bonjour"@de ∉ {{"bonjour"@fr}}: the TAG is part of the key"#
+    );
+}
+
+/// NEGATIVE — CROSS-DATATYPE, the FP this bucket exists to prevent. A plain
+/// `xsd:string` and a language-tagged literal with the same lexical form are
+/// different literals in different datatypes; a shared bucket would make them
+/// subsume each other.
+#[test]
+fn lang_vs_plain_string_not_subsumed_either_direction() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@fr))
+    EquivalentClasses(:D DataHasValue(:g "bonjour"^^xsd:string))
+"#,
+    );
+    assert!(!c.is_subclass(C, D), "langString ⊄ xsd:string");
+    assert!(!c.is_subclass(D, C), "xsd:string ⊄ langString");
+}
+
+/// POSITIVE: a tagged literal IS an `rdf:langString`, so the bare datatype
+/// acts as `Top` for this bucket.
+#[test]
+fn lang_value_subsumed_by_bare_langstring() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@fr))
+    EquivalentClasses(:D DataSomeValuesFrom(:g <http://www.w3.org/1999/02/22-rdf-syntax-ns#langString>))
+"#,
+    );
+    assert!(c.is_subclass(C, D), r#""bonjour"@fr ∈ rdf:langString"#);
+}
+
+/// NEGATIVE: bare `xsd:string` must NOT swallow a language-tagged value.
+#[test]
+fn lang_value_not_subsumed_by_bare_xsd_string() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@fr))
+    EquivalentClasses(:D DataSomeValuesFrom(:g xsd:string))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "a langString value is NOT an xsd:string"
+    );
+}
+
+/// POSITIVE: BCP47 tags compare case-insensitively (RDF 1.1 §3.3), so `@FR`
+/// and `@fr` are the same literal. Normalising is a COMPLETENESS matter — a
+/// missed membership, never an FP — but it is the documented semantics.
+#[test]
+fn lang_tag_comparison_is_case_insensitive() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@FR))
+    EquivalentClasses(:D DataSomeValuesFrom(:g DataOneOf("bonjour"@fr)))
+"#,
+    );
+    assert!(c.is_subclass(C, D), r#""bonjour"@FR ≡ "bonjour"@fr"#);
+}
+
+/// NEGATIVE — WRONG PROPERTY, mirroring the other buckets' control: the pair
+/// matches but the data property does not, so CR5 must not relay.
+#[test]
+fn lang_wrong_property_not_subsumed() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    Declaration(DataProperty(:h))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@fr))
+    EquivalentClasses(:D DataSomeValuesFrom(:h DataOneOf("bonjour"@fr)))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "∃g.{{@fr}} ⊄ ∃h.{{@fr}}: wrong property must NOT subsume"
+    );
+}
+
+/// NEGATIVE — MIXED ENUMERATION DROPS WHOLE. A `DataOneOf` mixing a tagged
+/// and an untagged literal is not a langString set; it must drop entirely
+/// rather than silently become the tagged subset (a partial set would be
+/// unsound in a sufficient-direction RHS).
+#[test]
+fn lang_mixed_oneof_drops_whole_enumeration() {
+    let c = classify(
+        r#"    Declaration(Class(:C))
+    Declaration(Class(:D))
+    Declaration(DataProperty(:g))
+    EquivalentClasses(:C DataHasValue(:g "bonjour"@fr))
+    EquivalentClasses(:D DataSomeValuesFrom(:g DataOneOf("bonjour"@fr "plain"^^xsd:string)))
+"#,
+    );
+    assert!(
+        !c.is_subclass(C, D),
+        "a mixed DataOneOf must drop whole, not become its tagged subset"
     );
 }

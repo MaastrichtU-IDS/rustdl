@@ -234,7 +234,32 @@ def test_data_property_values(tmp_path):
         "  Declaration(NamedIndividual(:a))\n"
         "  DataPropertyAssertion(:dp :a \"5\"^^xsd:integer))\n"
     )
-    quads = rustdl.data_property_values(str(p))
+    quints = rustdl.data_property_values(str(p))
+    # Assert the ARITY, not just a couple of indices: the previous version of
+    # this test read q[0]/q[1] only, so it passed at any tuple width and did
+    # not notice when the row grew a language-tag column (issue #72).
+    assert all(len(q) == 5 for q in quints), quints
     assert any(
-        q[0] == "http://ex/#a" and q[1] == "http://ex/#dp" for q in quads
+        q[0] == "http://ex/#a" and q[1] == "http://ex/#dp" and q[4] == ""
+        for q in quints
+    ), quints
+
+
+def test_data_property_values_keeps_language_tags(tmp_path):
+    """Issue #72: the tag is part of the literal's identity.
+
+    Two tagged assertions on ONE subject sharing a lexical form must stay TWO
+    rows. Dropping `lang` before dedup merged them, losing an assertion.
+    """
+    p = tmp_path / "lang.ofn"
+    p.write_text(
+        "Prefix(:=<http://ex/#>)\n"
+        "Ontology(<http://ex/>\n"
+        "  Declaration(DataProperty(:dp))\n"
+        "  Declaration(NamedIndividual(:a))\n"
+        '  DataPropertyAssertion(:dp :a "bonjour"@fr)\n'
+        '  DataPropertyAssertion(:dp :a "bonjour"@de))\n'
     )
+    quints = rustdl.data_property_values(str(p))
+    tags = sorted(q[4] for q in quints)
+    assert tags == ["de", "fr"], quints

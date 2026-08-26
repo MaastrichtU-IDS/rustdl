@@ -151,14 +151,16 @@ pub(crate) fn object_property_values(
         .map_err(reason_error_to_py)
 }
 
-/// Inferred data property values `(subject, property, lexical, datatype)`
+/// Inferred data property values `(subject, property, lexical, datatype, lang)`
 /// over named individuals.
 #[pyfunction]
 #[allow(clippy::type_complexity)]
-pub(crate) fn data_property_values(path: &str) -> PyResult<Vec<(String, String, String, String)>> {
+pub(crate) fn data_property_values(
+    path: &str,
+) -> PyResult<Vec<(String, String, String, String, String)>> {
     let o = load::load_path(path)?;
     owl_dl_reasoner::inferred_data_property_values(&o)
-        .map(|v| v.quads().to_vec())
+        .map(|v| v.quints().to_vec())
         .map_err(reason_error_to_py)
 }
 

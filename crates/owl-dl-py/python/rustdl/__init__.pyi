@@ -205,8 +205,14 @@ def object_property_values(path: str) -> list[tuple[str, str, str]]:
     if the budget was exhausted."""
     ...
 
-def data_property_values(path: str) -> list[tuple[str, str, str, str]]:
-    """Inferred data property values (subject, property, lexical, datatype)."""
+def data_property_values(path: str) -> list[tuple[str, str, str, str, str]]:
+    """Inferred data property values (subject, property, lexical, datatype, lang).
+
+    `lang` is the language tag for `rdf:langString` values and EMPTY otherwise.
+    It is part of the literal's IDENTITY, not decoration: `"bonjour"@fr` and
+    `"bonjour"@de` are distinct literals. Until issue #72 the tag was dropped
+    before dedup, which merged such rows and lost an assertion outright when
+    they shared a subject."""
     ...
 
 # ── complex class-expression queries ────────────────────────────────────────

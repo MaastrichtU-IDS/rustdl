@@ -53,10 +53,12 @@ fn object_values_include_asserted_and_symmetric() {
     assert!(has("http://ex/#b", "http://ex/#r", "http://ex/#a"));
 }
 
-/// A plain `DataPropertyAssertion` must surface as its 4-tuple (subject,
-/// property, lexical, datatype) — `inferred_data_property_values` is a
-/// structural passthrough over `materialize_data_property_assertions` with the
-/// `lang` element dropped.
+/// A plain `DataPropertyAssertion` must surface as its 5-tuple (subject,
+/// property, lexical, datatype, lang) — `inferred_data_property_values` is a
+/// structural passthrough over `materialize_data_property_assertions`,
+/// preserving every element. It used to drop `lang` and then dedup, which
+/// merged rows differing only by tag (issue #72); `lang` is empty here because
+/// the value is typed, not language-tagged.
 #[test]
 fn data_values_include_asserted() {
     let o = onto(
@@ -67,11 +69,12 @@ fn data_values_include_asserted() {
             DataPropertyAssertion(:dp :a "42"^^xsd:integer))"#,
     );
     let v = inferred_data_property_values(&o).unwrap();
-    assert!(v.quads().iter().any(|(s, p, lex, dt)| {
+    assert!(v.quints().iter().any(|(s, p, lex, dt, lang)| {
         s == "http://ex/#a"
             && p == "http://ex/#dp"
             && lex == "42"
             && dt == "http://www.w3.org/2001/XMLSchema#integer"
+            && lang.is_empty()
     }));
     assert!(!v.incomplete());
 }

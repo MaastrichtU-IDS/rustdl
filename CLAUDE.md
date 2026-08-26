@@ -1122,6 +1122,81 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   corpus-wide (sio 8904, wine 653, ore-15672 142, ore-10908 6001,
   shoiq-knowledge 449, sulo, ro, bibtex, galen, notgalen, pizza).
 
+  **`rdf:langString` bucket (2026-08-26, #72)** — the 8th DKey bucket, `lang:`,
+  and the one D9 explicitly left out ("language-tagged literals … rejected at
+  parse"). That rejection was a silent DROP, not a sound narrowing you could
+  observe: `data_point_some` fell through every arm to `exact_string_literal`,
+  which refuses `Literal::Language`, so the whole axiom failed conversion.
+  **A language-tagged value was therefore unconfirmable by ANY route** — the
+  reasoning path had no such fact, and `property-values` (a STRUCTURAL pass that
+  never converts) reported it with the tag stripped.
+  **The key is the PAIR `(lexical form, language tag)`**, not the lexical form:
+  `"bonjour"@fr` and `"bonjour"@de` are distinct literals, and both are distinct
+  from the `xsd:string` `"bonjour"`. Tags are LOWERCASED at parse (RDF 1.1 §3.3
+  compares per BCP47, case-insensitively) — a completeness matter, never an FP.
+  Members encode as `hex(lex).hex(tag)`, joined by `:`: BOTH halves hex, so
+  neither delimiter can occur inside one and the two-level decode is unambiguous.
+  **Why a separate bucket rather than members in `str:`** — `rdf:langString` and
+  `xsd:string` are disjoint datatypes (the `Family::LangString` arm already said
+  so), so a shared bucket would let `"bonjour"` and `"bonjour"@fr` subsume one
+  another. That is the SAME defect shape as the v0.4.6–v0.4.9 `xsd:float`/
+  `xsd:double` FP, and bucket separation is what makes it unconstructible rather
+  than merely unlikely. Both parser matrices now cover it (14 buckets);
+  **`numeric_oneof_parser_matrix_exclusivity` was hitting `unreachable!()` on the
+  new bucket until fixed, i.e. that half of the FP check was silently NOT RUNNING** —
+  when extending `sample_iris()`, extend BOTH probes.
+  **Evidence, and the corpus is not part of it.** The FP=0 net is 11 VERIFIED /
+  closures exact, but `datatype_value_membership.rs` says the curated corpus has
+  no clash of this kind, so that shows **non-regression only**. The real gate is
+  8 negatives-first canaries + 3 unit tests + a **Konclude ∪ HermiT adjudication**
+  on 4 probes, all three reasoners agreeing 4/4 — including the DISCRIMINATING
+  CONTROL (identical tagged literals ⇒ both oracles report `EquivalentClasses`),
+  without which their silence on the negative probes would be ambiguous, since
+  Konclude is documented to under-report. **4 sabotages run, 4 caught**: keying on
+  the lexical form alone, routing langString into `str:`, restoring the
+  lang-dropping dedup, and skipping tag lowercasing.
+  Companion fixes in the same change: `inferred_data_property_values` dropped
+  `lang` and THEN deduped, so two tagged assertions on one subject sharing a
+  lexical form **collapsed into one row — losing an assertion, not just a tag**
+  (`quads()` → `quints()`, and `property-values` gains a 5th column, empty for
+  non-langString, kept uniform so consumers splitting on tab do not see a
+  datatype-dependent row width); and `warn_if_dropped` went from **3 of 27 CLI
+  commands to 14** — every command that ANSWERS an entailment question — because
+  `instances-expr` printed NOTHING on an ontology whose only two axioms were
+  dropped while `classify` on the same file reported them.
+  **FULL TWO-ARM ORE SWEEP (2026-08-26): 1,920 ontologies, 0 regressions, 0 answer
+  changes.** Pinned binaries, both arms per ontology, 60 s cap, single-thread, **arm
+  order ALTERNATED by index** so the ~3.4% page-cache phantom the #70 sweep hit cancels
+  by construction: **1,764 IDENTICAL / 123 BOTH_FAIL / 33 DIFFER / 0 REGRESSED / 0
+  RECOVERED**, and over the identical set **24,922,547 `direct_subsumptions`, 204,090
+  `unsatisfiable`, 407,829 `equivalent_groups` — diff 0 on every one**. Wall flat
+  (aggregate −1.81%; the order split brackets it, AFTER-led +0.88% vs BEFORE-led
+  −3.60%, so the positional term still dominates and the sign is not meaningful).
+  **All 33 DIFFERs adjudicated: 27 differ ONLY in the `dropped` reporting block** — the
+  intended effect, a langString axiom that used to be discarded now converts — 5 do not
+  reproduce, 1 is noise. **Zero entailments lost, zero gained.**
+  **THE HEADLINE IS THAT NOTHING MOVED**: langString axioms now enter the KB on 27 real
+  ORE ontologies and NO answer changes, because those values participate in no
+  subsumption there. That is precisely why the corpus could never have validated this
+  fix, and why the Konclude ∪ HermiT adjudication is the evidence that counts — the same
+  inertness `datatype_value_membership.rs` warns about, demonstrated at corpus scale.
+  **TWO RUNS CANNOT ESTABLISH STABILITY on a budget-truncated ontology.** `ore_ont_1508`
+  flagged as LOSING entailments; a 2-run same-binary control said "self-consistent,
+  byte-identical" and I reported that — **the THIRD run refuted it** (13928, 13928,
+  **13926**), while AFTER was stable at 13928 across three. Run at least three, and note
+  the ontology has ZERO language literals, so the change is provably inert on it — the
+  inertness argument is what makes the noise reading safe rather than convenient.
+  **AND THE PYTHON STUB WENT STALE WITH CI GREEN.** `data_property_values`'
+  hand-written `__init__.pyi` kept declaring a 4-tuple after the runtime returned
+  5, and BOTH python jobs passed: `test_stubs.py` guards `__all__` NAME drift
+  only, stubs are not checked at runtime, and `test_queries.py` read `q[0]`/`q[1]`
+  so it passed at ANY tuple width. Fixed, plus
+  `test_tuple_returning_stubs_match_runtime_arity`, which parses the declared
+  `list[tuple[...]]` arity out of the stub and compares it against a real call
+  (sabotage-verified: reverting the stub to 4 fails it). **A passing pytest job is
+  NOT evidence the Python surface is correct** — check that the assertion depends
+  on the thing you changed.
+
   **Phase D11 (2026-06-09)** — `DataAllValuesFrom` (unblocked by the D10
   Horn-shortcircuit fix; data-`∀` now routes to the complete hybrid
   tableau). Two halves:

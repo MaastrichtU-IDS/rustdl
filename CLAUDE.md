@@ -1007,6 +1007,49 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   corpus-wide (sio 8904, wine 653, ore-15672 142, ore-10908 6001,
   shoiq-knowledge 449, sulo, ro, bibtex, galen, notgalen, pizza).
 
+  **`rdf:langString` bucket (2026-08-26, #72)** — the 8th DKey bucket, `lang:`,
+  and the one D9 explicitly left out ("language-tagged literals … rejected at
+  parse"). That rejection was a silent DROP, not a sound narrowing you could
+  observe: `data_point_some` fell through every arm to `exact_string_literal`,
+  which refuses `Literal::Language`, so the whole axiom failed conversion.
+  **A language-tagged value was therefore unconfirmable by ANY route** — the
+  reasoning path had no such fact, and `property-values` (a STRUCTURAL pass that
+  never converts) reported it with the tag stripped.
+  **The key is the PAIR `(lexical form, language tag)`**, not the lexical form:
+  `"bonjour"@fr` and `"bonjour"@de` are distinct literals, and both are distinct
+  from the `xsd:string` `"bonjour"`. Tags are LOWERCASED at parse (RDF 1.1 §3.3
+  compares per BCP47, case-insensitively) — a completeness matter, never an FP.
+  Members encode as `hex(lex).hex(tag)`, joined by `:`: BOTH halves hex, so
+  neither delimiter can occur inside one and the two-level decode is unambiguous.
+  **Why a separate bucket rather than members in `str:`** — `rdf:langString` and
+  `xsd:string` are disjoint datatypes (the `Family::LangString` arm already said
+  so), so a shared bucket would let `"bonjour"` and `"bonjour"@fr` subsume one
+  another. That is the SAME defect shape as the v0.4.6–v0.4.9 `xsd:float`/
+  `xsd:double` FP, and bucket separation is what makes it unconstructible rather
+  than merely unlikely. Both parser matrices now cover it (14 buckets);
+  **`numeric_oneof_parser_matrix_exclusivity` was hitting `unreachable!()` on the
+  new bucket until fixed, i.e. that half of the FP check was silently NOT RUNNING** —
+  when extending `sample_iris()`, extend BOTH probes.
+  **Evidence, and the corpus is not part of it.** The FP=0 net is 11 VERIFIED /
+  closures exact, but `datatype_value_membership.rs` says the curated corpus has
+  no clash of this kind, so that shows **non-regression only**. The real gate is
+  8 negatives-first canaries + 3 unit tests + a **Konclude ∪ HermiT adjudication**
+  on 4 probes, all three reasoners agreeing 4/4 — including the DISCRIMINATING
+  CONTROL (identical tagged literals ⇒ both oracles report `EquivalentClasses`),
+  without which their silence on the negative probes would be ambiguous, since
+  Konclude is documented to under-report. **4 sabotages run, 4 caught**: keying on
+  the lexical form alone, routing langString into `str:`, restoring the
+  lang-dropping dedup, and skipping tag lowercasing.
+  Companion fixes in the same change: `inferred_data_property_values` dropped
+  `lang` and THEN deduped, so two tagged assertions on one subject sharing a
+  lexical form **collapsed into one row — losing an assertion, not just a tag**
+  (`quads()` → `quints()`, and `property-values` gains a 5th column, empty for
+  non-langString, kept uniform so consumers splitting on tab do not see a
+  datatype-dependent row width); and `warn_if_dropped` went from **3 of 27 CLI
+  commands to 14** — every command that ANSWERS an entailment question — because
+  `instances-expr` printed NOTHING on an ontology whose only two axioms were
+  dropped while `classify` on the same file reported them.
+
   **Phase D11 (2026-06-09)** — `DataAllValuesFrom` (unblocked by the D10
   Horn-shortcircuit fix; data-`∀` now routes to the complete hybrid
   tableau). Two halves:

@@ -65,21 +65,30 @@ impl ObjectPropertyValues {
     }
 }
 
-/// Entailed DATA property quads over named individuals, plus a completeness
+/// Entailed DATA property values over named individuals, plus a completeness
 /// flag.
 #[derive(Debug, Clone)]
 pub struct DataPropertyValues {
-    quads: Vec<(String, String, String, String)>,
+    quints: Vec<(String, String, String, String, String)>,
     incomplete: bool,
 }
 
 impl DataPropertyValues {
-    /// `(subject_iri, property_iri, lexical, datatype_iri)` 4-tuples, sorted
-    /// and deduplicated (the `lang` element of the underlying materialize
-    /// closure is dropped — see the module doc).
+    /// `(subject_iri, property_iri, lexical, datatype_iri, lang)` 5-tuples,
+    /// sorted and deduplicated.
+    ///
+    /// `lang` is the language tag when the datatype is `rdf:langString`, and
+    /// EMPTY otherwise — the same representation
+    /// [`crate::materialize_data_property_assertions`] uses, so this is a
+    /// passthrough with no lossy conversion in between.
+    /// It is part of the KEY, not decoration: under RDF semantics
+    /// `"bonjour"@fr` and `"bonjour"@de` are DISTINCT literals, so dropping
+    /// the tag before `dedup` (which is what this did until 2026-08-26, issue
+    /// #72) silently merged them into one row — losing an assertion outright
+    /// when they shared a subject, not merely losing the tag.
     #[must_use]
-    pub fn quads(&self) -> &[(String, String, String, String)] {
-        &self.quads
+    pub fn quints(&self) -> &[(String, String, String, String, String)] {
+        &self.quints
     }
 
     /// Always `false`: `inferred_data_property_values` is a pure structural
@@ -474,9 +483,15 @@ pub fn inferred_object_property_values<A: ForIRI>(
 }
 
 /// Inferred DATA property values over named individuals: a pure structural
-/// passthrough over `materialize_data_property_assertions`, dropping the
-/// `lang` element to a 4-tuple. See the module doc for the v1 scope boundary
-/// (no negative-data-assertion entailment extension).
+/// passthrough over `materialize_data_property_assertions`, preserving the
+/// full 5-tuple INCLUDING the language tag. See the module doc for the v1
+/// scope boundary (no negative-data-assertion entailment extension).
+///
+/// The tag must survive into the dedup key. It did not until 2026-08-26
+/// (issue #72), and because `dedup` ran on the truncated tuple, two
+/// language-tagged assertions on one subject sharing a lexical form —
+/// `"bonjour"@fr` and `"bonjour"@de` — collapsed to a single row. That is
+/// data loss, not a formatting choice, and it was silent.
 ///
 /// # Errors
 /// [`ReasonError::Inconsistent`] if the ontology is inconsistent;
@@ -484,15 +499,11 @@ pub fn inferred_object_property_values<A: ForIRI>(
 pub fn inferred_data_property_values<A: ForIRI>(
     onto: &SetOntology<A>,
 ) -> Result<DataPropertyValues, ReasonError> {
-    let quints = crate::materialize_data_property_assertions(onto)?;
-    let mut quads: Vec<(String, String, String, String)> = quints
-        .into_iter()
-        .map(|(s, p, lex, dt, _lang)| (s, p, lex, dt))
-        .collect();
-    quads.sort();
-    quads.dedup();
+    let mut quints = crate::materialize_data_property_assertions(onto)?;
+    quints.sort();
+    quints.dedup();
     Ok(DataPropertyValues {
-        quads,
+        quints,
         incomplete: false,
     })
 }

@@ -122,11 +122,18 @@ fn individuals_text_output() {
 }
 
 /// `property-values` (no `--json`): section headers + tab-separated triples/
-/// quads. `:r` is symmetric and `r(a,b)` is asserted, so the seed alone
+/// quints. `:r` is symmetric and `r(a,b)` is asserted, so the seed alone
 /// (`materialize_object_property_assertions`, which already closes symmetric
 /// roles) surfaces both `r(a,b)` and the derived `r(b,a)` — no extension
 /// candidates remain unresolved by the seed, so this fixture is complete
 /// (no stderr warning).
+///
+/// The data row carries a FIFTH field, the language tag, EMPTY here because
+/// the value is `xsd:integer` — hence the trailing tab (issue #72). The width
+/// is deliberately uniform: a language tag is part of a literal's identity, so
+/// it needs its own column, and emitting it only for `rdf:langString` would
+/// make the row width vary by datatype and break any consumer splitting on
+/// tab. This test caught the format change, which is what it is for.
 #[test]
 fn property_values_text_output() {
     let out = rustdl()
@@ -141,7 +148,7 @@ fn property_values_text_output() {
          http://ex/#a\thttp://ex/#r\thttp://ex/#b\n\
          http://ex/#b\thttp://ex/#r\thttp://ex/#a\n\
          # data property values\n\
-         http://ex/#a\thttp://ex/#dp\t5\thttp://www.w3.org/2001/XMLSchema#integer\n"
+         http://ex/#a\thttp://ex/#dp\t5\thttp://www.w3.org/2001/XMLSchema#integer\t\n"
     );
     assert!(
         out.stderr.is_empty(),

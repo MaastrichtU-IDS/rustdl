@@ -67,11 +67,12 @@ fn data_values_include_asserted() {
             DataPropertyAssertion(:dp :a "42"^^xsd:integer))"#,
     );
     let v = inferred_data_property_values(&o).unwrap();
-    assert!(v.quads().iter().any(|(s, p, lex, dt)| {
+    assert!(v.quints().iter().any(|(s, p, lex, dt, lang)| {
         s == "http://ex/#a"
             && p == "http://ex/#dp"
             && lex == "42"
             && dt == "http://www.w3.org/2001/XMLSchema#integer"
+            && lang.is_empty()
     }));
     assert!(!v.incomplete());
 }

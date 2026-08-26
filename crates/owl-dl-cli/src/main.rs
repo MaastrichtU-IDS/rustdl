@@ -726,9 +726,23 @@ fn warn_if_incomplete(timed_out_pairs: usize, pair_timeout_ms: u64, global_timeo
 /// (unsupported constructs — see `owl_dl_reasoner::dropped_axioms`). Those
 /// axioms are simply absent from reasoning, so the result is a sound
 /// under-approximation: nothing false is reported, but something may be
-/// missing. Mirrors `warn_if_incomplete`'s placement (human path only —
-/// under `--json`, the `dropped` block itself is the signal, keeping stdout
-/// a single JSON object).
+/// missing.
+///
+/// Called from every command that ANSWERS an entailment question. It used to
+/// be called from three (`consistent`, `classify`, `realize`) out of 27, which
+/// is how issue #72 could happen: `instances-expr` on an ontology whose only
+/// two axioms were dropped printed NOTHING — no answer and no warning — while
+/// `classify` on the same file reported the drop. `CLAUDE.md`'s own rule is
+/// that a sound under-approximation the caller cannot detect is the defect.
+///
+/// Pure diagnostics (`tbox-stats`, `clause-stats`, `locality-stats`,
+/// `residual-*`, `hyper-*`) are deliberately NOT included: they report on the
+/// conversion itself rather than answering a question about the ontology, and
+/// `dropped_block` costs one extra `convert_ontology` per call.
+///
+/// Goes to stderr, so it is emitted on the `--json` paths too: stdout stays a
+/// single JSON object, and for the commands whose JSON carries no `dropped`
+/// block this is the only signal available.
 fn warn_if_dropped(dropped: &std::collections::BTreeMap<String, u64>) {
     let total: u64 = dropped.values().sum();
     if total == 0 {
@@ -952,6 +966,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let classes =
@@ -993,6 +1008,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let same =
@@ -1028,6 +1044,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let deadline =
                 (pair_timeout_ms > 0).then(|| std::time::Duration::from_millis(pair_timeout_ms));
             let obj = inferred_object_property_values(&onto, deadline)
@@ -1048,8 +1065,12 @@ fn main() -> Result<()> {
                 println!("{s}\t{p}\t{o}");
             }
             println!("# data property values");
-            for (s, p, lex, dt) in data.quads() {
-                println!("{s}\t{p}\t{lex}\t{dt}");
+            // The lang tag is part of the literal's IDENTITY (issue #72), so it
+            // is printed as a fifth column rather than dropped: `"bonjour"@fr`
+            // and `"bonjour"@de` are distinct literals and must not render
+            // identically. Empty for every non-`rdf:langString` value.
+            for (s, p, lex, dt, lang) in data.quints() {
+                println!("{s}\t{p}\t{lex}\t{dt}\t{lang}");
             }
             if obj.incomplete() || data.incomplete() {
                 eprintln!(
@@ -1059,6 +1080,7 @@ fn main() -> Result<()> {
         }
         Command::PropertyHierarchy { file, json } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let obj = owl_dl_reasoner::classify_object_property_hierarchy(&onto)
                 .context("classify_object_property_hierarchy")?;
             let data = owl_dl_reasoner::classify_data_property_hierarchy(&onto)
@@ -1081,6 +1103,7 @@ fn main() -> Result<()> {
         }
         Command::Sat { file, class_iri } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let verdict =
                 is_class_satisfiable(&onto, &class_iri).context("is_class_satisfiable")?;
             println!("{}", if verdict { "sat" } else { "unsat" });
@@ -1092,6 +1115,7 @@ fn main() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let verdict = if saturation_only {
                 is_subclass_of_saturation_only(&onto, &sub, &sup)
                     .context("is_subclass_of_saturation_only")?
@@ -1175,6 +1199,7 @@ fn main() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let verdict = if saturation_only {
                 is_instance_of_saturation_only(&onto, &class_iri, &individual_iri)
                     .context("is_instance_of_saturation_only")?
@@ -1189,6 +1214,7 @@ fn main() -> Result<()> {
             saturation_only,
         } => {
             let onto = parse_ofn(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let members = if saturation_only {
                 instances_of_saturation_only(&onto, &class_iri)
                     .context("instances_of_saturation_only")?
@@ -1201,6 +1227,7 @@ fn main() -> Result<()> {
         }
         Command::SatExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let ce = parse_ce(&pm, &ce)?;
             let v = owl_dl_reasoner::class_expression_satisfiable(&onto, &ce)
                 .context("class_expression_satisfiable")?;
@@ -1230,6 +1257,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let sub_ce = parse_ce(&pm, &sub_ce)?;
             let sup_ce = parse_ce(&pm, &sup_ce)?;
             let v = owl_dl_reasoner::class_expression_entailed_subclass(&onto, &sub_ce, &sup_ce)
@@ -1248,6 +1276,7 @@ fn main() -> Result<()> {
         }
         Command::InstancesExpr { file, ce, json } => {
             let (onto, pm) = parse_ofn_with_pm(&file)?;
+            warn_if_dropped(&json_out::dropped_block(&onto));
             let ce = parse_ce(&pm, &ce)?;
             let r = owl_dl_reasoner::class_expression_instances(&onto, &ce)
                 .context("class_expression_instances")?;

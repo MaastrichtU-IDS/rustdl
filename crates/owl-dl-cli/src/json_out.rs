@@ -368,7 +368,7 @@ pub(crate) struct PropertyValuesJson {
     pub(crate) schema_version: u32,
     pub(crate) incomplete: bool,
     pub(crate) object_property_values: Vec<[String; 3]>,
-    pub(crate) data_property_values: Vec<[String; 4]>,
+    pub(crate) data_property_values: Vec<[String; 5]>,
 }
 
 #[must_use]
@@ -383,10 +383,12 @@ pub(crate) fn build_property_values_json(
         .collect();
     object_property_values.sort();
 
-    let mut data_property_values: Vec<[String; 4]> = data
-        .quads()
+    // 5 elements: the language tag is part of the literal's identity (issue
+    // #72). Empty string for every non-`rdf:langString` value.
+    let mut data_property_values: Vec<[String; 5]> = data
+        .quints()
         .iter()
-        .map(|(s, p, lex, dt)| [s.clone(), p.clone(), lex.clone(), dt.clone()])
+        .map(|(s, p, lex, dt, lang)| [s.clone(), p.clone(), lex.clone(), dt.clone(), lang.clone()])
         .collect();
     data_property_values.sort();
 

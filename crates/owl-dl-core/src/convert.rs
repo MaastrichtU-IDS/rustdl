@@ -16,9 +16,9 @@ use thiserror::Error;
 use crate::ConceptPool;
 use crate::Vocabulary;
 use crate::data_axioms::{
-    DataIntersectionDkey, DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, OrdRange,
-    RangeBucket, StrSet, exact_string_literal, parse_data_intersection_dkey, parse_date,
-    parse_datetime, parse_decimal,
+    DataIntersectionDkey, DateKey, DateTimeKey, Decimal, FloatRange, IntegerRange, LangSet,
+    OrdRange, RangeBucket, StrSet, exact_lang_literal, exact_string_literal,
+    parse_data_intersection_dkey, parse_date, parse_datetime, parse_decimal,
 };
 use crate::ir::{ClassId, ConceptExpr, ConceptId, IndividualId, Role};
 use crate::ontology::{Axiom, InternalOntology, SubRolePath};
@@ -480,6 +480,76 @@ fn lower_str_data_to_some(
     pool.some(Role::named(role_id), filler)
 }
 
+// ── Issue #72 (2026-08-26): rdf:langString value-set DKey bucket ─────────
+//
+// `rdf:langString` is equality-typed like `xsd:string`, but a literal's
+// identity is the PAIR (lexical form, language tag). Its own `lang:` tag,
+// strictly disjoint from `str:` and from the six numeric/temporal buckets —
+// the datatypes really are disjoint (see `Family::LangString`), so sharing a
+// bucket with `str:` would make `"bonjour"` and `"bonjour"@fr` subsume each
+// other, a false positive.
+//
+// Member encoding is `hex(lexical).hex(tag)`: BOTH halves hex-encoded, joined
+// by `.`, members joined by `:`. Since hex is `[0-9a-f]*`, neither separator
+// can occur inside a half, so the two-level decode is unambiguous for
+// arbitrary content — the same reason D9 hex-encodes at all. `*` marks `Top`.
+const DKEY_LANG_TAG: &str = "lang:";
+
+fn lang_dkey_iri(set: &LangSet) -> String {
+    match set {
+        LangSet::Top => format!("{DKEY_IRI_PREFIX}{DKEY_LANG_TAG}*"),
+        LangSet::Set(members) => {
+            let body = members
+                .iter()
+                .map(|(lex, tag)| {
+                    format!(
+                        "{}.{}",
+                        hex_encode(lex.as_bytes()),
+                        hex_encode(tag.as_bytes())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(":");
+            format!("{DKEY_IRI_PREFIX}{DKEY_LANG_TAG}{body}")
+        }
+    }
+}
+
+/// Public single-point decode of a LANGSTRING `DKey` IRI into its [`LangSet`].
+/// Returns `None` for any non-langString-bucket or malformed `DKey` IRI,
+/// mirroring [`decode_string_dkey`].
+#[must_use]
+pub fn decode_lang_dkey(iri: &str) -> Option<LangSet> {
+    parse_lang_dkey_iri(iri)
+}
+
+fn parse_lang_dkey_iri(iri: &str) -> Option<LangSet> {
+    let rest = iri
+        .strip_prefix(DKEY_IRI_PREFIX)?
+        .strip_prefix(DKEY_LANG_TAG)?;
+    if rest == "*" {
+        return Some(LangSet::Top);
+    }
+    let mut set = std::collections::BTreeSet::new();
+    for tok in rest.split(':') {
+        let (lex, tag) = tok.split_once('.')?;
+        set.insert((hex_decode(lex)?, hex_decode(tag)?));
+    }
+    Some(LangSet::Set(set))
+}
+
+fn lower_lang_data_to_some(
+    set: &LangSet,
+    dp_iri: &str,
+    vocab: &mut Vocabulary,
+    pool: &mut ConceptPool,
+) -> ConceptId {
+    let role_id = vocab.intern_role(dp_iri);
+    let dkey_class = vocab.intern_class(&lang_dkey_iri(set));
+    let filler = pool.atomic(dkey_class);
+    pool.some(Role::named(role_id), filler)
+}
+
 // ── Numeric DataOneOf DKey buckets (Phase D-numeric-oneof) ───────────────
 //
 // Five new ONEOF tags, each strictly disjoint from each other and from all
@@ -721,6 +791,12 @@ fn data_range_dkey<A: ForIRI>(
         ord_dkey_iri(DKEY_DATETIME_TAG, &r, datetime_key)
     } else if let Some(s) = crate::data_axioms::parse_string_range(dr) {
         str_dkey_iri(&s)
+    } else if let Some(s) = crate::data_axioms::parse_lang_range(dr) {
+        // Issue #72: bare `rdf:langString` (→ Top) or a `DataOneOf` of
+        // language-tagged literals. Placed AFTER the string arm, which cannot
+        // match a language-tagged member (`exact_string_literal` rejects them),
+        // so the two are disjoint by construction rather than by ordering.
+        lang_dkey_iri(&s)
     } else if let Some(s) = crate::data_axioms::parse_integer_oneof(dr) {
         int_oneof_iri(&s)
     } else if let Some(s) = crate::data_axioms::parse_xsd_float_oneof(dr) {
@@ -819,6 +895,18 @@ fn data_point_some<A: ForIRI>(
             &OrdRange::point(v),
             DKEY_DATETIME_TAG,
             datetime_key,
+            dp_iri,
+            vocab,
+            pool,
+        ))
+    } else if let Some((lex, tag)) = exact_lang_literal(l) {
+        // Issue #72. Must come BEFORE the `xsd:string` arm — not because the
+        // arms could both match (they cannot: `exact_string_literal` rejects
+        // `Literal::Language`), but so the ordering states the intent that a
+        // language-tagged literal is its own datatype and never falls through
+        // to the string bucket.
+        Some(lower_lang_data_to_some(
+            &LangSet::singleton(lex, tag),
             dp_iri,
             vocab,
             pool,
@@ -2762,6 +2850,14 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
         .classes()
         .filter_map(|(cid, iri)| parse_string_dkey_iri(iri).map(|r| (cid, r)))
         .collect();
+    // Issue #72: `rdf:langString`, its own bucket — never mixed with `str:`,
+    // since the two datatypes are disjoint and a shared bucket would make
+    // `"x"` and `"x"@fr` subsume one another.
+    let lang_dkeys: Vec<(ClassId, LangSet)> = out
+        .vocabulary
+        .classes()
+        .filter_map(|(cid, iri)| parse_lang_dkey_iri(iri).map(|r| (cid, r)))
+        .collect();
     // ── The six NUMERIC `DataOneOf` buckets (`io:` / `fo:` / `dbo:` / `deo:` /
     // `dao:` / `dto:`) ────────────────────────────────────────────────────────
     // These were minted by `data_range_dkey` but NEVER collected here, so they
@@ -2813,6 +2909,13 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     } else {
         seed_bucket(out, &str_dkeys, StrSet::subset);
     }
+    // Issue #72. Deliberately NOT routed through `seed_str_bucket_indexed`:
+    // that optimisation is exact only under the cardinality argument that
+    // every `str:` DKey reaching it from a `DataPropertyAssertion` is a
+    // SINGLETON, and it is keyed on `StrSet`. The langString population is
+    // tiny by comparison (tags are few), so the plain O(k²) walk is correct
+    // and cheap; revisit only if a corpus ever shows otherwise.
+    seed_bucket(out, &lang_dkeys, LangSet::subset);
     // Numeric-oneof `⊑`: `DKey(S1) ⊑ DKey(S2)` iff `S1 ⊆ S2` (exact set
     // inclusion — every member of `S1` is a member of `S2`, so any value in
     // `S1` is in `S2`). Empty when the flag is off ⟹ these are no-ops.
@@ -2870,6 +2973,7 @@ fn seed_dkey_subsumptions(out: &mut InternalOntology) {
     seed_disjoint_bucket(out, &date_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &dt_dkeys, OrdRange::disjoint, comp);
     seed_disjoint_bucket(out, &str_dkeys, StrSet::disjoint, comp);
+    seed_disjoint_bucket(out, &lang_dkeys, LangSet::disjoint, comp);
     // Numeric-oneof disjointness. FP-CRITICAL DIRECTION: emitting a
     // `DisjointClasses` ADDS clashes, so a wrong "disjoint" is a false UNSAT,
     // not a miss. `BTreeSet::is_disjoint` is exact here because every bucket's
@@ -4898,6 +5002,17 @@ mod tests {
                         .collect(),
                 )),
             ),
+            (
+                "lang",
+                lang_dkey_iri(&LangSet::Set(
+                    [
+                        ("bonjour".to_string(), "fr".to_string()),
+                        ("bonjour".to_string(), "de".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                )),
+            ),
         ]
     }
 
@@ -4918,6 +5033,7 @@ mod tests {
                 "date" => parse_date_dkey_iri(iri).is_some(),
                 "dt" => parse_datetime_dkey_iri(iri).is_some(),
                 "str" => parse_string_dkey_iri(iri).is_some(),
+                "lang" => parse_lang_dkey_iri(iri).is_some(),
                 _ => unreachable!(),
             }
         };
@@ -4990,9 +5106,11 @@ mod tests {
         let mut all = sample_iris();
         all.extend(oneof.iter().cloned());
 
-        // Decoders for ALL thirteen buckets (7 interval/string + 6 oneof).
-        // `db:` (double interval) vs `dbo:` (double oneof) is the newest
-        // near-collision the matrix has to rule out.
+        // Decoders for ALL fourteen buckets (8 interval/string/lang + 6 oneof).
+        // `db:` (double interval) vs `dbo:` (double oneof) is one
+        // near-collision the matrix has to rule out; `lang:` vs `str:`
+        // (issue #72) is the other, and the FP it prevents is concrete —
+        // a shared bucket would make `"x"` and `"x"@fr` subsume each other.
         let probe = |bucket: &str, iri: &str| -> bool {
             match bucket {
                 "int" => parse_dkey_iri(iri).is_some(),
@@ -5002,6 +5120,7 @@ mod tests {
                 "date" => parse_date_dkey_iri(iri).is_some(),
                 "dt" => parse_datetime_dkey_iri(iri).is_some(),
                 "str" => parse_string_dkey_iri(iri).is_some(),
+                "lang" => parse_lang_dkey_iri(iri).is_some(),
                 "io" => parse_int_oneof_iri(iri).is_some(),
                 "fo" => parse_float_oneof_iri(iri).is_some(),
                 "dbo" => parse_double_oneof_iri(iri).is_some(),
@@ -5131,6 +5250,37 @@ mod tests {
         // Chronological tuple order.
         assert!(parse_date("2019-12-31") < parse_date("2020-01-01"));
         assert!(parse_datetime("2020-01-15T08:00:00") < parse_datetime("2020-01-15T08:00:01"));
+    }
+
+    /// Issue #72: the `lang:` bucket round-trips arbitrary content through
+    /// its TWO-level encoding. Both halves are hex, joined by `.`, members by
+    /// `:` — so a lexical form containing either delimiter cannot forge a
+    /// member boundary. That is the reason for hex, and the reason the pair
+    /// key is safe to put in an IRI at all.
+    #[test]
+    fn lang_dkey_iri_round_trips_including_delimiters() {
+        let set = LangSet::Set(
+            [
+                ("a:b.c".to_string(), "fr".to_string()),
+                ("naïve — ünïcode".to_string(), "de-ch".to_string()),
+                (String::new(), "en".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(parse_lang_dkey_iri(&lang_dkey_iri(&set)), Some(set));
+        assert_eq!(
+            parse_lang_dkey_iri(&lang_dkey_iri(&LangSet::Top)),
+            Some(LangSet::Top)
+        );
+        // A langString IRI must NOT decode as a string IRI, or the two
+        // datatypes would cross-seed. (The full matrix is
+        // `parser_matrix_mutual_exclusivity`; this is the pair that motivated
+        // the separate bucket.)
+        let lang_iri = lang_dkey_iri(&LangSet::singleton("bonjour".to_string(), "fr".to_string()));
+        assert!(parse_string_dkey_iri(&lang_iri).is_none());
+        let str_iri = str_dkey_iri(&StrSet::singleton("bonjour".to_string()));
+        assert!(parse_lang_dkey_iri(&str_iri).is_none());
     }
 
     #[test]

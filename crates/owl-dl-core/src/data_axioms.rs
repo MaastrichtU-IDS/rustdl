@@ -1106,6 +1106,102 @@ impl StrSet {
     }
 }
 
+/// Issue #72 (2026-08-26): an `rdf:langString` value set. Like [`StrSet`] this
+/// is an EQUALITY-typed datatype, but a language-tagged literal's identity is
+/// the PAIR `(lexical form, language tag)`: under RDF semantics `"bonjour"@fr`
+/// and `"bonjour"@de` are DISTINCT literals, and `"bonjour"@fr` is distinct
+/// again from the plain `xsd:string` `"bonjour"`.
+///
+/// `Top` is the bare `rdf:langString` (every language-tagged literal); `Set`
+/// is a finite enumeration from `DataOneOf`.
+///
+/// SOUNDNESS, and why this is a bucket of its own rather than members bolted
+/// onto [`StrSet`]:
+///
+/// - **`rdf:langString` is DISJOINT from `xsd:string`** — see the
+///   `Family::LangString` arm below, which already says so. Sharing a bucket
+///   would let `"bonjour"` and `"bonjour"@fr` subsume one another, a false
+///   positive. Bucket separation is what makes that unconstructible rather
+///   than merely unlikely, exactly as the `f:`/`dbo:` split does for
+///   `xsd:float` vs `xsd:double`.
+/// - **Tags compare case-insensitively** (RDF 1.1 §3.3: language tags are
+///   compared per BCP47, which is case-insensitive), so the tag is LOWERCASED
+///   at parse. `"x"@FR` and `"x"@fr` are the same literal and must land on the
+///   same key; failing to normalise would be an incompleteness (a missed
+///   membership), not an FP.
+/// - The lexical form is NOT normalised — it is compared by exact identity,
+///   the same rule [`StrSet`] uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LangSet {
+    Top,
+    Set(BTreeSet<(String, String)>),
+}
+
+impl LangSet {
+    pub fn singleton(lex: String, lang: String) -> Self {
+        LangSet::Set([(lex, lang)].into_iter().collect())
+    }
+
+    /// `self ⊆ other`: anything ⊆ `Top`; `Top` is a subset only of `Top`;
+    /// two finite sets compare by ordinary set inclusion. Mirrors
+    /// [`StrSet::subset`].
+    pub fn subset(&self, other: &Self) -> bool {
+        match (self, other) {
+            (_, LangSet::Top) => true,
+            (LangSet::Top, LangSet::Set(_)) => false,
+            (LangSet::Set(a), LangSet::Set(b)) => a.is_subset(b),
+        }
+    }
+
+    /// `self ∩ other = ∅` — conservative, mirroring [`StrSet::disjoint`].
+    /// `Top` overlaps everything so is NEVER disjoint.
+    pub fn disjoint(&self, other: &Self) -> bool {
+        match (self, other) {
+            (LangSet::Top, _) | (_, LangSet::Top) => false,
+            (LangSet::Set(a), LangSet::Set(b)) => a.is_disjoint(b),
+        }
+    }
+}
+
+/// Extract an EXACT `rdf:langString` value from a literal as its
+/// `(lexical form, lowercased language tag)` pair. Every other literal form —
+/// including a plain or `xsd:string`-typed literal, which is a DIFFERENT
+/// datatype — returns `None`.
+///
+/// Lowercasing is `to_ascii_lowercase`: BCP47 tags are ASCII by grammar, so
+/// this cannot alter a well-formed tag's non-ASCII content (there is none),
+/// and a malformed non-ASCII tag is left alone rather than mangled by
+/// locale-dependent casing.
+pub(crate) fn exact_lang_literal<A: ForIRI>(l: &Literal<A>) -> Option<(String, String)> {
+    match l {
+        Literal::Language { literal, lang } => Some((literal.clone(), lang.to_ascii_lowercase())),
+        _ => None,
+    }
+}
+
+/// Parse a language-string `DataRange`: bare `rdf:langString` (→ `Top`) or a
+/// `DataOneOf` whose members are ALL language-tagged literals (→ `Set`). Any
+/// non-language member drops the WHOLE enumeration — never a partial set,
+/// which would be unsound in a sufficient-direction RHS. Mirrors
+/// [`parse_string_range`].
+pub(crate) fn parse_lang_range<A: ForIRI>(dr: &DataRange<A>) -> Option<LangSet> {
+    match dr {
+        DataRange::Datatype(dt) if dt.0.as_ref() == RDF_LANG_STRING => Some(LangSet::Top),
+        DataRange::DataOneOf(lits) if !lits.is_empty() => {
+            let mut set = BTreeSet::new();
+            for l in lits {
+                set.insert(exact_lang_literal(l)?);
+            }
+            Some(LangSet::Set(set))
+        }
+        _ => None,
+    }
+}
+
+/// `rdf:langString`. Its own constant here so the parsers above do not depend
+/// on the `Family` classifier's private one.
+pub(crate) const RDF_LANG_STRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
+
 /// Extract an EXACT `xsd:string` value from a literal: `Simple` (untyped is
 /// `xsd:string` by OWL 2) or `Datatype` tagged exactly `xsd:string`. ALL
 /// other forms — language-tagged, or any non-string datatype — return
@@ -3725,6 +3821,66 @@ Ontology(<http://t/x>
         // Sharing a member → NOT disjoint.
         assert!(!set(&["a"]).disjoint(&set(&["a", "b"])));
         assert!(!set(&["a", "b"]).disjoint(&set(&["b", "c"])));
+    }
+
+    /// Issue #72. Mirrors `strset_disjoint`, but on the PAIR key: the
+    /// lexical form alone is not the identity.
+    #[test]
+    fn langset_subset_and_disjoint() {
+        let set = |xs: &[(&str, &str)]| {
+            LangSet::Set(
+                xs.iter()
+                    .map(|(l, t)| ((*l).to_string(), (*t).to_string()))
+                    .collect(),
+            )
+        };
+        // Top behaves as it does for StrSet.
+        assert!(set(&[("bonjour", "fr")]).subset(&LangSet::Top));
+        assert!(!LangSet::Top.subset(&set(&[("bonjour", "fr")])));
+        assert!(!LangSet::Top.disjoint(&set(&[("bonjour", "fr")])));
+
+        // SAME lexical form, DIFFERENT tag: distinct literals. This is the
+        // property the whole bucket exists for — if the key were the lexical
+        // form alone these two would be equal and either could subsume the
+        // other, which is the false positive.
+        let fr = set(&[("bonjour", "fr")]);
+        let de = set(&[("bonjour", "de")]);
+        assert!(!fr.subset(&de));
+        assert!(!de.subset(&fr));
+        assert!(fr.disjoint(&de));
+
+        // Ordinary set containment on matching pairs.
+        assert!(fr.subset(&set(&[("bonjour", "fr"), ("hallo", "de")])));
+        assert!(!fr.disjoint(&set(&[("bonjour", "fr"), ("hallo", "de")])));
+    }
+
+    /// The tag is lowercased at parse, so `@FR` and `@fr` land on one key.
+    /// A completeness property (failing to normalise would MISS a membership,
+    /// never invent one), but it is the documented RDF 1.1 semantics.
+    #[test]
+    fn lang_literal_tag_is_lowercased() {
+        use horned_owl::model::{Build, Literal};
+        let _b: Build<RcStr> = Build::new_rc();
+        let upper: Literal<RcStr> = Literal::Language {
+            literal: "bonjour".to_string(),
+            lang: "FR".to_string(),
+        };
+        let lower: Literal<RcStr> = Literal::Language {
+            literal: "bonjour".to_string(),
+            lang: "fr".to_string(),
+        };
+        assert_eq!(exact_lang_literal(&upper), exact_lang_literal(&lower));
+        assert_eq!(
+            exact_lang_literal(&upper),
+            Some(("bonjour".to_string(), "fr".to_string()))
+        );
+        // A plain / typed string is NOT a langString and must not leak in.
+        let plain: Literal<RcStr> = Literal::Simple {
+            literal: "bonjour".to_string(),
+        };
+        assert_eq!(exact_lang_literal(&plain), None);
+        // …and conversely a language-tagged literal is not an xsd:string.
+        assert_eq!(exact_string_literal(&upper), None);
     }
 
     // ── `literal_provably_outside_range` unit tests ────────────────────

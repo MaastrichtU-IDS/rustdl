@@ -954,6 +954,53 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   `docs/abox-consistency-check-handoff.md`. Spec:
   `docs/superpowers/specs/2026-06-04-abox-consistency-check-design.md`.
 
+  **`≤n` merge-pair trial merge (2026-08-27, #76, `RUSTDL_MAX_TRIAL_MERGE`, default ON,
+  `=0` reverts) — A REAL FALSE POSITIVE, and the FP=0 net STRUCTURALLY COULD NOT SEE IT.**
+  The SROIQ `≤`-rule is don't-know NONDETERMINISTIC over WHICH pair of witnesses to merge.
+  `apply_max` (`owl-dl-tableau/src/rules.rs`) runs in the DETERMINISTIC saturation pass and
+  committed to the first pair not marked distinct; when that pair was the one inconsistent
+  combination its clash propagated as `Unsat` — an unsound POSITIVE subsumption. Now each
+  candidate is merged behind a checkpoint and kept only if the survivor is clash-free,
+  rolling back otherwise; if NO pair survives the pre-existing `Bot` arm still fires, which
+  is sound because satisfying `≤n` requires SOME merge and every candidate is contradictory.
+  **Five-axiom witness** (`r10b`): `A ⊑ ∃r.M, ∃r.T, ∃r.PT` + `Disjoint(M,PT)` +
+  `I ≡ ≥3 r`. `A ⊑ I` is NOT entailed (T may merge with either) and rustdl said `yes`.
+  **The tell that it was ORDER-DEPENDENCE, not semantics:** move the disjoint pair to
+  `Disjoint(M,T)` and the old code answered correctly — by luck, the first-enumerated pair
+  happening to be compatible. Canary `max_merge_pair_choice.rs` pins all three plus the
+  entailed control `Disjoint(M,T,PT)`, where `A ⊑ I` genuinely holds and must survive.
+  **LIVE ON `pizza`**: `Margherita ⊑ InterestingPizza` and `QuattroFormaggi ⊑
+  InterestingPizza` (`InterestingPizza ≡ Pizza ⊓ ≥3 hasTopping`; Margherita has two
+  toppings and is closed to them). Konclude reports **20** other `X ⊑ InterestingPizza`
+  rows and excludes exactly those two, so its silence is a discriminating control, not
+  under-reporting.
+  **WHY NO GATE CAUGHT IT — the important part.** `classify` never emitted the FP: the
+  wedge/label-heuristic path prunes those pairs before the tableau is consulted. The bug
+  lived on the `subclass`/`explain`/`is_subclass_of` per-pair path, and the FP=0
+  closure-diff net diffs **classify** closures — so it is structurally blind to it. The
+  corpus-wide FP=0 claim elsewhere in this file is a claim about `classify` and remains
+  true; **it does not cover the per-pair query surface.** `trust_sat` had been accidentally
+  MASKING this: it was found only by running the FP=0 net with the #66 prototype
+  (`RUSTDL_CLASSIFY_VERIFY_REFUTATIONS=1`) forcing classify to tableau-adjudicate, where
+  pizza went 499 → **501, FP=2**.
+  **Evidence:** full 1,920-ontology two-arm sweep (`=0` vs default, one pinned binary, env
+  var the only difference, arm order alternated): **1,774 IDENTICAL / 24 DIFFER / 121
+  BOTH_FAIL / 0 REGRESSED / 1 RECOVERED** (`ore_ont_1938` DNF → 40.9 s). All 24 DIFFERs
+  re-adjudicated by SET membership: **23 do not reproduce**, 1 is real (`ore_ont_1508`) and
+  **gains 4 closure pairs, loses 0** — its Hasse row moved because the fix derived the
+  NEARER parent, making the farther one indirect, which would have read as a loss had I
+  stopped at `direct_subsumptions`. **Zero new false positives.** Wall **−0.37%**, both
+  order groups agreeing (−0.67% / −0.09%), so the checkpoint/rollback in the hot saturation
+  loop costs nothing measurable — it only fires on a REJECTED pair.
+  **PARTIAL BY CONSTRUCTION, and do not read it as closing the class:** a pair that clashes
+  only DEEPER is still committed to without a choice point, so a spurious `Unsat` remains
+  constructible. The complete fix is a backtrackable choice point over merge pairs in
+  `search.rs`, which branches over CONCEPTS today and needs a new branching primitive.
+  Two adjacent dep weaknesses remain (both pre-existing): `compute_max_merge_deps` unions
+  deps only for the merged pair, not the other witnesses whose existence triggered the
+  merge; and `search.rs:161` invokes the choose rule with an EMPTY `DepSet` where the
+  disjunction path threads `or_deps`.
+
 - **`crates/owl-dl-datatypes`** — concrete-domain reasoners (`card_sat`,
   interval/finite-set value ranges). **Wired into reasoning** (via the DKey
   side-map + the tableau `concrete_domain_clash`), and as of 2026-06-18 data

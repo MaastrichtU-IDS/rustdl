@@ -964,6 +964,36 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
         // R-witnesses carrying C (their edge deps + body-label deps).
         // Pass that union as merge_deps so moved labels carry it.
         let mut merged = false;
+        // Issue #76 — SOUNDNESS. The `≤`-rule is don't-know NONDETERMINISTIC
+        // over WHICH pair to merge; this loop is inside the deterministic
+        // saturation pass and used to commit to the first pair not marked
+        // distinct. When that pair was the one inconsistent combination, its
+        // clash propagated as `Unsat` and the consistent merges were never
+        // tried — a FALSE POSITIVE subsumption.
+        //
+        // Five-axiom witness (`r10b`): `A ⊑ ∃r.M, ∃r.T, ∃r.PT`,
+        // `Disjoint(M, PT)`, `I ≡ ≥3 r`. `A ⊑ I` does NOT hold (T may merge
+        // with either), but merging M's witness with PT's clashes at once and
+        // rustdl answered `yes`. It was live on `pizza`
+        // (`Margherita ⊑ InterestingPizza`, FP vs both Konclude and HermiT).
+        // The tell that it was order-dependence rather than semantics: with
+        // `Disjoint(M, T)` instead, the first-enumerated pair happens to be
+        // compatible and the answer was correct by luck.
+        //
+        // TRIAL MERGE: take a checkpoint, merge, and keep the pair only if the
+        // survivor is clash-free; otherwise roll back and try the next. If NO
+        // pair survives, fall through to the `Bot` arm exactly as before —
+        // which is sound, because a merge is required to satisfy `≤n` and every
+        // candidate is immediately contradictory.
+        //
+        // PARTIAL, and deliberately so: this removes the FP whenever some pair
+        // is immediately consistent, but a pair that clashes only DEEPER is
+        // still committed to without a choice point, so a spurious `Unsat`
+        // remains constructible. The complete fix is a backtrackable choice
+        // point in `search.rs` over merge pairs (the search driver branches
+        // over CONCEPTS today, so that needs a new branching primitive).
+        // `RUSTDL_MAX_TRIAL_MERGE=0` reverts to the first-pair behaviour.
+        let trial = crate::max_trial_merge_enabled();
         'pairs: for i in 0..c_neighbours.len() {
             for j in (i + 1)..c_neighbours.len() {
                 let a = c_neighbours[i];
@@ -972,10 +1002,18 @@ pub fn apply_max(ctx: &mut TableauContext<'_, '_, '_>, node: NodeId) -> RuleOutc
                     // Compute precise merge-condition deps for this pair.
                     let merge_deps: DepSet =
                         compute_max_merge_deps(ctx, node, role, body, a, b, &max_deps);
+                    let cp = trial.then(|| ctx.checkpoint());
                     if ctx.merge_into_with_deps(b, a, merge_deps.as_slice()) {
-                        applied = true;
-                        merged = true;
-                        break 'pairs;
+                        // `b` merged INTO `a`, so `a` is the survivor.
+                        if !trial || !ctx.clash_in(a) {
+                            applied = true;
+                            merged = true;
+                            break 'pairs;
+                        }
+                        crate::bump_counter!(ctx, max_trial_merge_rejects);
+                    }
+                    if let Some(cp) = cp {
+                        ctx.rollback_to(cp);
                     }
                 }
             }

@@ -40,6 +40,10 @@ pub(crate) struct RuleCounters {
     pub(crate) add_edge_calls: Cell<u64>,
 
     pub(crate) is_blocked_calls: Cell<u64>,
+    /// Issue #76: candidate `≤n` merge pairs rejected by the trial merge
+    /// because the survivor clashed immediately. Non-zero means the old
+    /// first-pair behaviour would have committed to a contradictory merge.
+    pub(crate) max_trial_merge_rejects: Cell<u64>,
     pub(crate) is_blocked_true: Cell<u64>,
     pub(crate) is_blocked_prefilter_rejects: Cell<u64>,
     pub(crate) is_blocked_subset_scans: Cell<u64>,
@@ -118,6 +122,10 @@ impl RuleCounters {
             ("add_label_inserted", self.add_label_inserted.get()),
             ("add_edge_calls", self.add_edge_calls.get()),
             ("is_blocked_calls", self.is_blocked_calls.get()),
+            (
+                "max_trial_merge_rejects",
+                self.max_trial_merge_rejects.get(),
+            ),
             ("is_blocked_true", self.is_blocked_true.get()),
             (
                 "is_blocked_prefilter_rejects",

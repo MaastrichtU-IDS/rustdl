@@ -48,14 +48,24 @@
 //! a second (see `nominal_first_minimality_variants.rs`), confirming the
 //! interaction (not either construct alone) is the cause.
 //!
-//! Per the task-5 brief's HONESTY REQUIREMENT, this test is **not** forced
-//! green: it is `#[ignore]`d so `cargo test` never hangs on it. Run it
-//! manually, under a shell timeout, to reproduce:
-//! `RUSTUP_TOOLCHAIN=stable timeout 30 cargo test -p owl-dl-tableau --test
-//! nominal_first_bounded -- --ignored` (exit 124 = confirmed non-
-//! termination). See `nominal_first_bounded_divergence_canary.rs` for a
-//! FAST, always-on regression test that documents the same divergence
-//! without hanging (small cap -> `NodeCap`, not `Sat`/`Unsat`).
+//! **STALE COMMENT CORRECTED 2026-08-27.** The text below described this test as
+//! `#[ignore]`d and non-terminating. It is neither: the gate is **live and passes
+//! in 0.00 s** (`cargo test -p owl-dl-tableau --test nominal_first_bounded` reports
+//! `1 passed; 0 ignored`). It was promoted from `#[ignore]` on 2026-08-05 when
+//! `RUSTDL_DOMAIN_ABSORPTION` became the default — that pass converts the
+//! `ObjectPropertyDomain(r,A)` residual this divergence depends on into a triggered
+//! role rule, so the generating cycle never opens. With `RUSTDL_DOMAIN_ABSORPTION=0`
+//! it still does not terminate, which is what `nominal_first_bounded_divergence_canary.rs`
+//! now pins (that canary sets the flag to `0` deliberately, in order to keep
+//! exercising the `NodeCap` safety net at all).
+//!
+//! Historical text, kept because it explains why the test is shaped this way:
+//! it was originally not forced green — `#[ignore]`d so `cargo test` would never hang
+//! on it — and was reproduced manually under a shell timeout (exit 124 = confirmed
+//! non-termination).
+//!
+//! **This satisfies acceptance criterion 1 of issue #49** ("cap-disabled bounded-graph
+//! gate passes … un-ignore `issue35_v4_completion_graph_is_bounded`).
 
 use horned_owl::io::ParserConfiguration;
 use horned_owl::io::ofn::reader::read as read_ofn;

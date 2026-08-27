@@ -61,7 +61,8 @@ No existing gate catches this.
 
 Three facts, in the order they matter.
 
-**(a) For EL the canonical model is universal.** One finite interpretation `M` with `C ⊑ D` iff
+**(a) For EL the canonical model is universal — but the admitted fragment EXCEEDS the theorem.**
+One finite interpretation `M` with `C ⊑ D` iff
 `x_C ∈ D^I`. So a single model witnesses *every* non-subsumption; there is no need for the
 per-class shape the label cache uses.
 
@@ -79,9 +80,41 @@ because `x_C`'s label is by construction `subsumers_of(C)`, and a reported negat
 monotonicity. **One model check proves the entire reported classification still valid.** This never
 assumes the closure was complete — only that `M` is a model — so there is no circularity.
 
+**REVISED v2 — the fragment is out of the OWL 2 EL profile.** `is_el_axiom` admits
+`ObjectPropertyRange` and 2-leg `ObjectPropertyChain` **independently, with no interaction
+restriction**, but OWL 2 EL globally forbids a range on a property implied by a chain
+(Baader-Brandt-Lutz 2008) — precisely because the unrestricted combination breaks the
+canonical-model technique. The gap is live in BOTH directions: the **engine** is incomplete there
+(two new D10 instances, scoping-doc appendix), and the **construction** yields a false `Violated` on
+the *benign* combination, because a chain-materialised edge's target never receives `eff_ranges` of
+the chain's super-role. `build_model` therefore **refuses**: if any role carrying a non-trivial
+effective range is the super-role of an admitted chain, return
+`Unresolved { ChainRangeOutOfProfile }`. Mirroring the profile restriction is honest and cheap;
+folding ranges into chain targets risks the divergence the restriction exists to prevent.
+
+**Two preconditions on the incremental claim, both load-bearing.**
+
+1. **`M` must have been verified.** The theorem needs `M ⊨ KB`; a `still_holds_after` on an
+   unverified or `Violated` model returns a `Verified` carrying no guarantee. Enforced by
+   **type-state**: only `VerifiedModel` — produced by `verify` returning `Verified` — exposes the
+   method. `FiniteModel` alone does not.
+2. **"Positives survive by monotonicity" presupposes the reported positives were correct.** This is
+   a completeness instrument, not an FP net, so the claim is conditional on soundness, which rustdl
+   establishes separately. §8's doc comment must carry that premise.
+
+**Scope of the negatives covered.** `M` witnesses reported negatives **over the named classes it
+seeds**. `owl:Thing` lowers to `ConceptExpr::Top`, not an `Atomic` class, so it is absent from
+`Vocabulary::classes()` and no element carries the ⊤-subsumer label. This costs no soundness today —
+measured: adding `SubClassOf(owl:Thing, A)` to `{D ⊑ A}` leaves `classify --json`
+**byte-identical**, because rustdl's reported classification never mentions `owl:Thing`. Seed one
+⊤-labeled element anyway (classes `X` with `⊤ ⊑ X`; normally empty) so the contract does not
+silently depend on that reporting convention.
+
 **Direction of risk.** The instrument is a **completeness** (MISSED) net, not an FP net. It checks
 that the reported closure admits a model; it does not check minimality. A spurious subsumption
-makes `M` "too full" and is caught only when it violates a disjointness axiom. Do not advertise it
+makes `M` "too full" and is caught only when it violates a **disjointness, domain, or range**
+axiom — the §6 step-5 union rule turns a spurious subsumption into spurious *edges*, so the channels
+are broader than disjointness alone, though still the noisy direction. Do not advertise it
 as an FP gate — every existing rustdl gate is already FP-shaped, and this fills the other hole.
 
 ## 4. Architecture
@@ -157,7 +190,9 @@ pub struct Violation { pub axiom_index: usize, pub axiom: Axiom, pub witness: Ve
 pub enum UnresolvedReason {
     UnhandledAxiom { axiom_index: usize, variant: &'static str },
     UnhandledConcept { axiom_index: usize, variant: &'static str },
-    BoundTripped { bound: &'static str, limit: usize },
+    BoundTripped { bound: &'static str, limit: Option<usize> }, // None = deadline trip
+    ChainRangeOutOfProfile { chain_super: RoleId },              // §3a
+    LabelNotClosed { class: ClassId, role: RoleId },             // §6 step 5 fallback
     GuardedRoleHasEdges { role: RoleId },   // see §7, guarded variants
 }
 pub enum Verdict {
@@ -196,16 +231,42 @@ Inputs: `&InternalOntology`. Steps, in order:
 4. **Seed elements.** For every class `C` in the extended space that is **not**
    `subs.is_unsatisfiable(C)`: `intern(subs.subsumers_of(C))` and record in `class_of`.
    Unsatisfiable classes get **no element** — this is what catches `RUSTDL_EL_BOT_FILLER` (§8, T5).
-   Enumerate named classes via `Vocabulary::classes()`; enumerate Tseitin classes as those
-   appearing in `facts` (see §10 gap 1 — the total count is not exposed).
+   **Seeding population, stated exactly** (two engineers would otherwise differ): the union of
+   `Vocabulary::classes()` and every id appearing in `facts` **in either the source or the target
+   position**. Do *not* seed `0..max_fact_id+1` — ids in no fact are unreachable and their
+   `subsumers_of` rows are not meaningful here. `Vocabulary::classes()` includes DKey and other
+   synthetic interned classes: harmless in the model, but reporting must filter them. Also seed the
+   one ⊤-labeled element per §3c.
 
 5. **Expand to fixpoint.** Worklist of elements. For element `e` with label `L(e)`, for every class
    `X ∈ L(e)` and every fact `(X, r, Y)`:
    `target_label = subs.subsumers_of(Y) ∪ eff_ranges(r)`; `t = intern(target_label)`; push edge
    `(e, t)` into `edges[r]`; enqueue `t` if new.
-   **The `∪ eff_ranges(r)` term is the Probe B fix** — without it, the `u`-successor of `∃u.A`
-   would be the same element as `A`-as-a-class, and `ObjectPropertyRange(u, F)` would read as
-   violated when nothing is wrong. Two elements coincide exactly when their labels do.
+   The range term is the Probe B fix — without it the `u`-successor of `∃u.A` would be the same
+   element as `A`-as-a-class, and `ObjectPropertyRange(u, F)` would read as violated when nothing is
+   wrong. Two elements coincide exactly when their labels do.
+
+   **REVISED v2 — the label must be TBox-CLOSED; a plain union is a false-`Violated` generator.**
+   Measured: with `Range(u,F)` and `F ⊑ G`, the plain union gives `{A, F}`, missing `G`, so
+   `SubClassOf(F, G)` reads violated on a **healthy** pure-EL ontology
+   (`tests/fixtures/label-closure-range-sub.ofn`). Unioning subsumer *closures* fixes that case but
+   still misses **conjunctive** triggers like `A ⊓ F ⊑ H`. So:
+
+   ```text
+   aug = eff_ranges(r) \ subs.subsumers_of(Y)
+   aug empty  ->  target_label = subs.subsumers_of(Y)           // already closed
+   otherwise  ->  inject  Q ≡ Y ⊓ ⨅aug  into a COPY of the InternalOntology,
+                  re-saturate ONCE, use subs2.subsumers_of(Q)   // fully closed
+   ```
+
+   Collect every needed `(Y, aug)` in a first pass so exactly **two** saturation runs occur. A fresh
+   defined class is a **conservative extension** — it cannot change entailments among original
+   classes — and the check still runs against the **original** axioms, so independence holds: using
+   saturation to *build* is fine, because the guarantee comes from the independent *check*. If a
+   pair cannot be injected, emit `Unresolved { LabelNotClosed }` rather than guessing.
+
+   `aug` is empty in the common case — the saturator already range-wraps outer RHS existentials — so
+   this fires only for **nested** markers and the `∃r.⊤` top-witness.
    Termination: labels are interned and the label lattice is finite. Bound anyway
    (`max_elements`, `max_edges`) → `Unresolved`.
 
@@ -224,7 +285,8 @@ present in the model rather than computed inside the check.
 
 Wildcard-free `match` over `Axiom` (`crates/owl-dl-core/src/ontology.rs:36`, **25** variants) and
 `ConceptExpr` (`crates/owl-dl-core/src/ir.rs:165`, **12** variants).
-`BareRoleDecls::analyze` (`crates/owl-dl-reasoner/src/classify.rs:1970`) is an existing
+`BareRoleDecls::analyze` (`crates/owl-dl-reasoner/src/classify.rs:1970`) is **private — copy it, do
+not call it**. It is an existing
 wildcard-free match over all 25 — use it as the template.
 
 ### Concepts — 5 checked, 7 → `Unresolved`
@@ -253,7 +315,10 @@ wildcard-free match over all 25 — use it as the template.
 | `TransitiveRole(Named(r))` | ∀a,b,c. `(a,r,b) ∧ (b,r,c) ⟹ has_edge(a,r,c)` |
 | `ObjectPropertyDomain { Named(r), d }` | ∀`(a,_) ∈ edges(r)`. `eval(d, a)` |
 | `ObjectPropertyRange { Named(r), rg }` | ∀`(_,b) ∈ edges(r)`. `eval(rg, b)` |
-| `SymmetricRole(r)` / `InverseObjectProperties(p,q)` | **verify `edges(r)` is empty**; if non-empty emit `GuardedRoleHasEdges` |
+| `SymmetricRole(r)` | **verify `edges(r)` is empty**; if non-empty emit `GuardedRoleHasEdges` |
+| `InverseObjectProperties(p,q)` | verify `edges(p)` **and** `edges(q)` are **both** empty — the gate's guard requires both roles unread |
+| `SubObjectPropertyOf { Chain(c), _ }`, `c.len() != 2` | `Unresolved` — the gate admits only length 2; `Chain` is a `Vec`, so match `if let [r,u] = c.as_slice()` |
+| `EquivalentObjectProperties` containing any `Role::Inverse` | `Unresolved` |
 | any inverse-polarity role in the above | `Unresolved` |
 | `DisjointUnion`, `DisjointObjectProperties`, `AsymmetricRole`, `ReflexiveRole`, `IrreflexiveRole`, `FunctionalRole`, `InverseFunctionalRole`, `ClassAssertion`, `ObjectPropertyAssertion`, `NegativeObjectPropertyAssertion`, `SameIndividual`, `DifferentIndividuals` | `Unresolved` |
 
@@ -276,7 +341,8 @@ pub fn build_model(internal: &InternalOntology, bounds: Bounds)
     -> Result<FiniteModel, UnresolvedReason>;
 
 /// Check every axiom of `internal` against `model`.
-pub fn verify(model: &FiniteModel, internal: &InternalOntology) -> Verdict;
+pub fn verify(model: FiniteModel, internal: &InternalOntology)
+    -> (Verdict, Option<VerifiedModel>);   // Some(..) iff Verdict::Verified
 
 impl FiniteModel {
     /// Check ONLY `added` against this model.
@@ -308,7 +374,31 @@ This is a genuine sharp edge and the reason Phase 4, not Phase 1, owns the editi
 without parsing stdout. `--json` emits `{verdict, axioms_checked, domain_size, violations[],
 unresolved[]}`.
 
-The command **refuses** an ontology outside `is_pure_el`, reporting `Unresolved` with the reason —
+**Contract points that were ambiguous in v1 and are now decided.**
+
+* **`is_pure_el` is `pub(crate)` and NOT re-exported**, so nothing outside `owl-dl-reasoner` can call
+  it — v1 cited an unreachable symbol. The CLI instead calls the public, re-exported
+  `owl_dl_reasoner::analyze_fragment(&internal) == FragmentClassification::PureEl`, whose first
+  branch is `is_pure_el` verbatim, including the `RUSTDL_FRAGMENT_BARE_DECL` sensitivity the §7
+  guarded variants depend on. No reasoner change; the verify crate never needs the symbol, so the §4
+  layering stands.
+* **`Violated` outranks `Unresolved`** when a run produces both: exit 2, and `--json` still lists the
+  `unresolved[]` rows so coverage is never hidden by a violation.
+* **`Bounds` govern construction only.** `verify` and `still_holds_after` take an explicit
+  `Option<Instant>` deadline rather than reading a stale `Instant` off the model; `FiniteModel`
+  retains `bounds` for provenance only.
+* **Out-of-model ids are empty, never a panic.** A fresh `ClassId` appears in no label (binary search
+  misses) — safe. A fresh `RoleId` would index past `edges` and `RoleHierarchy::{super,sub}_roles`
+  **panics out of range**, and "the edit introduces a role" is the *normal* case for
+  `still_holds_after`. The implementation MUST bounds-check and treat an unknown role as having an
+  empty extension. Pin with a test.
+* **The re-intern recipe, named so nobody re-derives it wrongly.** Convert added axioms against the
+  **original** ontology's tables via the public
+  `owl_dl_core::convert::convert_component(&component, &mut vocab, &mut pool)`
+  (`crates/owl-dl-core/src/convert.rs:1889`). Re-converting the whole edited ontology yields a
+  **fresh pool** and silently wrong `ClassId`s — the exact failure §8's warning describes.
+
+The command **refuses** an ontology outside the pure-EL fragment, reporting `Unresolved` with the reason —
 it must not silently produce a verdict on an out-of-fragment input.
 
 Nothing is wired into `classify`, `consistent`, or `realize`.
@@ -317,11 +407,79 @@ Nothing is wired into `classify`, `consistent`, or `realize`.
 
 Ordered deliberately: **a violation carries no information until spurious violations are zero.**
 
+**T3 WAS EMPTY AS SPECIFIED IN v1 — measured, and it invalidated the ordering.** Only **1 of 15**
+curated files reports `pure-EL` (`go-basic.ofn`), and at **51,967 declared classes** it exceeds the
+§5 default `max_elements: 50_000`, so it yields `BoundTripped`, not `Verified`. T3 would have
+produced **zero `Verified` verdicts** and the inertness gate would have passed on an empty set.
+
+**Respecified population, measured 2026-08-27:** banner-selected pure-EL members of the ORE pool
+(`/data/dumontier/ore-run/pool_sample/files`). Two independent samples agree the population is
+ample — **23/60 (38%)** at stride 23 offset 7, **11/50 (22%)** at stride 38 — i.e. roughly 420–730
+corpus-wide. Take members **under** the bound, spanning small-and-hand-checkable to near-bound: from
+the stride-23 sample, `ore_ont_13204` (35 classes), `3263` (170), `11274` (451), `4918` (594),
+`2672` (813), `10742` (1315), `2022` (1861), `3102` (2849), `5115` (6584), `4570` (6995),
+`3919` (7044), `13752` (7123), `12161` (9703), `4733` (15359), `16114` (18437), `5487` (19892),
+`13902` (20336), `11739` (26454), `16687` (32324), `14879` (45462). Two members just **over** the
+bound come free as `BoundTripped` cases: `ore_ont_1357` (60,973) and `ore_ont_283` (59,937).
+`go-basic.ofn` is kept as a deliberate documented `BoundTripped` case, **not** raised past — §11
+forbids raising a bound to make a sweep finish.
+
+**Additional tests v1 omitted** (each closes a way the suite could pass while the instrument is
+useless):
+
+| # | test | expected |
+|---|---|---|
+| T10 | `still_holds_after`: `Δ` that holds in `M` | `Verified` |
+| T11 | **`still_holds_after` NEGATIVE — essential:** `Δ = [SubClassOf(A,B)]` where some element has `A` but not `B` | `Violated` |
+| T12 | `still_holds_after` with an unhandled form in `Δ` (e.g. `FunctionalRole`) | `Unresolved`, never `Verified` |
+| T13 | `still_holds_after` with `Δ` naming a **fresh role** | no panic; empty extension |
+| T14 | type-state: `still_holds_after` is unreachable on a model that did not verify | compile-time |
+| T15 | `Bounds { max_elements: 1 }` on any fixture | `Unresolved { BoundTripped }` naming `max_elements` |
+| T16 | deadline trip | `Unresolved { BoundTripped { limit: None } }` |
+| T17 | determinism: `verify-el --json` twice on the T4 fixture | byte-identical |
+| T18 | exit-code mapping 0/2/3 | as specified |
+| T19 | out-of-fragment input (`pizza.ofn`) | `Unresolved`, exit 3 |
+| T20 | an unhandled axiom variant yields `Unresolved` (guards the no-wildcard rule) | `Unresolved` |
+| T21 | guarded variants: bare `SymmetricRole` with empty extension ⇒ `Verified`; a hand-built model where it HAS edges ⇒ `GuardedRoleHasEdges` | both |
+| T22 | **`Range(r,⊥)`-via-chain** (`tests/fixtures/chain-range-bot.ofn`) | `Unresolved { ChainRangeOutOfProfile }` — the profile refusal, and a distinct engine defect from T4 |
+| T23 | `label-closure-range-sub.ofn` (healthy `Range(u,F)`+`F ⊑ G`) | **`Verified`** — pins the v2 label-closure fix; the v1 plain union gives `Violated` |
+| T24 | `subsumers_of` reflexivity, on which §3c and §6-step-5 both depend | pass |
+
+T15/T16 matter more than they look: a builder that silently truncates at a bound and returns
+`Verified` on the truncated model passes every other test in the suite. T17 matters because rustdl
+shipped exactly this bug in `justify`/`report` (#59: five different reports from one binary), and
+`FiniteModel` holds two `HashMap`s.
+
+**Determinism requirement on the guarded env-flag tests (T6, T9).** `RUSTDL_*` are process-global;
+the reasoner crate uses a `test_env_lock`/`EnvGuard` convention for exactly this. The new crate must
+either replicate that guard or shell out to the CLI binary. Also: **the model builder must reach the
+saturator through the same env-flag-sensitive path**, or T6 tests nothing.
+
+**Vacuity notes that change how tests are written.**
+`T3` alone cannot detect an always-`Verified` implementation; it earns its keep only paired with
+T6/T7, which change the closure itself and so would fail for a closure-echoing evaluator — that
+pairing, not T1, is what actually enforces independence. `T2` must assert the successor
+**exists** and carries `F` (a ∀-quantified phrasing passes vacuously on zero successors). `T4` must
+assert **which** axiom is violated (`ObjectPropertyDomain(r, ⊥)`) and that the witness is `x_C`,
+or any garbage violation counts. `T9` and `T5` are passed by an always-`Verified` implementation and
+must not be counted as coverage — **the genuinely constraining sabotages are T6 and T7. Two.**
+
+**The ordering is right for INTERPRETATION but is a hazard as a WORK order**, because "drive spurious
+violations to zero" is a tuning loop in which *weakening the evaluator* also makes T3 green. Two
+rules separate repair from suppression:
+
+1. **`axioms_checked` must never decrease across a tuning step.** A builder change may legitimately
+   create new `Verified`s; an evaluator change may only move an axiom from `Violated` to
+   `Unresolved` — visible and counted — never to a silent pass.
+2. **Run T4/T5/T6/T7 continuously DURING the inertness phase, not after it.** The signature of
+   suppression is a tuning step flipping T4, T6 or T7 away from `Violated`. A calibration pair is
+   only a calibration pair while it is armed.
+
 | # | test | expected |
 |---|---|---|
 | T1 | `eval.rs` contains no `owl_dl_saturation` reference (source-scan test) | pass |
 | T2 | label interning keeps Probe B's two `A` elements distinct: `C ⊑ ∃t.∃u.A` + `Range(u,F)` ⇒ the `u`-successor carries `F`, `x_A` does not | pass |
-| T3 | **inertness** over pure-EL curated fixtures | `Verified`, zero `Violated` |
+| T3 | **inertness** over banner-selected pure-EL fixtures (see the sizing note) | **`Verified`** specifically |
 | T4 | **crown jewel:** chain-poison fixture, unsabotaged | `Violated` |
 | T5 | calibration control: `nested_existential_unpoisoned_role_stays_sat` (role `:s`, no chain axiom) | `Verified` |
 | T6 | sabotage `RUSTDL_EL_BOT_FILLER=0` | `Violated` |
@@ -364,12 +522,15 @@ Enumerated by inspection; all currently private or absent.
    `Axiom::SubObjectPropertyOf { sub: Chain(..) }`.
 6. **Effective ranges of `r`** — computed twice as private locals inside the saturator; re-derive
    per §6 step 3.
-7. **`reportable_class_iris` does not exist** as a function — only `ReportedClasses` (private,
+7. **`SYNTHETIC_CLASS_IRI_PREFIX` is not root-re-exported** — use the full path
+   `owl_dl_core::residual_absorbability::SYNTHETIC_CLASS_IRI_PREFIX` (the module is `pub`).
+   `DKEY_IRI_PREFIX` *is* re-exported at the crate root.
+8. **`reportable_class_iris` does not exist** as a function — only `ReportedClasses` (private,
    `classify.rs:73`). For reporting, filter with the public prefix constants
    `DKEY_IRI_PREFIX` (`convert.rs:51`) and `SYNTHETIC_CLASS_IRI_PREFIX`
    (`residual_absorbability.rs:44`). Note `Vocabulary::class_iri` **panics** on a Tseitin id — a
    `Violation` must render such elements by label, never by IRI.
-8. **Doc drift to fix in passing:** `crates/owl-dl-saturation/src/lib.rs:103` documents
+9. **Doc drift to fix in passing:** `crates/owl-dl-saturation/src/lib.rs:103` documents
    `RUSTDL_EL_BOT_FILLER` as "Default OFF"; the predicate at line 149 and an empirical run both
    show default **ON**.
 

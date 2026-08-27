@@ -156,3 +156,38 @@ when the bound trips — same idiom, and the bound must be *reported*, not silen
 * The user-facing per-pair certificate, and any output format or API commitment. Phase 1 is
   the internal gate; it delivers the D10 win, commits to no format, and is a strict
   prerequisite for the certificate anyway.
+
+---
+
+## Two NEW live D10 instances, found by reviewing this spec (2026-08-27)
+
+Both under the `# fragment: pure-EL (… saturator alone is complete)` banner with
+`incomplete: false`. These are the **7th and 8th** recorded instances of the class, and they were
+found by adversarial review of the design — before a line of the instrument was written.
+
+**Root cause: the fragment gate is out of the OWL 2 EL profile.** `is_el_axiom` admits
+`ObjectPropertyRange` and 2-leg `ObjectPropertyChain` **independently, with no interaction
+restriction**. OWL 2 EL globally forbids a range on a property implied by a chain
+(Baader–Brandt–Lutz 2008); the unrestricted combination is exactly what breaks the
+canonical-model technique.
+
+```
+SubObjectPropertyOf(ObjectPropertyChain(:t :u) :r)
+ObjectPropertyRange(:r owl:Nothing)              # or Range(:r :F) + SubClassOf(:F owl:Nothing)
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+```
+
+`C` **is** unsatisfiable: the chain forces an `r`-edge out of any `C`-instance, and the range
+forces that edge's target into `⊥`. Measured on today's binary: `unsatisfiable: []`,
+`incomplete: false`, `fragment: pure-EL`. (`A` alone is satisfiable — a standalone `A` need not be
+an `r`-successor.)
+
+This is the **range-side sibling** of the Domain crown jewel and is **not** covered by the
+`#[ignore]`d `nested_existential_poisoned_role_via_chain`. Both forms belong in
+`crates/owl-dl-verify/tests/fixtures/` as first-class gate fixtures.
+
+**Consequence for the instrument itself:** the same chain×range combination breaks the §6
+construction on the *benign* case (no `⊥`), because a chain-materialised edge's target never
+receives `eff_ranges` of the chain's super-role — a **false `Violated`** on a correct ontology.
+Spec v2 refuses that combination with `Unresolved` rather than guessing, mirroring the profile
+restriction.

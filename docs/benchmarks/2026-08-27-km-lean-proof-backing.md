@@ -153,9 +153,16 @@ Two reasons this fits rustdl specifically:
   sound-under-approximation idiom, so it needs no new soundness argument — only a new
   *observability* one.
 
-Payoff: a self-verifying completeness check that needs no peer reasoner, and which would
-make `RUSTDL_HYPERTABLEAU_TRUST_SAT`'s soundness — today an empirical corpus claim —
-checkable per pair.
+Payoff: a self-verifying completeness check that needs no peer reasoner, scoped to the
+path where rustdl asserts completeness **by construction** — it checks the fragment
+gate's own claim.
+
+**CORRECTION (same day):** an earlier version of this section said this would make
+`RUSTDL_HYPERTABLEAU_TRUST_SAT` checkable per pair. That is wrong for this phase.
+`trust_sat` governs the **wedge** on non-EL input; the EL fast path short-circuits and
+never consults it, and SROIQ is exactly where finite countermodels may not exist — the
+boundary KM itself declines to cross. The correct and stronger claim is the one measured
+below.
 
 ### Also transferable
 
@@ -176,3 +183,19 @@ checkable per pair.
 **105 `lean_exe` checker targets and 130 `KM_*` env vars.** rustdl already pins 43 flag
 defaults behaviourally *because* they drifted. KM's surface is why their own boundary
 takes an 803-line document to state.
+
+### Measured 2026-08-27: the target defect is LIVE on the default path
+
+`docs/benchmarks/2026-08-27-negative-certificates-scoping.md` has the detail. On today's
+binary, the fixture behind the `#[ignore]`d `nested_existential_poisoned_role_via_chain`
+(`chain(t,u) ⊑ r`, `Domain(r,⊥)`, `C ⊑ ∃t.∃u.A` — `C` **is** unsatisfiable):
+
+```
+consistent   : True
+unsatisfiable: []          <- wrong
+incomplete   : False       <- claims the answer is complete
+# fragment: pure-EL (trust_sat sound by construction; saturator alone is complete)
+```
+
+A wrong answer on the default path, with the fragment gate certifying completeness. That
+is the D10 class in its purest form, and it is what this instrument is for.

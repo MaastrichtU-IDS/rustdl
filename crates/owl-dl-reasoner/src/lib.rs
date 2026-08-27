@@ -6293,6 +6293,12 @@ pub(crate) struct PreparedOntology {
     /// `build_data_counting_classes`). The classify unsat-probe
     /// main-tableau-verifies these instead of trusting the wedge's `Sat`.
     pub(crate) data_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
+
+    /// Classes the wedge cannot decide for lack of nominal counting (see
+    /// `build_nominal_counting_classes`). Consumed by classify's unsat probe the same way
+    /// as `data_counting_classes`. Empty unless the ontology authors `Min`/`Max` over a
+    /// nominal-bounded class.
+    pub(crate) nominal_counting_classes: std::collections::HashSet<owl_dl_core::ir::ClassId>,
     /// `ABox`-seeded wedge consistency state. `Some` iff
     /// [`wedge_consistency_enabled`] and the ontology has `ABox` axioms;
     /// `None` otherwise (`ABox`-free inputs pay nothing, classify
@@ -6474,6 +6480,162 @@ fn concept_has_dkey_counting(
     }
 }
 
+/// Classes provably bounded to a FINITE set of individuals — `C ≡ {a₁ … a_N}` or
+/// `C ⊑ {a₁ … a_N}` (in the IR: an `Or` whose every operand is a `Nominal`). Maps the
+/// class to `N`.
+///
+/// Sibling of [`PreparedOntology::dkey_ranges`], for the nominal analogue of a `DKey`
+/// value range.
+fn build_nominal_bounded_classes(
+    internal: &InternalOntology,
+) -> std::collections::HashMap<owl_dl_core::ir::ClassId, usize> {
+    let pool = &internal.concepts;
+    let nominal_count = |c: ConceptId| -> Option<usize> {
+        match pool.get(c) {
+            ConceptExpr::Or(ops)
+                if !ops.is_empty()
+                    && ops
+                        .iter()
+                        .all(|&o| matches!(pool.get(o), ConceptExpr::Nominal(_))) =>
+            {
+                Some(ops.len())
+            }
+            // A single nominal is a 1-element bound.
+            ConceptExpr::Nominal(_) => Some(1),
+            _ => None,
+        }
+    };
+    let mut out = std::collections::HashMap::new();
+    let mut note = |c: &owl_dl_core::ir::ClassId, n: usize| {
+        // Keep the SMALLEST bound: two axioms bounding the same class both hold, and a
+        // tighter bound is what makes a counting clash provable.
+        let e = out.entry(*c).or_insert(n);
+        if n < *e {
+            *e = n;
+        }
+    };
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                if let ConceptExpr::Atomic(c) = pool.get(*sub)
+                    && let Some(n) = nominal_count(*sup)
+                {
+                    note(c, n);
+                }
+            }
+            Axiom::EquivalentClasses(members) => {
+                if let Some(n) = members.iter().filter_map(|&m| nominal_count(m)).min() {
+                    for &m in members {
+                        if let ConceptExpr::Atomic(c) = pool.get(m) {
+                            note(c, n);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Does `c` carry a `Min`/`Max` whose filler is bounded to finitely many individuals?
+///
+/// Structurally identical to [`concept_has_dkey_counting`] — the direct `Atomic` check is
+/// likewise REQUIRED, not an optimisation, because the recursion's `_ => false` arm does
+/// not match `Atomic`.
+fn concept_has_nominal_counting(
+    pool: &ConceptPool,
+    c: ConceptId,
+    bounded: &std::collections::HashMap<owl_dl_core::ir::ClassId, usize>,
+) -> bool {
+    match pool.get(c) {
+        ConceptExpr::Min(_, _, inner) | ConceptExpr::Max(_, _, inner) => {
+            if matches!(
+                pool.get(*inner),
+                ConceptExpr::Atomic(cls) if bounded.contains_key(cls)
+            ) {
+                return true;
+            }
+            concept_has_nominal_counting(pool, *inner, bounded)
+        }
+        ConceptExpr::Not(inner) => concept_has_nominal_counting(pool, *inner, bounded),
+        ConceptExpr::Some(_, inner) | ConceptExpr::All(_, inner) => {
+            concept_has_nominal_counting(pool, *inner, bounded)
+        }
+        ConceptExpr::And(ops) | ConceptExpr::Or(ops) => ops
+            .iter()
+            .any(|&o| concept_has_nominal_counting(pool, o, bounded)),
+        _ => false,
+    }
+}
+
+/// Classes whose satisfiability the WEDGE cannot decide because it does no nominal
+/// counting: a `Min`/`Max` over a class bounded to finitely many individuals
+/// (`C ≡ {a₁ … a_N}` + `B ≡ ≥(N+1) r.C` ⟹ `B ⊑ ⊥`, by pigeonhole).
+///
+/// Consumed by classify's unsat probe exactly as `data_counting_classes` is: a wedge `Sat`
+/// for one of these classes is NOT trusted and falls through to the main tableau. Sound —
+/// it only ever replaces a wedge `Sat` with the complete path. Empty set ⇒ zero overhead,
+/// which is the common case (measured 0 of the curated corpus).
+///
+/// See issue #49: `classify` missed `B ⊑ ⊥` on this shape while `rustdl sat B` decided it,
+/// because the wedge reported `Sat` and the shortcut trusted it.
+fn build_nominal_counting_classes(
+    internal: &InternalOntology,
+    bounded: &std::collections::HashMap<owl_dl_core::ir::ClassId, usize>,
+) -> std::collections::HashSet<owl_dl_core::ir::ClassId> {
+    let mut set = std::collections::HashSet::new();
+    if bounded.is_empty() {
+        return set;
+    }
+    let pool = &internal.concepts;
+    for ax in &internal.axioms {
+        match ax {
+            Axiom::SubClassOf { sub, sup } => {
+                if let ConceptExpr::Atomic(c) = pool.get(*sub)
+                    && concept_has_nominal_counting(pool, *sup, bounded)
+                {
+                    set.insert(*c);
+                }
+            }
+            Axiom::EquivalentClasses(members)
+                if members
+                    .iter()
+                    .any(|&m| concept_has_nominal_counting(pool, m, bounded)) =>
+            {
+                for &m in members {
+                    if let ConceptExpr::Atomic(c) = pool.get(m) {
+                        set.insert(*c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    set
+}
+
+/// `RUSTDL_NOMINAL_COUNTING_VERIFY` — don't trust a wedge `Sat` for a class carrying a
+/// `Min`/`Max` over a nominal-bounded filler; fall through to the main tableau.
+/// **Default OFF**; `=1` opts in. Sound either way — it only swaps a wedge `Sat` for the
+/// complete path — so OFF costs completeness, never soundness.
+///
+/// **Measured (issue #49 pigeonhole witness, `C ≡ {a₁…a_N}` + `B ≡ ≥(N+1) r.C`):** with a
+/// generous per-pair budget the flag recovers `B ⊑ ⊥` reliably (3/3 at
+/// `--pair-timeout-ms 20000`, N=3 and N=4), where the default misses it.
+///
+/// **BUT THE BUDGET IS THE BINDING CONSTRAINT, NOT THIS FLAG.** At the default 5 ms per-pair
+/// budget the recovery is *non-deterministic even with the label-cache shortcut disabled
+/// entirely* — measured `NONE NONE B NONE B` over five runs of
+/// `RUSTDL_UNSAT_VIA_LABELS=0`. So this flag is necessary but not sufficient: closing the
+/// gap at the default also needs the narrow class to get more probe budget, which is in
+/// tension with `unsat_probe_budget` existing to stop this phase starving `tier_walk`.
+/// Do not flip this default on the strength of the 20 s numbers alone.
+#[must_use]
+pub fn nominal_counting_verify_enabled() -> bool {
+    std::env::var_os("RUSTDL_NOMINAL_COUNTING_VERIFY").is_some_and(|v| v == "1")
+}
+
 /// Named classes that carry a *counting* `DKey` constraint
 /// (`DataMin/Max/ExactCardinality` over an integer range, lowered to
 /// `Min`/`Max` over a `DKey` filler). Scanned from the *un-mutated* IR
@@ -6615,6 +6777,8 @@ impl PreparedOntology {
         // available. Pure; consumed by the (not-yet-armed) P3 clash rule.
         let dkey_ranges = build_dkey_range_map(&internal);
         let data_counting_classes = build_data_counting_classes(&internal, &dkey_ranges);
+        let nominal_bounded = build_nominal_bounded_classes(&internal);
+        let nominal_counting_classes = build_nominal_counting_classes(&internal, &nominal_bounded);
         // H4: build the hyper cache from the un-mutated ontology
         // (before the absorb/NNF passes below consume it), iff enabled.
         if expired() {
@@ -6710,6 +6874,7 @@ impl PreparedOntology {
             abox_verdict: std::sync::OnceLock::new(),
             dkey_ranges,
             data_counting_classes,
+            nominal_counting_classes,
             consistency,
             tableau_id: TableauIdBudget::default(),
         }))

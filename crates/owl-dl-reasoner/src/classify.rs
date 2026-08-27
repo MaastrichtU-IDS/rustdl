@@ -3781,12 +3781,27 @@ fn classify_top_down_internal_impl(
                         // — fall through to the main tableau (which runs
                         // `concrete_domain_clash`). Sound: only swaps a wedge
                         // `Sat` for the complete path. Empty set ⇒ no overhead.
-                        let needs_verify = !prepared.data_counting_classes.is_empty()
+                        let needs_verify = (!prepared.data_counting_classes.is_empty()
                             && (prepared.data_counting_classes.contains(&class_id)
                                 || closure
                                     .subsumers_of(class_id)
                                     .iter()
-                                    .any(|s| prepared.data_counting_classes.contains(s)));
+                                    .any(|s| prepared.data_counting_classes.contains(s))))
+                            // Same defect one construct over (issue #49): the wedge does
+                            // no NOMINAL counting either, so it reports `Sat` for a class
+                            // whose `Min`/`Max` filler is bounded to finitely many
+                            // individuals — `C ≡ {a₁…a_N}` + `B ≡ ≥(N+1) r.C` ⟹ `B ⊑ ⊥`
+                            // by pigeonhole. Measured: `classify` missed that while
+                            // `rustdl sat B` decided it. Gated OFF by default pending a
+                            // wall measurement; sound either way, since it only ever
+                            // swaps a wedge `Sat` for the complete path.
+                            || (crate::nominal_counting_verify_enabled()
+                                && !prepared.nominal_counting_classes.is_empty()
+                                && (prepared.nominal_counting_classes.contains(&class_id)
+                                    || closure
+                                        .subsumers_of(class_id)
+                                        .iter()
+                                        .any(|s| prepared.nominal_counting_classes.contains(s))));
                         if !needs_verify {
                             return Ok((i, true, true));
                         }

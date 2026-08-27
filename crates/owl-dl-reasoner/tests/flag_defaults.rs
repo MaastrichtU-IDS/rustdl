@@ -87,6 +87,11 @@ fn expected() -> Vec<FlagRow> {
             true,
         ),
         (
+            "RUSTDL_CLASSIFY_VERIFY_REFUTATIONS",
+            owl_dl_reasoner::classify_verify_refutations_enabled as fn() -> bool,
+            false,
+        ),
+        (
             "RUSTDL_INVERSE_PAIR_FUNC",
             owl_dl_core::convert::inverse_pair_functionality_enabled,
             false,

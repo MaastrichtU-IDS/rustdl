@@ -4771,6 +4771,25 @@ fn subsumes_via_tableau(
     counting_relevant: &std::collections::HashSet<owl_dl_core::ClassId>,
     stats: &mut ClassificationStats,
 ) -> Result<Option<bool>, ReasonError> {
+    // Issue #66 (`RUSTDL_CLASSIFY_VERIFY_REFUTATIONS`, default OFF). Out of the
+    // fragment where the wedge's `Sat` verdict is complete BY CONSTRUCTION,
+    // trusting it can silently drop a real subsumption — `classify` omitted
+    // `Cap ⊑ VE` while `rustdl subclass` on the SAME binary proved it. When the
+    // flag is on, withdraw the trust exactly there and let the pair fall
+    // through to the tableau.
+    //
+    // Gated on the FRAGMENT, not applied blanket, so `PureEl`/`Horn` inputs keep
+    // the fast path: the saturator carries `PureEl` and the Horn fixpoint
+    // carries `Horn`, so a trusted `Sat` on those cannot be wrong and verifying
+    // it would be pure cost. That is what makes this cheaper than
+    // `RUSTDL_HYPERTABLEAU_TRUST_SAT=0` for the same completeness.
+    //
+    // `stats.fragment` is stamped before the pair loop, so reading it here is
+    // one gate covering every call site rather than four threaded parameters.
+    let trust_sat = trust_sat
+        && !(crate::classify_verify_refutations_enabled()
+            && matches!(stats.fragment, FragmentClassification::OutOfFragment));
+
     // Phase 1b snapshot-replay shortcut. When RUSTDL_SNAPSHOT_CAPTURE
     // is ON AND the ontology is BackPropRisk::Safe, consult the per-class
     // snapshot cache before the wedge. A snapshot for `sub` is built on

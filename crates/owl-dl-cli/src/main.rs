@@ -1135,6 +1135,14 @@ fn write_classification<W: Write>(out: &mut W, h: &Classification) -> std::io::R
             stats.timed_out_pairs
         )?;
     }
+    let tsr = json_out::trusted_sat_risk(&stats);
+    if tsr > 0 {
+        writeln!(
+            out,
+            "# trusted-Sat refutations: {tsr} (decided without the tableau; \
+             see issue #66 — NOT an error signal, this is 0 MISSED on ro/sio/pizza)"
+        )?;
+    }
     if stats.hyper_proven_pairs > 0 {
         writeln!(
             out,

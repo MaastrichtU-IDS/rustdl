@@ -128,14 +128,31 @@ fn and_short_circuits_to_false_even_with_an_unresolved_operand() {
 
 #[test]
 fn and_is_unresolved_when_no_operand_is_false_but_one_is_unresolved() {
-    // ⊤ ⊓ (∀r.X): ⊤ is True, ∀r.X is Unresolved. Must be Unresolved, not True.
+    // A ⊓ (∀r.X): A is True (asserted member), ∀r.X is Unresolved. Must be
+    // Unresolved, not True.
+    //
+    // NOTE: using `pool.top()` as the True operand here is a trap:
+    // `ConceptPool::and` drops `Top` as the identity element and, once only
+    // one non-Top operand remains, returns that operand UNWRAPPED rather than
+    // an `And` node — so `pool.and([top, all_r_x])` collapses to `all_r_x`
+    // itself and the test would silently stop exercising the `And` arm at
+    // all (it would re-test the trivial `All => Unresolved` arm instead).
+    // Use a second genuine, non-identity, True-yielding operand instead, and
+    // assert the pool actually produced an `And` node before trusting the
+    // rest of the test.
     let mut pool = ConceptPool::new();
+    let a = pool.atomic(ClassId::new(0));
     let top = pool.top();
     let all_r_x = pool.all(owl_dl_core::Role::named(RoleId::new(0)), top);
-    let conj = pool.and([top, all_r_x]);
+    let conj = pool.and([a, all_r_x]);
+    assert!(
+        matches!(pool.get(conj), owl_dl_core::ConceptExpr::And(_)),
+        "pool.and collapsed the node; this test would not exercise the And arm"
+    );
 
-    let model = StubModel::new(1);
+    let mut model = StubModel::new(1);
     let e = Element::new(0);
+    model.assert_member(e, ClassId::new(0));
 
     assert_eq!(
         eval_concept(&pool, &model, e, conj),

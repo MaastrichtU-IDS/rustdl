@@ -1,20 +1,10 @@
-use owl_dl_core::convert_ontology;
 use owl_dl_verify::model::{
     FiniteModel, build_role_hierarchy, chain_range_out_of_profile, effective_ranges,
 };
 use owl_dl_verify::{Bounds, Interpretation, UnresolvedReason};
 
-fn load(ofn: &str) -> owl_dl_core::InternalOntology {
-    let (onto, _): (
-        horned_owl::ontology::set::SetOntology<horned_owl::model::RcStr>,
-        _,
-    ) = horned_owl::io::ofn::reader::read(
-        &mut ofn.as_bytes(),
-        horned_owl::io::ParserConfiguration::default(),
-    )
-    .expect("parse fixture");
-    convert_ontology(&onto).expect("convert fixture")
-}
+mod common;
+use common::load;
 
 const CHAIN: &str = r"Prefix(:=<http://ex.org/>)
 Ontology(<http://ex.org/t>

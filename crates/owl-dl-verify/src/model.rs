@@ -6,8 +6,8 @@
 
 use hashbrown::HashMap;
 use owl_dl_core::{
-    Axiom, ClassId, ConceptExpr, InternalOntology, RoleHierarchy, RoleHierarchyBuilder, RoleId,
-    SubRolePath,
+    Axiom, ClassId, ConceptExpr, ConceptId, ConceptPool, InternalOntology, RoleHierarchy,
+    RoleHierarchyBuilder, RoleId, SubRolePath,
 };
 use owl_dl_saturation::Subsumers;
 
@@ -27,6 +27,9 @@ pub struct FiniteModel {
     /// `seed` builds on via `..Self::default()`) working. Absent reads the
     /// same as an out-of-range role: an empty sub-role extension.
     hierarchy: Option<RoleHierarchy>,
+    /// Running total of edges across all roles, checked against
+    /// `bounds.max_edges` by `push_edge`. Shared by both expansion paths.
+    edge_count: usize,
 }
 
 impl FiniteModel {
@@ -143,6 +146,42 @@ impl FiniteModel {
         if aug.is_empty() { Ok(base) } else { Err(aug) }
     }
 
+    /// Appends the edge `(from, r, to)` if not already present, checking
+    /// `bounds.max_edges` against the running total.
+    ///
+    /// Shared by both expansion paths (`expand` and `expand_from_axioms` via
+    /// `materialise_exists`) so they cannot drift on bound handling — a path
+    /// that appended edges without this check would silently exceed a bound
+    /// the other path honours.
+    ///
+    /// Returns `true` iff `max_edges` tripped (a `BoundTripped` reason was
+    /// pushed and the caller must stop).
+    fn push_edge(
+        &mut self,
+        r: RoleId,
+        from: Element,
+        to: Element,
+        bounds: &Bounds,
+        reasons: &mut Vec<UnresolvedReason>,
+    ) -> bool {
+        let Some(bucket) = self.edges.get_mut(r.index() as usize) else {
+            return false;
+        };
+        if bucket.contains(&(from, to)) {
+            return false;
+        }
+        bucket.push((from, to));
+        self.edge_count += 1;
+        if self.edge_count > bounds.max_edges {
+            reasons.push(UnresolvedReason::BoundTripped {
+                bound: "max_edges",
+                limit: Some(bounds.max_edges),
+            });
+            return true;
+        }
+        false
+    }
+
     /// Expands seeded elements into a graph: every existential fact `(x, r, y)`
     /// on a labelled element becomes an `r`-edge to the interned target label,
     /// iterated to a fixpoint (or a tripped bound).
@@ -163,7 +202,6 @@ impl FiniteModel {
         }
         let mut reasons = Vec::new();
         let mut queue: Vec<Element> = self.elements().collect();
-        let mut edge_count = 0usize;
         while let Some(e) = queue.pop() {
             let classes: Vec<ClassId> = self.label(e).to_vec();
             for x in classes {
@@ -182,17 +220,7 @@ impl FiniteModel {
                                 });
                                 return reasons;
                             }
-                            if let Some(bucket) = self.edges.get_mut(r.index() as usize)
-                                && !bucket.contains(&(e, t))
-                            {
-                                bucket.push((e, t));
-                                edge_count += 1;
-                            }
-                            if edge_count > bounds.max_edges {
-                                reasons.push(UnresolvedReason::BoundTripped {
-                                    bound: "max_edges",
-                                    limit: Some(bounds.max_edges),
-                                });
+                            if self.push_edge(r, e, t, bounds, &mut reasons) {
                                 return reasons;
                             }
                             if self.labels.len() > before {
@@ -207,6 +235,203 @@ impl FiniteModel {
             }
         }
         reasons
+    }
+
+    /// The atomic classes a concept expression directly requires of an
+    /// element, or nothing when the expression is not a shape we can label
+    /// from.
+    ///
+    /// `Some(..)` bodies contribute NO classes of their own — an element
+    /// standing for `∃u.A` is opaque as a class, and its content is carried
+    /// by the edge the caller materialises, not by its label.
+    fn required_atoms(pool: &ConceptPool, ce: ConceptId, out: &mut Vec<ClassId>) {
+        match pool.get(ce) {
+            ConceptExpr::Atomic(c) => out.push(*c),
+            ConceptExpr::And(ops) => {
+                for op in ops {
+                    Self::required_atoms(pool, *op, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Materialises the existential structure of axiom superclass positions.
+    ///
+    /// The saturator emits no fact for a NESTED existential body and gives its
+    /// Tseitin marker an empty subsumer set, so a fact-driven model (`expand`)
+    /// has no element for the nested witness at all. This walks the axioms
+    /// instead: wherever an element satisfies an axiom's antecedent atoms, the
+    /// axiom's consequent existential chain is built out, one element per
+    /// body.
+    ///
+    /// Labels reuse `target_label`, so the `TBox`-closure gap is reported as
+    /// `LabelNotClosed` here exactly as it is on the fact path — this adds
+    /// reach, not a second labelling policy. Additive: does not touch
+    /// `expand`'s edges or elements, only appends to them.
+    pub fn expand_from_axioms(
+        &mut self,
+        internal: &InternalOntology,
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+    ) -> Vec<UnresolvedReason> {
+        // (antecedent atoms, consequent concept) pairs, from both axiom shapes.
+        let mut rules: Vec<(Vec<ClassId>, ConceptId)> = Vec::new();
+        for ax in &internal.axioms {
+            match ax {
+                Axiom::SubClassOf { sub, sup } => {
+                    let mut ante = Vec::new();
+                    Self::required_atoms(&internal.concepts, *sub, &mut ante);
+                    if !ante.is_empty() {
+                        rules.push((ante, *sup));
+                    }
+                }
+                Axiom::EquivalentClasses(members) => {
+                    for lhs in members {
+                        for rhs in members {
+                            if lhs == rhs {
+                                continue;
+                            }
+                            let mut ante = Vec::new();
+                            Self::required_atoms(&internal.concepts, *lhs, &mut ante);
+                            if !ante.is_empty() {
+                                rules.push((ante, *rhs));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut reasons = Vec::new();
+        let mut round = 0usize;
+        loop {
+            let mut grew = false;
+            let elems: Vec<Element> = self.elements().collect();
+            for e in elems {
+                for (ante, sup) in &rules {
+                    if !ante.iter().all(|c| self.in_concept(e, *c)) {
+                        continue;
+                    }
+                    if self.materialise_exists(
+                        &internal.concepts,
+                        subs,
+                        eff,
+                        bounds,
+                        e,
+                        *sup,
+                        &mut reasons,
+                        &mut grew,
+                    ) {
+                        return reasons; // a bound tripped
+                    }
+                }
+            }
+            round += 1;
+            if !grew {
+                return reasons;
+            }
+            if round >= bounds.max_rounds {
+                reasons.push(UnresolvedReason::BoundTripped {
+                    bound: "max_rounds",
+                    limit: Some(bounds.max_rounds),
+                });
+                return reasons;
+            }
+        }
+    }
+
+    /// Builds out every positive `∃` in `ce` starting at `e`. Returns `true`
+    /// iff a bound tripped and the caller must stop.
+    #[allow(clippy::too_many_arguments)]
+    fn materialise_exists(
+        &mut self,
+        pool: &ConceptPool,
+        subs: &Subsumers,
+        eff: &HashMap<RoleId, Vec<ClassId>>,
+        bounds: &Bounds,
+        e: Element,
+        ce: ConceptId,
+        reasons: &mut Vec<UnresolvedReason>,
+        grew: &mut bool,
+    ) -> bool {
+        match pool.get(ce) {
+            ConceptExpr::And(ops) => {
+                for op in ops {
+                    if self.materialise_exists(pool, subs, eff, bounds, e, *op, reasons, grew) {
+                        return true;
+                    }
+                }
+                false
+            }
+            ConceptExpr::Some(role, body) => {
+                if role.is_inverse() {
+                    return false;
+                }
+                let r = role.role_id();
+                // Label the witness from the body's own required atoms, closed
+                // through `target_label` so the range union and the closure
+                // report are identical to the fact path.
+                let mut atoms = Vec::new();
+                Self::required_atoms(pool, *body, &mut atoms);
+                let mut label: Vec<ClassId> = Vec::new();
+                let mut unclosed = false;
+                for a in &atoms {
+                    match Self::target_label(subs, eff, r, *a) {
+                        Ok(l) => label.extend(l),
+                        Err(_) => unclosed = true,
+                    }
+                }
+                if unclosed {
+                    reasons.push(UnresolvedReason::LabelNotClosed {
+                        class: *atoms.first().unwrap_or(&ClassId::new(0)),
+                        role: r,
+                    });
+                }
+                if atoms.is_empty() {
+                    // Opaque body (e.g. a nested `∃`): the witness carries only
+                    // the role's effective ranges, and its content comes from
+                    // the edges built below.
+                    if let Some(rs) = eff.get(&r) {
+                        for c in rs {
+                            label.extend(subs.subsumers_of(*c));
+                        }
+                    }
+                }
+                label.sort_unstable_by_key(|c| c.index());
+                label.dedup();
+                let before = self.labels.len();
+                let w = self.intern(label);
+                if self.labels.len() > bounds.max_elements {
+                    reasons.push(UnresolvedReason::BoundTripped {
+                        bound: "max_elements",
+                        limit: Some(bounds.max_elements),
+                    });
+                    return true;
+                }
+                if self.labels.len() > before {
+                    *grew = true;
+                }
+                if self.push_edge(r, e, w, bounds, reasons) {
+                    return true;
+                }
+                // Recurse INTO the body at the new witness: this is the hop the
+                // fact list omits.
+                self.materialise_exists(pool, subs, eff, bounds, w, *body, reasons, grew)
+            }
+            ConceptExpr::Top
+            | ConceptExpr::Bot
+            | ConceptExpr::Atomic(_)
+            | ConceptExpr::Nominal(_)
+            | ConceptExpr::SelfRestriction(_)
+            | ConceptExpr::Not(_)
+            | ConceptExpr::Or(_)
+            | ConceptExpr::All(_, _)
+            | ConceptExpr::Min(_, _, _)
+            | ConceptExpr::Max(_, _, _) => false,
+        }
     }
 }
 

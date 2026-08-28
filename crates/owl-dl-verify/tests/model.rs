@@ -244,11 +244,17 @@ fn and_wrapped_nested_existential_reports_label_not_closed() {
 // this construct. Recovering it would mean either widening
 // `saturate_with_exists_facts`'s contract (a saturation-engine change, out of this
 // crate's declared scope) or having `expand` independently recover nested
-// Tseitin structure from `InternalOntology` (explicitly out of scope per the
-// task-4 brief: `expand`'s signature takes only `subs`/`facts`/`eff`/`bounds`).
-// Left `#[ignore]`d, asserting the BRIEF's literal desired outcome, so it trips
-// the moment a future change (Task 5 or a saturator change) closes this gap —
-// see `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md` for why an
+// Tseitin structure from `InternalOntology`.
+//
+// Task 4b built exactly that second option (`FiniteModel::expand_from_axioms`,
+// exercised directly by `axiom_driven_expansion_materialises_the_nested_chain`
+// above, which passes on the equivalent bare-nested shape `C ⊑ ∃t.∃u.A`). But
+// THIS test calls only `expand`, by design (its purpose is to keep documenting
+// the fact-driven path's own reach), and `expand` itself is untouched by 4b —
+// so re-running it here still fails, unchanged. See the per-test `#[ignore]`
+// reasons below for what was actually measured on this binary, including a
+// probe of what happens if `expand_from_axioms` IS added to this call site.
+// See `docs/2026-08-18-ignored-sentinels-went-stale-unobserved.md` for why an
 // `#[ignore]`d claim must be revisited rather than silently trusted.
 const NESTED_RANGE_NO_AND: &str = r"Prefix(:=<http://ex.org/>)
 Ontology(<http://ex.org/pb>
@@ -260,10 +266,23 @@ ObjectPropertyRange(:u :F)
 ";
 
 #[test]
-#[ignore = "MEASURED gap: saturate_with_exists_facts never emits a fact for the \
-            inner role of a bare (non-AND-wrapped) nested existential, so expand \
-            never calls target_label for it — no edge, no LabelNotClosed report. \
-            See the task-4 report and the doc comment above."]
+#[ignore = "RE-MEASURED for Task 4b (2026-08-28): still FAILS, unchanged — this test \
+            calls only model.expand(), which 4b deliberately left untouched, so \
+            saturate_with_exists_facts still emits no fact for the inner role and no \
+            u-edge is created. The RECHABILITY gap itself is now closed: a probe that \
+            additionally calls model.expand_from_axioms() on this exact fixture DOES \
+            produce a u-edge (confirmed by temporarily instrumenting this test and \
+            reverting). But even with that call added, this test's own assertion \
+            `in_concept(witness, f)` would still fail, for a DIFFERENT, deliberate \
+            reason: target_label(subs, eff, u, A) returns Err([F]) here (Range(u,F) \
+            with no A⊑F closure), and expand_from_axioms reports that as \
+            LabelNotClosed rather than force-closing F into the witness label — the \
+            same report-only design expand() already uses, not a residual gap in \
+            4b. So this fixture cannot pass as literally written without either (a) \
+            adding an A⊑F-style closure axiom (see the NESTED_MONO fixture above, \
+            which does exactly this and passes), or (b) changing the assertion to \
+            expect LabelNotClosed instead of Range-closure. Left as-is and ignored, \
+            scoped to the fact-driven path it documents."]
 fn nested_existential_range_gap_probe_b() {
     let internal = load(NESTED_RANGE_NO_AND);
     let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
@@ -295,13 +314,23 @@ fn nested_existential_range_gap_probe_b() {
 }
 
 #[test]
-#[ignore = "MEASURED gap: the pre-supplied fixture uses the same bare-nested \
-            shape as nested_existential_range_gap_probe_b — saturate_with_exists_facts \
-            returns exactly one fact, for the OUTER role only, so target_label is \
-            never invoked for the inner ranged role and expand reports nothing at \
-            all (reasons == []), not even a wrong LabelNotClosed. See the task-4 \
-            report; and_wrapped_nested_existential_reports_label_not_closed above \
-            positively exercises the same report path on a shape that DOES reach it."]
+#[ignore = "RE-MEASURED for Task 4b (2026-08-28): still FAILS as literally written \
+            (reasons == [] from model.expand() alone, unchanged from the task-4 \
+            report), because this test checks ONLY expand()'s return value and 4b \
+            deliberately left expand() untouched. But the underlying gap this test \
+            names IS closed at the model level: a probe that additionally calls \
+            model.expand_from_axioms() and folds its reasons into the checked Vec \
+            (confirmed by temporarily instrumenting this test and reverting) makes \
+            the assertion PASS — expand_from_axioms's materialise_exists hits \
+            target_label(subs, eff, u, A) on this exact fixture, gets Err([F]) \
+            (Range(u,F) with no A⊑F closure) and reports LabelNotClosed, exactly as \
+            this test wants. So this is not a residual defect in 4b; it is that this \
+            test exercises only HALF of the pipeline the brief's own Interfaces \
+            section describes (\"Task 5's build_model calls [expand_from_axioms] \
+            immediately after expand\"). Left ignored rather than edited to call the \
+            second method myself, since wiring the two together into one report \
+            surface is Task 5's declared scope, not 4b's — un-ignore this once that \
+            wiring lands and re-check."]
 fn label_closure_case_reports_label_not_closed_rather_than_a_wrong_label() {
     let ofn = std::fs::read_to_string("tests/fixtures/label-closure-range-sub.ofn")
         .expect("fixture present");
@@ -317,5 +346,64 @@ fn label_closure_case_reports_label_not_closed_rather_than_a_wrong_label() {
             .any(|r| matches!(r, UnresolvedReason::LabelNotClosed { .. })),
         "Range(u,F)+F⊑G needs closure this local rule cannot supply; report it, \
          do not emit a truncated label. Got {reasons:?}"
+    );
+}
+
+// --- Axiom-driven expansion reaches nested existential witnesses -----------
+//
+// Task 4b. `saturate_with_exists_facts` gives the nested existential's Tseitin
+// marker an EMPTY subsumer set and emits no fact for it (see the task-4b
+// brief and the two `#[ignore]`d tests above), so a fact-driven model has no
+// element for the `u`-successor at all. `expand_from_axioms` derives the
+// existential structure from the axioms via `ConceptPool` instead, reaching
+// the hop the fact list omits.
+const NESTED_MONO: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/nm>
+Declaration(Class(:A)) Declaration(Class(:C)) Declaration(Class(:D)) Declaration(Class(:F))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u))
+SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
+SubClassOf(:A :F)
+SubClassOf(ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :F)) :D)
+)
+";
+
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn axiom_driven_expansion_materialises_the_nested_chain() {
+    let internal = load(NESTED_MONO);
+    let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let hier = build_role_hierarchy(&internal);
+    let eff = effective_ranges(&internal, &hier);
+    let mut model = FiniteModel::seed(&internal, &subs, &facts).with_hierarchy(hier);
+    let bounds = Bounds::default();
+    let _ = model.expand(&subs, &facts, &eff, &bounds);
+    let _ = model.expand_from_axioms(&internal, &subs, &eff, &bounds);
+
+    let c = internal.vocabulary.class_id("http://ex.org/C").expect("C");
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let f = internal.vocabulary.class_id("http://ex.org/F").expect("F");
+    let t = internal.vocabulary.role_id("http://ex.org/t").expect("t");
+    let u = internal.vocabulary.role_id("http://ex.org/u").expect("u");
+    let x_c = model.element_of_class(c).expect("C is satisfiable");
+
+    // EXISTENTIAL at each hop: a zero-successor model passes a forall phrasing vacuously.
+    let mid = model.successors(x_c, t);
+    assert!(
+        !mid.is_empty(),
+        "C must gain a t-successor from its own axiom"
+    );
+    let leaf: Vec<_> = mid.iter().flat_map(|m| model.successors(*m, u)).collect();
+    assert!(
+        !leaf.is_empty(),
+        "the NESTED u-successor is what the fact list omits"
+    );
+    let w = leaf[0];
+    assert!(
+        model.in_concept(w, a),
+        "the leaf must satisfy the body class A"
+    );
+    assert!(
+        model.in_concept(w, f),
+        "and A ⊑ F must be closed INTO the leaf label — this is what makes the #80 shape detectable"
     );
 }

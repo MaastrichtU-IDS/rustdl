@@ -1,5 +1,12 @@
-//! Verified canonical models for pure-EL ontologies, and an engine-blind
-//! axiom evaluator over them.
+//! Finite models built from pure-EL ontologies' EL-saturation closures, and an
+//! engine-blind axiom evaluator over them.
+//!
+//! The model built here is **not proven canonical**: the same logical nested-existential
+//! witness can be labelled differently by the two expansion paths and end up interned as two
+//! separate elements — see
+//! `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`, which also records
+//! two more ways a witness's label can come out wrong. Every known imprecision so far points
+//! toward a spurious `Violated`, never a false `Verified`.
 //!
 //! See `docs/superpowers/specs/2026-08-27-negative-certificates-phase1-design.md`.
 
@@ -66,6 +73,18 @@ pub enum UnresolvedReason {
     /// direct evidence the shipped classification is incomplete.
     RunDelta {
         class: ClassId,
+    },
+    /// One or more axioms in the ontology were not understood by conversion and were silently
+    /// dropped BEFORE this crate ever saw them (`owl_dl_core::convert_ontology`'s
+    /// `DroppedAxioms`) — so neither `build_model` nor `verify` checked them at all. A caller
+    /// that reports `Verified`/`Violated` over such an ontology would be vouching for (or
+    /// flagging a defect in) a strictly WEAKER closure than the one the reasoner's own
+    /// `classify`/`consistent` would have used, which had those axioms. `count` is the total
+    /// number of dropped axioms, summed across kinds — see the caller for the per-kind
+    /// breakdown, which this crate has no way to represent (it does not depend on the CLI's
+    /// conversion-reporting types).
+    AxiomsDroppedAtConversion {
+        count: u64,
     },
 }
 
@@ -283,7 +302,10 @@ fn render_incremental_witness(model: &FiniteModel, witness: &[Element]) -> Strin
         .join(", ")
 }
 
-/// Builds the canonical model.
+/// Builds the finite model checked against the ontology's axioms.
+///
+/// Despite the module doc's original framing, this model is **not proven canonical** — see
+/// `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`.
 ///
 /// # Why the model comes from the FINAL augmented run
 ///

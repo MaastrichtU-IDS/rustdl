@@ -182,8 +182,8 @@ fn verify_fixture(internal: &InternalOntology) -> (Verdict, bool, Vec<Unresolved
 }
 
 /// The core invariant, checked over every fixture this project's D10 hunt
-/// produced — the four straight detections, the one that lands weaker, and
-/// the two the checker refuses outright — plus the three healthy controls
+/// produced — the five straight detections and the two the checker refuses
+/// outright — plus the three healthy controls
 /// (included here because the invariant is vacuously true on them too:
 /// `rustdl_agrees` is `true`, so nothing is asserted, and their `Verified`
 /// requirement is pinned separately by `healthy_controls_are_verified`).

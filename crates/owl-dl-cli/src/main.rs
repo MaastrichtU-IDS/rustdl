@@ -486,25 +486,32 @@ enum Command {
         #[arg(long)]
         dump_subsumptions: bool,
     },
-    /// Build an independent canonical model for a pure-EL ontology
-    /// (`owl-dl-verify`) and check every axiom against it directly, without
-    /// going through the saturator/wedge/tableau this crate's own answers
-    /// come from. A negative-certificate instrument, not a reasoner: it
-    /// never CONFIRMS a rustdl verdict, only ever catches a rustdl DEFECT
-    /// (the fragment gate certifies completeness, the model built
-    /// independently disagrees). Gated on
+    /// Build a finite model for a pure-EL ontology from its reported EL
+    /// closure (`owl-dl-verify`) and check its axioms against it directly,
+    /// without going through the saturator/wedge/tableau this crate's own
+    /// answers come from. A negative-certificate instrument, not a
+    /// reasoner. **This model is NOT proven canonical** — see
+    /// `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`.
+    ///
+    /// A `Violated` verdict means the model built from the reported closure
+    /// fails an axiom. Given a faithful builder, that means the closure is
+    /// incomplete. The builder itself is an under-approximation in places,
+    /// and every known imprecision found so far points toward a SPURIOUS
+    /// violation, never toward a false all-clear — three such cases are
+    /// reproduced in the doc linked above. **A `Violated` is a strong lead
+    /// requiring adjudication, not a proof.** Gated on
     /// `owl_dl_reasoner::analyze_fragment(&internal) ==
     /// FragmentClassification::PureEl` — anything else is `Unresolved`
     /// (out of scope, not a verdict about the ontology).
     ///
     /// Exit codes are distinct so a corpus sweep can bucket outcomes
     /// without parsing stdout: **0** `Verified` (the model satisfies every
-    /// axiom rustdl's classification is checked against; no defect found),
-    /// **2** `Violated` (the model built independently contradicts an
-    /// axiom — a genuine detection), **3** `Unresolved` (out of fragment, a
-    /// bound was tripped, or an axiom/concept shape this checker does not
-    /// yet handle — never treated as `Verified`), **1** I/O or parse
-    /// errors.
+    /// axiom checked — no lead found), **2** `Violated` (the model built
+    /// independently fails an axiom — a lead; see the adjudication caveat
+    /// above), **3** `Unresolved` (out of fragment, a bound was tripped, an
+    /// axiom/concept shape this checker does not yet handle, or content
+    /// axioms were dropped at conversion before this checker ever saw them
+    /// — never treated as `Verified`), **1** I/O or parse errors.
     VerifyEl {
         /// Path to an OWL ontology (.ofn / .owx / .owl / .rdf / .omn —
         /// format auto-detected from the extension).
@@ -894,6 +901,59 @@ fn fold_build_reasons(
             mut reasons,
         } => {
             reasons.append(&mut build_reasons);
+            Verdict::Unresolved {
+                domain_size,
+                reasons,
+            }
+        }
+    }
+}
+
+/// Folds `dropped`-axiom counts (content the CONVERTER, not this checker, refused to represent —
+/// see `warn_if_dropped`) into a `verify-el` verdict, mirroring `fold_build_reasons` immediately
+/// above.
+///
+/// Before this existed, `verify-el` could exit **0** `Verified` on an ontology whose reported
+/// closure was checked against a strictly weaker TBox/ABox than the one shipped: `HasKey` and
+/// other unrepresentable content axioms degrade gracefully at conversion (`CLAUDE.md`'s
+/// "Graceful degradation + surfaced drops" entry), so `warn_if_dropped` printed a stderr warning
+/// but the exit code — the whole point of which is that a corpus sweep need not parse stdout —
+/// still said "no defect found." A `Violated` result is unaffected: it already means a genuine
+/// disagreement was found against whatever (possibly weaker) closure was checked, and the
+/// dropped-axiom count is folded in as an additional `unresolved` row rather than displacing it,
+/// same as `fold_build_reasons` does for build-time reasons.
+fn fold_dropped_axioms(
+    verdict: owl_dl_verify::Verdict,
+    dropped: &std::collections::BTreeMap<String, u64>,
+) -> owl_dl_verify::Verdict {
+    use owl_dl_verify::{UnresolvedReason, Verdict};
+    let count: u64 = dropped.values().sum();
+    if count == 0 {
+        return verdict;
+    }
+    let reason = UnresolvedReason::AxiomsDroppedAtConversion { count };
+    match verdict {
+        Verdict::Verified { domain_size, .. } => Verdict::Unresolved {
+            domain_size,
+            reasons: vec![reason],
+        },
+        Verdict::Violated {
+            domain_size,
+            violations,
+            mut unresolved,
+        } => {
+            unresolved.push(reason);
+            Verdict::Violated {
+                domain_size,
+                violations,
+                unresolved,
+            }
+        }
+        Verdict::Unresolved {
+            domain_size,
+            mut reasons,
+        } => {
+            reasons.push(reason);
             Verdict::Unresolved {
                 domain_size,
                 reasons,
@@ -2470,6 +2530,7 @@ fn main() -> Result<()> {
                     fold_build_reasons(verdict, build_reasons)
                 }
             };
+            let verdict = fold_dropped_axioms(verdict, &dropped);
             let code = verify_el_exit_code(&verdict);
             if json {
                 let (violations, unresolved, axioms_checked, domain_size) = match &verdict {

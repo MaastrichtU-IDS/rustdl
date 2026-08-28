@@ -1,8 +1,16 @@
-//! The canonical model: elements are INTERNED LABEL SETS.
+//! The finite model: elements are INTERNED LABEL SETS.
 //!
 //! Two classes share an element exactly when their subsumer sets coincide,
 //! which (because `subsumers_of` is reflexive) happens exactly for
 //! derived-equivalent classes.
+//!
+//! **This model is not proven canonical.** The same logical nested-existential witness can be
+//! labelled differently by the fact-driven and axiom-driven expansion paths and get interned as
+//! two separate `Element`s, and (see the `ConceptExpr::Some` arm of `materialise_exists` below)
+//! an opaque body's witness label can also come out empty or under-labelled relative to the
+//! label a `Domain`/nested recursion later hangs an edge off of. See
+//! `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md` for the mechanism and
+//! three reproduced cases where it causes a spurious `Violated`.
 
 use hashbrown::HashMap;
 use owl_dl_core::{
@@ -124,6 +132,34 @@ enum PushOutcome {
     BoundTripped,
 }
 
+/// # Every public mutator here is truth-DECREASING
+///
+/// `intern` only ever ADDS elements (a fresh label is a new obligation the existential/edge
+/// checks in `eval.rs` now have to satisfy, never one discharged), and
+/// `test_only_remove_from_label`/`test_only_remove_edge` (gated behind the `test-mutations`
+/// feature — see this crate's `Cargo.toml`) only ever REMOVE, never add, label content or
+/// edges. An under-built model — missing a label entry, missing an edge — can only make an
+/// existential/role-hierarchy check FAIL, never spuriously succeed: there is no public
+/// operation that can make a check pass by omission. So the entire public surface errs toward
+/// `Violated`, never toward a false `Verified`.
+///
+/// This is why a caller doing `seed(...)` then `verify(...)` without ever calling `expand`/
+/// `expand_from_axioms` is safe (an unexpanded model is simply MORE under-built, which by the
+/// same argument can only produce MORE `Violated`/`Unresolved`, never a false `Verified`), and
+/// why building the whole crate with `--all-features` — which exposes `test-mutations` outside
+/// its own test binaries — is benign rather than a soundness hole: the mutator it exposes can
+/// only push a model further in the direction this crate already treats as safe.
+///
+/// **This property is about `FiniteModel`'s own construction, and is orthogonal to the
+/// model-BUILDING defects tracked in
+/// `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md` (F1/F2/F3).** Those
+/// are cases where `build_model` calls `intern`/`push_edge` with a label or edge set that is
+/// itself wrong (missing content that SHOULD have been there per another axiom) — the mutators
+/// did exactly what they were asked, faithfully, and still produced a spurious `Violated`
+/// because what they were asked to add was already incomplete. Truth-decreasing mutators bound
+/// the risk from calling them in the wrong ORDER or not at all; they say nothing about whether
+/// each call was given the right label to begin with.
+///
 /// # `still_holds_after` belongs on `VerifiedModel`, never here
 ///
 /// Task 11 adds `still_holds_after`. It must land on `VerifiedModel`
@@ -622,10 +658,15 @@ impl FiniteModel {
                     // CONTENT, the two paths can allocate two different
                     // `Element`s for one nested-existential witness — one
                     // under-labelled here, one correctly labelled by `expand`.
-                    // Not shown unsound (an extra edge-less element satisfies no
-                    // check this crate currently runs), but untested against a
-                    // future concept-level check. See
-                    // `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`.
+                    //
+                    // NOT edge-less: `push_edge` a few lines below gives `w` an
+                    // incoming edge unconditionally, and the recursive
+                    // `materialise_exists` call right after that can give it an
+                    // OUTGOING edge too. An under-labelled `w` sitting at the
+                    // source of a `Domain`-constrained edge is exactly how F3 in
+                    // `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`
+                    // reproduces a false `Violated` — read that doc before
+                    // trusting this element's label anywhere new.
                     if let Some(rs) = eff.get(&r) {
                         for c in rs {
                             label.extend(subs.subsumers_of(*c));

@@ -1303,9 +1303,19 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   ontologies only. `build_model` constructs a finite model straight from the EL saturation
   closure (`FiniteModel`/`VerifiedModel` in `src/model.rs`); `eval.rs`'s evaluator is generic over
   an `Interpretation` trait and resolves concepts only via `ConceptPool` — data, never saturation
-  logic — so it structurally cannot reach the engine it is checking. A failing axiom
-  (`Verdict::Violated`) means the reported closure admits **no model at all** — i.e. the reasoner
-  silently dropped an entailment, the D10 bug class this file documents repeatedly elsewhere.
+  logic — so it structurally cannot reach the engine it is checking. A `Verdict::Violated` means
+  the model built from the reported closure fails an axiom. *Given a faithful builder*, that
+  means the closure is incomplete — the D10 bug class this file documents repeatedly elsewhere.
+  **The builder itself is an under-approximation in places, and every known imprecision points
+  toward a SPURIOUS violation, never toward a false all-clear** — see the three reproduced
+  false-`Violated` cases (F1/F2/F3) in
+  `docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`. Empirically: zero
+  spurious violations across 16 pure-EL ORE ontologies and 3 healthy controls, and each of the 5
+  committed detections below was adjudicated individually. **A `Violated` is a strong lead
+  requiring adjudication, not a proof** — the design spec's own hedge (`docs/superpowers/specs/
+  2026-08-27-negative-certificates-phase1-design.md:461`: "a violation carries no information
+  until spurious violations are zero") applies to every verdict this instrument produces, not
+  just a caveat that failed to propagate once.
   Nothing here is wired into `classify`, `consistent`, or `realize`; it is reached only via
   `rustdl verify-el <file> [--json]` (exit 0 `Verified` / 2 `Violated` / 3 `Unresolved` — off-fragment
   or a build-time refusal — / 1 I/O/parse error). `[dependencies]` is `owl-dl-core` +
@@ -1319,7 +1329,11 @@ Data flows: `horned-owl` parse → `owl-dl-core` (IR + preprocessing) →
   pure-EL ORE ontologies; the other **4 are UNMEASURED**, not passing — they hit `timeout`'s
   exit 124 at a 300 s cap, which means "no verdict was reached," distinct from an actual exit-3
   `Unresolved` verdict. On committed fixtures, the checker produces **5 detections** tracking
-  issues #80/#81/#82 (real engine gaps the saturator is expected to have fixed once those land),
+  issues #80/#81/#82, of which **4 are peer-confirmed** real engine gaps the saturator is
+  expected to have fixed once those land; the 5th, `chain-range-bot`, is NOT — its own oracle
+  records `provenance: derivation-only` ("rustdl, Konclude AND HermiT all fail to confirm it …
+  Treated as unconfirmed either way"), so count it as a detection of the instrument firing, not
+  as a 5th confirmed engine gap,
   with **2 further fixtures REFUSED** by the chain-range profile guard (`ChainRangeOutOfProfile`)
   rather than checked — a coverage loss a future Phase 2 chain/range fold is expected to recover,
   not evidence against those 2 fixtures' entailments. The injection fixpoint's behaviour **past

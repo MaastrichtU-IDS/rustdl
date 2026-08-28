@@ -43,8 +43,15 @@ fn seeding_labels_are_sorted_and_contain_the_class_itself() {
     );
 }
 
+/// Was misnamed `derived_equivalent_classes_share_one_element` while its body asserted the
+/// OPPOSITE (`assert_ne!` on two classes that are NOT equivalent) — renamed to match what it
+/// actually checks. See `derived_equivalent_classes_share_one_element` below for the positive
+/// case this file was missing entirely: that two classes that ARE derived-equivalent really do
+/// collapse onto one `Element`, which is the load-bearing property `model.rs`'s module doc
+/// states (`intern` dedups by label content, and `subsumers_of` coinciding is exactly
+/// derived-equivalence).
 #[test]
-fn derived_equivalent_classes_share_one_element() {
+fn non_equivalent_classes_get_distinct_elements() {
     // B and C are NOT equivalent here, so they must be distinct elements.
     let internal = load(CHAIN);
     let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
@@ -55,6 +62,40 @@ fn derived_equivalent_classes_share_one_element() {
         model.element_of_class(b),
         model.element_of_class(c),
         "B and C have different subsumer sets, so they must not be interned together"
+    );
+}
+
+/// The positive case the file above was missing: two classes that are derived-equivalent
+/// (NOT asserted via `EquivalentClasses` — via mutual `SubClassOf`, so `subsumers_of` has to do
+/// the work) really do collapse onto the SAME `Element`. This is the property `model.rs`'s
+/// module doc calls out explicitly ("Two classes share an element exactly when their subsumer
+/// sets coincide … happens exactly for derived-equivalent classes") and, before this test,
+/// nothing in the suite asserted it.
+#[test]
+fn derived_equivalent_classes_share_one_element() {
+    const MUTUAL_SUBCLASS: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/eq>
+Declaration(Class(:A)) Declaration(Class(:B))
+SubClassOf(:A :B)
+SubClassOf(:B :A)
+)
+";
+    let internal = load(MUTUAL_SUBCLASS);
+    let (subs, facts, _) = owl_dl_saturation::saturate_with_exists_facts(&internal);
+    let model = FiniteModel::seed(&internal, &subs, &facts);
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let b = internal.vocabulary.class_id("http://ex.org/B").expect("B");
+    assert_eq!(
+        subs.subsumers_of(a),
+        subs.subsumers_of(b),
+        "A and B mutually subsume, so their subsumer sets must coincide"
+    );
+    let ea = model.element_of_class(a);
+    let eb = model.element_of_class(b);
+    assert!(ea.is_some(), "A is satisfiable, so it must be seeded");
+    assert_eq!(
+        ea, eb,
+        "derived-equivalent classes must be interned onto the SAME element"
     );
 }
 

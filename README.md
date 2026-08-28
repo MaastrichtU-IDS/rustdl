@@ -187,16 +187,26 @@ rustdl diagnose  ontology.ofn               # root vs derived unsatisfiable clas
 rustdl report    ontology.ofn -o report.html # self-contained HTML debugging report
 rustdl explain   ontology.ofn <sub> <sup>   # which engine answered (saturation vs tableau)
 rustdl verify-el ontology.ofn [--json]      # diagnostic: build a finite model from the EL closure and
-                                             # check every axiom against it independently of the saturator
+                                             # check the axioms it handles against it, via code
+                                             # independent of the saturator
 ```
 
 **`verify-el`** is a diagnostic, not a reasoning path — it is not wired into `classify`,
 `consistent`, or `realize`. It only runs on ontologies in the pure-EL fragment (exits **3**,
-`Unresolved`, on anything else) and exits **0** (`Verified`) when the model built from rustdl's
-own EL saturation closure satisfies every axiom, **2** (`Violated`) when it finds an axiom the
-closure's own model does not satisfy — direct evidence the saturator dropped an entailment — or
-**3** when the model builder itself had to refuse (a bound tripped, or a construct outside the
-checker's covered fragment) and **1** on an I/O/parse error.
+`Unresolved`, on anything else). Its independence is of CODE, not of input: the model it checks
+against is *built from* the saturator's own closure, and only 13 of the 25 `Axiom` variants have
+a check at all — everything else contributes an `Unresolved` row rather than a verdict. It exits
+**0** (`Verified`) when the model built from rustdl's own EL saturation closure satisfies every
+axiom it can check. A **2** (`Violated`) means the model built from the reported closure fails an
+axiom — a strong lead, not a proof: the model builder is itself an under-approximation in places,
+and every known imprecision found so far points toward a **spurious** violation, never toward a
+false all-clear (three reproduced cases in
+`docs/known-limitations/verify-two-expansion-paths-split-a-witness.md`). Exit **3**
+(`Unresolved`) covers several distinct routes, not just one: the model builder itself refusing
+outright (a bound tripped, or a construct outside the checker's covered fragment), a check-time
+axiom/concept shape the evaluator does not yet handle, content axioms silently dropped at
+conversion (before this checker ever saw them), or a `Verified` check result downgraded because
+of either of the last two — never treated as a clean `Verified`. **1** is an I/O/parse error.
 
 **Bounded classification** — sound under-approximation (every reported subsumption
 still holds; pairs not decided in time default to "not subsumed", never a false

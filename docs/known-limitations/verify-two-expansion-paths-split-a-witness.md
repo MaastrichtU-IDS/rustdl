@@ -1,9 +1,102 @@
-# The two model-expansion paths can label one logical witness differently
+# The model builder can report a false `Violated` (F1/F2/F3, plus the original split-witness risk)
 
-**Found:** 2026-08-28 (Task 14, `owl-dl-verify`) · **Status:** OPEN, not shown unsound ·
-**Severity:** untested completeness risk in a diagnostic-only tool
+**Found:** 2026-08-28 (Task 14, `owl-dl-verify`); F1/F2/F3 found 2026-08-28 during the final
+whole-branch review · **Status:** OPEN. The original split-witness risk below is still
+hypothetical/untested; F1/F2/F3 are CONFIRMED, reproducible, and each exits the CLI's normal
+success path (`(0 unresolved)`, exit 2) — the refusal machinery does not catch any of them ·
+**Severity:** this crate's central claim ("a `Violated` verdict is a real engine defect") does
+not hold as stated. See the corrected wording in `CLAUDE.md`'s `crates/owl-dl-verify` entry,
+`README.md`, and `rustdl verify-el --help`.
 
-## The defect
+## Direction of risk: read this before the mechanism sections below
+
+Every mechanism on this page is a **false `Violated`** — the model builder itself builds an
+incomplete or mislabelled witness, and the checker then reports that the very axiom which should
+have closed the gap has failed. None of them is a false `Verified` (a real defect that the
+checker misses). That asymmetry matters for how to read this instrument: **a `Violated` verdict
+is a strong lead requiring adjudication against a real classification disagreement, not a
+proof.** It does not, on its own, mean the reasoner dropped an entailment.
+
+The original analysis on this page (kept below, in "Why this is not shown to be an unsound
+checker") reasoned about the *other* direction — whether an under-labelled or duplicated element
+could let a genuinely-violated axiom read as `Verified`/`Holds`. That is the wrong question for
+this instrument. `Verdict::Violated` is not a background risk that only matters if it *hides*
+something; reporting `Violated` **is** the output signal a user acts on. The old paragraph's own
+observation — "an extra, edge-poor element can only make MORE axioms fail to be witnessed, never
+fewer" — is not a safety argument here; "more axioms fail" is precisely a spurious `Violated`.
+F1/F2/F3 below are that mechanism family, confirmed rather than hypothetical.
+
+## F1 — conjunctive `∃`-body plus a GCI over the conjunction
+
+**Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f1_conjunctive_exists_body_gci_is_a_false_violated`
+(control: `f1_control_flat_exists_body_verifies_cleanly`).
+
+```
+SubClassOf(:X ObjectSomeValuesFrom(:r ObjectIntersectionOf(:A :B)))
+SubClassOf(ObjectIntersectionOf(:A :B) :C)
+```
+
+`materialise_exists`'s `ConceptExpr::Some` arm (`model.rs`, the loop over `required_atoms`) labels
+the witness as `subsumers_of(A) ∪ subsumers_of(B)` — a plain union, never closed under the GCI
+`A ⊓ B ⊑ C`. The witness therefore satisfies `A ⊓ B` by its own label (both `A` and `B` are in
+it) but does **not** contain `C`. The checker then evaluates `A ⊓ B ⊑ C` over the whole domain,
+finds this element in `A ⊓ B` and not in `C`, and reports **that axiom** — the one the model
+should have used to close its own label — as violated.
+
+The flat control (`X ⊑ ∃r.A`, `A ⊑ C`) verifies cleanly: with a single atomic body, `target_label`
+resolves through the saturator's own closure, which already folds `A ⊑ C` into `A`'s subsumer
+set before the model is ever built. Only the conjunctive body bypasses that closure.
+
+## F2 — nested `∃` plus an ordinary `SubClassOf(owl:Thing, C)`
+
+**Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f2_nested_exists_plus_thing_subclass_is_a_false_violated`
+(control: `f2_control_flat_exists_plus_thing_subclass_verifies_cleanly`).
+
+```
+SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :Y)))
+SubClassOf(owl:Thing :C)
+```
+
+A nested `∃` gets an element seeded per Tseitin marker, and that element's label comes back as
+`target_label`'s minimal `{Q}` row — the marker's own (nearly empty) subsumer set — never closed
+under `⊤ ⊑ C`. The checker evaluates `⊤ ⊑ C` over the whole domain (every element must be in
+`C`), finds the marker element is not, and reports a violation. **`SubClassOf(owl:Thing, …)` is an
+ordinary axiom shape in real EL ontologies** (a global range/typing constraint), not an exotic
+construct manufactured to trigger this.
+
+The flat control (single `∃`, no nesting) verifies cleanly, because the fact-driven expansion
+path resolves the witness directly from the saturator's closure, which already has `⊤ ⊑ C` folded
+into every class's subsumer set — the loss is specific to the Tseitin-marker path nested `∃`s
+take.
+
+## F3 — nested `∃` plus `ObjectPropertyDomain` on the inner role
+
+**Reproducer:** `crates/owl-dl-verify/tests/known_limitations.rs::f3_nested_exists_plus_inner_domain_is_a_false_violated`.
+
+```
+SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :Y)))
+ObjectPropertyDomain(:s :D)
+```
+
+`materialise_exists` mints the outer `∃r`'s witness element with a label taken from
+`effective_ranges(r)` — empty here, since `r` has no declared domain/range — and then
+**recurses into the inner `∃s.Y` body at that same element**, giving it an outgoing `s`-edge.
+`ObjectPropertyDomain(s, D)` is checked against every edge source under `s`; this element is one,
+and its label is empty, so it fails a domain constraint the model itself is responsible for
+having attached an edge without ever attaching the label that edge's presence should imply.
+
+## Why these three, and not the original split-witness risk, were caught first
+
+All four defects live in the same code path (`materialise_exists`'s handling of an opaque `∃`
+body) and share the same root cause: **the label attached to a witness minted on the axiom-driven
+path is not always closed against the axioms/edges the model goes on to build around it.** The
+original split-witness analysis below asked whether that under-labelling could let a *different*,
+already-built element mask a real violation (untested, still open); F1/F2/F3 show the more direct
+consequence — the under-labelled element's OWN presence in the domain trips a checker that has no
+way to tell "genuinely absent from this class" apart from "labelled this way because of how it was
+built."
+
+## Original split-witness analysis (2026-08-28, Task 14) — kept, direction of risk corrected above
 
 `owl-dl-verify`'s `FiniteModel::build_model` runs **two** expansion passes over the same
 saturation closure — `expand` (the fact-driven path, over the saturator's own
@@ -14,42 +107,35 @@ with an empty subsumer set, so the fact path alone has no element for the nested
 (`expand_from_axioms`'s own doc comment, `crates/owl-dl-verify/src/model.rs:455-467`).
 
 **The two paths can label that same nested witness differently.** In `materialise_exists`'s
-`ConceptExpr::Some(role, body)` arm (`model.rs:566-643`), when `body` is itself opaque (no
-`required_atoms`, e.g. another nested `∃`) the witness's label is built from `eff.get(&r)` — the
-role's *effective ranges* — which is frequently **empty** (`model.rs:613-622`). The fact path
-(`expand`, `model.rs:379-434`) instead resolves the same shape via `target_label`, whose `Ok`
-arm ultimately bottoms out at `subs.subsumers_of(Tseitin Q)` — and a Tseitin marker's subsumer
-set is never empty; it contains at least `{Q}` itself.
+`ConceptExpr::Some(role, body)` arm, when `body` is itself opaque (no `required_atoms`, e.g.
+another nested `∃`) the witness's label is built from `eff.get(&r)` — the role's *effective
+ranges* — which is frequently **empty**. The fact path (`expand`) instead resolves the same shape
+via `target_label`, whose `Ok` arm ultimately bottoms out at `subs.subsumers_of(Tseitin Q)` — and
+a Tseitin marker's subsumer set is never empty; it contains at least `{Q}` itself.
 
-`intern` (`model.rs:164-177`) dedups **purely by label content** (`label_ix: HashMap<Box<[ClassId]>,
-Element>`), with no notion that two labels might denote the same underlying existential
-witness. So when both paths visit the same nested `∃`, they can produce two *different* label
-vectors for what is logically one witness — and `intern` allocates **two separate `Element`s**
-for it, one under-labelled (from `eff_ranges`, often `[]`) and one correctly labelled (from the
-Tseitin marker's subsumers).
+`intern` dedups **purely by label content** (`label_ix: HashMap<Box<[ClassId]>, Element>`), with
+no notion that two labels might denote the same underlying existential witness. So when both
+paths visit the same nested `∃`, they can produce two *different* label vectors for what is
+logically one witness — and `intern` allocates **two separate `Element`s** for it, one
+under-labelled (from `eff_ranges`, often `[]`) and one correctly labelled (from the Tseitin
+marker's subsumers).
 
 This directly contradicts the design spec's "one canonical interpretation" framing (§3/§5 of
 `docs/superpowers/specs/2026-08-27-negative-certificates-phase1-design.md`): the model built is
-not canonical when the same witness can appear twice under different labels.
+**not canonical** when the same witness can appear twice under different labels. (`src/lib.rs`
+and `src/model.rs`'s module docs were corrected on this point during the branch review that added
+F1/F2/F3 — they no longer claim the model is canonical.)
 
-## Why this is not (yet) shown to be an unsound checker
+### Why this specific risk is not (yet) shown to cause a false `Violated` on its own
 
 The under-labelled element (from `eff_ranges`) carries no edges of its own beyond what
-`materialise_exists` immediately builds under it, and an extra, edge-poor element in a finite
-model can only make MORE axioms fail to be witnessed, never fewer — `eval::check_axiom`'s
-existential checks look for *some* satisfying successor across the whole domain, and an
-edge-less duplicate never satisfies one that the correctly-labelled element wouldn't already
-satisfy. So the split element does not appear to let a genuinely-failing axiom pass as `Holds`
-in the checks this crate currently runs (`eval.rs` only ever checks `SubClassOf` /
-`EquivalentClasses` / role-hierarchy shapes over the domain as a whole, never a check keyed to
-one specific `Element` by identity).
-
-**What is untested:** whether a future *concept-level* check (e.g. "does element `e`'s label
-already entail `D`?", something this crate does not currently do) could read the WEAKER of the
-two labels for the same real-world witness and report a false `Violated`, or a check that
-depends on iterating "all successors of `x` under `r`" and only visits one of the two split
-elements could silently see the wrong one. Nothing in the current evaluator does this, but
-nothing in the code prevents a future one from being written that would.
+`materialise_exists` immediately builds under it. Whether an evaluator check keyed to iterating
+"all successors of `x` under `r`" could visit only the under-labelled copy and therefore miss
+something the correctly-labelled copy would have satisfied — which WOULD be a false `Violated`,
+by the same direction-of-risk logic as F1/F2/F3 — is **untested**: `eval.rs` currently only
+checks `SubClassOf` / `EquivalentClasses` / role-hierarchy shapes over the domain as a whole,
+never a check keyed to one specific `Element` by identity, so nothing in the current evaluator
+exercises this. Nothing in the code prevents a future evaluator addition from doing so.
 
 ## Fix sketch (not built)
 
@@ -58,10 +144,14 @@ The two paths would need to converge on the target label BEFORE calling `intern`
 markers `expand`'s `target_label` would have reached, rather than falling back to
 `eff.get(&r)` alone. That requires exposing the fact path's marker resolution to the axiom path,
 which the two functions do not currently share (`model.rs:379` vs `model.rs:545` take disjoint
-parameter sets built by different callers in `build_model`).
+parameter sets built by different callers in `build_model`). Note this fix sketch targets the
+split-witness risk and F3's edge-attachment mechanism; F1 (conjunctive body) and F2 (Tseitin
+marker vs. `⊤`-closure) need the label-closure step applied more generally, not just at the
+`intern` boundary — see each section above for the specific gap.
 
 ## Where this is recorded in code
 
 `materialise_exists`'s opaque-body branch (`crates/owl-dl-verify/src/model.rs`, the
 `if atoms.is_empty() { ... }` block inside the `ConceptExpr::Some` arm) carries a matching
-inline comment pointing back at this file.
+inline comment pointing back at this file, corrected during the branch review to describe the
+edge it attaches immediately below (F3) rather than claiming the element is edge-less.

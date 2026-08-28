@@ -79,6 +79,21 @@ fn marker_residue_fixture() -> &'static str {
     )
 }
 
+/// A fixture with ONE unsupported `HasKey` axiom (dropped gracefully at
+/// conversion per `CLAUDE.md`'s "Graceful degradation + surfaced drops"
+/// entry) alongside an otherwise-trivial pure-EL `SubClassOf(:A :B)`. Found
+/// during the final whole-branch review: before `fold_dropped_axioms`
+/// existed, this exited **0** `Verified` — the checker vouched for a
+/// closure built from strictly fewer axioms than the ontology actually has,
+/// with the drop reported only as a stderr warning a corpus sweep bucketing
+/// on exit code alone would never see.
+fn dropped_axiom_fixture() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/dropped-haskey.ofn"
+    )
+}
+
 /// `ontologies/real/pizza.ofn` is part of the gitignored corpus
 /// (`./scripts/fetch-real-ontologies.sh` pulls it on demand) — present in
 /// this sandbox, but a fresh clone or CI checkout may not have it. Every
@@ -154,6 +169,62 @@ fn build_refusal_is_unresolved_and_exits_three() {
         stdout.contains("ChainRangeOutOfProfile"),
         "the build-time refusal reason must be surfaced, not swallowed: {stdout:?}"
     );
+}
+
+/// The bug this test guards: a fixture that would otherwise be `Verified`
+/// must be downgraded to `Unresolved` (exit 3) when the converter silently
+/// dropped a content axiom `verify-el` never got to check — see
+/// `fold_dropped_axioms` in `main.rs`.
+#[test]
+fn dropped_axioms_downgrade_a_verified_check_to_unresolved_and_exit_three() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg(dropped_axiom_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("unresolved:"),
+        "expected an unresolved: line, got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("AxiomsDroppedAtConversion"),
+        "the dropped-axiom reason must be surfaced, not swallowed: {stdout:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("HasKey"),
+        "warn_if_dropped's own warning must still fire: {stderr:?}"
+    );
+}
+
+/// Same fixture, `--json`: the `dropped` block must still be present (it
+/// always is, at any verdict) AND the top-level `verdict` must say
+/// `"unresolved"`, not `"verified"`.
+#[test]
+fn dropped_axioms_downgrade_is_visible_in_json_too() {
+    let out = rustdl()
+        .arg("verify-el")
+        .arg("--json")
+        .arg(dropped_axiom_fixture())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON on stdout");
+    assert_eq!(json["verdict"], "unresolved");
+    assert_eq!(json["dropped"]["HasKey: unsupported axiom (HasKey)"], 1);
 }
 
 /// `verify-el ontologies/real/pizza.ofn` must be `Unresolved` (exit 3):

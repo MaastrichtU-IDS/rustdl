@@ -11,7 +11,7 @@ pub use interp::{Element, Interpretation};
 
 use std::time::Instant;
 
-use owl_dl_core::{Axiom, ClassId, InternalOntology, RoleId};
+use owl_dl_core::{Axiom, ClassId, ConceptPool, InternalOntology, RoleId};
 use owl_dl_saturation::Subsumers;
 
 use eval::AxiomVerdict;
@@ -132,12 +132,145 @@ pub enum Verdict {
 /// because that would let a caller ask the question of a model that was
 /// never checked and get an answer with no soundness guarantee behind it.
 #[derive(Debug)]
-// The field is unread until Task 11 adds `still_holds_after`, which is the
-// only intended reader. `#[allow(dead_code)]` rather than dropping the field
-// or giving it a premature accessor — an accessor now would itself be dead
-// code, and this struct exists PRECISELY to hold a `FiniteModel` no other
-// code may touch yet.
-pub struct VerifiedModel(#[allow(dead_code)] FiniteModel);
+pub struct VerifiedModel(FiniteModel);
+
+impl VerifiedModel {
+    /// Does the classification this model already witnesses remain valid if
+    /// every axiom in `added` also holds?
+    ///
+    /// # The claim, and why it is licensed only here
+    ///
+    /// If every axiom in `added` holds in `self`'s model, the classification
+    /// previously reported for the ontology `self` was built from remains
+    /// valid IN FULL under the edit: every reported negative
+    /// (non-)subsumption is witnessed by this SAME model (nothing about the
+    /// model needs to change to keep witnessing it), and every reported
+    /// positive still holds by monotonicity — see the "positives half is
+    /// conditional" caveat below. So one model check replaces re-running the
+    /// reasoner on the edited ontology.
+    ///
+    /// This only works because `self` is a `VerifiedModel`: it exists ONLY
+    /// via `verify`'s `Verified` arm, i.e. every axiom the original report
+    /// was based on was already confirmed to hold in this exact model. A
+    /// model that was never checked (a bare [`model::FiniteModel`]) witnesses
+    /// nothing — which is why this method is not `FiniteModel::still_holds_
+    /// after`; see that type's `compile_fail` doctest in `model.rs`.
+    ///
+    /// # Caller contract
+    ///
+    /// - **Additions only.** `added` says nothing about REMOVED axioms. A
+    ///   removed axiom is free for a reported NEGATIVE (shrinking the
+    ///   entailed set can only preserve a non-subsumption, by monotonicity),
+    ///   but it can invalidate a reported POSITIVE — checking that needs the
+    ///   justification half of this project, out of scope here.
+    /// - **`added` is already-lowered IR, and must be interned against the
+    ///   SAME tables `self` was built from.** Convert each new horned-owl
+    ///   `Component` via `owl_dl_core::convert::convert_component(&component,
+    ///   &mut vocab, &mut pool)`
+    ///   (`crates/owl-dl-core/src/convert.rs:1889`) against the ORIGINAL
+    ///   ontology's `vocabulary`/`concepts` — never by re-converting the
+    ///   whole edited ontology from scratch, which allocates a FRESH
+    ///   `ConceptPool`/`Vocabulary` and silently gives the same-looking
+    ///   `ClassId`/`ConceptId`/`RoleId` values a different meaning. `pool` is
+    ///   an explicit parameter here precisely so that mistake cannot happen
+    ///   silently: it must be the identical pool `added` was converted
+    ///   against, and the one `self`'s labels are drawn from.
+    /// - **Check `dropped` did not grow.** If converting `added` drops an
+    ///   axiom, that axiom never makes it into `added` at all, so it is
+    ///   invisible to this method — a `Verified` verdict says nothing about
+    ///   it. The caller, not this method, must check
+    ///   `InternalOntology::dropped` did not grow before trusting a
+    ///   `Verified` result.
+    /// - **The positives half is conditional.** "Reported positives hold by
+    ///   monotonicity" presupposes they were correct in the first place. This
+    ///   method is a completeness instrument for the EDIT, not a fresh
+    ///   false-positive net over the original classification.
+    ///
+    /// # `SubObjectPropertyOf(Role)` / `EquivalentObjectProperties` are
+    /// genuine checks here, unlike in `verify`
+    ///
+    /// [`eval::check_axiom`]'s doc explains why those two arms are true by
+    /// construction when checking a FRESHLY BUILT model against its OWN
+    /// ontology (`build_role_hierarchy` already folded `sub ⊑ sup` into the
+    /// same hierarchy the check reads back, before the check ever runs).
+    /// That argument does NOT carry over here: `added` is checked against
+    /// `self`'s EXISTING, unchanged hierarchy, which does not contain the new
+    /// `sub ⊑ sup` — so here those two arms genuinely ask whether the OLD
+    /// model happens to already satisfy the NEW role axiom, and can and do
+    /// report `Violated` (see `tests/incremental.rs`).
+    ///
+    /// # Witness rendering
+    ///
+    /// Unlike `verify`, this method has no `InternalOntology`/`Vocabulary` in
+    /// scope — only a bare [`ConceptPool`] — so a `Violation::note` here
+    /// renders each witness element's label as its raw `ClassId` list rather
+    /// than a resolved IRI.
+    pub fn still_holds_after(
+        &self,
+        pool: &ConceptPool,
+        added: &[Axiom],
+        deadline: Option<Instant>,
+    ) -> Verdict {
+        let domain_size = self.0.domain_size();
+        let mut violations: Vec<Violation> = Vec::new();
+        let mut unresolved: Vec<UnresolvedReason> = Vec::new();
+
+        for (index, ax) in added.iter().enumerate() {
+            if deadline.is_some_and(|dl| Instant::now() >= dl) {
+                unresolved.push(UnresolvedReason::BoundTripped {
+                    bound: "deadline",
+                    limit: None,
+                });
+                break;
+            }
+            match eval::check_axiom(pool, &self.0, index, ax) {
+                AxiomVerdict::Holds => {}
+                AxiomVerdict::Fails { witness, note } => {
+                    let rendered = render_incremental_witness(&self.0, &witness);
+                    violations.push(Violation {
+                        axiom_index: index,
+                        axiom: ax.clone(),
+                        witness,
+                        note: format!("{note} [{rendered}]"),
+                    });
+                }
+                AxiomVerdict::Unresolved(reason) => unresolved.push(reason),
+            }
+        }
+
+        if !violations.is_empty() {
+            return Verdict::Violated {
+                domain_size,
+                violations,
+                unresolved,
+            };
+        }
+        if !unresolved.is_empty() {
+            return Verdict::Unresolved {
+                domain_size,
+                reasons: unresolved,
+            };
+        }
+        Verdict::Verified {
+            axioms_checked: added.len(),
+            domain_size,
+        }
+    }
+}
+
+/// Renders every witness element's label as its raw `ClassId` list, for
+/// [`VerifiedModel::still_holds_after`]'s `Violation::note`.
+///
+/// Unlike `render_witness`/`render_label` (used by `verify`), this has no
+/// `InternalOntology`/`Vocabulary` in scope — `still_holds_after` takes only
+/// a bare `ConceptPool` — so it cannot resolve a `ClassId` to its IRI.
+fn render_incremental_witness(model: &FiniteModel, witness: &[Element]) -> String {
+    witness
+        .iter()
+        .map(|e| format!("{e:?}={:?}", model.label(*e)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Builds the canonical model.
 ///

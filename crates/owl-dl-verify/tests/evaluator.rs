@@ -1496,25 +1496,6 @@ fn verified_model_does_not_expose_its_inner_finite_model_mutably() {
     );
 }
 
-// DELETE THIS ENTIRE TEST once Task 11 lands `still_holds_after` on
-// `VerifiedModel`. It exists only to pin "this task (10) does not implement
-// it yet" — once Task 11 legitimately adds `fn still_holds_after` to
-// `lib.rs`, this assertion is EXPECTED to fail, and the fix is to remove
-// the test, not to weaken the assertion. (Contrast with the sibling doctest
-// on `FiniteModel` in `model.rs`, which stays valid forever: Task 11 adds
-// the method to `VerifiedModel`, not to `FiniteModel`, so that check is
-// permanent and untouched by this note.)
-#[test]
-fn still_holds_after_does_not_exist_yet_task_10_scope_marker() {
-    let lib_src = include_str!("../src/lib.rs");
-    assert!(
-        !lib_src.contains("fn still_holds_after"),
-        "this task (10) does not implement still_holds_after — Task 11 adds \
-         it to VerifiedModel. If it now exists, DELETE THIS TEST rather than \
-         editing the assertion."
-    );
-}
-
 #[test]
 fn verify_honours_an_already_elapsed_deadline_and_reports_it_as_a_deadline_not_a_count() {
     // Requirement: `limit: None` is what distinguishes a deadline-based

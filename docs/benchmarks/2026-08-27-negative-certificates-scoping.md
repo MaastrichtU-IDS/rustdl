@@ -191,3 +191,43 @@ construction on the *benign* case (no `⊥`), because a chain-materialised edge'
 receives `eff_ranges` of the chain's super-role — a **false `Violated`** on a correct ontology.
 Spec v2 refuses that combination with `Unresolved` rather than guessing, mirroring the profile
 restriction.
+
+---
+
+## Filed as issues #80, #81, #82 (2026-08-28) — and the headline was NOT what the reviews said
+
+Five live pure-EL D10 defects, all found by **designing and reviewing** this instrument rather than
+running it, grouped by root cause and filed:
+
+* **#80 — nested existential monotonicity.** THE HEADLINE, and it emerged only from re-deriving a
+  fixture the review had labelled a healthy control. **Three axioms, pure EL, no chain or range:**
+  `C ⊑ ∃t.∃u.A`, `A ⊑ F`, `∃t.∃u.F ⊑ D` entails `C ⊑ D` by plain monotonicity. Konclude reports
+  `(A,F)` and `(C,D)`; rustdl reports only `(A,F)`, `incomplete: false`, `fragment: pure-EL`.
+  **The one-level form is caught correctly**, so nesting is exactly the trigger — a perfect
+  discriminating control.
+* **#81 — ranges not folded into nested existential witnesses.** `cascade.ofn`: 8 classes,
+  `A ⊑ FINAL` entailed by a 7-step derivation, Konclude's only non-trivial row, **rustdl emits zero
+  rows**. Plus the unsat-shaped `unsatnested.ofn`, with `unsatconj.ofn` (non-nested) passing as the
+  control.
+* **#82 — chain-implied roles.** Domain half Konclude-confirmed (the gap behind the `#[ignore]`d
+  `nested_existential_poisoned_role_via_chain`, previously untracked); range half new, and **both
+  reasoners miss it**, so it is adjudicated by derivation. Filed with the OWL 2 EL profile caveat
+  stated: the profile forbids range-on-chain-implied-property, and `is_el_axiom` admits the two
+  constructs independently, so the actionable defect may be the *gate* rather than the engine.
+
+### Method notes worth keeping
+
+**Konclude's OWX output is multi-line.** A one-line `grep 'SubClassOf(...)'` returns nothing on
+every ontology — indistinguishable from "Konclude found nothing". Parse the
+`<SubClassOf><Class IRI=.../><Class IRI=.../></SubClassOf>` element, and calibrate against a case
+where the oracle is known to report something.
+
+**A reviewer's "healthy control" label is a hypothesis, not a result.** `chainrange_ctl.ofn` was
+handed over as a discriminating healthy control; measuring it showed Konclude derives `C ⊑ D` and
+rustdl misses it, and re-deriving showed the entailment needs neither the chain nor the range. That
+one re-derivation produced #80 — the most fundamental defect of the set. **Adjudicate every fixture
+yourself, including the ones labelled as passing.**
+
+**Konclude's silence is ambiguous, so say which claims rest on it.** It confirms #80, #81 and #82
+Part 1, and misses #82 Part 2 — where the claim rests on derivation alone. Reporting that
+distinction is the difference between an oracle result and an assertion.

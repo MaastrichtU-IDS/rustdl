@@ -11,7 +11,7 @@ use owl_dl_core::{
     SubRolePath,
 };
 use owl_dl_verify::eval::{AxiomVerdict, Judgement, check_axiom, eval_concept};
-use owl_dl_verify::{Bounds, Element, Interpretation, UnresolvedReason};
+use owl_dl_verify::{Bounds, Element, Interpretation, UnresolvedReason, Verdict, verify};
 
 mod common;
 
@@ -1220,4 +1220,294 @@ fn every_unhandled_axiom_variant_yields_unresolved() {
             "unhandled variant {ax:?} must be Unresolved, never a silent pass"
         );
     }
+}
+
+// -----------------------------------------------------------------------
+// Task 10: `verify`, `Verdict`, and the `VerifiedModel` type-state.
+// -----------------------------------------------------------------------
+//
+// Everything above this point exercises `check_axiom`/`eval_concept`
+// directly. These tests exercise the assembled surface: `verify` running
+// `check_axiom` over a WHOLE ontology's axiom list and folding the results
+// into one `Verdict`.
+
+// A second role (`:q`) plus `DisjointObjectProperties`, so this fixture
+// carries one CHECKED axiom (`SubClassOf`, which holds) and one variant
+// `check_axiom` never judges at all (`DisjointObjectProperties` has no
+// derived side-axiom at conversion, unlike e.g. `FunctionalObjectProperty` —
+// confirmed by probing `convert_ontology`'s output directly — so this
+// fixture's axiom list is exactly the six printed below and nothing this
+// test did not ask for).
+const UNHANDLED_VARIANT_FIXTURE: &str = r"Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/unresolved>
+Declaration(Class(:A)) Declaration(Class(:B))
+Declaration(ObjectProperty(:p)) Declaration(ObjectProperty(:q))
+SubClassOf(:A :B)
+DisjointObjectProperties(:p :q)
+)
+";
+
+#[test]
+fn verify_returns_verified_and_some_model_on_a_healthy_ontology() {
+    let internal = common::load(SUBCLASS_FIXTURE);
+    let (m, build_reasons) =
+        owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(
+        build_reasons.is_empty(),
+        "this fixture must build cleanly, or the verdict below would not \
+         actually be exercising `verify`'s own logic: {build_reasons:?}"
+    );
+    let expected_domain = m.domain_size();
+    let expected_axioms = internal.axioms.len();
+
+    let (verdict, model_out) = verify(m, &internal, None);
+    match verdict {
+        Verdict::Verified {
+            axioms_checked,
+            domain_size,
+        } => {
+            assert_eq!(
+                domain_size, expected_domain,
+                "domain_size must be the model's actual domain size"
+            );
+            assert_eq!(
+                axioms_checked, expected_axioms,
+                "a Verified run checked every axiom, so axioms_checked must \
+                 equal the ontology's whole axiom count"
+            );
+        }
+        other => panic!("a healthy ontology must verify: {other:?}"),
+    }
+    assert!(
+        model_out.is_some(),
+        "Verified must hand back Some(VerifiedModel) — that is the only \
+         verdict allowed to"
+    );
+}
+
+#[test]
+fn verify_returns_violated_and_none_on_a_sabotaged_label_and_pins_the_witness() {
+    let internal = common::load(SUBCLASS_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::SubClassOf { .. }));
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let b = internal.vocabulary.class_id("http://ex.org/B").expect("B");
+    let elem_a = m.element_of_class(a).expect("A is satisfiable");
+    m.test_only_remove_from_label(elem_a, b);
+    let expected_domain = m.domain_size();
+
+    let (verdict, model_out) = verify(m, &internal, None);
+    match verdict {
+        Verdict::Violated {
+            domain_size,
+            violations,
+            unresolved,
+        } => {
+            assert_eq!(domain_size, expected_domain, "domain_size on Violated");
+            assert_eq!(violations.len(), 1, "exactly one axiom was sabotaged");
+            assert_eq!(violations[0].axiom_index, idx, "pinned axiom index");
+            assert_eq!(
+                violations[0].axiom, internal.axioms[idx],
+                "the reported axiom must be the SubClassOf that was sabotaged"
+            );
+            assert_eq!(
+                violations[0].witness,
+                vec![elem_a],
+                "pinned witness element"
+            );
+            assert!(
+                unresolved.is_empty(),
+                "this fixture has nothing else to be unresolved about"
+            );
+        }
+        other => panic!("the sabotaged label must be caught as Violated: {other:?}"),
+    }
+    assert!(
+        model_out.is_none(),
+        "Violated must never hand back a VerifiedModel"
+    );
+}
+
+#[test]
+fn verify_returns_unresolved_and_none_on_an_unhandled_axiom_variant() {
+    let internal = common::load(UNHANDLED_VARIANT_FIXTURE);
+    let (m, build_reasons) =
+        owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    assert!(build_reasons.is_empty(), "{build_reasons:?}");
+    let expected_domain = m.domain_size();
+    let idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::DisjointObjectProperties(_))
+    });
+
+    let (verdict, model_out) = verify(m, &internal, None);
+    match verdict {
+        Verdict::Unresolved {
+            domain_size,
+            reasons,
+        } => {
+            assert_eq!(domain_size, expected_domain, "domain_size on Unresolved");
+            assert!(
+                reasons.iter().any(|r| matches!(
+                    r,
+                    UnresolvedReason::UnhandledAxiom {
+                        axiom_index,
+                        variant: "DisjointObjectProperties",
+                    } if *axiom_index == idx
+                )),
+                "the unhandled DisjointObjectProperties axiom must be reported, \
+                 pinned to its own index: {reasons:?}"
+            );
+        }
+        other => panic!("an unhandled axiom variant must be Unresolved: {other:?}"),
+    }
+    assert!(
+        model_out.is_none(),
+        "Unresolved must never hand back a VerifiedModel — even though the \
+         model itself was never sabotaged, some axiom went unjudged, and \
+         that alone must be enough to withhold the type-state wrapper"
+    );
+}
+
+#[test]
+fn violated_outranks_unresolved_and_still_carries_the_unresolved_rows() {
+    // Same fixture as the unhandled-variant test (so it carries a genuine
+    // UnhandledAxiom), PLUS the SubClassOf label sabotage from the
+    // Violated test — so one run produces both kinds of finding at once.
+    let internal = common::load(UNHANDLED_VARIANT_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let sc_idx = axiom_index(&internal, |ax| matches!(ax, Axiom::SubClassOf { .. }));
+    let unhandled_idx = axiom_index(&internal, |ax| {
+        matches!(ax, Axiom::DisjointObjectProperties(_))
+    });
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    let b = internal.vocabulary.class_id("http://ex.org/B").expect("B");
+    let elem_a = m.element_of_class(a).expect("A is satisfiable");
+    m.test_only_remove_from_label(elem_a, b);
+
+    let (verdict, model_out) = verify(m, &internal, None);
+    match verdict {
+        Verdict::Violated {
+            violations,
+            unresolved,
+            ..
+        } => {
+            assert_eq!(violations.len(), 1);
+            assert_eq!(violations[0].axiom_index, sc_idx);
+            assert!(
+                !unresolved.is_empty(),
+                "coverage must not be hidden behind the violation — the \
+                 unhandled DisjointObjectProperties finding must still be \
+                 reported: {unresolved:?}"
+            );
+            assert!(unresolved.iter().any(|r| matches!(
+                r,
+                UnresolvedReason::UnhandledAxiom {
+                    axiom_index,
+                    variant: "DisjointObjectProperties",
+                } if *axiom_index == unhandled_idx
+            )));
+        }
+        other => panic!("Violated must outrank Unresolved: {other:?}"),
+    }
+    assert!(model_out.is_none());
+}
+
+#[test]
+fn violation_witness_containing_a_tseitin_shaped_class_id_renders_without_panicking() {
+    // `check_axiom`/`eval_concept` never touch `Vocabulary` at all (see
+    // `eval.rs`'s module doc), so this element is manufactured directly on
+    // the model rather than through the saturator — the point being tested
+    // is `verify`'s OWN rendering, not how such a label could arise in
+    // practice. `FiniteModel::intern` is a plain public method (not gated
+    // behind the test-mutations feature): interning a label a caller built
+    // by hand is ordinary usage, unlike mutating one already interned.
+    let internal = common::load(SUBCLASS_FIXTURE);
+    let (mut m, _) = owl_dl_verify::build_model(&internal, &Bounds::default()).expect("builds");
+    let a = internal.vocabulary.class_id("http://ex.org/A").expect("A");
+    // Well beyond anything `internal`'s vocabulary itself interned — stands
+    // in for a Tseitin marker (`TseitinAllocator` bases marker ids at
+    // `vocabulary.num_classes()`) or an `inject_conjunction`-created
+    // `verify-aug:` class. `Vocabulary::class_iri` indexes its own table
+    // directly and PANICS on an id outside it; this is exactly the hazard
+    // `verify`'s witness rendering exists to avoid.
+    let synthetic =
+        ClassId::new(u32::try_from(internal.vocabulary.num_classes()).unwrap_or(u32::MAX) + 1000);
+    let tainted = m.intern(vec![a, synthetic]);
+    let idx = axiom_index(&internal, |ax| matches!(ax, Axiom::SubClassOf { .. }));
+
+    // Does not panic: that is the assertion. `verify` must render `tainted`'s
+    // label — which contains `synthetic` — while `m` is still alive, without
+    // ever calling `class_iri(synthetic)`.
+    let (verdict, model_out) = verify(m, &internal, None);
+    match verdict {
+        Verdict::Violated { violations, .. } => {
+            let hit = violations
+                .iter()
+                .find(|v| v.axiom_index == idx && v.witness.contains(&tainted))
+                .expect("the tainted element must be reported as the witness");
+            assert!(
+                hit.note.contains("http://ex.org/A"),
+                "the real class in the label must still render by IRI: {}",
+                hit.note
+            );
+            assert!(
+                hit.note.contains("synthetic"),
+                "the Tseitin-shaped id must render by a synthetic tag: {}",
+                hit.note
+            );
+        }
+        other => panic!("the tainted element must produce a violation: {other:?}"),
+    }
+    assert!(model_out.is_none());
+}
+
+// --- Type-state structural checks (no `trybuild` dependency; see this
+// task's brief) -------------------------------------------------------------
+//
+// A genuine compile-fail test (`FiniteModel::still_holds_after` does not
+// exist) is out of reach without a new dev-dependency, which the brief
+// forbids adding for this. `tests/independence.rs` already establishes the
+// house idiom for exactly this situation — assert the invariant by scanning
+// the source text — so these two follow it rather than inventing a second
+// mechanism.
+
+#[test]
+fn finite_model_does_not_expose_still_holds_after() {
+    // Task 11 adds `still_holds_after`, and it must land on `VerifiedModel`
+    // (in `lib.rs`), never on `FiniteModel` (in `model.rs`) — see
+    // `VerifiedModel`'s doc comment for why: a caller must not be able to
+    // ask the soundness question of a model that was never checked.
+    let model_src = include_str!("../src/model.rs");
+    assert!(
+        !model_src.contains("fn still_holds_after"),
+        "FiniteModel must never gain a `still_holds_after` method — that \
+         belongs on VerifiedModel only"
+    );
+}
+
+#[test]
+fn verified_model_does_not_expose_its_inner_finite_model_mutably() {
+    // The type-state guarantee rests entirely on `VerifiedModel`'s tuple
+    // field being PRIVATE: a `pub struct VerifiedModel(pub FiniteModel)`
+    // would let any caller reconstruct one by hand — bypassing `verify`'s
+    // checking loop entirely — or reach the wrapped model mutably through
+    // it. Neither `pub` spelling (`pub FiniteModel` immediately inside the
+    // parens, or a later `pub fn` returning `&mut FiniteModel` / owned
+    // `FiniteModel` from an `impl VerifiedModel` block) may appear.
+    let lib_src = include_str!("../src/lib.rs");
+    assert!(
+        lib_src.contains("struct VerifiedModel("),
+        "VerifiedModel must exist as a tuple struct"
+    );
+    assert!(
+        !lib_src.contains("VerifiedModel(pub "),
+        "VerifiedModel's tuple field must stay private, or any caller could \
+         construct one without going through verify()'s checking loop"
+    );
+    assert!(
+        !lib_src.contains("fn still_holds_after"),
+        "this task does not implement still_holds_after; Task 11 must add \
+         it to VerifiedModel, and when it does, it must not expose &mut \
+         FiniteModel or an owned FiniteModel to get there"
+    );
 }

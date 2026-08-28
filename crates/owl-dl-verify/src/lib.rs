@@ -9,9 +9,12 @@ pub mod model;
 
 pub use interp::{Element, Interpretation};
 
-use owl_dl_core::{ClassId, InternalOntology, RoleId};
+use std::time::Instant;
+
+use owl_dl_core::{Axiom, ClassId, InternalOntology, RoleId};
 use owl_dl_saturation::Subsumers;
 
+use eval::AxiomVerdict;
 use model::FiniteModel;
 
 /// Construction bounds. Checking is bounded separately, by a deadline passed to
@@ -65,6 +68,70 @@ pub enum UnresolvedReason {
         class: ClassId,
     },
 }
+
+/// One axiom that a checked model fails to satisfy.
+///
+/// `witness` names the element(s) responsible for the failure (a single
+/// element for a concept-level check, both edge endpoints for a role/chain
+/// check). `note` carries the human-readable explanation, and it is where
+/// each witness element's LABEL gets rendered — see `verify`'s doc for why
+/// that has to happen there rather than here: the `FiniteModel` that could
+/// answer what an `Element` even means is consumed by `verify` before a
+/// caller ever sees a `Violation`, so `witness` alone would otherwise be
+/// uninterpretable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Violation {
+    pub axiom_index: usize,
+    pub axiom: Axiom,
+    pub witness: Vec<Element>,
+    pub note: String,
+}
+
+/// The outcome of checking a model against every axiom in its ontology.
+///
+/// `domain_size` is on ALL THREE variants: `verify` consumes the model by
+/// value, so a caller has no other way to recover it once a verdict comes
+/// back. `Violated` OUTRANKS `Unresolved` — a run that produces both is
+/// reported `Violated` — but it still carries its own `unresolved` rows, so
+/// coverage is never hidden behind a violation: a caller can see both "I
+/// found a violation" and "N axiom forms I could not judge" from the one
+/// verdict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Verified {
+        axioms_checked: usize,
+        domain_size: usize,
+    },
+    Violated {
+        domain_size: usize,
+        violations: Vec<Violation>,
+        unresolved: Vec<UnresolvedReason>,
+    },
+    Unresolved {
+        domain_size: usize,
+        reasons: Vec<UnresolvedReason>,
+    },
+}
+
+/// Type-state witness that a [`FiniteModel`] was checked against its own
+/// ontology by [`verify`] and found to satisfy every axiom `check_axiom`
+/// could judge (see [`Verdict::Verified`]).
+///
+/// The inner `FiniteModel` is a PRIVATE tuple field, so nothing outside this
+/// module can construct a `VerifiedModel` other than by going through
+/// `verify`'s checking loop, and nothing — inside or outside this crate —
+/// can reach the model mutably through this type at all. Task 11 adds
+/// `still_holds_after` as a method ON `VerifiedModel`, never on
+/// `FiniteModel` itself: `FiniteModel::still_holds_after` must not exist,
+/// because that would let a caller ask the question of a model that was
+/// never checked and get an answer with no soundness guarantee behind it.
+#[derive(Debug)]
+// The field is unread until Task 11 adds `still_holds_after`, which is the
+// only intended reader. `#[allow(dead_code)]` rather than dropping the field
+// or giving it a premature accessor — an accessor now would itself be dead
+// code, and this struct exists PRECISELY to hold a `FiniteModel` no other
+// code may touch yet.
+pub struct VerifiedModel(#[allow(dead_code)] FiniteModel);
 
 /// Builds the canonical model.
 ///
@@ -168,6 +235,152 @@ pub fn build_model(
             model::inject_conjunction(&mut working, &subs, &eff, y, r);
         }
     }
+}
+
+/// Checks `model` against every axiom in `internal.axioms`, in order, and
+/// returns a verdict plus — **only** when that verdict is `Verified` — the
+/// model wrapped as a [`VerifiedModel`].
+///
+/// # `Some(VerifiedModel)` iff `Verified`, and why that is not "iff no violations"
+///
+/// `VerifiedModel::still_holds_after` (Task 11) derives its entire soundness
+/// argument from the model having been checked, in full, against the
+/// ontology it was built from. A `Violated` run obviously cannot license
+/// that. An `Unresolved` run is the subtler case — `model` itself may be
+/// perfectly fine — but "some axioms were never actually judged" is exactly
+/// the situation the type-state exists to rule out, so it must ALSO refuse
+/// the wrapper. Handing one out on anything short of a full `Verified` pass
+/// would silently void the guarantee for every downstream caller, who has
+/// no way to tell from the type alone that the check was incomplete.
+///
+/// # `Bounds` vs. `deadline`
+///
+/// [`Bounds`] governs `build_model`'s CONSTRUCTION only. Checking here is
+/// bounded solely by `deadline`, passed in fresh by the caller — never a
+/// stale `Instant` read off `model` — because construction and checking can
+/// happen arbitrarily far apart in time (e.g. `still_holds_after`, called
+/// long after the model that backs it was built). If `deadline` expires
+/// before every axiom has been checked, the remaining axioms are left
+/// unjudged and a `BoundTripped { bound: "deadline", limit: None }` is
+/// recorded — `None` distinguishes a deadline from a count-based bound.
+///
+/// # Witness rendering happens HERE, not in the caller
+///
+/// [`eval::AxiomVerdict::Fails`] carries bare [`Element`]s, and `model` is
+/// consumed by this function — a caller has no `FiniteModel` left to look an
+/// element's label up against once a `Violation` reaches them. Rendering
+/// therefore happens inside this loop, into `Violation::note`, while `model`
+/// is still alive (see `render_witness`). It never calls
+/// `Vocabulary::class_iri` on a class id `internal`'s vocabulary did not
+/// itself intern — a Tseitin marker, or an `inject_conjunction`-created
+/// `verify-aug:` class — because that call PANICS out of range; such an id
+/// renders as a synthetic tag instead.
+///
+/// # `SubObjectPropertyOf(Role)` / `EquivalentObjectProperties` scoping
+///
+/// [`eval::check_axiom`]'s doc explains why those two arms cannot be
+/// sabotaged by deleting a model edge when checking a FRESHLY BUILT model
+/// against its own ontology: `build_role_hierarchy` records `sub ⊑ sup`
+/// into the same closure that `has_edge`/`edges` walk, so the antecedent's
+/// edges are already inside the consequent's search space, and the check
+/// reads vacuously `Holds`. Do not read that as those two arms being dead
+/// weight in general — it is NOT true under `still_holds_after`, which
+/// checks ADDED axioms against an EXISTING model whose hierarchy does not
+/// yet contain the new `sub ⊑ sup`.
+pub fn verify(
+    model: FiniteModel,
+    internal: &InternalOntology,
+    deadline: Option<Instant>,
+) -> (Verdict, Option<VerifiedModel>) {
+    let domain_size = model.domain_size();
+    let mut violations: Vec<Violation> = Vec::new();
+    let mut unresolved: Vec<UnresolvedReason> = Vec::new();
+
+    for (index, ax) in internal.axioms.iter().enumerate() {
+        if deadline.is_some_and(|dl| Instant::now() >= dl) {
+            unresolved.push(UnresolvedReason::BoundTripped {
+                bound: "deadline",
+                limit: None,
+            });
+            break;
+        }
+        match eval::check_axiom(&internal.concepts, &model, index, ax) {
+            AxiomVerdict::Holds => {}
+            AxiomVerdict::Fails { witness, note } => {
+                let rendered = render_witness(&model, internal, &witness);
+                violations.push(Violation {
+                    axiom_index: index,
+                    axiom: ax.clone(),
+                    witness,
+                    note: format!("{note} [{rendered}]"),
+                });
+            }
+            AxiomVerdict::Unresolved(reason) => unresolved.push(reason),
+        }
+    }
+
+    if !violations.is_empty() {
+        return (
+            Verdict::Violated {
+                domain_size,
+                violations,
+                unresolved,
+            },
+            None,
+        );
+    }
+    if !unresolved.is_empty() {
+        return (
+            Verdict::Unresolved {
+                domain_size,
+                reasons: unresolved,
+            },
+            None,
+        );
+    }
+    let axioms_checked = internal.axioms.len();
+    (
+        Verdict::Verified {
+            axioms_checked,
+            domain_size,
+        },
+        Some(VerifiedModel(model)),
+    )
+}
+
+/// Renders every witness element's label into one comma-joined string, for
+/// `Violation::note`. Must run while `model` is alive — see `verify`'s doc.
+fn render_witness(model: &FiniteModel, internal: &InternalOntology, witness: &[Element]) -> String {
+    witness
+        .iter()
+        .map(|e| format!("{e:?}={}", render_label(model, internal, *e)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Renders one element's label as `{iri, iri, ...}`.
+///
+/// Falls back to a synthetic tag for any class id `internal`'s vocabulary
+/// did not itself intern — a Tseitin marker (`TseitinAllocator` bases marker
+/// ids at `vocabulary.num_classes()` and never interns an IRI for one) or an
+/// `inject_conjunction`-created `verify-aug:` class: `Vocabulary::class_iri`
+/// indexes its own interned table directly and PANICS on an id outside it,
+/// so this checks `num_classes()` first rather than ever calling it
+/// speculatively.
+fn render_label(model: &FiniteModel, internal: &InternalOntology, e: Element) -> String {
+    let num_real = internal.vocabulary.num_classes();
+    let parts: Vec<String> = model
+        .label(e)
+        .iter()
+        .map(|c| {
+            if (c.index() as usize) < num_real {
+                internal.vocabulary.class_iri(*c).to_string()
+            } else {
+                format!("<synthetic#{}>", c.index())
+            }
+        })
+        .collect();
+    format!("{{{}}}", parts.join(", "))
 }
 
 /// Reports every ORIGINAL class whose satisfiability changed between the first

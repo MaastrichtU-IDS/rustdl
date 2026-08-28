@@ -1,0 +1,8 @@
+Prefix(:=<http://ex.org/>)
+Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
+Ontology(<http://ex.org/bf>
+Declaration(Class(:X)) Declaration(Class(:Z))
+Declaration(ObjectProperty(:r))
+SubClassOf(:X ObjectSomeValuesFrom(:r owl:Nothing))
+SubClassOf(:X :Z)
+)

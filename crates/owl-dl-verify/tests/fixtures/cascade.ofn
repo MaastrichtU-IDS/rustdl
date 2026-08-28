@@ -1,0 +1,13 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/cascade>
+Declaration(Class(:Y)) Declaration(Class(:F)) Declaration(Class(:G)) Declaration(Class(:Z))
+Declaration(Class(:A)) Declaration(Class(:W)) Declaration(Class(:P)) Declaration(Class(:FINAL))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s)) Declaration(ObjectProperty(:u)) Declaration(ObjectProperty(:v))
+ObjectPropertyRange(:r :F)
+ObjectPropertyRange(:u :G)
+SubClassOf(:A ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :Y)))
+SubClassOf(ObjectIntersectionOf(ObjectSomeValuesFrom(:s :Y) :F) ObjectSomeValuesFrom(:u ObjectSomeValuesFrom(:v :W)))
+SubClassOf(ObjectIntersectionOf(ObjectSomeValuesFrom(:v :W) :G) :Z)
+SubClassOf(ObjectSomeValuesFrom(:u :Z) :P)
+SubClassOf(ObjectSomeValuesFrom(:r :P) :FINAL)
+)

@@ -1,0 +1,9 @@
+Prefix(:=<http://ex.org/>)
+Ontology(<http://ex.org/un>
+Declaration(Class(:Y)) Declaration(Class(:F)) Declaration(Class(:W)) Declaration(Class(:X))
+Declaration(ObjectProperty(:r)) Declaration(ObjectProperty(:s))
+ObjectPropertyRange(:r :F)
+DisjointClasses(:F :W)
+SubClassOf(ObjectSomeValuesFrom(:s :Y) :W)
+SubClassOf(:X ObjectSomeValuesFrom(:r ObjectSomeValuesFrom(:s :Y)))
+)

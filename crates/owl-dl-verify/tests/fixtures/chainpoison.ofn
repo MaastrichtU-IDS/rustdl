@@ -1,11 +1,8 @@
-Prefix(:=<http://t/>)
+Prefix(:=<http://ex.org/>)
 Prefix(owl:=<http://www.w3.org/2002/07/owl#>)
-Ontology(<http://t/chain>
-Declaration(Class(:A))
-Declaration(Class(:C))
-Declaration(ObjectProperty(:r))
-Declaration(ObjectProperty(:t))
-Declaration(ObjectProperty(:u))
+Ontology(<http://ex.org/cp>
+Declaration(Class(:C)) Declaration(Class(:A))
+Declaration(ObjectProperty(:t)) Declaration(ObjectProperty(:u)) Declaration(ObjectProperty(:r))
 SubObjectPropertyOf(ObjectPropertyChain(:t :u) :r)
 ObjectPropertyDomain(:r owl:Nothing)
 SubClassOf(:C ObjectSomeValuesFrom(:t ObjectSomeValuesFrom(:u :A)))
